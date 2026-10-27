@@ -852,6 +852,62 @@ fn prefix_verification_refuses_rewritten_or_retired_journal_entries() {
     }
 }
 
+/// fa-0hs4.5: a period that holds entries but was never materialized has no
+/// cache to disagree with the journal. It is uninitialized lag, green and
+/// stale, on both verification paths, never corruption. Materialized cells
+/// that disagree with the refold are still corruption.
+#[test]
+fn an_unmaterialized_period_with_entries_is_stale_lag_not_corruption() {
+    let mut h = harness();
+    h.post_rent(1_000, b"never-materialized");
+    let ctx = h.ctx();
+    for v in [
+        verify_period(&h.db, &h.book, &h.march).unwrap(),
+        fa_registers::verify_period_with_context(&h.db, &ctx.query(), &h.book, &h.march).unwrap(),
+    ] {
+        assert!(v.is_green(), "an absent cache is not drift: {v:?}");
+        assert_eq!(v.cache_status, CacheStatus::Uninitialized, "{v:?}");
+        assert!(v.drift.is_empty() && v.pending_drift.is_empty(), "{v:?}");
+        assert_eq!(v.cells_checked, 0, "{v:?}");
+        assert_eq!(v.verified_through, None, "{v:?}");
+        assert!(
+            v.stale && v.lag_entries >= 1,
+            "every entry is unread: {v:?}"
+        );
+    }
+
+    // Planted negative: materialize, then tamper with a stored cell.
+    let fold = h.materialize_march();
+    assert_eq!(
+        verify_period(&h.db, &h.book, &h.march)
+            .unwrap()
+            .cache_status,
+        CacheStatus::Verified
+    );
+    let cash_key = fold
+        .cells
+        .iter()
+        .find(|c| c.key.account == h.cash)
+        .unwrap()
+        .key
+        .clone();
+    let mut tamper = WriteBatch::new(relation::IN_PERIOD);
+    tamper.set_vertex_property(
+        register_vid(h.book.book_id, &cash_key),
+        property::CREDITS_POSTED,
+        Some(CanonicalScalar::bytes(7i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    h.write_derived(tamper);
+    for v in [
+        verify_period(&h.db, &h.book, &h.march).unwrap(),
+        fa_registers::verify_period_with_context(&h.db, &ctx.query(), &h.book, &h.march).unwrap(),
+    ] {
+        assert!(!v.is_green(), "{v:?}");
+        assert_eq!(v.cache_status, CacheStatus::Corrupt, "{v:?}");
+        assert_eq!(v.drift.len(), 1, "{v:?}");
+    }
+}
+
 #[test]
 fn a_missing_cache_header_cannot_certify_surviving_cells() {
     let mut h = harness();
@@ -1069,8 +1125,15 @@ fn missing_register_membership_is_detected_and_repaired() {
     for remove_label in [false, true] {
         let mut h = harness();
         h.post_rent(123, b"rent");
-        // Nonempty journal without its materialization cannot verify green.
-        h.assert_not_green("unmaterialized journal cells");
+        // A nonempty journal never materialized has no cache to disagree with
+        // it: uninitialized lag, never corruption (fa-0hs4.5; the corruption
+        // negatives are an_unmaterialized_period_with_entries_is_stale_lag_not_corruption).
+        let unmaterialized = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(
+            unmaterialized.is_green() && unmaterialized.stale,
+            "{unmaterialized:?}"
+        );
+        assert_eq!(unmaterialized.cache_status, CacheStatus::Uninitialized);
         let fold = h.materialize_march();
         let rvid = register_vid(h.book.book_id, &fold.cells[0].key);
         let pvid = period_vid(&h.book.calendar.id, &h.march);

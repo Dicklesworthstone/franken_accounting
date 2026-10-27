@@ -57,16 +57,8 @@ fn run(argv: &[String]) -> u8 {
         }
     };
     let d = &reg.daemon;
-    let mut flags: Vec<&str> = d.flags.iter().map(String::as_str).collect();
-    for flag in ["--mcp", "--token", "--cluster"] {
-        if !flags.contains(&flag) {
-            flags.push(flag);
-        }
-    }
-    let mut switches: Vec<&str> = d.switches.iter().map(String::as_str).collect();
-    if !switches.contains(&"--version") {
-        switches.push("--version");
-    }
+    let flags: Vec<&str> = d.flags.iter().map(String::as_str).collect();
+    let switches: Vec<&str> = d.switches.iter().map(String::as_str).collect();
     let parsed = match args::parse(argv, &flags, &switches) {
         Ok(a) => a,
         Err(e) => return cli::usage_error(argv, e.message, e.fix, false).0,
@@ -85,7 +77,6 @@ fn run(argv: &[String]) -> u8 {
         for u in &d.usage {
             text.push_str(&format!("  {u}\n"));
         }
-        text.push_str("  fad serve --book <dir> --mcp stdio|socket [--token <file>] [--cluster <name|all> ...] [--files-root <dir>]\n");
         print!("{text}");
         return 0;
     }

@@ -9,6 +9,9 @@
 #   scripts/tests/close_bead_selftest.sh::refuses_verdict_without_landing_commit
 #   scripts/tests/close_bead_selftest.sh::closes_with_cited_note
 #   scripts/tests/close_bead_selftest.sh::unbound_resumed_steps_cannot_authorize_closure
+#   scripts/tests/close_bead_selftest.sh::refuses_note_whose_step_tree_differs_from_commit_tree
+#   scripts/tests/close_bead_selftest.sh::refuses_note_started_before_its_commit
+#   scripts/tests/close_bead_selftest.sh::refuses_test_names_reported_outside_the_test_step
 # =============================================================================
 
 set -uo pipefail
@@ -159,6 +162,11 @@ beads = [
         "status": "in_progress",
         "description": "Code bead trying none loophole.\n\n```acceptance-tests\nnone: trying to skip tests on crates/ edit\n```\n",
     },
+    {
+        "id": "fa-forged-note",
+        "status": "in_progress",
+        "description": "Bead offered a forged verdict note (fa-0hs4.1).\n\n```acceptance-tests\nfa-journal::retention::tests::floor_enforced\n```\n",
+    },
 ]
 path.write_text("\n".join(json.dumps(b) for b in beads) + "\n")
 PY
@@ -169,7 +177,7 @@ git config user.name "Close Bead Self-Test"
 git config user.email "close-bead@example.invalid"
 printf 'pub fn init() {}\n' > crates/fa/src/lib.rs
 git add .
-git commit -q -m "feat: initial implementation (fa-good, fa-missing-test, fa-failed-test, fa-code-loophole)"
+git commit -q -m "feat: initial implementation (fa-good, fa-missing-test, fa-failed-test, fa-code-loophole, fa-forged-note)"
 
 printf '# Guide\n' > docs/guide.md
 git add docs/guide.md
@@ -346,8 +354,72 @@ process_closure_and_regression_checks() {
   gate_pass "process_closure_and_regression_checks (none: loophole blocked on code commits, closure-debt=0, 30-day regression check green)"
 }
 
+# fa-0hs4.1: rewrite main_commit's note the way the 2026-10-25 notes were
+# forged, offer it for fa-forged-note, restore the note, and require refusal.
+forged_note_is_refused() {
+  local case_name="$1" mode="$2" expect="$3"
+  local orig_note out rc=0
+  orig_note="$(git notes --ref=fa-verdict show "$main_commit")"
+  python3 - "$main_commit" "$mode" <<'PY'
+import json, subprocess, sys
+commit, mode = sys.argv[1], sys.argv[2]
+note = subprocess.check_output(["git", "notes", "--ref=fa-verdict", "show", commit], text=True)
+out, moved, forged = [], [], None
+for line in note.splitlines():
+    if mode == "early-start" and line.startswith("started_utc="):
+        line = "started_utc=2000-01-01T00:00:00Z"
+    if line.startswith("step_verdict="):
+        rec = json.loads(line.removeprefix("step_verdict="))
+        if mode == "foreign-step-tree" and rec.get("step") == "test":
+            rec["tree_hash"] = "0" * 40
+        if mode == "names-outside-test-step" and rec.get("step") == "test":
+            # The forged step looks complete; only its name and the place of
+            # the test names differ from the real test step.
+            forged = json.loads(json.dumps(rec))
+            forged["step"] = "check-classify"
+            w = rec.get("witness", {})
+            moved = w.pop("passed_test_names", [])
+            rec["witness"] = w
+            forged["witness"] = {"log_digest": w.get("log_digest"), "passed_test_names": moved}
+        line = "step_verdict=" + json.dumps(rec, separators=(",", ":"))
+    out.append(line)
+if mode == "names-outside-test-step":
+    out.append("step_verdict=" + json.dumps(forged, separators=(",", ":")))
+subprocess.run(["git", "notes", "--ref=fa-verdict", "add", "-f", "-m", "\n".join(out) + "\n", commit],
+               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+PY
+  out="$(bash scripts/close_bead.sh fa-forged-note --verdict "$main_commit" --repository "$fixture" --reason "forged" 2>&1)" || rc=$?
+  printf '%s\n' "$orig_note" | git notes --ref=fa-verdict add -f -F - "$main_commit" 2>/dev/null
+  [ "$rc" -ne 0 ] || fail "$case_name: close_bead.sh accepted a forged note ($out)"
+  grep -Fq "$expect" <<< "$out" || fail "$case_name: expected \`$expect\` ($out)"
+  python3 - "$STUB_BEADS_JSONL" <<'PY' || fail "$case_name: bead status changed after refusal"
+import json, pathlib, sys
+rows = {r["id"]: r for r in map(json.loads, pathlib.Path(sys.argv[1]).read_text().splitlines())}
+assert rows["fa-forged-note"]["status"] == "in_progress"
+PY
+  gate_pass "$case_name (forged note refused: $expect)"
+}
+
+refuses_note_whose_step_tree_differs_from_commit_tree() {
+  forged_note_is_refused refuses_note_whose_step_tree_differs_from_commit_tree \
+    foreign-step-tree "step tree_hash mismatch"
+}
+
+refuses_note_started_before_its_commit() {
+  forged_note_is_refused refuses_note_started_before_its_commit \
+    early-start "before commit"
+}
+
+refuses_test_names_reported_outside_the_test_step() {
+  forged_note_is_refused refuses_test_names_reported_outside_the_test_step \
+    names-outside-test-step "ignored_rust_test_names="
+}
+
 parser_unit_tests
 closes_with_cited_note
+refuses_note_whose_step_tree_differs_from_commit_tree
+refuses_note_started_before_its_commit
+refuses_test_names_reported_outside_the_test_step
 refuses_missing_test
 refuses_failed_test
 refuses_verdict_without_landing_commit

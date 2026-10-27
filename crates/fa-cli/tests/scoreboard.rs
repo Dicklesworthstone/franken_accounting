@@ -403,26 +403,16 @@ fn run_registry_probe(probe_name: &str) -> ProbeOutcome {
                 ))
             }
         }
-        "verdict_freshness" => {
-            let readme = std::fs::read_to_string(root.join("README.md")).unwrap_or_default();
-            let lpv = root.join("scripts/local_proof_verify.sh").is_file();
-            if readme.contains("Verified at ") && readme.contains(": PASS") && lpv {
-                ProbeOutcome::ok("registry_ok")
-            } else {
-                ProbeOutcome::err("missing fresh PASS verdict marker")
-            }
-        }
-        "tier0_coverage" => {
-            let tier0_sh =
-                std::fs::read_to_string(root.join("scripts/tier0.sh")).unwrap_or_default();
-            let pre_push = root.join("scripts/hooks/pre-push").is_file();
-            let install_hooks = root.join("scripts/install-hooks.sh").is_file();
-            if tier0_sh.contains("refs/notes/fa-tier0") && pre_push && install_hooks {
-                ProbeOutcome::ok("registry_ok")
-            } else {
-                ProbeOutcome::err("missing tier0 hooks or scripts/tier0.sh")
-            }
-        }
+        // GOV-02 and GOV-03 are claims about git notes and per-checkout hooks,
+        // which no test can observe. These probes once passed on a README
+        // marker and script files alone (fa-ygj2, fa-0hs4.3). They stay unmet
+        // until a committed, machine-produced artifact can be read here.
+        "verdict_freshness" => ProbeOutcome::err(
+            "no committed full-scope verdict artifact: refs/notes/fa-verdict is not visible to a test, and its notes are selftest-only (fa-ygj2)",
+        ),
+        "tier0_coverage" => ProbeOutcome::err(
+            "no committed Tier-0 coverage artifact: hooks are per checkout and refs/notes/fa-tier0 is not visible to a test (fa-0hs4.3)",
+        ),
         other => ProbeOutcome::err(format!("unmet registry criterion probe `{other}`")),
     }
 }

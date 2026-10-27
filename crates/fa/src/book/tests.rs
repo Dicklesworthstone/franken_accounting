@@ -1328,7 +1328,7 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
         .unwrap()
         .unwrap();
     let retained = book
-        .retain_certificate(&cx, &certified.certificate)
+        .retain_certificate(&cx, VId(1), &restate, &certified.certificate)
         .await
         .unwrap()
         .unwrap();

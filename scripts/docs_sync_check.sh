@@ -98,6 +98,15 @@ for block in verbs_text.split("[[verb]]")[1:]:
         subs = re.findall(r'"([^"]+)"', subs_m.group(1)) if subs_m else []
         verb_subs[vname] = set(subs)
 
+global_section = re.search(r'^\[global\]\n(.*?)(?=^\[)', verbs_text, re.M | re.S)
+global_flags = set()
+global_switches = set()
+if global_section:
+    gf = re.search(r'^flags\s*=\s*\[([^\]]*)\]', global_section.group(1), re.M)
+    gs = re.search(r'^switches\s*=\s*\[([^\]]*)\]', global_section.group(1), re.M)
+    global_flags = set(re.findall(r'"([^"]+)"', gf.group(1))) if gf else set()
+    global_switches = set(re.findall(r'"([^"]+)"', gs.group(1))) if gs else set()
+
 aliases = {}
 for block in verbs_text.split("[[alias]]")[1:]:
     fr = re.search(r'^\s*from\s*=\s*\[([^\]]*)\]', block, re.M)
@@ -142,6 +151,15 @@ for lineno, raw in enumerate(above_tldr.splitlines(), 1):
         continue
     cmd_count += 1
     words = joined.split()[1:]
+    # Registered global flags may precede the verb (`fa --token t period close`).
+    while words:
+        head = words[0].split("=", 1)[0]
+        if head in global_flags:
+            words = words[1:] if "=" in words[0] else words[2:]
+        elif head in global_switches:
+            words = words[1:]
+        else:
+            break
     if not words:
         continue
     # Expand alias (2-word then 1-word)

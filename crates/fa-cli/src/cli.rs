@@ -5621,10 +5621,15 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .or_else(|| book.periods().ok()?.first().map(|p| p.start))
                 .unwrap_or(DateDay(0));
             let date = date_flag(args, default_date)?;
+            // Issuance's default key is the commitment itself. Capability events
+            // share (book, principal, key) outcome claims (2dde2be2b), so the
+            // revocation needs its own default or the issuer could never revoke.
             let key = args
                 .flag("--key")
                 .map(|k| k.as_bytes().to_vec())
-                .unwrap_or_else(|| revoked_commitment.to_vec());
+                .unwrap_or_else(|| {
+                    [b"capability-revoke:".as_slice(), &revoked_commitment].concat()
+                });
             let default_desc = format!("capability revoke {}", hex(&revoked_commitment));
             let description = args.flag("--description").unwrap_or(&default_desc);
             let revoked =
@@ -14996,6 +15001,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut diagnostics = Vec::new();
             let mut actions = Vec::new();
             let mut repairs = Vec::new();
+            let mut failing: Vec<&str> = Vec::new();
             for p in &periods {
                 let v = match book.verify_registers(p) {
                     Ok(v) => v,
@@ -15028,21 +15034,30 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 all_green &= v.is_green();
                 if !v.is_green() {
+                    failing.push(p.as_str());
                     repairs.push(format!("--period {p}"));
                 }
                 if v.is_green() && v.stale {
-                    out.warn(format!(
-                        "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
-                        v.lag_entries
-                    ));
+                    if v.cache_status == fa_registers::CacheStatus::Verified {
+                        out.warn(format!(
+                            "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
+                            v.lag_entries
+                        ));
+                    }
                     actions.push((
                         format!("fa registers advance --period {p} --json"),
                         "consume unread journal entries after the verified cache prefix".into(),
                     ));
                 }
                 if v.cache_status == fa_registers::CacheStatus::Uninitialized {
+                    // An absent cache is lag, never drift (fa-0hs4.5).
+                    let unread = if v.lag_entries == 0 {
+                        String::new()
+                    } else {
+                        format!(" ({} journal entries unread)", v.lag_entries)
+                    };
                     out.warn(format!(
-                        "{p}: register cache is uninitialized; no processed prefix is certified; initialize it with fa registers advance --period {p} --json"
+                        "{p}: register cache is uninitialized; no processed prefix is certified; initialize it with fa registers advance --period {p} --json{unread}"
                     ));
                 }
                 details.push(obj(vec![
@@ -15089,7 +15104,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Err(Fail::Verification {
                     message: format!(
                         "stored registers differ from the refold in {}{}",
-                        periods.join(", "),
+                        failing.join(", "),
                         if diagnostics.is_empty() {
                             String::new()
                         } else {

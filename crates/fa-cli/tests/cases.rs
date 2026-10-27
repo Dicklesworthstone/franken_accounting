@@ -21,6 +21,8 @@ mod evaluate;
 mod invariance;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "cases/outsider.rs"]
+mod outsider;
 #[path = "cases/property.rs"]
 mod property;
 #[path = "cases/reads.rs"]
@@ -78,6 +80,14 @@ fn _selftest() {
     ] {
         assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
     }
+    // The outsider stage: the checkpoint, the balance sheet's report bundle
+    // verified in process, its replay byte-identical, and the book's
+    // integrity green.
+    assert!(
+        o.lines.iter().any(|l| l
+            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=green"),
+        "{text}"
+    );
     assert!(!text.contains("REPRODUCE"), "{text}");
     assert_eq!(
         o.lines.last().map(String::as_str),
@@ -126,6 +136,66 @@ fn _selftest_neg_n_twin_that_keeps_the_legs_fails() {
     );
 }
 
+/// The self-test's claimed rows, which the outsider negatives keep PASS.
+const SELFTEST_CLAIMS: [&str; 4] = [
+    "_selftest-P-02",
+    "_selftest-P-03",
+    "_selftest-R-01",
+    "_selftest-CASE-selftest-restatement",
+];
+
+/// A8a (§12.1): one flipped byte in the produced bundle makes the
+/// in-process `fa_verify::verify_bundle` refuse it, and the case fails even
+/// though every claimed row still reads PASS.
+#[test]
+fn bundle_byte_flip_fails_the_case_whatever_its_expectations_say() {
+    outsider::FLIP_BUNDLE_BYTE.with(|f| f.set(true));
+    let o = run_case(&selftest_files(), HARNESS_VERBS);
+    outsider::FLIP_BUNDLE_BYTE.with(|f| f.set(false));
+    let text = o.text();
+    for id in SELFTEST_CLAIMS {
+        assert!(
+            o.row(id).is_some_and(|r| r.starts_with("PASS ")),
+            "{id}\n{text}"
+        );
+    }
+    let line = o
+        .lines
+        .iter()
+        .find(|l| l.starts_with("OUTSIDER native "))
+        .expect("the outsider line");
+    assert!(
+        line.starts_with(
+            "OUTSIDER native checkpoint=created bundle=fail(the report bundle did not verify"
+        ) && line.ends_with(" replay=identical verify_book=green"),
+        "{text}"
+    );
+    assert!(!o.rows_ok && !o.ok, "{text}");
+}
+
+/// A8a (§12.7): `fa verify book` exiting 8 fails the case, whatever its
+/// rows say. The binary offers no way to corrupt a book from the CLI, so
+/// the exit is injected into the runner's observation of the call.
+#[test]
+fn verify_book_exit_8_fails_the_case() {
+    outsider::FORCE_VERIFY_BOOK_EXIT.with(|f| f.set(Some(8)));
+    let o = run_case(&selftest_files(), HARNESS_VERBS);
+    outsider::FORCE_VERIFY_BOOK_EXIT.with(|f| f.set(None));
+    let text = o.text();
+    for id in SELFTEST_CLAIMS {
+        assert!(
+            o.row(id).is_some_and(|r| r.starts_with("PASS ")),
+            "{id}\n{text}"
+        );
+    }
+    assert!(
+        o.lines.iter().any(|l| l
+            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=fail(expected fa verify book exit=0 green observed exit=8 green=true)"),
+        "{text}"
+    );
+    assert!(!o.rows_ok && !o.ok, "{text}");
+}
+
 /// The JSONL log: one step record per `fa` call, one verdict record per
 /// printed row, each line a record the log module parses back.
 #[test]
@@ -149,6 +219,8 @@ fn _selftest_logs_every_step_and_every_row() {
         }
     }
     assert_eq!(steps, o.steps.len());
+    // A budget line (`FAIL budget ...`, on a contended worker) is the
+    // case's wall-clock verdict, not a row: it has no verdict record.
     let rows = o
         .lines
         .iter()
@@ -156,6 +228,7 @@ fn _selftest_logs_every_step_and_every_row() {
             ["PASS ", "FAIL ", "UNRUN "]
                 .iter()
                 .any(|v| l.starts_with(v))
+                && !l.starts_with("FAIL budget ")
         })
         .count();
     assert_eq!(verdicts, rows, "{}", o.text());
