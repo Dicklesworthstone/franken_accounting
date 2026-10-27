@@ -4851,6 +4851,8 @@ fn native_certificate_retention_checks_presented_and_current_authority() {
         issuer.holder(),
     )
     .unwrap()
+    .for_books(&[certified.certificate.book_id])
+    .unwrap()
     .holder_bound(possession_digest(&[63; 32]));
     let agent = Capability::new(
         VId(64),
@@ -4858,6 +4860,8 @@ fn native_certificate_retention_checks_presented_and_current_authority() {
         &[Op::Read, Op::Produce],
         issuer.holder(),
     )
+    .unwrap()
+    .on_branch(Id128::TRUNK)
     .unwrap()
     .holder_bound(possession_digest(&[64; 32]));
     for (capability, key) in [
@@ -4901,6 +4905,36 @@ fn native_certificate_retention_checks_presented_and_current_authority() {
             principal,
             owner.clone().expiring_at(before_retention),
             "FA-REF-014",
+        ),
+        (
+            "account scope",
+            principal,
+            owner.clone().for_accounts(&["1000"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "period scope",
+            principal,
+            owner.clone().for_periods(&["FY2026-P03"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "effective scope",
+            principal,
+            owner.clone().effective_through(day),
+            "FA-REF-011",
+        ),
+        (
+            "known-at scope",
+            principal,
+            owner.clone().known_at_most(certified.certificate.known_at),
+            "FA-REF-011",
+        ),
+        (
+            "other branch scope",
+            principal,
+            owner.clone().on_branch(Id128([0xd2; 16])).unwrap(),
+            "FA-REF-011",
         ),
         (
             "unissued holder-bound capability",

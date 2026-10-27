@@ -4894,6 +4894,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Retain verified canonical certificate bytes under current `read` and
     /// `produce` authority. The presented principal must hold the capability;
     /// admission precedes certificate validation and storage, including retries.
+    /// Scope caveats must admit the whole book at the current trunk head.
     ///
     /// This metadata publication has its own sequence but creates no journal
     /// Entry and leaves the report's original known-at coordinate unchanged.
@@ -4913,6 +4914,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "retaining a report certificate",
                 )
             })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
