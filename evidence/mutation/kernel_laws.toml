@@ -1,0 +1,398 @@
+# Kernel-law mutation campaign record (fa-0hs4.15): every registries/mutants.toml row
+# applied by scripts/mutants_execute.sh in a standalone clone, each killed_by test run
+# alone through rch. A kill proves the named tests notice this one mutation at this
+# revision; it does not prove they cover the law. Results file: kernel_laws.results.
+commit = "b953dae5f3c52cf0090a40939000b5f6b2597a7b"
+tree = "ee6a39a13ed3ae024723be70c45562626cadaaaf"
+toolchain = "rustc 1.100.0-nightly (908501772 2026-08-30)"
+worker = "vmi1227854"
+mutants = 38
+killed = 38
+
+[[mutant]]
+id = "MUT-001"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/amount.rs"
+[[mutant.kill]]
+test = "fa-money::lib::amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing"
+excerpt = "test amount::tests::checked_arithmetic_refuses_overflow_and_unit_mixing ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 13126ms"
+
+[[mutant]]
+id = "MUT-002"
+verdict = "KILLED"
+law = "FA-INV-01.per-unit"
+file = "crates/fa-money/src/amount.rs"
+[[mutant.kill]]
+test = "fa-money::lib::amount::tests::negative_legs_are_refused_with_the_other_side"
+excerpt = "test amount::tests::negative_legs_are_refused_with_the_other_side ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7324ms"
+
+[[mutant]]
+id = "MUT-003"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/amount.rs"
+[[mutant.kill]]
+test = "fa-money::lib::amount::tests::mul_rate_and_convert_are_exact_then_rounded"
+excerpt = "test amount::tests::mul_rate_and_convert_are_exact_then_rounded ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7145ms"
+
+[[mutant]]
+id = "MUT-004"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/rounding.rs"
+[[mutant.kill]]
+test = "fa-money::lib::rounding::tests::tie_behaviour_matches_the_registered_meanings"
+excerpt = "test rounding::tests::tie_behaviour_matches_the_registered_meanings ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7300ms"
+
+[[mutant]]
+id = "MUT-005"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/rounding.rs"
+[[mutant.kill]]
+test = "fa-money::lib::rounding::tests::tie_behaviour_matches_the_registered_meanings"
+excerpt = "test rounding::tests::tie_behaviour_matches_the_registered_meanings ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7236ms"
+
+[[mutant]]
+id = "MUT-006"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/rounding.rs"
+[[mutant.kill]]
+test = "fa-money::lib::rounding::tests::exact_values_never_move_and_ids_round_trip"
+excerpt = "test rounding::tests::exact_values_never_move_and_ids_round_trip ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 13152ms"
+
+[[mutant]]
+id = "MUT-007"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/rounding.rs"
+[[mutant.kill]]
+test = "fa-money::lib::rounding::tests::tie_behaviour_matches_the_registered_meanings"
+excerpt = "test rounding::tests::tie_behaviour_matches_the_registered_meanings ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 16279ms"
+
+[[mutant]]
+id = "MUT-008"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/allocation.rs"
+[[mutant.kill]]
+test = "fa-money::lib::allocation::tests::deterministic_ties_go_to_the_lowest_index"
+excerpt = "test allocation::tests::deterministic_ties_go_to_the_lowest_index ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 11346ms"
+
+[[mutant]]
+id = "MUT-009"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/allocation.rs"
+[[mutant.kill]]
+test = "fa-money::lib::allocation::tests::conserves_total_on_a_grid"
+excerpt = "test allocation::tests::conserves_total_on_a_grid ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7121ms"
+
+[[mutant]]
+id = "MUT-010"
+verdict = "KILLED"
+law = "FA-INV-01.base-residual"
+file = "crates/fa-money/src/valuation.rs"
+[[mutant.kill]]
+test = "fa-money::lib::valuation::tests::mixed_base_rounding_residual_preserves_at_par_valuations"
+excerpt = "test valuation::tests::mixed_base_rounding_residual_preserves_at_par_valuations ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7145ms"
+
+[[mutant]]
+id = "MUT-011"
+verdict = "KILLED"
+law = "FA-INV-06.core"
+file = "crates/fa-money/src/valuation.rs"
+[[mutant.kill]]
+test = "fa-money::lib::valuation::tests::multiple_foreign_units_are_refused_in_single_rate_valuation"
+excerpt = "test valuation::tests::multiple_foreign_units_are_refused_in_single_rate_valuation ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 13139ms"
+
+[[mutant]]
+id = "MUT-012"
+verdict = "KILLED"
+law = "FA-INV-01.per-unit"
+file = "crates/fa-money/src/valuation.rs"
+[[mutant.kill]]
+test = "fa-money::lib::valuation::tests::native_imbalance_is_never_absorbed_as_rounding"
+excerpt = "test valuation::tests::native_imbalance_is_never_absorbed_as_rounding ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 6673ms"
+
+[[mutant]]
+id = "MUT-013"
+verdict = "KILLED"
+law = "FA-INV-01.base"
+file = "crates/fa-money/src/valuation.rs"
+[[mutant.kill]]
+test = "fa-money::lib::valuation::tests::fa_p7r_counterexample_balances_without_a_new_leg"
+excerpt = "test valuation::tests::fa_p7r_counterexample_balances_without_a_new_leg ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 10161ms"
+
+[[mutant]]
+id = "MUT-014"
+verdict = "KILLED"
+law = "FA-INV-03.core"
+file = "crates/fa-time/src/period.rs"
+[[mutant.kill]]
+test = "fa-time::lib::period::tests::december_31_resolves_by_discriminator"
+excerpt = "test period::tests::december_31_resolves_by_discriminator ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 4822ms"
+
+[[mutant]]
+id = "MUT-015"
+verdict = "KILLED"
+law = "FA-INV-03.core"
+file = "crates/fa-time/src/period.rs"
+[[mutant.kill]]
+test = "fa-time::lib::period::tests::state_machine_matches_the_matrix"
+excerpt = "test period::tests::state_machine_matches_the_matrix ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 5387ms"
+
+[[mutant]]
+id = "MUT-016"
+verdict = "KILLED"
+law = "FA-INV-03.core"
+file = "crates/fa-time/src/period.rs"
+[[mutant.kill]]
+test = "fa-time::lib::period::tests::december_31_resolves_by_discriminator"
+excerpt = "test period::tests::december_31_resolves_by_discriminator ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 4952ms"
+
+[[mutant]]
+id = "MUT-017"
+verdict = "KILLED"
+law = "FA-INV-04.core"
+file = "crates/fa-registers/src/lib.rs"
+[[mutant.kill]]
+test = "fa-registers::lib::tests::cell_net_uses_checked_subtraction_and_detects_overflow"
+excerpt = "test tests::cell_net_uses_checked_subtraction_and_detects_overflow ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 25151ms"
+
+[[mutant]]
+id = "MUT-018"
+verdict = "KILLED"
+law = "FA-INV-04.core"
+file = "crates/fa-registers/src/lib.rs"
+[[mutant.kill]]
+test = "fa-registers::lib::tests::stock_candidates_include_prior_years_and_special_periods"
+excerpt = "test tests::stock_candidates_include_prior_years_and_special_periods ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 17731ms"
+
+[[mutant]]
+id = "MUT-019"
+verdict = "KILLED"
+law = "FA-INV-04.core"
+file = "crates/fa-registers/src/lib.rs"
+[[mutant.kill]]
+test = "fa-registers::lib::tests::fold_digest_is_a_function_of_cells_and_watermark"
+excerpt = "test tests::fold_digest_is_a_function_of_cells_and_watermark ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 13425ms"
+
+[[mutant]]
+id = "MUT-020"
+verdict = "KILLED"
+law = "FA-INV-08.reversed-once"
+file = "crates/fa-registers/src/open_items.rs"
+[[mutant.kill]]
+test = "fa-registers::lib::open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption"
+excerpt = "test open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 13150ms"
+
+[[mutant]]
+id = "MUT-021"
+verdict = "KILLED"
+law = "FA-INV-04.open-amount"
+file = "crates/fa-registers/src/open_items.rs"
+[[mutant.kill]]
+test = "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"
+excerpt = "test kernel_and_oracle_agree_on_a_generated_history ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 88194ms"
+
+[[mutant]]
+id = "MUT-022"
+verdict = "KILLED"
+law = "FA-INV-14.public-commitment"
+file = "crates/fa-notary/src/lib.rs"
+[[mutant.kill]]
+test = "fa-notary::lib::document::tests::producer_paths_match_kernel_commitments_and_the_independent_verifier"
+excerpt = "test document::tests::producer_paths_match_kernel_commitments_and_the_independent_verifier ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 20733ms"
+
+[[mutant]]
+id = "MUT-023"
+verdict = "KILLED"
+law = "FA-INV-14.public-commitment"
+file = "crates/fa-notary/src/lib.rs"
+[[mutant.kill]]
+test = "fa-notary::lib::document::tests::producer_paths_match_kernel_commitments_and_the_independent_verifier"
+excerpt = "test document::tests::producer_paths_match_kernel_commitments_and_the_independent_verifier ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 22252ms"
+
+[[mutant]]
+id = "MUT-024"
+verdict = "KILLED"
+law = "FA-INV-14.leaf-envelope"
+file = "crates/fa-notary/src/tree.rs"
+[[mutant.kill]]
+test = "fa-notary::lib::tree::tests::incremental_roots_and_peaks_equal_the_definition_at_every_size"
+excerpt = "test tree::tests::incremental_roots_and_peaks_equal_the_definition_at_every_size ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 13091ms"
+
+[[mutant]]
+id = "MUT-025"
+verdict = "KILLED"
+law = "FA-INV-07.migration-disjoint"
+file = "crates/fa-verify/src/migration_balance.rs"
+[[mutant.kill]]
+test = "fa-verify::lib::migration_balance::tests::open_abandoned_and_finalized_runs_have_different_proven_balances"
+excerpt = "test migration_balance::tests::open_abandoned_and_finalized_runs_have_different_proven_balances ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 25117ms"
+
+[[mutant]]
+id = "MUT-026"
+verdict = "KILLED"
+law = "FA-INV-07.migration-disjoint"
+file = "crates/fa-verify/src/migration_balance.rs"
+[[mutant.kill]]
+test = "fa-verify::lib::migration_balance::tests::every_migration_mode_obeys_its_historical_visibility_and_inclusive_cutoff"
+excerpt = "test migration_balance::tests::every_migration_mode_obeys_its_historical_visibility_and_inclusive_cutoff ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 28218ms"
+
+[[mutant]]
+id = "MUT-027"
+verdict = "KILLED"
+law = "FA-INV-07.migration-disjoint"
+file = "crates/fa-verify/src/migration_balance.rs"
+[[mutant.kill]]
+test = "fa-verify::lib::migration_balance::tests::every_migration_mode_obeys_its_historical_visibility_and_inclusive_cutoff"
+excerpt = "test migration_balance::tests::every_migration_mode_obeys_its_historical_visibility_and_inclusive_cutoff ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 28194ms"
+
+[[mutant]]
+id = "MUT-028"
+verdict = "KILLED"
+law = "FA-INV-04.outsider-recomputation"
+file = "crates/fa-verify/src/migration_balance.rs"
+[[mutant.kill]]
+test = "fa-verify::lib::migration_balance::tests::controls_and_bodies_cannot_be_omitted_duplicated_or_substituted"
+excerpt = "test migration_balance::tests::controls_and_bodies_cannot_be_omitted_duplicated_or_substituted ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 34508ms"
+
+[[mutant]]
+id = "MUT-029"
+verdict = "KILLED"
+law = "FA-INV-10.core"
+file = "crates/fa-policy/src/admit.rs"
+[[mutant.kill]]
+test = "fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"
+excerpt = "test admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 8892ms"
+
+[[mutant]]
+id = "MUT-030"
+verdict = "KILLED"
+law = "FA-INV-10.core"
+file = "crates/fa-policy/src/admit.rs"
+[[mutant.kill]]
+test = "fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"
+excerpt = "test admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 7924ms"
+
+[[mutant]]
+id = "MUT-031"
+verdict = "KILLED"
+law = "FA-INV-10.core"
+file = "crates/fa-policy/src/admit.rs"
+[[mutant.kill]]
+test = "fa-policy::lib::admit::tests::ceilings_bound_every_leg_and_a_bounded_token_admits_only_its_units"
+excerpt = "test admit::tests::ceilings_bound_every_leg_and_a_bounded_token_admits_only_its_units ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 11693ms"
+
+[[mutant]]
+id = "MUT-032"
+verdict = "KILLED"
+law = "FA-INV-15.availability"
+file = "crates/fa-escrow/src/lib.rs"
+[[mutant.kill]]
+test = "fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign"
+excerpt = "test tests::escrow_availability_and_balancing_headroom_follow_normal_sign ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 8778ms"
+
+[[mutant]]
+id = "MUT-033"
+verdict = "KILLED"
+law = "FA-INV-15.availability"
+file = "crates/fa-escrow/src/lib.rs"
+[[mutant.kill]]
+test = "fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign"
+excerpt = "test tests::escrow_availability_and_balancing_headroom_follow_normal_sign ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 4339ms"
+
+[[mutant]]
+id = "MUT-034"
+verdict = "KILLED"
+law = "FA-INV-07.core"
+file = "crates/fa-model/src/entry.rs"
+[[mutant.kill]]
+test = "fa-model::lib::entry::tests::structural_rules_are_enforced"
+excerpt = "test entry::tests::structural_rules_are_enforced ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 11794ms"
+
+[[mutant]]
+id = "MUT-035"
+verdict = "KILLED"
+law = "FA-INV-03.core"
+file = "crates/fa-journal/src/post.rs"
+[[mutant.kill]]
+test = "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"
+excerpt = "test kernel_and_oracle_agree_on_a_generated_history ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 62229ms"
+[[mutant.kill]]
+test = "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_generated_histories_across_seeds"
+excerpt = "test kernel_and_oracle_agree_on_generated_histories_across_seeds ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 5370ms"
+
+[[mutant]]
+id = "MUT-036"
+verdict = "KILLED"
+law = "FA-INV-11.core"
+file = "crates/fa-cli/src/cli.rs"
+[[mutant.kill]]
+test = "fa-cli::tests/polish_bar.rs::verify_determinism"
+excerpt = "test verify_determinism ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 41532ms"
+
+[[mutant]]
+id = "MUT-037"
+verdict = "KILLED"
+law = "FA-INV-15.availability"
+file = "crates/fa-journal/src/limit.rs"
+[[mutant.kill]]
+test = "fa-formats::tests/tigerbeetle.rs::corpus_runs_through_kernel"
+excerpt = "test corpus_runs_through_kernel ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 65676ms"
+
+[[mutant]]
+id = "MUT-038"
+verdict = "KILLED"
+law = "FA-INV-03.witness-race"
+file = "crates/fa-journal/src/post.rs"
+[[mutant.kill]]
+test = "fa-registers::tests/differential.rs::serial_equivalence_oracle"
+excerpt = "test serial_equivalence_oracle ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 73172ms"
+[[mutant.kill]]
+test = "fa-conformance::tests/substrate.rs::post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period"
+excerpt = "test post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period ... FAILED"
+remote = "rch::hook::transfer_orchestration: Remote command finished: exit=101 in 154156ms"
