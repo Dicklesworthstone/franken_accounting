@@ -1113,7 +1113,7 @@ pub(crate) async fn commit_batch<V: Vfs + Clone>(
 /// [`commit_batch`] through the substrate's production crash-point seam
 /// (fa-0fl); `None` is `commit_batch`.
 #[allow(clippy::too_many_arguments)]
-async fn commit_batch_with_crash<V: Vfs + Clone>(
+pub(crate) async fn commit_batch_with_crash<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,

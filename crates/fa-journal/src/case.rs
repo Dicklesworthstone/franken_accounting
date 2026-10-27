@@ -1985,6 +1985,23 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
     ordinal: u32,
     req: CaseRequest,
 ) -> Outcome<CaseRecorded> {
+    post_case_with_crash(db, ctx, book, ordinal, req, None).await
+}
+
+/// [`post_case`] through the substrate's production crash-point seam
+/// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes the
+/// Post's one publication at each registered point and checks the book
+/// after reopening (fa-75j4, fa-0fl). `None` is `post_case`: both run this
+/// one path.
+#[doc(hidden)]
+pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    ordinal: u32,
+    req: CaseRequest,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Outcome<CaseRecorded> {
     const FIX: &str = "fa case post <case>";
     if ordinal == 0 {
         return Ok(Err(unknown(ordinal)));
@@ -2133,13 +2150,21 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
         staged.txn.abort();
         return Ok(Err(denial(&d)));
     }
-    let posted =
-        match crate::batch::commit_batch(db, ctx, book, &capabilities, &batch, admission, staged)
-            .await?
-        {
-            Err(r) => return Ok(Err(r)),
-            Ok(posted) => posted,
-        };
+    let posted = match crate::batch::commit_batch_with_crash(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        admission,
+        staged,
+        crash_at,
+    )
+    .await?
+    {
+        Err(r) => return Ok(Err(r)),
+        Ok(posted) => posted,
+    };
     if posted.already_recorded {
         return Ok(Err(fcw("the case's entries committed concurrently")));
     }

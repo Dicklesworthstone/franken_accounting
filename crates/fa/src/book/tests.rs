@@ -1208,6 +1208,304 @@ fn post_crash_matrix() -> Vec<CrashObservation> {
     runs
 }
 
+/// An Approved restatement case on the prepared lab book, for the Post's
+/// crash-point matrix. A PriorPeriodAdjustment case over February posts one
+/// plain March entry the planner (VId 4) planned in its scenario; two
+/// Humans (VIds 2, 3) approve its manifest, and VId 1 opens, rehearses and
+/// will post it.
+/// The rehearsal names a retained trial-balance certificate. That is all the
+/// journal's Rehearse record requires: its certificate is a retained
+/// CERTIFICATE vertex. The facade's `Book::rehearse_case` is what demands a
+/// replayed scenario diff, and it runs only on the sync book. This matrix
+/// judges the Post's one publication, not the rehearsal.
+struct ApprovedCase {
+    book: LabBook,
+    vfs: FaultVfs<MemVfs>,
+    march: String,
+    usd: fa_money::UnitId,
+    poster: Capability,
+    date: DateDay,
+}
+
+async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
+    let cx = PurposeContexts::narrow_runtime_root(root);
+    let PreparedFixture {
+        mut book,
+        vfs,
+        request,
+        march,
+        usd,
+        ..
+    } = prepared_fixture(root, seed).await;
+    let book_id = book.context().book_id;
+    let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let restate = Capability::embedded(VId(1), &["restate", "read", "produce"]).unwrap();
+    let planner_vid = VId(4);
+    let planner = Capability::embedded(planner_vid, &["post", "read"]).unwrap();
+    let mut documents = Vec::new();
+    for bytes in [
+        &b"Adjustment memo: a February receipt was never recorded"[..],
+        &b"Controller's determination: correct February in March"[..],
+    ] {
+        let document = fa_journal::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: bytes.to_vec(),
+        };
+        book.add_document(&cx, &document).await.unwrap().unwrap();
+        documents.push(document.oid());
+    }
+    let mut documents = documents.into_iter();
+    let (narrative, authority) = (documents.next().unwrap(), documents.next().unwrap());
+    book.open_case(
+        &cx,
+        restate.clone(),
+        fa_journal::CaseKind::PriorPeriodAdjustment,
+        vec!["FY2026-P02".into()],
+        Some(narrative),
+        Some(fa_journal::Determination {
+            day: DateDay::from_ymd(2026, 3, 10).unwrap(),
+            authority,
+        }),
+        date,
+        b"crash-case",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let fork_at = book.head(&cx).unwrap();
+    book.open_scenario(
+        &cx,
+        planner.clone(),
+        "adjusted",
+        fa_journal::ScenarioFork::default(),
+        date,
+        "The unrecorded February receipt",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let legs = vec![
+        LegPayload::simple(
+            Side::Debit,
+            account_vid(book_id, "1000"),
+            Amount::new(usd, 50_000),
+        ),
+        LegPayload::simple(
+            Side::Credit,
+            account_vid(book_id, "6000"),
+            Amount::new(usd, 50_000),
+        ),
+    ];
+    let planned = EntryPayload {
+        principal_ref: planner_vid,
+        description: book.seal_text(&cx, "the February receipt").unwrap(),
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        idempotency_key: b"crash-case-receipt".to_vec(),
+        ..request.proposal.clone()
+    };
+    let plan = book
+        .record_scenario_intent(
+            &cx,
+            planner,
+            "adjusted",
+            fa_intents::PostIntent::new(planned, Vec::new()).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .control_entry;
+    let certified = book
+        .certify_trial_balance(
+            &cx,
+            crate::TrialBalanceSelection::Periods(vec![march.clone()]),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let retained = book
+        .retain_certificate(&cx, &certified.certificate)
+        .await
+        .unwrap()
+        .unwrap();
+    book.rehearse_case(
+        &cx,
+        restate.clone(),
+        1,
+        fa_journal::Rehearsal {
+            scenario: "adjusted".into(),
+            certificate: retained.digest,
+            fork_at,
+            periods: vec!["FY2026-P02".into()],
+            intents: vec![plan],
+        },
+        date,
+        b"crash-rehearsal",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let digest = book
+        .case_manifest(&cx, 1)
+        .unwrap()
+        .unwrap()
+        .digest()
+        .unwrap();
+    let mut approvals = Vec::new();
+    for who in [2, 3] {
+        let approved = book
+            .approve(
+                &cx,
+                Capability::embedded(VId(who), &["approve"]).unwrap(),
+                digest,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        approvals.push(approved.approval().approval_vid);
+    }
+    book.approve_case(&cx, restate, 1, approvals, date, b"crash-dual")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        book.case(&cx, 1).unwrap().unwrap().state,
+        fa_journal::CaseState::Approved
+    );
+    ApprovedCase {
+        book,
+        vfs,
+        march,
+        usd,
+        poster: Capability::embedded(VId(1), &["restate", "post", "read"]).unwrap(),
+        date,
+    }
+}
+
+/// fa-75j4 acceptance ("crash between approval and post recovers to
+/// all-or-nothing"), on the fa-0fl harness: an Approved case's Post, its
+/// entry, its Post record and the case's Approved → Posted compare-and-set
+/// in one publication, crashes at each of the substrate's seven commit
+/// crash points. The fault VFS then loses every unsynced byte and the book
+/// reopens. Then:
+/// - Either the case is Posted with its entry and Post record both
+///   journaled, or it is still Approved with neither, never a partial Post.
+/// - A crash before the commit marker keeps nothing; the control keeps it.
+/// - March's cells fold exactly what survived and verify.
+/// - The retried Post is the recorded case exactly when the crash kept it,
+///   and leaves the case Posted with its two entries either way.
+#[test]
+fn a_case_post_crashed_at_every_commit_point_is_posted_or_still_approved_after_reopen() {
+    case_post_crash_matrix();
+}
+
+fn case_post_crash_matrix() -> Vec<CrashObservation> {
+    use fa_journal::CaseState;
+    use fgdb::CrashPoint;
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 1300 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let ApprovedCase {
+                mut book,
+                vfs,
+                march,
+                usd,
+                poster,
+                date,
+            } = approved_case(&root, seed).await;
+            let book_id = book.context().book_id;
+            let before = journal_entries(&book, &cx);
+            let outcome = book
+                .post_case_with_crash(&cx, poster.clone(), 1, date, b"crash-post", point)
+                .await;
+            // A crash point this publication's write path never passes leaves
+            // an ordinary commit; one it passes fails the publication.
+            // Either way, a completed publication must survive the crash.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let state = book.case(&cx, 1).unwrap().unwrap().state;
+            // The case's entry and its Post record are its two new entries.
+            let kept = match (after.len().checked_sub(before.len()), state) {
+                (Some(0), CaseState::Approved) => false,
+                (Some(2), CaseState::Posted) => true,
+                (new, state) => {
+                    panic!("{point:?}: a partial Post: {new:?} new entries, case {state:?}")
+                }
+            };
+            if published {
+                assert!(kept, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(kept, expected, "{point:?}");
+            }
+            let receipt_cell = |fold: &Fold| {
+                fold.cells.iter().any(|cell| {
+                    cell.key.account == account_vid(book_id, "1000")
+                        && cell.key.unit_id == usd.0
+                        && cell.debits == 50_000
+                })
+            };
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(receipt_cell(&fold), kept, "{point:?}: {fold:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let retried = book
+                .post_case(&cx, poster, 1, date, b"crash-post")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retried.already_recorded, kept, "{point:?}");
+            assert_eq!(retried.case.state, CaseState::Posted, "{point:?}");
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 2);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert!(receipt_cell(&fold), "{point:?}: {fold:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            CrashObservation {
+                barrier: "case_post",
+                case,
+                seed,
+                kept,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
+    }
+    runs
+}
+
 /// fa-0fl, the crash-point matrix for an atomic batch (plan §5.8): three
 /// rent members in one PostBatch, one publication, crashed at each of the
 /// substrate's seven commit crash points; the fault VFS then loses every

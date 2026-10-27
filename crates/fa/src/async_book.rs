@@ -1556,6 +1556,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CaseRecorded> {
+        self.post_case_with_crash(
+            cx,
+            capability,
+            ordinal,
+            effective_date,
+            idempotency_key,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::post_case`] through the substrate's production crash-point
+    /// seam, for the lab campaign that crashes the Post's one publication
+    /// (fa-75j4, fa-0fl). `None` is `post_case`.
+    #[doc(hidden)]
+    pub async fn post_case_with_crash(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<fa_journal::CaseRecorded> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let description = format!("post case {ordinal}");
         let req = self.case_request(
@@ -1565,7 +1589,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &description,
             idempotency_key,
         )?;
-        Ok(fa_journal::post_case(&mut self.db, cx, &self.context, ordinal, req).await?)
+        Ok(fa_journal::post_case_with_crash(
+            &mut self.db,
+            cx,
+            &self.context,
+            ordinal,
+            req,
+            crash_at,
+        )
+        .await?)
     }
 
     /// Disclose case `ordinal` (Posted → Disclosed) in `document`
