@@ -125,6 +125,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "period_states.toml",
     "procedures.toml",
     "proof_lanes.toml",
+    "proportional_post_laws.toml",
     "reason_codes.toml",
     "redaction_contracts.toml",
     "refusal_catalog.toml",
@@ -321,6 +322,60 @@ pub fn check_allocation_laws(text: &str) -> Result<usize, String> {
         }
     }
     Ok(rows.len())
+}
+
+pub fn check_proportional_post_laws(text: &str) -> Result<usize, String> {
+    const F: &str = "proportional_post_laws.toml";
+    let doc = toml::parse(text).map_err(|e| format!("{F}: {e}"))?;
+    if doc.root.len() != 2
+        || req_int(F, &doc.root, "schema_version")? != 1
+        || !(2..=4096).contains(&req_int(F, &doc.root, "max_legs")?)
+        || !doc.tables.is_empty()
+        || doc.arrays.len() != 1
+    {
+        return Err(format!("{F}: unsupported schema or leg bound"));
+    }
+    let rows = doc
+        .arrays
+        .get("law")
+        .ok_or_else(|| format!("{F}: missing [[law]]"))?;
+    let [row] = rows.as_slice() else {
+        return Err(format!(
+            "{F}: BalancedLargestRemainder requires exactly one law row"
+        ));
+    };
+    if row.len() != 9 || req_int(F, row, "id")? != 1 || req_int(F, row, "version")? != 1 {
+        return Err(format!("{F}: unknown law identity, version or fields"));
+    }
+    for (field, expected) in [
+        ("name", "BalancedLargestRemainder"),
+        (
+            "domain",
+            "positive-native-monetary-legs; exact-rate-in-[0,1]",
+        ),
+        ("partition", "unit-and-normalized-legal-entity"),
+        (
+            "target",
+            "common-pending-debit-credit-total-times-rate; HalfEven",
+        ),
+        (
+            "allocation",
+            "same-target-per-side; largest-remainder; ties-lowest-source-ordinal",
+        ),
+        (
+            "zero",
+            "omit-zero-posted-legs; empty-result-refuses-with-VoidReserve",
+        ),
+        (
+            "remainder",
+            "released-per-original-leg; never-a-new-posting",
+        ),
+    ] {
+        if req_str(F, row, field)? != expected {
+            return Err(format!("{F}: {field} differs from the executable law"));
+        }
+    }
+    Ok(1)
 }
 
 pub fn check_limits(text: &str) -> Result<usize, String> {
@@ -799,6 +854,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
 
     check_account_types(&read("account_types.toml")?)?;
     check_allocation_laws(&read("allocation_laws.toml")?)?;
+    check_proportional_post_laws(&read("proportional_post_laws.toml")?)?;
     check_limits(&read("limits.toml")?)?;
     let refusals_text = read("refusal_catalog.toml")?;
     let refusals_checked = check_refusal_immutability(&refusals_text, &exits)?;

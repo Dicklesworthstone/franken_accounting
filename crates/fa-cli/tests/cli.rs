@@ -6516,6 +6516,7 @@ fn law_and_unit_listings_name_every_registered_law_and_unit() {
     for (family, name) in [
         ("rounding", "HalfEven"),
         ("allocation", "LargestRemainder"),
+        ("proportional-post", "BalancedLargestRemainder"),
         ("fx", "SpotClose"),
     ] {
         assert!(
@@ -6532,6 +6533,7 @@ fn law_and_unit_listings_name_every_registered_law_and_unit() {
             "conversion",
             "fx",
             "lot",
+            "proportional-post",
             "rounding",
             "tracing"
         ]

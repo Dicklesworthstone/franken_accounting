@@ -58,12 +58,17 @@ const SYMBOLS: &str = include_str!("../../../registries/symbols.toml");
 /// The law registries `fa law list|show` reads, embedded at build time:
 /// `(family, the array that holds its laws, the registry text)` (plan
 /// §6.2–§6.4; Appendix D "Chart and registries").
-pub const LAW_REGISTRIES: [(&str, &str, &str); 6] = [
+pub const LAW_REGISTRIES: [(&str, &str, &str); 7] = [
     ("rounding", "law", ROUNDING_LAWS),
     (
         "allocation",
         "law",
         include_str!("../../../registries/allocation_laws.toml"),
+    ),
+    (
+        "proportional-post",
+        "law",
+        include_str!("../../../registries/proportional_post_laws.toml"),
     ),
     ("conversion", "conversion_law", g0::CONVERSION_LAWS_TOML),
     ("fx", "law", g0::FX_LAWS_TOML),
