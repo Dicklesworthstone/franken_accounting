@@ -382,6 +382,27 @@ fn an_original_issuance_key_cannot_switch_its_recorded_issuer_capability() {
 }
 
 #[test]
+fn a_modern_issuance_claim_authenticates_a_target_for_a_new_issuer_request() {
+    let mut h = harness();
+    let original = request(&h, Kind::Issue);
+    let first = execute(&mut h, &original).unwrap().unwrap();
+    let mut next = original;
+    next.key = b"observe-issued-target-under-current-authority".to_vec();
+    next.capability = human(PREPARER, &["issue_capability", "post"]);
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    assert_eq!(
+        execute(&mut h, &next).unwrap().unwrap(),
+        Recorded {
+            already: true,
+            ..first
+        },
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
 fn a_target_identity_requires_the_right_control_and_its_empty_acceptance_envelope() {
     for kind in [Kind::Issue, Kind::Revoke] {
         let mut producer = harness();
@@ -704,6 +725,13 @@ fn original_legacy_capability_events_remain_read_only_retry_anchors() {
         let mut changed = original.clone();
         changed.description = text(&h, "changed legacy request", 141);
         assert_conflict(&mut h, &changed);
+        let mut new_key = original.clone();
+        new_key.key = b"observe-authentic-legacy-capability-target".to_vec();
+        assert_eq!(execute(&mut h, &new_key).unwrap().unwrap(), expected);
+        if matches!(kind, Kind::Issue) {
+            new_key.capability = human(PREPARER, &["issue_capability", "post"]);
+            assert_conflict(&mut h, &new_key);
+        }
         assert!(h.db.vertex(outcome(&h, &original)).unwrap().is_none());
         assert_eq!(h.db.frontier().unwrap(), head);
         assert_eq!(h.db.vertices().unwrap(), rows);

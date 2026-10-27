@@ -276,6 +276,46 @@ impl Fixture {
 }
 
 #[test]
+fn default_capability_keys_allow_revocation_and_keep_retries_read_only() {
+    let fixture = Fixture::new(false);
+    let token = fixture.issue_root(false);
+    let commitment = hex(&token.capability().commitment().unwrap());
+    let args = [
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--yes",
+    ];
+    let first = fixture.ok(&args);
+    assert_eq!(text(&first, "event"), "capability_revoked");
+    assert_eq!(
+        data(&first).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    let head = fixture.head();
+    let retry = fixture.ok(&args);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in ["control_entry", "recorded_at"] {
+        assert_eq!(data(&retry).get(field), data(&first).get(field));
+    }
+    assert_eq!(fixture.head(), head);
+    fixture.refuse_post(
+        "root.token",
+        "missing-after-revocation.json",
+        7,
+        "FA-REF-023",
+    );
+}
+
+#[test]
 fn cli_root_issue_enforces_cumulative_gross_debits_and_retries_do_not_recharge() {
     let fixture = Fixture::new(true);
     fixture.issue_root(false);
