@@ -15,7 +15,7 @@
 
 > <!-- fa-verified-status -->Verified at 90fbbcc4c63e (2026-10-25): PASS
 
-> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and `--certify` retains a certificate that `fa replay` reproduces byte for byte; a token with any scope caveat is refused every query before the book opens, and per-row procedure CALLs inside a pipeline are still open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a read-only Human bound session runs (read, produce and verify only, as auditor-style tokens are) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (Agent and writing sessions and the owner are not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
+> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and `--certify` retains a certificate that `fa replay` reproduces byte for byte; a token with any scope caveat is refused every query before the book opens, and per-row procedure CALLs inside a pipeline are still open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -127,8 +127,10 @@ notifications coalesce, and reads or idempotent retries that change nothing do
 not wake it. This early attempt does not record clock evidence, run sweeps or
 postpone the regular timer. Its Rust regressions still require qualification.
 Period selection remains explicit: new periods are not discovered automatically.
-Historical checkpoints, cadence policies, functional-value maintenance, other
-register families and the remaining cached report reads are unfinished.
+Native register checkpoints exist as disposable cache objects with a cadence
+decision card; journaled checkpoints at fiscal-year boundaries, functional-value
+maintenance, other register families and the remaining cached report reads are
+unfinished.
 
 ### Approved company statement layouts
 
@@ -232,9 +234,10 @@ or lose request bytes. Status reports whether timing is enabled, its authority,
 cycle count, latest tick, corroboration and the last cycle error. Cancellation
 and Stop end timed work through the server's structured lifetime.
 
-These bounds limit published effects per cycle; candidate discovery still
-scans the book. Journaled capability issuance, paged backlog discovery and the
-full timing simulation campaign remain unfinished. `fa sweep now` (also
+These bounds limit published effects per cycle. Candidate discovery reads the
+disposable paged sweep index, which `fa sweep now` and every corroborated daemon
+cycle advance; it falls back to a full scan only when the index cannot advance.
+The full timing simulation campaign remains unfinished. `fa sweep now` (also
 `fa schedule sweep`) requests an explicit sweep under the caller's authority.
 MCP exposes the same intent fields as `timeout_ns` and `reverse_on`, subject
 to its fixed launch capability; it cannot grant itself System authority.
@@ -592,8 +595,8 @@ independent verifier reconstructs the effective-date aging and the control accou
 as-of trial balance from the same authenticated journal prefix and canonical registry
 documents. It then checks each native unit's posted net, open net and difference;
 pending debits and credits remain separate. The result includes the item drilldown,
-control-account cells, historical account metadata and both source digests. A valid
-proof can report a nonzero difference: `reconciled: false` is an accounting result.
+control-account cells, historical account metadata and both source digests. A bundle
+that verifies can still report a nonzero difference: `reconciled: false` is an accounting result.
 
 Export's `--expect` is the independent JSON request, with a fixed integer
 `known_at`; it is required for this family. The recipient's
@@ -752,9 +755,10 @@ principal, capability commitment, proposal, native staged effects, snapshot,
 security-policy epoch and capability expiry. No capability is created from
 the artifact; the caller supplies current authority again at commit.
 
-This first slice deliberately requires the exact same book sequence. A new
-posting, period transition, policy change, approval or retained report
-certificate requires a fresh plan. A mismatched plan refuses with
+A plan requires the same accounting state. A new posting, period transition,
+policy change or approval requires a fresh plan; metadata-only commits
+(retained report certificates, register and accumulator checkpoints) do not
+invalidate it. A mismatched plan refuses with
 `FA-REF-034` (exit 6), and current authorization is checked before protected
 book observations. Commit repeats the posting checks and compares the actual
 staged effects before publishing. An exact retry of a successfully committed
@@ -766,9 +770,9 @@ a graph locator. The pinned substrate has no public generic application
 object store, so this slice leaves the native `Entry.plan_certificate` field
 absent instead of treating that digest as a substrate object ID. Planning
 requires any needed approvals to exist already. Planning before approval
-collection, rebasing through portable read witnesses, atomic multi-intent
-batches, draft promotion and authenticated sessions remain unfinished
-under `fa-we7` and its dependent beads.
+collection and rebasing through portable read witnesses remain unfinished
+under `fa-we7`; atomic batches (`fa batch`), draft promotion
+(`fa draft promote`) and issued session tokens (`fa capability issue`) exist.
 
 ### Issued Human operator tokens
 
@@ -852,8 +856,10 @@ unfinished.
 
 Each book operation takes the configured writer lease. If a running `fad` or
 another writer holds it, the server refuses instead of forwarding authority
-through the daemon's unauthenticated protocol. This is a trusted launch binding;
-authenticated capability issuance and daemon sessions remain unfinished. Host
+through the daemon's unauthenticated protocol. This is a trusted launch binding.
+An issued capability token (`fa capability issue`, `fa-mcp --token`) binds a
+session to an issued identity instead; MCP hosted by `fad serve --mcp stdio
+--token` has no end-to-end test yet (`fa-z5u`). Host
 file arguments are not confined to a filesystem sandbox, so deployments must
 still control the server process's filesystem access.
 
@@ -961,8 +967,8 @@ each published checkpoint with the book's Ed25519 key
 (`Book::checkpoint_public_key`) as a `TransparencyCheckpoint` and produces
 evidence bundles with detached production receipts (`Book::produce_bundle`);
 `fa-verify checkpoint|scope|bundle` check them. The CLI exports both (see
-below); witnesses and key rotation remain
-unfinished. The
+below); witness cosignatures exist (`fa checkpoint witness`), while journaled
+witness policies and key rotation remain unfinished (`fa-qtfd`). The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
 
@@ -1484,9 +1490,9 @@ leaves nothing behind. Summary trial balances, functional-currency views,
 scenario branches, statement diffs and traces are not rendered yet. Over MCP,
 `render: md` returns the Markdown inline; file formats are host-only.
 
-This slice covers one book and native units. Custom company layouts, cash-flow
-and equity-roll-forward statements, FX translation, and presentation rounding
-remain separate work. `fa consolidate` consolidates one multi-entity book's
+This slice covers one book and native units. Company layouts, presentation
+rounding, cash flow and the equity roll-forward are described above; FX
+translation remains separate work. `fa consolidate` consolidates one multi-entity book's
 legal entities (plan §12.3); consolidation across books, with translation and
 CTA, is not available yet (fa-76hy). A certificate establishes replay
 and arithmetic over the journal; it does not establish GAAP conformity.
@@ -1525,8 +1531,8 @@ Two more restatement views read a period at a reported coordinate. On `fa tb`,
   comparative column (FA-REF-174 otherwise).
 
 Only one restatement view applies at a time, and none combines with a known-at
-selector. `AS CURRENTLY STATED` with supersession netting remains a target
-(`fa-wrrw`, after `fa-oz3`).
+selector. `--as-currently-stated` reads the period at the head with every correction
+recorded since it was reported; corrections are legs, so the fold nets them.
 
 ## The six bets
 

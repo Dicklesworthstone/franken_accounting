@@ -970,6 +970,21 @@ fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
     assert_eq!(code, 0, "{}{}", captured.stdout, captured.stderr);
     let event = json::parse(captured.stdout.lines().next().unwrap()).unwrap();
     assert_eq!(data(&event), data(&by_sequence[0]));
+    // `head()` renders the known-at sequence.
+    let at_seq: i128 = at.parse().expect("known_at is an integer sequence");
+    let accesses = ok(
+        &fixture.book,
+        &["access", "log", "--since", &at.to_string()],
+    );
+    assert_eq!(data(&accesses[0]).get("count"), Some(&Json::Int(1)));
+    let access = &data(&accesses[0])
+        .get("events")
+        .and_then(Json::as_arr)
+        .unwrap()[0];
+    assert_eq!(text(access, "command"), "statement diff");
+    assert_eq!(text(access, "principal_name"), "report-reader");
+    assert_eq!(access.get("observed_at"), Some(&Json::Int(at_seq)));
+    assert_eq!(access.get("recorded_at"), Some(&Json::Int(at_seq + 1)));
     let (code, captured) = bound(&[
         "statement",
         "diff",
@@ -989,7 +1004,11 @@ fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
     let (code, captured) = bound(&[&pair[..], &["--certify"][..]].concat());
     assert_eq!(code, 7, "{}{}", captured.stdout, captured.stderr);
     assert!(captured.stdout.contains("produce"), "{}", captured.stdout);
-    assert_eq!(head(), at);
+    assert_eq!(
+        head(),
+        (at_seq + 1).to_string(),
+        "only the admitted read's AccessEvent was published"
+    );
 }
 
 #[test]

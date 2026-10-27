@@ -949,7 +949,7 @@ pub(crate) struct BookSource<'a> {
     /// The launch-bound session's capability: every book it opens admits
     /// it as current authority before anything is read or stamped.
     bound: Option<Capability>,
-    /// The AccessEvent a read-only bound session's command owes (plan §9.7,
+    /// The AccessEvent a bound session's read or plan delivery owes (plan §9.7,
     /// fa-7dw): committed on the first open, after admission and before the
     /// handler observes anything.
     access: Option<fa::access_log::AccessRecord>,
@@ -1833,13 +1833,19 @@ fn exit_class(exit: u8) -> String {
         .unwrap_or_else(|| format!("exit-{exit}"))
 }
 
-/// The AccessEvent a bound session's command owes, when its capability is a
-/// read-only Human one: every op within read, produce and verify, as the
-/// Auditor, Regulator, Investigator and Production templates are (plan §9.7,
-/// §14.4; fa-7dw). Agent sessions are internal readers, left to the plan's
-/// sampled policy. The request digest covers the command's positional words,
-/// flags and switches, never the host's book or key paths. A session that
-/// cannot state its record is refused, never served unrecorded.
+/// The AccessEvent a bound session's read or plan delivery owes (plan §9.7,
+/// §14.4; fa-7dw). A capability's ability to write never exempts its reads:
+/// Agent, Preparer, Auditor-with-Witness and Investigator-with-Hold all leave
+/// a receipt. The existing authority registry identifies ordinary reads,
+/// including exports and streams. Protected document/finding reads and bank
+/// readers also carry narrower operations; those are recorded as well.
+///
+/// The conservative internal policy records every admitted read, without
+/// sampling. A plan-only delivery records before acquiring its guarded basis;
+/// committing a saved plan does not insert a publication that invalidates it.
+/// The request digest covers the command's positional words, flags and
+/// switches, never the host's book or key paths. A session that cannot state
+/// its record is refused, never served unrecorded.
 fn access_record(
     authority: &LaunchAuthority,
     args: &Args,
@@ -1855,7 +1861,25 @@ fn access_record(
     let Some(verb) = args.positional.first() else {
         return Ok(None);
     };
-    if !read_only {
+    let operations = bound_command_ops(verb, args).unwrap_or_default();
+    let ordinary_read = operations.contains(&fa_policy::Op::Read)
+        && operations.iter().all(|op| {
+            matches!(
+                op,
+                fa_policy::Op::Read | fa_policy::Op::Produce | fa_policy::Op::Verify
+            )
+        });
+    let protected_read = matches!(verb.as_str(), "document" | "finding")
+        && operations.contains(&fa_policy::Op::Read);
+    let reconciliation_read = operations.contains(&fa_policy::Op::Read)
+        && (verb == "procedure"
+            || (verb == "bank"
+                && matches!(
+                    args.positional.get(1).map(String::as_str),
+                    Some("match" | "status" | "history" | "reconciliation")
+                )));
+    let plan_delivery = period_plan_only(verb, args) || post_plan_only(verb, args);
+    if !(read_only || ordinary_read || protected_read || reconciliation_read || plan_delivery) {
         return Ok(None);
     }
     let commitment = capability
@@ -5597,10 +5621,15 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .or_else(|| book.periods().ok()?.first().map(|p| p.start))
                 .unwrap_or(DateDay(0));
             let date = date_flag(args, default_date)?;
+            // Issuance's default key is the commitment itself. Capability events
+            // share (book, principal, key) outcome claims (2dde2be2b), so the
+            // revocation needs its own default or the issuer could never revoke.
             let key = args
                 .flag("--key")
                 .map(|k| k.as_bytes().to_vec())
-                .unwrap_or_else(|| revoked_commitment.to_vec());
+                .unwrap_or_else(|| {
+                    [b"capability-revoke:".as_slice(), &revoked_commitment].concat()
+                });
             let default_desc = format!("capability revoke {}", hex(&revoked_commitment));
             let description = args.flag("--description").unwrap_or(&default_desc);
             let revoked =
@@ -14972,6 +15001,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut diagnostics = Vec::new();
             let mut actions = Vec::new();
             let mut repairs = Vec::new();
+            let mut failing: Vec<&str> = Vec::new();
             let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
             for (p, v) in periods.iter().zip(book.verify_registers_each(&codes)?) {
                 let v = match v {
@@ -15005,21 +15035,30 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 all_green &= v.is_green();
                 if !v.is_green() {
+                    failing.push(p.as_str());
                     repairs.push(format!("--period {p}"));
                 }
                 if v.is_green() && v.stale {
-                    out.warn(format!(
-                        "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
-                        v.lag_entries
-                    ));
+                    if v.cache_status == fa_registers::CacheStatus::Verified {
+                        out.warn(format!(
+                            "{p}: verified cache has {} unread journal entries; run fa registers advance --period {p} --json",
+                            v.lag_entries
+                        ));
+                    }
                     actions.push((
                         format!("fa registers advance --period {p} --json"),
                         "consume unread journal entries after the verified cache prefix".into(),
                     ));
                 }
                 if v.cache_status == fa_registers::CacheStatus::Uninitialized {
+                    // An absent cache is lag, never drift (fa-0hs4.5).
+                    let unread = if v.lag_entries == 0 {
+                        String::new()
+                    } else {
+                        format!(" ({} journal entries unread)", v.lag_entries)
+                    };
                     out.warn(format!(
-                        "{p}: register cache is uninitialized; no processed prefix is certified; initialize it with fa registers advance --period {p} --json"
+                        "{p}: register cache is uninitialized; no processed prefix is certified; initialize it with fa registers advance --period {p} --json{unread}"
                     ));
                 }
                 details.push(obj(vec![
@@ -15066,7 +15105,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Err(Fail::Verification {
                     message: format!(
                         "stored registers differ from the refold in {}{}",
-                        periods.join(", "),
+                        failing.join(", "),
                         if diagnostics.is_empty() {
                             String::new()
                         } else {

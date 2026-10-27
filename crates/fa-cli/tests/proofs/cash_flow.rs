@@ -258,5 +258,5 @@ fn retained_direct_and_policy_cash_flow_export_the_original_gross_movements() {
         wrong[7] = fa_verify::blake3::hex(&inner_pin);
         assert_eq!(fa_verify::cli::run(&wrong, &read).exit, 8);
     }
-    assert_eq!(fixture.head(), before, "all cash proof exports are reads");
+    fixture.assert_proof_accesses_since(before, "cash-reader", 2);
 }

@@ -95,7 +95,7 @@ vector = "Submitting a self-signed approval, reusing an approval across mutated 
 mitigation_clauses = ["FA-INV-10.sod", "FA-INV-10.approval-binds-proposal", "FA-INV-03.transition-approvals"]
 mitigation_refusals = ["FA-REF-008", "FA-REF-012", "FA-REF-016", "FA-REF-111"]
 status = "live"
-residual_risk = "Two distinct human principals who collude out-of-band with valid, disjoint roles can satisfy commit-time SoD; forensic detection relies on Lantern JET timing and concentration procedures (fa-lantern)."
+residual_risk = "On the token-less owner CLI both principals are names the operator supplies (`--as`), so one operator can satisfy dual control; issued Human tokens bind approvals to issued identities, and signed approvals are fa-z46b / fa-kae. Two distinct token holders who collude out-of-band with valid, disjoint roles can still satisfy commit-time SoD; forensic detection relies on Lantern JET timing and concentration procedures (fa-lantern)."
 test_refs = ["fa-journal::tests/policy.rs::self_approval_is_refused_and_a_distinct_human_approval_admits", "fa-policy::tests/sod_oracle.rs::engine_and_oracle_agree_on_every_transcript", "fa-policy::lib::approval::tests::recording_requires_the_op_and_binding_is_exact"]
 
 [[threat]]
@@ -108,7 +108,7 @@ vector = "Attempting direct trunk writes from an Agent profile, bypassing dry-ru
 mitigation_clauses = ["FA-INV-10.core", "FA-INV-11.core", "FA-INV-05.evidence-minimum"]
 mitigation_refusals = ["FA-REF-007", "FA-REF-013", "FA-REF-015", "FA-REF-086"]
 status = "live"
-residual_risk = "Draft branch isolation (fa-s7x) is not yet live so Agent-profile trunk writes fail closed with FA-REF-013; untrusted document/memo content boundary marking is tracked by fa-9rw."
+residual_risk = "Agent-profile trunk writes fail closed with FA-REF-013; Agents plan into intent-log drafts that a Human holding approve promotes (fa draft), and substrate branch isolation is fa-s7x; untrusted document/memo content boundary marking is tracked by fa-9rw."
 test_refs = ["fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-cli::tests/plans.rs::tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key"]
 
 [[threat]]
@@ -121,7 +121,7 @@ vector = "Presenting a capability issued to another holder, an expired capabilit
 mitigation_clauses = ["FA-INV-10.core", "FA-INV-10.current-policy"]
 mitigation_refusals = ["FA-REF-011", "FA-REF-014", "FA-REF-022", "FA-REF-023"]
 status = "live"
-residual_risk = "On the local CLI outside launch-bound fa-mcp sessions, `--as` / `--grant` constructs embedded capabilities until cryptographic token minting and verification (EP-AUTH: fa-v62, fa-r3q) replace caller-supplied CLI flags."
+residual_risk = "On the local CLI without an issued token, `--as` / `--grant` construct embedded capabilities from caller-supplied flags; issued tokens (fa capability issue, fa-mcp --token) bind a session to an issued identity, and approvals signed by principal keys are fa-z46b / fa-kae."
 test_refs = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::a_post_reads_the_current_epoch_so_an_earlier_approval_is_stale"]
 
 [[threat]]

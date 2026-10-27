@@ -143,8 +143,8 @@ fn posted_book(name: &str) -> (PathBuf, PathBuf) {
         r#"{"effective_date":"2026-03-16","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"12.50 USD"},{"side":"credit","account":"1000","amount":"12.50 USD"}]}"#,
     );
     ok(&["post", "--intent", &rent, "--evidence", &oid, "--json"]);
-    // A register cache never advanced differs from its refold (fa-q2z):
-    // advance March's before `verify registers` reads it.
+    // Advance March's register cache so `verify registers` checks stored
+    // cells (a never-advanced cache is uninitialized lag, fa-0hs4.5).
     ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
     (dir, book)
 }
@@ -735,6 +735,10 @@ fn every_plan_leaf_present_or_registered() {
         ),
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
+        (
+            "fa finding dismiss",
+            "fa-waow: today fa finding review --action dismiss; fa.findings is at its 7-tool cluster cap and MCP parity admits only host-only exclusions, so a CLI-only subcommand cannot land",
+        ),
         ("fa gen book", "fa-ykbp"),
         (
             "fa recon book-to-book",

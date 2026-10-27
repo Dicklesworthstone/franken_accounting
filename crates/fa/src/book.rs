@@ -3737,6 +3737,16 @@ impl Book {
         }))
     }
 
+    /// [`Book::advance_sweep_index`] under the caller's context, for timed work
+    /// already running inside a serving region (the `fad` timer cycle).
+    pub async fn advance_sweep_index_with(
+        &mut self,
+        cx: &Cx,
+    ) -> Result<fa_journal::SweepIndexState, BookError> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.advance_sweep_index(&purposes).await)
+    }
+
     /// Advance the disposable paged sweep index over the committed delta stream
     /// to the current head (plan §5.4, §7.6, FA-CFG-02).
     pub fn advance_sweep_index(&mut self) -> Result<fa_journal::SweepIndexState, BookError> {
@@ -4107,26 +4117,18 @@ impl Book {
         with_store!(&self.store, core => self.runtime.block_on(core.access_log(&purposes, since)))
     }
 
-    /// Persist a certificate lazily as an immutable object in this book.
-    /// Exact retries return the original storage sequence without a write.
-    /// The report's known-at coordinate does not change when it is retained.
+    /// Persist an immutable certificate under the presented principal's
+    /// current `read` and `produce` authority, including on an exact retry.
+    /// Retries return the original storage sequence without a write; neither
+    /// retention nor retry changes the report's known-at or accounting fold.
     pub fn retain_certificate(
         &mut self,
-        certificate: &crate::ReportCertificate,
-    ) -> Outcome<crate::RetainedCertificate> {
-        let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
-    }
-
-    /// Persist a certificate lazily after verifying current `read` and
-    /// `produce` authority for this book (fa-mg2j).
-    pub fn retain_certificate_authorized(
-        &mut self,
-        certificate: &crate::ReportCertificate,
+        principal: VId,
         capability: &fa_policy::Capability,
+        certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate_authorized(&purposes, certificate, capability)))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, principal, capability, certificate)))
     }
 
     /// Load a retained artifact by its full public certificate digest.
@@ -4545,6 +4547,24 @@ impl Book {
     ) -> Outcome<Option<ProducedBundle>> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce a portable Statement of Changes in Equity. The complete signed
+    /// journal and historical registry closure let an outsider recompute the
+    /// entire equity/income chart, owner movements and closing-transfer identity.
+    /// Current whole-book read/produce authority precedes history observation;
+    /// the receipt binds the original outer certificate and its role choices.
+    pub fn produce_equity_roll_forward_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::EquityRollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_equity_roll_forward_bundle(
             &purposes, principal, capability, state, certificate,
         )))
     }

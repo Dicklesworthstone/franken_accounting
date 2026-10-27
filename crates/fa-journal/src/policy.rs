@@ -1516,8 +1516,8 @@ pub struct Revoked {
 
 /// Authenticate a target-derived capability result before treating it as a
 /// no-op. A different scoped key may observe the existing target result; an
-/// original-key retry must also preserve its semantic request. This does not
-/// reserve capability keys in the common IntentOutcome namespace.
+/// original-key retry must also preserve its semantic request. Modern results
+/// retain the common-key claim published atomically with the target event.
 fn recorded_capability_event<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1593,12 +1593,19 @@ fn recorded_capability_event<V: asupersync::fs::Vfs + Clone>(
         }
         _ => false,
     };
-    let Some(before) = row.created_at.0.checked_sub(1).map(CommitSeq) else {
+    if !origin_matches || !crate::outcome::verify_capability_recorded(db, row, &stored)? {
         return Ok(Err(conflict()));
-    };
-    if !origin_matches
-        || db.vertex_at(row.vid, before)?.is_some()
-        || db.vertex_at(row.vid, row.created_at)?.as_ref() != Some(row)
+    }
+    // A modern claim authenticates the complete original issuance, including
+    // the issuing capability's commitment. A pre-claim legacy row has no such
+    // witness: its issuer origin must match the currently admitted request,
+    // even when a different scoped key only observes the existing target.
+    // Merely requiring a nonzero origin would bless a forged issuer digest.
+    if *kind == CAPABILITY_EVENT_ISSUE
+        && stored.proposal.origin != proposal.origin
+        && db
+            .vertex(crate::outcome::entry_outcome_vid(&stored.proposal))?
+            .is_none()
     {
         return Ok(Err(conflict()));
     }
@@ -1625,6 +1632,39 @@ fn recorded_capability_event<V: asupersync::fs::Vfs + Clone>(
         }
         (Err(e), _) | (_, Err(e)) => Err(e.into()),
     }
+}
+
+/// Admit the caller's scoped key independently of a capability's target
+/// identity. In particular, a fresh key cannot observe an existing target
+/// when that key already belongs to a posting, batch or another control.
+fn capability_key_witness<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    proposal: &EntryPayload,
+    target: VId,
+) -> Outcome<()> {
+    if let Err(r) = crate::outcome::witness_named_key(
+        txn,
+        db,
+        proposal.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        target,
+    )? {
+        return Ok(Err(r));
+    }
+    // Pre-protocol normal-key entries are their own immutable reservation.
+    // This point witness also makes a prepared posting lose to a control
+    // that reserves the shared claim first, and vice versa.
+    let normal = entry_vid(
+        proposal.book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    if normal != target && txn.vertex_has_label(db, normal, label::ENTRY)?.is_some() {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    Ok(Ok(()))
 }
 
 /// Journal a revocation (plan §14.2: "issuance and revocation are journaled
@@ -1708,6 +1748,10 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    if let Err(r) = capability_key_witness(&txn, db, &entry.proposal, vid)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
         return Ok(
@@ -1718,8 +1762,18 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
             }),
         );
     }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&entry.proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_capability_control(&mut batch, &entry, vid)?;
     txn.write(db, batch)?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(Revoked {
@@ -1746,9 +1800,9 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
                     already_recorded: true,
                 },
             )),
-            None => Err(KernelError::Corrupt(
-                "revocation identity spent but no live row".into(),
-            )),
+            // The common key can lose to a different target even while
+            // this target's own identity remains unused.
+            None => Ok(Err(crate::outcome::key_conflict())),
         },
         Err(e) => Err(e.into()),
     }
@@ -2047,6 +2101,10 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    if let Err(r) = capability_key_witness(&txn, db, &entry.proposal, vid)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
         return Ok(
@@ -2058,8 +2116,18 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
             }),
         );
     }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&entry.proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_capability_control(&mut batch, &entry, vid)?;
     txn.write(db, batch)?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => Ok(Ok(Issued {
@@ -2088,9 +2156,7 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
                     already_recorded: true,
                 },
             )),
-            None => Err(KernelError::Corrupt(
-                "issuance identity spent but no live row".into(),
-            )),
+            None => Ok(Err(crate::outcome::key_conflict())),
         },
         Err(e) => Err(e.into()),
     }

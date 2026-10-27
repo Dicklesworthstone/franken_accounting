@@ -139,6 +139,7 @@ enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
     Aging(&'a crate::AgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
+    EquityRollForward(&'a crate::EquityRollForwardCertificate),
     CashFlow(&'a crate::CashFlowCertificate),
     CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
     AgingReconciliation {
@@ -153,6 +154,9 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Native(certificate) => certificate,
             Self::Aging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
+            Self::EquityRollForward(certificate) => {
+                certificate.source_certificate().source_certificate()
+            }
             Self::CashFlow(certificate) => certificate.source_certificate().source_certificate(),
             Self::CashFlowPolicy(certificate) => certificate
                 .source_certificate()
@@ -1552,6 +1556,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CaseRecorded> {
+        self.post_case_with_crash(
+            cx,
+            capability,
+            ordinal,
+            effective_date,
+            idempotency_key,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::post_case`] through the substrate's production crash-point
+    /// seam, for the lab campaign that crashes the Post's one publication
+    /// (fa-75j4, fa-0fl). `None` is `post_case`.
+    #[doc(hidden)]
+    pub async fn post_case_with_crash(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<fa_journal::CaseRecorded> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let description = format!("post case {ordinal}");
         let req = self.case_request(
@@ -1561,7 +1589,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &description,
             idempotency_key,
         )?;
-        Ok(fa_journal::post_case(&mut self.db, cx, &self.context, ordinal, req).await?)
+        Ok(fa_journal::post_case_with_crash(
+            &mut self.db,
+            cx,
+            &self.context,
+            ordinal,
+            req,
+            crash_at,
+        )
+        .await?)
     }
 
     /// Disclose case `ordinal` (Posted → Disclosed) in `document`
@@ -3771,6 +3807,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export the complete Statement of Changes in Equity over its historical
+    /// equity/income chart and native lead schedule. The original outer
+    /// certificate binds owner role choices as well as every movement and total.
+    pub async fn produce_equity_roll_forward_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::EquityRollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::EquityRollForward(certificate),
+        )
+        .await
+    }
+
     /// Export policy-classified direct cash flow. Replay derives each decision
     /// from the original complete counterpart entries before the exact policy,
     /// including unused rules and explicit overrides, is signed in the bundle.
@@ -3835,6 +3892,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             // Enforce that boundary before restoring any report history.
             observes: match report {
                 ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_) => fa_policy::Observes::Head,
                 _ => capability
@@ -3898,6 +3956,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 if let Err(refusal) =
                     self.replay_roll_forward(cx, principal, capability, certificate)?
                 {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::EquityRollForward(certificate) => {
+                if let Err(refusal) = self.replay_equity_roll_forward(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                )? {
                     return Ok(Err(refusal));
                 }
                 None
@@ -3978,6 +4048,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let requires_registry_closure = matches!(
             report,
             ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
                 | ReportBundleCertificate::AgingReconciliation { .. }
@@ -4095,6 +4166,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             },
             ReportBundleCertificate::RollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::EquityRollForward(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),
@@ -4935,38 +5012,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         crate::access_log::log(&self.db, &self.context, since)
     }
 
-    /// Retain verified canonical certificate bytes in this book's substrate.
-    /// The public content digest resolves the immutable artifact after reopen.
-    /// This lazy write has its own sequence; the report keeps its original
-    /// known-at coordinate and no journal Entry is created.
+    /// Retain verified canonical certificate bytes under current `read` and
+    /// `produce` authority. The presented principal must hold the capability;
+    /// admission precedes certificate validation and storage, including retries.
+    /// Scope caveats must admit the whole book at the current trunk head.
+    ///
+    /// This metadata publication has its own sequence but creates no journal
+    /// Entry and leaves the report's original known-at coordinate unchanged.
+    /// An Agent with explicit production authority may retain a certificate.
     pub async fn retain_certificate(
         &mut self,
         cx: &PurposeContexts,
-        certificate: &crate::ReportCertificate,
-    ) -> Outcome<crate::RetainedCertificate> {
-        crate::certificate_store::retain(&mut self.db, cx, &self.context, &self.blobs, certificate)
-            .await
-    }
-
-    /// Retain verified canonical certificate bytes after verifying current
-    /// `read` and `produce` authority for this book (fa-mg2j). Retention
-    /// publishes metadata even though producing the report itself is a read.
-    pub async fn retain_certificate_authorized(
-        &mut self,
-        cx: &PurposeContexts,
-        certificate: &crate::ReportCertificate,
+        principal: VId,
         capability: &fa_policy::Capability,
+        certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
-        if let Err(denial) =
-            fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
-                |()| {
-                    fa_policy::require(
-                        capability,
-                        fa_policy::Op::Produce,
-                        "retaining a report certificate",
-                    )
-                },
-            )
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Produce,
+                    "retaining a report certificate",
+                )
+            })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -4981,7 +5050,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(refusal));
         }
-        self.retain_certificate(cx, certificate).await
+        crate::certificate_store::retain(&mut self.db, cx, &self.context, &self.blobs, certificate)
+            .await
     }
 
     /// Load a retained certificate by its full public content digest.

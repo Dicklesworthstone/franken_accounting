@@ -1,5 +1,6 @@
 //! Persisted producer artifacts checked by the independent outsider verifier.
-//! Every CLI invocation opens the book anew; proof export must remain a read.
+//! Every CLI invocation opens the book anew. Bound proof exports publish only
+//! their AccessEvents; the retained proof and ledger remain unchanged.
 
 #![forbid(unsafe_code)]
 
@@ -204,6 +205,24 @@ impl Fixture {
 
     fn head(&self) -> u64 {
         self.open().head().expect("book frontier").0
+    }
+
+    fn assert_proof_accesses_since(&self, before: u64, principal: &str, count: usize) {
+        let book = self.open();
+        let events = book.access_log(fgdb_types::CommitSeq(before)).unwrap();
+        assert_eq!(events.len(), count, "one receipt per bound export");
+        for (index, event) in events.iter().enumerate() {
+            let observed = before + u64::try_from(index).unwrap();
+            assert_eq!(event.record.principal_name, principal);
+            assert_eq!(event.record.command, "bundle produce");
+            assert_eq!(event.observed_at.0, observed);
+            assert_eq!(event.recorded_at.0, observed + 1);
+        }
+        assert_eq!(
+            book.head().unwrap().0,
+            before + u64::try_from(count).unwrap(),
+            "proof export publishes only its audit receipt, no accounting or certificate changes"
+        );
     }
 
     fn checkpoint(&self) -> Json {

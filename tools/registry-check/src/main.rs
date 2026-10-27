@@ -742,6 +742,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         CheckerIndex::parse(&read("checker_index.toml")?).map_err(|e| e.to_string())?;
     let proof_lanes =
         ProofLanes::parse(&read("proof_lanes.toml")?, &invariants).map_err(|e| e.to_string())?;
+    check_proof_lane_artifacts(root, &proof_lanes)?;
     let period_states =
         PeriodStatesRegistry::parse(&read("period_states.toml")?).map_err(|e| e.to_string())?;
     for tr in &period_states.transitions {
@@ -1571,6 +1572,26 @@ pub fn check_readme_agents_sync(
     Ok(commands_checked)
 }
 
+/// Every proof and model lane names a formal file that exists (fa-0hs4.4).
+/// A dormant lane still names real files: its artifact paths once pointed at
+/// a `formal/lean/FaProofs/` tree and TLA+ files that were never written.
+fn check_proof_lane_artifacts(root: &Path, lanes: &ProofLanes) -> Result<(), String> {
+    let missing: Vec<String> = lanes
+        .lanes
+        .iter()
+        .filter(|lane| !root.join(&lane.artifact_path).is_file())
+        .map(|lane| format!("{} -> {}", lane.id, lane.artifact_path))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "proof_lanes.toml: artifact_path names no file: {}",
+            missing.join(", ")
+        ))
+    }
+}
+
 fn default_workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -2089,6 +2110,21 @@ per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
         .expect_err("external oracle claim without artifact must fail");
         assert!(
             err.to_string().contains("beancount_v3") && err.to_string().contains("external-oracle"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn proof_lane_artifact_paths_exist() {
+        let root = default_workspace_root();
+        let invariants = Invariants::embedded().expect("invariants.toml");
+        let mut lanes = ProofLanes::embedded(&invariants).expect("proof_lanes.toml");
+        check_proof_lane_artifacts(&root, &lanes).expect("every lane names a real formal file");
+        // Planted negative: the path the registry carried before fa-0hs4.4.
+        lanes.lanes[0].artifact_path = "formal/lean/FaProofs/Amount.lean".into();
+        let err = check_proof_lane_artifacts(&root, &lanes).expect_err("a missing path must fail");
+        assert!(
+            err.contains(&lanes.lanes[0].id) && err.contains("FaProofs/Amount.lean"),
             "{err}"
         );
     }

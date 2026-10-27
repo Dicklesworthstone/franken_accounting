@@ -134,7 +134,11 @@ fn native_open_item_bundles_recompute_applications_and_reversal_parity_at_each_f
                 .unwrap();
             fixture
                 .book
-                .retain_certificate(&certified.certificate)
+                .retain_certificate(
+                    PRINCIPAL,
+                    &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+                    &certified.certificate,
+                )
                 .unwrap()
                 .unwrap();
             let produced = produce(&mut fixture.book, &certified.certificate);

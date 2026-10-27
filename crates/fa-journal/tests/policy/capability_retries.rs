@@ -112,6 +112,14 @@ fn assert_conflict(h: &mut Harness, request: &Request) {
     assert_eq!(h.db.vertices().unwrap(), rows);
 }
 
+fn outcome(h: &Harness, request: &Request) -> VId {
+    fa_model::intent_outcome_vid(
+        h.book.book_id,
+        &request.capability.holder().0.to_le_bytes(),
+        &request.key,
+    )
+}
+
 #[test]
 fn original_capability_keys_bind_semantics_and_resealed_retries_return_the_original_result() {
     for kind in [Kind::Issue, Kind::Revoke] {
@@ -122,7 +130,14 @@ fn original_capability_keys_bind_semantics_and_resealed_retries_return_the_origi
         let first = execute(&mut h, &original).unwrap().unwrap();
         assert_eq!(first.at.0, before.0 + 1);
         assert!(!first.already);
-        assert_eq!(h.db.vertices().unwrap().len(), count + 1);
+        assert_eq!(h.db.vertices().unwrap().len(), count + 2);
+        let claim = h.db.vertex(outcome(&h, &original)).unwrap().unwrap();
+        assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
+        assert_eq!(claim.created_at, first.at);
+        assert_eq!(
+            fa_journal::rows::prop(&claim, property::TARGET_REF),
+            Some(&CanonicalScalar::bytes(first.vid.0.to_le_bytes().to_vec()).unwrap()),
+        );
         let expected = Recorded {
             already: true,
             ..first
@@ -141,6 +156,193 @@ fn original_capability_keys_bind_semantics_and_resealed_retries_return_the_origi
         assert_eq!(execute(&mut h, &resealed).unwrap().unwrap(), expected);
         assert_eq!(h.db.frontier().unwrap(), head);
         assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn capability_events_reserve_the_common_key_against_posting_batches_and_other_targets() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let original = request(&h, kind);
+        let first = execute(&mut h, &original).unwrap().unwrap();
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+
+        let post = h.proposal(PREPARER, 100, &original.key, EntryClass::ORIGINAL);
+        let refusal = h
+            .post(post, human(PREPARER, &["post"]), Vec::new())
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+
+        let mut other_target = original.clone();
+        other_target.target = other_target
+            .target
+            .clone()
+            .holder_bound(possession_digest(&[137; 32]));
+        assert_conflict(&mut h, &other_target);
+        let mut other_kind = original.clone();
+        other_kind.kind = match kind {
+            Kind::Issue => Kind::Revoke,
+            Kind::Revoke => Kind::Issue,
+        };
+        assert_conflict(&mut h, &other_kind);
+
+        let member = h.proposal(
+            PREPARER,
+            200,
+            b"unpublished-capability-key-batch-member",
+            EntryClass::ORIGINAL,
+        );
+        let batch = PostBatch::new(
+            original.key.clone(),
+            vec![PostIntent::new(member, Vec::new()).unwrap()],
+        )
+        .unwrap();
+        let ctx = h.ctx();
+        let refused = h
+            .runtime
+            .block_on(post_batch(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                human(PREPARER, &["post"]),
+                batch,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-032", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(
+            execute(&mut h, &original).unwrap().unwrap(),
+            Recorded {
+                already: true,
+                ..first
+            },
+        );
+        let other_principal = h.proposal(BOB, 300, &original.key, EntryClass::ORIGINAL);
+        h.post(other_principal, human(BOB, &["post"]), Vec::new())
+            .expect("the same bytes are a different key in another principal's scope");
+    }
+}
+
+#[test]
+fn posting_and_batch_keys_cannot_issue_revoke_or_observe_an_existing_capability() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        for batch_key in [false, true] {
+            let mut h = harness();
+            let original = request(&h, kind);
+            execute(&mut h, &original).unwrap().unwrap();
+            let occupied = b"occupied-capability-request";
+            if batch_key {
+                let member = h.proposal(
+                    PREPARER,
+                    100,
+                    b"capability-collision-batch-member",
+                    EntryClass::ORIGINAL,
+                );
+                let batch = PostBatch::new(
+                    occupied.to_vec(),
+                    vec![PostIntent::new(member, Vec::new()).unwrap()],
+                )
+                .unwrap();
+                let ctx = h.ctx();
+                h.runtime
+                    .block_on(post_batch(
+                        &mut h.db,
+                        &ctx,
+                        &h.book,
+                        human(PREPARER, &["post"]),
+                        batch,
+                    ))
+                    .unwrap()
+                    .unwrap();
+            } else {
+                let post = h.proposal(PREPARER, 100, occupied, EntryClass::ORIGINAL);
+                h.post(post, human(PREPARER, &["post"]), Vec::new())
+                    .unwrap();
+            }
+            let mut occupied_request = original;
+            occupied_request.key = occupied.to_vec();
+            // Neither an existing target nor a fresh target bypasses the
+            // scoped key already owned by a different successful intent.
+            assert_conflict(&mut h, &occupied_request);
+            occupied_request.target = occupied_request
+                .target
+                .holder_bound(possession_digest(&[138; 32]));
+            assert_conflict(&mut h, &occupied_request);
+        }
+    }
+}
+
+#[test]
+fn a_prepared_post_loses_to_a_capability_event_reserving_the_same_key() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let original = request(&h, kind);
+        let proposal = h.proposal(PREPARER, 100, &original.key, EntryClass::ORIGINAL);
+        let post_vid =
+            fa_model::entry_vid(h.book.book_id, &PREPARER.0.to_le_bytes(), &original.key);
+        let ctx = h.ctx();
+        let PostPreparation::Ready(prepared) = prepare_post(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            PostRequest {
+                proposal,
+                capability: human(PREPARER, &["post"]),
+                approvals: Vec::new(),
+                plan_certificate: None,
+            },
+        )
+        .unwrap()
+        .unwrap() else {
+            panic!("fresh posting")
+        };
+        let recorded = execute(&mut h, &original).unwrap().unwrap();
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refused = h
+            .runtime
+            .block_on(prepared.commit(&mut h.db, &ctx))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.exit, exit::CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert!(h.db.vertex(post_vid).unwrap().is_none());
+        assert_eq!(
+            h.db.vertex(outcome(&h, &original))
+                .unwrap()
+                .unwrap()
+                .created_at,
+            recorded.at,
+        );
+    }
+}
+
+#[test]
+fn a_missing_or_rewritten_capability_claim_cannot_be_treated_as_a_legacy_event() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        for deleted in [false, true] {
+            let mut h = harness();
+            let original = request(&h, kind);
+            let recorded = execute(&mut h, &original).unwrap().unwrap();
+            let claim = outcome(&h, &original);
+            assert!(h.db.vertex_at(claim, recorded.at).unwrap().is_some());
+            let mut damage = WriteBatch::new(relation::IN_BOOK);
+            if deleted {
+                damage.delete_vertex(claim);
+            } else {
+                damage.set_vertex_property(
+                    claim,
+                    property::TARGET_REF,
+                    Some(CanonicalScalar::bytes(VId(139).0.to_le_bytes().to_vec()).unwrap()),
+                );
+            }
+            write(&mut h, damage);
+            assert_conflict(&mut h, &original);
+        }
     }
 }
 
@@ -177,6 +379,27 @@ fn an_original_issuance_key_cannot_switch_its_recorded_issuer_capability() {
     execute(&mut h, &next).unwrap().unwrap();
     next.capability = human(PREPARER, &["issue_capability", "post"]);
     assert_conflict(&mut h, &next);
+}
+
+#[test]
+fn a_modern_issuance_claim_authenticates_a_target_for_a_new_issuer_request() {
+    let mut h = harness();
+    let original = request(&h, Kind::Issue);
+    let first = execute(&mut h, &original).unwrap().unwrap();
+    let mut next = original;
+    next.key = b"observe-issued-target-under-current-authority".to_vec();
+    next.capability = human(PREPARER, &["issue_capability", "post"]);
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    assert_eq!(
+        execute(&mut h, &next).unwrap().unwrap(),
+        Recorded {
+            already: true,
+            ..first
+        },
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
 }
 
 #[test]
@@ -429,6 +652,7 @@ fn capability_results_retain_their_original_coordinates_after_durable_reopen() {
         let original = request(&h, kind);
         let first = execute(&mut h, &original).unwrap().unwrap();
         let original_row = h.db.vertex(first.vid).unwrap().unwrap();
+        let original_claim = h.db.vertex(outcome(&h, &original)).unwrap().unwrap();
         let mut unrelated = WriteBatch::new(relation::IN_BOOK);
         unrelated.create_vertex(VId(136), vec![label::DOCUMENT], vec![]);
         write(&mut h, unrelated);
@@ -462,5 +686,54 @@ fn capability_results_retain_their_original_coordinates_after_durable_reopen() {
         assert_eq!(h.db.frontier().unwrap(), head);
         assert_eq!(h.db.vertices().unwrap(), rows);
         assert_eq!(h.db.vertex(first.vid).unwrap().unwrap(), original_row);
+        assert_eq!(
+            h.db.vertex(outcome(&h, &original)).unwrap().unwrap(),
+            original_claim,
+        );
+    }
+}
+
+#[test]
+fn original_legacy_capability_events_remain_read_only_retry_anchors() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut producer = harness();
+        let original = request(&producer, kind);
+        let produced = execute(&mut producer, &original).unwrap().unwrap();
+        let (entry, _) = read_entry(&producer.db, produced.vid).unwrap().unwrap();
+
+        // Reproduce an old writer's publication directly, without creating
+        // and deleting a modern claim to manufacture a legacy fixture.
+        let mut h = harness();
+        let mut legacy = WriteBatch::new(relation::IN_BOOK);
+        legacy.create_vertex(
+            produced.vid,
+            vec![label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        write(&mut h, legacy);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let expected = Recorded {
+            vid: produced.vid,
+            at: head,
+            already: true,
+        };
+        assert_eq!(execute(&mut h, &original).unwrap().unwrap(), expected);
+        let mut resealed = original.clone();
+        resealed.description = text(&h, "capability event", 140);
+        assert_eq!(execute(&mut h, &resealed).unwrap().unwrap(), expected);
+        let mut changed = original.clone();
+        changed.description = text(&h, "changed legacy request", 141);
+        assert_conflict(&mut h, &changed);
+        let mut new_key = original.clone();
+        new_key.key = b"observe-authentic-legacy-capability-target".to_vec();
+        assert_eq!(execute(&mut h, &new_key).unwrap().unwrap(), expected);
+        if matches!(kind, Kind::Issue) {
+            new_key.capability = human(PREPARER, &["issue_capability", "post"]);
+            assert_conflict(&mut h, &new_key);
+        }
+        assert!(h.db.vertex(outcome(&h, &original)).unwrap().is_none());
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
     }
 }

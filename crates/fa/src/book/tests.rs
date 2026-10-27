@@ -1208,6 +1208,304 @@ fn post_crash_matrix() -> Vec<CrashObservation> {
     runs
 }
 
+/// An Approved restatement case on the prepared lab book, for the Post's
+/// crash-point matrix. A PriorPeriodAdjustment case over February posts one
+/// plain March entry the planner (VId 4) planned in its scenario; two
+/// Humans (VIds 2, 3) approve its manifest, and VId 1 opens, rehearses and
+/// will post it.
+/// The rehearsal names a retained trial-balance certificate. That is all the
+/// journal's Rehearse record requires: its certificate is a retained
+/// CERTIFICATE vertex. The facade's `Book::rehearse_case` is what demands a
+/// replayed scenario diff, and it runs only on the sync book. This matrix
+/// judges the Post's one publication, not the rehearsal.
+struct ApprovedCase {
+    book: LabBook,
+    vfs: FaultVfs<MemVfs>,
+    march: String,
+    usd: fa_money::UnitId,
+    poster: Capability,
+    date: DateDay,
+}
+
+async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
+    let cx = PurposeContexts::narrow_runtime_root(root);
+    let PreparedFixture {
+        mut book,
+        vfs,
+        request,
+        march,
+        usd,
+        ..
+    } = prepared_fixture(root, seed).await;
+    let book_id = book.context().book_id;
+    let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let restate = Capability::embedded(VId(1), &["restate", "read", "produce"]).unwrap();
+    let planner_vid = VId(4);
+    let planner = Capability::embedded(planner_vid, &["post", "read"]).unwrap();
+    let mut documents = Vec::new();
+    for bytes in [
+        &b"Adjustment memo: a February receipt was never recorded"[..],
+        &b"Controller's determination: correct February in March"[..],
+    ] {
+        let document = fa_journal::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(1),
+            bytes: bytes.to_vec(),
+        };
+        book.add_document(&cx, &document).await.unwrap().unwrap();
+        documents.push(document.oid());
+    }
+    let mut documents = documents.into_iter();
+    let (narrative, authority) = (documents.next().unwrap(), documents.next().unwrap());
+    book.open_case(
+        &cx,
+        restate.clone(),
+        fa_journal::CaseKind::PriorPeriodAdjustment,
+        vec!["FY2026-P02".into()],
+        Some(narrative),
+        Some(fa_journal::Determination {
+            day: DateDay::from_ymd(2026, 3, 10).unwrap(),
+            authority,
+        }),
+        date,
+        b"crash-case",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let fork_at = book.head(&cx).unwrap();
+    book.open_scenario(
+        &cx,
+        planner.clone(),
+        "adjusted",
+        fa_journal::ScenarioFork::default(),
+        date,
+        "The unrecorded February receipt",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let legs = vec![
+        LegPayload::simple(
+            Side::Debit,
+            account_vid(book_id, "1000"),
+            Amount::new(usd, 50_000),
+        ),
+        LegPayload::simple(
+            Side::Credit,
+            account_vid(book_id, "6000"),
+            Amount::new(usd, 50_000),
+        ),
+    ];
+    let planned = EntryPayload {
+        principal_ref: planner_vid,
+        description: book.seal_text(&cx, "the February receipt").unwrap(),
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        idempotency_key: b"crash-case-receipt".to_vec(),
+        ..request.proposal.clone()
+    };
+    let plan = book
+        .record_scenario_intent(
+            &cx,
+            planner,
+            "adjusted",
+            fa_intents::PostIntent::new(planned, Vec::new()).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .control_entry;
+    let certified = book
+        .certify_trial_balance(
+            &cx,
+            crate::TrialBalanceSelection::Periods(vec![march.clone()]),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let retained = book
+        .retain_certificate(&cx, VId(1), &restate, &certified.certificate)
+        .await
+        .unwrap()
+        .unwrap();
+    book.rehearse_case(
+        &cx,
+        restate.clone(),
+        1,
+        fa_journal::Rehearsal {
+            scenario: "adjusted".into(),
+            certificate: retained.digest,
+            fork_at,
+            periods: vec!["FY2026-P02".into()],
+            intents: vec![plan],
+        },
+        date,
+        b"crash-rehearsal",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let digest = book
+        .case_manifest(&cx, 1)
+        .unwrap()
+        .unwrap()
+        .digest()
+        .unwrap();
+    let mut approvals = Vec::new();
+    for who in [2, 3] {
+        let approved = book
+            .approve(
+                &cx,
+                Capability::embedded(VId(who), &["approve"]).unwrap(),
+                digest,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        approvals.push(approved.approval().approval_vid);
+    }
+    book.approve_case(&cx, restate, 1, approvals, date, b"crash-dual")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        book.case(&cx, 1).unwrap().unwrap().state,
+        fa_journal::CaseState::Approved
+    );
+    ApprovedCase {
+        book,
+        vfs,
+        march,
+        usd,
+        poster: Capability::embedded(VId(1), &["restate", "post", "read"]).unwrap(),
+        date,
+    }
+}
+
+/// fa-75j4 acceptance ("crash between approval and post recovers to
+/// all-or-nothing"), on the fa-0fl harness: an Approved case's Post, its
+/// entry, its Post record and the case's Approved → Posted compare-and-set
+/// in one publication, crashes at each of the substrate's seven commit
+/// crash points. The fault VFS then loses every unsynced byte and the book
+/// reopens. Then:
+/// - Either the case is Posted with its entry and Post record both
+///   journaled, or it is still Approved with neither, never a partial Post.
+/// - A crash before the commit marker keeps nothing; the control keeps it.
+/// - March's cells fold exactly what survived and verify.
+/// - The retried Post is the recorded case exactly when the crash kept it,
+///   and leaves the case Posted with its two entries either way.
+#[test]
+fn a_case_post_crashed_at_every_commit_point_is_posted_or_still_approved_after_reopen() {
+    case_post_crash_matrix();
+}
+
+fn case_post_crash_matrix() -> Vec<CrashObservation> {
+    use fa_journal::CaseState;
+    use fgdb::CrashPoint;
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 1300 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let ApprovedCase {
+                mut book,
+                vfs,
+                march,
+                usd,
+                poster,
+                date,
+            } = approved_case(&root, seed).await;
+            let book_id = book.context().book_id;
+            let before = journal_entries(&book, &cx);
+            let outcome = book
+                .post_case_with_crash(&cx, poster.clone(), 1, date, b"crash-post", point)
+                .await;
+            // A crash point this publication's write path never passes leaves
+            // an ordinary commit; one it passes fails the publication.
+            // Either way, a completed publication must survive the crash.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let state = book.case(&cx, 1).unwrap().unwrap().state;
+            // The case's entry and its Post record are its two new entries.
+            let kept = match (after.len().checked_sub(before.len()), state) {
+                (Some(0), CaseState::Approved) => false,
+                (Some(2), CaseState::Posted) => true,
+                (new, state) => {
+                    panic!("{point:?}: a partial Post: {new:?} new entries, case {state:?}")
+                }
+            };
+            if published {
+                assert!(kept, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(kept, expected, "{point:?}");
+            }
+            let receipt_cell = |fold: &Fold| {
+                fold.cells.iter().any(|cell| {
+                    cell.key.account == account_vid(book_id, "1000")
+                        && cell.key.unit_id == usd.0
+                        && cell.debits == 50_000
+                })
+            };
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(receipt_cell(&fold), kept, "{point:?}: {fold:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let retried = book
+                .post_case(&cx, poster, 1, date, b"crash-post")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retried.already_recorded, kept, "{point:?}");
+            assert_eq!(retried.case.state, CaseState::Posted, "{point:?}");
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 2);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert!(receipt_cell(&fold), "{point:?}: {fold:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            CrashObservation {
+                barrier: "case_post",
+                case,
+                seed,
+                kept,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
+    }
+    runs
+}
+
 /// fa-0fl, the crash-point matrix for an atomic batch (plan §5.8): three
 /// rent members in one PostBatch, one publication, crashed at each of the
 /// substrate's seven commit crash points; the fault VFS then loses every
@@ -4206,6 +4504,7 @@ fn certified_trial_balance_replays_after_later_and_backdated_postings() {
 
 #[test]
 fn generic_certificates_replay_exact_reports_and_retain_each_report_family() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::{CertificateStatus, ReportCertificate, ReportOutput, ReportSelection};
     let (mut book, _, day, _) = certified_fixture();
     let cash = account_vid(book.context().book_id, "1000");
@@ -4277,13 +4576,18 @@ fn generic_certificates_replay_exact_reports_and_retain_each_report_family() {
     );
     for result in certified {
         let retained = book
-            .retain_certificate(&result.certificate)
+            .retain_certificate(VId(1), &producer, &result.certificate)
             .unwrap()
             .unwrap();
         let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
         assert_eq!(loaded, result.certificate);
         assert_eq!(book.replay_report(&loaded).unwrap().unwrap(), result.report);
-        assert_eq!(book.retain_certificate(&loaded).unwrap().unwrap(), retained);
+        assert_eq!(
+            book.retain_certificate(VId(1), &producer, &loaded)
+                .unwrap()
+                .unwrap(),
+            retained
+        );
         assert_eq!(book.head().unwrap(), retained.recorded_at);
         assert_eq!(
             book.certificate_status(&loaded).unwrap().unwrap(),
@@ -4604,6 +4908,7 @@ fn certification_requires_genesis_and_the_historical_runtime_context() {
 
 #[test]
 fn generic_instant_certificates_preserve_the_original_sequence_and_tick_brackets() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::{ReportCertificate, ReportSelection};
     let (mut book, usd, day, _) = certified_fixture();
     let cash = account_vid(book.context().book_id, "1000");
@@ -4673,7 +4978,7 @@ fn generic_instant_certificates_preserve_the_original_sequence_and_tick_brackets
     certificate_tick(&mut book, base + 120, true);
     for result in results {
         let retained = book
-            .retain_certificate(&result.certificate)
+            .retain_certificate(VId(1), &producer, &result.certificate)
             .unwrap()
             .unwrap();
         let loaded = book.read_certificate(&retained.digest).unwrap().unwrap();
@@ -4771,7 +5076,7 @@ fn native_certificate_retention_requires_produce() {
     let before = book.head().unwrap();
     let reader = Capability::embedded(VId(1), &["read"]).unwrap();
     let refused = book
-        .retain_certificate_authorized(&certified.certificate, &reader)
+        .retain_certificate(VId(1), &reader, &certified.certificate)
         .unwrap()
         .unwrap_err();
     assert_eq!((refused.code, refused.exit), ("FA-REF-011", 7));
@@ -4785,7 +5090,7 @@ fn native_certificate_retention_requires_produce() {
 
     let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     let retained = book
-        .retain_certificate_authorized(&certified.certificate, &producer)
+        .retain_certificate(VId(1), &producer, &certified.certificate)
         .unwrap()
         .unwrap();
     assert!(retained.recorded_at > before);
@@ -4795,7 +5100,7 @@ fn native_certificate_retention_requires_produce() {
     );
     let published = book.head().unwrap();
     assert_eq!(
-        book.retain_certificate_authorized(&certified.certificate, &producer)
+        book.retain_certificate(VId(1), &producer, &certified.certificate)
             .unwrap()
             .unwrap(),
         retained
@@ -4806,7 +5111,7 @@ fn native_certificate_retention_requires_produce() {
         "exact retry publishes nothing"
     );
     assert_eq!(
-        book.retain_certificate_authorized(&certified.certificate, &reader)
+        book.retain_certificate(VId(1), &reader, &certified.certificate)
             .unwrap()
             .unwrap_err()
             .code,
@@ -4817,7 +5122,250 @@ fn native_certificate_retention_requires_produce() {
 }
 
 #[test]
+fn native_certificate_retention_checks_presented_and_current_authority() {
+    use crate::TrialBalanceSelection;
+    use fa_policy::{Op, Profile, possession_digest};
+
+    let (mut book, _, day, _) = certified_fixture();
+    let certified = book
+        .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+        .unwrap()
+        .unwrap();
+    let original_bytes = certified.certificate.canonical_bytes().unwrap();
+    let original_fold = book.trial_balance(&["FY2026-P03".to_string()]).unwrap();
+    let agent_report = book
+        .certify_trial_balance(
+            TrialBalanceSelection::Activity(vec!["FY2026-P03".to_string()]),
+            Some(certified.certificate.known_at),
+        )
+        .unwrap()
+        .unwrap();
+    let issuer = Capability::embedded(VId(62), &["issue_capability", "read", "produce"]).unwrap();
+    let principal = VId(63);
+    let producer = Capability::new(
+        principal,
+        Profile::Human,
+        &[Op::Read, Op::Produce],
+        issuer.holder(),
+    )
+    .unwrap()
+    .for_books(&[certified.certificate.book_id])
+    .unwrap()
+    .holder_bound(possession_digest(&[63; 32]));
+    let agent = Capability::new(
+        VId(64),
+        Profile::Agent,
+        &[Op::Read, Op::Produce],
+        issuer.holder(),
+    )
+    .unwrap()
+    .on_branch(Id128::TRUNK)
+    .unwrap()
+    .holder_bound(possession_digest(&[64; 32]));
+    for (capability, key) in [
+        (&producer, b"issue-certificate-producer".as_slice()),
+        (&agent, b"issue-agent-certificate-producer".as_slice()),
+    ] {
+        book.issue_capability(
+            issuer.clone(),
+            capability.clone(),
+            day,
+            key,
+            "Explicit certificate production authority",
+        )
+        .unwrap()
+        .unwrap();
+    }
+    let owner = Capability::embedded(principal, &["read", "produce"]).unwrap();
+    let before_retention = book.head().unwrap();
+    let refusals = [
+        (
+            "missing read",
+            principal,
+            Capability::embedded(principal, &["produce"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "missing produce",
+            principal,
+            Capability::embedded(principal, &["read"]).unwrap(),
+            "FA-REF-011",
+        ),
+        ("wrong holder", VId(65), producer.clone(), "FA-REF-011"),
+        (
+            "excluded book",
+            principal,
+            owner.clone().for_books(&[Id128([0xd1; 16])]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "expired now",
+            principal,
+            owner.clone().expiring_at(before_retention),
+            "FA-REF-014",
+        ),
+        (
+            "account scope",
+            principal,
+            owner.clone().for_accounts(&["1000"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "period scope",
+            principal,
+            owner.clone().for_periods(&["FY2026-P03"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "effective scope",
+            principal,
+            owner.clone().effective_through(day),
+            "FA-REF-011",
+        ),
+        (
+            "known-at scope",
+            principal,
+            owner.clone().known_at_most(certified.certificate.known_at),
+            "FA-REF-011",
+        ),
+        (
+            "other branch scope",
+            principal,
+            owner.clone().on_branch(Id128([0xd2; 16])).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            "unissued holder-bound capability",
+            principal,
+            owner.holder_bound(possession_digest(&[65; 32])),
+            "FA-REF-156",
+        ),
+    ];
+    let mut retained = None;
+    for existing in [false, true] {
+        if existing {
+            let stored = book
+                .retain_certificate(principal, &producer, &certified.certificate)
+                .unwrap()
+                .unwrap();
+            assert!(stored.recorded_at > before_retention);
+            retained = Some(stored);
+        }
+        for (case, actor, capability, code) in &refusals {
+            let before = book.head().unwrap();
+            let outcome = book
+                .retain_certificate(*actor, capability, &certified.certificate)
+                .unwrap();
+            assert_eq!(book.head().unwrap(), before, "{case}, existing={existing}");
+            let refusal = outcome.unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (*code, 7), "{case}");
+            let loaded = book
+                .read_certificate(&certified.certificate.digest)
+                .unwrap();
+            if existing {
+                assert_eq!(loaded.unwrap().canonical_bytes().unwrap(), original_bytes);
+            } else {
+                assert_eq!(loaded.unwrap_err().code, "FA-REF-150");
+            }
+        }
+    }
+    let stored = retained.unwrap();
+    let published = book.head().unwrap();
+    assert_eq!(
+        book.retain_certificate(principal, &producer, &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        stored
+    );
+    assert_eq!(book.head().unwrap(), published);
+    assert_eq!(
+        book.replay_trial_balance(&certified.certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+
+    // Production is metadata, not an Agent accounting post to trunk. Require
+    // a genuinely new artifact so an idempotent shortcut cannot fake admission.
+    assert_eq!(agent.profile(), Profile::Agent);
+    assert_ne!(agent_report.certificate.digest, stored.digest);
+    let agent_stored = book
+        .retain_certificate(agent.holder(), &agent, &agent_report.certificate)
+        .unwrap()
+        .unwrap();
+    assert!(agent_stored.recorded_at > published);
+    assert_eq!(
+        book.read_certificate(&agent_stored.digest)
+            .unwrap()
+            .unwrap(),
+        agent_report.certificate
+    );
+    let after_fold = book.trial_balance(&["FY2026-P03".to_string()]).unwrap();
+    assert_eq!(after_fold.known_at, agent_stored.recorded_at);
+    assert_eq!(after_fold.rows, original_fold.rows);
+    assert_eq!(after_fold.unit_totals, original_fold.unit_totals);
+    assert_eq!(
+        after_fold.pending_unit_totals,
+        original_fold.pending_unit_totals
+    );
+    assert_eq!(after_fold.periods, original_fold.periods);
+    assert_eq!(
+        after_fold.effective_through,
+        original_fold.effective_through
+    );
+    assert_eq!(after_fold.activity, original_fold.activity);
+    assert_eq!(
+        book.trial_balance_at(&["FY2026-P03".to_string()], Some(original_fold.known_at))
+            .unwrap(),
+        original_fold
+    );
+
+    for (revoked, actor, capability, certificate, key) in [
+        (
+            producer.commitment().unwrap(),
+            principal,
+            &producer,
+            &certified.certificate,
+            b"revoke-certificate-producer".as_slice(),
+        ),
+        (
+            issuer.commitment().unwrap(),
+            agent.holder(),
+            &agent,
+            &agent_report.certificate,
+            b"revoke-certificate-issuer".as_slice(),
+        ),
+    ] {
+        book.revoke_capability(
+            Capability::embedded(VId(66), &["issue_capability"]).unwrap(),
+            revoked,
+            day,
+            key,
+            "Withdraw certificate production authority",
+        )
+        .unwrap()
+        .unwrap();
+        let before = book.head().unwrap();
+        let refusal = book
+            .retain_certificate(actor, capability, certificate)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", 7));
+        assert_eq!(book.head().unwrap(), before);
+    }
+    assert_eq!(
+        book.read_certificate(&stored.digest)
+            .unwrap()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap(),
+        original_bytes
+    );
+}
+
+#[test]
 fn retained_certificates_are_idempotent_without_changing_the_certified_report() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::{CertificateStatus, TrialBalanceSelection};
     let (mut book, _, day, _) = certified_fixture();
     let certified = book
@@ -4827,7 +5375,7 @@ fn retained_certificates_are_idempotent_without_changing_the_certified_report() 
     let original_bytes = certified.certificate.canonical_bytes().unwrap();
     let original_at = certified.certificate.known_at;
     let retained = book
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(VId(1), &producer, &certified.certificate)
         .unwrap()
         .unwrap();
     assert_eq!(retained.digest, certified.certificate.digest);
@@ -4842,7 +5390,7 @@ fn retained_certificates_are_idempotent_without_changing_the_certified_report() 
         original_bytes
     );
     assert_eq!(
-        book.retain_certificate(&certified.certificate)
+        book.retain_certificate(VId(1), &producer, &certified.certificate)
             .unwrap()
             .unwrap(),
         retained,
@@ -4887,7 +5435,10 @@ fn retained_certificates_are_idempotent_without_changing_the_certified_report() 
     let before_refusal = book.head().unwrap();
     let mut altered = certified.certificate.clone();
     altered.output[0] ^= 1;
-    let refusal = book.retain_certificate(&altered).unwrap().unwrap_err();
+    let refusal = book
+        .retain_certificate(VId(1), &producer, &altered)
+        .unwrap()
+        .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
     assert_eq!(book.head().unwrap(), before_refusal);
     assert_eq!(
@@ -4907,7 +5458,7 @@ fn retained_certificates_are_idempotent_without_changing_the_certified_report() 
     .unwrap();
     let foreign_head = foreign.head().unwrap();
     let refusal = foreign
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(VId(1), &producer, &certified.certificate)
         .unwrap()
         .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
@@ -4916,6 +5467,7 @@ fn retained_certificates_are_idempotent_without_changing_the_certified_report() 
 
 #[test]
 fn historical_inline_certificate_retries_do_not_reselect_placement() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::TrialBalanceSelection;
     use fa_model::symbols::{label, property, relation};
     use fgdb_types::CanonicalScalar;
@@ -5008,7 +5560,10 @@ fn historical_inline_certificate_retries_do_not_reselect_placement() {
         book.replay_trial_balance(&certificate).unwrap().unwrap(),
         certified.report
     );
-    let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+    let retained = book
+        .retain_certificate(VId(1), &producer, &certificate)
+        .unwrap()
+        .unwrap();
     assert_eq!(retained.digest, certificate.digest);
     assert_eq!(retained.recorded_at, recorded_at);
     assert_eq!(book.head().unwrap(), recorded_at);
@@ -5025,6 +5580,7 @@ fn historical_inline_certificate_retries_do_not_reselect_placement() {
 
 #[test]
 fn initial_certificate_retention_can_follow_unrelated_commits() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::TrialBalanceSelection;
 
     let (mut book, _, day, _) = certified_fixture();
@@ -5045,7 +5601,7 @@ fn initial_certificate_retention_can_follow_unrelated_commits() {
     let after_unrelated = book.head().unwrap();
     assert!(after_unrelated > certified.certificate.known_at);
     let retained = book
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(VId(1), &producer, &certified.certificate)
         .unwrap()
         .unwrap();
     assert!(retained.recorded_at > after_unrelated);
@@ -5058,7 +5614,7 @@ fn initial_certificate_retention_can_follow_unrelated_commits() {
         original_bytes
     );
     assert_eq!(
-        book.retain_certificate(&certified.certificate)
+        book.retain_certificate(VId(1), &producer, &certified.certificate)
             .unwrap()
             .unwrap(),
         retained
@@ -5075,6 +5631,7 @@ fn initial_certificate_retention_can_follow_unrelated_commits() {
 
 #[test]
 fn restored_certificate_bytes_do_not_hide_a_later_record_version() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::{ReportCertificate, TrialBalanceSelection};
     use fa_model::symbols::{property, relation};
     use fgdb_types::CanonicalScalar;
@@ -5085,7 +5642,10 @@ fn restored_certificate_bytes_do_not_hide_a_later_record_version() {
         .unwrap()
         .unwrap();
     let certificate = certified.certificate;
-    let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+    let retained = book
+        .retain_certificate(VId(1), &producer, &certificate)
+        .unwrap()
+        .unwrap();
     let vid = crate::certificate_store::certificate_vid(book.context().book_id, &retained.digest);
     let original = with_store!(&book.store, core => core.db.vertex(vid))
         .unwrap()
@@ -5135,7 +5695,10 @@ fn restored_certificate_bytes_do_not_hide_a_later_record_version() {
         .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
     assert!(refusal.message.contains("existed before"), "{refusal}");
-    let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+    let refusal = book
+        .retain_certificate(VId(1), &producer, &certificate)
+        .unwrap()
+        .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
     assert_eq!(
         book.head().unwrap(),
@@ -5163,6 +5726,7 @@ fn restored_certificate_bytes_do_not_hide_a_later_record_version() {
 
 #[test]
 fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_history() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::TrialBalanceSelection;
     use fa_model::symbols::{label, property, relation};
     use fgdb_types::CanonicalScalar;
@@ -5174,7 +5738,10 @@ fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_h
             .unwrap()
             .unwrap()
             .certificate;
-        let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+        let retained = book
+            .retain_certificate(VId(1), &producer, &certificate)
+            .unwrap()
+            .unwrap();
         let vid =
             crate::certificate_store::certificate_vid(book.context().book_id, &retained.digest);
         let mut change = fgdb::WriteBatch::new(relation::HAS_LEG);
@@ -5206,7 +5773,10 @@ fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_h
             .unwrap()
             .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
-        let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+        let refusal = book
+            .retain_certificate(VId(1), &producer, &certificate)
+            .unwrap()
+            .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
         assert_eq!(book.head().unwrap(), after_tamper);
         let original =
@@ -5223,6 +5793,7 @@ fn retained_certificate_rewrites_and_retirements_are_refused_without_repairing_h
 
 #[test]
 fn retained_certificate_cannot_be_rebound_from_an_earlier_unrelated_record() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     use crate::TrialBalanceSelection;
     use fa_model::symbols::{label, property, relation};
     use fgdb_types::CanonicalScalar;
@@ -5269,7 +5840,10 @@ fn retained_certificate_cannot_be_rebound_from_an_earlier_unrelated_record() {
         .unwrap()
         .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
-    let refusal = book.retain_certificate(&certificate).unwrap().unwrap_err();
+    let refusal = book
+        .retain_certificate(VId(1), &producer, &certificate)
+        .unwrap()
+        .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-150", 8));
     assert_eq!(book.head().unwrap(), after_rebind);
 }
@@ -6163,6 +6737,7 @@ fn certificate_status_ignores_period_controls_but_tracks_later_reservation_relea
 /// FA-REF-135.
 #[test]
 fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     let book_id = Id128([0x5c; 16]);
     let (spec, usd) = spec(book_id);
     let mut book = Book::create_memory(
@@ -6221,7 +6796,10 @@ fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
         .unwrap()
         .unwrap()
         .certificate;
-    let retained = book.retain_certificate(&certificate).unwrap().unwrap();
+    let retained = book
+        .retain_certificate(VId(1), &producer, &certificate)
+        .unwrap()
+        .unwrap();
     let checkpoint = book
         .checkpoint(
             principal,
@@ -7277,6 +7855,7 @@ fn public_document_commitment_does_not_decode_bytes_or_trust_a_rebound_digest() 
 
 #[test]
 fn directory_book_persists_across_reopen() {
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
     let dir = std::env::temp_dir().join(format!("fa-book-{}", std::process::id()));
     let keys = BookKeys::generate(&Entropy::deterministic(9)).unwrap();
     let book_id = Id128([5; 16]);
@@ -7337,7 +7916,7 @@ fn directory_book_persists_across_reopen() {
             .unwrap()
             .unwrap();
         retained_certificate = book
-            .retain_certificate(&certified_report.certificate)
+            .retain_certificate(VId(1), &producer, &certified_report.certificate)
             .unwrap()
             .unwrap();
     }
@@ -7363,7 +7942,9 @@ fn directory_book_persists_across_reopen() {
         certified_report.report
     );
     assert_eq!(
-        book.retain_certificate(&certificate).unwrap().unwrap(),
+        book.retain_certificate(VId(1), &producer, &certificate)
+            .unwrap()
+            .unwrap(),
         retained_certificate
     );
     assert_eq!(book.head().unwrap(), retained_certificate.recorded_at);

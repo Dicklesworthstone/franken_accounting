@@ -41,6 +41,26 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     // `statement balance-sheet` and `statement issue`: the statement verb
     // registers no subcommands, its reports are positional.
     ("statement", None),
+    // A7b: a restatement case and its scenario.
+    ("case", Some("open")),
+    ("case", Some("determine")),
+    ("case", Some("rehearse")),
+    ("case", Some("approve")),
+    ("case", Some("post")),
+    ("case", Some("diff")),
+    ("case", Some("disclose")),
+    ("case", Some("close")),
+    ("case", Some("show")),
+    ("scenario", Some("fork")),
+    ("scenario", Some("run")),
+    ("scenario", Some("diff")),
+    ("explain", Some("lineage")),
+    // A8a: the outsider stage.
+    ("checkpoint", Some("create")),
+    ("bundle", Some("produce")),
+    ("replay", None),
+    ("registers", Some("advance")),
+    ("verify", Some("book")),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

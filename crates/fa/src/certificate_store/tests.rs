@@ -77,8 +77,12 @@ impl Harness {
         certificate: &ReportCertificate,
     ) -> Result<RetainedCertificate, Refusal> {
         let cx = self.cx();
+        let producer = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
         self.runtime
-            .block_on(self.book.retain_certificate(&cx, certificate))
+            .block_on(
+                self.book
+                    .retain_certificate(&cx, PRINCIPAL, &producer, certificate),
+            )
             .unwrap()
     }
 

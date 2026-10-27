@@ -21,6 +21,8 @@ mod evaluate;
 mod invariance;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "cases/outsider.rs"]
+mod outsider;
 #[path = "cases/property.rs"]
 mod property;
 #[path = "cases/reads.rs"]
@@ -59,8 +61,31 @@ fn _selftest() {
     assert_eq!(
         o.row("_selftest-SELF-native"),
         Some(
-            "UNRUN _selftest-SELF-native D native -/default procedure=jet.self_sourced_evidence@1 entries=S-1 severity=Medium reason=filler_invariance"
+            "UNRUN _selftest-SELF-native D native -/default procedure=jet.self_sourced_evidence@1 entries=A-1,N-1,P-1,S-1 severity=Medium reason=filler_invariance"
         ),
+        "{text}"
+    );
+    // A8a: P-1's cells by dry run, N-1 and its mutation twin, the bridge T
+    // (A, the case's delta, B certified) and its read-back, and the case's
+    // generated row. The claimed rows (case.toml) are the ones that PASS.
+    for row in [
+        "PASS _selftest-P-02 P native P-1/evidence_attached=none state=Open refusal=FA-REF-080 exit=3 record_consistent=false commit_agrees=ok ref=agree",
+        "PASS _selftest-P-02 P native P-1/evidence_attached=placeholder_unreviewed state=Open refusal=FA-REF-086 exit=3 record_consistent=false commit_agrees=ok ref=agree",
+        "PASS _selftest-P-02 P native P-1/evidence_attached=placeholder_reviewed state=Open refusal=admitted exit=0 commit_agrees=ok ref=agree",
+        "PASS _selftest-P-03 P native P-1/period_state_at_commit=Open state=Open refusal=admitted exit=0 ref=agree",
+        "PASS _selftest-P-03 P native P-1/period_state_at_commit=Closed state=Closed refusal=FA-REF-010 exit=7 record_consistent=false commit_agrees=ok ref=agree",
+        "UNRUN _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:reported reason=filler_invariance",
+        "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00",
+        "PASS _selftest-CASE-selftest-restatement R native -/default kind=case_show read=case show,selftest-restatement state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-PH-DET disclosure=reviewed twin=refused:FA-REF-179:exit=3",
+    ] {
+        assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
+    }
+    // The outsider stage: the checkpoint, the balance sheet's report bundle
+    // verified in process, its replay byte-identical, and the book's
+    // integrity green.
+    assert!(
+        o.lines.iter().any(|l| l
+            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=green"),
         "{text}"
     );
     assert!(!text.contains("REPRODUCE"), "{text}");
@@ -68,6 +93,107 @@ fn _selftest() {
         o.lines.last().map(String::as_str),
         Some(format!("LOG {}", o.log_path.display()).as_str())
     );
+}
+
+/// A8a (Appendix Z.7): the self-test's bridge T reads its certified B
+/// (900.00, A plus the case's delta) and still prints UNRUN, never PASS,
+/// until its contributing-entry witness (A11b) and outsider check (A12)
+/// land.
+#[test]
+fn selftest_t_row_reads_unrun_while_a11b_or_a12_is_absent() {
+    let o = outcome(SELFTEST);
+    assert_eq!(
+        o.row("_selftest-T-01"),
+        Some(
+            "UNRUN _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 reason=contributing_entry,outsider"
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// A8a (§3.7 item 3): an N twin that keeps the target's 1,234.56 legs is
+/// not a mutation, so the procedure does not report it and the row fails.
+#[test]
+fn _selftest_neg_n_twin_that_keeps_the_legs_fails() {
+    let o = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "twin_value = \"1000.00\"",
+            new: "twin_value = \"1234.56\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a twin that does not report fails the case");
+    let row = o.row("_selftest-N-01").unwrap_or_default();
+    assert!(
+        row.starts_with(
+            "FAIL _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:did_not_report "
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// The self-test's claimed rows, which the outsider negatives keep PASS.
+const SELFTEST_CLAIMS: [&str; 4] = [
+    "_selftest-P-02",
+    "_selftest-P-03",
+    "_selftest-R-01",
+    "_selftest-CASE-selftest-restatement",
+];
+
+/// A8a (§12.1): one flipped byte in the produced bundle makes the
+/// in-process `fa_verify::verify_bundle` refuse it, and the case fails even
+/// though every claimed row still reads PASS.
+#[test]
+fn bundle_byte_flip_fails_the_case_whatever_its_expectations_say() {
+    outsider::FLIP_BUNDLE_BYTE.with(|f| f.set(true));
+    let o = run_case(&selftest_files(), HARNESS_VERBS);
+    outsider::FLIP_BUNDLE_BYTE.with(|f| f.set(false));
+    let text = o.text();
+    for id in SELFTEST_CLAIMS {
+        assert!(
+            o.row(id).is_some_and(|r| r.starts_with("PASS ")),
+            "{id}\n{text}"
+        );
+    }
+    let line = o
+        .lines
+        .iter()
+        .find(|l| l.starts_with("OUTSIDER native "))
+        .expect("the outsider line");
+    assert!(
+        line.starts_with(
+            "OUTSIDER native checkpoint=created bundle=fail(the report bundle did not verify"
+        ) && line.ends_with(" replay=identical verify_book=green"),
+        "{text}"
+    );
+    assert!(!o.rows_ok && !o.ok, "{text}");
+}
+
+/// A8a (§12.7): `fa verify book` exiting 8 fails the case, whatever its
+/// rows say. The binary offers no way to corrupt a book from the CLI, so
+/// the exit is injected into the runner's observation of the call.
+#[test]
+fn verify_book_exit_8_fails_the_case() {
+    outsider::FORCE_VERIFY_BOOK_EXIT.with(|f| f.set(Some(8)));
+    let o = run_case(&selftest_files(), HARNESS_VERBS);
+    outsider::FORCE_VERIFY_BOOK_EXIT.with(|f| f.set(None));
+    let text = o.text();
+    for id in SELFTEST_CLAIMS {
+        assert!(
+            o.row(id).is_some_and(|r| r.starts_with("PASS ")),
+            "{id}\n{text}"
+        );
+    }
+    assert!(
+        o.lines.iter().any(|l| l
+            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=fail(expected fa verify book exit=0 green observed exit=8 green=true)"),
+        "{text}"
+    );
+    assert!(!o.rows_ok && !o.ok, "{text}");
 }
 
 /// The JSONL log: one step record per `fa` call, one verdict record per
@@ -93,6 +219,8 @@ fn _selftest_logs_every_step_and_every_row() {
         }
     }
     assert_eq!(steps, o.steps.len());
+    // A budget line (`FAIL budget ...`, on a contended worker) is the
+    // case's wall-clock verdict, not a row: it has no verdict record.
     let rows = o
         .lines
         .iter()
@@ -100,10 +228,11 @@ fn _selftest_logs_every_step_and_every_row() {
             ["PASS ", "FAIL ", "UNRUN "]
                 .iter()
                 .any(|v| l.starts_with(v))
+                && !l.starts_with("FAIL budget ")
         })
         .count();
     assert_eq!(verdicts, rows, "{}", o.text());
-    assert_eq!(rows, 3, "{}", o.text());
+    assert_eq!(rows, 12, "{}", o.text());
 }
 
 /// Every `fa` call the runner makes is a (verb, subcommand) of the table it
@@ -156,7 +285,7 @@ fn every_logged_verb_is_in_the_harness_verb_table() {
         finding.binds,
         [(
             "$C_FINDINGRUN_jet.round_amounts".to_string(),
-            "findings_recorded.certificate of step 4 (jet.round_amounts)".to_string()
+            "findings_recorded.certificate of step 5 (jet.round_amounts)".to_string()
         )]
     );
 }
@@ -194,12 +323,12 @@ fn period_label_map_is_logged_once_per_book() {
     );
 }
 
-/// `pre_case` on a variant with no `[[case]]` reads at the head at the
-/// `finding_record` step. The self-test's last write before that step is
-/// S-1's post (S-2 is refused, `entry show` is a read), so the run's source
+/// A `finding_record` step before the book's case opens reads at the head
+/// at that step. The self-test's last write before it is S-1's post (N-1
+/// posts first, S-2 is refused, `entry show` is a read), so the run's source
 /// coordinate is S-1's recorded sequence, and the runner passed exactly it.
 #[test]
-fn pre_case_on_a_book_without_a_case_is_the_head_at_the_finding_step() {
+fn finding_record_before_the_case_reads_the_head_at_its_step() {
     let o = outcome(SELFTEST);
     let book = &o.books["native"];
     let runs = fa(book, &["finding".into(), "runs".into(), "--json".into()]);
@@ -296,8 +425,8 @@ fn _selftest_neg_wrong_refusal_id() {
         SELFTEST,
         &[PlantedEdit {
             file: "expectations.toml",
-            old: "refusal = \"FA-REF-010\"",
-            new: "refusal = \"FA-REF-011\"",
+            old: "intent = \"S-2\"\nrefusal = \"FA-REF-010\"",
+            new: "intent = \"S-2\"\nrefusal = \"FA-REF-011\"",
         }],
         HARNESS_VERBS,
     )
@@ -377,6 +506,11 @@ fn _selftest_neg_blank_discipline_stops_at_k_prov() {
         [
             "FAIL _selftest-D-01 D native S-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
             "FAIL _selftest-P-01 P native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-P-02 P native P-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-P-03 P native P-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-N-01 N native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-T-01 T native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-R-01 R native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
             "FAIL _selftest-SELF-native D native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
         ],
         "{}",
@@ -1932,6 +2066,51 @@ fn second_issuance_of_a_period_binds_its_own_placeholder() {
     }
 }
 
+/// A7b (§3.3 step 7): the same quarter read off the certified statements
+/// and trial balance: the balance sheet's assets line as currently stated
+/// (1,250.00), the income statement's revenue line as originally reported
+/// (1,000.00, the first issuance's) and the trial balance's 1100 row
+/// (1,250.00).
+#[test]
+fn statement_and_trial_balance_reads_return_their_lines() {
+    let o = reads_run(&[]);
+    let text = o.text();
+    for (id, row) in [
+        (
+            "reads-R-05",
+            "PASS reads-R-05 R native -/default kind=read_back read=balance-sheet,assets,2026Q1,as-currently-stated value=1250.00",
+        ),
+        (
+            "reads-R-06",
+            "PASS reads-R-06 R native -/default kind=read_back read=income-statement,revenue,2026Q1,as-originally-reported value=1000.00",
+        ),
+        (
+            "reads-R-07",
+            "PASS reads-R-07 R native -/default kind=read_back read=tb,1100,2026Q1 value=1250.00",
+        ),
+    ] {
+        assert_eq!(o.row(id), Some(row), "{text}");
+    }
+}
+
+/// A7b: a statement read names a line the definition has not: no read, so
+/// the row fails naming the line, never reading zero.
+#[test]
+fn statement_read_of_an_unknown_line_fails() {
+    let o = reads_run(&[PlantedEdit {
+        file: "expectations.toml",
+        old: "read_verb = \"balance-sheet\"\nread_target = \"assets\"",
+        new: "read_verb = \"balance-sheet\"\nread_target = \"assetz\"",
+    }]);
+    let text = o.text();
+    assert!(
+        o.row("reads-R-05")
+            .is_some_and(|r| r.starts_with("FAIL reads-R-05 ")
+                && r.contains("reason=expected a balance-sheet line assetz in USD observed none")),
+        "{text}"
+    );
+}
+
 /// A7b: a published value the book does not reach fails the T row, naming
 /// both values, and the kernel refuses its assertion FA-REF-140; the
 /// read-backs of the same value fail too.
@@ -2014,6 +2193,157 @@ fn as_originally_reported_without_issuance_or_lock_is_refused_fa_ref_161() {
         Some(
             "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
         ),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("reads-R-06"),
+        Some(
+            "FAIL reads-R-06 R native -/default kind=read_back read=income-statement,revenue,2026Q1,as-originally-reported reason=expected exit=0 from statement income-statement observed exit=3 FA-REF-161"
+        ),
+        "{text}"
+    );
+    assert!(!o.rows_ok, "{text}");
+}
+
+/// The lifecycle fixture (`crates/fa-oracles/tests/fixtures/lifecycle_min/`,
+/// A7b): an issued and locked quarter restated by a full case.
+const LIFECYCLE: [(&str, &str); 6] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/roles.toml"),
+    ),
+    (
+        "sources.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/sources.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/expectations.toml"),
+    ),
+];
+
+fn lifecycle_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
+    match run_files("lifecycle", &LIFECYCLE, edits, HARNESS_VERBS) {
+        Ok(o) => Box::new(o),
+        Err(o) => o,
+    }
+}
+
+/// The fixture's `case_disclose` step, which a planted edit removes.
+const DISCLOSE_STEP: &str =
+    "[[step]]\nseq = 17\nkind = \"case_disclose\"\nref = \"rc\"\nprincipal = \"case-poster-1\"\n\n";
+
+/// A7b (§3.3 steps 4 and 5): the quarter is issued and locked, then case rc
+/// runs its whole life cycle: open (determined on the restating filing's
+/// date, the declared default), scenario fork/run/diff, rehearse, two
+/// approvals, post by a non-approver, statement diff, disclose and close.
+/// The case's number is logged once, every case and scenario call
+/// succeeds but the disclosure twin (FA-REF-179), and the generated row
+/// reads the case Closed with its kind, day, authority and reviewed
+/// disclosure (the target's lineage names Restates). The quarter reads
+/// 1,000.00 as originally reported and as reported in its issuance, and
+/// 1,200.00 as currently stated.
+#[test]
+fn issue_lock_and_full_restatement_lifecycle_run() {
+    let o = lifecycle_run(&[]);
+    let text = o.text();
+    let cases: Vec<&String> = o.lines.iter().filter(|l| l.starts_with("CASES ")).collect();
+    assert_eq!(cases, ["CASES native rc=1"], "{text}");
+    assert_eq!(
+        o.row("lifecycle-CASE-rc"),
+        Some(
+            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3"
+        ),
+        "{text}"
+    );
+    let refused: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| s.exit != 0)
+        .map(|s| {
+            format!(
+                "{} {}",
+                // After `--book $BOOK`.
+                s.argv_redacted.get(2..4).unwrap_or_default().join(" "),
+                s.refusal_id.as_deref().unwrap_or("-")
+            )
+        })
+        .collect();
+    assert_eq!(refused, ["case disclose FA-REF-179"], "{text}");
+    for (id, row) in [
+        (
+            "lifecycle-R-01",
+            "PASS lifecycle-R-01 R native -/default kind=read_back read=balance,6100,2026Q1,as-originally-reported value=1000.00",
+        ),
+        (
+            "lifecycle-R-02",
+            "PASS lifecycle-R-02 R native -/default kind=read_back read=balance,6100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00",
+        ),
+        (
+            "lifecycle-R-03",
+            "PASS lifecycle-R-03 R native -/default kind=read_back read=balance,6100,2026Q1,as-currently-stated value=1200.00",
+        ),
+    ] {
+        assert_eq!(o.row(id), Some(row), "{text}");
+    }
+    assert!(o.rows_ok, "{text}");
+}
+
+/// A7b (§3.3 step 5): a history that ends before its `case_close` step
+/// (X3's walking skeleton ends at `case_post`) leaves the case's row UNRUN,
+/// never PASS.
+#[test]
+fn case_row_is_unrun_never_pass_without_a_case_close_step() {
+    let o = lifecycle_run(&[
+        PlantedEdit {
+            file: "books/native.toml",
+            old: DISCLOSE_STEP,
+            new: "",
+        },
+        PlantedEdit {
+            file: "books/native.toml",
+            old: "[[step]]\nseq = 18\nkind = \"case_close\"\nref = \"rc\"\nprincipal = \"case-poster-1\"\n\n",
+            new: "",
+        },
+    ]);
+    let text = o.text();
+    assert_eq!(
+        o.row("lifecycle-CASE-rc"),
+        Some(
+            "UNRUN lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc reason=needs:case_close step"
+        ),
+        "{text}"
+    );
+}
+
+/// A7b (§3.3 step 5): without its `case_disclose` step, `fa case close` is
+/// refused (it moves only Disclosed to Closed), the case stays Posted, and
+/// the generated row fails naming the state it observed.
+#[test]
+fn case_show_without_disclosure_fails() {
+    let o = lifecycle_run(&[PlantedEdit {
+        file: "books/native.toml",
+        old: DISCLOSE_STEP,
+        new: "",
+    }]);
+    let text = o.text();
+    let row = o.row("lifecycle-CASE-rc").expect("the case row");
+    assert!(
+        row.starts_with(
+            "FAIL lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Posted case_kind=Restatement "
+        ) && row.contains("reason=expected Closed observed Posted"),
         "{text}"
     );
     assert!(!o.rows_ok, "{text}");

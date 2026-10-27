@@ -28,7 +28,7 @@
 | `WF-RQ-06` | `VC-06` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance at a historical known-at sequence (`fa tb --period --as-known-at`) |
 | `WF-RQ-07` | `VC-07` | `readme-quick` | `works` | `0` | `trial_balance` | `—` | Trial balance as originally reported (`fa tb --as-originally-reported`) |
 | `WF-RQ-08` | `VC-08` | `readme-quick` | `works` | `0` | `reversed` | `—` | Reverse a committed entry with SupersessionKind::Reverses lineage (`fa reverse`) |
-| `WF-RQ-09` | `VC-09` | `readme-quick` | `works` | `0` | `case_opened` | `—` | Open a restatement case from the CLI (`fa case open`: journaled Proposed; `fa case` determine, rehearse, approve, post, disclose and close carry it on, and this build posts only PriorPeriodAdjustment cases) |
+| `WF-RQ-09` | `VC-09` | `readme-quick` | `works` | `0` | `case_opened` | `—` | Open a restatement case from the CLI (`fa case open`: journaled Proposed; `fa case` determine, rehearse, approve, post, disclose and close carry it on, and all four case kinds post) |
 | `WF-RQ-10` | `VC-10` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run Lantern journal-entry test (`fa procedure run jet.round_amounts`) |
 | `WF-RQ-11` | `VC-11` | `readme-quick` | `works` | `0` | `procedure_run` | `—` | Run LIBR fund tracing (`fa procedure run trace.libr`) |
 | `WF-RQ-12` | `VC-12` | `readme-quick` | `works` | `0` | `bundle_produced` | `—` | Produce a signed offline evidence bundle (`fa bundle produce`) |
@@ -134,5 +134,5 @@
 | ID | Metric | Evidence Class | Probe | Status | Exit | Bead | Description |
 |---|---|---|---|---|---:|---|---|
 | `GOV-01` | `closure_debt` | `registry` | `registry` | `absent` | `2` | `fa-8jcr` | Zero unbacked closed beads without a machine-verified acceptance-tests block and verdict note (pre-fa-8jcr closures remain in debt until backfilled) |
-| `GOV-02` | `verdict_freshness` | `registry` | `registry` | `works` | `0` | `—` | Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window |
-| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `works` | `0` | `—` | Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active |
+| `GOV-02` | `verdict_freshness` | `registry` | `registry` | `absent` | `2` | `fa-ygj2` | Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window |
+| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `absent` | `2` | `fa-0hs4.3` | Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active |

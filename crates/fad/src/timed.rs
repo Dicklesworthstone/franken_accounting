@@ -133,6 +133,10 @@ pub(crate) trait TimedBook {
         cap: &Capability,
         max: usize,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>>;
+    async fn advance_sweep_index(
+        &mut self,
+        cx: &Cx,
+    ) -> Result<fa_journal::SweepIndexState, BookError>;
 }
 
 impl TimedBook for Book {
@@ -179,6 +183,13 @@ impl TimedBook for Book {
         max: usize,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
         Book::sweep_recurring(self, cx, cap, max).await
+    }
+
+    async fn advance_sweep_index(
+        &mut self,
+        cx: &Cx,
+    ) -> Result<fa_journal::SweepIndexState, BookError> {
+        Book::advance_sweep_index_with(self, cx).await
     }
 }
 
@@ -227,6 +238,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
         AsyncBook::sweep_recurring(self, &PurposeContexts::narrow_runtime_root(cx), cap, max).await
     }
+
+    async fn advance_sweep_index(
+        &mut self,
+        cx: &Cx,
+    ) -> Result<fa_journal::SweepIndexState, BookError> {
+        AsyncBook::advance_sweep_index(self, &PurposeContexts::narrow_runtime_root(cx)).await
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -237,6 +255,8 @@ pub(crate) struct Cycle {
     pub blocked_reversals: usize,
     pub recurring: usize,
     pub blocked_recurring: usize,
+    /// Whether the paged sweep index reached the cycle's final head.
+    pub sweep_index_current: bool,
 }
 
 /// Timed work owned by the daemon's serving region. Dropping the server
@@ -546,6 +566,11 @@ impl TimedWork {
         // Both kernel paths also witness current tick corroboration and
         // current capability policy inside their own transactions.
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
+        // The disposable paged index turns candidate discovery into a read of
+        // the committed delta instead of a whole-book scan (fa-gpd4,
+        // fa-0hs4.11). It is derived state: when it cannot advance, discovery
+        // falls back to the exact scan and the cycle still runs.
+        cycle.sweep_index_current = book.advance_sweep_index(cx).await.is_ok();
         if let Some(batch) = admitted(
             book.sweep_expiry(cx, capability, self.policy.sweep_batch)
                 .await,
@@ -567,6 +592,11 @@ impl TimedWork {
         )? {
             cycle.recurring = batch.posted.len();
             cycle.blocked_recurring = batch.blocked.len();
+        }
+        // Carry the index over this cycle's own effects, so the next cycle
+        // reads only what commits in between.
+        if cycle.expired + cycle.reversed + cycle.recurring > 0 {
+            cycle.sweep_index_current = book.advance_sweep_index(cx).await.is_ok();
         }
         Ok(cycle)
     }

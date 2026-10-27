@@ -1,12 +1,14 @@
-//! fa-7dw: AccessEvent (who read what) on the real binary. A read-only token
-//! session's command commits one AccessEvent before it observes the book;
-//! `fa access log` lists them. Embedded-owner reads and sessions that can
-//! write are not recorded by this slice.
+//! fa-7dw: AccessEvent (who read what) through real binary and bound-host
+//! commands. Bound reads commit one AccessEvent before observing the book,
+//! including Agent and writing sessions. Owner reads remain unrecorded.
 
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fa_cli::authority::{LaunchAuthority, LaunchProfile};
+use fa_cli::cli::{Files, Stdin};
+use fa_cli::entry::fa_with_authority;
 use fa_cli::json::{self, Json};
 
 fn temporary() -> PathBuf {
@@ -42,11 +44,15 @@ fn number(value: &Json, key: &str) -> i128 {
 
 struct Fixture {
     dir: PathBuf,
+    evidence: String,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let f = Self { dir: temporary() };
+        let mut f = Self {
+            dir: temporary(),
+            evidence: String::new(),
+        };
         f.ok(&["book", "create", "--name", "Access log"]);
         std::fs::write(
             f.dir.join("chart.json"),
@@ -67,6 +73,7 @@ impl Fixture {
             "HumanUpload",
         ]);
         let evidence = text(data(&document), "oid").to_string();
+        f.evidence = evidence.clone();
         std::fs::write(
             f.dir.join("sale.json"),
             r#"{"idempotency_key":"sale","effective_date":"2026-03-10","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"4000","amount":"5.00 USD"}]}"#,
@@ -133,13 +140,48 @@ impl Fixture {
         args.extend_from_slice(extra);
         data(&self.ok(&args)).clone()
     }
+
+    fn head(&self) -> i128 {
+        number(
+            self.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    }
+
+    fn bound(&self, authority: &LaunchAuthority, args: &[&str], input: Option<&str>) -> (u8, Json) {
+        let mut argv = args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        argv.push("--json".to_string());
+        let (exit, captured) = fa_with_authority(
+            &argv,
+            Files {
+                cwd: Some(self.dir.clone()),
+                stdin: input.map_or(Stdin::Missing, |bytes| {
+                    Stdin::Forwarded(bytes.as_bytes().to_vec())
+                }),
+            },
+            authority,
+            true,
+        );
+        let lines = captured.stdout.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "{args:?}: {captured:?}");
+        fa_cli::verbs::registry()
+            .unwrap()
+            .check_line(lines[0])
+            .unwrap_or_else(|error| panic!("robot schema: {error}\n{captured:?}"));
+        let event = json::parse(lines[0]).unwrap();
+        assert_eq!(event.get("authority"), Some(&authority.envelope_json()));
+        (exit, event)
+    }
 }
 
 #[test]
-fn a_read_only_token_read_is_recorded_before_it_observes_the_book() {
+fn token_reads_are_recorded_before_observation_even_when_the_holder_can_write() {
     let f = Fixture::new();
     let (auditor, commitment) = f.issue("auditor-1", &["read"]);
-    let (preparer, _) = f.issue("preparer-1", &["read", "post"]);
+    let (preparer, preparer_commitment) = f.issue("preparer-1", &["read", "post"]);
 
     // Owner reads are not recorded.
     f.ok(&["tb", "--period", "FY2026-P03"]);
@@ -167,9 +209,18 @@ fn a_read_only_token_read_is_recorded_before_it_observes_the_book() {
         "the read observed the book only after its record was committed"
     );
 
-    // A token that can write is not recorded by this slice.
-    f.ok(&["--token", &preparer, "tb", "--period", "FY2026-P03"]);
-    assert_eq!(number(&f.log(&[]), "count"), 1);
+    // Write authority never exempts a read from audit. The writing token's
+    // report, too, sees the already committed AccessEvent.
+    let tb = f.ok(&["--token", &preparer, "tb", "--period", "FY2026-P03"]);
+    let log = f.log(&[]);
+    assert_eq!(number(&log, "count"), 2);
+    let writer = &log.get("events").and_then(Json::as_arr).unwrap()[1];
+    assert_eq!(text(writer, "principal_name"), "preparer-1");
+    assert_eq!(text(writer, "capability"), preparer_commitment);
+    assert_eq!(
+        number(tb.get("coordinate").unwrap(), "known_at"),
+        number(writer, "recorded_at")
+    );
 
     // The same read again is a second, distinct event; another command and
     // a refused command are recorded too (the record precedes the outcome).
@@ -177,30 +228,30 @@ fn a_read_only_token_read_is_recorded_before_it_observes_the_book() {
     f.ok(&["--token", &auditor, "explain", "period", "FY2026-P03"]);
     let log = f.log(&[]);
     let events = log.get("events").and_then(Json::as_arr).unwrap();
-    assert_eq!(events.len(), 3, "{log:?}");
-    assert_ne!(text(&events[0], "vid"), text(&events[1], "vid"));
+    assert_eq!(events.len(), 4, "{log:?}");
+    assert_ne!(text(&events[0], "vid"), text(&events[2], "vid"));
     assert_eq!(
         text(&events[0], "request_digest"),
-        text(&events[1], "request_digest"),
+        text(&events[2], "request_digest"),
         "the same arguments digest alike"
     );
-    assert_eq!(text(&events[2], "command"), "explain period");
+    assert_eq!(text(&events[3], "command"), "explain period");
     assert_ne!(
         text(&events[0], "request_digest"),
-        text(&events[2], "request_digest")
+        text(&events[3], "request_digest")
     );
 
     // Filters: by principal, and after a sequence.
-    assert_eq!(number(&f.log(&["--reader", "preparer-1"]), "count"), 0);
+    assert_eq!(number(&f.log(&["--reader", "preparer-1"]), "count"), 1);
     assert_eq!(number(&f.log(&["--reader", "auditor-1"]), "count"), 3);
-    let after = number(&events[1], "recorded_at").to_string();
+    let after = number(&events[2], "recorded_at").to_string();
     assert_eq!(number(&f.log(&["--since", &after]), "count"), 1);
 
     // Reading the log under the read-only token records that read too, and
     // the answer includes it.
     let own = f.ok(&["--token", &auditor, "access", "log"]);
     let own = data(&own);
-    assert_eq!(number(own, "count"), 4, "{own:?}");
+    assert_eq!(number(own, "count"), 5, "{own:?}");
     let last = own
         .get("events")
         .and_then(Json::as_arr)
@@ -212,7 +263,256 @@ fn a_read_only_token_read_is_recorded_before_it_observes_the_book() {
     // Planted negative: a bad --since is usage and records nothing.
     let (code, _) = f.run(&["access", "log", "--since", "soon"]);
     assert_eq!(code, 2);
-    assert_eq!(number(&f.log(&[]), "count"), 4);
+    assert_eq!(number(&f.log(&[]), "count"), 5);
+}
+
+#[test]
+fn witness_and_hold_authority_do_not_suppress_a_readers_access_history() {
+    let f = Fixture::new();
+    for (principal, extra_op) in [
+        ("auditor-witness", "witness"),
+        ("investigator-hold", "hold"),
+    ] {
+        let (token, commitment) = f.issue(principal, &["read", extra_op]);
+        let before = f.head();
+        let read = f.ok(&["--token", &token, "document", "read", &f.evidence]);
+        let log = f.log(&["--since", &before.to_string()]);
+        assert_eq!(number(&log, "count"), 1, "{log:?}");
+        let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];
+        assert_eq!(text(access, "principal_name"), principal);
+        assert_eq!(text(access, "capability"), commitment);
+        assert_eq!(text(access, "command"), "document read");
+        assert_eq!(number(access, "observed_at"), before);
+        assert_eq!(number(access, "recorded_at"), before + 1);
+        assert_eq!(
+            number(read.get("coordinate").unwrap(), "known_at"),
+            before + 1
+        );
+        assert_eq!(
+            text(data(&read).get("text").unwrap(), "untrusted_content"),
+            "March receipt"
+        );
+    }
+}
+
+#[test]
+fn bound_agent_and_preparer_reads_audit_documents_findings_and_streams_once() {
+    let f = Fixture::new();
+    std::fs::write(f.dir.join("bank.txt"), b"Account BANK-123, March statement").unwrap();
+    let source = f.ok(&[
+        "document",
+        "add",
+        "bank.txt",
+        "--kind",
+        "BankStatement",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let source = text(data(&source), "oid");
+    f.ok(&["document", "redact", source]);
+    std::fs::write(
+        f.dir.join("weekend.json"),
+        r#"{"idempotency_key":"weekend","effective_date":"2026-03-14","legs":[{"side":"debit","account":"1000","amount":"7.00 USD"},{"side":"credit","account":"4000","amount":"7.00 USD"}]}"#,
+    )
+    .unwrap();
+    f.ok(&[
+        "post",
+        "--intent",
+        "weekend.json",
+        "--evidence",
+        &f.evidence,
+    ]);
+    let findings = f.ok(&["finding", "record", "jet.weekend"]);
+    assert_eq!(number(data(&findings), "finding_count"), 1);
+    let finding = data(&findings)
+        .get("finding_ids")
+        .and_then(Json::as_arr)
+        .unwrap()[0]
+        .as_str()
+        .unwrap();
+
+    for (principal, profile) in [
+        ("agent-reader", LaunchProfile::Agent),
+        ("preparer-reader", LaunchProfile::Preparer),
+    ] {
+        let authority = LaunchAuthority::new(
+            f.dir.join("book"),
+            None,
+            principal,
+            profile,
+            &["read", "post", "produce"],
+        )
+        .unwrap();
+        let start = f.head();
+        for args in [
+            vec!["document", "read", source],
+            vec!["finding", "show", finding],
+            vec!["export", "ndjson", "--period", "FY2026-P03"],
+            vec!["query", "CALL fa.access_log"],
+        ] {
+            let before = f.head();
+            let (exit, result) = f.bound(&authority, &args, None);
+            assert_eq!(exit, 0, "{principal}: {args:?}: {result:?}");
+            let log = f.log(&["--since", &before.to_string()]);
+            assert_eq!(
+                number(&log, "count"),
+                1,
+                "one receipt for the entire response: {log:?}"
+            );
+            let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];
+            assert_eq!(text(access, "principal_name"), principal);
+            assert_eq!(number(access, "observed_at"), before);
+            assert_eq!(number(access, "recorded_at"), before + 1);
+            assert_eq!(f.head(), before + 1, "the read only publishes its receipt");
+            assert_eq!(
+                number(result.get("coordinate").unwrap(), "known_at"),
+                number(access, "recorded_at"),
+                "the read cannot disclose an observation made before its receipt commits"
+            );
+            match args[0] {
+                "document" => {
+                    assert_eq!(text(data(&result), "view"), "redacted");
+                    assert_eq!(data(&result).get("text"), Some(&Json::Null));
+                    assert_eq!(data(&result).get("bytes_hex"), Some(&Json::Null));
+                    assert!(!result.render().contains("BANK-123"));
+                }
+                "export" => {
+                    let files = data(&result).get("files").and_then(Json::as_arr).unwrap();
+                    let stream = files
+                        .iter()
+                        .find(|file| text(file, "name") == "gl.ndjson")
+                        .unwrap();
+                    let content = text(stream, "content");
+                    assert_eq!(
+                        fa_formats::csv_gl::verify_ndjson_gl_stream(content).unwrap(),
+                        4
+                    );
+                    let header = json::parse(content.lines().next().unwrap()).unwrap();
+                    assert_eq!(number(&header, "known_at"), number(access, "recorded_at"));
+                }
+                "query" => {
+                    let rows = data(&result).get("events").and_then(Json::as_arr).unwrap();
+                    assert_eq!(text(rows.last().unwrap(), "command"), "query");
+                    assert_eq!(text(rows.last().unwrap(), "vid"), text(access, "vid"));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(number(&f.log(&["--since", &start.to_string()]), "count"), 4);
+    }
+}
+
+#[test]
+fn a_bound_plan_audits_before_its_basis_and_commit_does_not_invalidate_the_plan() {
+    let f = Fixture::new();
+    let authority = LaunchAuthority::new(
+        f.dir.join("book"),
+        None,
+        "preparer-planner",
+        LaunchProfile::Preparer,
+        &["read", "post"],
+    )
+    .unwrap();
+    let intent = r#"{"idempotency_key":"planned-sale","effective_date":"2026-03-10","legs":[{"side":"debit","account":"1000","amount":"3.00 USD"},{"side":"credit","account":"4000","amount":"3.00 USD"}]}"#;
+    let before = f.head();
+    let (exit, planned) = f.bound(
+        &authority,
+        &[
+            "post",
+            "--intent",
+            "-",
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+        ],
+        Some(intent),
+    );
+    assert_eq!(exit, 0, "{planned:?}");
+    assert_eq!(text(&planned, "event"), "plan");
+    let log = f.log(&["--since", &before.to_string()]);
+    assert_eq!(number(&log, "count"), 1);
+    let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(text(access, "command"), "post");
+    assert_eq!(number(access, "observed_at"), before);
+    assert_eq!(number(access, "recorded_at"), before + 1);
+    assert_eq!(
+        f.head(),
+        before + 1,
+        "rehearsal publishes its access record, no entry"
+    );
+
+    let bytes = text(data(&planned), "bytes");
+    let (exit, committed) = f.bound(&authority, &["commit", "--plan", "-"], Some(bytes));
+    assert_eq!(
+        exit, 0,
+        "the access receipt must precede acquisition of the guarded basis: {committed:?}"
+    );
+    assert_eq!(text(&committed, "event"), "plan_committed");
+    assert_eq!(
+        data(&committed).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(f.head(), before + 2);
+    assert_eq!(
+        number(&f.log(&[]), "count"),
+        1,
+        "commit must not self-invalidate by recording another read"
+    );
+    let (exit, repeated) = f.bound(&authority, &["commit", "--plan", "-"], Some(bytes));
+    assert_eq!(exit, 0, "{repeated:?}");
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&repeated), "vid"), text(data(&committed), "vid"));
+    assert_eq!(f.head(), before + 2);
+}
+
+#[test]
+fn unauthorized_and_revoked_readers_disclose_nothing_and_publish_no_access_event() {
+    let f = Fixture::new();
+    let writer = LaunchAuthority::new(
+        f.dir.join("book"),
+        None,
+        "writer-without-read",
+        LaunchProfile::Agent,
+        &["post"],
+    )
+    .unwrap();
+    let (token, commitment) = f.issue("revoked-reader", &["read", "post", "produce"]);
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let before = f.head();
+    for args in [
+        vec!["document", "read", &f.evidence],
+        vec!["finding", "list"],
+        vec!["export", "ndjson", "--period", "FY2026-P03"],
+    ] {
+        let (exit, refused) = f.bound(&writer, &args, None);
+        assert_eq!(exit, 7, "{args:?}: {refused:?}");
+        assert_eq!(refused.get("coordinate"), Some(&Json::Null));
+        assert_eq!(refused.get("book"), Some(&Json::Null));
+        assert!(!refused.render().contains("March receipt"));
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
+
+        let mut revoked_args = vec!["--token", token.as_str()];
+        revoked_args.extend_from_slice(&args);
+        let (exit, refused) = f.run(&revoked_args);
+        assert_eq!(exit, 7, "{revoked_args:?}: {refused:?}");
+        assert_eq!(refused.get("coordinate"), Some(&Json::Null));
+        assert_eq!(refused.get("book"), Some(&Json::Null));
+        assert!(!refused.render().contains("March receipt"));
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-023");
+        assert_eq!(f.head(), before);
+        assert_eq!(number(&f.log(&[]), "count"), 0);
+    }
 }
 
 /// fa-5c1, the runtime graph queried: `fa query "CALL fa.access_log"` is the

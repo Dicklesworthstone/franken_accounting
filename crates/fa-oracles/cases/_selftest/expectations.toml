@@ -36,3 +36,117 @@ statistic_name = "round_legs"
 statistic_value = "2"
 statistic_scale = 0
 statistic_status = "S"
+
+# A8a (fa-yugf.19): evidence cells of P-1 by dry run, an N with its mutation twin, the certified bridge
+# T (A, the case's delta, B read certified) and its as-originally-reported read-back.
+
+[[expectation]]
+id = "_selftest-P-02"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["P-1"]
+intent = "P-1"
+refusal = "FA-REF-080"
+law_row = "evidence_policy.toml#Original"
+attribute = "evidence_attached"
+reference_verdict = "FA-REF-080"
+
+[[target]]
+expectation = "_selftest-P-02"
+fact = "P-1"
+branch_attrs = ["evidence_attached"]
+
+[[branch_cell]]
+expectation = "_selftest-P-02"
+target = "P-1"
+cell = ["none"]
+expect = "FA-REF-080"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "_selftest-P-02"
+target = "P-1"
+cell = ["placeholder_unreviewed"]
+expect = "FA-REF-086"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "_selftest-P-02"
+target = "P-1"
+cell = ["placeholder_reviewed"]
+expect = "admit"
+record_consistent = true
+
+[[expectation]]
+id = "_selftest-P-03"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["P-1"]
+intent = "P-1"
+refusal = "FA-REF-010"
+law_row = "admissibility.toml#Original/Closed"
+attribute = "period_state_at_commit"
+reference_verdict = "FA-REF-010"
+
+[[target]]
+expectation = "_selftest-P-03"
+fact = "P-1"
+branch_attrs = ["period_state_at_commit"]
+
+[[branch_cell]]
+expectation = "_selftest-P-03"
+target = "P-1"
+cell = ["Open"]
+expect = "admit"
+record_consistent = true
+
+[[branch_cell]]
+expectation = "_selftest-P-03"
+target = "P-1"
+cell = ["Closed"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[expectation]]
+id = "_selftest-N-01"
+type = "N"
+book_variant = "native"
+statement_template = "N.no_finding"
+basis = ["N-1"]
+kind = "no_finding"
+target = "N-1"
+procedure = "jet.round_amounts"
+version = 1
+mechanism = "crates/fa-lantern/src/jet.rs:118"
+twin_kind = "mutation"
+twin_attribute = "amount_precision"
+twin_value = "1000.00"
+twin_expect = "reports"
+
+[[expectation]]
+id = "_selftest-T-01"
+type = "T"
+book_variant = "native"
+statement_template = "T.bridge"
+basis = ["A-1", "D-1", "B-1"]
+kind = "bridge"
+vintages = []
+read_verb = "balance"
+read_target = "1100"
+read_coordinate = "2026Q1"
+read_selector = "currently_stated"
+published = "B-1"
+
+[[expectation]]
+id = "_selftest-R-01"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["A-1"]
+read_verb = "balance"
+read_target = "1100"
+read_coordinate = "2026Q1"
+read_selector = "originally_reported"
+posted = "A-1"

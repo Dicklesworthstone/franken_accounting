@@ -192,14 +192,14 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
     let refused = fa_verify::cli::run(&wrong_pin, &|path| std::fs::read(path));
     assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
     assert!(!refused.stdout.contains("\"verdict\":\"verified\""));
-    assert_eq!(fixture.head(), before, "all three exports are reads");
+    fixture.assert_proof_accesses_since(before, "aging-reader", 1);
 }
 
 #[test]
-fn other_composed_report_families_do_not_inherit_aging_bundle_support() {
+fn retained_equity_exports_recompute_the_outer_report_and_require_its_pin() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();
-    fixture.post("not-portable-equity", "2026-03-10", "5.00", &evidence);
+    fixture.post("portable-equity", "2026-03-10", "5.00", &evidence);
     let metadata = certify(
         &fixture,
         &[
@@ -216,20 +216,54 @@ fn other_composed_report_families_do_not_inherit_aging_bundle_support() {
         artifact.family(),
         fa::ReportArtifactFamily::EquityRollForward
     );
-    fixture.checkpoint();
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
     let before = fixture.head();
     let locator = format!("C:{}", text(&metadata, "oid"));
-    let (exit, refused) = run(
+    let produced = ok(
         &fixture.book,
-        &["bundle", "produce", "--certificate", &locator],
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
     );
-    assert_eq!(exit, 3, "{}", refused.render());
+    let bundle = bytes(&produced);
+    let receipt = unhex(text(&produced, "receipt"));
+    let verified = fa_verify::report::verify_report_expected(
+        &bundle,
+        &[key],
+        None,
+        Some(&receipt),
+        Some(artifact.digest()),
+    )
+    .unwrap();
+    assert_eq!(verified.output, artifact.output());
+    assert_eq!(verified.certificate_digest, *artifact.digest());
+    let equity = verified.equity_roll_forward.unwrap();
+    assert_eq!(equity.units.len(), 1);
+    assert_eq!(equity.units[0].net_income, 500);
+    assert_eq!(equity.units[0].closing_total_equity, 500);
+    let certificate =
+        fa::EquityRollForwardCertificate::decode(&unhex(text(&metadata, "bytes"))).unwrap();
     assert!(
-        refused
-            .render()
-            .contains("no independent portable report producer"),
-        "{}",
-        refused.render()
+        fa_verify::report::verify_report_expected(
+            &bundle,
+            &[key],
+            None,
+            Some(&receipt),
+            Some(certificate.source_certificate().digest()),
+        )
+        .is_err()
     );
     assert_eq!(fixture.head(), before);
 }
@@ -402,11 +436,7 @@ fn retained_aging_reconciliation_exports_both_sources_and_the_outer_recipient_pi
     assert_eq!(exit, 0, "{}{}", output.stdout, output.stderr);
     let produced = parse_line(&output.stdout, &output.stderr);
     assert_eq!(bytes(&produced), original_bundle.unwrap());
-    assert_eq!(
-        fixture.head(),
-        before,
-        "all exports preserve the retained book"
-    );
+    fixture.assert_proof_accesses_since(before, "reconciliation-reader", 1);
 }
 
 #[test]

@@ -216,6 +216,8 @@ pub fn reproduce(call: &Call) -> String {
 /// One recorded finding run.
 #[derive(Clone, Debug)]
 pub struct FindingRun {
+    /// The `finding_record` step that recorded it.
+    pub step: i128,
     pub version: Option<i128>,
     /// Each recorded finding's `finding` object (severity, statistic,
     /// cites, narrative).
@@ -265,6 +267,9 @@ pub struct BookRun<'c> {
     pub documents: BTreeMap<String, String>,
     /// Intent id → entry vid, for the intents that posted.
     pub vids: BTreeMap<String, String>,
+    /// Intent id → the step that posted it (a finding run reads the entries
+    /// posted before its own step).
+    pub posted_steps: BTreeMap<String, i128>,
     /// (entry vid, entry leg ordinal) → `<intent>#<[[leg]] ordinal>`.
     pub legs: BTreeMap<(String, i128), String>,
     /// Account vid → `[[account]] code`, from the posted entries' legs.
@@ -307,6 +312,12 @@ pub struct BookRun<'c> {
     pub assertions: BTreeMap<String, super::reads::Assertion>,
     /// Each period label's issued report certificates, in step order (A7b).
     pub issuances: BTreeMap<String, Vec<String>>,
+    /// Each opened `[[case]]`'s runs, by its id (A7b).
+    pub cases: BTreeMap<String, super::lifecycle::CaseRun>,
+    /// Each certified scenario diff: the scenario and its certificate file.
+    pub scenario_diffs: Vec<(String, String)>,
+    /// The outsider stage's checks, for a book with a checkpoint (A8a).
+    pub outsider: Option<super::outsider::Outsider>,
 }
 
 impl<'c> BookRun<'c> {
@@ -326,6 +337,7 @@ impl<'c> BookRun<'c> {
             periods: BTreeMap::new(),
             documents: BTreeMap::new(),
             vids: BTreeMap::new(),
+            posted_steps: BTreeMap::new(),
             legs: BTreeMap::new(),
             accounts: BTreeMap::new(),
             posts: BTreeMap::new(),
@@ -348,6 +360,9 @@ impl<'c> BookRun<'c> {
             reads: BTreeMap::new(),
             assertions: BTreeMap::new(),
             issuances: BTreeMap::new(),
+            cases: BTreeMap::new(),
+            scenario_diffs: Vec::new(),
+            outsider: None,
         }
     }
 
@@ -755,7 +770,7 @@ impl<'c> BookRun<'c> {
     }
 
     /// The citation-stub bytes of a `[[document]] stub_of`.
-    fn stub_bytes(&self, stub_of: &str) -> Option<Vec<u8>> {
+    pub(crate) fn stub_bytes(&self, stub_of: &str) -> Option<Vec<u8>> {
         if let Some(fact) = stub_of.strip_prefix("placeholder:") {
             return Some(stub::placeholder(fact));
         }
@@ -896,6 +911,17 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::FillerBatch) => self.filler_batch(step),
                 Some(StepKind::AssertBalance) => self.assert_balance(step),
                 Some(StepKind::Issue) => self.issue(step),
+                Some(StepKind::CaseOpen) => self.case_open(step),
+                Some(StepKind::CaseDetermine) => self.case_determine(step),
+                Some(StepKind::ScenarioFork) => self.scenario_fork(step),
+                Some(StepKind::ScenarioRun) => self.scenario_run(step),
+                Some(StepKind::ScenarioDiff) => self.scenario_diff(step),
+                Some(StepKind::CaseRehearse) => self.case_rehearse(step),
+                Some(StepKind::CaseApprove) => self.case_approve(step),
+                Some(StepKind::CasePost) => self.case_post(step),
+                Some(StepKind::CaseDisclose) => self.case_disclose(step),
+                Some(StepKind::CaseClose) => self.case_close(step),
+                Some(StepKind::Checkpoint) => self.checkpoint(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -953,6 +979,7 @@ impl<'c> BookRun<'c> {
         if let Some(vid) = call.str_field("posted", "vid") {
             self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
             self.vids.insert(intent_id.to_string(), vid.clone());
+            self.posted_steps.insert(intent_id.to_string(), seq);
             self.map_legs(seq, intent_id, &vid);
         }
         self.posts.insert(intent_id.to_string(), call);
@@ -1018,6 +1045,7 @@ impl<'c> BookRun<'c> {
                 &it.id,
             );
             self.vids.insert(it.id.clone(), vid.clone());
+            self.posted_steps.insert(it.id.clone(), seq);
             self.map_legs(seq, &it.id, &vid);
         }
         self.posts.insert(it.id.clone(), call);
@@ -1401,6 +1429,7 @@ impl<'c> BookRun<'c> {
         if let Some(vid) = call.str_field("posted", "vid") {
             self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
             self.vids.insert(intent_id.to_string(), vid);
+            self.posted_steps.insert(intent_id.to_string(), seq);
         }
         self.posts.insert(intent_id.to_string(), call);
     }
@@ -1486,6 +1515,7 @@ impl<'c> BookRun<'c> {
                 &it.id,
             );
             self.vids.insert(it.id.clone(), vid.to_string());
+            self.posted_steps.insert(it.id.clone(), seq);
             if self.map_batch_legs {
                 self.map_legs(seq, &it.id, vid);
             }
@@ -1723,6 +1753,7 @@ impl<'c> BookRun<'c> {
         self.runs.insert(
             procedure.to_string(),
             FindingRun {
+                step: seq,
                 version,
                 findings,
                 finding_vids,
@@ -1757,8 +1788,13 @@ impl<'c> BookRun<'c> {
                 call.exit
             ))
         });
-        // The history's end is also where every T and R row reads (A7b).
+        // The history's end is also where every T and R row reads, and
+        // each case is shown for its generated row (A7b).
         self.reads();
+        self.case_reads();
+        // A book with a checkpoint then proves its bundle, replay and
+        // integrity to an outsider (A8a).
+        self.outsider();
     }
 
     /// The trial balance of each period (plan §3.3 step 7); a failure here
@@ -1864,6 +1900,7 @@ pub fn run_case_with(
     }
     // 3–10. Each book variant.
     let mut sweep_failed = false;
+    let mut outsider_failed = false;
     let mut budget = Budget::new(budget_ms);
     for (index, book) in case.books.values().enumerate() {
         let book_started = Instant::now();
@@ -1881,6 +1918,9 @@ pub fn run_case_with(
         if run.failure.is_none() && run.unrun_steps.is_empty() {
             run.trial_balances();
         }
+        // A failed outsider check fails the case whatever its rows say
+        // (§12.1).
+        outsider_failed |= run.outsider.as_ref().is_some_and(|o| !o.ok());
         // Each N row's harness-only twin runs on its own book (A11c), after
         // the target's history ran; a matcher twin (A16) or an exact_gap
         // twin target needs no book of its own.
@@ -1933,8 +1973,11 @@ pub fn run_case_with(
         out.lines.append(&mut run.lines);
         out.steps.append(&mut run.steps);
         for t in twins.values_mut() {
-            out.lines
-                .extend(t.lines.drain(..).filter(|l| !l.starts_with("PERIODS ")));
+            out.lines.extend(
+                t.lines
+                    .drain(..)
+                    .filter(|l| !l.starts_with("PERIODS ") && !l.starts_with("CASES ")),
+            );
             out.steps.append(&mut t.steps);
         }
         for ev in rows {
@@ -1986,6 +2029,7 @@ pub fn run_case_with(
     // claimed expectation's verdict, the worst of its rows, is PASS.
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
     out.rows_ok = !sweep_failed
+        && !outsider_failed
         && verdicts.values().all(|v| *v != RowVerdict::Fail)
         && case
             .header
@@ -2150,7 +2194,7 @@ fn push_swept(out: &mut RunOutcome, case: &Case, swept: cells::Swept) {
         swept
             .lines
             .into_iter()
-            .filter(|l| !l.starts_with("PERIODS ")),
+            .filter(|l| !l.starts_with("PERIODS ") && !l.starts_with("CASES ")),
     );
     out.steps.extend(swept.steps);
     for c in swept.cells {

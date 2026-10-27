@@ -19,3 +19,23 @@ description = "reviews the self-test's placeholder documents"
 label = "examiner-1"
 kind = "harness"
 description = "records the self-test's audit procedure runs"
+
+[[role]]
+label = "examiner-witness"
+kind = "harness"
+description = "creates the self-test book's signed checkpoint"
+
+[[role]]
+label = "case-approver-1"
+kind = "harness"
+description = "approves the self-test's restatement case"
+
+[[role]]
+label = "case-approver-2"
+kind = "harness"
+description = "approves the self-test's restatement case"
+
+[[role]]
+label = "case-poster-1"
+kind = "harness"
+description = "plans and posts the self-test's restatement delta"

@@ -1,7 +1,10 @@
 # Reads fixture expectations: a per_account T reading 1100 certified at 2026Q1 against the published
 # 1,250.00 (kernel-attested: its assert_balance step records B and its twins are refused FA-REF-140),
 # and four read-backs of the same cell: as originally reported and as reported in the first issuance
-# (1,000.00, before R-2), as reported in the second issuance and as currently stated (1,250.00).
+# (1,000.00, before R-2), as reported in the second issuance and as currently stated (1,250.00). Then
+# the same quarter read off the certified statements and trial balance: the balance sheet's assets
+# line as currently stated, the income statement's revenue line as originally reported, and the
+# trial balance's 1100 row.
 
 [[expectation]]
 id = "reads-T-01"
@@ -62,4 +65,39 @@ read_verb = "balance"
 read_target = "1100"
 read_coordinate = "2026Q1"
 read_selector = "currently_stated"
+posted = "P-1"
+
+[[expectation]]
+id = "reads-R-05"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["P-1"]
+read_verb = "balance-sheet"
+read_target = "assets"
+read_coordinate = "2026Q1"
+read_selector = "currently_stated"
+posted = "P-1"
+
+[[expectation]]
+id = "reads-R-06"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["R-1"]
+read_verb = "income-statement"
+read_target = "revenue"
+read_coordinate = "2026Q1"
+read_selector = "originally_reported"
+posted = "R-1"
+
+[[expectation]]
+id = "reads-R-07"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["P-1"]
+read_verb = "tb"
+read_target = "1100"
+read_coordinate = "2026Q1"
 posted = "P-1"

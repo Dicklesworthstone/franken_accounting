@@ -963,8 +963,9 @@ pub struct Drift {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CacheStatus {
-    /// No maintenance header or stored cells exist. Empty-set equality can
-    /// still be green, but no processed journal prefix is certified.
+    /// No maintenance header or stored cells exist. There is no cache to
+    /// disagree with the journal, so the period is green and every entry is
+    /// unread lag (`stale`), but no processed journal prefix is certified.
     Uninitialized,
     /// Stored cells and the maintenance header agree with their journal prefix.
     Verified,
@@ -1210,6 +1211,20 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
         result
             .projection_errors
             .push("stored register cells have no valid maintenance header".into());
+    }
+    if uninitialized {
+        // Nothing was ever materialized: no stored cell exists to disagree
+        // with the refold, so the refold's cells are unread work, not drift
+        // (the fa-q2z rule that lag is never corruption, at its extreme). A
+        // header without cells, or cells without a header, stays corruption.
+        result.drift.clear();
+        result.pending_drift.clear();
+        result.cells_checked = 0;
+        result.lag_entries = db
+            .vertices_at(head)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::ENTRY))
+            .count();
     }
     if basis < head {
         reads.load_entry_rows(basis, head)?;
