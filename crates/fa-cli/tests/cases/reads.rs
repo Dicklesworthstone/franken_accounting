@@ -4,7 +4,12 @@
 //! After the history, every T and R row's read runs once and is kept on the
 //! run, keyed by `<expectation>/<target fact>` (`-` for a row without
 //! targets). A `balance` read is `fa explain balance <account> --period
-//! <code> --certify --json`, through the row's selector: `--as-originally-reported`,
+//! <code> --certify --json` (its value the cell's net); a `balance-sheet`
+//! or `income-statement` read is `fa statement <verb> --for <code>
+//! --certify --json` (its value the current column of the line whose code
+//! is the read's target); a `tb` read is `fa tb --period <code> --certify
+//! --json` (its value the target account's net). Each reads through the
+//! row's selector: `--as-originally-reported`,
 //! `--as-currently-stated`, or `--as-reported-in C:<oid>` for
 //! `reported_in:<period>[#<n>]`, the certificate the period's n-th `issue`
 //! step issued. Its value is the cell's net (debits minus credits) in the
@@ -130,7 +135,10 @@ impl BookRun<'_> {
             value: Err(why),
             certificate: None,
         };
-        if verb != "balance" {
+        if !matches!(
+            verb,
+            "balance" | "balance-sheet" | "income-statement" | "tb"
+        ) {
             return fail(token, format!("needs:A7b ({verb} reads)"));
         }
         let Some(code) = self.period_code(coordinate) else {
@@ -148,26 +156,35 @@ impl BookRun<'_> {
         let unit = field(e, t, value_key)
             .and_then(|f| self.value_of(f))
             .map_or_else(|| self.book.book.base_unit.clone(), |(_, u)| u);
-        let mut args = vec![
-            "explain".to_string(),
-            "balance".to_string(),
-            target.to_string(),
-            "--period".to_string(),
-            code,
-        ];
+        let mut args: Vec<String> = match verb {
+            "balance" => ["explain", "balance", target, "--period"]
+                .map(str::to_string)
+                .into(),
+            "tb" => ["tb", "--period"].map(str::to_string).into(),
+            _ => ["statement", verb, "--for"].map(str::to_string).into(),
+        };
+        args.push(code);
         match view {
             Ok(flags) => args.extend(flags),
             Err(why) => return fail(token, why),
         }
         args.extend(["--certify".to_string(), "--json".to_string()]);
         let reference = key(e, t);
-        let call = self.call(self.head, &reference, "explain", args);
+        let called = args.first().cloned().unwrap_or_default();
+        // The command, as a refusal names it: `explain balance`, `statement
+        // <verb>` or `tb`.
+        let command = if verb == "tb" {
+            called.clone()
+        } else {
+            args.get(..2).unwrap_or_default().join(" ")
+        };
+        let call = self.call(self.head, &reference, &called, args);
         if call.exit != 0 {
             self.lines.push(reproduce(&call));
             return fail(
                 token,
                 format!(
-                    "expected exit=0 from explain balance observed exit={} {}",
+                    "expected exit=0 from {command} observed exit={} {}",
                     call.exit,
                     call.refusal_id().unwrap_or_default()
                 )
@@ -175,15 +192,48 @@ impl BookRun<'_> {
                 .to_string(),
             );
         }
-        let certificate = call.str_field("balance_explained", "certificate");
-        let net = call
-            .array_field("balance_explained", "cells")
-            .iter()
-            .find(|c| c.get("unit").and_then(Json::as_str) == Some(unit.as_str()))
-            .and_then(|c| c.get("net").and_then(Json::as_str).map(str::to_string));
+        let in_unit = |amount: &str| amount.ends_with(&format!(" {unit}"));
+        let (certificate, net) = match verb {
+            "balance" => (
+                call.str_field("balance_explained", "certificate"),
+                call.array_field("balance_explained", "cells")
+                    .iter()
+                    .find(|c| c.get("unit").and_then(Json::as_str) == Some(unit.as_str()))
+                    .and_then(|c| c.get("net").and_then(Json::as_str).map(str::to_string)),
+            ),
+            "tb" => (
+                call.str_field("report_certificate", "oid"),
+                call.array_field("trial_balance", "rows")
+                    .iter()
+                    .filter(|r| r.get("code").and_then(Json::as_str) == Some(target))
+                    .filter_map(|r| r.get("net").and_then(Json::as_str))
+                    .find(|n| in_unit(n))
+                    .map(str::to_string),
+            ),
+            // A statement line's amounts are in column order; the first is
+            // the current period's.
+            _ => (
+                call.str_field("report_certificate", "oid"),
+                call.array_field("statement", "lines")
+                    .iter()
+                    .find(|l| {
+                        l.get("code").and_then(Json::as_str) == Some(target)
+                            && l.get("unit").and_then(Json::as_str) == Some(unit.as_str())
+                    })
+                    .and_then(|l| l.get("amounts").and_then(Json::as_array))
+                    .and_then(<[Json]>::first)
+                    .and_then(Json::as_str)
+                    .map(str::to_string),
+            ),
+        };
         let value = match (net, scale_of(&unit)) {
-            // No cell in the unit: the account holds nothing in it.
-            (None, Some(_)) => Ok(0),
+            // No cell in the unit: the account holds nothing in it. A
+            // statement line or trial-balance row that is not there is
+            // no read.
+            (None, Some(_)) if verb == "balance" => Ok(0),
+            (None, Some(_)) => Err(format!(
+                "expected a {verb} line {target} in {unit} observed none"
+            )),
             // The net renders with its unit (`1000.00 USD`).
             (Some(n), Some(s)) => match n.strip_suffix(unit.as_str()).map(str::trim_end) {
                 Some(amount) => {

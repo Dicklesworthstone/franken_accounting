@@ -1932,6 +1932,51 @@ fn second_issuance_of_a_period_binds_its_own_placeholder() {
     }
 }
 
+/// A7b (§3.3 step 7): the same quarter read off the certified statements
+/// and trial balance: the balance sheet's assets line as currently stated
+/// (1,250.00), the income statement's revenue line as originally reported
+/// (1,000.00, the first issuance's) and the trial balance's 1100 row
+/// (1,250.00).
+#[test]
+fn statement_and_trial_balance_reads_return_their_lines() {
+    let o = reads_run(&[]);
+    let text = o.text();
+    for (id, row) in [
+        (
+            "reads-R-05",
+            "PASS reads-R-05 R native -/default kind=read_back read=balance-sheet,assets,2026Q1,as-currently-stated value=1250.00",
+        ),
+        (
+            "reads-R-06",
+            "PASS reads-R-06 R native -/default kind=read_back read=income-statement,revenue,2026Q1,as-originally-reported value=1000.00",
+        ),
+        (
+            "reads-R-07",
+            "PASS reads-R-07 R native -/default kind=read_back read=tb,1100,2026Q1 value=1250.00",
+        ),
+    ] {
+        assert_eq!(o.row(id), Some(row), "{text}");
+    }
+}
+
+/// A7b: a statement read names a line the definition has not: no read, so
+/// the row fails naming the line, never reading zero.
+#[test]
+fn statement_read_of_an_unknown_line_fails() {
+    let o = reads_run(&[PlantedEdit {
+        file: "expectations.toml",
+        old: "read_verb = \"balance-sheet\"\nread_target = \"assets\"",
+        new: "read_verb = \"balance-sheet\"\nread_target = \"assetz\"",
+    }]);
+    let text = o.text();
+    assert!(
+        o.row("reads-R-05")
+            .is_some_and(|r| r.starts_with("FAIL reads-R-05 ")
+                && r.contains("reason=expected a balance-sheet line assetz in USD observed none")),
+        "{text}"
+    );
+}
+
 /// A7b: a published value the book does not reach fails the T row, naming
 /// both values, and the kernel refuses its assertion FA-REF-140; the
 /// read-backs of the same value fail too.
@@ -2013,6 +2058,13 @@ fn as_originally_reported_without_issuance_or_lock_is_refused_fa_ref_161() {
         o.row("reads-R-04"),
         Some(
             "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("reads-R-06"),
+        Some(
+            "FAIL reads-R-06 R native -/default kind=read_back read=income-statement,revenue,2026Q1,as-originally-reported reason=expected exit=0 from statement income-statement observed exit=3 FA-REF-161"
         ),
         "{text}"
     );
