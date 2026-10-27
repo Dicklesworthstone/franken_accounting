@@ -29,3 +29,13 @@ description = "approves the fixture's restatement case"
 label = "case-poster-1"
 kind = "harness"
 description = "plans and posts the fixture's restatement delta"
+
+[[role]]
+label = "case-reconciler-1"
+kind = "harness"
+description = "records the fixture's balance assertion before the case"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the fixture's assertion-drift run after the case"

@@ -7,6 +7,6 @@ version = 1
 kind = "harness_selftest"
 scope = "the runner's issue step and restatement case steps (case open, scenario fork/run/diff, rehearse, approve, post, disclose, close) and the generated case read-back row"
 claims = []
-capabilities = ["verb:post", "verb:statement", "verb:case", "verb:scenario", "verb:explain"]
+capabilities = ["verb:post", "verb:statement", "verb:case", "verb:scenario", "verb:explain", "verb:assert-balance", "procedure:recon.assertion_drift@1"]
 pinned_commit = "b4fe3e23c"
 variants = ["native"]

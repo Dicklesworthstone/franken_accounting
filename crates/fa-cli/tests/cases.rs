@@ -2381,7 +2381,17 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
             )
         })
         .collect();
-    assert_eq!(refused, ["case disclose FA-REF-179"], "{text}");
+    // The as-filed assertion's two twins (B +/- 1 minor unit) and the
+    // disclosure twin are the only refused calls.
+    assert_eq!(
+        refused,
+        [
+            "assert-balance --account FA-REF-140",
+            "assert-balance --account FA-REF-140",
+            "case disclose FA-REF-179"
+        ],
+        "{text}"
+    );
     for (id, row) in [
         (
             "lifecycle-R-01",
@@ -2399,6 +2409,27 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
         assert_eq!(o.row(id), Some(row), "{text}");
     }
     assert!(o.rows_ok, "{text}");
+}
+
+/// A7b (§5.3): A is asserted as filed (1,000.00 on 6100) before the case;
+/// after the case restates A by 200.00, `recon.assertion_drift` reports
+/// exactly that attestation, Critical, citing the attestation, the account,
+/// the quarter and the delta recorded after it, with the drift's magnitude
+/// |sum of deltas| = 200.00 (the sign is the fold's, never the statistic's).
+#[test]
+fn assertion_drift_reports_the_magnitude_of_the_summed_deltas() {
+    let o = lifecycle_run(&[]);
+    let text = o.text();
+    let row = o.row("lifecycle-D-01").unwrap_or_default();
+    assert!(
+        !row.starts_with("FAIL ")
+            && row.contains(" procedure=recon.assertion_drift@1 ")
+            && row.contains(" entry=delta-A-1 ")
+            && row.contains(" cite=6100,attestation:lifecycle-R-01,period:2026Q1 ")
+            && row.contains(" severity=Critical ")
+            && row.contains(" statistic_name=assertion_drift statistic=20000 scale=2 "),
+        "{text}"
+    );
 }
 
 /// A7b (§3.3 step 5): a history that ends before its `case_close` step

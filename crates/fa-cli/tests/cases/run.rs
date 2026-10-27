@@ -319,6 +319,8 @@ pub struct BookRun<'c> {
     pub scenario_diffs: Vec<(String, String)>,
     /// Intent id -> the entry vid `fa scenario run` planned it as (A11b).
     pub planned_entries: BTreeMap<String, String>,
+    /// Attestation vid -> the `assert_balance` step ref that recorded it.
+    pub attestations: BTreeMap<String, String>,
     /// The outsider stage's checks, for a book with a checkpoint (A8a).
     pub outsider: Option<super::outsider::Outsider>,
 }
@@ -366,6 +368,7 @@ impl<'c> BookRun<'c> {
             cases: BTreeMap::new(),
             scenario_diffs: Vec::new(),
             planned_entries: BTreeMap::new(),
+            attestations: BTreeMap::new(),
             outsider: None,
         }
     }

@@ -579,6 +579,10 @@ impl BookRun<'_> {
             args
         };
         let asserted = self.call(step.seq, &step.reference, "assert-balance", args_for(minor));
+        // A finding that cites this attestation names the step that made it.
+        if let Some(vid) = asserted.str_field("attestation_recorded", "attestation_vid") {
+            self.attestations.insert(vid, step.reference.clone());
+        }
         let mut twins = Vec::new();
         for offset in [1, -1] {
             // A twin past the i128 range has no cell to differ from.
