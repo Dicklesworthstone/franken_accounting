@@ -780,3 +780,62 @@ commit-input guard; it is not native Rust proof. Native tests, Clippy and
 Tier 0/Tier 1 remain UNRUN because the unchanged disk preflight exits 1.
 The original `fa-ze0y` and `fa-mg2j` acceptance remains open; no full-project
 pass or closure follows from this repair.
+
+## 2026-10-27 — Native qualification: access receipts and cache recovery
+
+The full workspace run at `e58191e8` reproduced three CLI access-log
+failures. A Human operator token holding only Hold was sent through the MCP
+launch ceiling, even though that token's Human authority was valid. The
+operator-token route now recognizes Hold alongside Approve, Close, Reopen
+and Witness. The existing regression checks the original token bytes and
+caveats and still rejects binding that authority to MCP. Neither MCP ceiling
+is widened. A native candidate run passed all 76 CLI library tests and the
+previously failing Hold/Witness access-history workflow; that run still
+failed the other two access-log cases.
+
+The bound NDJSON export had constructed its journal inside
+`BookSource::open_admitted`'s admission callback. The callback runs before
+the access receipt commits, so the returned HEAD export observed sequence
+13 while its receipt was recorded at 14. The candidate admits the requested
+reach in the callback, then constructs the export after the receipt. HEAD
+is resolved then; explicit historical selectors and proof cuts keep their
+own prefix. The existing HEAD assertions remain exact, and an additional
+historical-export regression posts a later entry and requires its exclusion,
+the selected stream/header coordinate and exactly one current access
+receipt. Native qualification of this export correction is pending.
+
+The other negative case called `finding list` without its now-required
+certificate selector. It received usage exit 2 before reaching authorization.
+The fixture now supplies a syntactically valid nonexistent certificate;
+unauthorized callers must still receive the same exact safety refusal,
+disclose no coordinate or book, publish no access receipt and never look up
+that handle. This changes the input to exercise authorization; it does not
+change error precedence or relax a denial assertion.
+
+The same baseline failed a register-cache expectation. Damaging a mutable
+cell correctly rejects that cell, but an intact immutable checkpoint and
+exact tail can still answer a whole-book authorized read. The old assertion
+incorrectly required a literal fold after damaging only the cell. The same
+test now independently requires the cell-only path to fall back to Literal
+and register verification to detect drift, then requires checkpoint recovery
+to equal the complete literal report bytes without changing the journal or
+graph. It finally damages only the disposable checkpoint head and retains
+the original literal fallback assertions when both cache paths are unusable.
+This intentionally admits valid checkpoint recovery; damaged cells, changed
+amounts, incorrect cursor/tail coordinates and read-time writes remain
+rejected. Assertions increase and production cache code is unchanged. The
+exact original test passed natively with the candidate overlay: 1 passed,
+0 failed, 619 filtered. That is not a passing 620-test library target.
+
+The lab fixture also boxes its existing Send future before task creation,
+preserving lazy ambient-Cx capture, seed, budget, scheduler, quiescence and
+cancellation-completion checks. Real whole-library code generation no longer
+emitted the recursive Send proof's future-incompatibility warning; it still
+reported 610 passed and 10 failed before the cache-test correction. There is
+no recursion-limit increase, lint suppression or unsafe Send implementation.
+
+These results are source-scoped repair evidence, not a release verdict.
+The complete baseline run and combined successor qualification remain
+pending. Foreign settlement-group fixtures still require lawful source
+valuation and carrying-value inputs; their currencies and positive scope
+remain intact. Full Tier 1 and original Beads acceptance remain open.
