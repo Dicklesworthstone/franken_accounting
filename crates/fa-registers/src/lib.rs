@@ -658,6 +658,21 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
         .published_at)
 }
 
+/// Every `IN_PERIOD` edge by its source, as `(eid, dst)` in scan order: one
+/// pass over the book's edges instead of one per register cell (fa-rbs3).
+fn period_memberships(edges: &[fgdb::EdgeRecord]) -> BTreeMap<VId, Vec<(fgdb_types::EId, VId)>> {
+    let mut by_source: BTreeMap<VId, Vec<(fgdb_types::EId, VId)>> = BTreeMap::new();
+    for edge in edges {
+        if edge.entry.relation == relation::IN_PERIOD {
+            by_source
+                .entry(edge.entry.src)
+                .or_default()
+                .push((edge.entry.eid, edge.entry.dst));
+        }
+    }
+    by_source
+}
+
 /// Build the projection write without publishing it, so maintenance can
 /// publish its cursor in the same transaction. Callers validate the fold.
 fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
@@ -674,7 +689,7 @@ fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
         .map(|c| register_vid(book.book_id, &c.key))
         .collect();
     let candidates = stored_registers(db, book, fold)?;
-    let edges = db.edges()?;
+    let memberships = period_memberships(&db.edges()?);
     for row in candidates.values() {
         if row.labels.iter().any(|l| *l != label::REGISTER) {
             return Err(KernelError::Corrupt(
@@ -688,12 +703,9 @@ fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
             batch.set_vertex_label(row.vid, label::REGISTER, false);
             batch.set_vertex_property(row.vid, property::EFFECTIVE_PERIOD, None);
         }
-        for edge in &edges {
-            if edge.entry.src == row.vid
-                && edge.entry.relation == relation::IN_PERIOD
-                && (!expected.contains(&row.vid) || edge.entry.dst != pvid)
-            {
-                batch.delete_edge(edge.entry.eid);
+        for (eid, dst) in memberships.get(&row.vid).into_iter().flatten() {
+            if !expected.contains(&row.vid) || *dst != pvid {
+                batch.delete_edge(*eid);
             }
         }
     }
@@ -1059,7 +1071,7 @@ fn verify_projection<V: asupersync::fs::Vfs + Clone>(
         .in_neighbours(pvid, relation::IN_PERIOD)?
         .into_iter()
         .collect();
-    let edges = db.edges()?;
+    let memberships = period_memberships(&db.edges()?);
     let mut stored_digest: Option<Option<[u8; 32]>> = None;
     let columns = fold_columns(fold);
     for (key, (posted, pending)) in &columns {
@@ -1076,11 +1088,9 @@ fn verify_projection<V: asupersync::fs::Vfs + Clone>(
                     && u64::try_from(int(&row, property::WATERMARK, "register.watermark")?).ok()
                         == Some(fold.watermark.map_or(0, |s| s.0))
                     && linked.contains(&rvid)
-                    && !edges.iter().any(|e| {
-                        e.entry.src == rvid
-                            && e.entry.relation == relation::IN_PERIOD
-                            && e.entry.dst != pvid
-                    });
+                    && !memberships
+                        .get(&rvid)
+                        .is_some_and(|m| m.iter().any(|(_, dst)| *dst != pvid));
                 if !metadata_ok {
                     projection_errors.push(format!("register {:032x}: identity, metadata, watermark or period membership disagrees", rvid.0));
                 }
