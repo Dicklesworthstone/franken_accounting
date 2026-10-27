@@ -862,7 +862,8 @@ mod tests {
         );
 
         // 2. Uniform 9-bucket population [100; 9] (n = 900):
-        // Pinned against `fsci_stats::chisquare` (361.528467 -> 361_528_467 at 1e6 scale;
+        // Reference value hand-copied from an `fsci_stats::chisquare` run; fsci-stats is
+        // not a dependency, so nothing here re-runs it (361.528467 -> 361_528_467 at 1e6 scale;
         // integer floor truncation across 9 buckets differs by at most 9 units at 1e-6).
         let uniform = [100u64; 9];
         let ks_uni = ks_1e9(&uniform).unwrap();
@@ -873,7 +874,8 @@ mod tests {
         assert!((chi_uni - 361_528_467).abs() <= 9);
 
         // 3. Skewed leading-1 heavy population (n = 1000):
-        // Pinned against `fsci_stats::chisquare` (198_818_611 at 1e6 scale) and step KS (198_970_004 at 1e9 scale).
+        // Reference values hand-copied from `fsci_stats::chisquare` (198_818_611 at 1e6 scale)
+        // and step KS (198_970_004 at 1e9 scale); fsci-stats is not run here.
         let skewed = [500u64, 100, 80, 70, 60, 50, 50, 45, 45];
         let ks_skew = ks_1e9(&skewed).unwrap();
         assert_eq!(ks_skew, 198_970_004);
