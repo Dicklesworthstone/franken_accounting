@@ -1878,32 +1878,54 @@ mod bound_tests {
     fn the_first_matching_rule_decides_and_an_undecided_command_is_not_admitted() {
         assert_eq!(ops("post", None, None, &[], &[]), names(&["post"]));
         assert_eq!(ops("help", None, None, &[], &[]), names(&[]));
-        // A plan or dry run of a transition reads; the transition itself is
-        // host-only.
+        // Planning matches the read rule before the transition's operation.
+        // A commit names close/reopen for issued operator tokens; MCP's
+        // privilege ceilings and independent confirmation are checked by the
+        // CLI, not by this registry lookup. Commit inputs cannot select read
+        // authority merely by adding a planning flag.
+        for (subcommand, required) in [
+            ("open", "close"),
+            ("soft-close", "close"),
+            ("close", "close"),
+            ("lock", "close"),
+            ("reopen", "reopen"),
+        ] {
+            for planning in [&["--dry-run"][..], &["--plan-out"][..]] {
+                assert_eq!(
+                    ops(
+                        "period",
+                        Some(subcommand),
+                        Some("FY2026-P03"),
+                        planning,
+                        &[]
+                    ),
+                    names(&["read"]),
+                    "{subcommand} {planning:?}"
+                );
+            }
+            for commit in [
+                &[][..],
+                &["--dry-run", "--plan"][..],
+                &["--plan-out", "--approval"][..],
+            ] {
+                assert_eq!(
+                    ops("period", Some(subcommand), Some("FY2026-P03"), commit, &[]),
+                    names(&[required]),
+                    "{subcommand} {commit:?}"
+                );
+            }
+        }
         assert_eq!(
             ops(
                 "period",
-                Some("open"),
+                Some("unknown-transition"),
                 Some("FY2026-P03"),
-                &["--dry-run"],
-                &[]
-            ),
-            names(&["read"])
-        );
-        assert_eq!(
-            ops(
-                "period",
-                Some("open"),
-                Some("FY2026-P03"),
-                &["--dry-run", "--plan"],
+                &[],
                 &[]
             ),
             None
         );
-        assert_eq!(
-            ops("period", Some("open"), Some("FY2026-P03"), &[], &[]),
-            None
-        );
+        assert_eq!(ops("unknown-verb", None, None, &[], &[]), None);
         // Certification needs produce beside read.
         assert_eq!(ops("gl", Some("detail"), None, &[], &[]), names(&["read"]));
         assert_eq!(
