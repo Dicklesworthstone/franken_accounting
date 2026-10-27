@@ -609,6 +609,277 @@ fn authorization_precedes_frontier_chart_and_certificate_observation() {
 }
 
 #[test]
+fn native_comparison_scope_admission_requires_head_for_saved_frontiers() {
+    fn denied<T: std::fmt::Debug>(outcome: Outcome<T>, caveat: &str) {
+        let refusal = outcome.unwrap().unwrap_err();
+        assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
+        assert_eq!(refusal.exit, exit::SAFETY);
+        assert!(refusal.message.contains(caveat), "{refusal:?}");
+    }
+
+    let mut h = Harness::new();
+    h.initial();
+    let before = h.head();
+    h.post(
+        "retained",
+        "2026-03-15",
+        h.usd,
+        ("expense", "cash"),
+        15,
+        false,
+    );
+    let after = h.head();
+    let mut request = h.request(before, "balance-sheet");
+    request.after = Some(after);
+    let good = h.certify(&request);
+    let c = &good.certificate;
+    let authority = cap(&["read", "produce"]);
+    let workpaper = h
+        .book
+        .statement_diff_workpaper(&h.cx(), PRINCIPAL, &authority, c)
+        .unwrap()
+        .unwrap();
+    h.post("later", "2026-03-20", h.usd, ("cash", "sales"), 9, false);
+    let head = h.head();
+    let cx = h.cx();
+    let admitted = authority
+        .clone()
+        .for_books(&[BOOK])
+        .unwrap()
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let pinned = admitted.clone().known_at_most(head);
+    assert_eq!(
+        h.book
+            .statement_diff(&cx, PRINCIPAL, &admitted, &request)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .certify_statement_diff(&cx, PRINCIPAL, &admitted, &request)
+            .unwrap()
+            .unwrap()
+            .report,
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &admitted, c)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .diff_statement_certificates(&cx, PRINCIPAL, &admitted, &c.before, &c.after)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .compare_statement_certificates(&cx, PRINCIPAL, &admitted, &c.before, &c.after)
+            .unwrap()
+            .unwrap()
+            .report,
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .statement_diff_workpaper(&cx, PRINCIPAL, &admitted, c)
+            .unwrap()
+            .unwrap(),
+        workpaper
+    );
+    let mut equal = request.clone();
+    equal.before = after;
+    let unchanged = h
+        .book
+        .certify_statement_diff(&cx, PRINCIPAL, &admitted, &equal)
+        .unwrap()
+        .unwrap();
+    assert!(unchanged.report.is_unchanged());
+    assert_eq!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &admitted, &unchanged.certificate)
+            .unwrap()
+            .unwrap(),
+        unchanged.report
+    );
+    denied(
+        h.book.statement_diff(&cx, PRINCIPAL, &pinned, &equal),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_statement_diff(&cx, PRINCIPAL, &pinned, &equal),
+        "known_at",
+    );
+    denied(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &pinned, &unchanged.certificate),
+        "known_at",
+    );
+
+    for (caveat, scoped) in [
+        (
+            "accounts",
+            authority.clone().for_accounts(&["cash"]).unwrap(),
+        ),
+        (
+            "periods",
+            authority
+                .clone()
+                .for_periods(&["FY2025-P03", "FY2026-P03"])
+                .unwrap(),
+        ),
+        (
+            "effective",
+            authority.clone().effective_through(day("2026-03-31")),
+        ),
+        ("known_at", pinned.clone()),
+        (
+            "branch",
+            authority.clone().on_branch(Id128([0xd2; 16])).unwrap(),
+        ),
+        (
+            "books",
+            authority.clone().for_books(&[Id128([0xf2; 16])]).unwrap(),
+        ),
+    ] {
+        denied(
+            h.book.statement_diff(&cx, PRINCIPAL, &scoped, &request),
+            caveat,
+        );
+        denied(
+            h.book
+                .certify_statement_diff(&cx, PRINCIPAL, &scoped, &request),
+            caveat,
+        );
+        denied(
+            h.book.replay_statement_diff(&cx, PRINCIPAL, &scoped, c),
+            caveat,
+        );
+        denied(
+            h.book
+                .diff_statement_certificates(&cx, PRINCIPAL, &scoped, &c.before, &c.after),
+            caveat,
+        );
+        denied(
+            h.book
+                .compare_statement_certificates(&cx, PRINCIPAL, &scoped, &c.before, &c.after),
+            caveat,
+        );
+        denied(
+            h.book.statement_diff_workpaper(&cx, PRINCIPAL, &scoped, c),
+            caveat,
+        );
+        let mut damaged = c.clone();
+        damaged.before.output_digest[0] ^= 1;
+        denied(
+            h.book
+                .replay_statement_diff(&cx, PRINCIPAL, &scoped, &damaged),
+            caveat,
+        );
+        denied(
+            h.book.diff_statement_certificates(
+                &cx,
+                PRINCIPAL,
+                &scoped,
+                &damaged.before,
+                &damaged.after,
+            ),
+            caveat,
+        );
+        denied(
+            h.book.compare_statement_certificates(
+                &cx,
+                PRINCIPAL,
+                &scoped,
+                &damaged.before,
+                &damaged.after,
+            ),
+            caveat,
+        );
+        denied(
+            h.book
+                .statement_diff_workpaper(&cx, PRINCIPAL, &scoped, &damaged),
+            caveat,
+        );
+    }
+    let mut at_head = request.clone();
+    at_head.after = None;
+    denied(
+        h.book.statement_diff(&cx, PRINCIPAL, &pinned, &at_head),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_statement_diff(&cx, PRINCIPAL, &pinned, &at_head),
+        "known_at",
+    );
+    let mut reversed = request.clone();
+    reversed.before = head;
+    // Current context/integrity reach is judged even before validating
+    // endpoint order, so malformed input cannot bypass the HEAD requirement.
+    denied(
+        h.book.statement_diff(&cx, PRINCIPAL, &pinned, &reversed),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_statement_diff(&cx, PRINCIPAL, &pinned, &reversed),
+        "known_at",
+    );
+    let mut moved = c.clone();
+    moved.before.known_at = head;
+    denied(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &pinned, &moved),
+        "known_at",
+    );
+    denied(
+        h.book
+            .compare_statement_certificates(&cx, PRINCIPAL, &pinned, &moved.before, &moved.after),
+        "known_at",
+    );
+    // Whole-book authority does not waive either source checksum or the
+    // outer comparison digest, including an equal-frontier bridge.
+    for mut damaged in [c.clone(), unchanged.certificate] {
+        damaged.digest[0] ^= 1;
+        assert_eq!(
+            h.book
+                .replay_statement_diff(&cx, PRINCIPAL, &admitted, &damaged)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            crate::certificate::code::CERTIFICATE_INVALID
+        );
+    }
+    let mut damaged = c.clone();
+    damaged.after.output_digest[0] ^= 1;
+    assert_eq!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &admitted, &damaged)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        crate::certificate::code::CERTIFICATE_INVALID
+    );
+    assert_eq!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &admitted.expiring_at(head), c)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-014"
+    );
+    assert_eq!(h.head(), head);
+}
+
+#[test]
 fn foreign_books_and_rewritten_history_cannot_replay_a_comparison() {
     let mut h = Harness::new();
     h.initial();
@@ -867,6 +1138,79 @@ fn functional_comparison_retains_both_sources_and_replays_from_a_cold_head() {
     let encoded = c.canonical_bytes().unwrap();
     let decoded = StatementDiffCertificate::decode(&encoded).unwrap();
     assert_eq!(decoded, *c);
+    let pinned = authority.clone().known_at_most(after);
+    let bounded = StatementDiffRequest {
+        after: Some(after),
+        ..request.clone()
+    };
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .functional_statement_diff(&cx, PRINCIPAL, &authority, &bounded)
+            )
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    assert_eq!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &pinned, &decoded)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .functional_statement_diff(&cx, PRINCIPAL, &pinned, &bounded)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .certify_functional_statement_diff(&cx, PRINCIPAL, &pinned, &bounded)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+    let reversed = StatementDiffRequest {
+        before: CommitSeq(after.0 + 1),
+        after: Some(before),
+        ..request.clone()
+    };
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .functional_statement_diff(&cx, PRINCIPAL, &pinned, &reversed)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY,
+        "current context/integrity reach is judged before observing or validating endpoint order"
+    );
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .certify_functional_statement_diff(&cx, PRINCIPAL, &pinned, &reversed)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
     let artifact = crate::ReportArtifact::decode(&encoded).unwrap();
     assert!(artifact.uses_functional_valuations());
     assert_eq!(

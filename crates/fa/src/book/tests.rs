@@ -4483,6 +4483,260 @@ fn bundles_judge_scope_caveats_and_serve_a_pin_its_own_state() {
     );
 }
 
+fn proof_scope_denials(
+    capability: &Capability,
+    day: DateDay,
+    pin: CommitSeq,
+) -> [(&'static str, Capability); 6] {
+    [
+        (
+            "accounts",
+            capability.clone().for_accounts(&["1000"]).unwrap(),
+        ),
+        (
+            "periods",
+            capability.clone().for_periods(&["FY2026-P03"]).unwrap(),
+        ),
+        ("effective", capability.clone().effective_through(day)),
+        ("known_at", capability.clone().known_at_most(pin)),
+        (
+            "branch",
+            capability.clone().on_branch(Id128([0xd1; 16])).unwrap(),
+        ),
+        (
+            "books",
+            capability.clone().for_books(&[Id128([0xf1; 16])]).unwrap(),
+        ),
+    ]
+}
+
+/// Proofs recompute the whole chain at HEAD even when the output names
+/// one entry, account or historical checkpoint. The embedded facade must
+/// enforce that actual reach as the CLI does (fa-0x0); in particular, a
+/// balance proof's complete payload closure cannot leak the other account.
+#[test]
+fn proof_exports_require_whole_book_scope_before_checkpoint_selection() {
+    use crate::{ProofKind, ProofRequest, SuffixRequest};
+    use fa_policy::{Op, Profile};
+
+    let (mut book, usd, day, entry) = certified_fixture();
+    let principal = VId(1);
+    let witness = Capability::embedded(principal, &["witness"]).unwrap();
+    let first = book.checkpoint(principal, &witness).unwrap().unwrap();
+    post_rent(
+        &mut book,
+        usd,
+        principal,
+        day,
+        b"proof-suffix-rent",
+        150_000,
+    )
+    .unwrap()
+    .unwrap();
+    let second = book.checkpoint(principal, &witness).unwrap().unwrap();
+    let before = book.head().unwrap();
+    let producer = Capability::embedded(principal, &["read", "produce"]).unwrap();
+    let book_scoped = producer
+        .clone()
+        .for_books(&[book.context().book_id])
+        .unwrap();
+    let agent =
+        Capability::new(principal, Profile::Agent, &[Op::Read, Op::Produce], VId(1)).unwrap();
+    let old =
+        fa_verify::Checkpoint::decode(&crate::proof::checkpoint_bytes(&first.stored).unwrap())
+            .unwrap();
+    let new =
+        fa_verify::Checkpoint::decode(&crate::proof::checkpoint_bytes(&second.stored).unwrap())
+            .unwrap();
+
+    for kind in [
+        ProofKind::Checkpoint,
+        ProofKind::SignedCheckpoint,
+        ProofKind::Inclusion {
+            entry,
+            with_record: false,
+        },
+        ProofKind::Inclusion {
+            entry,
+            with_record: true,
+        },
+        ProofKind::Consistency {
+            next_state: second.stored.oid,
+        },
+        ProofKind::Prefix,
+        ProofKind::PrefixWithRecords,
+        ProofKind::Balance {
+            account: account_vid(book.context().book_id, "1000"),
+            unit: usd,
+            effective_through: Some(day),
+        },
+    ] {
+        let request = ProofRequest {
+            state: Some(first.stored.oid),
+            kind,
+        };
+        let produced = book
+            .export_proof(principal, &book_scoped, request)
+            .unwrap()
+            .unwrap();
+        let by_agent = book
+            .export_proof(principal, &agent, request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            produced, by_agent,
+            "read-only proofs remain lawful for an Agent"
+        );
+        assert_eq!(produced.checkpoint.oid, first.stored.oid);
+        assert!(!produced.bytes.is_empty());
+        if kind == ProofKind::PrefixWithRecords {
+            fa_verify::proof::production::derivation::verify_prefix_with_records(
+                &produced.bytes,
+                &old,
+            )
+            .expect("complete authorized payload prefix verifies offline");
+        }
+        for (caveat, scoped) in proof_scope_denials(&producer, day, first.stored.recorded_at) {
+            let refusal = book
+                .export_proof(principal, &scoped, request)
+                .unwrap()
+                .expect_err("a requested proof never widens read scope");
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7), "{kind:?}");
+            assert!(
+                refusal.message.contains(&format!("`{caveat}`")),
+                "{refusal:?}"
+            );
+            let absent = book
+                .export_proof(
+                    principal,
+                    &scoped,
+                    ProofRequest {
+                        state: Some(Oid([0xff; 32])),
+                        ..request
+                    },
+                )
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                refusal, absent,
+                "scope refusal does not reveal checkpoint existence"
+            );
+        }
+    }
+
+    let request = SuffixRequest {
+        state: first.stored.oid,
+        next_state: Some(second.stored.oid),
+    };
+    let suffix = book
+        .export_suffix(principal, &producer, request)
+        .unwrap()
+        .unwrap();
+    fa_verify::verify_consistency(&suffix.consistency, &old, &new).unwrap();
+    assert_eq!(suffix.records.len() as u64, new.leaf_count - old.leaf_count);
+    assert!(!suffix.records.is_empty());
+    for record in &suffix.records {
+        assert_eq!(
+            fa_verify::verify_inclusion(record, &new).unwrap().record,
+            fa_verify::RecordCheck::Recomputed,
+        );
+    }
+    for (caveat, scoped) in proof_scope_denials(&producer, day, first.stored.recorded_at) {
+        let refusal = book
+            .export_suffix(principal, &scoped, request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+        assert!(
+            refusal.message.contains(&format!("`{caveat}`")),
+            "{refusal:?}"
+        );
+        let absent = book
+            .export_suffix(
+                principal,
+                &scoped,
+                SuffixRequest {
+                    state: Oid([0xff; 32]),
+                    next_state: None,
+                },
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal, absent);
+    }
+    assert_eq!(
+        book.head().unwrap(),
+        before,
+        "export and refusal publish nothing"
+    );
+}
+
+/// The same whole-chain verification powers witness cosigning. Scope
+/// admission precedes checkpoint selection and even decoding caller-supplied
+/// prior/onto bytes; those inputs cannot turn a scoped reader into a witness
+/// of out-of-scope history (fa-0x0).
+#[test]
+fn checkpoint_witnesses_judge_scope_before_inputs_or_signatures() {
+    let (mut book, _, day, _) = certified_fixture();
+    let principal = VId(1);
+    let witness = Capability::embedded(principal, &["read", "witness"]).unwrap();
+    let book_scoped = witness
+        .clone()
+        .for_books(&[book.context().book_id])
+        .unwrap();
+    let published = book.checkpoint(principal, &witness).unwrap().unwrap();
+    let before = book.head().unwrap();
+    let key = fa_notary::SigningKey::from_seed(&[0x76; 32]);
+    let request = crate::WitnessRequest {
+        state: Some(published.stored.oid),
+        ..crate::WitnessRequest::default()
+    };
+    let cosigned = book
+        .witness_checkpoint(principal, &book_scoped, &key, request)
+        .unwrap()
+        .unwrap();
+    let verified = fa_verify::verify_checkpoint(
+        &cosigned.cosigned,
+        &[book.checkpoint_public_key(), key.public_key()],
+    )
+    .expect("both authorized signatures verify independently");
+    assert_eq!(verified.signed_by.len(), 2);
+    assert_eq!(cosigned.checkpoint.oid, published.stored.oid);
+    for (caveat, scoped) in proof_scope_denials(&witness, day, published.stored.recorded_at) {
+        for requested in [
+            request,
+            crate::WitnessRequest::default(),
+            crate::WitnessRequest {
+                state: Some(Oid([0xff; 32])),
+                ..request
+            },
+            crate::WitnessRequest {
+                previous: Some(b"not a checkpoint"),
+                ..request
+            },
+            crate::WitnessRequest {
+                onto: Some(b"not a checkpoint"),
+                ..request
+            },
+        ] {
+            let refusal = book
+                .witness_checkpoint(principal, &scoped, &key, requested)
+                .unwrap()
+                .expect_err("a scoped witness cannot observe or cosign the whole chain");
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+            assert!(
+                refusal.message.contains(&format!("`{caveat}`")),
+                "{refusal:?}"
+            );
+        }
+    }
+    assert_eq!(
+        book.head().unwrap(),
+        before,
+        "cosigning and refusal publish nothing"
+    );
+}
+
 fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {
     let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
     let units = fa_money::UnitRegistry::embedded().unwrap();

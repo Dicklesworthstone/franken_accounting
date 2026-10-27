@@ -1,5 +1,5 @@
 use super::*;
-use crate::statement_trace::acceptance::{Harness, PRINCIPAL, cap};
+use crate::statement_trace::acceptance::{Harness, PRINCIPAL, cap, day};
 use crate::statement_trace::{StatementEntryEvent, StatementPublication};
 use fa_model::symbols::{property, relation};
 use fgdb::{WriteBatch, WriteMismatchPolicy};
@@ -424,6 +424,255 @@ fn current_authority_precedes_corrupt_sources_and_provenance_never_grants_access
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.exit, exit::VERIFICATION);
+    assert_eq!(h.head(), head);
+}
+
+#[test]
+fn trace_scope_admission_requires_head_even_for_historical_and_equal_frontiers() {
+    fn denied<T: std::fmt::Debug>(outcome: Outcome<T>, caveat: &str) {
+        let refusal = outcome.unwrap().unwrap_err();
+        assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
+        assert_eq!(refusal.exit, exit::SAFETY);
+        assert!(refusal.message.contains(caveat), "{refusal:?}");
+    }
+
+    let mut h = Harness::new();
+    h.initial();
+    let before = h.head();
+    h.post("plus", "2026-03-15", h.usd, ("cash", "sales"), 15, false);
+    h.post("minus", "2026-03-15", h.usd, ("sales", "cash"), 15, false);
+    let after = h.head();
+    let mut request = h.request(before, "balance-sheet");
+    request.comparison.after = Some(after);
+    let good = certify(&h, &request);
+    let authority = cap(&["read", "produce"]);
+    let diff = h
+        .book
+        .certify_statement_diff(&h.cx(), PRINCIPAL, &authority, &request.comparison)
+        .unwrap()
+        .unwrap();
+    let jsonl = h
+        .book
+        .statement_trace_jsonl(&h.cx(), PRINCIPAL, &authority, &good.certificate)
+        .unwrap()
+        .unwrap();
+    h.post("later", "2026-03-20", h.usd, ("cash", "sales"), 9, false);
+    let head = h.head();
+    let cx = h.cx();
+    let admitted = authority
+        .clone()
+        .for_books(&[h.book.context().book_id])
+        .unwrap()
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let pinned = admitted.clone().known_at_most(head);
+    assert_eq!(
+        h.book
+            .statement_trace(&cx, PRINCIPAL, &admitted, &request)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .certify_statement_trace(&cx, PRINCIPAL, &admitted, &request)
+            .unwrap()
+            .unwrap()
+            .report,
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .certify_statement_trace_from_diff(&cx, PRINCIPAL, &admitted, &diff.certificate, 32)
+            .unwrap()
+            .unwrap()
+            .report,
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .replay_statement_trace(&cx, PRINCIPAL, &admitted, &good.certificate)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .statement_trace_jsonl(&cx, PRINCIPAL, &admitted, &good.certificate)
+            .unwrap()
+            .unwrap(),
+        jsonl
+    );
+    let mut equal = request.clone();
+    equal.comparison.before = after;
+    let unchanged = h
+        .book
+        .certify_statement_trace(&cx, PRINCIPAL, &admitted, &equal)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.certificate.sources().len(), 1);
+    assert!(unchanged.report.publications().is_empty());
+    assert_eq!(
+        h.book
+            .replay_statement_trace(&cx, PRINCIPAL, &admitted, &unchanged.certificate)
+            .unwrap()
+            .unwrap(),
+        unchanged.report
+    );
+    denied(
+        h.book.statement_trace(&cx, PRINCIPAL, &pinned, &equal),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_statement_trace(&cx, PRINCIPAL, &pinned, &equal),
+        "known_at",
+    );
+    denied(
+        h.book
+            .replay_statement_trace(&cx, PRINCIPAL, &pinned, &unchanged.certificate),
+        "known_at",
+    );
+
+    for (caveat, scoped) in [
+        (
+            "accounts",
+            authority.clone().for_accounts(&["cash"]).unwrap(),
+        ),
+        (
+            "periods",
+            authority
+                .clone()
+                .for_periods(&["FY2025-P03", "FY2026-P03"])
+                .unwrap(),
+        ),
+        (
+            "effective",
+            authority.clone().effective_through(day("2026-03-31")),
+        ),
+        ("known_at", pinned.clone()),
+        (
+            "branch",
+            authority.clone().on_branch(Id128([0xd3; 16])).unwrap(),
+        ),
+        (
+            "books",
+            authority.clone().for_books(&[Id128([0xf3; 16])]).unwrap(),
+        ),
+    ] {
+        denied(
+            h.book.statement_trace(&cx, PRINCIPAL, &scoped, &request),
+            caveat,
+        );
+        denied(
+            h.book
+                .certify_statement_trace(&cx, PRINCIPAL, &scoped, &request),
+            caveat,
+        );
+        denied(
+            h.book.certify_statement_trace_from_diff(
+                &cx,
+                PRINCIPAL,
+                &scoped,
+                &diff.certificate,
+                32,
+            ),
+            caveat,
+        );
+        denied(
+            h.book
+                .replay_statement_trace(&cx, PRINCIPAL, &scoped, &good.certificate),
+            caveat,
+        );
+        denied(
+            h.book
+                .statement_trace_jsonl(&cx, PRINCIPAL, &scoped, &good.certificate),
+            caveat,
+        );
+        let mut damaged = good.certificate.clone();
+        damaged.sources[1].output_digest[0] ^= 1;
+        denied(
+            h.book
+                .replay_statement_trace(&cx, PRINCIPAL, &scoped, &damaged),
+            caveat,
+        );
+        denied(
+            h.book
+                .statement_trace_jsonl(&cx, PRINCIPAL, &scoped, &damaged),
+            caveat,
+        );
+    }
+    let mut at_head = request.clone();
+    at_head.comparison.after = None;
+    denied(
+        h.book.statement_trace(&cx, PRINCIPAL, &pinned, &at_head),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_statement_trace(&cx, PRINCIPAL, &pinned, &at_head),
+        "known_at",
+    );
+    let mut reversed = request.clone();
+    reversed.comparison.before = head;
+    denied(
+        h.book.statement_trace(&cx, PRINCIPAL, &pinned, &reversed),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_statement_trace(&cx, PRINCIPAL, &pinned, &reversed),
+        "known_at",
+    );
+    // Malformed intermediate sources do not waive current integrity reach,
+    // even when every explicitly named sequence falls within the pin.
+    let mut moved = good.certificate.clone();
+    moved.sources[1].known_at = head;
+    assert_eq!(moved.sources.last().unwrap().known_at, after);
+    denied(
+        h.book
+            .replay_statement_trace(&cx, PRINCIPAL, &pinned, &moved),
+        "known_at",
+    );
+    denied(
+        h.book
+            .statement_trace_jsonl(&cx, PRINCIPAL, &pinned, &moved),
+        "known_at",
+    );
+    for mut damaged in [good.certificate.clone(), unchanged.certificate] {
+        damaged.digest[0] ^= 1;
+        assert_eq!(
+            h.book
+                .replay_statement_trace(&cx, PRINCIPAL, &admitted, &damaged)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            crate::certificate::code::CERTIFICATE_INVALID
+        );
+    }
+    let mut damaged = good.certificate.clone();
+    damaged.sources[1].output_digest[0] ^= 1;
+    assert_eq!(
+        h.book
+            .replay_statement_trace(&cx, PRINCIPAL, &admitted, &damaged)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        crate::certificate::code::CERTIFICATE_INVALID
+    );
+    assert_eq!(
+        h.book
+            .replay_statement_trace(
+                &cx,
+                PRINCIPAL,
+                &admitted.expiring_at(head),
+                &good.certificate
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-014"
+    );
     assert_eq!(h.head(), head);
 }
 
