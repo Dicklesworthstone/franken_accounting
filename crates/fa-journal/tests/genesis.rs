@@ -49,6 +49,8 @@ mod outcome_batch_integrity_tests;
 mod outcome_key_tests;
 #[path = "genesis/policy_outcome_keys.rs"]
 mod policy_outcome_keys;
+#[path = "genesis/proportional.rs"]
+mod proportional_tests;
 #[path = "genesis/recurring.rs"]
 mod recurring_tests;
 #[path = "genesis/register_capacity.rs"]

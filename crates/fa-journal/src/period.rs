@@ -325,7 +325,7 @@ pub fn transition_proposal(
 ) -> EntryPayload {
     let period_code = period.code.as_str();
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::PERIOD_CONTROL,

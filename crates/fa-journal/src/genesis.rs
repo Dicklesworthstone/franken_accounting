@@ -1082,7 +1082,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     let canonical_bytes = w.finish().map_err(fa_model::EntryError::from)?;
 
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::SCHEMA_CONTROL,

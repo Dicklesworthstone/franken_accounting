@@ -2771,6 +2771,71 @@ mod tests {
     }
 
     #[test]
+    fn post_reserve_proportion_schema_preserves_exact_strings_and_scalar_compatibility() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_adjust_post_reserve")
+            .expect("post-reserve tool");
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["proportion"]["type"], json!("string"));
+        assert_eq!(schema["properties"]["law"]["type"], json!("string"));
+        assert!(
+            !schema["required"]
+                .as_array()
+                .expect("required fields")
+                .contains(&json!("amount"))
+        );
+        let invocation = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "hold": "00000000000000000000000000000001",
+                    "date": "2026-03-20",
+                    "proportion": "37/100",
+                    "law": "BalancedLargestRemainder",
+                    "dry_run": true
+                }),
+            )
+            .expect("exact proportional rehearsal");
+        let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+            .expect("registered command");
+        assert_eq!(parsed.positional[0], "post-reserve");
+        assert_eq!(parsed.flag("--proportion"), Some("37/100"));
+        assert_eq!(parsed.flag("--law"), Some("BalancedLargestRemainder"));
+        assert!(parsed.flag("--amount").is_none());
+        assert!(parsed.switch("--dry-run"));
+        let scalar = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "hold": "00000000000000000000000000000001",
+                    "date": "2026-03-20",
+                    "amount": "60.00 USD"
+                }),
+            )
+            .expect("existing scalar form");
+        let parsed = args::parse(&scalar.argv, &reg.value_flags(), &reg.switches())
+            .expect("registered scalar command");
+        assert_eq!(parsed.flag("--amount"), Some("60.00 USD"));
+        assert!(parsed.flag("--proportion").is_none());
+        let refused = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "hold": "00000000000000000000000000000001",
+                    "date": "2026-03-20",
+                    "proportion": 0.37,
+                    "law": "BalancedLargestRemainder"
+                }),
+            )
+            .expect_err("binary floating-point input is not an exact rate string");
+        assert!(refused.message.contains("proportion"), "{refused:?}");
+    }
+
+    #[test]
     fn gl_certification_schema_routes_inline_and_requires_produce() {
         let (mcp, reg) = embedded();
         let tool = mcp.tool_by_wire("fa_proof_gl").expect("GL tool");

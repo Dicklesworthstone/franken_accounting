@@ -367,7 +367,7 @@ pub fn retention_activation_proposal(
 ) -> Result<EntryPayload, KernelError> {
     let policy_oid = policy.policy_oid()?;
     Ok(EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::POLICY_CONTROL,

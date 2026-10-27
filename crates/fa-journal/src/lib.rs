@@ -53,6 +53,7 @@ pub mod policy;
 pub mod post;
 pub mod production;
 pub mod projections;
+pub mod proportional;
 pub mod rea;
 pub mod recurring;
 pub mod redaction;
@@ -196,6 +197,7 @@ pub use production::{
     RecordedRange, document_ranges, list_productions, mark_exhibit, open_production, produce,
     read_production,
 };
+pub use proportional::{PreparedProportionalPost, prepare_proportional_post};
 pub use rea::{
     DIMENSION_KIND_PARTY, EventRow, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,
     ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, bind_external_id,

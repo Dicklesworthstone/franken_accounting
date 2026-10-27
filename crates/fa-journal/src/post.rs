@@ -3986,6 +3986,33 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             )
             .at("entry", format!("{:032x}", target.vid.0))));
         }
+        // A named proportional resolution binds its exact rate and law in
+        // immutable extension 35. Recompute only after the pending EntryRef
+        // has authenticated the source, using the same transaction witness.
+        // Balanced but incorrectly distributed sub-vectors must not pass.
+        if proposal
+            .extensions
+            .iter()
+            .any(|(tag, _)| *tag == fa_model::entry::PROPORTIONAL_POST_EXTENSION)
+        {
+            let arithmetic = asupersync::Cx::detached_cancel_context();
+            let mut budget = fa_money::ArithmeticBudget::new(
+                &arithmetic,
+                fa_money::BudgetLimits::uniform(10_000_000, 0),
+                fa_money::proportional_post::MAX_PROPORTIONAL_POST_RATE_BYTES,
+            );
+            if let Err(refusal) = crate::proportional::verify_proportional_post(
+                &mut budget,
+                &spec,
+                &book.units,
+                &pending_entry.proposal,
+                proposal,
+            ) {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+            ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+        }
         hold = Some(pending_entry.proposal.clone());
         hold_seq = Some(row.created_at);
         if let Disposition::Posts { source_ordinals } = disposition {

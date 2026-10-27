@@ -42,7 +42,7 @@ fn posting(total: i128, method: AllocationMethod, weights: &[u128]) -> Allocatio
 
 fn template(posting: &AllocationPosting) -> EntryPayload {
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_journal::allocation::ALLOCATION_SCHEMA_MINOR,
         book_id: BOOK,
         branch_id: Id128::TRUNK,
         class: EntryClass::ALLOCATION,

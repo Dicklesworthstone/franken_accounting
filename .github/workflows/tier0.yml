@@ -10,6 +10,12 @@ name: Tier 0 (format and type-check every target)
 
 on:
   workflow_dispatch:
+    inputs:
+      focused_accounting_tests:
+        description: Run focused proportional posting and due-date aging behavior tests (not Tier 1)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -47,3 +53,31 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 check --locked -Z bindeps -Z git=shallow-deps --workspace --all-targets --jobs 2
+      # These named feature regressions supplement Tier 0; they do not replace
+      # the complete Tier 1 workspace verification chain.
+      - name: Focused proportional posting laws and journal admission
+        if: ${{ inputs.focused_accounting_tests }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-money --lib proportional_post --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-model --lib proportional::tests:: --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis proportional_tests:: --jobs 1 -- --test-threads=1
+      - name: Focused due-date certificates and offline verification
+        if: ${{ inputs.focused_accounting_tests }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib aging::due_date::tests --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test statements due_date_aging --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test proofs due_date_aging_bundle_verifies_offline --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli due_date_aging_reads_journaled_maturity_through_the_binary --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-verify --lib --jobs 1 -- --test-threads=1
+      - name: Focused proportional posting CLI and MCP behavior
+        if: ${{ inputs.focused_accounting_tests }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli proportional_post --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --lib post_reserve_proportion --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test robot_schema --jobs 1 -- --test-threads=1

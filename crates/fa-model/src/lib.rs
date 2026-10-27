@@ -30,6 +30,7 @@ pub mod ids;
 pub mod limits;
 pub mod mirrors;
 pub mod obligation;
+pub mod proportional;
 pub mod rea;
 pub mod revaluation;
 pub mod symbols;
@@ -58,6 +59,7 @@ pub use ids::{
     statement_issuance_vid, unit_vid,
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
+pub use proportional::ProportionalPostBasis;
 pub use rea::{
     EventKind, EventResource, EventSpec, ExternalIdBinding, InstrumentKind, InstrumentSpec,
     LegalEntityFullSpec, OwnershipPct, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,

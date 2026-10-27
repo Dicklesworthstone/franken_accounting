@@ -346,7 +346,7 @@ fn create_proposal(
     let encoded = encode_body(spec, capability)?;
     let schedule = recurring_schedule_vid(spec.template.book_id, &spec.name);
     Ok(EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: spec.template.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::SCHEDULE_CONTROL,
@@ -665,7 +665,7 @@ fn occurrence(plan: &RecurringPlan, index: u64, tick: Tick) -> Result<EntryPaylo
         .u64(index)
         .u128(tick.entry.0);
     let mut p = spec.template.clone();
-    p.schema_minor = fa_model::entry::SCHEMA_MINOR;
+    p.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
     p.effective_date = date;
     p.idempotency_key = domain_digest(
         b"fa:recurring-occurrence-key:v1",

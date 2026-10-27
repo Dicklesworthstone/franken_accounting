@@ -887,7 +887,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     }
     let legs = swapped(&target.proposal.legs);
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::REVERSAL,
@@ -1560,7 +1560,7 @@ pub(crate) fn cancellation<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::SCHEDULE_CONTROL,

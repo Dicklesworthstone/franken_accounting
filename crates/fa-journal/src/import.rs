@@ -276,7 +276,7 @@ fn prepare(
     )
     .map_err(|e| structure(e.to_string(), "report this"))?;
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::IMPORT_CONTROL,

@@ -63,7 +63,7 @@ fa checkpoint create --grant witness --book acme --json
 fa verify accumulator --book acme --json
 # Every book-level verify target (entities and registers over every period), then one verdict.
 fa verify book --book acme --json
-# The registered rounding, allocation, FX, conversion, lot and tracing laws, and the unit versions.
+# The registered rounding, allocation, proportional-post, FX, conversion, lot and tracing laws, and the unit versions.
 fa law list --json
 fa unit list --json
 ```
@@ -191,6 +191,41 @@ same `functional`, comparative and presentation options and transports review
 source inline. Embedded callers use `Book::functional_custom_statement` or
 `Book::certify_functional_custom_statement` to prepare historical reads under
 current authority.
+
+### Proportional posting of held entries
+
+Post a specified proportion of a multi-leg or multi-unit hold under a named
+law, with the same dry-run and retained-plan workflow as ordinary postings:
+
+```bash
+fa law show BalancedLargestRemainder --family proportional-post --json
+fa post-reserve <hold-vid> --date 2026-03-20 \
+  --proportion "0.37" --law BalancedLargestRemainder \
+  --dry-run --plan-out proportional.plan --book ./books/acme --json
+fa commit --plan proportional.plan --book ./books/acme --json
+```
+
+The rate is an exact decimal or ratio string, such as `0.37` or `37/100`,
+in the interval `[0,1]`. The law rounds one common debit/credit target per
+native unit and legal entity using HalfEven, then independently allocates
+that target across each side by largest remainder. Ties use the original
+leg ordinal. For a hold of Dr 60.01 USD, Dr 39.99 USD and Cr 100.00 USD,
+37% posts Dr 22.20 USD, Dr 14.80 USD and Cr 37.00 USD. Every unposted
+remainder is released, and every original leg stays within its held amount.
+
+The immutable resolution records the law, version and canonical exact rate.
+The posting kernel recomputes the sub-vector from the authenticated hold:
+balanced but incorrectly allocated legs are refused. Zero-rounded legs are
+omitted with their original source mapping preserved. If all legs round to
+zero, the request is refused; use `fa void-reserve` to release a hold.
+Period, expiry, account, entity and other balancing laws still apply.
+Holds with existing base valuations require an explicit valued resolution.
+
+The existing `--amount "60.00 USD"` form remains available for two-leg,
+single-unit holds. Generic Resolution intents accept
+`"proportion":{"law":"BalancedLargestRemainder","rate":"0.37"}`;
+choose exactly one of `proportion`, `amount` or explicit `legs`. The MCP
+`fa_adjust_post_reserve` tool accepts the same `proportion` and `law` strings.
 
 ### Timed holds and scheduled reversals
 

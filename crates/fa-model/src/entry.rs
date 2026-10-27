@@ -41,10 +41,11 @@ use crate::limits::*;
 
 pub const SCHEMA_MAJOR: u16 = 1;
 /// The highest additive minor this reader understands in full. Minor 0 is
-/// the original layout; minor 1 appends the extension block. A writer may
+/// the original layout; minor 1 appends the extension block, and minor 2
+/// admits the named proportional-post basis. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 1;
+pub const SCHEMA_MINOR: u16 = 2;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -235,6 +236,11 @@ pub const OBLIGATION_MATURITY_EXTENSION: u16 = 33;
 /// [`crate::valuation::validate_terms`].
 pub const VALUATION_ADJUSTMENT_EXTENSION: u16 = 34;
 
+/// Extension 35, `fa:proportional-post:v1`: the exact named law and rate
+/// of a Resolution(Posts), recomputed against its authenticated hold.
+pub const PROPORTIONAL_POST_EXTENSION: u16 = 35;
+pub const PROPORTIONAL_POST_SCHEMA_MINOR: u16 = 2;
+
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
 pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
@@ -272,6 +278,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     RULE_INPUTS_EXTENSION,
     OBLIGATION_MATURITY_EXTENSION,
     VALUATION_ADJUSTMENT_EXTENSION,
+    PROPORTIONAL_POST_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1847,6 +1854,30 @@ impl EntryPayload {
             .find(|(t, _)| *t == VALUATION_ADJUSTMENT_EXTENSION)
         {
             crate::valuation::validate_terms(bytes).map_err(|(what, why)| invalid(what, why))?;
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == PROPORTIONAL_POST_EXTENSION)
+        {
+            if self.schema_minor < PROPORTIONAL_POST_SCHEMA_MINOR
+                || self.class != EntryClass::RESOLUTION
+                || !matches!(
+                    self.pending.as_ref().and_then(|p| p.disposition.as_ref()),
+                    Some(Disposition::Posts { .. })
+                )
+            {
+                return Err(invalid(
+                    "extensions.proportional_post",
+                    "a proportional-post basis belongs only to Resolution(Posts) at schema minor 2 or later",
+                ));
+            }
+            crate::proportional::ProportionalPostBasis::decode(bytes).map_err(|_| {
+                invalid(
+                    "extensions.proportional_post",
+                    "unknown law/version or malformed bounded exact-rate basis",
+                )
+            })?;
         }
         if let (Some((_, bytes)), EntryOrigin::Rule { event_ref, .. }) = (
             self.extensions

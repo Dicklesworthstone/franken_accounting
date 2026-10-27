@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fa_cli::json::{self, Json};
 use fa_cli::verbs::registry;
 
+#[path = "cli/proportional_post.rs"]
+mod proportional_post;
+
 /// The one event a non-zero exit emits (plan Appendix D).
 const ERROR_EVENTS: &[&str] = &["error"];
 

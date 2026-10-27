@@ -514,7 +514,7 @@ pub fn activation_proposal(
     description: Erasable<String>,
 ) -> EntryPayload {
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::POLICY_CONTROL,
@@ -1695,7 +1695,7 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal(&d)));
     }
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::POLICY_CONTROL,
@@ -2052,7 +2052,7 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
     let commitment = req.issued.commitment().map_err(capability_error)?;
     let issuer_commitment = req.capability.commitment().map_err(capability_error)?;
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::POLICY_CONTROL,

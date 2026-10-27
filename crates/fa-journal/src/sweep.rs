@@ -574,7 +574,7 @@ pub struct Ticked {
 #[must_use]
 pub fn tick_proposal(book: &BookContext, req: &TickRequest) -> EntryPayload {
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::TIME_CONTROL,
@@ -920,7 +920,7 @@ fn expires_proposal(
     description: Erasable<String>,
 ) -> EntryPayload {
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::RESOLUTION,
@@ -967,7 +967,7 @@ pub(crate) fn cursor_proposal(
     description: Erasable<String>,
 ) -> Result<EntryPayload, KernelError> {
     Ok(EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::SWEEP_CONTROL,

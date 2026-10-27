@@ -179,7 +179,7 @@ impl Harness {
 
     fn template(&self, key: &str, evidence: EvidenceRef) -> EntryPayload {
         EntryPayload {
-            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            schema_minor: fa_journal::allocation::ALLOCATION_SCHEMA_MINOR,
             book_id: BOOK,
             branch_id: Id128::TRUNK,
             class: EntryClass::ALLOCATION,

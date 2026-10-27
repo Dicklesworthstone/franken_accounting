@@ -563,7 +563,7 @@ impl RuleActivationPlan {
     /// on the version's vertex, effective from the activation date.
     pub fn proposal(&self, book: &BookContext) -> EntryPayload {
         EntryPayload {
-            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            schema_minor: fa_model::entry::EXTENSIONS_MINOR,
             book_id: book.book_id,
             branch_id: Id128::TRUNK,
             class: EntryClass::POLICY_CONTROL,
@@ -1076,7 +1076,7 @@ pub fn rule_derived_proposal(
         )
     })?;
     Ok(EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: derived.rule.produces().entry_class(),

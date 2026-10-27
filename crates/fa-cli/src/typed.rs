@@ -860,10 +860,9 @@ pub(crate) fn batch_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_document(ctx, args, None, doc)
 }
 
-/// `fa post-reserve <hold vid> --date YYYY-MM-DD --amount "<amount> <UNIT>"`
-/// (plan §15.3, Appendix B `PostReserve` amount sugar): a Resolution posting
-/// `amount` on both legs of a two-leg, single-unit hold and releasing the
-/// rest. A hold of more legs names its posted sub-vector with `fa resolve`.
+/// Resolve a hold by a scalar two-leg amount or a registered exact proportion.
+/// The proportional form derives each original leg's posted amount under the
+/// named law; the posting kernel independently checks that derivation.
 pub(crate) fn post_reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     resolve_reserve(ctx, args, true)
 }
@@ -882,22 +881,32 @@ fn resolve_reserve(ctx: &mut Ctx<'_>, args: &Args, posts: bool) -> Result<(), Fa
         "void-reserve"
     };
     let example = if posts {
-        "fa post-reserve <hold vid> --date YYYY-MM-DD --amount \"60.00 USD\" [--description <text>] [--key K] [--evidence <oid>]... [--dry-run] --json"
+        "fa post-reserve <hold vid> --date YYYY-MM-DD (--amount \"60.00 USD\" | --proportion \"0.37\" --law BalancedLargestRemainder) [--description <text>] [--key K] [--evidence <oid>]... [--dry-run] --json"
     } else {
         "fa void-reserve <hold vid> --date YYYY-MM-DD [--description <text>] [--key K] --yes --json"
     };
     if args.positional.len() != 2 {
         return Err(usage(format!("{verb} needs exactly one hold vid"), example));
     }
-    for flag in ["--date", "--amount", "--description", "--key"] {
+    for flag in [
+        "--date",
+        "--amount",
+        "--proportion",
+        "--law",
+        "--description",
+        "--key",
+    ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(format!("{verb} takes only one {flag}"), example));
         }
     }
-    if !posts && args.flag("--amount").is_some() {
+    let amount = args.flag("--amount");
+    let proportion = args.flag("--proportion");
+    let law = args.flag("--law");
+    if !posts && (amount.is_some() || proportion.is_some() || law.is_some()) {
         return Err(usage(
-            "a void releases the whole hold and posts nothing: it takes no --amount",
-            "post part of the hold with fa post-reserve <hold vid> --amount ...",
+            "a void releases the whole hold and takes no amount, proportion or law",
+            "post part of the hold with fa post-reserve <hold vid> --proportion 0.37 --law BalancedLargestRemainder",
         ));
     }
     let hold = args.positional[1]
@@ -912,13 +921,32 @@ fn resolve_reserve(ctx: &mut Ctx<'_>, args: &Args, posts: bool) -> Result<(), Fa
         .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
     let mut fields = vec![("effective_date", s(date)), ("resolves", s(hold.as_str()))];
     let key = if posts {
-        let amount = args
-            .flag("--amount")
-            .filter(|amount| !amount.is_empty())
-            .ok_or_else(|| usage("post-reserve needs --amount \"<amount> <UNIT>\"", example))?;
         fields.push(("disposition", s("posts")));
-        fields.push(("amount", s(amount)));
-        format!("post-reserve:{hold}:{amount}")
+        match (amount, proportion, law) {
+            (Some(amount), None, None) if !amount.is_empty() => {
+                fields.push(("amount", s(amount)));
+                format!("post-reserve:{hold}:{amount}")
+            }
+            (None, Some(rate), Some(law)) if !rate.is_empty() && !law.is_empty() => {
+                fields.push(("proportion", obj(vec![("law", s(law)), ("rate", s(rate))])));
+                // One hold has one proportional resolution identity. The
+                // canonical proposal binds the law and exact rate, so
+                // equivalent decimal/ratio spellings retry the same entry.
+                format!("post-reserve:{hold}:proportion")
+            }
+            (None, Some(_), None) => {
+                return Err(usage(
+                    "a proportional post names its registered --law explicitly",
+                    "--proportion \"0.37\" --law BalancedLargestRemainder",
+                ));
+            }
+            _ => {
+                return Err(usage(
+                    "post-reserve requires either --amount or --proportion with --law",
+                    example,
+                ));
+            }
+        }
     } else {
         fields.push(("disposition", s("voids")));
         format!("void-reserve:{hold}")

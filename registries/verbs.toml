@@ -120,14 +120,14 @@ example = "fa access log --since 0 --json"
 
 [[verb]]
 name = "law"
-summary = "The registered laws this build embeds (plan §6.2–§6.4): rounding, allocation, conversion, FX, lot and tracing laws by family, id, name and version, with every field of their registry row. Reads no book."
+summary = "The registered laws this build embeds (plan §5.4, §6.2–§6.4): rounding, allocation, proportional-post, conversion, FX, lot and tracing laws by family, id, name and version, with every field of their registry row. Reads no book."
 writes = false
 subcommands = ["list", "show"]
 flags = ["--family"]
 switches = []
 events = ["laws", "law"]
 exits = [0, 2]
-usage = ["law list [--family rounding|allocation|conversion|fx|lot|tracing]", "law show <name> [--family <family>]   (a name registered in several families needs --family)", "Every rounding, allocation and FX conversion names a registered law (doctrine 4); these are the names an intent may use."]
+usage = ["law list [--family rounding|allocation|proportional-post|conversion|fx|lot|tracing]", "law show <name> [--family <family>]   (a name registered in several families needs --family)", "Every rounding, allocation, proportional post and FX conversion names a registered law (doctrine 4); these are the names an intent may use."]
 example = "fa law show HalfEven --json"
 
 [[verb]]
@@ -352,15 +352,15 @@ example = "fa batch --intent batch.json --book ./books/myco --json"
 
 [[verb]]
 name = "post-reserve"
-summary = "Post part or all of a two-leg hold (plan §15.3, Appendix B PostReserve): a Resolution posting --amount on both legs and releasing the rest. Typed sugar over fa resolve."
+summary = "Post part or all of a hold with a scalar two-leg amount or a registered exact proportion (plan §5.4, Appendix B PostReserve). The kernel verifies the named law and releases every unposted remainder."
 writes = true
 subcommands = []
-flags = ["--date", "--amount", "--description", "--key", "--evidence", "--grant", "--plan-out", "--draft"]
+flags = ["--date", "--amount", "--proportion", "--law", "--description", "--key", "--evidence", "--grant", "--plan-out", "--draft"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["post-reserve <hold vid> --date YYYY-MM-DD --amount \"60.00 USD\" [--description <text>] [--key K] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The hold must have two legs in one unit without base valuations; each leg posts --amount on its own account, side and dimensions, at most what it reserved, and the rest is released. A hold of more legs names its posted sub-vector with fa resolve --intent (legs with source_ordinal). The default key is post-reserve:<hold>:<amount>."]
-example = "fa post-reserve <hold vid> --date 2026-03-20 --amount \"60.00 USD\" --book ./books/myco --json"
+usage = ["post-reserve <hold vid> --date YYYY-MM-DD (--amount \"60.00 USD\" | --proportion \"0.37\" --law BalancedLargestRemainder) [--description <text>] [--key K] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The amount form requires two legs in one unit without base valuations; each leg posts the same amount on its own account, side and dimensions. The proportion form supports multiple legs and native units: a named law rounds one target per unit and legal entity, then allocates that target independently over debit and credit legs by largest remainder, with original-ordinal tie breaks. The exact rate must lie in [0,1]. All original leg capacities and other posting laws still apply; existing base valuations require explicit posted legs. Zero allocations are omitted; an empty result is refused and names fa void-reserve. The immutable resolution retains its law, version and exact rate for admission replay.", "Generic intent form: fa resolve --intent with proportion: {law: \"BalancedLargestRemainder\", rate: \"0.37\"}; choose exactly one of amount, proportion or explicit legs. Scalar default key: post-reserve:<hold>:<amount>; proportional default key: post-reserve:<hold>:proportion:<law>:<rate>."]
+example = "fa post-reserve <hold vid> --date 2026-03-20 --proportion \"0.37\" --law BalancedLargestRemainder --book ./books/myco --json"
 
 [[verb]]
 name = "void-reserve"
@@ -1911,8 +1911,8 @@ fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "per
 [[event]]
 name = "plan"
 book = true
-doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. With --balancing, requested names the original amount and moved names the admitted amount; both are null otherwise. The plan binds both amounts, and approvals bind the resolved proposal. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. An Agent-profile plan is a rehearsal and cannot commit to trunk. Planning does not gather new approvals. idempotency_key is exact key bytes in hex. warnings are what journal-entry testing would flag about an Original or Adjusting entry (RoundAmount, SoftClosedPeriod, PossibleDuplicate citing the earlier entries, CutoffDrift), read at the plan's snapshot; they never refuse or change the plan, and each also appears in the envelope warnings. unchecked names a check that did not run and why (PossibleDuplicate needs a capability that reads the whole book). The envelope certificate stays null: these public digests are not native object-store OIDs."
-fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "requested:amount?", "moved:amount?", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "warnings:[plan_warning]", "unchecked:[plan_unchecked]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. With --balancing, requested names the original amount and moved names the admitted amount; both are null otherwise. The plan binds both amounts, and approvals bind the resolved proposal. proportional_post names the registered hold-posting law, version, canonical exact rate and original source-ordinal mapping; it is null for other plans. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. An Agent-profile plan is a rehearsal and cannot commit to trunk. Planning does not gather new approvals. idempotency_key is exact key bytes in hex. warnings are what journal-entry testing would flag about an Original or Adjusting entry (RoundAmount, SoftClosedPeriod, PossibleDuplicate citing the earlier entries, CutoffDrift), read at the plan's snapshot; they never refuse or change the plan, and each also appears in the envelope warnings. unchecked names a check that did not run and why (PossibleDuplicate needs a capability that reads the whole book). The envelope certificate stays null: these public digests are not native object-store OIDs."
+fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "requested:amount?", "moved:amount?", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "proportional_post:plan_proportional_post?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "warnings:[plan_warning]", "unchecked:[plan_unchecked]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
 
 [[event]]
 name = "plan_committed"
@@ -3618,6 +3618,11 @@ doc = "One proposed leg with the resolved account code, immutable account identi
 fields = ["ordinal:int", "account:string", "account_vid:hex", "side:string", "amount:amount", "dimensions:[batch_plan_dimension]"]
 
 [[shape]]
+name = "plan_proportional_post"
+doc = "The registered proportional hold-posting law and version, its canonical exact rational rate, and the original held-leg ordinals corresponding to the planned nonzero legs. The kernel recomputes this sub-vector from the authenticated hold; omitted original legs and unposted remainders are released."
+fields = ["law:string", "version:int", "rate_numerator:string", "rate_denominator:string", "source_ordinals:[int]"]
+
+[[shape]]
 name = "plan_valuation"
 doc = "The exact functional-currency amounts retained by a valued proposal, alongside its native plan legs. The registered law and its content-addressed identity govern these amounts; the preview neither selects a new rate nor grants authority. Null on an unvalued native plan."
 fields = ["base_unit:string", "law:string", "law_oid:hex", "debits:amount", "credits:amount", "legs:[plan_base_leg]"]
@@ -4966,11 +4971,11 @@ name = "post_reserve"
 verb = "post-reserve"
 subcommands = []
 positionals = ["hold"]
-flags = ["--date", "--amount", "--description", "--key", "--evidence", "--draft"]
+flags = ["--date", "--amount", "--proportion", "--law", "--description", "--key", "--evidence", "--draft"]
 switches = ["--dry-run"]
-required = ["hold", "--date", "--amount"]
-dont = ["Don't post more than the hold reserved: each leg posts at most its reservation and the rest is released.", "Don't use it for a hold of more than two legs: name the sub-vector with fa_post_resolve."]
-mistakes = ["A JSON number in amount: write \"60.00 USD\".", "Naming the original intent's key instead of the hold's vid."]
+required = ["hold", "--date"]
+dont = ["Don't post more than the hold reserved: each leg posts at most its reservation and the rest is released.", "Choose amount for a two-leg single-unit hold, or proportion with an explicit law for a multi-leg hold; do not combine them.", "Don't infer a posting from a zero-rounded proportion: use void-reserve when release is intended."]
+mistakes = ["A JSON number in amount or proportion: write \"60.00 USD\" or \"0.37\" as a string.", "Naming the original intent's key instead of the hold's vid.", "Omitting law with proportion: explicitly select BalancedLargestRemainder."]
 
 
 [[mcp.tool]]
@@ -5648,7 +5653,7 @@ fields = ["target:string", "verdict:string", "detail:string"]
 
 [[shape]]
 name = "law_row"
-doc = "A registered law: its family (rounding, allocation, conversion, fx, lot, tracing), id, name, optional version, and every other registry field as key/value text, in key order."
+doc = "A registered law: its family (rounding, allocation, proportional-post, conversion, fx, lot, tracing), id, name, optional version, and every other registry field as key/value text, in key order."
 fields = ["family:string", "id:int", "name:string", "version:int?", "attributes:[law_attribute]"]
 
 [[shape]]

@@ -343,7 +343,7 @@ fn control_proposal(
     let bytes = scope.canonical_bytes()?;
     let scope_digest = domain_digest(SCOPE_DOMAIN, &[&bytes]);
     Ok(EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::HOLD_CONTROL,

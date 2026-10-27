@@ -273,7 +273,7 @@ impl IssuancePlan {
     pub fn proposal(&self, book: &BookContext) -> Result<EntryPayload, KernelError> {
         let issuance = &self.issuance;
         Ok(EntryPayload {
-            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            schema_minor: fa_model::entry::EXTENSIONS_MINOR,
             book_id: book.book_id,
             branch_id: Id128::TRUNK,
             class: EntryClass::ISSUANCE_CONTROL,

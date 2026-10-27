@@ -54,7 +54,7 @@ impl StatementDefinitionPlan {
     pub fn proposal(&self) -> Result<EntryPayload, KernelError> {
         let oid = self.definition.digest()?;
         Ok(EntryPayload {
-            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            schema_minor: fa_model::entry::EXTENSIONS_MINOR,
             book_id: self.book_id,
             branch_id: Id128::TRUNK,
             class: EntryClass::POLICY_CONTROL,

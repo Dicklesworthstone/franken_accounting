@@ -3084,6 +3084,92 @@ impl Book {
         )))
     }
 
+    /// Derive a named proportional hold resolution without publication.
+    /// Current authority is checked before reading the immutable book spec;
+    /// journal admission later authenticates the hold and recomputes every
+    /// native amount, including holds staged earlier in the same batch.
+    pub fn prepare_proportional_post(
+        &self,
+        capability: &fa_journal::Capability,
+        hold: &fa_model::EntryPayload,
+        law_name: &str,
+        rate_text: &str,
+    ) -> Outcome<fa_journal::PreparedProportionalPost> {
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Post,
+            "preparing a proportional hold resolution",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.admit_current(capability)? {
+            return Ok(Err(refusal));
+        }
+        let Some(law) = fa_money::proportional_post::ProportionalPostLaw::from_name(law_name)
+        else {
+            return Ok(Err(fa_journal::proportional::refusal(
+                "unknown proportional-post law; name BalancedLargestRemainder",
+            )));
+        };
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::BudgetLimits::uniform(10_000_000, 0),
+            fa_money::proportional_post::MAX_PROPORTIONAL_POST_RATE_BYTES,
+        );
+        let rate = if let Some((numerator, denominator)) = rate_text.split_once('/') {
+            fa_money::Rate::from_ratio(&mut budget, numerator.trim(), denominator.trim())
+        } else {
+            fa_money::Rate::from_decimal(&mut budget, rate_text)
+        };
+        let rate = match rate {
+            Ok(rate) => rate,
+            Err(error) => return Ok(Err(fa_journal::proportional::refusal(error))),
+        };
+        let spec = self.spec()?;
+        Ok(fa_journal::prepare_proportional_post(
+            &mut budget,
+            &spec,
+            &self.context().units,
+            hold,
+            law,
+            &rate,
+        ))
+    }
+
+    /// Decode the named proportional basis of a caller-owned proposal for
+    /// review. This is bounded pure arithmetic, performs no storage reads,
+    /// and does not authenticate the proposal or grant posting authority.
+    pub fn proportional_post_basis(
+        &self,
+        proposal: &fa_model::EntryPayload,
+    ) -> Result<
+        Option<(
+            fa_money::proportional_post::ProportionalPostLaw,
+            fa_money::Rate,
+        )>,
+        fa_journal::Refusal,
+    > {
+        let Some((_, bytes)) = proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::PROPORTIONAL_POST_EXTENSION)
+        else {
+            return Ok(None);
+        };
+        let basis = fa_model::ProportionalPostBasis::decode(bytes)
+            .map_err(fa_journal::proportional::refusal)?;
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::BudgetLimits::uniform(10_000_000, 0),
+            fa_money::proportional_post::MAX_PROPORTIONAL_POST_RATE_BYTES,
+        );
+        let rate = fa_money::Rate::decode(&mut budget, &basis.rate_bytes)
+            .map_err(fa_journal::proportional::refusal)?;
+        Ok(Some((basis.law, rate)))
+    }
+
     /// Derive a single foreign open item's exact remaining carrying basis,
     /// producing an ordinary proposal for the existing plan/commit protocol.
     pub fn prepare_fx_settlement(

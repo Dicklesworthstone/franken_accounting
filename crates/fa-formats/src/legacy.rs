@@ -520,7 +520,7 @@ impl LegacyImportBatch {
             let idempotency_key = format!("legacy-opening:v1:{idx}").into_bytes();
 
             proposals.push(EntryPayload {
-                schema_minor: fa_model::entry::SCHEMA_MINOR,
+                schema_minor: fa_model::entry::EXTENSIONS_MINOR,
                 book_id: book.book_id,
                 branch_id: Id128::TRUNK,
                 class: EntryClass::MIGRATION,

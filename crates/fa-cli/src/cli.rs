@@ -7739,6 +7739,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "resolves",
         "disposition",
         "amount",
+        "proportion",
         "timeout_ns",
         "reverse_on",
         "prior_period_error",
@@ -7950,6 +7951,12 @@ fn build_post_request_with_prior(
             "name the entry's legs in `legs`",
         ));
     }
+    if doc.get("proportion").is_some() && class != EntryClass::RESOLUTION {
+        return Err(usage(
+            "a proportional post belongs to a Resolution of a held entry",
+            "use fa post-reserve --proportion 0.37 --law BalancedLargestRemainder, or remove proportion",
+        ));
+    }
     if doc.get("revises").is_some() && class != EntryClass::REVISION {
         return Err(usage(
             "`revises` names the target of a Revision only",
@@ -8005,6 +8012,7 @@ fn build_post_request_with_prior(
     let mut supersession = Vec::new();
     let mut pending = None;
     let mut control = None;
+    let mut proportional_extension = None;
     let mut reversal_detail = None;
     let mut reversal_base_totals = None;
     let mut reversal_rate_evidence = Vec::new();
@@ -8294,7 +8302,10 @@ fn build_post_request_with_prior(
         };
         let resolution_of = Some(hold.entry_ref(vid));
         let disposition = doc.get("disposition").and_then(Json::as_str).unwrap_or(
-            if doc.get("legs").is_some() || doc.get("amount").is_some() {
+            if doc.get("legs").is_some()
+                || doc.get("amount").is_some()
+                || doc.get("proportion").is_some()
+            {
                 "posts"
             } else {
                 "voids"
@@ -8302,10 +8313,13 @@ fn build_post_request_with_prior(
         );
         match disposition {
             "voids" | "void" | "release" => {
-                if doc.get("legs").is_some() || doc.get("amount").is_some() {
+                if doc.get("legs").is_some()
+                    || doc.get("amount").is_some()
+                    || doc.get("proportion").is_some()
+                {
                     return Err(usage(
-                        "a Voids resolution carries no legs",
-                        "remove `legs`, or set disposition to \"posts\"",
+                        "a Voids resolution carries no legs, amount or proportion",
+                        "remove the posting inputs, or set disposition to \"posts\"",
                     ));
                 }
                 // A void releases the hold for good (verbs.toml [[dangerous]]).
@@ -8319,8 +8333,37 @@ fn build_post_request_with_prior(
                 Vec::new()
             }
             "posts" | "post" => {
+                let forms = ["legs", "amount", "proportion"]
+                    .iter()
+                    .filter(|field| doc.get(field).is_some())
+                    .count();
+                if forms != 1 {
+                    return Err(usage(
+                        "a Posts resolution requires exactly one of legs, amount or proportion",
+                        "supply explicit legs, a two-leg amount, or proportion: {law: \"BalancedLargestRemainder\", rate: \"0.37\"}",
+                    ));
+                }
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                if let Some(text) = doc.get("amount") {
+                if let Some(proportion) = doc.get("proportion") {
+                    let Json::Obj(fields) = proportion else {
+                        return Err(usage(
+                            "proportion must be an object with law and an exact rate string",
+                            "proportion: {law: \"BalancedLargestRemainder\", rate: \"0.37\"}",
+                        ));
+                    };
+                    if fields.iter().any(|(key, _)| key != "law" && key != "rate") {
+                        return Err(usage(
+                            "proportion accepts only law and rate",
+                            "proportion: {law: \"BalancedLargestRemainder\", rate: \"0.37\"}",
+                        ));
+                    }
+                    let law = req_str(proportion, "law", "proportion")?;
+                    let rate = req_str(proportion, "rate", "proportion")?;
+                    let prepared =
+                        book.prepare_proportional_post(&capability, &hold.proposal, law, rate)??;
+                    proportional_extension = Some(prepared.extension_bytes);
+                    pairs.extend(prepared.source_ordinals.into_iter().zip(prepared.legs));
+                } else if let Some(text) = doc.get("amount") {
                     // Appendix B PostReserve `amount`: sugar for a two-leg,
                     // single-unit hold, each leg posting `amount` on its
                     // own account, side and dimensions; the kernel bounds it
@@ -8514,7 +8557,11 @@ fn build_post_request_with_prior(
     }
     let event_arg = flag_event.or(doc_event);
     let mut proposal = EntryPayload {
-        schema_minor: 0,
+        schema_minor: if proportional_extension.is_some() {
+            fa_model::entry::PROPORTIONAL_POST_SCHEMA_MINOR
+        } else {
+            0
+        },
         book_id: ctx.book_id,
         branch_id: Id128::TRUNK,
         class,
@@ -8540,7 +8587,9 @@ fn build_post_request_with_prior(
         supersession,
         pending,
         external_ids: Vec::new(),
-        extensions: Vec::new(),
+        extensions: proportional_extension
+            .map(|bytes| vec![(fa_model::entry::PROPORTIONAL_POST_EXTENSION, bytes)])
+            .unwrap_or_default(),
         tags: Vec::new(),
     };
     for evidence in reversal_rate_evidence {
@@ -9535,6 +9584,27 @@ pub(crate) fn emit_post_plan(
             Disposition::Voids => "voids",
             Disposition::Expires { .. } => "expires",
         });
+    let proportional = book.proportional_post_basis(proposal)?;
+    let proportional_json = proportional.as_ref().map_or(Json::Null, |(law, rate)| {
+        let source_ordinals = match proposal
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.disposition.as_ref())
+        {
+            Some(Disposition::Posts { source_ordinals }) => source_ordinals
+                .iter()
+                .map(|ordinal| Json::Int(i128::from(*ordinal)))
+                .collect(),
+            _ => Vec::new(),
+        };
+        obj(vec![
+            ("law", s(law.name())),
+            ("version", Json::Int(i128::from(law.version()))),
+            ("rate_numerator", s(rate.numerator().to_string())),
+            ("rate_denominator", s(rate.denominator().to_string())),
+            ("source_ordinals", Json::Arr(source_ordinals)),
+        ])
+    });
     let bound = out.is_bound();
     let authority_posture = out.authority_posture();
     let bound_void = !out.can_confirm() && disposition == Some("voids");
@@ -9625,6 +9695,15 @@ pub(crate) fn emit_post_plan(
     }
     if let Some(disposition) = disposition {
         human.push_str(&format!("\nResolution disposition: {disposition}"));
+    }
+    if let Some((law, rate)) = &proportional {
+        human.push_str(&format!(
+            "\nProportional post: {} v{} at exact rate {}/{}; unposted held amounts are released",
+            law.name(),
+            law.version(),
+            rate.numerator(),
+            rate.denominator(),
+        ));
     }
     if let Some((_, lines)) = &net_effect {
         human.push_str("\nNet effect (the target plus this entry):\n");
@@ -9717,6 +9796,7 @@ pub(crate) fn emit_post_plan(
                 resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),
             ),
             ("disposition", disposition.map_or(Json::Null, s)),
+            ("proportional_post", proportional_json),
             (
                 "supersedes",
                 Json::Arr(

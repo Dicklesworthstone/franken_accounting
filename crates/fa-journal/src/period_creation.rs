@@ -500,7 +500,7 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
     let canonical_bytes = definition.canonical_bytes()?;
     let body_digest = domain_digest(DOMAIN, &[&canonical_bytes]);
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::SCHEMA_CONTROL,

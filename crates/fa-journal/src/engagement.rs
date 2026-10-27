@@ -1021,7 +1021,7 @@ fn record_proposal(
 ) -> EntryPayload {
     let (from, to) = kind.states(state);
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::ENGAGEMENT_CONTROL,

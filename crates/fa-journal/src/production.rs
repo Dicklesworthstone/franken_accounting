@@ -529,7 +529,7 @@ fn record_proposal(
     let vid = profile.vid();
     let (from, to) = kind.states();
     Ok(EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::PRODUCTION_CONTROL,

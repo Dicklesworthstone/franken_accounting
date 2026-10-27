@@ -997,7 +997,7 @@ pub(crate) fn schema_control_proposal(
     description: Erasable<String>,
 ) -> EntryPayload {
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::SCHEMA_CONTROL,

@@ -766,7 +766,7 @@ fn record_proposal(
         }
     };
     EntryPayload {
-        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::CASE_CONTROL,
@@ -1771,7 +1771,7 @@ pub fn derive_member(
     proposal.extensions.sort_by_key(|(tag, _)| *tag);
     // An extension block needs schema minor 1 (Appendix A); a Plan record
     // written at minor 0 has none.
-    proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::SCHEMA_MINOR);
+    proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
     Ok(Ok(proposal))
 }
 
