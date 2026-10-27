@@ -5,9 +5,10 @@
 //! Migration retains its declared run-scoped keys. Period, time and normal-key
 //! policy activation, account lifecycle, dimension creation and native
 //! subledger registration controls also reserve the common key; their
-//! pre-protocol entries remain valid retry anchors. Other dedicated
-//! writers, including target-derived capability issuance and revocation, have
-//! not migrated.
+//! pre-protocol entries remain valid retry anchors. New capability issuance
+//! and revocation events reserve the key beside their target-derived Entry;
+//! their original legacy events remain valid read-only retry anchors. This
+//! does not migrate historical capability keys into the monetary-key coverage.
 //! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
@@ -687,6 +688,63 @@ pub fn stage_control(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<
     stage_claim(batch, entry, vid).map(|_| ())
 }
 
+/// Capability events reserve a scoped key beside their unique target.
+fn capability_control(entry: &Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if proposal.class != EntryClass::POLICY_CONTROL
+        || proposal.branch_id != Id128::TRUNK
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+    {
+        return false;
+    }
+    let Some(fa_model::ControlPayload::CapabilityEvent {
+        commitment,
+        kind,
+        caveats_digest,
+    }) = &proposal.control
+    else {
+        return false;
+    };
+    let fa_model::EntryOrigin::Control {
+        control_kind,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    match *kind {
+        crate::policy::CAPABILITY_EVENT_ISSUE => {
+            *control_kind == fa_model::ControlKind::CAPABILITY_ISSUANCE
+                && *spec_body_digest != [0; 32]
+                && vid == crate::policy::issuance_vid(proposal.book_id, commitment)
+        }
+        crate::policy::CAPABILITY_EVENT_REVOKE => {
+            *control_kind == fa_model::ControlKind::CAPABILITY_REVOCATION
+                && spec_body_digest == commitment
+                && *caveats_digest == [0; 32]
+                && proposal.extensions.is_empty()
+                && vid == crate::policy::revocation_vid(proposal.book_id, commitment)
+        }
+        _ => false,
+    }
+}
+
+/// Called only by the dedicated capability writer after admitting the
+/// complete control. The successful key and target publish in one transaction.
+pub(crate) fn stage_capability_control(
+    batch: &mut WriteBatch,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !capability_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "capability outcome claim requires its registered target-derived control".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
 fn stage_claim(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<[u8; 32], KernelError> {
     let claim = EntryClaim::new(entry, vid, None)?;
     let encoded = claim.canonical_bytes()?;
@@ -707,7 +765,30 @@ pub fn verify_control_recorded<V: Vfs + Clone>(
     row: &VertexRow,
     entry: &Entry,
 ) -> Result<bool, KernelError> {
-    if !normal_key_control(entry, row.vid) || !original(db, row)? {
+    if !normal_key_control(entry, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
+}
+
+/// Check the atomic claim after authenticating a capability event's target.
+pub(crate) fn verify_capability_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !capability_control(entry, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
+}
+
+fn verify_control_claim<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !original(db, row)? {
         return Ok(false);
     }
     let outcome = entry_outcome_vid(&entry.proposal);
