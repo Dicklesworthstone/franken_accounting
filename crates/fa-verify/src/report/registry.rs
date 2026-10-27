@@ -34,7 +34,7 @@ enum Value {
     Text(String),
     Int(i128),
     Bool(bool),
-    Array,
+    Array(Vec<Value>),
 }
 type Table = BTreeMap<String, Value>;
 struct Document {
@@ -96,10 +96,11 @@ impl<'a> Cursor<'a> {
             }),
             4 => {
                 let n = self.count(65_536, 1)?;
+                let mut values = Vec::with_capacity(n);
                 for _ in 0..n {
-                    self.value(depth + 1)?;
+                    values.push(self.value(depth + 1)?);
                 }
-                Value::Array
+                Value::Array(values)
             }
             _ => return Err(invalid("unsupported canonical registry value tag")),
         })
@@ -460,4 +461,195 @@ pub(super) fn verify(
             BTreeMap::new()
         },
     ))
+}
+
+/// Decimal scales and currency kinds are valuation inputs, not display labels.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FunctionalUnit {
+    pub scale: u8,
+    pub currency: bool,
+}
+pub(super) struct FunctionalRegistry {
+    pub units: BTreeMap<u32, FunctionalUnit>,
+}
+fn text_array(row: &Table, key: &str) -> Result<Vec<String>, ReportError> {
+    let Some(Value::Array(values)) = row.get(key) else {
+        return Err(invalid(format!("registry field {key} must be an array")));
+    };
+    values
+        .iter()
+        .map(|value| match value {
+            Value::Text(value) => Ok(value.clone()),
+            _ => Err(invalid(format!("registry field {key} must contain text"))),
+        })
+        .collect()
+}
+fn functional_laws(doc: &Document) -> Result<(), ReportError> {
+    if doc.root.len() != 4
+        || doc.named_tables != 0
+        || doc.arrays.len() != 2
+        || string(&doc.root, "ad_hoc_rate_admission")? != "forbidden"
+        || string(&doc.root, "residual_bound_law")?
+            != "strictly_less_than_one_base_minor_unit_times_foreign_leg_count"
+        || string(&doc.root, "realized_fx_mode")? != "paired_conversion_account"
+    {
+        return Err(invalid("unsupported FX registry policy"));
+    }
+    let laws = rows(doc, "law")?;
+    let mut identities = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    for row in laws {
+        let id = integer(row, "id")?;
+        let version = integer(row, "version")?;
+        if row.len() != 12
+            || !(1..=u16::MAX as i128).contains(&id)
+            || !(1..=u16::MAX as i128).contains(&version)
+            || !identities.insert((id, version))
+            || !names.insert(string(row, "name")?)
+            || !matches!(string(row, "status")?, "live" | "reserved")
+            || string(row, "code")?.is_empty()
+            || string(row, "meaning")?.is_empty()
+            || string(row, "standard_ref")?.is_empty()
+        {
+            return Err(invalid("ambiguous or unsupported FX law identity"));
+        }
+        text_array(row, "admitted_classes")?;
+    }
+    for (id, code, name, purpose, date, classes) in [
+        (
+            1,
+            "spot_close",
+            "SpotClose",
+            "SpotClose",
+            "entry_effective_date",
+            [
+                "Original",
+                "Adjusting",
+                "Reversal",
+                "Pending",
+                "Resolution",
+                "Migration",
+            ]
+            .as_slice(),
+        ),
+        (
+            3,
+            "period_average",
+            "PeriodAverage",
+            "PeriodAverage",
+            "period_end_date",
+            ["Original", "Adjusting", "Reversal"].as_slice(),
+        ),
+    ] {
+        let row = laws
+            .iter()
+            .find(|row| {
+                matches!(row.get("id"), Some(Value::Int(value)) if *value == id)
+                    && matches!(row.get("version"), Some(Value::Int(1)))
+            })
+            .ok_or_else(|| invalid("missing supported direct FX law version"))?;
+        if string(row, "code")? != code
+            || string(row, "name")? != name
+            || string(row, "rate_purpose")? != purpose
+            || string(row, "date_selector")? != date
+            || string(row, "rounding_law")? != "HalfEven"
+            || string(row, "residual_mode")? != "designated_leg"
+            || string(row, "status")? != "live"
+            || text_array(row, "admitted_classes")?
+                .iter()
+                .map(String::as_str)
+                .ne(classes.iter().copied())
+        {
+            return Err(invalid(
+                "direct FX law semantics differ from this verifier's supported version",
+            ));
+        }
+    }
+    Ok(())
+}
+fn functional_rounding(doc: &Document) -> Result<(), ReportError> {
+    let names = [
+        "HalfUp",
+        "HalfDown",
+        "HalfEven",
+        "HalfAwayFromZero",
+        "HalfTowardZero",
+        "Ceiling",
+        "Floor",
+        "TowardZero",
+        "AwayFromZero",
+    ];
+    let laws = rows(doc, "law")?;
+    if doc.root.len() != 1
+        || doc.named_tables != 0
+        || doc.arrays.len() != 1
+        || laws.len() != names.len()
+    {
+        return Err(invalid("unsupported rounding registry vocabulary"));
+    }
+    for (index, (row, name)) in laws.iter().zip(names).enumerate() {
+        if row.len() != 3
+            || integer(row, "id")? != (index + 1) as i128
+            || string(row, "name")? != name
+            || string(row, "definition")?.is_empty()
+        {
+            return Err(invalid("rounding law identifiers have changed semantics"));
+        }
+    }
+    if string(&laws[2], "definition")?
+        != "Banker's rounding: ties to the even neighbour (sign-symmetric)."
+    {
+        return Err(invalid("unsupported HalfEven definition"));
+    }
+    Ok(())
+}
+pub(super) fn verify_functional(
+    inputs: &[(&str, &[u8])],
+    expected: &[u8; 32],
+) -> Result<FunctionalRegistry, ReportError> {
+    const NAMES: [&str; 6] = [
+        "account_types",
+        "entry_classes",
+        "units",
+        "foundations",
+        "fx_laws",
+        "rounding_laws",
+    ];
+    if inputs.iter().map(|(name, _)| *name).ne(NAMES) {
+        return Err(invalid(
+            "functional reports require all six canonical registries in certificate order",
+        ));
+    }
+    let mut transcript = Vec::new();
+    let mut docs = Vec::with_capacity(inputs.len());
+    for (name, bytes) in inputs {
+        docs.push(document(bytes)?);
+        transcript.extend_from_slice(name.as_bytes());
+        transcript.push(0);
+        transcript.extend_from_slice(&hash_parts(b"fa:registry-canonical-digest:v1", &[bytes]));
+    }
+    if hash_parts(b"fa:report-registry-closure:v2", &[&transcript]) != *expected {
+        return Err(invalid(
+            "functional registry inputs differ from the certificate's exact closure",
+        ));
+    }
+    account_types(&docs[0])?;
+    entry_classes(&docs[1])?;
+    units(&docs[2])?;
+    functional_laws(&docs[4])?;
+    functional_rounding(&docs[5])?;
+    let mut definitions = BTreeMap::new();
+    for row in rows(&docs[2], "unit")? {
+        let id = u32::try_from(integer(row, "id")?).map_err(|_| invalid("invalid unit id"))?;
+        let scale =
+            u8::try_from(integer(row, "scale")?).map_err(|_| invalid("invalid decimal scale"))?;
+        definitions.insert(
+            id,
+            FunctionalUnit {
+                scale,
+                currency: string(row, "kind")? == "currency",
+            },
+        );
+    }
+    Ok(FunctionalRegistry { units: definitions })
 }
