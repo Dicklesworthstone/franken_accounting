@@ -271,6 +271,30 @@ fn unknown_matter(matter: &str) -> Refusal {
 }
 
 impl Book {
+    /// Volume preparation and rendering read the current matter, held
+    /// document inventory, and document metadata before producing bytes.
+    /// Judge those reads before revealing whether any requested matter exists.
+    fn admit_volume_reads(
+        &self,
+        principal: VId,
+        capability: &Capability,
+        produce: bool,
+    ) -> Outcome<()> {
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context().book_id)
+            .and_then(|()| {
+                if produce {
+                    fa_policy::require(capability, fa_policy::Op::Produce, "produce")
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        self.admit_current(capability)
+    }
+
     fn held_documents(&self) -> Outcome<BTreeMap<Oid, fa_journal::evidence::DocumentSummary>> {
         Ok(self
             .documents(None)?
@@ -287,8 +311,8 @@ impl Book {
         claims: &PrivilegeClaims,
         volume: &str,
     ) -> Outcome<ProductionProfile> {
-        if let Err(denial) = fa_policy::require(capability, fa_policy::Op::Produce, "produce") {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        if let Err(refusal) = self.admit_volume_reads(capability.holder(), capability, true)? {
+            return Ok(Err(refusal));
         }
         let Some(view) = self.production(matter)? else {
             return Ok(Err(unknown_matter(matter)));
@@ -379,8 +403,8 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: Option<&[u8]>,
     ) -> Outcome<Option<(Produced, ProductionVolume)>> {
-        if let Err(denial) = fa_policy::require(capability, fa_policy::Op::Produce, "produce") {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        if let Err(refusal) = self.admit_volume_reads(principal, capability, true)? {
+            return Ok(Err(refusal));
         }
         if self.production(matter)?.is_none() {
             return Ok(Err(unknown_matter(matter)));
@@ -502,6 +526,9 @@ impl Book {
         volume: &str,
         bundle: Option<BundleDelivery>,
     ) -> Outcome<ProductionVolume> {
+        if let Err(refusal) = self.admit_volume_reads(capability.holder(), capability, false)? {
+            return Ok(Err(refusal));
+        }
         let profile = &produced.profile;
         if let Err(refusal) = volume_label(volume) {
             return Ok(Err(refusal));

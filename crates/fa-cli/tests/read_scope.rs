@@ -547,14 +547,10 @@ fn exports_enforce_the_same_scope_as_stock_reads_before_disclosing_or_writing() 
     );
 }
 
-/// fa-2q91: `--with-proofs` writes a complete-prefix bundle beside the
-/// extract, so the bundle's reach is judged as well. A token bounded to
-/// March's effective dates exports March's stock but not its proofs (the
-/// bundle holds April's entry); a pinned auditor (plan §15.6) is served the
-/// state recorded at its pin, never a later one, and the extract verifies
-/// offline against it. One account's month (`--account`) is proven within
-/// the same effective bound by its scope index, and a pinned auditor's
-/// account month is served the state at its pin.
+/// fa-2q91 / fa-0x0: `--with-proofs` checks complete retained journal and
+/// checkpoint integrity at HEAD even for a historical state or one account.
+/// Its actual reach is admitted before opening the book. Authorized callers
+/// still export independently verifiable historical and account-scoped ADS.
 #[test]
 fn ads_proofs_disclose_only_what_the_token_reaches() {
     let f = Fixture::new();
@@ -577,16 +573,19 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         &["read", "produce"],
         &["--known-at-most", &pin.to_string()],
     );
+    let (whole, _) = f.issue_ops("ads-whole", &["read", "produce"], &[]);
     let exported = f.ok(&[
         "--token",
-        &pinned,
+        &whole,
         "export",
         "ads",
         "--as-of",
         "2026-04-30",
         "--out",
-        "pinned-ads",
+        "historical-ads",
         "--with-proofs",
+        "--state",
+        text(data(&first), "oid"),
     ]);
     let proof = data(&exported).get("proof").expect("proof");
     assert_eq!(text(proof, "state"), text(data(&first), "oid"));
@@ -598,9 +597,9 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
     assert_eq!(
         number(data(&exported), "entries"),
         2,
-        "March and April, not the posting after the pin"
+        "March and April, before the later posting"
     );
-    let dir = f.dir.join("pinned-ads");
+    let dir = f.dir.join("historical-ads");
     let read = |name: &str| std::fs::read(dir.join(name)).expect(name);
     let key: [u8; 32] = (0..32)
         .map(|i| {
@@ -621,27 +620,53 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
     .unwrap();
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!(report.entries, 2);
-    // The pinned state's chart, judged against its own declarations.
+    // The selected historical state's chart, judged against its declarations.
     assert_eq!(report.chart_rows, Some(2));
 
-    // A state named beyond the pin is out of scope, and writes nothing.
-    f.out_of_scope(
-        &[
-            "--token",
-            &pinned,
-            "export",
-            "ads",
-            "--as-of",
-            "2026-04-30",
-            "--out",
-            "later-ads",
-            "--with-proofs",
-            "--state",
-            text(data(&second), "oid"),
-        ],
-        "`known_at`",
-    );
-    assert!(!f.dir.join("later-ads").exists());
+    let refused_before_open = |args: &[&str], caveat: &str| {
+        let (exit, event) = f.run(args);
+        assert_eq!(exit, 7, "{event:?}");
+        assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011");
+        assert!(text(data(&event), "message").contains(caveat));
+        assert_eq!(event.get("book"), Some(&Json::Null), "{event:?}");
+        assert_eq!(event.get("coordinate"), Some(&Json::Null), "{event:?}");
+        data(&event).clone()
+    };
+    // No selected state, including the old in-pin one or a nonexistent oid,
+    // can hide the HEAD integrity reads. Refusals reveal no state existence.
+    let mut pinned_refusal = None;
+    for (index, state) in [
+        text(data(&first), "oid"),
+        text(data(&second), "oid"),
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = format!("denied-pinned-{index}");
+        let refusal = refused_before_open(
+            &[
+                "--token",
+                &pinned,
+                "export",
+                "ads",
+                "--as-of",
+                "2026-04-30",
+                "--out",
+                &output,
+                "--with-proofs",
+                "--state",
+                state,
+            ],
+            "`known_at`",
+        );
+        if let Some(expected) = &pinned_refusal {
+            assert_eq!(&refusal, expected);
+        } else {
+            pinned_refusal = Some(refusal);
+        }
+        assert!(!f.dir.join(output).exists());
+    }
 
     // March's stock is within an effective bound; its proofs are not.
     let (through, _) = f.issue_ops(
@@ -659,14 +684,37 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         "--out",
     ];
     f.ok(&[&march[..], &["march-ads"]].concat());
-    f.out_of_scope(
+    refused_before_open(
         &[&march[..], &["march-proofs", "--with-proofs"]].concat(),
         "`effective`",
     );
     assert!(!f.dir.join("march-proofs").exists());
 
-    // One account's month is within the same bound: its scope-index bundle
-    // ends on March 31 (plan §13.1), so that auditor's extract is proven.
+    // Output narrowing does not narrow the integrity reads. A rejected
+    // account/period request is refused before even resolving the period.
+    for (token, caveat) in [(&through, "`effective`"), (&pinned, "`known_at`")] {
+        for period in ["FY2026-P03", "FY2099-P01"] {
+            refused_before_open(
+                &[
+                    "--token",
+                    token,
+                    "export",
+                    "ads",
+                    "--account",
+                    "1000",
+                    "--period",
+                    period,
+                    "--out",
+                    "denied-cash",
+                    "--with-proofs",
+                ],
+                caveat,
+            );
+        }
+    }
+    assert!(!f.dir.join("denied-cash").exists());
+
+    // A whole-book capability still produces the narrower account output.
     let verify_dir = |name: &str, proof: &Json| {
         let dir = f.dir.join(name);
         let read = |file: &str| std::fs::read(dir.join(file)).expect(file);
@@ -688,10 +736,18 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         .unwrap()
     };
     let cash = f.ok(&[
-        &march[..],
-        &["march-cash", "--account", "1000", "--with-proofs"],
-    ]
-    .concat());
+        "--token",
+        &whole,
+        "export",
+        "ads",
+        "--period",
+        "FY2026-P03",
+        "--out",
+        "march-cash",
+        "--account",
+        "1000",
+        "--with-proofs",
+    ]);
     let proof = data(&cash).get("proof").expect("proof");
     assert_eq!(text(proof, "completeness"), "scope_index_complete");
     let report = verify_dir("march-cash", proof);
@@ -699,10 +755,10 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
     assert_eq!(report.account_scope.as_deref(), Some("1000"));
     assert_eq!(report.effective_through, "2026-03-31");
 
-    // A pinned auditor's account month is served the state at its pin too.
-    let pinned_cash = f.ok(&[
+    // Historical account output also remains available after later postings.
+    let historical_cash = f.ok(&[
         "--token",
-        &pinned,
+        &whole,
         "export",
         "ads",
         "--account",
@@ -710,12 +766,14 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         "--period",
         "FY2026-P03",
         "--out",
-        "pinned-cash",
+        "historical-cash",
         "--with-proofs",
+        "--state",
+        text(data(&first), "oid"),
     ]);
-    let proof = data(&pinned_cash).get("proof").expect("proof");
+    let proof = data(&historical_cash).get("proof").expect("proof");
     assert_eq!(text(proof, "state"), text(data(&first), "oid"));
-    let report = verify_dir("pinned-cash", proof);
+    let report = verify_dir("historical-cash", proof);
     assert!(report.verified(), "{:?}", report.failures);
 }
 
