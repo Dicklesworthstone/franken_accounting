@@ -1,4 +1,4 @@
-//! The authenticated source closure for portable functional trial balances.
+//! The authenticated source closure for portable functional reports.
 //!
 //! The facade replays its original native certificate before calling these
 //! helpers. The independent verifier reproduces the valuation and report;
@@ -52,7 +52,7 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     && matches!(proposal.origin, EntryOrigin::Migration { .. })
                 {
                     return Ok(Err(refused(
-                        "portable functional trial balances do not yet interpret migration-origin valuations",
+                        "portable functional reports do not yet interpret migration-origin valuations",
                     )));
                 }
                 let Some(base) = &proposal.base_totals else {
@@ -63,7 +63,7 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     Some(FxLawId::SpotClose | FxLawId::PeriodAverage)
                 ) {
                     return Ok(Err(refused(
-                        "portable functional trial balances support SpotClose, PeriodAverage and their exact inherited reversals",
+                        "portable functional reports support SpotClose, PeriodAverage and their exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {
@@ -149,20 +149,24 @@ pub fn rate_oids(journal: &Journal, known_at: CommitSeq) -> Outcome<Vec<Oid>> {
 pub(super) fn certificate(certificate: &[u8], journal: &Journal, known_at: CommitSeq) -> bool {
     let check = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.fixed::<{ b"fa:report-certificate:v10".len() }>("functional certificate")?
-            != *b"fa:report-certificate:v10"
-            || reader.str(64, "scope")? != "fa-fold-over-prefix"
-        {
+        let (output, selector) = if certificate.starts_with(b"fa:report-certificate:v10") {
+            reader.fixed::<{ b"fa:report-certificate:v10".len() }>("functional certificate")?;
+            ("fa:functional-trial-balance:v1", 8)
+        } else if certificate.starts_with(b"fa:report-certificate:v5") {
+            reader.fixed::<{ b"fa:report-certificate:v5".len() }>("functional certificate")?;
+            ("fa:functional-statement:v1", 3)
+        } else {
+            return Ok(false);
+        };
+        if reader.str(64, "scope")? != "fa-fold-over-prefix" {
             return Ok(false);
         }
         reader.str(64, "authority")?;
-        Ok(
-            reader.str(64, "output")? == "fa:functional-trial-balance:v1"
-                && reader.fixed::<16>("book")? == journal.book_id.0
-                && reader.fixed::<16>("branch")? == [0; 16]
-                && reader.u64("known-at")? == known_at.0
-                && reader.u8("selector")? == 8,
-        )
+        Ok(reader.str(64, "output")? == output
+            && reader.fixed::<16>("book")? == journal.book_id.0
+            && reader.fixed::<16>("branch")? == [0; 16]
+            && reader.u64("known-at")? == known_at.0
+            && reader.u8("selector")? == selector)
     };
     check().unwrap_or(false)
 }

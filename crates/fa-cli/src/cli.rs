@@ -6513,10 +6513,13 @@ fn plan_document_into_draft(
         ));
     }
     if doc.get("intents").is_some() {
-        return Err(usage(
-            "a batch document cannot be planned into a draft; the draft is its own batch",
-            "plan each intent into the draft; its promotion posts them as one batch",
-        ));
+        if forced.is_some() {
+            return Err(usage(
+                "this typed entry command accepts one intent, not a PostBatch",
+                "append the batch with fa batch --intent <file> --draft <name>",
+            ));
+        }
+        return post_batch_document(ctx, args, doc, Some(name));
     }
     let who = ctx.principal(args);
     let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
@@ -7496,7 +7499,12 @@ fn batch_member_fail(index: usize, fail: Fail) -> Fail {
 /// effects (an invoice and its application in one batch: the application
 /// names the invoice's identity-derived vid). The batch key is the identity
 /// of its IntentOutcome, so an identical retry returns the recorded outcome.
-fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(), Fail> {
+fn post_batch_document(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    doc: &Json,
+    draft: Option<&str>,
+) -> Result<(), Fail> {
     const FIX: &str = "a batch intent is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]}; fa robot-docs examples shows an entry intent";
     for flag in [
         "--balancing",
@@ -7539,6 +7547,17 @@ fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(),
     let mut intents = Vec::with_capacity(members.len());
     let mut classes = Vec::with_capacity(members.len());
     let mut earlier = batch_plan::PriorEntries::new();
+    if let Some(name) = draft {
+        for entry in book.draft_entries(&capability, name)?? {
+            let vid = batch_plan::proposal_vid(&entry.proposal)?;
+            if earlier.insert(vid, entry).is_some() {
+                return Err(Fail::Internal(
+                    "a retained draft repeats an entry identity".into(),
+                ));
+            }
+        }
+    }
+    let mut incoming = batch_plan::PriorEntries::new();
     for (i, member) in members.iter().enumerate() {
         let built = build_post_request_with_prior(
             out,
@@ -7554,11 +7573,23 @@ fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(),
         classes.push(built.class_name);
         let intent = PostIntent::new(built.request.proposal, built.request.approvals)
             .map_err(|e| usage(format!("batch member {i}: {e}"), "check the member intent"))?;
-        batch_plan::remember(&mut earlier, &intent).map_err(|f| batch_member_fail(i, f))?;
+        if draft.is_some() {
+            batch_plan::remember(&mut incoming, &intent).map_err(|f| batch_member_fail(i, f))?;
+            let vid = batch_plan::proposal_vid(intent.proposal())?;
+            // Original reviewed targets win on a retry: fresh private-text
+            // salts must not rewrite a later member's authenticated EntryRef.
+            earlier.entry(vid).or_insert_with(|| incoming[&vid].clone());
+        } else {
+            batch_plan::remember(&mut earlier, &intent).map_err(|f| batch_member_fail(i, f))?;
+        }
         intents.push(intent);
     }
     let batch = fa::PostBatch::new(key.as_bytes().to_vec(), intents)
         .map_err(|e| usage(format!("batch intent: {e}; nothing was posted"), FIX))?;
+    if let Some(name) = draft {
+        let planned = book.plan_batch_into_draft(capability, name, batch.clone())??;
+        return batch_plan::emit_draft(out, &book, name, &batch, &planned);
+    }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let plan = book.plan_batch(batch, &capability)??;
         return batch_plan::emit(out, &book, &ctx.files, args, &plan);
@@ -8755,7 +8786,7 @@ pub(crate) fn post_document(
         ));
     }
     if forced.is_none() && doc.get("intents").is_some() {
-        return post_batch_document(ctx, args, &doc);
+        return post_batch_document(ctx, args, &doc, None);
     }
     check_post_planning_options(args)?;
     let who = ctx.principal(args);

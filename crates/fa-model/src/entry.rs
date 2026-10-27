@@ -103,7 +103,10 @@ pub const DRAFT_BODY_EXTENSION: u16 = 8;
 /// target for dependent retries after discard or availability drift. Empty
 /// resolved bytes denote the Entry exactly sealed from the retained proposal
 /// and approvals (no plan certificate), verified against the retained digest.
-/// Versions 1 and 2 keep their original encoding.
+/// Version 4 retains an atomic batch as `u16 4 | bytes batch_key | list(bytes
+/// v3_member)`: one ordered group of reviewed intents under one capability.
+/// Every member is appended by the same control publication; promotion still
+/// replays the complete draft in order. Versions 1--3 keep their original encoding.
 pub const DRAFT_INTENT_EXTENSION: u16 = 9;
 /// Extension tag 10, `fa:scenario-body:v1` (plan §15.2, Appendix B
 /// `ForkScenario`, bead fa-k07b): a scenario's immutable body on its

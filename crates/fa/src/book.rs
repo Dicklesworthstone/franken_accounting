@@ -1549,6 +1549,20 @@ impl Book {
         )))
     }
 
+    /// Append an ordered PostBatch to a draft atomically, without posting its
+    /// members to trunk. Current authority and every posting law still apply.
+    pub fn plan_batch_into_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        batch: fa_journal::PostBatch,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_batch_into_draft(
+            &purposes, capability, name, batch,
+        )))
+    }
+
     /// Rehearse this owner's retained draft members without publishing them.
     /// Returns their resolved entries, or `None` for an empty open draft.
     pub fn preview_draft(

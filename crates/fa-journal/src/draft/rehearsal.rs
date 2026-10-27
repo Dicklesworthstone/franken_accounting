@@ -470,6 +470,7 @@ fn capture<V: Vfs + Clone>(
                 "draft control does not match its native lifecycle contract",
             ));
         }
+        let mut plan_discriminator = None;
         let kind = match (state, *from, *to) {
             (None, 0, 1) => {
                 if proposal.principal_ref != body.owner
@@ -490,36 +491,33 @@ fn capture<V: Vfs + Clone>(
                         "Plan record carries a different extension or proof",
                     ));
                 }
-                let (intent, capability, resolved_entry_digest, resolved_entry) =
-                    decode_intent(bytes)?;
-                let planned = intent.proposal();
-                if proposal.principal_ref != body.owner
-                    || capability.holder() != body.owner
-                    || planned.principal_ref != body.owner
-                    || planned.book_id != book.book_id
-                    || planned.branch_id != Id128::TRUNK
-                    || intent_bytes(
-                        &intent,
-                        &capability,
+                let decoded = decode_plan_record(bytes)?;
+                for (intent, capability, resolved_entry_digest, resolved_entry) in decoded.members {
+                    let planned = intent.proposal();
+                    if proposal.principal_ref != body.owner
+                        || capability.holder() != body.owner
+                        || planned.principal_ref != body.owner
+                        || planned.book_id != book.book_id
+                        || planned.branch_id != Id128::TRUNK
+                        || !member_keys.insert(planned.idempotency_key.clone())
+                        || member_keys.len() > fa_model::limits::MAX_BATCH_ENTRIES
+                    {
+                        return Err(corrupt(
+                            "Plan record does not bind its original owner, intent and capability",
+                        ));
+                    }
+                    intents.push(PlannedIntent {
+                        record: record.reference.entry_ref.vid,
+                        recorded_at: record.reference.recorded_at,
+                        intent,
+                        capability,
                         resolved_entry_digest,
-                        resolved_entry.as_ref(),
-                    )? != *bytes
-                    || !member_keys.insert(planned.idempotency_key.clone())
-                {
-                    return Err(corrupt(
-                        "Plan record does not bind its original owner, intent and capability",
-                    ));
+                        resolved_entry,
+                    });
                 }
-                intents.push(PlannedIntent {
-                    record: record.reference.entry_ref.vid,
-                    recorded_at: record.reference.recorded_at,
-                    intent,
-                    capability,
-                    resolved_entry_digest,
-                    resolved_entry,
-                });
                 plans.push(record.reference.clone());
-                Kind::Plan
+                plan_discriminator = Some(decoded.discriminator);
+                decoded.kind
             }
             (Some(DraftState::Open), 1, 2) => {
                 state = Some(DraftState::Promoted);
@@ -531,14 +529,7 @@ fn capture<V: Vfs + Clone>(
             }
             _ => return Err(corrupt("draft controls do not form one lawful lifecycle")),
         };
-        let discriminator = if matches!(kind, Kind::Plan) {
-            intents
-                .last()
-                .map(|plan| plan.intent.proposal().idempotency_key.as_slice())
-                .ok_or_else(|| corrupt("Plan has no retained intent"))?
-        } else {
-            &[]
-        };
+        let discriminator = plan_discriminator.as_deref().unwrap_or(&[]);
         if proposal.idempotency_key != record_key(kind, draft, discriminator)
             || record.reference.entry_ref.vid != record_vid(book, proposal)
         {

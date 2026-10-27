@@ -58,6 +58,8 @@ pub struct DraftDiff {
     pub source_known_at: CommitSeq,
     pub source_digest: [u8; 32],
     pub period: String,
+    /// Planned members, including every member of an atomic Plan control.
+    /// The source witness separately counts immutable control records.
     pub plans: usize,
     pub seq_map_digest: [u8; 32],
     pub rehearsal_known_at: CommitSeq,
@@ -433,7 +435,7 @@ fn assemble(
         || source.known_at.0.checked_add(1) != Some(draft.known_at.0)
         || rehearsal.batch.recorded_at != draft.known_at
         || rehearsal.batch.already_recorded
-        || rehearsal.batch.entries.len() != source.plans.len()
+        || rehearsal.batch.entries.len() != rehearsal.view.intents.len()
         || rehearsal.seq_map.source_book != source.body.book_id
         || rehearsal.seq_map.source_prefix != source.known_at
         || !rehearsal.seq_map.is_monotone()
@@ -461,7 +463,7 @@ fn assemble(
         source_known_at: source.known_at,
         source_digest: source.digest().map_err(encoded_error)?,
         period: period.into(),
-        plans: source.plans.len(),
+        plans: rehearsal.view.intents.len(),
         seq_map_digest: rehearsal.seq_map.digest().map_err(encoded_error)?,
         rehearsal_known_at: draft.known_at,
         batch_outcome: rehearsal.batch.outcome,

@@ -394,6 +394,9 @@ fn functional_export_keeps_exact_residual_and_honors_a_pinned_producer() {
 #[path = "portable/transitions.rs"]
 mod transitions;
 
+#[path = "portable/statements.rs"]
+mod statements;
+
 #[test]
 fn functional_export_refuses_unvalued_foreign_history_even_outside_selected_dates() {
     let mut fixture = Fixture::new();

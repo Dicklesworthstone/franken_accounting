@@ -170,8 +170,8 @@ pub fn assemble_with_registries(
     )
 }
 
-/// Package a replayed functional trial balance with its original six-registry
-/// closure, exact historical version-2 BookSpec, and every authenticated Rate
+/// Package a replayed functional trial balance or financial statement with its
+/// original six-registry closure, exact historical version-2 BookSpec, and every authenticated Rate
 /// document cited at or before known-at. The facade must govern every Rate read.
 /// This profile supports sequence-selected trunk reports under SpotClose and
 /// PeriodAverage, including exact inherited reversals; other valuation laws and
@@ -211,7 +211,7 @@ pub fn assemble_functional_with_registries(
         || !bodies.is_empty()
     {
         return Ok(Err(refused(
-            "functional trial balance requires its exact six-registry closure and supported native source",
+            "functional report requires its exact six-registry closure and supported native source",
         )));
     }
     if let Err(refusal) = functional::validate(journal, known_at, book_spec, rates)? {
@@ -491,7 +491,7 @@ fn assemble_inner(
         || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
