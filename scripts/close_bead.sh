@@ -129,9 +129,11 @@ repo_dir="$(cd "$repo_dir" && pwd -P)"
 # Python helper module embedded for acceptance-tests parsing, inventory extraction,
 # closure-debt calculation, and 30-day regression checking.
 run_py_helper() {
-  python3 -B - "$@" <<'PY'
+  FA_CLOSE_VERIFIER="$root/scripts/local_proof_verify.sh" python3 -B - "$@" <<'PY'
 import datetime
+import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -212,7 +214,7 @@ def load_beads(repo):
             beads[row["id"]] = row
     return beads
 
-def load_verdict_inventory(repo, verdict_spec):
+def load_verdict_inventory(repo, verdict_spec, for_close=False):
     """
     Loads passed and failed test inventories from either a proof directory,
     a manifest.txt path, or a git note under refs/notes/fa-verdict.
@@ -232,6 +234,18 @@ def load_verdict_inventory(repo, verdict_spec):
     p = pathlib.Path(verdict_spec) if verdict_spec else None
     if p and p.exists():
         proof_dir = p if p.is_dir() else p.parent
+        command = ["bash", os.environ["FA_CLOSE_VERIFIER"], "--repository", repo]
+        if for_close:
+            command.append("--for-close")
+        command.append(str(proof_dir))
+        checked = subprocess.run(command, text=True, capture_output=True)
+        if checked.returncode:
+            print(checked.stdout, end="", file=sys.stderr)
+            print(checked.stderr, end="", file=sys.stderr)
+            die("verdict inventory has no verified full-scope retained evidence")
+        checked_fields = dict(line.split("=", 1) for line in checked.stdout.splitlines() if "=" in line)
+        if checked_fields.get("scope") != "full":
+            die("verdict inventory requires full-scope retained v3 evidence")
         manifest_file = proof_dir / "manifest.txt"
         if not manifest_file.is_file():
             die(f"manifest file not found: {manifest_file}")
@@ -244,44 +258,25 @@ def load_verdict_inventory(repo, verdict_spec):
         tree = kv.get("tree", "")
         verdict = kv.get("verdict", "")
         stable = kv.get("tree_stable", "")
-        note_id = ""
-        try:
-            out = subprocess.check_output(
-                ["git", "-C", repo, "notes", "--ref=fa-verdict", "list", commit],
-                text=True, stderr=subprocess.DEVNULL
-            ).strip()
-            if out:
-                note_id = out.split()[0]
-        except Exception:
-            pass
-        if not note_id:
-            sums = proof_dir / "SHA256SUMS"
-            if sums.is_file():
-                import hashlib
-                note_id = hashlib.sha256(sums.read_bytes()).hexdigest()[:40]
-            else:
-                note_id = commit
-
-        # Scan check.stdout.log and steps/*.log for executed tests and gate cases
-        log_files = [proof_dir / "check.stdout.log"]
-        steps_dir = proof_dir / "steps"
-        if steps_dir.is_dir():
-            log_files.extend(sorted(steps_dir.glob("*.log")))
-        for lf in log_files:
-            if not lf.is_file():
+        note_id = hashlib.sha256((proof_dir / "SHA256SUMS").read_bytes()).hexdigest()[:40]
+        records = [json.loads(line) for line in (proof_dir / "step-verdicts.jsonl").read_text().splitlines()]
+        # Only declared, checksum-bound step logs can supply executed cases.
+        for record in records:
+            if record["log_digest"] == "none":
                 continue
-            step_stem = lf.stem
+            step_stem = record["step"]
+            lf = proof_dir / "steps" / (step_stem + ".log")
             text = lf.read_text(encoding="utf-8", errors="replace")
-            for m in re.finditer(r"^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)$", text, re.M):
-                tname, status = m.group(1), m.group(2)
-                target_Set = passed if status == "ok" else failed
-                target_Set.add(tname)
-                target_Set.add(f"{step_stem}::{tname}")
+            if step_stem == "test":
+                for m in re.finditer(r"^test\s+(\S+)(?: - should panic)?\s+\.\.\.\s+(ok|FAILED)$", text, re.M):
+                    (passed if m.group(2) == "ok" else failed).add(m.group(1))
             for m in re.finditer(r"^(PASS|FAIL|ok)\s+([A-Za-z0-9_.:/-]+)", text, re.M):
                 kind, cname = m.group(1), m.group(2)
                 target_Set = failed if kind == "FAIL" else passed
-                target_Set.add(cname)
+                # Script cases stay qualified by their owning step. A PASS
+                # in check-classify cannot impersonate a workspace Rust test.
                 target_Set.add(f"{step_stem}::{cname}")
+                target_Set.add(f"{step_stem.replace('-', '_')}::{cname}")
         return {
             "commit": commit,
             "tree": tree,
@@ -326,43 +321,19 @@ def load_verdict_inventory(repo, verdict_spec):
             die(f"cannot resolve verdict reference `{target}` in {repo}")
     if not note_id:
         die(f"no refs/notes/fa-verdict note found for `{target}` in {repo}")
-    note_text = subprocess.check_output(
-        ["git", "-C", repo, "notes", "--ref=fa-verdict", "show", commit],
-        text=True, stderr=subprocess.DEVNULL
-    )
-    kv = {}
-    for line in note_text.splitlines():
-        if not line.strip() or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        if k == "step_verdict":
-            rec = json.loads(v)
-            sname = rec.get("step", "")
-            st = rec.get("status", "")
-            if st == "PASS":
-                passed.add(sname)
-            elif st == "FAIL":
-                failed.add(sname)
-            w = rec.get("witness", {})
-            for pt in w.get("passed_test_names", []):
-                passed.add(pt)
-            for ft in w.get("failed_test_names", []):
-                failed.add(ft)
-        elif k == "passed_test":
-            passed.add(v.strip())
-        elif k == "failed_test":
-            failed.add(v.strip())
-        else:
-            kv[k] = v
-    return {
-        "commit": kv.get("commit", commit),
-        "tree": kv.get("tree", ""),
-        "verdict": kv.get("verdict", ""),
-        "stable": kv.get("tree_stable", ""),
-        "note_id": note_id,
-        "passed": passed,
-        "failed": failed,
-    }
+    command = ["bash", os.environ["FA_CLOSE_VERIFIER"], "--repository", repo]
+    if for_close:
+        command.append("--for-close")
+    command.extend(["--note", commit])
+    checked = subprocess.run(command, text=True, capture_output=True)
+    if checked.returncode:
+        print(checked.stdout, end="", file=sys.stderr)
+        print(checked.stderr, end="", file=sys.stderr)
+        die("note has no verified full-scope retained evidence")
+    fields = dict(line.split("=", 1) for line in checked.stdout.splitlines() if "=" in line)
+    inventory = load_verdict_inventory(repo, fields["path"], for_close)
+    inventory["note_id"] = fields["note_id"]
+    return inventory
 
 def matches_inventory(test_id, inv_set):
     if test_id in inv_set:
@@ -501,7 +472,7 @@ if cmd == "regression-check":
 
 if cmd == "verify-close":
     repo, bead_id, verdict_spec, landing_commit, no_tests_reason, require_block = sys.argv[2:8]
-    inv = load_verdict_inventory(repo, verdict_spec)
+    inv = load_verdict_inventory(repo, verdict_spec, for_close=True)
     beads = load_beads(repo)
     row = beads.get(bead_id)
 
@@ -597,10 +568,9 @@ fi
 [ -n "$reason" ] || fail "missing --reason"
 
 spec="${verdict_arg:-$manifest_arg}"
-require_block=0
-[ -n "$verdict_arg" ] && require_block=1
+require_block=1
 
-# 1. Authenticate the verdict bundle or published note via local_proof_verify.sh
+# 1. Verify retained evidence; this does not authenticate the producer's identity.
 if [ -d "$spec" ] || [ -f "$spec" ]; then
   if [ -d "$spec" ]; then
     proof_dir="$spec"
@@ -610,7 +580,7 @@ if [ -d "$spec" ] || [ -f "$spec" ]; then
     proof_dir="$(dirname "$spec")"
   fi
   [ -f "$manifest_file" ] || fail "manifest file not found: $manifest_file"
-  bash "$root/scripts/local_proof_verify.sh" --repository "$repo_dir" "$proof_dir" >/dev/null \
+  bash "$root/scripts/local_proof_verify.sh" --repository "$repo_dir" --for-close "$proof_dir" >/dev/null \
     || fail "proof bundle at $proof_dir failed local_proof_verify.sh against $repo_dir"
   verdict="$(awk -F= '$1 == "verdict" { print $2 }' "$manifest_file")"
   stable="$(awk -F= '$1 == "tree_stable" { print $2 }' "$manifest_file")"
@@ -639,7 +609,7 @@ except Exception:
     sys.exit(1)
 PY
 )" || fail "cannot resolve --verdict $spec in $repo_dir"
-  verify_out="$(bash "$root/scripts/local_proof_verify.sh" --repository "$repo_dir" --note "$resolved_commit")" \
+  verify_out="$(bash "$root/scripts/local_proof_verify.sh" --repository "$repo_dir" --for-close --note "$resolved_commit")" \
     || fail "verdict note for $spec ($resolved_commit) failed local_proof_verify.sh against $repo_dir"
   verdict="$(awk -F= '$1 == "verdict" { print $2 }' <<< "$verify_out")"
   stable="$(awk -F= '$1 == "tree_stable" { print $2 }' <<< "$verify_out")"
