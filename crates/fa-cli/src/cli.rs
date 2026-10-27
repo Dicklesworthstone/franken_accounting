@@ -5621,10 +5621,15 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .or_else(|| book.periods().ok()?.first().map(|p| p.start))
                 .unwrap_or(DateDay(0));
             let date = date_flag(args, default_date)?;
+            // Issuance's default key is the commitment itself. Capability events
+            // share (book, principal, key) outcome claims (2dde2be2b), so the
+            // revocation needs its own default or the issuer could never revoke.
             let key = args
                 .flag("--key")
                 .map(|k| k.as_bytes().to_vec())
-                .unwrap_or_else(|| revoked_commitment.to_vec());
+                .unwrap_or_else(|| {
+                    [b"capability-revoke:".as_slice(), &revoked_commitment].concat()
+                });
             let default_desc = format!("capability revoke {}", hex(&revoked_commitment));
             let description = args.flag("--description").unwrap_or(&default_desc);
             let revoked =

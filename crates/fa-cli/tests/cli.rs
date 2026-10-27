@@ -12547,6 +12547,118 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         seen.extend(check_robot_output(&argv, code, &out));
     }
 
+    // fa-qh60: an approved company layout through the CLI: template, define,
+    // two independent approvals, activate, then the native and functional
+    // custom statements.
+    let layout = dir.join("company-layout-events-book");
+    let mut run_layout = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(layout.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_layout(&["book", "create", "--name", "Layout Co"]);
+    run_layout(&["chart", "import", "--template", "us-gaap-smb"]);
+    run_layout(&["period", "create", "--fiscal-year", "2026"]);
+    run_layout(&["period", "open", "FY2026-P03"]);
+    let layout_evidence = source_doc(&dir, &layout);
+    let layout_sale = write(
+        &dir,
+        "layout-sale.json",
+        r#"{"effective_date":"2026-03-14","idempotency_key":"layout-sale","legs":[{"side":"debit","account":"1200","amount":"10.00 USD"},{"side":"credit","account":"4000","amount":"10.00 USD"}]}"#,
+    );
+    run_layout(&[
+        "post",
+        "--intent",
+        &layout_sale,
+        "--evidence",
+        &layout_evidence,
+    ]);
+    let template_path = dir.join("company-income-template.toml");
+    run_layout(&[
+        "statement",
+        "template",
+        "--definition",
+        "income-statement",
+        "--out",
+        template_path.to_str().unwrap(),
+    ]);
+    let template = std::fs::read_to_string(&template_path)?;
+    assert!(
+        template.contains("\nname = \"income-statement\"\n"),
+        "{template}"
+    );
+    let company = write(
+        &dir,
+        "company-income.toml",
+        &template.replacen(
+            "\nname = \"income-statement\"\n",
+            "\nname = \"company-income\"\n",
+            1,
+        ),
+    );
+    let layout_plan = dir.join("company-income.plan").display().to_string();
+    let review = run_layout(&[
+        "statement",
+        "define",
+        "--file",
+        &company,
+        "--from",
+        "2026-01-01",
+        "--key",
+        "company-income-v1",
+        "--plan-out",
+        &layout_plan,
+    ]);
+    let proposal = field(&review, "proposal_digest")
+        .expect("a define review names its proposal")
+        .to_string();
+    let first = run_layout(&[
+        "approve",
+        "--proposal",
+        &proposal,
+        "--as",
+        "layout-reviewer-a",
+    ]);
+    let second = run_layout(&[
+        "approve",
+        "--proposal",
+        &proposal,
+        "--as",
+        "layout-reviewer-b",
+    ]);
+    let first = field(&first, "approval_vid").unwrap().to_string();
+    let second = field(&second, "approval_vid").unwrap().to_string();
+    run_layout(&[
+        "statement",
+        "activate",
+        "--plan",
+        &layout_plan,
+        "--approval",
+        &first,
+        "--approval",
+        &second,
+    ]);
+    run_layout(&[
+        "statement",
+        "custom",
+        "--definition",
+        "company-income",
+        "--for",
+        "FY2026-P03",
+    ]);
+    run_layout(&[
+        "statement",
+        "custom",
+        "--definition",
+        "company-income",
+        "--for",
+        "FY2026-P03",
+        "--functional",
+    ]);
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
