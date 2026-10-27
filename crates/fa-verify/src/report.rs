@@ -27,6 +27,8 @@
 //! per-entry gross cash turnover and selected native-unit stocks. Its policy
 //! wrapper additionally derives every assignment from original counterpart legs
 //! and explicit overrides; economic classification and approval are not judged.
+//! Equity roll-forwards independently reproduce the complete equity/income
+//! chart, owner movements, closing transfers and opening-to-closing identity.
 //! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
@@ -40,6 +42,7 @@
 mod aging;
 mod cash_flow;
 mod dimension;
+mod equity;
 mod explain;
 mod metadata;
 mod open_items;
@@ -59,6 +62,9 @@ pub use cash_flow::{
     VerifiedGeneralLedger,
 };
 pub use dimension::VerifiedDimensionSelection;
+pub use equity::{
+    EquityActivityKind, EquityMovement, EquityRollForwardUnit, VerifiedEquityRollForward,
+};
 pub use explain::{
     ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
     ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
@@ -176,6 +182,8 @@ pub struct VerifiedReport {
     /// Complete direct cash flow, with independently derived policy decisions
     /// when its outer certificate carries a counterpart policy.
     pub cash_flow: Option<VerifiedCashFlow>,
+    /// Complete Statement of Changes in Equity, including owner role inputs.
+    pub equity_roll_forward: Option<VerifiedEquityRollForward>,
     /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -544,9 +552,14 @@ fn verify_report_with_inputs(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
-    // The supported composition has a fixed depth: policy -> direct cash ->
-    // roll-forward -> native as-of trial balance. Each decoder checks its exact
-    // source format; no generic recursive certificate dispatch is accepted.
+    // Each supported composition has a fixed depth. Equity has one roll-forward
+    // source; policy cash flow has one direct-cash source over a roll-forward.
+    // No generic recursive certificate dispatch is accepted.
+    let equity = if equity::recognizes(certificate_bytes) {
+        Some(equity::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     let cash_policy = if cash_flow::policy::recognizes(certificate_bytes) {
         Some(cash_flow::policy::decode(certificate_bytes)?)
     } else {
@@ -562,7 +575,9 @@ fn verify_report_with_inputs(
     };
     let roll_forward_bytes = cash
         .as_ref()
-        .map_or(certificate_bytes, |value| value.source);
+        .map(|value| value.source)
+        .or_else(|| equity.as_ref().map(|value| value.source))
+        .unwrap_or(certificate_bytes);
     let reconciliation = if reconciliation::recognizes(certificate_bytes) {
         Some(reconciliation::decode(certificate_bytes)?)
     } else {
@@ -611,9 +626,10 @@ fn verify_report_with_inputs(
     if let (Some(aging), Some(control)) = (&aging, &control) {
         reconciliation::bind(aging, &cert, control)?;
     }
-    let certificate_digest = cash_policy
+    let certificate_digest = equity
         .as_ref()
         .map(|value| value.digest)
+        .or_else(|| cash_policy.as_ref().map(|value| value.digest))
         .or_else(|| cash.as_ref().map(|value| value.digest))
         .or_else(|| reconciliation.as_ref().map(|value| value.digest))
         .or_else(|| aging.as_ref().map(|value| value.digest))
@@ -631,13 +647,13 @@ fn verify_report_with_inputs(
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a native statement, OpenItems, ExplainBalance, roll-forward or direct cash flow; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, OpenItems, ExplainBalance, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
     if (is_open_items || is_explanation || roll_forward.is_some()) && major != 2 {
         return Err(failed(
             "registry_closure",
-            "native v3 reports, roll-forwards and direct cash flows require a version-2 bundle with their authenticated complete registry closure",
+            "native v3 reports, roll-forwards, equity and direct cash flows require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -921,6 +937,7 @@ fn verify_report_with_inputs(
                     aging_reconciliation: Some(comparison),
                     roll_forward: None,
                     cash_flow: None,
+                    equity_roll_forward: None,
                     unit_universe_source: "authenticated-registry",
                     output,
                     checked_records: records.len(),
@@ -947,6 +964,7 @@ fn verify_report_with_inputs(
                 aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
+                equity_roll_forward: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -973,6 +991,7 @@ fn verify_report_with_inputs(
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            equity_roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1020,6 +1039,7 @@ fn verify_report_with_inputs(
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            equity_roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1073,6 +1093,7 @@ fn verify_report_with_inputs(
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            equity_roll_forward: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -1115,6 +1136,40 @@ fn verify_report_with_inputs(
             &visible_migrations,
             &rows,
         )?;
+        if let Some(equity_certificate) = &equity {
+            let (equity_roll_forward, output) = equity::replay(
+                equity_certificate,
+                roll_forward,
+                certificate.digest,
+                &schema,
+            )?;
+            return Ok(VerifiedReport {
+                scope: "recomputation",
+                bundle_digest: digest,
+                certificate_digest,
+                output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                checkpoint: signed,
+                known_at: cert.known_at,
+                time_selection: None,
+                effective_through: Some(equity_roll_forward.effective_through),
+                activity: false,
+                periods: Vec::new(),
+                rows: Vec::new(),
+                statement: None,
+                dimension: None,
+                open_items: None,
+                explanation: None,
+                aging: None,
+                aging_reconciliation: None,
+                roll_forward: None,
+                cash_flow: None,
+                equity_roll_forward: Some(equity_roll_forward),
+                unit_universe_source: "authenticated-registry",
+                output,
+                checked_records: records.len(),
+                receipt,
+            });
+        }
         if let Some(cash_certificate) = &cash {
             let (mut cash_flow, mut output) =
                 cash_flow::replay(cash_certificate, roll_forward, certificate.digest)?;
@@ -1150,6 +1205,7 @@ fn verify_report_with_inputs(
                 aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: Some(cash_flow),
+                equity_roll_forward: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1176,6 +1232,7 @@ fn verify_report_with_inputs(
             aging_reconciliation: None,
             roll_forward: Some(roll_forward),
             cash_flow: None,
+            equity_roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1202,6 +1259,7 @@ fn verify_report_with_inputs(
         aging_reconciliation: None,
         roll_forward: None,
         cash_flow: None,
+        equity_roll_forward: None,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

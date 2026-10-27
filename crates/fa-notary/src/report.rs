@@ -34,7 +34,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, effective-date aging, roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -129,6 +129,7 @@ pub fn assemble_with_registries(
         || aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
+        || equity_certificate(certificate)
         || cash_flow_certificate(certificate)
         || policy_cash_flow_certificate(certificate)
         || explanation)
@@ -301,9 +302,24 @@ fn roll_forward_certificate(certificate: &[u8]) -> bool {
 }
 
 /// These are bounded format routes, not independent replay. The facade checks
-/// the full outer report before assembly and the recipient verifies its digest,
-/// every original cash movement and the classification from authenticated data.
-/// Split and indirect wrappers are deliberately outside this profile.
+/// the full outer report before assembly. Equity adds complete historical chart
+/// selection, explicit owner roles and the opening-to-closing reconciliation.
+fn equity_certificate(certificate: &[u8]) -> bool {
+    let check = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "equity format")? != b"fa:equity-roll-forward-certificate:v1" {
+            return Ok(false);
+        }
+        Ok(roll_forward_certificate(
+            reader.bytes(MAX_REPORT_BUNDLE_BYTES, "equity source")?,
+        ))
+    };
+    check().unwrap_or(false)
+}
+
+/// Recognize the direct cash wrapper over its native lead schedule. Production
+/// replays the full outer report; recipients independently verify every cash
+/// movement and its classification. Split and indirect wrappers are unsupported.
 fn cash_flow_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -384,6 +400,7 @@ fn assemble_inner(
                 || aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
+                || equity_certificate(certificate)
                 || cash_flow_certificate(certificate)
                 || policy_cash_flow_certificate(certificate)))
     {

@@ -139,6 +139,7 @@ enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
     Aging(&'a crate::AgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
+    EquityRollForward(&'a crate::EquityRollForwardCertificate),
     CashFlow(&'a crate::CashFlowCertificate),
     CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
     AgingReconciliation {
@@ -153,6 +154,9 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Native(certificate) => certificate,
             Self::Aging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
+            Self::EquityRollForward(certificate) => {
+                certificate.source_certificate().source_certificate()
+            }
             Self::CashFlow(certificate) => certificate.source_certificate().source_certificate(),
             Self::CashFlowPolicy(certificate) => certificate
                 .source_certificate()
@@ -3744,6 +3748,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export the complete Statement of Changes in Equity over its historical
+    /// equity/income chart and native lead schedule. The original outer
+    /// certificate binds owner role choices as well as every movement and total.
+    pub async fn produce_equity_roll_forward_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::EquityRollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::EquityRollForward(certificate),
+        )
+        .await
+    }
+
     /// Export policy-classified direct cash flow. Replay derives each decision
     /// from the original complete counterpart entries before the exact policy,
     /// including unused rules and explicit overrides, is signed in the bundle.
@@ -3808,6 +3833,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             // Enforce that boundary before restoring any report history.
             observes: match report {
                 ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_) => fa_policy::Observes::Head,
                 _ => capability
@@ -3871,6 +3897,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 if let Err(refusal) =
                     self.replay_roll_forward(cx, principal, capability, certificate)?
                 {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::EquityRollForward(certificate) => {
+                if let Err(refusal) = self.replay_equity_roll_forward(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                )? {
                     return Ok(Err(refusal));
                 }
                 None
@@ -3951,6 +3989,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let requires_registry_closure = matches!(
             report,
             ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
                 | ReportBundleCertificate::AgingReconciliation { .. }
@@ -4068,6 +4107,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             },
             ReportBundleCertificate::RollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::EquityRollForward(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

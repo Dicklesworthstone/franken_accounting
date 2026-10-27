@@ -4533,6 +4533,24 @@ impl Book {
         )))
     }
 
+    /// Produce a portable Statement of Changes in Equity. The complete signed
+    /// journal and historical registry closure let an outsider recompute the
+    /// entire equity/income chart, owner movements and closing-transfer identity.
+    /// Current whole-book read/produce authority precedes history observation;
+    /// the receipt binds the original outer certificate and its role choices.
+    pub fn produce_equity_roll_forward_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::EquityRollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_equity_roll_forward_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce policy-classified direct cash flow for offline recomputation.
     /// Native replay derives each classification from complete original
     /// counterpart entries; the signed outer artifact preserves every policy

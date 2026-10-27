@@ -31,6 +31,17 @@ fn many(book: &Path, args: &[&str]) -> (i32, Vec<Json>) {
     (result.status.code().unwrap_or(-1), events)
 }
 
+fn unhex(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0);
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
 #[test]
 fn equity_certification_reopens_replays_and_tracks_backdated_changes() {
     let f = Fixture::with_chart(
@@ -151,5 +162,155 @@ fn equity_certification_reopens_replays_and_tracks_backdated_changes() {
         get(&replayed[0], "data"),
         get(&produced[0], "data"),
         "closing does not rewrite a retained statement"
+    );
+
+    // Certify the completed year after its Closing entry. Both retained and
+    // file export routes carry an independently replayable owner movement
+    // statement, including the income-to-retained-earnings transfer.
+    let closed_at = head(&f.book);
+    let closed_path = f.dir.join("closed-equity.cert");
+    let mut closed_args = args.to_vec();
+    *closed_args.last_mut().unwrap() = closed_path.to_str().unwrap();
+    let (code, closed) = many(&f.book, &closed_args);
+    assert_eq!(code, 0, "{closed:?}");
+    assert_eq!(closed.len(), 2);
+    let closed_bytes = std::fs::read(&closed_path).unwrap();
+    let certificate = fa::EquityRollForwardCertificate::decode(&closed_bytes).unwrap();
+    assert_eq!(certificate.known_at().0 as i128, closed_at);
+    let locator = format!("C:{}", text(&closed[1], "oid"));
+    let expected_digest = fa_verify::blake3::hex(certificate.digest());
+    let checkpoint = ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let signed = ok(
+        &f.book,
+        &[
+            "proof",
+            "signed-checkpoint",
+            "--state",
+            text(&checkpoint, "oid"),
+        ],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let before_exports = head(&f.book);
+    let mut original_bundle = None;
+    for source in [locator.as_str(), closed_path.to_str().unwrap()] {
+        let produced = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                source,
+                "--state",
+                text(&checkpoint, "oid"),
+            ],
+        );
+        assert_eq!(text(&produced, "scope"), "report");
+        assert!(text(&produced, "verify").contains(&format!("--expect {expected_digest}")));
+        let bundle = unhex(text(&produced, "bytes"));
+        let receipt = unhex(text(&produced, "receipt"));
+        let verified = fa_verify::report::verify_report_expected(
+            &bundle,
+            &[key],
+            None,
+            Some(&receipt),
+            Some(certificate.digest()),
+        )
+        .expect("closed equity independently recomputes from signed native history");
+        assert_eq!(verified.certificate_digest, *certificate.digest());
+        assert_eq!(verified.known_at as i128, closed_at);
+        assert_eq!(verified.output, certificate.output());
+        assert_eq!(verified.unit_universe_source, "authenticated-registry");
+        let equity = verified.equity_roll_forward.unwrap();
+        assert_eq!(equity.label, "Annual equity");
+        assert_eq!(equity.units.len(), 1);
+        let unit = &equity.units[0];
+        assert_eq!(unit.opening_total_equity, 0);
+        assert_eq!(unit.issuances, 50_000);
+        assert_eq!(unit.distributions, -3_000);
+        assert_eq!(unit.net_income, 8_000);
+        assert_eq!(unit.closing_transfers_net, 0);
+        assert_eq!(unit.net_equity_change, 55_000);
+        assert_eq!(unit.closing_total_equity, 55_000);
+        assert_eq!(unit.equity_tie_out_residual, 0);
+        let transfers = equity
+            .movements
+            .iter()
+            .filter(|movement| {
+                movement.kind == fa_verify::report::EquityActivityKind::ClosingTransfer
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transfers.len(),
+            3,
+            "Closing moves revenue, expense and retained earnings"
+        );
+        assert_eq!(
+            transfers
+                .iter()
+                .map(|movement| movement.credits - movement.debits)
+                .sum::<i128>(),
+            0
+        );
+
+        if let Some((expected_bundle, expected_receipt)) = &original_bundle {
+            assert_eq!(&bundle, expected_bundle);
+            assert_eq!(&receipt, expected_receipt);
+        } else {
+            original_bundle = Some((bundle.clone(), receipt.clone()));
+        }
+        let verifier_args = [
+            "report",
+            "equity.fab",
+            "--key",
+            text(&signed, "checkpoint_public_key"),
+            "--receipt",
+            "equity.receipt",
+            "--expect",
+            &expected_digest,
+            "--json",
+        ]
+        .map(str::to_string);
+        let read = |name: &str| match name {
+            "equity.fab" => Ok(bundle.clone()),
+            "equity.receipt" => Ok(receipt.clone()),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                name.to_string(),
+            )),
+        };
+        let checked = fa_verify::cli::run(&verifier_args, &read);
+        assert_eq!(checked.exit, 0, "{}{}", checked.stdout, checked.stderr);
+        assert!(checked.stdout.contains("\"verdict\":\"verified\""));
+        assert!(checked.stdout.contains("equity_unit"));
+        assert!(checked.stdout.contains("closing_transfer"));
+        // The nested lead schedule does not authenticate the owner's choice
+        // of issuance and distribution accounts; pin the outer certificate.
+        let inner = certificate.source_certificate().digest();
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &bundle,
+                &[key],
+                None,
+                Some(&receipt),
+                Some(inner),
+            )
+            .is_err()
+        );
+        let mut wrong = verifier_args;
+        wrong[7] = fa_verify::blake3::hex(inner);
+        assert_eq!(fa_verify::cli::run(&wrong, &read).exit, 8);
+    }
+    assert_eq!(
+        head(&f.book),
+        before_exports,
+        "owner proof exports publish nothing"
+    );
+    assert_eq!(std::fs::read(&closed_path).unwrap(), closed_bytes);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "the original pre-close certificate remains exact"
     );
 }
