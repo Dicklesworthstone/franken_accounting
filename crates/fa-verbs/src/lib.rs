@@ -1878,8 +1878,9 @@ mod bound_tests {
     fn the_first_matching_rule_decides_and_an_undecided_command_is_not_admitted() {
         assert_eq!(ops("post", None, None, &[], &[]), names(&["post"]));
         assert_eq!(ops("help", None, None, &[], &[]), names(&[]));
-        // A plan or dry run of a transition reads; the transition itself is
-        // host-only.
+        // A plan or dry run of a transition reads; the transition itself, and
+        // a dry run that consumes a plan, need `close` (an issued Human
+        // operator runs period transitions, ead3caec5); reopen is its own op.
         assert_eq!(
             ops(
                 "period",
@@ -1898,11 +1899,15 @@ mod bound_tests {
                 &["--dry-run", "--plan"],
                 &[]
             ),
-            None
+            names(&["close"])
         );
         assert_eq!(
             ops("period", Some("open"), Some("FY2026-P03"), &[], &[]),
-            None
+            names(&["close"])
+        );
+        assert_eq!(
+            ops("period", Some("reopen"), Some("FY2026-P03"), &[], &[]),
+            names(&["reopen"])
         );
         // Certification needs produce beside read.
         assert_eq!(ops("gl", Some("detail"), None, &[], &[]), names(&["read"]));
