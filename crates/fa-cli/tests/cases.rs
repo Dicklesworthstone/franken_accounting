@@ -59,14 +59,70 @@ fn _selftest() {
     assert_eq!(
         o.row("_selftest-SELF-native"),
         Some(
-            "UNRUN _selftest-SELF-native D native -/default procedure=jet.self_sourced_evidence@1 entries=S-1 severity=Medium reason=filler_invariance"
+            "UNRUN _selftest-SELF-native D native -/default procedure=jet.self_sourced_evidence@1 entries=A-1,N-1,P-1,S-1 severity=Medium reason=filler_invariance"
         ),
         "{text}"
     );
+    // A8a: P-1's cells by dry run, N-1 and its mutation twin, the bridge T
+    // (A, the case's delta, B certified) and its read-back, and the case's
+    // generated row. The claimed rows (case.toml) are the ones that PASS.
+    for row in [
+        "PASS _selftest-P-02 P native P-1/evidence_attached=none state=Open refusal=FA-REF-080 exit=3 record_consistent=false commit_agrees=ok ref=agree",
+        "PASS _selftest-P-02 P native P-1/evidence_attached=placeholder_unreviewed state=Open refusal=FA-REF-086 exit=3 record_consistent=false commit_agrees=ok ref=agree",
+        "PASS _selftest-P-02 P native P-1/evidence_attached=placeholder_reviewed state=Open refusal=admitted exit=0 commit_agrees=ok ref=agree",
+        "PASS _selftest-P-03 P native P-1/period_state_at_commit=Open state=Open refusal=admitted exit=0 ref=agree",
+        "PASS _selftest-P-03 P native P-1/period_state_at_commit=Closed state=Closed refusal=FA-REF-010 exit=7 record_consistent=false commit_agrees=ok ref=agree",
+        "UNRUN _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:reported reason=filler_invariance",
+        "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00",
+        "PASS _selftest-CASE-selftest-restatement R native -/default kind=case_show read=case show,selftest-restatement state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-PH-DET disclosure=reviewed twin=refused:FA-REF-179:exit=3",
+    ] {
+        assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
+    }
     assert!(!text.contains("REPRODUCE"), "{text}");
     assert_eq!(
         o.lines.last().map(String::as_str),
         Some(format!("LOG {}", o.log_path.display()).as_str())
+    );
+}
+
+/// A8a (Appendix Z.7): the self-test's bridge T reads its certified B
+/// (900.00, A plus the case's delta) and still prints UNRUN, never PASS,
+/// until its contributing-entry witness (A11b) and outsider check (A12)
+/// land.
+#[test]
+fn selftest_t_row_reads_unrun_while_a11b_or_a12_is_absent() {
+    let o = outcome(SELFTEST);
+    assert_eq!(
+        o.row("_selftest-T-01"),
+        Some(
+            "UNRUN _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 reason=contributing_entry,outsider"
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// A8a (§3.7 item 3): an N twin that keeps the target's 1,234.56 legs is
+/// not a mutation, so the procedure does not report it and the row fails.
+#[test]
+fn _selftest_neg_n_twin_that_keeps_the_legs_fails() {
+    let o = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "twin_value = \"1000.00\"",
+            new: "twin_value = \"1234.56\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a twin that does not report fails the case");
+    let row = o.row("_selftest-N-01").unwrap_or_default();
+    assert!(
+        row.starts_with(
+            "FAIL _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:did_not_report "
+        ),
+        "{}",
+        o.text()
     );
 }
 
@@ -103,7 +159,7 @@ fn _selftest_logs_every_step_and_every_row() {
         })
         .count();
     assert_eq!(verdicts, rows, "{}", o.text());
-    assert_eq!(rows, 3, "{}", o.text());
+    assert_eq!(rows, 12, "{}", o.text());
 }
 
 /// Every `fa` call the runner makes is a (verb, subcommand) of the table it
@@ -156,7 +212,7 @@ fn every_logged_verb_is_in_the_harness_verb_table() {
         finding.binds,
         [(
             "$C_FINDINGRUN_jet.round_amounts".to_string(),
-            "findings_recorded.certificate of step 4 (jet.round_amounts)".to_string()
+            "findings_recorded.certificate of step 5 (jet.round_amounts)".to_string()
         )]
     );
 }
@@ -194,12 +250,12 @@ fn period_label_map_is_logged_once_per_book() {
     );
 }
 
-/// `pre_case` on a variant with no `[[case]]` reads at the head at the
-/// `finding_record` step. The self-test's last write before that step is
-/// S-1's post (S-2 is refused, `entry show` is a read), so the run's source
+/// A `finding_record` step before the book's case opens reads at the head
+/// at that step. The self-test's last write before it is S-1's post (N-1
+/// posts first, S-2 is refused, `entry show` is a read), so the run's source
 /// coordinate is S-1's recorded sequence, and the runner passed exactly it.
 #[test]
-fn pre_case_on_a_book_without_a_case_is_the_head_at_the_finding_step() {
+fn finding_record_before_the_case_reads_the_head_at_its_step() {
     let o = outcome(SELFTEST);
     let book = &o.books["native"];
     let runs = fa(book, &["finding".into(), "runs".into(), "--json".into()]);
@@ -296,8 +352,8 @@ fn _selftest_neg_wrong_refusal_id() {
         SELFTEST,
         &[PlantedEdit {
             file: "expectations.toml",
-            old: "refusal = \"FA-REF-010\"",
-            new: "refusal = \"FA-REF-011\"",
+            old: "intent = \"S-2\"\nrefusal = \"FA-REF-010\"",
+            new: "intent = \"S-2\"\nrefusal = \"FA-REF-011\"",
         }],
         HARNESS_VERBS,
     )
@@ -377,6 +433,11 @@ fn _selftest_neg_blank_discipline_stops_at_k_prov() {
         [
             "FAIL _selftest-D-01 D native S-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
             "FAIL _selftest-P-01 P native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-P-02 P native P-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-P-03 P native P-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-N-01 N native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-T-01 T native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-R-01 R native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
             "FAIL _selftest-SELF-native D native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
         ],
         "{}",
