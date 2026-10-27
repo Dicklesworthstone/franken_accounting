@@ -442,7 +442,11 @@ fn historical_native_statements_export_comparatives_zero_leaves_and_pending_excl
         }
         let retained = fixture
             .book
-            .retain_certificate(&certified.certificate)
+            .retain_certificate(
+                PRINCIPAL,
+                &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+                &certified.certificate,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(

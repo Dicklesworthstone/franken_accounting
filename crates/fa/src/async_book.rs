@@ -4953,38 +4953,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         crate::access_log::log(&self.db, &self.context, since)
     }
 
-    /// Retain verified canonical certificate bytes in this book's substrate.
-    /// The public content digest resolves the immutable artifact after reopen.
-    /// This lazy write has its own sequence; the report keeps its original
-    /// known-at coordinate and no journal Entry is created.
+    /// Retain verified canonical certificate bytes under current `read` and
+    /// `produce` authority. The presented principal must hold the capability;
+    /// admission precedes certificate validation and storage, including retries.
+    /// Scope caveats must admit the whole book at the current trunk head.
+    ///
+    /// This metadata publication has its own sequence but creates no journal
+    /// Entry and leaves the report's original known-at coordinate unchanged.
+    /// An Agent with explicit production authority may retain a certificate.
     pub async fn retain_certificate(
         &mut self,
         cx: &PurposeContexts,
-        certificate: &crate::ReportCertificate,
-    ) -> Outcome<crate::RetainedCertificate> {
-        crate::certificate_store::retain(&mut self.db, cx, &self.context, &self.blobs, certificate)
-            .await
-    }
-
-    /// Retain verified canonical certificate bytes after verifying current
-    /// `read` and `produce` authority for this book (fa-mg2j). Retention
-    /// publishes metadata even though producing the report itself is a read.
-    pub async fn retain_certificate_authorized(
-        &mut self,
-        cx: &PurposeContexts,
-        certificate: &crate::ReportCertificate,
+        principal: VId,
         capability: &fa_policy::Capability,
+        certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
-        if let Err(denial) =
-            fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
-                |()| {
-                    fa_policy::require(
-                        capability,
-                        fa_policy::Op::Produce,
-                        "retaining a report certificate",
-                    )
-                },
-            )
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Produce,
+                    "retaining a report certificate",
+                )
+            })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -4999,7 +4991,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(refusal));
         }
-        self.retain_certificate(cx, certificate).await
+        crate::certificate_store::retain(&mut self.db, cx, &self.context, &self.blobs, certificate)
+            .await
     }
 
     /// Load a retained certificate by its full public content digest.

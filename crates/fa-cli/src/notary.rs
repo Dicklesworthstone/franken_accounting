@@ -288,7 +288,7 @@ pub(crate) fn retain_report_certificate(
         }
         crate::cli::write_new_output_file(files, path, &bytes, "certificate", "--certificate-out")?;
     }
-    let retained = book.retain_certificate_authorized(certificate, capability)??;
+    let retained = book.retain_certificate(capability.holder(), capability, certificate)??;
     Ok((bytes, retained))
 }
 
