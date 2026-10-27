@@ -426,3 +426,6 @@ fn functional_export_refuses_unvalued_foreign_history_even_outside_selected_date
     );
     assert_eq!(fixture.book.head().unwrap(), before);
 }
+
+#[path = "portable/settlements.rs"]
+mod settlements;

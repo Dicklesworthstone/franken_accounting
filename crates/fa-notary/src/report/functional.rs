@@ -48,6 +48,15 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
         match record {
             Record::Entry(entry) => {
                 let proposal = &entry.proposal;
+                if proposal
+                    .extensions
+                    .iter()
+                    .any(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
+                {
+                    return Ok(Err(refused(
+                        "portable functional reports do not yet independently replay cumulative FX revaluation basis",
+                    )));
+                }
                 if !proposal.legs.is_empty()
                     && matches!(proposal.origin, EntryOrigin::Migration { .. })
                 {
@@ -60,10 +69,14 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                 };
                 if !matches!(
                     FxLawId::from_oid(&base.fx_law_oid),
-                    Some(FxLawId::SpotClose | FxLawId::PeriodAverage)
+                    Some(
+                        FxLawId::SpotClose
+                            | FxLawId::PeriodAverage
+                            | FxLawId::SettlementCarryingBasis
+                    )
                 ) {
                     return Ok(Err(refused(
-                        "portable functional reports support SpotClose, PeriodAverage and their exact inherited reversals",
+                        "portable functional reports support SpotClose, PeriodAverage, source-bound SettlementCarryingBasis and their exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {

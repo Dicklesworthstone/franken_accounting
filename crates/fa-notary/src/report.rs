@@ -173,9 +173,10 @@ pub fn assemble_with_registries(
 /// Package a replayed functional trial balance or financial statement with its
 /// original six-registry closure, exact historical version-2 BookSpec, and every authenticated Rate
 /// document cited at or before known-at. The facade must govern every Rate read.
-/// This profile supports sequence-selected trunk reports under SpotClose and
-/// PeriodAverage, including exact inherited reversals; other valuation laws and
-/// migration-origin monetary entries require their own independent interpreter.
+/// This profile supports sequence-selected trunk reports under SpotClose,
+/// PeriodAverage and source-bound SettlementCarryingBasis, including exact
+/// inherited reversals. Other valuation laws and migration-origin monetary
+/// entries require their own independent interpreter.
 ///
 /// Major 3 preserves the complete-prefix layout and appends six registry frames,
 /// bytes(BookSpec), then list(fixed32 Rate OID, bytes(inline DocumentRecord)).
