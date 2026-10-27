@@ -54,6 +54,9 @@ cases = [
     ("plain", "fa period close FY2026-P03", 0, "PASS readme-commands"),
     ("registered-prefix", 'fa --token "controller token" --book ./book --json period close FY2026-P03', 0, "PASS readme-commands"),
     ("inline-alias-prefix", "fa --token=controller.token --robot period close FY2026-P03", 0, "PASS readme-commands"),
+    ("inline-comment", "fa period close FY2026-P03 # the document's range", 0, "PASS readme-commands"),
+    ("quoted-hash", 'fa --token "controller#1 token" period close FY2026-P03', 0, "PASS readme-commands"),
+    ("broken-quote", 'fa --token "broken period close', 1, "malformed command"),
     ("unknown-prefix", "fa --invented t period close", 1, "unregistered verb `--invented`"),
     ("missing-value", "fa --token", 1, "needs a value"),
     ("unknown-verb", "fa --token t invented", 1, "unregistered verb `invented`"),
@@ -221,7 +224,7 @@ for lineno, raw in enumerate(above_tldr.splitlines(), 1):
         continue
     cmd_count += 1
     try:
-        words = shlex.split(joined)[1:]
+        words = shlex.split(joined, comments=True)[1:]
     except ValueError as error:
         cmd_mismatches.append(f"README.md:{pending_line}: malformed command `{joined}`: {error}")
         continue
