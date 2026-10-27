@@ -943,6 +943,15 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let certificate = fa::RollForwardCertificate::decode(&bytes)?;
                 book.produce_roll_forward_bundle(principal, &capability, state, &certificate)??
             }
+            fa::ReportArtifactFamily::EquityRollForward => {
+                let certificate = fa::EquityRollForwardCertificate::decode(&bytes)?;
+                book.produce_equity_roll_forward_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                )??
+            }
             fa::ReportArtifactFamily::CashFlow => {
                 let certificate = fa::CashFlowCertificate::decode(&bytes)?;
                 book.produce_cash_flow_bundle(principal, &capability, state, &certificate)??
@@ -960,7 +969,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native report, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native report, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }

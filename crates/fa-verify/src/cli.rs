@@ -105,7 +105,8 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
                                                 trial balances, statements, open items, balance explanations,
-                                                effective-date aging, reconciliation, account roll-forwards or direct cash flows.
+                                                effective-date aging, reconciliation, account roll-forwards,
+                                                direct cash flows or changes in equity.
                                                 V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -1384,6 +1385,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
+                                } else if report.equity_roll_forward.is_some() {
+                                    "equity_roll_forward"
                                 } else if let Some(cash) = &report.cash_flow {
                                     if cash.policy.is_some() {
                                         "policy_cash_flow"
@@ -1409,6 +1412,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
+                                } else if let Some(equity) = &report.equity_roll_forward {
+                                    equity.units.len()
                                 } else if let Some(cash) = &report.cash_flow {
                                     cash.units.len()
                                 } else if let Some(schedule) = &report.roll_forward {
@@ -1498,6 +1503,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(schedule) = &report.roll_forward {
                         checks.extend(roll_forward_checks(schedule));
+                    }
+                    if let Some(equity) = &report.equity_roll_forward {
+                        checks.extend(equity_checks(equity));
                     }
                     if let Some(cash) = &report.cash_flow {
                         checks.extend(cash_flow_checks(cash));
@@ -2032,6 +2040,110 @@ fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
                 ("debits", s(total.amounts.debits.to_string())),
                 ("credits", s(total.amounts.credits.to_string())),
                 ("item_count", n(total.amounts.item_count)),
+            ],
+        ));
+    }
+    checks
+}
+
+fn equity_checks(report: &crate::report::VerifiedEquityRollForward) -> Vec<Check> {
+    let accounts =
+        |ids: &[u128]| Json::List(ids.iter().map(|id| s(format!("{id:032x}"))).collect());
+    let mut checks = vec![Check::pass(
+        "equity_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("label", s(&report.label)),
+            ("effective_from", day(Some(report.effective_from))),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            ("issuance_accounts", accounts(&report.issuance_accounts)),
+            (
+                "distribution_accounts",
+                accounts(&report.distribution_accounts),
+            ),
+            ("amount_basis", s("native units; credit minus debit")),
+            (
+                "classification_basis",
+                s(
+                    "authenticated owner roles and recorded Closing class; economic treatment and approval not judged",
+                ),
+            ),
+        ],
+    )];
+    for account in &report.accounts {
+        checks.push(Check::pass(
+            "equity_account",
+            "authenticated_metadata",
+            vec![
+                ("account", s(format!("{:032x}", account.id))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+            ],
+        ));
+    }
+    for unit in &report.units {
+        checks.push(Check::pass(
+            "equity_unit",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(unit.unit_id))),
+                (
+                    "opening_contributed_equity",
+                    amount(unit.opening_contributed_equity),
+                ),
+                (
+                    "opening_unclosed_earnings",
+                    amount(unit.opening_unclosed_earnings),
+                ),
+                ("opening_total_equity", amount(unit.opening_total_equity)),
+                ("net_income", amount(unit.net_income)),
+                ("issuances", amount(unit.issuances)),
+                ("distributions", amount(unit.distributions)),
+                (
+                    "other_equity_movements",
+                    amount(unit.other_equity_movements),
+                ),
+                ("closing_transfers_net", amount(unit.closing_transfers_net)),
+                ("net_equity_change", amount(unit.net_equity_change)),
+                (
+                    "closing_contributed_equity",
+                    amount(unit.closing_contributed_equity),
+                ),
+                (
+                    "closing_unclosed_earnings",
+                    amount(unit.closing_unclosed_earnings),
+                ),
+                ("closing_total_equity", amount(unit.closing_total_equity)),
+                (
+                    "equity_tie_out_residual",
+                    amount(unit.equity_tie_out_residual),
+                ),
+            ],
+        ));
+    }
+    for movement in &report.movements {
+        checks.push(Check::pass(
+            "equity_movement",
+            "recomputation",
+            vec![
+                ("entry_digest", h(&movement.entry_digest)),
+                ("leg_index", n(u64::from(movement.leg_index))),
+                ("recorded_seq", n(movement.recorded_seq)),
+                ("effective_day", day(Some(movement.effective_day))),
+                ("class", n(u64::from(movement.class))),
+                ("kind", s(movement.kind.name())),
+                ("account", s(format!("{:032x}", movement.account_id))),
+                ("unit", n(u64::from(movement.unit_id))),
+                ("debits", amount(movement.debits)),
+                ("credits", amount(movement.credits)),
             ],
         ));
     }
