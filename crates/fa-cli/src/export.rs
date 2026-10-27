@@ -123,6 +123,13 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         fa_policy::require(&capability, op, "exporting the journal")
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
+    if with_proofs {
+        // The bundle checks whole-journal/checkpoint integrity at HEAD even
+        // when its output is one account or an older state. Admit that reach
+        // before opening the book or resolving a period's cutoff.
+        fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
     let selection = match (args.flag("--period"), args.flag("--as-of")) {
         (Some(code), None) => fa::TrialBalanceSelection::Periods(vec![code.to_string()]),
         (None, Some(date)) => fa::TrialBalanceSelection::AsOf(
@@ -157,16 +164,12 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // The bundle is produced first (its own admission precedes every
         // read of the journal); the read scope borrows the book after it.
         // An account's bundle ends at the cutoff, so a --period cutoff is
-        // read first under the admitted read scope (at a pinned capability's
-        // own pin), and checked again at the proof's own sequence below.
+        // read first under the admitted whole-book scope and checked again
+        // at the proof's own sequence below.
         let planned_cutoff = match (with_proofs, account, &selection) {
             (true, Some(_), fa::TrialBalanceSelection::Periods(_)) => {
-                let at = match capability.known_at_pin() {
-                    Some(pin) => Some(pin.min(book.head()?)),
-                    None => None,
-                };
                 let scope = book.read_scope(capability.holder(), &capability)??;
-                let seq = scope.admit_report(&selection.clone().into(), at)??;
+                let seq = scope.admit_report(&selection.clone().into(), None)??;
                 Some(cutoff_at(&scope, &selection, seq)?)
             }
             (true, Some(_), fa::TrialBalanceSelection::AsOf(day)) => Some(*day),

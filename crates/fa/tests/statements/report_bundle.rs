@@ -15,6 +15,118 @@ pub(super) fn tick(book: &mut Book, ns: u64, monotonic_ok: bool) {
 }
 
 #[test]
+fn report_bundles_admit_head_before_certificate_and_checkpoint_selection() {
+    let mut fixture = Fixture::new(0xe7);
+    fixture.transfer(
+        day(2026, 1, 15),
+        b"bundle-scope-original",
+        fixture.usd,
+        ("1000", "4000"),
+        150,
+    );
+    let certificate = fixture
+        .book
+        .certify_trial_balance(
+            fa::TrialBalanceSelection::Periods(vec![JANUARY.into()]),
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    let original = produce(&mut fixture.book, &certificate);
+    let original_state = original.checkpoint.checkpoint.body.state_oid;
+    fixture.transfer(
+        day(2026, 1, 20),
+        b"bundle-scope-later",
+        fixture.usd,
+        ("1000", "4000"),
+        900,
+    );
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce", "witness"]).unwrap();
+    let latest = fixture
+        .book
+        .checkpoint(PRINCIPAL, &capability)
+        .unwrap()
+        .unwrap();
+    let before = fixture.book.head().unwrap();
+    let mut tampered = certificate.clone();
+    tampered.digest[0] ^= 1;
+    let mut foreign = certificate.clone();
+    foreign.book_id = Id128([0xff; 16]);
+    for (caveat, denied) in [
+        (
+            "accounts",
+            capability.clone().for_accounts(&["1000"]).unwrap(),
+        ),
+        (
+            "periods",
+            capability.clone().for_periods(&[JANUARY]).unwrap(),
+        ),
+        (
+            "effective",
+            capability.clone().effective_through(day(2026, 1, 31)),
+        ),
+        (
+            "known_at",
+            capability.clone().known_at_most(certificate.known_at),
+        ),
+        ("known_at", capability.clone().known_at_most(before)),
+        (
+            "branch",
+            capability.clone().on_branch(Id128([0xf1; 16])).unwrap(),
+        ),
+        (
+            "books",
+            capability.clone().for_books(&[Id128([0xf2; 16])]).unwrap(),
+        ),
+    ] {
+        let mut expected = None;
+        for source in [&certificate, &tampered, &foreign] {
+            for state in [
+                None,
+                Some(original_state),
+                Some(latest.stored.oid),
+                Some(Oid([0xff; 32])),
+            ] {
+                let refusal = fixture
+                    .book
+                    .produce_report_bundle(PRINCIPAL, &denied, state, source)
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+                assert!(refusal.message.contains(&format!("`{caveat}`")));
+                if let Some(expected) = &expected {
+                    assert_eq!(
+                        &refusal, expected,
+                        "authority precedes every source observation"
+                    );
+                } else {
+                    expected = Some(refusal);
+                }
+            }
+        }
+    }
+    let historical = fixture
+        .book
+        .produce_report_bundle(PRINCIPAL, &capability, Some(original_state), &certificate)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.bundle.bytes, original.bundle.bytes);
+    let verified = fa_verify::report::verify_report_expected(
+        &historical.bundle.bytes,
+        &[fixture.book.checkpoint_public_key()],
+        None,
+        Some(&historical.receipt),
+        Some(&certificate.digest),
+    )
+    .unwrap();
+    assert_eq!(verified.output, certificate.output);
+    assert_eq!(verified.known_at, certificate.known_at.0);
+    assert_eq!(fixture.book.head().unwrap(), before);
+}
+
+#[test]
 fn instant_reports_export_the_original_tick_frontier_and_verify_offline() {
     let mut fixture = Fixture::new(0xec);
     let base = fa_time::UtcInstant::parse("2026-01-15T00:00:00Z")

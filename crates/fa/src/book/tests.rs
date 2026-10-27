@@ -4403,20 +4403,26 @@ fn bundles_require_produce_and_verify_with_the_book_key() {
     );
 }
 
-/// A bundle's reach is judged against the scope caveats before the journal
-/// is read (doctrine 8; plan §13.1; fa-0x0, fa-2q91). A complete prefix
-/// discloses every account, period and effective day, so those caveats
-/// refuse it; an effective bound admits an account interval (and balances)
-/// ending within it; a pinned capability is served the newest state
-/// recorded at or before its pin, and a later state it names is out of
-/// scope.
+/// Bundle admission covers every integrity and document read, not just the
+/// selected output. Even an old state or one account's interval verifies
+/// complete retained journal records against HEAD (fa-0x0, fa-2q91).
 #[test]
-fn bundles_judge_scope_caveats_and_serve_a_pin_its_own_state() {
-    let (mut book, usd, day, _) = certified_fixture();
+fn bundles_judge_current_integrity_reach_before_selecting_historical_states() {
+    let (mut book, usd, day, entry) = certified_fixture();
     let principal = VId(1);
     let producer = Capability::embedded(principal, &["produce", "read"]).unwrap();
     let witness = Capability::embedded(principal, &["witness"]).unwrap();
     let first = book.checkpoint(principal, &witness).unwrap().unwrap();
+    let prefix = fa_notary::BundleRequest {
+        scope: fa_notary::BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    let original = book
+        .produce_bundle(principal, &producer, Some(first.stored.oid), &prefix)
+        .unwrap()
+        .unwrap()
+        .unwrap();
     post_rent(
         &mut book,
         usd,
@@ -4428,11 +4434,7 @@ fn bundles_judge_scope_caveats_and_serve_a_pin_its_own_state() {
     .unwrap()
     .unwrap();
     let second = book.checkpoint(principal, &witness).unwrap().unwrap();
-    let prefix = fa_notary::BundleRequest {
-        scope: fa_notary::BundleScope::Prefix,
-        balances: Vec::new(),
-        inline_documents: false,
-    };
+    let head = book.head().unwrap();
     let cash = account_vid(book.context().book_id, "1000");
     let interval = |to: i32, balance: Option<Option<i32>>| fa_notary::BundleRequest {
         scope: fa_notary::BundleScope::Index(fa_notary::ScopeRequest::Account {
@@ -4463,6 +4465,7 @@ fn bundles_judge_scope_caveats_and_serve_a_pin_its_own_state() {
             "{}",
             refusal.message
         );
+        refusal
     };
 
     let latest = book
@@ -4472,67 +4475,205 @@ fn bundles_judge_scope_caveats_and_serve_a_pin_its_own_state() {
         .expect("the latest state");
     assert_eq!(state_of(&latest), second.stored.oid);
 
-    // Whole-book caveats refuse a complete prefix.
-    let bounded = producer.clone().effective_through(day);
-    refused(&mut book, &bounded, None, &prefix, "effective");
-    let march = producer.clone().for_periods(&["FY2026-P03"]).unwrap();
-    refused(&mut book, &march, None, &prefix, "periods");
-    let march_cash = interval(day.0, None);
-    let cash_only = producer.clone().for_accounts(&["1000"]).unwrap();
-    refused(&mut book, &cash_only, None, &march_cash, "accounts");
-    // An effective bound admits the account interval ending within it, and
-    // a balance cut off within it; not one past it, nor one over every day.
+    // A narrow output does not bound the integrity read. All six caveats
+    // refuse before selection, including an interval within its effective
+    // bound and a named entry wholly contained in the earlier checkpoint.
     let within = interval(day.0, Some(Some(day.0)));
-    book.produce_bundle(principal, &bounded, None, &within)
-        .unwrap()
-        .unwrap()
-        .expect("within the bound");
     let past = interval(day.0 + 20, None);
-    refused(&mut book, &bounded, None, &past, "effective");
     let every_day = interval(day.0, Some(None));
-    refused(&mut book, &bounded, None, &every_day, "effective");
+    let named_entry = fa_notary::BundleRequest {
+        scope: fa_notary::BundleScope::Entries(vec![entry]),
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    for (caveat, scoped) in proof_scope_denials(&producer, day, first.stored.recorded_at) {
+        let expected = refused(&mut book, &scoped, None, &prefix, caveat);
+        for request in [&prefix, &within, &past, &every_day, &named_entry] {
+            for state in [
+                None,
+                Some(first.stored.oid),
+                Some(second.stored.oid),
+                Some(Oid([0xff; 32])),
+            ] {
+                assert_eq!(
+                    refused(&mut book, &scoped, state, request, caveat),
+                    expected,
+                    "scope refusal reveals neither state existence nor selected contents"
+                );
+            }
+        }
+    }
+    for pin in [CommitSeq(first.stored.recorded_at.0 - 1), head] {
+        refused(
+            &mut book,
+            &producer.clone().known_at_most(pin),
+            Some(first.stored.oid),
+            &prefix,
+            "known_at",
+        );
+    }
 
-    // A pin is served the newest state recorded at or before it.
-    let pinned = producer.clone().known_at_most(first.stored.recorded_at);
-    let at_pin = book
-        .produce_bundle(principal, &pinned, None, &prefix)
+    // Current whole-book authority can still select the exact historical
+    // checkpoint after later posts. Its body remains identical and verifies
+    // independently; its new receipt records the present production time.
+    let historical = book
+        .produce_bundle(principal, &producer, Some(first.stored.oid), &prefix)
         .unwrap()
         .unwrap()
-        .expect("the state at the pin");
-    assert_eq!(state_of(&at_pin), first.stored.oid);
+        .expect("the historical state remains available to admitted authority");
+    assert_eq!(state_of(&historical), first.stored.oid);
+    assert_eq!(historical.bundle, original.bundle);
     let report = fa_verify::verify_bundle(
-        &at_pin.bundle.bytes,
+        &historical.bundle.bytes,
         &[book.checkpoint_public_key()],
-        Some(&at_pin.receipt),
+        Some(&historical.receipt),
     )
     .unwrap();
     assert!(report.verified(), "{:#?}", report.checks);
     assert_eq!(
         report.manifest.through_seq, first.stored.state.through_seq.0,
-        "the bundle proves the pinned state's prefix, not the head's"
+        "the bundle proves the requested state's prefix"
     );
-    let named = book
-        .produce_bundle(principal, &pinned, Some(first.stored.oid), &prefix)
-        .unwrap()
-        .unwrap()
-        .expect("named at the pin");
-    assert_eq!(named.bundle, at_pin.bundle);
-    refused(
-        &mut book,
-        &pinned,
-        Some(second.stored.oid),
-        &prefix,
-        "known_at",
-    );
-    let before_any = producer
-        .clone()
-        .known_at_most(CommitSeq(first.stored.recorded_at.0 - 1));
+    for request in [&within, &named_entry] {
+        let selected = book
+            .produce_bundle(principal, &producer, Some(first.stored.oid), request)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let verified = fa_verify::verify_bundle(
+            &selected.bundle.bytes,
+            &[book.checkpoint_public_key()],
+            Some(&selected.receipt),
+        )
+        .unwrap();
+        assert!(verified.verified(), "{:#?}", verified.checks);
+    }
     assert_eq!(
-        book.produce_bundle(principal, &before_any, None, &prefix)
+        book.head().unwrap(),
+        head,
+        "exports and refusals publish nothing"
+    );
+}
+
+#[test]
+fn production_volumes_judge_scope_and_current_authority_before_matter_reads() {
+    let (mut book, _, day, _) = certified_fixture();
+    let principal = VId(1);
+    let producer = Capability::embedded(principal, &["read", "produce"]).unwrap();
+    book.open_production(
+        producer.clone(),
+        fa_journal::ProductionProfile {
+            book_id: book.context().book_id,
+            matter: "known-matter".into(),
+            bates_prefix: "CASE".into(),
+            first_bates: 1,
+            load_file_format: 1,
+            protective_order: None,
+        },
+        day,
+        b"open-scope-matter",
+    )
+    .unwrap()
+    .unwrap();
+    let document = book.documents(None).unwrap().unwrap()[0].oid;
+    let documents = vec![fa_journal::ProducedDocument {
+        document,
+        pages: None,
+        designation: None,
+    }];
+    let produced = book
+        .produce(
+            producer.clone(),
+            "known-matter",
+            documents.clone(),
+            day,
+            b"scope-volume-source",
+        )
+        .unwrap()
+        .unwrap();
+    let claims = crate::PrivilegeClaims::default();
+    let rendered = book
+        .production_volume(&producer, &produced, &claims, "VOL001")
+        .unwrap()
+        .unwrap();
+    assert!(!rendered.natives.is_empty());
+    let reader = Capability::embedded(principal, &["read"]).unwrap();
+    assert_eq!(
+        book.production_volume(&reader, &produced, &claims, "VOL001")
             .unwrap()
             .unwrap(),
+        rendered,
+        "rendering existing ranges remains a read, without new production authority"
+    );
+    let prefix = fa_notary::BundleRequest {
+        scope: fa_notary::BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    let before = book.head().unwrap();
+    let mut denied: Vec<_> = proof_scope_denials(&producer, day, before)
+        .into_iter()
+        .map(|(caveat, capability)| (Some(caveat), capability, "FA-REF-011"))
+        .collect();
+    denied.push((None, producer.clone().expiring_at(before), "FA-REF-014"));
+    denied.push((
         None,
-        "no state is recorded at or before the pin"
+        Capability::embedded(principal, &["produce"]).unwrap(),
+        "FA-REF-011",
+    ));
+    for (caveat, capability, code) in denied {
+        let mut expected = None;
+        for matter in ["known-matter", "unknown-matter"] {
+            for volume in ["VOL001", "not/a/volume"] {
+                for refusal in [
+                    book.produce_bundle_volume(
+                        principal,
+                        &capability,
+                        matter,
+                        Some(Oid([0xff; 32])),
+                        &prefix,
+                        &claims,
+                        volume,
+                        day,
+                        Some(b"denied-bundle-volume"),
+                    )
+                    .unwrap()
+                    .unwrap_err(),
+                    book.produce_volume(
+                        &capability,
+                        matter,
+                        documents.clone(),
+                        &claims,
+                        volume,
+                        day,
+                        b"denied-document-volume",
+                    )
+                    .unwrap()
+                    .unwrap_err(),
+                    book.production_volume(&capability, &produced, &claims, volume)
+                        .unwrap()
+                        .unwrap_err(),
+                ] {
+                    assert_eq!((refusal.code, refusal.exit), (code, 7));
+                    if let Some(caveat) = caveat {
+                        assert!(refusal.message.contains(&format!("`{caveat}`")));
+                    }
+                    if let Some(expected) = &expected {
+                        assert_eq!(
+                            &refusal, expected,
+                            "no matter or volume detail before authority"
+                        );
+                    } else {
+                        expected = Some(refusal);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        book.head().unwrap(),
+        before,
+        "refusal assigns no Bates numbers"
     );
 }
 

@@ -49,9 +49,10 @@ fn bundle_basis_at<V: Vfs + Clone>(
     state: Option<fa_model::Oid>,
     pin: Option<CommitSeq>,
 ) -> Result<Option<Result<BundleBasis, fa_journal::Refusal>>, KernelError> {
-    // A pinned capability sees only the states recorded at or before its
-    // pin, so the chain is read as known there: the latest state is the
-    // newest of those, and a state named beyond the pin is out of scope.
+    // This pin limits checkpoint selection only. Notary's bundle basis
+    // still verifies current journal/checkpoint integrity, so callers must
+    // admit whole-book HEAD before entering this helper. Selecting an older
+    // state is not a bounded historical read of the complete operation.
     let chain = fa_notary::chain(db, pin)?;
     let stored = match state {
         None => chain.first(),
@@ -71,21 +72,6 @@ fn bundle_basis_at<V: Vfs + Clone>(
         )))),
         (None, _, _) => Ok(None),
     }
-}
-
-/// The last effective day a bundle discloses: an account interval's end,
-/// or a later balance cutoff. `None` (every day) for a prefix, for named
-/// entries (their days are known only once read) and for a balance over
-/// every day.
-fn bundle_through(request: &fa_notary::BundleRequest) -> Option<DateDay> {
-    let mut through = match &request.scope {
-        fa_notary::BundleScope::Index(fa_notary::ScopeRequest::Account { to, .. }) => *to,
-        _ => return None,
-    };
-    for balance in &request.balances {
-        through = through.max(balance.effective_through?);
-    }
-    Some(DateDay(through))
 }
 
 fn seal(
@@ -4043,20 +4029,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<Option<ProducedBundle>> {
         let certificate = report.source();
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let reach = fa_policy::Reach {
-            // Roll-forward and cash-flow replay require unpinned head authority.
-            // Enforce that boundary before restoring any report history.
-            observes: match report {
-                ReportBundleCertificate::RollForward(_)
-                | ReportBundleCertificate::EquityRollForward(_)
-                | ReportBundleCertificate::CashFlow(_)
-                | ReportBundleCertificate::CashFlowPolicy(_) => fa_policy::Observes::Head,
-                _ => capability
-                    .known_at_pin()
-                    .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
-            },
-            ..fa_policy::Reach::whole_book(true)
-        };
+        // Every bundle verifies current journal/checkpoint integrity, and
+        // source replay can also read current registry state. A historical
+        // certificate or checkpoint selector does not bound those reads.
+        let reach = fa_policy::Reach::whole_book(true);
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
             .and_then(|()| {
                 fa_policy::require(
@@ -4569,22 +4545,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &fa_notary::BundleRequest,
     ) -> Outcome<Option<ProducedBundle>> {
         cx.query().checkpoint().map_err(BookError::Context)?;
-        // The scope caveats judge what the bundle discloses, before the
-        // journal is read (doctrine 8; plan §13.1 "capability restrictions
-        // may require refusal"). Whole entries of any account are disclosed
-        // and no scope maps onto periods, so an `accounts` or `periods`
-        // caveat refuses; an `effective` caveat admits only an account
-        // interval (and balances) ending within it; a pin is served by the
-        // states recorded at or before it (bundle_basis_at).
-        let reach = fa_policy::Reach {
-            branch: Some(fa_model::Id128::TRUNK),
-            observes: capability
-                .known_at_pin()
-                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
-            periods: None,
-            through: bundle_through(request),
-            accounts: None,
-        };
+        // Admission judges the operation's actual reads, not just its
+        // output scope (doctrine 8). Even an account interval or an older
+        // state verifies the complete checkpointed journal and checkpoint
+        // against HEAD; cited-document reads also inspect current metadata.
+        // Until those paths can be bounded, every scope caveat must be
+        // judged against whole-book HEAD before any storage observation.
+        let reach = fa_policy::Reach::whole_book(true);
         // A production writes nothing, so it is admitted as a read: an
         // Agent-profile capability holding `produce` may produce.
         if let Err(denial) = fa_policy::admit_within(
