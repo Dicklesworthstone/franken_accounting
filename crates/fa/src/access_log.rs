@@ -1,13 +1,13 @@
 //! AccessEvent: who read what (plan §9.7, §14.5, Appendix G; bead fa-7dw).
 //!
-//! A read served to a read-only Human bound session (a capability whose ops
-//! stay within read, produce and verify: the Auditor, Regulator, Investigator
-//! and Production templates) is recorded as one immutable AccessEvent vertex,
-//! committed in its own transaction before the command observes the book. A
-//! delivered answer therefore always has its record; a command that then
-//! fails leaves a record with nothing delivered (over-recording, never
-//! under-recording). Like a retained certificate, the record is a native
-//! vertex with its own sequence and no journal Entry.
+//! The surface records bound reads and plan-only deliveries as one immutable
+//! AccessEvent vertex before the command observes the book. Agent and writing
+//! sessions are included: write authority is never an exemption from recording
+//! a read. A delivered answer therefore has its record; a command that then
+//! fails leaves an attempted read with nothing delivered (over-recording, never
+//! under-recording). These are pre-disclosure attempts, not acknowledgments of
+//! complete delivery or per-object access receipts. Like a retained certificate,
+//! the record is a native vertex with its own sequence and no journal Entry.
 //!
 //! The payload names the head the read observed. Each record advances the
 //! head, so two reads never share an identity.

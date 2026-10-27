@@ -949,7 +949,7 @@ pub(crate) struct BookSource<'a> {
     /// The launch-bound session's capability: every book it opens admits
     /// it as current authority before anything is read or stamped.
     bound: Option<Capability>,
-    /// The AccessEvent a read-only bound session's command owes (plan §9.7,
+    /// The AccessEvent a bound session's read or plan delivery owes (plan §9.7,
     /// fa-7dw): committed on the first open, after admission and before the
     /// handler observes anything.
     access: Option<fa::access_log::AccessRecord>,
@@ -1833,13 +1833,19 @@ fn exit_class(exit: u8) -> String {
         .unwrap_or_else(|| format!("exit-{exit}"))
 }
 
-/// The AccessEvent a bound session's command owes, when its capability is a
-/// read-only Human one: every op within read, produce and verify, as the
-/// Auditor, Regulator, Investigator and Production templates are (plan §9.7,
-/// §14.4; fa-7dw). Agent sessions are internal readers, left to the plan's
-/// sampled policy. The request digest covers the command's positional words,
-/// flags and switches, never the host's book or key paths. A session that
-/// cannot state its record is refused, never served unrecorded.
+/// The AccessEvent a bound session's read or plan delivery owes (plan §9.7,
+/// §14.4; fa-7dw). A capability's ability to write never exempts its reads:
+/// Agent, Preparer, Auditor-with-Witness and Investigator-with-Hold all leave
+/// a receipt. The existing authority registry identifies ordinary reads,
+/// including exports and streams. Protected document/finding reads and bank
+/// readers also carry narrower operations; those are recorded as well.
+///
+/// The conservative internal policy records every admitted read, without
+/// sampling. A plan-only delivery records before acquiring its guarded basis;
+/// committing a saved plan does not insert a publication that invalidates it.
+/// The request digest covers the command's positional words, flags and
+/// switches, never the host's book or key paths. A session that cannot state
+/// its record is refused, never served unrecorded.
 fn access_record(
     authority: &LaunchAuthority,
     args: &Args,
@@ -1855,7 +1861,25 @@ fn access_record(
     let Some(verb) = args.positional.first() else {
         return Ok(None);
     };
-    if !read_only {
+    let operations = bound_command_ops(verb, args).unwrap_or_default();
+    let ordinary_read = operations.contains(&fa_policy::Op::Read)
+        && operations.iter().all(|op| {
+            matches!(
+                op,
+                fa_policy::Op::Read | fa_policy::Op::Produce | fa_policy::Op::Verify
+            )
+        });
+    let protected_read = matches!(verb.as_str(), "document" | "finding")
+        && operations.contains(&fa_policy::Op::Read);
+    let reconciliation_read = operations.contains(&fa_policy::Op::Read)
+        && (verb == "procedure"
+            || (verb == "bank"
+                && matches!(
+                    args.positional.get(1).map(String::as_str),
+                    Some("match" | "status" | "history" | "reconciliation")
+                )));
+    let plan_delivery = period_plan_only(verb, args) || post_plan_only(verb, args);
+    if !(read_only || ordinary_read || protected_read || reconciliation_read || plan_delivery) {
         return Ok(None);
     }
     let commitment = capability

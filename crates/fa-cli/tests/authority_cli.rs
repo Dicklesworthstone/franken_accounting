@@ -522,7 +522,13 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             Some(&Json::Int(i128::from(tick.recorded_at.0))),
         );
     }
-    assert_eq!(book.head().unwrap(), before);
+    let access = book.access_log(before).unwrap();
+    assert_eq!(access.len(), 1);
+    assert_eq!(access[0].record.command, "tb");
+    assert_eq!(access[0].record.principal_name, "report-preparer");
+    assert_eq!(access[0].observed_at, before);
+    assert_eq!(access[0].recorded_at.0, before.0 + 1);
+    assert_eq!(book.head().unwrap(), access[0].recorded_at);
 
     // With live authority the same contained file reaches certificate
     // decoding; after revocation its malformed contents must remain unread.
@@ -530,6 +536,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["replay", "supplied.cert", "--json"],
         vec!["certificate", "status", "supplied.cert", "--json"],
     ] {
+        let before_attempt = book.head().unwrap();
         let (exit, allowed) = held(&mut book, &argv);
         assert_eq!(exit, 8, "argv={argv:?}\n{allowed:?}");
         let allowed = event(&authority, &allowed);
@@ -541,7 +548,16 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
                 .and_then(Json::as_str),
             Some("FA-REF-150"),
         );
-        assert_eq!(book.head().unwrap(), before);
+        let access = book.access_log(before_attempt).unwrap();
+        assert_eq!(
+            access.len(),
+            1,
+            "an admitted attempt is audited before decoding"
+        );
+        assert_eq!(access[0].record.principal_name, "report-preparer");
+        assert_eq!(access[0].observed_at, before_attempt);
+        assert_eq!(access[0].recorded_at.0, before_attempt.0 + 1);
+        assert_eq!(book.head().unwrap(), access[0].recorded_at);
     }
 
     book.revoke_capability(
