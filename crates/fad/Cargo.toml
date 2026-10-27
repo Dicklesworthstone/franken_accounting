@@ -24,9 +24,9 @@ fa = { path = "../fa", version = "=0.0.1" }
 fa-cli = { path = "../fa-cli", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
 fgdb-types = { workspace = true }
 
 [dev-dependencies]
 fgdb = { workspace = true }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
-fa-time = { path = "../fa-time", version = "=0.0.1" }

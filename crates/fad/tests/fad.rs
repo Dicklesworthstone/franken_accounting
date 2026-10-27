@@ -88,9 +88,13 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 /// A book with a chart, an open March, a source document, and one posting.
 /// Returns (book dir, document oid).
 fn book(dir: &Path) -> (PathBuf, String) {
+    book_with_options(dir, &[])
+}
+
+fn book_with_options(dir: &Path, options: &[&str]) -> (PathBuf, String) {
     let book = dir.join("book");
     let b = book.display().to_string();
-    ok(&[
+    let mut create = vec![
         "book",
         "create",
         "--book",
@@ -98,7 +102,9 @@ fn book(dir: &Path) -> (PathBuf, String) {
         "--name",
         "Daemon Co",
         "--json",
-    ]);
+    ];
+    create.extend_from_slice(options);
+    ok(&create);
     let chart = write(
         dir,
         "chart.json",
@@ -177,15 +183,20 @@ fn start(book: &Path) -> Daemon {
 }
 
 fn start_without_files_root(book: &Path) -> Daemon {
-    start_daemon(book, false, None)
+    start_daemon(book, false, None, None)
 }
 
 fn start_with_timed_work(book: &Path, bootstrap: bool) -> Daemon {
     let files_root = book.parent().expect("book parent dir");
-    start_daemon(book, bootstrap, Some(files_root))
+    start_daemon(book, bootstrap, Some(files_root), None)
 }
 
-fn start_daemon(book: &Path, bootstrap: bool, files_root: Option<&Path>) -> Daemon {
+fn start_daemon(
+    book: &Path,
+    bootstrap: bool,
+    files_root: Option<&Path>,
+    fiscal_year: Option<i32>,
+) -> Daemon {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fad"));
     command.args(["serve", "--book", &book.display().to_string(), "--json"]);
     if let Some(root) = files_root {
@@ -193,6 +204,9 @@ fn start_daemon(book: &Path, bootstrap: bool, files_root: Option<&Path>) -> Daem
     }
     if bootstrap {
         command.arg("--bootstrap-system");
+    }
+    if let Some(year) = fiscal_year {
+        command.args(["--register-fiscal-year", &year.to_string()]);
     }
     let mut child = command
         .env_remove("FA_BOOK")
@@ -224,6 +238,157 @@ impl Daemon {
         let _ = self.out.read_to_string(&mut rest);
         (status.code().unwrap_or(-1), rest)
     }
+}
+
+#[test]
+fn fiscal_year_launch_maintains_future_created_periods_and_posted_amounts_over_the_real_socket() {
+    use fa_cli::json::{self, Json};
+    use std::time::{Duration, Instant};
+    let dir = tmp("fiscal-cohort");
+    let periods = write(
+        &dir,
+        "calendar.json",
+        r#"{"years":[{"fiscal_year":2026,"periods":[{"start":"2026-01-01","end":"2026-01-31"},{"start":"2026-02-01","end":"2026-02-28"},{"start":"2026-03-01","end":"2026-12-31"}]},{"fiscal_year":2027,"periods":[{"start":"2027-01-01","end":"2027-12-31"}]},{"fiscal_year":2028,"periods":[{"start":"2028-01-01","end":"2028-12-31"}]}]}"#,
+    );
+    let (book, oid) = book_with_options(
+        &dir,
+        &[
+            "--calendar",
+            "custom",
+            "--periods",
+            &periods,
+            "--adjustment-periods",
+            "0",
+        ],
+    );
+    let b = book.display().to_string();
+    let daemon = start_daemon(&book, false, Some(&dir), Some(2027));
+    // Always stop the owned process, including after an assertion failure.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let serving = json::parse(daemon.serving.trim()).unwrap();
+        let data = serving.get("data").unwrap();
+        assert_eq!(data.get("timed_work_enabled"), Some(&Json::Bool(false)));
+        assert_eq!(data.get("timed_authority"), Some(&Json::Null));
+        let states = data
+            .get("register_maintenance")
+            .unwrap()
+            .get("periods")
+            .unwrap()
+            .as_arr()
+            .unwrap();
+        assert_eq!(
+            states
+                .iter()
+                .map(|row| row.get("period").unwrap().as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["FY2027-P01", "FY2027-OPEN", "FY2027-CLOSE"]
+        );
+        assert!(
+            states
+                .iter()
+                .all(|row| row.get("through") == Some(&Json::Null))
+        );
+        ok(&[
+            "period",
+            "create",
+            "--fiscal-year",
+            "2028",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        ok(&[
+            "period",
+            "create",
+            "--fiscal-year",
+            "2027",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        ok(&["period", "open", "FY2027-P01", "--book", &b, "--json"]);
+        let reg = registry().unwrap();
+        let posted = client::call(&book.join(&reg.daemon.socket), &Request {
+            op: Op::Run,
+            argv: ["post", "--intent", "-", "--evidence", &oid, "--book", &b, "--json"].into_iter().map(str::to_owned).collect(),
+            cwd: None,
+            stdin: Some(br#"{"effective_date":"2027-01-05","idempotency_key":"fiscal-cohort-rent","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#.to_vec()),
+            token: None,
+        }, &reg.daemon).unwrap();
+        assert_eq!(posted.exit, 0, "{}{}", posted.stdout, posted.stderr);
+        assert_eq!(checked(&posted.stdout), vec!["posted"]);
+        let posted_at: i128 = field(&posted.stdout, "recorded_at")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (code, out, err) = fad(&["status", "--book", &b, "--json"]);
+            assert_eq!(code, 0, "{out}{err}");
+            let status = json::parse(out.trim()).unwrap();
+            let work = status
+                .get("data")
+                .unwrap()
+                .get("register_maintenance")
+                .unwrap();
+            let state = &work.get("periods").unwrap().as_arr().unwrap()[0];
+            if matches!(state.get("through"), Some(Json::Int(at)) if *at >= posted_at) {
+                assert_eq!(state.get("error"), Some(&Json::Null));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "P01 did not reach posting prefix {posted_at}: {out}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let verified = ok(&[
+            "verify",
+            "registers",
+            "--period",
+            "FY2027-P01",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert!(verified.contains("\"green\":true"), "{verified}");
+        let tb = ok(&["tb", "--period", "FY2027-P01", "--book", &b, "--json"]);
+        // Stock carries the fixture's 10 USD forward; selected-period activity
+        // contains only the new 1 USD posting. Neither may lose prior history.
+        assert!(tb.contains("\"debits\":\"11.00 USD\""), "{tb}");
+        assert!(tb.contains("\"credits\":\"11.00 USD\""), "{tb}");
+        let activity = ok(&[
+            "tb",
+            "--activity",
+            "--period",
+            "FY2027-P01",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert!(activity.contains("\"debits\":\"1.00 USD\""), "{activity}");
+        assert!(activity.contains("\"credits\":\"1.00 USD\""), "{activity}");
+        let other = ok(&[
+            "verify",
+            "registers",
+            "--period",
+            "FY2028-P01",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert!(
+            other.contains("\"cache_status\":\"uninitialized\""),
+            "{other}"
+        );
+    }));
+    let stopped = fad(&["stop", "--book", &b, "--json"]);
+    let finished = daemon.finish();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+    assert_eq!(stopped.0, 0, "{}{}", stopped.1, stopped.2);
+    assert_eq!(finished.0, 0, "{}", finished.1);
 }
 
 #[test]

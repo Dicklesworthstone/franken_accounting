@@ -34,7 +34,7 @@ use fa_money::Side;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{KernelError, RegisterError, entries_at, entry_period, resolve_known_at};
+use crate::{KernelError, RegisterError, entries_at, entry_period, resolutions, resolve_known_at};
 
 /// One expected cell as the refold sees it, in its account's normal-balance
 /// sign: a limited account's lifetime cell (`period: None`), or one period
@@ -109,11 +109,14 @@ fn fold_entry(
     cells: &mut BTreeMap<CellKey, LimitCell>,
     scopes: &BTreeMap<VId, LimitScope>,
     book: &BookContext,
-    entry: &Entry,
-    by_id: &BTreeMap<VId, &Entry>,
+    recorded: &(VId, Entry, CommitSeq),
+    by_id: &BTreeMap<VId, (&Entry, CommitSeq)>,
+    resolved: &BTreeMap<VId, CommitSeq>,
 ) -> Result<(), RegisterError> {
+    let (vid, entry, recorded_at) = recorded;
     let p = &entry.proposal;
     let mut moves: BTreeMap<CellKey, Movement> = BTreeMap::new();
+    let mut zero_duration = false;
     let key = |account: VId, of: &Entry| -> Result<Option<CellKey>, RegisterError> {
         Ok(match scopes.get(&account) {
             None => None,
@@ -133,6 +136,7 @@ fn fold_entry(
             }
         }
         EntryClass::PENDING => {
+            zero_duration = resolved.get(vid) == Some(recorded_at);
             for leg in &p.legs {
                 if let Some(k) = key(leg.account_ref, entry)? {
                     moves
@@ -148,9 +152,10 @@ fn fold_entry(
                 .as_ref()
                 .and_then(|x| x.resolution_of)
                 .ok_or_else(|| KernelError::Corrupt("resolution has no pending target".into()))?;
-            let hold = by_id
+            let (hold, held_at) = by_id
                 .get(&target.vid)
                 .ok_or_else(|| KernelError::Corrupt("resolution target is missing".into()))?;
+            zero_duration = held_at == recorded_at;
             for leg in &hold.proposal.legs {
                 if let Some(k) = key(leg.account_ref, hold)? {
                     moves
@@ -181,26 +186,32 @@ fn fold_entry(
         })?;
         add(&mut cell.debits_posted, m.posted_debits)?;
         add(&mut cell.credits_posted, m.posted_credits)?;
-        add(&mut cell.debits_pending, m.reserved_debits)?;
-        add(&mut cell.credits_pending, m.reserved_credits)?;
-        add(
-            &mut cell.debits_pending,
-            m.released_debits
-                .checked_neg()
-                .ok_or(RegisterError::Overflow)?,
-        )?;
-        add(
-            &mut cell.credits_pending,
-            m.released_credits
-                .checked_neg()
-                .ok_or(RegisterError::Overflow)?,
-        )?;
-        if cell.debits_pending < 0 || cell.credits_pending < 0 {
-            return Err(KernelError::Corrupt(format!(
-                "account {:032x}: a resolution releases more than its hold reserved",
-                k.0.0
-            ))
-            .into());
+        // A hold and resolution in one commit have no observable reserved
+        // interval. Their movements still validate the original amounts and
+        // touch their cells, including generation, but must not create an
+        // artificial pending balance in either VId order.
+        if !zero_duration {
+            add(&mut cell.debits_pending, m.reserved_debits)?;
+            add(&mut cell.credits_pending, m.reserved_credits)?;
+            add(
+                &mut cell.debits_pending,
+                m.released_debits
+                    .checked_neg()
+                    .ok_or(RegisterError::Overflow)?,
+            )?;
+            add(
+                &mut cell.credits_pending,
+                m.released_credits
+                    .checked_neg()
+                    .ok_or(RegisterError::Overflow)?,
+            )?;
+            if cell.debits_pending < 0 || cell.credits_pending < 0 {
+                return Err(KernelError::Corrupt(format!(
+                    "account {:032x}: a resolution releases more than its hold reserved",
+                    k.0.0
+                ))
+                .into());
+            }
         }
         cell.generation = cell
             .generation
@@ -255,11 +266,16 @@ pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let entries = entries_at(db, book, seq)?;
-    let by_id: BTreeMap<VId, &Entry> = entries.iter().map(|(v, e, _)| (*v, e)).collect();
+    let resolved = resolutions(&entries)?;
+    let by_id: BTreeMap<_, _> = entries.iter().map(|(v, e, seq)| (*v, (e, *seq))).collect();
     let mut ordered: Vec<&(VId, Entry, CommitSeq)> = entries.iter().collect();
-    ordered.sort_by_key(|(v, _, seq)| (*seq, *v));
-    for (_, entry, _) in ordered {
-        fold_entry(&mut cells, &scopes, book, entry, &by_id)?;
+    // Reservation intervals are half-open in recorded time. At each atomic
+    // boundary, release older holds before adding new reservations so the
+    // checked i128 fold cannot overflow on a nonexistent intra-commit cut.
+    // Zero-length intervals are handled without pending arithmetic above.
+    ordered.sort_by_key(|(v, e, seq)| (*seq, e.proposal.class != EntryClass::RESOLUTION, *v));
+    for recorded in ordered {
+        fold_entry(&mut cells, &scopes, book, recorded, &by_id, &resolved)?;
     }
     let mut accounts = Vec::with_capacity(cells.len());
     let mut drift = Vec::new();

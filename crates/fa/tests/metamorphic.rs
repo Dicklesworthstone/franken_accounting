@@ -855,6 +855,8 @@ fn metamorphic_rebuild_registers_equals_incrementally_maintained_registers() {
         let mut f = setup_book(seed, 0x45);
         let entries = generate_entries(seed ^ 0x5005_0000, f.usd, f.eur);
         let post_cap = Capability::embedded(f.principal, &["post"]).expect("post cap");
+        let maintenance_cap = Capability::embedded(f.principal, &["read", "verify", "maintain"])
+            .expect("maintenance cap");
 
         for (idx, spec) in entries.iter().enumerate() {
             let proposal = build_proposal(&f, spec);
@@ -868,7 +870,11 @@ fn metamorphic_rebuild_registers_equals_incrementally_maintained_registers() {
                 .expect("post io")
                 .expect("post ok");
             if idx.is_multiple_of(2) {
-                let _ = f.book.advance_registers(&f.march).expect("advance");
+                let _ = f
+                    .book
+                    .advance_registers(f.principal, &maintenance_cap, &f.march)
+                    .expect("maintenance I/O")
+                    .expect("advance");
             }
         }
 
@@ -926,7 +932,11 @@ fn metamorphic_rebuild_registers_equals_incrementally_maintained_registers() {
             })
             .expect("hold io")
             .expect("hold ok");
-        let _ = f.book.advance_registers(&f.march).expect("advance hold");
+        let _ = f
+            .book
+            .advance_registers(f.principal, &maintenance_cap, &f.march)
+            .expect("maintenance I/O")
+            .expect("advance hold");
 
         let res_proposal = EntryPayload {
             schema_minor: 0,
@@ -973,11 +983,17 @@ fn metamorphic_rebuild_registers_equals_incrementally_maintained_registers() {
 
         let maintained = f
             .book
-            .advance_registers(&f.march)
+            .advance_registers(f.principal, &maintenance_cap, &f.march)
+            .expect("maintenance I/O")
             .expect("advance final")
             .fold;
         let verify_before = f.book.verify_registers(&f.march).expect("verify before");
-        let rebuilt = f.book.rebuild_registers(&f.march).expect("rebuild").fold;
+        let rebuilt = f
+            .book
+            .rebuild_registers(f.principal, &maintenance_cap, &f.march)
+            .expect("maintenance I/O")
+            .expect("rebuild")
+            .fold;
         let refolded = f.book.fold_period(&f.march).expect("fold_period");
         let verify_after = f.book.verify_registers(&f.march).expect("verify after");
 

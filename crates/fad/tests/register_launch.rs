@@ -92,9 +92,51 @@ fn registered_help_explains_explicit_period_selection() {
     assert_eq!(output.status.code(), Some(0));
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("--register-period"));
+    assert!(text.contains("--register-fiscal-year"));
     assert!(text.contains("--bootstrap-system"));
     assert!(text.contains("--files-root"));
     assert!(text.contains("one period"));
+}
+
+#[test]
+fn fiscal_year_launch_selection_is_serve_only_exclusive_and_parsed_before_book_access() {
+    let book = "/this-book-must-not-be-opened/fiscal-year-launch";
+    let valid = run(&[
+        "serve",
+        "--register-fiscal-year",
+        "2026",
+        "--book",
+        book,
+        "--json",
+    ]);
+    assert_eq!(valid.status.code(), Some(4), "{valid:?}");
+    assert!(!std::path::Path::new(book).exists());
+    for options in [
+        vec!["status", "--register-fiscal-year", "2026"],
+        vec!["stop", "--register-fiscal-year", "2026"],
+        vec!["serve", "--register-fiscal-year", "not-a-year"],
+        vec!["serve", "--register-fiscal-year", "2147483648"],
+        vec!["serve", "--register-fiscal-year"],
+        vec![
+            "serve",
+            "--register-fiscal-year",
+            "2026",
+            "--register-fiscal-year",
+            "2027",
+        ],
+        vec![
+            "serve",
+            "--register-fiscal-year",
+            "2026",
+            "--register-period",
+            "FY2026-P03",
+        ],
+    ] {
+        let mut args = options;
+        args.extend(["--book", book, "--json"]);
+        assert_eq!(run(&args).status.code(), Some(2), "{args:?}");
+        assert!(!std::path::Path::new(book).exists());
+    }
 }
 
 #[test]

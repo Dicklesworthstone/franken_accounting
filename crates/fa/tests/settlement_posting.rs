@@ -389,6 +389,292 @@ fn portable_plan_retry_after_reopen_and_later_publications_returns_the_original_
 }
 
 #[test]
+fn independent_fx_batch_plan_posts_exact_effects_and_retries_after_cold_reopen() {
+    independent_fx_public_workflow(false);
+}
+
+#[test]
+fn independent_fx_group_plan_posts_one_entry_and_retries_after_cold_reopen() {
+    independent_fx_public_workflow(true);
+}
+
+fn independent_fx_public_workflow(group: bool) {
+    use fa::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementRequest};
+    use fa_intents::{BatchPlan, PostBatch, PostIntent, PostPlan};
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+
+    let mut h = Harness::new();
+    let cx = h.cx();
+    let eur = UnitRegistry::embedded().unwrap().lookup("EUR").unwrap();
+    h.runtime
+        .block_on(h.book.install_chart(
+            &cx,
+            &[AccountSpec {
+                code: "fx".into(),
+                name: "Realized FX".into(),
+                account_type: 4,
+                normal_balance: 1,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            }],
+            PRINCIPAL,
+            day("2026-03-01"),
+            b"fx-chart",
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut rates = Vec::new();
+    for (purpose, numerator) in [
+        (FxRatePurpose::SpotClose, 12),
+        (FxRatePurpose::Settlement, 15),
+    ] {
+        let rate = FxRateDocument::new(
+            FxRateTerms {
+                base_unit: h.usd,
+                quote_unit: eur,
+                rate_num: numerator,
+                rate_den: 10,
+                rounding: RoundingLaw::HalfEven,
+            },
+            day("2026-03-10"),
+            1,
+            purpose,
+            "Explicit retained batch fixture rate",
+        )
+        .unwrap();
+        rates.push(
+            h.runtime
+                .block_on(h.book.upload_fx_rate(&cx, &capability(), &rate))
+                .unwrap()
+                .unwrap()
+                .oid,
+        );
+    }
+    let stripped = h.root.restrict::<asupersync::cx::cap::None>();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    let mut targets = Vec::new();
+    for key in ["first-fx-invoice", "second-fx-invoice"] {
+        let mut proposal = h.proposal(key, "2026-03-10", "receivable", "capital", 10_000);
+        for leg in &mut proposal.legs {
+            leg.amount.unit = eur;
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        let valued = h
+            .runtime
+            .block_on(h.book.value_fx_proposal(
+                &cx,
+                &capability(),
+                proposal,
+                FxLawId::SpotClose,
+                &[rates[0]],
+                &mut budget,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(
+            valued
+                .legs
+                .iter()
+                .all(|leg| leg.base_amount == Some(Amount::new(h.usd, 12_000)))
+        );
+        targets.push(h.post(valued).entry_ref());
+    }
+    let mut members = Vec::new();
+    let mut requests = Vec::new();
+    for (index, native, cash, relief) in [(0, 4_000, 6_000, 4_800), (1, 10_000, 15_000, 12_000)] {
+        let mut template = h.proposal(
+            &format!("fx-batch-{index}"),
+            "2026-03-20",
+            "cash",
+            "capital",
+            1,
+        );
+        template.legs.clear();
+        template.unit_totals.clear();
+        let request = FxSettlementRequest {
+            target: targets[index],
+            target_ordinal: 0,
+            amount: Amount::new(eur, native),
+            settlement_amount: Amount::new(h.usd, cash),
+            settlement_account: account("cash"),
+            conversion_account: account("payable"),
+            realized_fx_account: account("fx"),
+            rate_document: rates[1],
+        };
+        let prepared = h
+            .runtime
+            .block_on(h.book.prepare_fx_settlement(
+                &cx,
+                &capability(),
+                &request,
+                template,
+                &mut budget,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared.base_relief(), Amount::new(h.usd, relief));
+        requests.push(request);
+        members.push(PostIntent::new(prepared.into_proposal(), Vec::new()).unwrap());
+    }
+    let head = h.head();
+    let (portable, posted_entries, recorded_at) = if group {
+        let mut template = h.proposal("facade-group-fx", "2026-03-20", "cash", "capital", 1);
+        template.legs.clear();
+        template.unit_totals.clear();
+        let prepared = h
+            .runtime
+            .block_on(h.book.prepare_fx_settlement_group(
+                &cx,
+                &capability(),
+                &requests,
+                template,
+                &mut budget,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared
+                .items()
+                .iter()
+                .map(|item| item.base_relief.mantissa)
+                .collect::<Vec<_>>(),
+            vec![4_800, 12_000]
+        );
+        assert_eq!(h.head(), head);
+        let intent = PostIntent::new(prepared.into_proposal(), Vec::new()).unwrap();
+        let plan = h
+            .runtime
+            .block_on(h.book.plan_with_history(&cx, intent, &capability()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(h.head(), head);
+        let portable = plan.canonical_bytes().unwrap();
+        let posted = h
+            .runtime
+            .block_on(h.book.commit_plan(&cx, plan, &capability()))
+            .unwrap()
+            .unwrap();
+        (portable, vec![posted.entry_ref()], posted.recorded_at())
+    } else {
+        let batch = PostBatch::new(b"facade-atomic-fx".to_vec(), members).unwrap();
+        let plan = h
+            .runtime
+            .block_on(h.book.plan_batch_with_history(&cx, batch, &capability()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(h.head(), head);
+        let portable = plan.canonical_bytes().unwrap();
+        let posted = h
+            .runtime
+            .block_on(h.book.commit_batch_plan(&cx, plan, &capability()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(posted.entries.len(), 2);
+        (portable, posted.entries, posted.recorded_at)
+    };
+    assert_eq!(recorded_at.0, head.0 + 1);
+    assert_eq!(posted_entries.len(), if group { 1 } else { 2 });
+    assert_eq!((h.open(targets[0], 0), h.open(targets[1], 0)), (6_000, 0));
+    let functional = h
+        .runtime
+        .block_on(
+            h.book
+                .functional_period_activity(&cx, &capability(), "FY2026-P03", None),
+        )
+        .unwrap()
+        .unwrap();
+    let cell = |code| {
+        functional
+            .cells
+            .iter()
+            .find(|cell| cell.key.account == account(code))
+            .unwrap()
+    };
+    assert_eq!(
+        (cell("payable").debits, cell("payable").credits),
+        (16_800, 16_800)
+    );
+    assert_eq!(cell("receivable").net(), Some(7_200));
+    assert_eq!(cell("cash").net(), Some(21_000));
+    assert_eq!(cell("fx").net(), Some(-4_200));
+    let verification = h.book.verify_fx_conversions(&cx, None).unwrap();
+    assert!(verification.is_green(), "{verification:?}");
+    assert_eq!(
+        verification.checked.values().sum::<u64>(),
+        if group { 3 } else { 4 }
+    );
+    // Reopening must reconstruct the two same-publication carrying effects,
+    // and an authenticated retry must not apply either amount a second time.
+    let head = h.head();
+    let Harness {
+        runtime,
+        root,
+        book,
+        vfs,
+        ..
+    } = h;
+    drop(book);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let mut reopened = runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            vfs,
+            Path::new("settlement-book"),
+            BookKeys::for_development(82),
+            Entropy::deterministic(83),
+        ))
+        .unwrap();
+    let (already_recorded, retry_entries, retry_at) = if group {
+        let retry = runtime
+            .block_on(reopened.commit_plan(
+                &cx,
+                PostPlan::decode(&portable).unwrap(),
+                &capability(),
+            ))
+            .unwrap()
+            .unwrap();
+        (
+            matches!(&retry, Posted::AlreadyRecorded { .. }),
+            vec![retry.entry_ref()],
+            retry.recorded_at(),
+        )
+    } else {
+        let retry = runtime
+            .block_on(reopened.commit_batch_plan(
+                &cx,
+                BatchPlan::decode(&portable).unwrap(),
+                &capability(),
+            ))
+            .unwrap()
+            .unwrap();
+        (retry.already_recorded, retry.entries, retry.recorded_at)
+    };
+    assert!(already_recorded);
+    assert_eq!(retry_entries, posted_entries);
+    assert_eq!(retry_at, recorded_at);
+    assert_eq!(reopened.head(&cx).unwrap(), head);
+    assert!(
+        reopened
+            .verify_fx_conversions(&cx, None)
+            .unwrap()
+            .is_green()
+    );
+    assert_eq!(
+        runtime
+            .block_on(reopened.functional_period_activity(&cx, &capability(), "FY2026-P03", None,))
+            .unwrap()
+            .unwrap(),
+        functional
+    );
+    assert!(reopened.verify_open_items(&cx).unwrap().is_green());
+    assert_eq!(reopened.head(&cx).unwrap(), head);
+}
+
+#[test]
 fn reviewed_preparation_is_exact_and_an_unrelated_commit_requires_explicit_refresh() {
     let mut h = Harness::new();
     let invoice = h.invoice("review-invoice", "2026-03-10", 100);

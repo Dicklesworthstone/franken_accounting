@@ -709,10 +709,16 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
             fa_reference::BatchVerdict::Posted { .. }
         ));
 
-        // At the target frontier only the one-unit hold contributes. Both a cold rebuild
-        // and advancement from a cached large hold must reach that result.
+        // A cold cursor replays retained deltas from origin; a cached cursor
+        // consumes only the release and new hold. Neither needs the old
+        // overflow-triggered full-fold fallback now that admission refuses it.
         let recovered = maintain(&mut k, period);
-        assert!(recovered.rebuilt);
+        assert!(!recovered.rebuilt, "cached_hold={cached_hold}");
+        if cached_hold {
+            assert_eq!(recovered.entries_decoded, 2);
+        } else {
+            assert!(recovered.entries_decoded >= 3);
+        }
         maintained_matches_oracle(&recovered, &oracle, k.book.book_id);
         assert_eq!(recovered.fold.pending.len(), 2);
         assert!(
@@ -738,7 +744,7 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
 #[test]
 fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
     for resolution_first_in_journal in [false, true] {
-        let (mut k, mut oracle, periods) = setup();
+        let (mut k, mut oracle, periods) = setup_reservation_limits();
         let (march, april) = (&periods[2], &periods[3]);
         open_period(&mut k, &mut oracle, march, 1);
         open_period(&mut k, &mut oracle, april, 2);
@@ -748,22 +754,22 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
         let mut refs = Vec::new();
         maintain(&mut k, march);
         maintain(&mut k, april);
-        for amount in [0, 60] {
-            let mut hold = maintenance_intent("Pending", held_on, 150, "atomic-hold");
-            for nonce in 0u64.. {
-                hold.key = format!("atomic-hold-{amount}-{nonce}").into_bytes();
-                let vid =
-                    fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &hold.key);
-                if (fa_journal::rows::resolution_vid(vid).0 < vid.0) == resolution_first_in_journal
-                {
-                    break;
-                }
-            }
+        for (held_amount, amount) in [(150, 0), (150, 60), (i128::MAX, 0)] {
+            let mut hold = maintenance_intent("Pending", held_on, held_amount, "atomic-hold");
+            hold.key = (0..256u64)
+                .find_map(|nonce| {
+                    let key = format!("atomic-hold-{held_amount}-{amount}-{nonce}").into_bytes();
+                    let vid = fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &key);
+                    ((fa_journal::rows::resolution_vid(vid).0 < vid.0)
+                        == resolution_first_in_journal)
+                        .then_some(key)
+                })
+                .expect("cover the requested VId order within the fixture budget");
             let mut release = maintenance_intent(
                 "Resolution",
                 resolved_on,
                 amount,
-                &format!("atomic-resolution-{amount}"),
+                &format!("atomic-resolution-{held_amount}-{amount}"),
             );
             release.resolves = Some(Resolve {
                 target: refs.len(),
@@ -772,12 +778,27 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
             let mut extended = refs.clone();
             extended.push(predicted_ref(&k, &hold, usd, &refs));
             let members = [hold, release];
-            let batch_key = format!("atomic-hold-and-release-{amount}");
+            let batch_key = format!("atomic-pair-{held_amount}-{amount}");
             let before = k.db.frontier().unwrap();
             let historical =
                 fa_registers::fold_period_at(&k.db, &k.book, march, Some(before)).unwrap();
+            let historical_availability =
+                verify_availability(&k.db, &k.book, Some(before)).unwrap();
             let posted = kernel_batch(&mut k, &batch_key, &members, usd, &extended).unwrap();
             assert_eq!(posted.recorded_at.0, before.0 + 1);
+            assert_eq!(
+                posted.entries[1].vid < posted.entries[0].vid,
+                resolution_first_in_journal
+            );
+            for reference in &posted.entries {
+                assert_eq!(
+                    fa_journal::post::read_entry(&k.db, reference.vid)
+                        .unwrap()
+                        .unwrap()
+                        .1,
+                    posted.recorded_at
+                );
+            }
             assert!(matches!(
                 oracle.post_batch(batch_key.as_bytes(), &members),
                 fa_reference::BatchVerdict::Posted { .. }
@@ -788,6 +809,19 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
                 historical,
                 "atomic publication cannot expose an intermediate reservation"
             );
+            assert_eq!(
+                verify_availability(&k.db, &k.book, Some(before)).unwrap(),
+                historical_availability
+            );
+            let before_verify = k.db.frontier().unwrap();
+            let availability = verify_availability(&k.db, &k.book, None);
+            assert_eq!(k.db.frontier().unwrap(), before_verify);
+            let availability = availability.unwrap();
+            assert!(availability.is_green(), "{availability:?}");
+            assert_eq!(availability.accounts_checked, 2);
+            assert_cell_in(&k, &oracle, "1000", None, 0);
+            assert_cell_in(&k, &oracle, "6000", Some(march), 0);
+            assert_cell_in(&k, &oracle, "6000", Some(april), 0);
             for period in [march, april] {
                 let advance = maintain(&mut k, period);
                 assert!(
@@ -801,6 +835,109 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
             }
         }
     }
+}
+
+#[test]
+fn availability_releases_prior_reservations_before_same_commit_births() {
+    let (mut k, mut oracle, periods) = setup_reservation_limits();
+    let march = &periods[2];
+    open_period(&mut k, &mut oracle, march, 1);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let date = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let mut refs = Vec::new();
+    let large = maintenance_intent("Pending", date, i128::MAX, "availability-large");
+    refs.push(kernel_post(&mut k, &large, usd, &refs).unwrap().entry_ref());
+    assert!(matches!(oracle.post(&large), Verdict::Posted { .. }));
+    let before = k.db.frontier().unwrap();
+    let historical = verify_availability(&k.db, &k.book, Some(before)).unwrap();
+    assert!(historical.is_green(), "{historical:?}");
+    assert_eq!(historical.accounts_checked, 2);
+
+    let mut release = maintenance_intent("Resolution", date, 0, "availability-release-large");
+    release.resolves = Some(Resolve {
+        target: 0,
+        posts: None,
+    });
+    let resolution = fa_journal::rows::resolution_vid(refs[0].vid);
+    let key = (0..256u64)
+        .map(|n| format!("availability-small-{n}"))
+        .find(|key| {
+            fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), key.as_bytes())
+                < resolution
+        })
+        .expect("exercise the overflowing VId order, never select an easier order");
+    let small = maintenance_intent("Pending", date, 1, &key);
+    let members = [release, small];
+    let posted = kernel_batch(
+        &mut k,
+        "availability-release-and-rebook",
+        &members,
+        usd,
+        &refs,
+    )
+    .unwrap();
+    assert_eq!(posted.recorded_at.0, before.0 + 1);
+    assert!(posted.entries[1].vid < posted.entries[0].vid);
+    assert!(matches!(
+        oracle.post_batch(b"availability-release-and-rebook", &members),
+        fa_reference::BatchVerdict::Posted { .. }
+    ));
+    let before_verify = k.db.frontier().unwrap();
+    let availability = verify_availability(&k.db, &k.book, None);
+    assert_eq!(k.db.frontier().unwrap(), before_verify);
+    let availability = availability.unwrap();
+    assert!(availability.is_green(), "{availability:?}");
+    assert_eq!(availability.accounts_checked, 2);
+    assert_cell_in(&k, &oracle, "1000", None, 0);
+    assert_cell_in(&k, &oracle, "6000", Some(march), 0);
+    assert_eq!(
+        verify_availability(&k.db, &k.book, Some(before)).unwrap(),
+        historical
+    );
+
+    // Valid atomic reservations must not excuse a damaged cell. Keep the
+    // historical valid frontier while planting damage in this test's store.
+    let valid_frontier = k.db.frontier().unwrap();
+    let expense = account_vid(k.book.book_id, "6000");
+    let cell = fa_journal::limit::cell_vid(expense, Some(march));
+    let ctx = k.ctx();
+    let mut damaged = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+    damaged.set_vertex_property(cell, fa_model::symbols::property::GENERATION, None);
+    k.runtime
+        .block_on(async { k.db.write(&ctx.commit(), damaged).await })
+        .unwrap();
+    let drifted = verify_availability(&k.db, &k.book, None).unwrap();
+    assert!(!drifted.is_green());
+    assert!(drifted.drift.iter().any(|d| {
+        d.code == "6000" && d.period.as_deref() == Some(march.as_str()) && d.stored.is_none()
+    }));
+    assert_eq!(
+        verify_availability(&k.db, &k.book, Some(valid_frontier)).unwrap(),
+        availability
+    );
+
+    // Append a canonical copy under a false resolution identity rather than
+    // editing an existing journal object. The shared target validator must
+    // refuse the forged/duplicate resolution before comparing derived cells.
+    let original = k.db.vertex(posted.entries[0].vid).unwrap().unwrap();
+    let forged = VId(u128::MAX);
+    assert!(k.db.vertex(forged).unwrap().is_none());
+    let mut duplicate = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+    duplicate.create_vertex(forged, original.labels.to_vec(), original.props.to_vec());
+    k.runtime
+        .block_on(async { k.db.write(&ctx.commit(), duplicate).await })
+        .unwrap();
+    let error = verify_availability(&k.db, &k.book, None).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("invalid or duplicate pending resolution"),
+        "{error}"
+    );
+    assert_eq!(
+        verify_availability(&k.db, &k.book, Some(valid_frontier)).unwrap(),
+        availability
+    );
 }
 
 /// fa-715: a trial balance and a period activity at the head served from
@@ -1758,6 +1895,29 @@ fn setup() -> (Kernel, Oracle, Vec<String>) {
         .map(|(code, ty, leaf)| (*code, *ty, *leaf, 0, None))
         .collect();
     setup_with(&chart)
+}
+
+/// Lifetime cash and period expense cells without tighter amount limits
+/// than their existing i128 representation. Neither reservation direction
+/// is silently exempt from the native cell/refold comparison.
+fn setup_reservation_limits() -> (Kernel, Oracle, Vec<String>) {
+    let rows: Vec<ChartRow> = ACCOUNTS
+        .iter()
+        .map(|(code, ty, leaf)| {
+            let scope = match *code {
+                "1000" => Some(LimitScope::Lifetime),
+                "6000" => Some(LimitScope::Period),
+                _ => None,
+            };
+            let limit = scope.map(|scope| BalanceLimit {
+                lower: None,
+                upper: Some(i128::MAX),
+                scope,
+            });
+            (*code, *ty, *leaf, 0, limit)
+        })
+        .collect();
+    setup_with(&rows)
 }
 
 fn setup_with(rows: &[ChartRow]) -> (Kernel, Oracle, Vec<String>) {

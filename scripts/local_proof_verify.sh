@@ -9,14 +9,16 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: bash scripts/local_proof_verify.sh [--repository DIR] [--for-resume] [PROOF_DIR]
-       bash scripts/local_proof_verify.sh [--repository DIR] --note COMMIT_OR_REF
+Usage: bash scripts/local_proof_verify.sh [--repository DIR] [--for-resume|--for-close] [PROOF_DIR]
+       bash scripts/local_proof_verify.sh [--repository DIR] [--for-close] --note COMMIT_OR_REF [PROOF_DIR]
 
 Options:
   --repository DIR  Require DIR's Git object database to contain the proof's
                     commit, tree, and exact tracked scripts/check.sh blob.
   --note REV        Verify a published refs/notes/fa-verdict note for REV in
-                    --repository DIR (defaults to current repository).
+                    --repository DIR (defaults to current repository), bound
+                    to its retained proof_dir or an explicitly supplied copy.
+  --for-close       Require a retained v3 full canonical gate and executed tests.
   --for-resume      Require v3, a stable tree matching DIR's current tree,
                     identical check script/toolchain, and zero FAIL records.
   -h, --help        Show this help.
@@ -35,6 +37,7 @@ repository=""
 proof_arg=""
 note_arg=""
 for_resume=0
+for_close=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repository)
@@ -48,6 +51,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --for-resume) for_resume=1; shift ;;
+    --for-close) for_close=1; shift ;;
     -h|--help)
       usage
       exit 0
@@ -61,6 +65,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$proof_arg" ] || [ -n "$note_arg" ] || { usage >&2; exit 2; }
+[ "$for_resume" -eq 0 ] || [ "$for_close" -eq 0 ] || fail "choose --for-resume or --for-close"
 
 if [ -n "$repository" ]; then
   [ -d "$repository" ] || fail "not a repository directory: $repository"
@@ -75,6 +80,7 @@ fi
 if [ -z "$note_arg" ] && [ -n "$proof_arg" ] && [ ! -d "$proof_arg" ] && [ -n "$repository" ] && [ "$for_resume" -eq 0 ]; then
   if git -C "$repository" rev-parse --verify --quiet "${proof_arg}^{commit}" >/dev/null 2>&1; then
     note_arg="$proof_arg"
+    proof_arg=""
   fi
 fi
 
@@ -92,17 +98,29 @@ if [ -n "$note_arg" ]; then
   note_text="$(git -C "$repo_for_note" notes --ref=fa-verdict show "$target_commit" 2>/dev/null)" \
     || fail "cannot read refs/notes/fa-verdict note for $target_commit"
 
-  python3 -B - "$target_commit" "$target_tree" "$target_script_blob" "$note_blob" "$note_text" <<'PY' || exit 1
+  python3 -B - "$target_commit" "$target_tree" "$target_script_blob" "$note_blob" "$note_text" \
+    "$repo_for_note" "$proof_arg" "${BASH_SOURCE[0]}" "$for_close" <<'PY' || exit 1
+import hashlib
 import json
+import pathlib
 import re
+import subprocess
 import sys
 
 target_commit, target_tree, target_script_blob, note_blob, note_text = sys.argv[1:6]
+repository, proof_override, verifier, for_close = sys.argv[6:10]
 
 def require(cond, msg):
     if not cond:
         print(f"local-proof-verify: {msg}", file=sys.stderr)
         sys.exit(1)
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, f"duplicate JSON key {key}")
+        result[key] = value
+    return result
 
 kv = {}
 steps = []
@@ -112,7 +130,7 @@ for raw in note_text.splitlines():
     require("=" in raw, f"malformed note line: {raw}")
     k, v = raw.split("=", 1)
     if k == "step_verdict":
-        steps.append(json.loads(v))
+        steps.append(json.loads(v, object_pairs_hook=strict_object))
     else:
         require(k not in kv, f"duplicate note key: {k}")
         kv[k] = v
@@ -139,6 +157,8 @@ require(bool(re.fullmatch(r"[0-9a-f]{64}", kv.get("proof_sums_sha256", ""))), "n
 inv_digest = kv.get("test_inventory_digest", "")
 require(inv_digest == "none" or bool(re.fullmatch(r"[0-9a-f]{64}", inv_digest)), "invalid test_inventory_digest in note")
 require(bool(steps), "note contains zero step_verdict records")
+require("passed_test" not in kv and "failed_test" not in kv,
+        "unbound test-name fields cannot authorize a note")
 
 for rec in steps:
     name = rec.get("step", "")
@@ -160,14 +180,70 @@ elif verdict == "red":
     require(kv["tree_stable"] == "true" and check_exit != 0, "red note must be stable with nonzero exit")
     require(any(r["status"] in ("FAIL", "UNRUN") for r in steps), "red note lacks failing/unrun step")
 
-print("LOCAL_PROOF_VERIFIED")
+proof = pathlib.Path(proof_override or kv.get("proof_dir", ""))
+require(bool(proof_override or kv.get("proof_dir")), "note requires a retained v3 proof directory")
+require(proof.is_dir(), f"retained proof directory is unavailable: {proof}")
+proof = proof.resolve()
+command = ["bash", verifier, "--repository", repository]
+if for_close == "1":
+    command.append("--for-close")
+command.append(str(proof))
+checked = subprocess.run(command, text=True, capture_output=True)
+if checked.returncode:
+    print(checked.stdout, end="")
+    print(checked.stderr, end="", file=sys.stderr)
+    require(False, "note's retained proof failed verification")
+checked_fields = dict(line.split("=", 1) for line in checked.stdout.splitlines() if "=" in line)
+if "scope" in kv:
+    require(kv["scope"] == checked_fields["scope"], "note/retained scope mismatch")
+manifest = dict(line.split("=", 1) for line in (proof / "manifest.txt").read_text().splitlines())
+require(manifest.get("format_version") == "3", "notes require retained v3 step logs")
+require(all(kv.get(key) == value for key, value in manifest.items()), "note/retained manifest mismatch")
+require(hashlib.sha256((proof / "SHA256SUMS").read_bytes()).hexdigest() == kv["proof_sums_sha256"],
+        "note/retained proof checksum identity mismatch")
+records = [json.loads(line, object_pairs_hook=strict_object)
+           for line in (proof / "step-verdicts.jsonl").read_text().splitlines()]
+require(len(steps) == len(records), "note/retained step inventory mismatch")
+tools = (proof / "tools.txt").read_text().splitlines()
+require([line.removeprefix("rustc=") for line in tools if line.startswith("rustc=")] == [toolchain],
+        "note/retained toolchain mismatch")
+listed_log = proof / "steps/test-list.log"
+listed = sorted(re.findall(r"^\s*(.+): test$", listed_log.read_text(), re.M)) if listed_log.is_file() else []
+actual_inventory = (hashlib.sha256(("\n".join(listed) + "\n").encode()).hexdigest() if listed else
+                    hashlib.sha256(listed_log.read_bytes()).hexdigest() if listed_log.is_file() else "none")
+require(inv_digest == actual_inventory, "note/retained test inventory mismatch")
+for rec, origin in zip(steps, records):
+    name = origin["step"]
+    require({key: value for key, value in rec.items() if key not in {"witness", "duration_ms"}} == origin,
+            f"{name}: note/retained execution provenance mismatch")
+    require(rec["duration_ms"] == origin["duration_secs"] * 1000, f"{name}: note duration mismatch")
+    log = proof / "steps" / (name + ".log")
+    passed, failed = [], []
+    actual_witness = {"log_digest": origin["log_digest"], "worker": origin["worker"]}
+    if log.is_file():
+        text = log.read_text(errors="replace")
+        if name == "test-list":
+            actual_witness["listed_tests"] = len(re.findall(r"^\s*(.+): test$", text, re.M))
+            actual_witness["test_inventory_digest"] = actual_inventory
+        elif name in {"test", "robot-schema", "registry-check"}:
+            actual_witness["passed_tests"] = sum(map(int, re.findall(r"^test result: ok\. (\d+) passed;", text, re.M)))
+        elif name in {"check", "clippy"}:
+            actual_witness["finished_targets"] = len(re.findall(r"^\s*Finished ", text, re.M))
+        evidence = re.findall(r"^\s*evidence artifact_id=(\S+) .* verdict=PASS$", text, re.M)
+        if evidence:
+            actual_witness["evidence_artifacts"] = evidence
+        for match in re.finditer(r"^test\s+(\S+)(?: - should panic)?\s+\.\.\.\s+(ok|FAILED)$", text if name == "test" else "", re.M):
+            (passed if match[2] == "ok" else failed).append(match[1])
+        for match in re.finditer(r"^(PASS|FAIL|ok)\s+([A-Za-z0-9_.:/-]+)", text, re.M):
+            (failed if match[1] == "FAIL" else passed).append(match[2])
+    if passed:
+        actual_witness["passed_test_names"] = passed
+    if failed:
+        actual_witness["failed_test_names"] = failed
+    require(rec["witness"] == actual_witness,
+            f"{name}: note test witness differs from retained log")
+print(checked.stdout, end="")
 print(f"note_id={note_blob}")
-print(f"commit={target_commit}")
-print(f"tree={target_tree}")
-print(f"check_script_blob={kv.get('check_script_blob', '')}")
-print(f"check_exit={check_exit}")
-print(f"tree_stable={kv['tree_stable']}")
-print(f"verdict={verdict}")
 PY
   exit 0
 fi
@@ -201,6 +277,10 @@ manifest_value() {
 format_version="$(manifest_value format_version)" \
   || fail "manifest must contain exactly one format_version"
 case "$format_version" in 1|2|3) ;; *) fail "unsupported format_version: $format_version" ;; esac
+if [ "$for_close" -eq 1 ]; then
+  [ "$format_version" = 3 ] || fail "closure requires retained v3 step evidence"
+  [ -n "$repository" ] || fail "--for-close requires --repository"
+fi
 if [ "$for_resume" -eq 1 ]; then
   [ "$format_version" = 3 ] || fail "resume requires v3 retained step evidence; legacy proof verification is unchanged"
   [ -n "$repository" ] || fail "--for-resume requires --repository"
@@ -329,6 +409,10 @@ if [ -n "$repository" ]; then
   fi
 fi
 
+if [ "$for_close" -eq 1 ]; then
+  [ "$verdict" = pass ] && [ "$stable" = true ] || fail "closure requires a stable PASS proof"
+fi
+
 case "$verdict" in
   pass)
     [ "$stable" = true ] || fail "pass proof is not tree-stable"
@@ -357,19 +441,22 @@ case "$verdict" in
     ;;
 esac
 
+proof_scope="historical"
 if [ "$format_version" = 3 ]; then
   command -v python3 >/dev/null 2>&1 || fail "v3 step verification requires python3"
-  source_ids="$(python3 -B - "$proof" "$tree" "$script_blob" "$verdict" "$for_resume" <<'PY'
+  step_validation="$(python3 -B - "$proof" "$tree" "$script_blob" "$verdict" "$for_resume" \
+      "$repository" "$commit" "$for_close" <<'PY'
 import collections
 import datetime
 import hashlib
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 root = pathlib.Path(sys.argv[1])
-tree, script_blob, verdict, for_resume = sys.argv[2:]
+tree, script_blob, verdict, for_resume, repository, commit, for_close = sys.argv[2:]
 
 def require(condition, message):
     if not condition:
@@ -395,6 +482,27 @@ def records_at(directory):
 
 try:
     records = records_at(root)
+    manifest = dict(line.split("=", 1) for line in (root / "manifest.txt").read_text().splitlines())
+    run_started = datetime.datetime.strptime(manifest["started_utc"], "%Y-%m-%dT%H:%M:%SZ")
+    run_finished = datetime.datetime.strptime(manifest["finished_utc"], "%Y-%m-%dT%H:%M:%SZ")
+    require(run_finished >= run_started, "reversed proof execution times")
+    canonical = []
+    if repository:
+        committed = int(subprocess.check_output(["git", "-C", repository, "show", "-s", "--format=%ct", commit], text=True).strip())
+        committed_at = datetime.datetime.fromtimestamp(committed, datetime.timezone.utc).replace(tzinfo=None)
+        require(run_started >= committed_at, "proof started before its commit")
+        script = subprocess.check_output(["git", "-C", repository, "show", f"{commit}:scripts/check.sh"], text=True)
+        headers = re.findall(r"^# CANONICAL_STEPS: (.+)$", script, re.M)
+        if len(headers) == 1:
+            canonical = [name.strip() for name in headers[0].split(",")]
+            require(all(re.fullmatch(r"[A-Za-z0-9_.-]+", name) for name in canonical)
+                    and len(set(canonical)) == len(canonical), "invalid canonical step inventory")
+    full_scope = bool(canonical) and set(canonical) == set(records)
+    if for_close == "1":
+        require(full_scope, "closure requires the full canonical step inventory, including test")
+        require(records.get("test", {}).get("status") == "PASS"
+                and records.get("test-list", {}).get("status") == "PASS",
+                "closure requires executed tests and their inventory")
     tools = (root / "tools.txt").read_text().splitlines()
     toolchains = [line.removeprefix("rustc=") for line in tools if line.startswith("rustc=")]
     require(len(toolchains) == 1 and toolchains[0].startswith("rustc "), "missing or ambiguous Rust toolchain")
@@ -426,6 +534,9 @@ try:
         started = datetime.datetime.strptime(record["started"], "%Y-%m-%dT%H:%M:%SZ")
         finished = datetime.datetime.strptime(record["finished"], "%Y-%m-%dT%H:%M:%SZ")
         require(finished >= started, f"{name}: reversed execution times")
+        require(finished <= run_finished, f"{name}: step finished after its proof")
+        if "reused_from" not in record:
+            require(started >= run_started, f"{name}: step started before its proof")
         log = root / "steps" / (name + ".log")
         if record["log_digest"] == "none":
             require(record["status"] != "PASS" and not log.exists(), f"{name}: missing PASS log or unbound log")
@@ -467,18 +578,21 @@ try:
     if records.get("test", {}).get("status") == "PASS":
         require(records.get("test-list", {}).get("status") == "PASS", "test PASS lacks an inventory witness")
         listed = collections.Counter(re.findall(r"^\s*(.+): test$", (root / "steps/test-list.log").read_text(), re.M))
-        executed = collections.Counter(re.findall(r"^test (.+) \.\.\. (?:ok|ignored)$", (root / "steps/test.log").read_text(), re.M))
-        require(bool(listed) and not (listed - executed), "listed tests missing from execution")
+        executed = collections.Counter(re.findall(r"^test (\S+)(?: - should panic)? \.\.\. (?:ok|ignored(?:, [^\n]*)?)$", (root / "steps/test.log").read_text(), re.M))
+        require(bool(listed) and listed == executed, "listed/executed test inventories differ")
     sources_dir = root / "sources"
     actual_sources = {path.name for path in sources_dir.iterdir()} if sources_dir.exists() else set()
     require(actual_sources == source_ids, "unreferenced or missing retained source proof")
+    print("scope=" + ("full" if full_scope else "partial"))
     for source_id in sorted(source_ids):
-        print(source_id)
-except (OSError, ValueError, KeyError, TypeError) as error:
+        print("source=" + source_id)
+except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
     print(f"local-proof-verify: {error}", file=sys.stderr)
     sys.exit(1)
 PY
 )" || fail "v3 step evidence is invalid"
+  proof_scope="$(awk -F= '$1 == "scope" { print $2 }' <<< "$step_validation")"
+  source_ids="$(awk -F= '$1 == "source" { print $2 }' <<< "$step_validation")"
   depth="${FA_PROOF_VERIFY_DEPTH:-0}"
   [[ "$depth" =~ ^[0-9]+$ ]] && [ "$depth" -lt 16 ] || fail "source proof nesting exceeds 16"
   while IFS= read -r source_id; do
@@ -509,3 +623,4 @@ printf 'check_script_blob=%s\n' "${script_blob:-legacy-unrecorded}"
 printf 'check_exit=%s\n' "$check_exit"
 printf 'tree_stable=%s\n' "$stable"
 printf 'verdict=%s\n' "$verdict"
+printf 'scope=%s\n' "$proof_scope"

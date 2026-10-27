@@ -204,7 +204,7 @@ pub fn upload_grade(policy: &EvidencePolicy, profile: Profile) -> Result<u8, Ker
 }
 
 /// Shared inline/external admission. There is no storage observation before
-/// the operation and book checks, and no content hashing or blob access
+/// the operation, book and scope checks, and no content hashing or blob access
 /// before current expiry and the original revocation witness are checked.
 fn admit_upload<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -217,6 +217,7 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
     cx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(denial) = fa_policy::require(capability, Op::Post, "uploading evidence")
         .and_then(|()| fa_policy::scope(capability, book.book_id))
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
     {
         return Ok(Err(policy::refusal(&denial)));
     }

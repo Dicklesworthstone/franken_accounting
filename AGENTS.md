@@ -60,9 +60,21 @@ operative text. Do not invent the missing sections.
 
 ## Branch Policy
 
-- Primary branch is `main`.
-- Do not reference `master` in docs/scripts.
-- If release instructions require sync, push `main:master` after `main`.
+**Owner directive (2026-10-27): one canonical `main`, mirrored to `master`.**
+
+- Work only in `/Users/jemanuel/projects/franken_accounting` on `main`.
+- Do not create feature, staging, train, experiment or review branches, linked
+  worktrees, or pull requests. Reconcile useful existing work into canonical
+  `main` by preserving the strongest compatible parts of each file.
+- Publish `main` normally, then mirror that exact commit to `master`; never
+  force-push. Inspect and merge any open PR's useful code into `main`.
+- Preserve every existing tip, dirty file and negative-test control in verified
+  recovery material before any owner-authorized retirement. A deliberately
+  weakened control is evidence, not product code to merge.
+- This directive overrides the legacy train, staging, auxiliary-worktree and PR
+  workflow instructions below. Their verification requirements still apply:
+  Tier 0 must pass for the exact tree before any fold, merge or direct push to
+  `main`; `UNRUN` is never a pass or authority to close a Bead.
 
 ---
 

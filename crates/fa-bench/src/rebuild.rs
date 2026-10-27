@@ -246,9 +246,15 @@ pub fn build(legs: u64, seed: u64) -> Result<RebuildBook, BenchError> {
         next = end;
     }
 
+    let maintain =
+        Capability::embedded(ledger.operator, &["read", "verify", "maintain"]).map_err(exec)?;
     let mut maintained = Vec::with_capacity(ledger.periods.len());
     for period in &ledger.periods {
-        let advance = ledger.book.advance_registers(period).map_err(exec)?;
+        let advance = ledger
+            .book
+            .advance_registers(ledger.operator, &maintain, period)
+            .map_err(exec)?
+            .map_err(|refusal| exec(refusal.message))?;
         maintained.push(advance.fold.fold_digest);
     }
     Ok(RebuildBook {
@@ -262,10 +268,18 @@ impl RebuildBook {
     /// Rebuild every period's registers from the journal, timed, and check
     /// each refold digest-equal to the maintained registers.
     pub fn rebuild(&mut self) -> Result<Rebuilt, BenchError> {
+        let maintain = Capability::embedded(self.ledger.operator, &["read", "verify", "maintain"])
+            .map_err(exec)?;
         let start = Instant::now();
         let mut advances = Vec::with_capacity(self.ledger.periods.len());
         for period in &self.ledger.periods {
-            advances.push(self.ledger.book.rebuild_registers(period).map_err(exec)?);
+            advances.push(
+                self.ledger
+                    .book
+                    .rebuild_registers(self.ledger.operator, &maintain, period)
+                    .map_err(exec)?
+                    .map_err(|refusal| exec(refusal.message))?,
+            );
         }
         let elapsed_us = u64::try_from(start.elapsed().as_micros()).map_err(exec)?;
         let mut legs_folded = 0u64;

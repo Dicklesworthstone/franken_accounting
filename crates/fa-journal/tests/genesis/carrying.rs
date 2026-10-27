@@ -1,5 +1,8 @@
 use super::*;
-use fa_journal::carrying::{FxSettlementRequest, open_item_carrying_at, prepare_fx_settlement};
+use fa_journal::carrying::{
+    FxSettlementRequest, PreparedFxSettlementGroup, open_item_carrying_at, prepare_fx_settlement,
+    prepare_fx_settlement_group,
+};
 use fa_money::RoundingLaw;
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 
@@ -144,19 +147,14 @@ fn fixture(native: i128, base: i128) -> Fixture {
 
 impl Fixture {
     fn prepare(&self, amount: i128, key: &[u8]) -> PreparedFxSettlement {
+        self.prepare_for(self.target, amount, key)
+    }
+
+    fn prepare_for(&self, target: EntryRef, amount: i128, key: &[u8]) -> PreparedFxSettlement {
         let stripped = Cx::detached_cancel_context();
         let mut budget =
             ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
-        let req = FxSettlementRequest {
-            target: self.target,
-            target_ordinal: 0,
-            amount: Amount::new(self.foreign, amount),
-            settlement_amount: Amount::new(self.h.usd, amount.checked_mul(2).unwrap()),
-            settlement_account: self.h.cash,
-            conversion_account: self.conversion,
-            realized_fx_account: self.realized,
-            rate_document: self.rate,
-        };
+        let req = self.fx_request(target, amount);
         prepare_fx_settlement(
             &self.h.db,
             &self.h.ctx(),
@@ -170,17 +168,75 @@ impl Fixture {
         .unwrap()
     }
 
+    fn fx_request(&self, target: EntryRef, amount: i128) -> FxSettlementRequest {
+        FxSettlementRequest {
+            target,
+            target_ordinal: 0,
+            amount: Amount::new(self.foreign, amount),
+            settlement_amount: Amount::new(self.h.usd, amount.checked_mul(2).unwrap()),
+            settlement_account: self.h.cash,
+            conversion_account: self.conversion,
+            realized_fx_account: self.realized,
+            rate_document: self.rate,
+        }
+    }
+
+    fn prepare_group(
+        &self,
+        requests: &[FxSettlementRequest],
+        key: &[u8],
+    ) -> Result<PreparedFxSettlementGroup, Refusal> {
+        let stripped = Cx::detached_cancel_context();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        prepare_fx_settlement_group(
+            &self.h.db,
+            &self.h.ctx(),
+            &self.h.book,
+            &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+            requests,
+            self.h.proposal(vec![], key, EntryClass::ORIGINAL),
+            &mut budget,
+        )
+        .unwrap()
+    }
+
     fn carrying(&self) -> CarryingOpenItem {
+        self.carrying_for(self.target)
+    }
+
+    fn carrying_for(&self, target: EntryRef) -> CarryingOpenItem {
         open_item_carrying_at(
             &self.h.db,
             &self.h.ctx(),
             &self.h.book,
-            self.target,
+            target,
             0,
             self.h.db.frontier().unwrap(),
         )
         .unwrap()
         .unwrap()
+    }
+
+    fn another_target(&mut self) -> EntryRef {
+        let (entry, _) = read_entry(&self.h.db, self.target.vid).unwrap().unwrap();
+        let mut proposal = entry.proposal;
+        proposal.idempotency_key = b"second-foreign-invoice".to_vec();
+        self.h.post(request(proposal)).unwrap().entry_ref()
+    }
+
+    fn post_fx_batch(&mut self, batch: PostBatch) -> Result<BatchPosted, Refusal> {
+        let cx = self.h.ctx();
+        self.h
+            .runtime
+            .block_on(fa_journal::post_batch(
+                &mut self.h.db,
+                &cx,
+                &self.h.book,
+                Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+                batch,
+            ))
+            .unwrap()
     }
 
     fn verify(&self) {
@@ -192,6 +248,462 @@ impl Fixture {
             })
             .unwrap();
         assert!(verification.is_green(), "{:?}", verification.drift);
+    }
+}
+
+#[test]
+fn independent_fx_group_is_one_entry_with_exact_partial_final_zero_and_single_undo() {
+    for (base, second_amount, relief, remainder) in [
+        (10, 3, (3, 10), ((2, 7), (0, 0))),
+        (1, 1, (0, 0), ((2, 1), (2, 1))),
+        (6, 3, (2, 6), ((2, 4), (0, 0))),
+    ] {
+        let mut f = fixture(3, base);
+        let second = f.another_target();
+        let inputs = [
+            f.fx_request(f.target, 1),
+            f.fx_request(second, second_amount),
+        ];
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let group = f.prepare_group(&inputs, b"single-fx-group").unwrap();
+        assert_eq!(group.items().len(), 2);
+        assert_eq!(
+            (
+                group.items()[0].base_relief.mantissa,
+                group.items()[1].base_relief.mantissa
+            ),
+            relief
+        );
+        assert!(
+            group
+                .items()
+                .iter()
+                .all(|item| item.carrying.known_at == head)
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        let proposal = group.into_proposal();
+        assert_eq!(
+            proposal
+                .legs
+                .iter()
+                .filter(|leg| !leg.settles.is_empty())
+                .count(),
+            2
+        );
+        let posted = f.h.post(request(proposal.clone())).unwrap();
+        assert_eq!(posted.recorded_at().0, head.0 + 1);
+        for (target, expected) in [(f.target, remainder.0), (second, remainder.1)] {
+            let item = f.carrying_for(target);
+            assert_eq!(
+                (item.open_native.mantissa, item.open_base.mantissa),
+                expected
+            );
+        }
+        f.verify();
+        let rows = f.h.db.vertices().unwrap();
+        assert_eq!(
+            f.prepare_group(&inputs, b"single-fx-group")
+                .unwrap()
+                .into_proposal(),
+            proposal
+        );
+        let retry = f.h.post(request(proposal.clone())).unwrap();
+        assert!(matches!(&retry, Posted::AlreadyRecorded { .. }));
+        assert_eq!(retry.entry_ref(), posted.entry_ref());
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.h.db.frontier().unwrap(), posted.recorded_at());
+        let reversed = undo(&proposal, posted.entry_ref(), b"undo-entire-fx-group");
+        let undone = f.h.post(request(reversed)).unwrap();
+        assert_eq!(undone.recorded_at().0, posted.recorded_at().0 + 1);
+        for target in [f.target, second] {
+            let item = f.carrying_for(target);
+            assert_eq!(
+                (item.open_native.mantissa, item.open_base.mantissa),
+                (3, base)
+            );
+        }
+        f.verify();
+    }
+}
+
+#[test]
+fn fx_group_overlap_bad_later_input_and_post_only_authority_publish_nothing() {
+    let mut f = fixture(3, 10);
+    let second = f.another_target();
+    let inputs = [f.fx_request(f.target, 1), f.fx_request(second, 1)];
+    let head = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let mut cases = Vec::new();
+    let mut duplicate = inputs.clone();
+    duplicate[1].target = duplicate[0].target;
+    cases.push(duplicate);
+    let mut forged = inputs.clone();
+    forged[1].target = forged[0].target;
+    forged[1].target.entry_digest[0] ^= 1;
+    cases.push(forged);
+    let mut bad_cash = inputs.clone();
+    bad_cash[1].settlement_amount.mantissa += 1;
+    cases.push(bad_cash);
+    let mut another_rate = inputs.clone();
+    another_rate[1].rate_document = Oid([7; 32]);
+    cases.push(another_rate);
+    for inputs in cases {
+        assert_eq!(
+            f.prepare_group(&inputs, b"invalid-fx-group")
+                .unwrap_err()
+                .code,
+            "FA-REF-071"
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+    }
+    let group = f
+        .prepare_group(&inputs, b"post-only-fx-group")
+        .unwrap()
+        .into_proposal();
+    let mut denied = request(group);
+    denied.capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    assert_eq!(f.h.post(denied).unwrap_err().exit, 7);
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn balanced_false_later_fx_component_and_group_in_batch_refuse_without_partial_effects() {
+    let mut f = fixture(3, 10);
+    let second = f.another_target();
+    let inputs = [f.fx_request(f.target, 1), f.fx_request(second, 1)];
+    let group = f.prepare_group(&inputs, b"false-later-fx-group").unwrap();
+    let second_start = group.items()[1].leg_range.start;
+    let mut proposal = group.into_proposal();
+    // Preserve both native and functional balance, and conversion neutrality.
+    // Only the second item's claimed carrying relief is wrong.
+    for ordinal in [second_start, second_start + 1, second_start + 2] {
+        proposal.legs[ordinal]
+            .base_amount
+            .as_mut()
+            .unwrap()
+            .mantissa += 1;
+    }
+    proposal.legs[second_start + 2].amount.mantissa += 1;
+    proposal.legs[second_start + 4].amount.mantissa += 1;
+    proposal.legs[second_start + 4]
+        .base_amount
+        .as_mut()
+        .unwrap()
+        .mantissa += 1;
+    // Cash is2 while carrying is3, so the loss grows from1 to2.
+    let totals = proposal.base_totals.as_mut().unwrap();
+    totals.debits += 2;
+    totals.credits += 2;
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let head = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let refusal = f.h.post(request(proposal)).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-071");
+    assert!(refusal.message.contains("disagrees with journal-derived"));
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    let valid = f
+        .prepare_group(&inputs, b"group-not-batch-member")
+        .unwrap()
+        .into_proposal();
+    let batch = f.h.batch(b"unsupported-fx-group-batch", vec![valid]);
+    assert_eq!(f.post_fx_batch(batch).unwrap_err().code, "FA-REF-071");
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn portable_fx_group_refuses_stale_source_and_unrelated_heads_then_retries_one_entry() {
+    for source_change in [false, true] {
+        let mut f = fixture(3, 10);
+        let second = f.another_target();
+        let inputs = [f.fx_request(f.target, 1), f.fx_request(second, 1)];
+        let proposal = f
+            .prepare_group(&inputs, b"portable-fx-group")
+            .unwrap()
+            .into_proposal();
+        let cap = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
+        let plan = f.h.post_plan(request(proposal)).unwrap();
+        let bytes = plan.canonical_bytes().unwrap();
+        if source_change {
+            let earlier = f.prepare(1, b"competing-group-application").into_proposal();
+            f.h.post(request(earlier)).unwrap();
+        } else {
+            let doc =
+                f.h.document(INVOICE, HUMAN_UPLOAD, b"new independent group evidence");
+            f.h.add_document(&doc).unwrap();
+        }
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        assert_eq!(
+            f.h.publish_plan(fa_intents::PostPlan::decode(&bytes).unwrap(), &cap)
+                .unwrap_err()
+                .code,
+            fa_journal::refusal::code::PLAN_INVALIDATED
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        let fresh = f
+            .prepare_group(&inputs, b"portable-fx-group")
+            .unwrap()
+            .into_proposal();
+        let plan = f.h.post_plan(request(fresh)).unwrap();
+        let posted = f.h.publish_plan(plan.clone(), &cap).unwrap();
+        assert_eq!(posted.recorded_at().0, head.0 + 1);
+        let item = f.carrying();
+        assert_eq!(
+            (item.open_native.mantissa, item.open_base.mantissa),
+            if source_change { (1, 3) } else { (2, 7) }
+        );
+        assert_eq!(f.carrying_for(second).open_base.mantissa, 7);
+        let retry = f.h.publish_plan(plan, &cap).unwrap();
+        assert!(matches!(&retry, Posted::AlreadyRecorded { .. }));
+        assert_eq!(retry.entry_ref(), posted.entry_ref());
+        assert_eq!(f.h.db.frontier().unwrap(), posted.recorded_at());
+        f.verify();
+    }
+}
+
+#[test]
+fn independent_fx_batch_publishes_exact_partial_final_and_zero_relief_at_one_prefix() {
+    for (base, second_amount, relief, remaining_first, remaining_second) in [
+        (10, 3, (3, 10), (2, 7), (0, 0)),
+        (1, 1, (0, 0), (2, 1), (2, 1)),
+    ] {
+        let mut f = fixture(3, base);
+        let second = f.another_target();
+        let first = f.prepare(1, b"atomic-first");
+        let later = f.prepare_for(second, second_amount, b"atomic-second");
+        assert_eq!(
+            (first.base_relief().mantissa, later.base_relief().mantissa),
+            relief
+        );
+        let batch = f.h.batch(
+            b"atomic-fx",
+            vec![first.into_proposal(), later.into_proposal()],
+        );
+        let head = f.h.db.frontier().unwrap();
+        let posted = f.post_fx_batch(batch.clone()).unwrap();
+        assert!(!posted.already_recorded);
+        assert_eq!(posted.entries.len(), 2);
+        assert_eq!(posted.recorded_at.0, head.0 + 1);
+        for entry in &posted.entries {
+            assert_eq!(
+                read_entry(&f.h.db, entry.vid).unwrap().unwrap().1,
+                posted.recorded_at
+            );
+        }
+        for (target, expected) in [(f.target, remaining_first), (second, remaining_second)] {
+            let item = f.carrying_for(target);
+            assert_eq!(
+                (item.open_native.mantissa, item.open_base.mantissa),
+                expected
+            );
+        }
+        f.verify();
+        let rows = f.h.db.vertices().unwrap();
+        let retry = f.post_fx_batch(batch).unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.entries, posted.entries);
+        assert_eq!(retry.recorded_at, posted.recorded_at);
+        assert_eq!(f.h.db.frontier().unwrap(), posted.recorded_at);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        let reversals = posted
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let (entry, _) = read_entry(&f.h.db, target.vid).unwrap().unwrap();
+                undo(
+                    &entry.proposal,
+                    *target,
+                    format!("undo-independent-{index}").as_bytes(),
+                )
+            })
+            .collect();
+        let undo_batch = f.h.batch(b"undo-independent-fx", reversals);
+        let undone = f.h.post_batch(undo_batch).unwrap();
+        assert_eq!(undone.recorded_at.0, posted.recorded_at.0 + 1);
+        for target in [f.target, second] {
+            let item = f.carrying_for(target);
+            assert_eq!(
+                (item.open_native.mantissa, item.open_base.mantissa),
+                (3, base)
+            );
+        }
+        f.verify();
+    }
+}
+
+#[test]
+fn overlapping_fx_batch_targets_refuse_even_when_the_second_digest_is_forged() {
+    for forged in [false, true] {
+        let mut f = fixture(3, 10);
+        let first = f.prepare(1, b"overlap-first").into_proposal();
+        let mut second = f.prepare(1, b"overlap-second").into_proposal();
+        if forged {
+            second.legs[0].settles[0].target.entry_digest[0] ^= 1;
+        }
+        let batch = f.h.batch(b"overlap-fx", vec![first, second]);
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refusal = f.post_fx_batch(batch).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-071", 3));
+        assert!(refusal.message.contains("distinct existing target legs"));
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.carrying().open_base.mantissa, 10);
+    }
+}
+
+#[test]
+fn mixed_fx_batches_and_post_only_authority_cannot_publish_any_member() {
+    for fx_first in [false, true] {
+        let mut f = fixture(3, 10);
+        let fx = f.prepare(1, b"mixed-fx").into_proposal();
+        let plain =
+            f.h.proposal(f.h.rent_legs(1), b"mixed-plain", EntryClass::ORIGINAL);
+        let members = if fx_first {
+            vec![fx, plain]
+        } else {
+            vec![plain, fx]
+        };
+        let batch = f.h.batch(b"mixed", members);
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refusal = f.post_fx_batch(batch).unwrap_err();
+        assert_eq!(
+            refusal.code,
+            fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+    }
+    let mut f = fixture(3, 10);
+    let other = f.another_target();
+    let batch = f.h.batch(
+        b"post-only-fx",
+        vec![
+            f.prepare(1, b"post-only-first").into_proposal(),
+            f.prepare_for(other, 1, b"post-only-second").into_proposal(),
+        ],
+    );
+    let head = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let refusal = f.h.post_batch(batch).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn an_invalid_later_fx_member_or_staged_target_rolls_back_the_complete_batch() {
+    for staged_target in [false, true] {
+        let mut f = fixture(3, 10);
+        let other = f.another_target();
+        let first = f.prepare(1, b"rollback-first").into_proposal();
+        let mut second = f.prepare_for(other, 1, b"rollback-second").into_proposal();
+        if staged_target {
+            second.legs[0].settles[0].target = f.h.member_ref(&first);
+        } else {
+            for leg in &mut second.legs[..2] {
+                leg.base_amount.as_mut().unwrap().mantissa += 1;
+            }
+            let totals = second.base_totals.as_mut().unwrap();
+            totals.debits += 1;
+            totals.credits += 1;
+        }
+        let batch = f.h.batch(b"rollback-fx", vec![first, second]);
+        let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refusal = f.post_fx_batch(batch).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-071", 3),
+            "{refusal:?}"
+        );
+        assert!(refusal.message.contains("member 1"));
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert!(f.h.db.vertex(outcome).unwrap().is_none());
+        assert_eq!(f.carrying().open_base.mantissa, 10);
+        assert_eq!(f.carrying_for(other).open_base.mantissa, 10);
+    }
+}
+
+#[test]
+fn portable_independent_fx_batch_refuses_stale_basis_then_replans_and_retries_exactly() {
+    for source_change in [false, true] {
+        let mut f = fixture(3, 10);
+        let other = f.another_target();
+        let batch = f.h.batch(
+            b"portable-fx",
+            vec![
+                f.prepare(1, b"portable-first").into_proposal(),
+                f.prepare_for(other, 1, b"portable-second").into_proposal(),
+            ],
+        );
+        let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let plan = f.h.planned_batch(batch.clone(), &capability).unwrap();
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        let portable = plan.canonical_bytes().unwrap();
+        if source_change {
+            f.h.post(request(
+                f.prepare(1, b"intervening-application").into_proposal(),
+            ))
+            .unwrap();
+        } else {
+            let doc =
+                f.h.document(INVOICE, HUMAN_UPLOAD, b"unrelated retained evidence");
+            f.h.add_document(&doc).unwrap();
+        }
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refusal =
+            f.h.publish_batch_plan(
+                fa_intents::BatchPlan::decode(&portable).unwrap(),
+                &capability,
+            )
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (fa_journal::refusal::code::PLAN_INVALIDATED, 6)
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        let current = f.h.batch(
+            b"portable-fx",
+            vec![
+                f.prepare(1, b"portable-first").into_proposal(),
+                f.prepare_for(other, 1, b"portable-second").into_proposal(),
+            ],
+        );
+        let fresh = f.h.planned_batch(current, &capability).unwrap();
+        let posted = f.h.publish_batch_plan(fresh.clone(), &capability).unwrap();
+        assert_eq!(posted.recorded_at.0, head.0 + 1);
+        let first = f.carrying();
+        assert_eq!(
+            (first.open_native.mantissa, first.open_base.mantissa),
+            if source_change { (1, 3) } else { (2, 7) }
+        );
+        let second = f.carrying_for(other);
+        assert_eq!(
+            (second.open_native.mantissa, second.open_base.mantissa),
+            (2, 7)
+        );
+        f.verify();
+        let retry = f.h.publish_batch_plan(fresh, &capability).unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.entries, posted.entries);
+        assert_eq!(f.h.db.frontier().unwrap(), posted.recorded_at);
     }
 }
 
@@ -210,6 +722,137 @@ fn undo(proposal: &EntryPayload, target: EntryRef, key: &[u8]) -> EntryPayload {
     }
     reversed.unit_totals = EntryPayload::fold_unit_totals(&reversed.legs).unwrap();
     reversed
+}
+
+#[test]
+fn remaining_carrying_relief_matches_independent_limb_oracle() {
+    let native_unit = UnitId(2);
+    let base_unit = UnitId(1);
+    let stripped = Cx::detached_cancel_context();
+    let mut comparisons = 0;
+    for native in 1..=31 {
+        for base in 0..=31 {
+            for application in 1..=native {
+                let mut budget =
+                    ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+                let actual = fa_journal::carrying::remaining_carrying_relief(
+                    &mut budget,
+                    Amount::new(native_unit, native),
+                    Amount::new(base_unit, base),
+                    Amount::new(native_unit, application),
+                )
+                .unwrap();
+                assert_eq!(
+                    actual,
+                    Amount::new(
+                        base_unit,
+                        fa_reference::fx::remaining_carrying_relief(native, base, application)
+                            .unwrap(),
+                    ),
+                    "native={native}, base={base}, application={application}",
+                );
+                comparisons += 1;
+            }
+        }
+    }
+    assert_eq!(comparisons, 15_872);
+    for (native, base, application) in [
+        (i128::MAX, i128::MAX, i128::MAX - 1),
+        (i128::MAX, i128::MAX - 1, i128::MAX - 2),
+        (2, i128::MAX, 1),
+        (1, i128::MAX, 1),
+    ] {
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        assert_eq!(
+            fa_journal::carrying::remaining_carrying_relief(
+                &mut budget,
+                Amount::new(native_unit, native),
+                Amount::new(base_unit, base),
+                Amount::new(native_unit, application),
+            )
+            .unwrap()
+            .mantissa,
+            fa_reference::fx::remaining_carrying_relief(native, base, application).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn application_relief_agrees_with_reference_over_reversals_and_remainders() {
+    let mut saw_recorded_relief_differ_from_current_proportion = false;
+    for (native, base, applications) in [
+        (3, 10, vec![1, 1, 1]),
+        (2, 1, vec![1, 1]),
+        (3, 2, vec![1, 1, 1]),
+        (3, 1, vec![2, 1]),
+        (7, 5, vec![2, 3, 2]),
+        (8, 3, vec![4, 1, 3]),
+        (1_000, 1_050, vec![400, 100, 500]),
+    ] {
+        let mut f = fixture(native, base);
+        let mut expected_native = native;
+        let mut expected_base = base;
+        let mut snapshots = vec![(f.h.db.frontier().unwrap(), native, base)];
+        let mut recorded = Vec::new();
+        for (index, application) in applications.into_iter().enumerate() {
+            let relief = fa_reference::fx::remaining_carrying_relief(
+                expected_native,
+                expected_base,
+                application,
+            )
+            .unwrap();
+            let before = f.h.db.frontier().unwrap();
+            let prepared = f.prepare(application, format!("oracle-apply-{index}").as_bytes());
+            assert_eq!(f.h.db.frontier().unwrap(), before);
+            assert_eq!(prepared.carrying().open_native.mantissa, expected_native);
+            assert_eq!(prepared.carrying().open_base.mantissa, expected_base);
+            assert_eq!(prepared.base_relief(), Amount::new(f.h.usd, relief));
+            let proposal = prepared.into_proposal();
+            let posted = f.h.post(request(proposal.clone())).unwrap();
+            recorded.push((proposal, posted.entry_ref(), application, relief));
+            expected_native = expected_native.checked_sub(application).unwrap();
+            expected_base = expected_base.checked_sub(relief).unwrap();
+            let current = f.carrying();
+            assert_eq!(current.open_native.mantissa, expected_native);
+            assert_eq!(current.open_base.mantissa, expected_base);
+            assert_eq!(current.applied_native.mantissa, native - expected_native);
+            assert_eq!(current.applied_base.mantissa, base - expected_base);
+            snapshots.push((f.h.db.frontier().unwrap(), expected_native, expected_base));
+            f.verify();
+        }
+        assert_eq!((expected_native, expected_base), (0, 0));
+        for (index, (proposal, target, application, relief)) in recorded.iter().enumerate() {
+            if let Ok(recomputed) = fa_reference::fx::remaining_carrying_relief(
+                expected_native,
+                expected_base,
+                *application,
+            ) {
+                saw_recorded_relief_differ_from_current_proportion |= recomputed != *relief;
+            }
+            f.h.post(request(undo(
+                proposal,
+                *target,
+                format!("oracle-undo-{index}").as_bytes(),
+            )))
+            .unwrap();
+            expected_native = expected_native.checked_add(*application).unwrap();
+            expected_base = expected_base.checked_add(*relief).unwrap();
+            assert_eq!(f.carrying().open_native.mantissa, expected_native);
+            assert_eq!(f.carrying().open_base.mantissa, expected_base);
+            snapshots.push((f.h.db.frontier().unwrap(), expected_native, expected_base));
+            f.verify();
+        }
+        assert_eq!((expected_native, expected_base), (native, base));
+        for (at, expected_native, expected_base) in snapshots {
+            let historical = open_item_carrying_at(&f.h.db, &f.h.ctx(), &f.h.book, f.target, 0, at)
+                .unwrap()
+                .unwrap();
+            assert_eq!(historical.open_native.mantissa, expected_native);
+            assert_eq!(historical.open_base.mantissa, expected_base);
+        }
+    }
+    assert!(saw_recorded_relief_differ_from_current_proportion);
 }
 
 #[test]

@@ -439,6 +439,50 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
         .unwrap_err();
     assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
     assert_eq!(f.head(), head);
+    let head = f.head();
+    let rows = f.book.db.vertices().unwrap();
+    // This extra balanced credit would make the cash cell's gross credits
+    // MAX+1. The current publication law must stop it before an invalid
+    // journal can reach certification. The unchanged Lantern arithmetic
+    // tests retain direct full-width discrepancy/refusal coverage.
+    let (source_entry, _) = f.book.read_entry(&cx, source).unwrap().unwrap();
+    let mut over_capacity = source_entry.proposal;
+    over_capacity.idempotency_key = b"over-capacity-certificate-source".to_vec();
+    for leg in &mut over_capacity.legs {
+        leg.side = leg.side.flipped();
+    }
+    over_capacity.unit_totals = EntryPayload::fold_unit_totals(&over_capacity.legs).unwrap();
+    let refusal = f
+        .runtime
+        .block_on(f.book.post(
+            &cx,
+            PostRequest {
+                proposal: over_capacity,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+    assert_eq!(f.head(), head);
+    assert_eq!(f.book.db.vertices().unwrap(), rows);
+    assert_eq!(
+        f.certify(&f.request("recon.attested_register_compare", source))
+            .report,
+        exact.report
+    );
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &exact.certificate)
+            .unwrap()
+            .unwrap(),
+        exact.report
+    );
+    // The source-capacity refusal above must not replace the independent
+    // statistic-width boundary. A wider attestation keeps the journal's
+    // monetary cells representable while the discrepancy exceeds i128.
     let mut wider_claim = fa_registers::assertion::claim_of(&claim);
     wider_claim.mantissa = 2;
     let evidence: Vec<_> = f.evidence.iter().map(|e| e.document_oid).collect();
@@ -454,6 +498,7 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
         .unwrap()
         .unwrap();
     let head = f.head();
+    let rows = f.book.db.vertices().unwrap();
     assert!(matches!(
         f.book.certify_procedure(
             &cx,
@@ -466,6 +511,7 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
         ))
     ));
     assert_eq!(f.head(), head);
+    assert_eq!(f.book.db.vertices().unwrap(), rows);
     assert_eq!(
         f.book
             .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &exact.certificate)

@@ -505,8 +505,17 @@ fn atomic_pending_resolutions_export_and_replay_as_one_accounting_frontier() {
         ("1000", "3000"),
         1_000,
     );
-    fixture.book.advance_registers(JANUARY).unwrap();
-    fixture.book.advance_registers(FEBRUARY).unwrap();
+    let maintain = Capability::embedded(PRINCIPAL, &["read", "verify", "maintain"]).unwrap();
+    fixture
+        .book
+        .advance_registers(PRINCIPAL, &maintain, JANUARY)
+        .unwrap()
+        .unwrap();
+    fixture
+        .book
+        .advance_registers(PRINCIPAL, &maintain, FEBRUARY)
+        .unwrap()
+        .unwrap();
     let before = fixture.book.head().unwrap();
     let book_id = fixture.book.context().book_id;
     let mut proposals = Vec::new();
@@ -601,7 +610,11 @@ fn atomic_pending_resolutions_export_and_replay_as_one_accounting_frontier() {
     let known_at = posted.recorded_at;
     for period in [JANUARY, FEBRUARY] {
         let literal = fixture.book.fold_period(period).unwrap();
-        let maintained = fixture.book.advance_registers(period).unwrap();
+        let maintained = fixture
+            .book
+            .advance_registers(PRINCIPAL, &maintain, period)
+            .unwrap()
+            .unwrap();
         assert!(!maintained.rebuilt);
         assert_eq!(maintained.fold, literal);
         assert!(literal.pending.is_empty());

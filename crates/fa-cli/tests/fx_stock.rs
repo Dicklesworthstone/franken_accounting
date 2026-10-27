@@ -35,6 +35,17 @@ fn integer(value: &Json, key: &str) -> i128 {
     }
 }
 
+fn unhex(value: &str) -> Vec<u8> {
+    assert!(value.len().is_multiple_of(2));
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
 fn rows<'a>(value: &'a Json, key: &str) -> &'a [Json] {
     value.get(key).and_then(Json::as_arr).expect(key)
 }
@@ -793,6 +804,47 @@ fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_r
     ] {
         assert_eq!(run(&fixture.book, &args).0, 2, "{args:?}");
     }
+    // Functional two-frontier diffs are supported. Sequence 1 predates
+    // this period, so that query is a law refusal, not an unsupported verb.
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--definition",
+            "balance-sheet",
+            "--before",
+            "1",
+        ],
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "class"), "refusal");
+    let frontier = before.to_string();
+    let compared = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--definition",
+            "balance-sheet",
+            "--before",
+            &frontier,
+        ],
+    );
+    assert_eq!(text(&compared, "event"), "statement_diff");
+    assert_eq!(data(&compared).get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(
+        head(&fixture.book),
+        before,
+        "both report paths are read-only"
+    );
     let unvalued = fixture.file("unvalued-statement.json", r#"{"effective_date":"2026-02-05","idempotency_key":"unvalued-statement","legs":[{"side":"debit","account":"1200","amount":"10.00 EUR"},{"side":"credit","account":"4000","amount":"10.00 EUR"}]}"#);
     ok(
         &fixture.book,
@@ -1081,4 +1133,524 @@ fn functional_trial_balance_certificate_keeps_original_instant_brackets_on_repla
         ok_many(&fixture.book, &["replay", &reference])[0],
         original[0]
     );
+}
+
+/// The checkpoint key is an explicit fixture-owner trust premise. The
+/// dependency-free verifier owns its signature, record and selector parsers.
+fn check_retained_source_exports(
+    fixture: &Fixture,
+    source: fa_model::EntryRef,
+    payload: &[u8],
+    recorded_at: CommitSeq,
+    earlier_state: &Json,
+) -> (i128, [u8; 32]) {
+    use fa_verify::proof::production::derivation::verify_prefix_with_status;
+
+    let key_hex = text(data(earlier_state), "public_key");
+    let key: [u8; 32] = unhex(key_hex).try_into().unwrap();
+    let earlier_oid = text(data(earlier_state), "oid");
+    let before = head(&fixture.book);
+    let old_signed = ok(
+        &fixture.book,
+        &["proof", "signed-checkpoint", "--state", earlier_oid],
+    );
+    let old_anchor =
+        fa_verify::verify_checkpoint(&unhex(text(data(&old_signed), "bytes")), &[key]).unwrap();
+    assert!(old_anchor.checkpoint.through_seq < recorded_at.0);
+    let old_export = ok(
+        &fixture.book,
+        &["proof", "prefix", "--with-record", "--state", earlier_oid],
+    );
+    let old_bytes = unhex(text(data(&old_export), "bytes"));
+    let old_prefix = verify_prefix_with_status(&old_bytes, &old_anchor.checkpoint).unwrap();
+    assert_eq!(old_prefix.record_check, fa_verify::RecordCheck::Recomputed);
+    assert!(
+        old_prefix
+            .prefix
+            .envelopes
+            .iter()
+            .all(|leaf| leaf.record_digest != source.entry_digest),
+        "an earlier authentic checkpoint does not preserve this later source"
+    );
+    assert_eq!(head(&fixture.book), before);
+
+    // Publication is an explicit authorized action. Export never silently
+    // creates a checkpoint, repairs the journal, or blesses its accounting.
+    let state = ok(
+        &fixture.book,
+        &["checkpoint", "create", "--grant", "witness"],
+    );
+    assert!(integer(data(&state), "through_seq") >= i128::from(recorded_at.0));
+    assert_eq!(text(data(&state), "public_key"), key_hex);
+    let published = head(&fixture.book);
+    assert!(published > before);
+    let oid = text(data(&state), "oid");
+    let signed_path = fixture.dir.join("retained-source.ckpt");
+    ok(
+        &fixture.book,
+        &[
+            "proof",
+            "signed-checkpoint",
+            "--state",
+            oid,
+            "--out",
+            signed_path.to_str().unwrap(),
+        ],
+    );
+    let signed_bytes = std::fs::read(&signed_path).unwrap();
+    let anchor = fa_verify::verify_checkpoint(&signed_bytes, &[key]).unwrap();
+    let state_oid: [u8; 32] = unhex(oid).try_into().unwrap();
+    assert_eq!(anchor.state_oid, state_oid);
+    assert!(anchor.checkpoint.through_seq >= recorded_at.0);
+    let mut stranger = key;
+    stranger[0] ^= 0x80;
+    assert!(fa_verify::verify_checkpoint(&signed_bytes, &[stranger]).is_err());
+
+    let prefix_path = fixture.dir.join("retained-source.prefix");
+    let prefix_args = [
+        "proof",
+        "prefix",
+        "--with-record",
+        "--state",
+        oid,
+        "--out",
+        prefix_path.to_str().unwrap(),
+    ];
+    let prefix_export = ok(&fixture.book, &prefix_args);
+    let claim = data(&prefix_export).get("claim").unwrap();
+    assert_eq!(claim.get("with_record"), Some(&Json::Bool(true)));
+    assert_eq!(text(claim, "payload_coverage"), "all_checkpoint_entries");
+    let prefix_bytes = std::fs::read(&prefix_path).unwrap();
+    let prefix = verify_prefix_with_status(&prefix_bytes, &anchor.checkpoint).unwrap();
+    assert_eq!(prefix.record_check, fa_verify::RecordCheck::Recomputed);
+    assert_eq!(prefix.prefix.scope, "seq_range_complete");
+    let source_leaves = prefix
+        .prefix
+        .envelopes
+        .iter()
+        .filter(|leaf| leaf.record_digest == source.entry_digest)
+        .collect::<Vec<_>>();
+    assert_eq!(source_leaves.len(), 1);
+    assert_eq!(source_leaves[0].commit_seq, recorded_at.0);
+    let positions = prefix_bytes
+        .windows(payload.len())
+        .enumerate()
+        .filter_map(|(index, bytes)| (bytes == payload).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(positions.len(), 1, "exact native payload must be preserved");
+    assert!(verify_prefix_with_status(&prefix_bytes, &old_anchor.checkpoint).is_err());
+    assert!(verify_prefix_with_status(&old_bytes, &anchor.checkpoint).is_err());
+    let mut changed_amount = prefix_bytes.clone();
+    let amount_offset = payload
+        .windows(16)
+        .position(|bytes| bytes == i128::MAX.to_le_bytes())
+        .unwrap();
+    changed_amount[positions[0] + amount_offset] ^= 1;
+    assert!(verify_prefix_with_status(&changed_amount, &anchor.checkpoint).is_err());
+    assert!(
+        verify_prefix_with_status(&prefix_bytes[..prefix_bytes.len() - 1], &anchor.checkpoint)
+            .is_err()
+    );
+
+    let inclusion_path = fixture.dir.join("retained-source.inclusion");
+    let entry_id = format!("{:032x}", source.vid.0);
+    ok(
+        &fixture.book,
+        &[
+            "proof",
+            "inclusion",
+            "--entry",
+            &entry_id,
+            "--with-record",
+            "--state",
+            oid,
+            "--out",
+            inclusion_path.to_str().unwrap(),
+        ],
+    );
+    let inclusion_bytes = std::fs::read(&inclusion_path).unwrap();
+    let included = fa_verify::verify_inclusion(&inclusion_bytes, &anchor.checkpoint).unwrap();
+    assert_eq!(included.record, fa_verify::RecordCheck::Recomputed);
+    assert_eq!(included.envelope.record_digest, source.entry_digest);
+    assert_eq!(included.envelope.commit_seq, recorded_at.0);
+    assert!(
+        inclusion_bytes
+            .windows(payload.len())
+            .any(|bytes| bytes == payload)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&signed_path, &prefix_path, &inclusion_path] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    let (status, _) = run(&fixture.book, &prefix_args);
+    assert_eq!(
+        status, 5,
+        "existing source export must never be overwritten"
+    );
+    assert_eq!(std::fs::read(&prefix_path).unwrap(), prefix_bytes);
+    assert_eq!(head(&fixture.book), published);
+
+    for (kind, path) in [("inclusion", &inclusion_path), ("prefix", &prefix_path)] {
+        let argv = [
+            kind,
+            path.to_str().unwrap(),
+            "--checkpoint",
+            signed_path.to_str().unwrap(),
+            "--key",
+            key_hex,
+            "--json",
+        ]
+        .map(str::to_string);
+        let output = fa_verify::cli::run(&argv, &|path| std::fs::read(path));
+        assert_eq!(
+            output.exit, 0,
+            "{kind}: {}\n{}",
+            output.stdout, output.stderr
+        );
+        let report = json::parse(output.stdout.trim()).unwrap();
+        assert_eq!(text(&report, "verdict"), "verified");
+        let check = rows(&report, "checks")
+            .iter()
+            .find(|check| text(check, "check") == kind)
+            .unwrap();
+        let detail = check.get("detail").unwrap();
+        assert_eq!(
+            text(
+                detail,
+                if kind == "prefix" {
+                    "record_check"
+                } else {
+                    "record"
+                }
+            ),
+            "recomputed"
+        );
+        if kind == "prefix" {
+            assert_eq!(
+                text(detail, "scope_derivation"),
+                "all_prefix_payloads_checked"
+            );
+        }
+    }
+    let (status, refusal) = run(&fixture.book, &["tb", "--period", "FY2026-P01"]);
+    assert_eq!(status, 3, "{}", refusal.render());
+    assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-198");
+    assert_eq!(head(&fixture.book), published);
+    (published, state_oid)
+}
+
+#[test]
+fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_and_export() {
+    for (fitting_net, cached) in [(false, false), (false, true), (true, false), (true, true)] {
+        let seed = 0xe7;
+        let fixture = Fixture::create(Some(seed));
+        fixture.post("retained-safe", "2026-01-05", "1.00", 10);
+        let cached_through = cached.then(|| {
+            let advanced = ok(
+                &fixture.book,
+                &["registers", "advance", "--period", "FY2026-P01"],
+            );
+            integer(data(&advanced), "through")
+        });
+        let safe = head(&fixture.book);
+        let earlier_state = (!fitting_net).then(|| {
+            ok(
+                &fixture.book,
+                &["checkpoint", "create", "--grant", "witness"],
+            )
+        });
+        if fitting_net {
+            // The current writer lawfully fills the opposite gross columns.
+            // The later injected entry then overflows gross with a fitting net.
+            let rate = fixture.rate("retained-opposite", "2026-01-05", 10);
+            let intent = fixture.file("opposite.json", &format!(r#"{{"effective_date":"2026-01-05","idempotency_key":"retained-opposite","legs":[{{"side":"credit","account":"1200","amount":"1701411834604692317316873037158841057.27 EUR"}},{{"side":"debit","account":"4000","amount":"1701411834604692317316873037158841057.27 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{rate}"]}}}}"#));
+            ok(
+                &fixture.book,
+                &["post", "--intent", &intent, "--evidence", &fixture.evidence],
+            );
+        }
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut db = runtime
+            .block_on(Database::open(
+                &cx.commit(),
+                &fixture.book.join("store"),
+                db_keys(seed),
+            ))
+            .unwrap();
+        let original = db
+            .vertices()
+            .unwrap()
+            .iter()
+            .filter(|row| row.labels.contains(&fa_model::symbols::label::ENTRY))
+            .map(|row| {
+                fa_model::Entry::decode(
+                    &fa_journal::rows::bytes(row, property::FA_PAYLOAD, "retained payload")
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .find(|entry| entry.proposal.idempotency_key == b"retained-safe")
+            .unwrap();
+        let mut proposal = original.proposal;
+        proposal.idempotency_key = b"retained-over-cap".to_vec();
+        for leg in &mut proposal.legs {
+            leg.amount.mantissa = i128::MAX;
+            leg.base_amount.as_mut().unwrap().mantissa = i128::MAX;
+        }
+        proposal.unit_totals = fa_model::EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        let base = proposal.base_totals.as_mut().unwrap();
+        base.debits = i128::MAX;
+        base.credits = i128::MAX;
+        let vid = fa_model::entry_vid(
+            proposal.book_id,
+            &proposal.principal_ref.0.to_le_bytes(),
+            &proposal.idempotency_key,
+        );
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let mut has_leg = WriteBatch::new(relation::HAS_LEG);
+        has_leg.create_vertex(
+            vid,
+            vec![fa_model::symbols::label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        let mut posts = WriteBatch::new(relation::POSTS_TO);
+        let mut in_unit = WriteBatch::new(relation::IN_UNIT);
+        for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+            let ordinal = u16::try_from(ordinal).unwrap();
+            let leg_vid = fa_journal::rows::leg_vid(vid, ordinal);
+            let mut mirrors =
+                fa_model::leg_mirrors(leg, ordinal, entry.proposal.effective_date, &units).unwrap();
+            mirrors.push((
+                property::APPLIED,
+                fa_journal::rows::mantissa_scalar("applied", 0).unwrap(),
+            ));
+            has_leg.create_vertex(leg_vid, vec![fa_model::symbols::label::LEG], mirrors);
+            has_leg.add_edge(
+                fa_journal::rows::edge_id(relation::HAS_LEG, vid, leg_vid),
+                vid,
+                leg_vid,
+                vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
+            );
+            posts.add_edge(
+                fa_journal::rows::edge_id(relation::POSTS_TO, leg_vid, leg.account_ref),
+                leg_vid,
+                leg.account_ref,
+                Vec::new(),
+            );
+            let unit = units.get(leg.amount.unit).unwrap();
+            let unit_vid = fa_model::unit_vid(
+                entry.proposal.book_id,
+                &format!("{}@v{}", unit.code, unit.version),
+            );
+            in_unit.add_edge(
+                fa_journal::rows::edge_id(relation::IN_UNIT, leg_vid, unit_vid),
+                leg_vid,
+                unit_vid,
+                Vec::new(),
+            );
+        }
+        let mut in_period = WriteBatch::new(relation::IN_PERIOD);
+        let period = fa_model::period_vid("fx-stock-cold", "FY2026-P01");
+        in_period.add_edge(
+            fa_journal::rows::edge_id(relation::IN_PERIOD, vid, period),
+            vid,
+            period,
+            Vec::new(),
+        );
+        // Fault-injection of retained source, not a current-writer escape hatch.
+        // The native marker assigns recorded time; no timestamp is supplied.
+        let mut txn = db.begin(&cx.txn()).unwrap();
+        txn.write_ordered(&mut db, vec![has_leg, posts, in_unit, in_period])
+            .unwrap();
+        runtime.block_on(txn.commit(&mut db, &cx.commit())).unwrap();
+        let invalid_head = db.frontier().unwrap();
+        let before_rows = db.vertices().unwrap();
+        drop(db);
+
+        let mut refusing_commands = vec![
+            vec!["tb", "--period", "FY2026-P01"],
+            vec!["tb", "--functional", "--period", "FY2026-P01"],
+            vec!["verify", "entities", "--period", "FY2026-P01"],
+            vec!["registers", "advance", "--period", "FY2026-P01"],
+            vec![
+                "registers",
+                "materialize",
+                "--period",
+                "FY2026-P01",
+                "--yes",
+            ],
+        ];
+        if cached_through.is_none() {
+            refusing_commands.push(vec!["verify", "registers", "--period", "FY2026-P01"]);
+        }
+        for args in refusing_commands {
+            let (status, refusal) = run(&fixture.book, &args);
+            assert_eq!(status, 3, "{args:?}: {}", refusal.render());
+            assert_eq!(text(&refusal, "event"), "error");
+            assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-198");
+            assert!(refusal.render().contains(&format!("{:032x}", vid.0)));
+            if args.get(1) == Some(&"entities") {
+                assert!(
+                    refusal.render().contains("entity <default>;"),
+                    "{}",
+                    refusal.render()
+                );
+            }
+            assert!(
+                fa_cli::verbs::registry()
+                    .unwrap()
+                    .check_line(&refusal.render())
+                    .is_ok()
+            );
+            assert_eq!(head(&fixture.book), i128::from(invalid_head.0));
+        }
+        if let Some(through) = cached_through {
+            // Verification certifies the stored prefix, not an unread head.
+            // Preserve that useful read without claiming the invalid tail.
+            let verified = ok(
+                &fixture.book,
+                &["verify", "registers", "--period", "FY2026-P01"],
+            );
+            assert_eq!(text(&verified, "event"), "registers_verified");
+            let periods = rows(data(&verified), "periods");
+            assert_eq!(periods.len(), 1);
+            let period = &periods[0];
+            assert_eq!(period.get("green"), Some(&Json::Bool(true)));
+            assert_eq!(period.get("stale"), Some(&Json::Bool(true)));
+            assert_eq!(integer(period, "verified_through"), through);
+            assert!(through < i128::from(invalid_head.0));
+            let unread = before_rows
+                .iter()
+                .filter(|row| {
+                    row.labels.contains(&fa_model::symbols::label::ENTRY)
+                        && i128::from(row.created_at.0) > through
+                })
+                .count();
+            assert!(unread > 0);
+            assert_eq!(
+                integer(period, "lag_entries"),
+                i128::try_from(unread).unwrap()
+            );
+            assert_eq!(text(period, "refold_digest"), text(period, "stored_digest"));
+            assert!(!rows(&verified, "warnings").is_empty());
+            assert!(!rows(&verified, "next_actions").is_empty());
+            assert_eq!(head(&fixture.book), i128::from(invalid_head.0));
+        }
+        let historic = ok(
+            &fixture.book,
+            &[
+                "tb",
+                "--functional",
+                "--period",
+                "FY2026-P01",
+                "--as-known-at",
+                &safe.to_string(),
+            ],
+        );
+        assert_eq!(total_debits(&historic), "1.00 USD");
+        let source = format!("{:032x}", vid.0);
+        ok(&fixture.book, &["entry", "show", &source]);
+        let output = fixture.dir.join("retained-source.ndjson");
+        let args = [
+            "export",
+            "ndjson",
+            "--period",
+            "FY2026-P01",
+            "--out",
+            output.to_str().unwrap(),
+        ];
+        if fitting_net {
+            let exported = ok(&fixture.book, &args);
+            assert_eq!(integer(data(&exported), "entries"), 3);
+            let exported_bytes = std::fs::read_to_string(&output).unwrap();
+            assert!(
+                exported_bytes.contains(&source),
+                "retained source must be exported"
+            );
+        } else {
+            // FormatJournal requires representable net balances. Retain this
+            // unsupported escape-path boundary, with no truncated output.
+            let (status, refused) = run(&fixture.book, &args);
+            assert_eq!(status, 5, "{}", refused.render());
+            assert_eq!(text(&refused, "event"), "error");
+            assert!(!output.exists());
+        }
+        let reopened = runtime
+            .block_on(Database::open(
+                &cx.commit(),
+                &fixture.book.join("store"),
+                db_keys(seed),
+            ))
+            .unwrap();
+        assert_eq!(reopened.frontier().unwrap(), invalid_head);
+        assert_eq!(reopened.vertices().unwrap(), before_rows);
+        let (retained, recorded_at) = fa_journal::post::read_entry(&reopened, vid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained, entry);
+        assert_eq!(recorded_at, invalid_head);
+        if let Some(earlier_state) = earlier_state {
+            let source_row = reopened.vertex(vid).unwrap().unwrap();
+            let payload =
+                fa_journal::rows::bytes(&source_row, property::FA_PAYLOAD, "source").unwrap();
+            drop(reopened);
+            let (published, state_oid) = check_retained_source_exports(
+                &fixture,
+                entry.entry_ref(vid),
+                &payload,
+                recorded_at,
+                &earlier_state,
+            );
+            let after = runtime
+                .block_on(Database::open(
+                    &cx.commit(),
+                    &fixture.book.join("store"),
+                    db_keys(seed),
+                ))
+                .unwrap();
+            assert_eq!(i128::from(after.frontier().unwrap().0), published);
+            for row in before_rows {
+                let mut current = after.vertex(row.vid).unwrap().unwrap();
+                // Explicit checkpoint publication advances only the Book's
+                // derived head pointer. Its earlier version remains readable;
+                // journal entries and every unrelated property stay exact.
+                if row.labels.contains(&fa_model::symbols::label::BOOK) {
+                    let mut historical = after.vertex_at(row.vid, invalid_head).unwrap().unwrap();
+                    assert_eq!(row.retired_at, None);
+                    assert_eq!(
+                        historical.retired_at.map(|seq| i128::from(seq.0)),
+                        Some(published)
+                    );
+                    historical.retired_at = None;
+                    assert_eq!(historical, row);
+                    assert_eq!(
+                        fa_journal::rows::bytes(&current, property::ACCUMULATOR_HEAD, "head")
+                            .unwrap(),
+                        state_oid
+                    );
+                    assert_eq!(i128::from(current.created_at.0), published);
+                    current.created_at = row.created_at;
+                    current
+                        .props
+                        .retain(|(key, _)| *key != property::ACCUMULATOR_HEAD);
+                    let mut original = row;
+                    original
+                        .props
+                        .retain(|(key, _)| *key != property::ACCUMULATOR_HEAD);
+                    assert_eq!(current, original);
+                } else {
+                    assert_eq!(current, row);
+                }
+            }
+        }
+    }
 }

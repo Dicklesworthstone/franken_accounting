@@ -17,6 +17,8 @@
 //! idempotency conflict. Recording durable refusals as outcomes (the rest
 //! of the FA-INV-09 `intent-outcome` clause) is not part of this slice.
 
+use std::collections::BTreeSet;
+
 use asupersync::fs::Vfs;
 use fa_intents::{BatchPlan, BatchPlanCertificate, PostBatch};
 use fa_model::symbols::{label, property, relation};
@@ -49,6 +51,83 @@ pub const MAX_OUTCOME_BYTES: usize = 52 + 48 * fa_model::limits::MAX_BATCH_ENTRI
 /// plan and its exact caller capability. It grants no trunk authority.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VerifiedBatchPlan(());
+
+/// The existing single-item carrying law composes only when no member can
+/// change another member's source. Only this module constructs the token,
+/// after checking the complete batch, including its execution posture.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IndependentCarryingBatch(());
+
+pub(crate) struct MemberPreparation {
+    pub(crate) txn: Option<WriteTxn>,
+    pub(crate) carrying: Option<IndependentCarryingBatch>,
+}
+
+fn independent_carrying_batch(
+    batch: &PostBatch,
+    admission: Admission,
+) -> Result<Option<IndependentCarryingBatch>, Refusal> {
+    if !batch
+        .members()
+        .iter()
+        .any(|member| crate::carrying::is_source_bound(member.proposal()))
+    {
+        return Ok(None);
+    }
+    if !matches!(
+        admission,
+        Admission::Commit | Admission::Plan | Admission::VerifiedBatch(_)
+    ) || batch.members().iter().any(|member| {
+        !crate::carrying::is_source_bound(member.proposal())
+            || !matches!(
+                member.proposal().class,
+                EntryClass::ORIGINAL | EntryClass::ADJUSTING
+            )
+    }) {
+        return Err(crate::carrying::unsupported_batch());
+    }
+    let mut targets = BTreeSet::new();
+    for (index, member) in batch.members().iter().enumerate() {
+        let mut applying = member
+            .proposal()
+            .legs
+            .iter()
+            .filter(|leg| !leg.settles.is_empty());
+        let application = applying
+            .next()
+            .and_then(|leg| match leg.settles.as_slice() {
+                [application] => Some(application),
+                _ => None,
+            });
+        let Some(application) = application.filter(|_| applying.next().is_none()) else {
+            return Err(member_refusal(
+                index,
+                Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    "each atomic FX member requires one single-target applying leg",
+                    "plan §5.7–5.10 (independent carrying-value sources)",
+                    "prepare each member through the single-item FX settlement law",
+                ),
+            ));
+        };
+        // Identity includes the ordinal, not the caller-supplied digest:
+        // forged handles for the same leg must not bypass independence.
+        if !targets.insert((application.target.vid, application.ordinal)) {
+            return Err(member_refusal(
+                index,
+                Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    "atomic FX settlements require distinct existing target legs",
+                    "plan §5.7–5.10 (independent carrying-value sources)",
+                    "combine no two applications to the same target leg in one batch; prepare later relief after the earlier publication",
+                ),
+            ));
+        }
+    }
+    Ok(Some(IndependentCarryingBatch(())))
+}
 
 /// The immutable body of a batch's IntentOutcome: the request it records
 /// and, in member order, the entries that request committed.
@@ -629,6 +708,10 @@ fn judge_retry<V: Vfs + Clone>(
     admission: Admission,
     outcome: VId,
 ) -> Outcome<BatchPosted> {
+    let carrying = match independent_carrying_batch(batch, admission) {
+        Ok(carrying) => carrying,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     // A single-entry claim at this common key is a conflict. Read only its
     // VID-only metadata here: a batch capability need not reach that entry.
     let lookup = db.begin(&ctx.txn())?;
@@ -649,7 +732,10 @@ fn judge_retry<V: Vfs + Clone>(
             book,
             member_request(intent, capability),
             admission,
-            None,
+            MemberPreparation {
+                txn: None,
+                carrying,
+            },
             None,
             &mut reconciliation,
         )? {
@@ -847,6 +933,9 @@ pub(crate) struct StagedBatch {
     security_policy_epoch: u64,
     /// A rehearsal can be retained and inspected, but never published.
     planning: bool,
+    /// Independent FX members all depend on this transaction's complete
+    /// committed basis, even though their sources are pairwise disjoint.
+    aggregate: bool,
 }
 
 impl StagedBatch {
@@ -925,6 +1014,10 @@ fn stage_batch_with<V: Vfs + Clone>(
         return Ok(Err(crate::outcome::key_conflict()));
     }
     let ovid = outcome_vid(book, batch);
+    let carrying = match independent_carrying_batch(batch, admission) {
+        Ok(carrying) => carrying,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let mut txn: Option<WriteTxn> = None;
     let mut tracker = TemplateByteTracker::default();
     // Every member stages into one transaction, so the reconciliation
@@ -942,7 +1035,10 @@ fn stage_batch_with<V: Vfs + Clone>(
             book,
             request,
             admission,
-            txn.take(),
+            MemberPreparation {
+                txn: txn.take(),
+                carrying,
+            },
             Some(std::mem::take(&mut tracker)),
             reconciliation,
         )? {
@@ -989,7 +1085,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         }
         security_policy_epoch = Some(epoch);
         resolved.push(prepared.entry().clone());
-        let (staged, member, next_tracker) = prepared.into_member(planning)?;
+        let (staged, member, next_tracker) = prepared.into_member(planning, carrying)?;
         tracker = next_tracker;
         let current_bytes = tracker.total_bytes();
         if current_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
@@ -1092,6 +1188,7 @@ fn stage_batch_with<V: Vfs + Clone>(
             KernelError::Corrupt("a validated batch has no security policy epoch".into())
         })?,
         planning,
+        aggregate: carrying.is_some(),
     }))))
 }
 
@@ -1135,6 +1232,7 @@ pub(crate) async fn commit_batch_with_crash<V: Vfs + Clone>(
         entries,
         periods,
         template_tracker,
+        aggregate,
         ..
     } = *staged;
     let total_bytes = template_tracker.total_bytes();
@@ -1153,6 +1251,12 @@ pub(crate) async fn commit_batch_with_crash<V: Vfs + Clone>(
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
+    }
+    if aggregate
+        && let Err(refusal) = crate::post::check_aggregate_basis(txn.basis(), db.frontier()?)
+    {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     match txn.commit_with_crash(db, &commit, crash_at).await {
         Ok(seq) => Ok(Ok(BatchPosted {

@@ -26,7 +26,9 @@ pub enum IntakeAction {
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Check authority before the host consumes its input stream.
     ///
-    /// Ordinary upload/import requires no read capability. Bank import also
+    /// Upload reaches the whole book at its current trunk head; unsupported
+    /// scope caveats refuse before a host consumes evidence. Ordinary
+    /// upload/import requires no read capability. Bank import also
     /// requires whole-book read and reconcile before source consumption. The
     /// admission frontier is the current book head, never a historical report
     /// coordinate. Success must not be cached or substituted for publication.
@@ -41,7 +43,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let book = self.context();
         let admission = match action {
             IntakeAction::Upload => fa_policy::require(capability, Op::Post, "uploading evidence")
-                .and_then(|()| fa_policy::scope(capability, book.book_id)),
+                .and_then(|()| fa_policy::scope(capability, book.book_id))
+                .and_then(|()| {
+                    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+                }),
             IntakeAction::ImportRun | IntakeAction::BankImport => {
                 let key = fa_policy::sod::control_key("ImportControl", None, "Import");
                 let op = policy::steward()?.preparer_op(&key).ok_or_else(|| {

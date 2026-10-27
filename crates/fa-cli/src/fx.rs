@@ -321,6 +321,78 @@ pub(crate) fn value_intent(
     )??)
 }
 
+/// Group allocation must supply the targets before carrying-value expansion.
+/// All other intent paths keep their existing valuation order.
+pub(crate) fn is_carrying_group(doc: &Json) -> bool {
+    doc.get("payments")
+        .or_else(|| doc.get("applications"))
+        .is_some()
+        && doc
+            .get("fx")
+            .and_then(|fx| fx.get("law"))
+            .and_then(Json::as_str)
+            == Some("SettlementCarryingBasis")
+}
+
+/// Retain the original native allocation observations while deriving the full
+/// FX entry. Rebind the expanded ordinals through the ordinary group preparer,
+/// including every unused eligible target, at exactly the same prefix.
+pub(crate) fn prepare_group_intent(
+    book: &mut Book,
+    capability: &Capability,
+    doc: &Json,
+    request: fa::SettlementGroupRequest,
+) -> Result<fa::PreparedSettlementGroup, Fail> {
+    let prepared = book.prepare_settlement_group(request, capability)??;
+    if !is_carrying_group(doc) {
+        return Ok(prepared);
+    }
+    let basis = prepared.known_at();
+    let observations = prepared.allocations().to_vec();
+    let mut proposal = value_intent(book, capability, doc, prepared.into_proposal())?;
+    let expected = proposal.clone();
+    let invalidated = || {
+        Fail::Refusal(fa_journal::Refusal::new(
+            fa_journal::refusal::code::PLAN_INVALIDATED,
+            fa_journal::exit::CONFLICT,
+            "the FX expansion changed the complete group or its allocation observations",
+            "plan §5.2 / §5.7 (one carrying prefix and exact reviewed effects)",
+            "prepare a fresh complete group; retain every eligible target and review the expanded FX effects before approval",
+        ))
+    };
+    let mut payments = Vec::with_capacity(observations.len());
+    for (ordinal, leg) in proposal.legs.iter_mut().enumerate() {
+        if leg.settles.is_empty() {
+            continue;
+        }
+        let old = observations.get(payments.len()).ok_or_else(invalidated)?;
+        payments.push(fa::SettlementLegSelection {
+            payment_leg: u16::try_from(ordinal).map_err(|_| invalidated())?,
+            targets: old.allocation.request.targets.clone(),
+        });
+        leg.settles.clear();
+    }
+    if payments.len() != observations.len() {
+        return Err(invalidated());
+    }
+    let expanded = book.prepare_settlement_group(
+        fa::SettlementGroupRequest { proposal, payments },
+        capability,
+    )??;
+    if expanded.known_at() != basis
+        || expanded.proposal() != &expected
+        || expanded.allocations().len() != observations.len()
+        || expanded
+            .allocations()
+            .iter()
+            .zip(&observations)
+            .any(|(new, old)| new.allocation != old.allocation)
+    {
+        return Err(invalidated());
+    }
+    Ok(expanded)
+}
+
 /// Two declared economic legs are expanded into the explicitly requested FX
 /// route. Their cash/native amounts, target, sides and dimensions are checked;
 /// the carrying valuation comes exclusively from the journal.
@@ -330,7 +402,7 @@ fn settlement_intent(
     fx: &Json,
     mut proposal: EntryPayload,
 ) -> Result<EntryPayload, Fail> {
-    const FIX: &str = "supply two legs (functional-currency cash and one fully applied foreign control leg), and fx:{law: SettlementCarryingBasis, rates:[D:oid], conversion_account:<code>, realized_fx_account:<code>}; receipt/payment accept --fx-rate, --conversion and --realized-fx with exactly one --applies <vid>:<leg>=<foreign amount>";
+    const FIX: &str = "supply pairs of functional-currency cash and one fully applied foreign control leg, with distinct target legs, and fx:{law: SettlementCarryingBasis, rates:[D:oid], conversion_account:<code>, realized_fx_account:<code>}; receipt/payment accept --fx-rate, --conversion and --realized-fx with exactly one --applies <vid>:<leg>=<foreign amount>";
     strict_object(
         fx,
         &["law", "rates", "conversion_account", "realized_fx_account"],
@@ -353,76 +425,89 @@ fn settlement_intent(
         .as_str()
         .ok_or_else(|| usage("Rate must be a D:oid string", FIX))?;
     let rate_document = Oid(crate::document::hex32(rate, "intent.fx.rates")?);
-    if proposal.legs.len() != 2 {
+    let (pairs, remainder) = proposal.legs.as_chunks::<2>();
+    if pairs.is_empty() || !remainder.is_empty() || pairs.len() > fa::MAX_FX_SETTLEMENT_ITEMS {
         return Err(usage(
-            "FX settlement requires exactly two declared source legs",
+            "FX settlement requires a bounded nonempty list of cash/application leg pairs",
             FIX,
         ));
     }
-    let applying_index = proposal
-        .legs
-        .iter()
-        .position(|leg| !leg.settles.is_empty())
-        .ok_or_else(|| {
-            usage(
-                "FX settlement must name the invoice or bill it applies to",
-                FIX,
-            )
-        })?;
-    let applying = proposal.legs[applying_index].clone();
-    let cash = proposal.legs[1 - applying_index].clone();
-    let [application] = applying.settles.as_slice() else {
-        return Err(usage(
-            "FX settlement supports one target per applying leg",
-            FIX,
-        ));
-    };
-    if !cash.settles.is_empty()
-        || application.amount != applying.amount
-        || applying.side == cash.side
-        || cash.amount.unit != book.spec()?.base_unit
-        || applying.amount.unit == cash.amount.unit
-    {
-        return Err(usage(
-            "FX settlement requires opposite cash/control sides, base-currency cash and a fully applied foreign leg",
-            FIX,
-        ));
-    }
+    let base_unit = book.spec()?.base_unit;
     let route = |field| {
         required_string(fx, field, "intent.fx", FIX)
             .map(|code| fa_model::account_vid(book.context().book_id, code))
     };
-    let request = fa::FxSettlementRequest {
-        target: application.target,
-        target_ordinal: application.ordinal,
-        amount: applying.amount,
-        settlement_amount: cash.amount,
-        settlement_account: cash.account_ref,
-        conversion_account: route("conversion_account")?,
-        realized_fx_account: route("realized_fx_account")?,
-        rate_document,
-    };
+    let conversion_account = route("conversion_account")?;
+    let realized_fx_account = route("realized_fx_account")?;
+    let mut requests = Vec::new();
+    let mut declared = Vec::new();
+    for pair in pairs {
+        let applying_index = pair
+            .iter()
+            .position(|leg| !leg.settles.is_empty())
+            .ok_or_else(|| {
+                usage(
+                    "each FX pair must name the invoice or bill it applies to",
+                    FIX,
+                )
+            })?;
+        let applying = pair[applying_index].clone();
+        let cash = pair[1 - applying_index].clone();
+        let [application] = applying.settles.as_slice() else {
+            return Err(usage(
+                "FX settlement supports one target per applying leg",
+                FIX,
+            ));
+        };
+        if !cash.settles.is_empty()
+            || application.amount != applying.amount
+            || applying.side == cash.side
+            || cash.amount.unit != base_unit
+            || applying.amount.unit == cash.amount.unit
+        {
+            return Err(usage(
+                "FX settlement requires opposite cash/control sides, base-currency cash and a fully applied foreign leg",
+                FIX,
+            ));
+        }
+        requests.push(fa::FxSettlementRequest {
+            target: application.target,
+            target_ordinal: application.ordinal,
+            amount: applying.amount,
+            settlement_amount: cash.amount,
+            settlement_account: cash.account_ref,
+            conversion_account,
+            realized_fx_account,
+            rate_document,
+        });
+        declared.push((applying, cash));
+    }
     proposal.legs.clear();
     proposal.unit_totals.clear();
-    let prepared = book.prepare_fx_settlement(capability, &request, proposal)??;
-    let carrying = prepared.carrying();
-    if applying.account_ref != carrying.account
-        || applying.side == carrying.side
-        || applying.dimension_set != carrying.dimensions
-    {
-        return Err(usage(
-            "the declared applying account, side or dimensions disagree with the retained open item",
-            FIX,
-        ));
+    let prepared = book.prepare_fx_settlement_group(capability, &requests, proposal)??;
+    let mut ranges = Vec::new();
+    for ((applying, _), item) in declared.iter().zip(prepared.items()) {
+        if applying.account_ref != item.carrying.account
+            || applying.side == item.carrying.side
+            || applying.dimension_set != item.carrying.dimensions
+        {
+            return Err(usage(
+                "the declared applying account, side or dimensions disagree with the retained open item",
+                FIX,
+            ));
+        }
+        ranges.push(item.leg_range.clone());
     }
     let mut result = prepared.into_proposal();
-    for leg in &mut result.legs {
-        if !leg.settles.is_empty() {
-            leg.memo = applying.memo.clone();
-        }
-        if leg.account_ref == cash.account_ref && leg.amount.unit == cash.amount.unit {
-            leg.memo = cash.memo.clone();
-            leg.dimension_set = cash.dimension_set.clone();
+    for ((applying, cash), range) in declared.iter().zip(ranges) {
+        for leg in &mut result.legs[range] {
+            if !leg.settles.is_empty() {
+                leg.memo = applying.memo.clone();
+            }
+            if leg.account_ref == cash.account_ref && leg.amount.unit == cash.amount.unit {
+                leg.memo = cash.memo.clone();
+                leg.dimension_set = cash.dimension_set.clone();
+            }
         }
     }
     Ok(result)

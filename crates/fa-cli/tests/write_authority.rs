@@ -7,7 +7,7 @@
 //! exactly those operations.
 //!
 //! An MCP token-bound session never holds more than the Preparer launch ceiling
-//! (read, post, post_softclosed, verify, reconcile, produce, partial_view):
+//! (read, post, post_softclosed, verify, reconcile, produce, partial_view, maintain):
 //! a row needing any other operation (approve, witness, schema_change,
 //! hold, erase, privileged, migrate, close, issue_capability) can never be
 //! run by MCP, and a token with exactly its operations is refused when the
@@ -1254,12 +1254,12 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &["registers", "materialize", "--period", "FY2026-P03"],
-            &[Op::Read, Op::Verify],
+            &[Op::Read, Op::Verify, Op::Maintain],
             Succeeds,
         ),
         row(
             &["registers", "advance", "--period", "FY2026-P03"],
-            &[Op::Read, Op::Verify],
+            &[Op::Read, Op::Verify, Op::Maintain],
             Succeeds,
         ),
         row(

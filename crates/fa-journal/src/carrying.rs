@@ -72,6 +72,36 @@ pub struct PreparedFxSettlement {
     proposal: EntryPayload,
 }
 
+/// One item's journal-derived explanation inside a complete group proposal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FxSettlementItem {
+    pub carrying: CarryingOpenItem,
+    pub base_relief: Amount,
+    pub leg_range: core::ops::Range<usize>,
+}
+
+/// Independent foreign applications recorded as one ordinary accounting entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedFxSettlementGroup {
+    items: Vec<FxSettlementItem>,
+    proposal: EntryPayload,
+}
+
+impl PreparedFxSettlementGroup {
+    pub fn items(&self) -> &[FxSettlementItem] {
+        &self.items
+    }
+    pub fn proposal(&self) -> &EntryPayload {
+        &self.proposal
+    }
+    pub fn into_proposal(self) -> EntryPayload {
+        self.proposal
+    }
+}
+
+/// Every admitted item requires at least four nonzero native legs.
+pub const MAX_FX_SETTLEMENT_ITEMS: usize = fa_model::limits::MAX_LEGS_PER_ENTRY / 4;
+
 impl PreparedFxSettlement {
     pub fn carrying(&self) -> &CarryingOpenItem {
         &self.carrying
@@ -101,9 +131,9 @@ pub(crate) fn unsupported_batch() -> Refusal {
     Refusal::new(
         code::CLASS_NOT_IMPLEMENTED,
         exit::REFUSAL,
-        "source-bound foreign settlement cannot join a batch, paired replacement, or draft promotion",
+        "this compound operation cannot combine source-bound foreign settlements",
         "plan §5.10 (complete aggregate carrying-value dependency)",
-        "review and commit the foreign settlement as its own native PostPlan",
+        "commit each settlement alone, or use an FX-only atomic batch of distinct existing target legs; paired replacement, mixed batches, and draft/case promotion remain unsupported",
     )
 }
 
@@ -344,13 +374,7 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
                     if application.target != target
                         || applying.settles.len() != 1
                         || application.amount != applying.amount
-                        || entry
-                            .proposal
-                            .legs
-                            .iter()
-                            .filter(|other| !other.settles.is_empty())
-                            .count()
-                            != 1
+                        || settlement_ranges(&entry.proposal).is_err()
                         || applying.account_ref != leg.account_ref
                         || applying.side == leg.side
                         || applying.dimension_set != leg.dimension_set
@@ -461,6 +485,146 @@ pub fn prepare_fx_settlement<V: Vfs + Clone>(
     cx.query().with_restriction(|| {
         prepare_fx_settlement_inner(db, cx, book, capability, request, template, budget)
     })
+}
+
+/// Compose complete single-item effects at one prefix. One retained rate and
+/// disjoint targets make every relief independent; no within-entry order can
+/// spend another item's remaining native or functional balance.
+pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    requests: &[FxSettlementRequest],
+    template: EntryPayload,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+) -> Outcome<PreparedFxSettlementGroup> {
+    if let Err(refusal) = crate::revaluation::authorize(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if requests.is_empty() || requests.len() > MAX_FX_SETTLEMENT_ITEMS {
+        return Ok(Err(invalid(
+            "FX group is empty or exceeds the entry leg work bound",
+        )));
+    }
+    let mut targets = BTreeSet::new();
+    for request in requests {
+        if !targets.insert((request.target.vid, request.target_ordinal)) {
+            return Ok(Err(invalid(
+                "FX group targets must be pairwise distinct existing legs",
+            )));
+        }
+        if request.rate_document != requests[0].rate_document {
+            return Ok(Err(invalid(
+                "FX group requires one explicitly shared Settlement Rate document",
+            )));
+        }
+    }
+    let head = db.frontier()?;
+    let mut proposal: Option<EntryPayload> = None;
+    let mut items = Vec::with_capacity(requests.len());
+    for request in requests {
+        let prepared = match prepare_fx_settlement(
+            db,
+            cx,
+            book,
+            capability,
+            request,
+            template.clone(),
+            budget,
+        )? {
+            Ok(prepared) => prepared,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if items.first().is_some_and(|item: &FxSettlementItem| {
+            item.carrying.known_at != prepared.carrying.known_at
+        }) {
+            return Ok(Err(invalid(
+                "FX group preparation did not retain one carrying prefix",
+            )));
+        }
+        let start = proposal.as_ref().map_or(0, |value| value.legs.len());
+        let end = start
+            .checked_add(prepared.proposal.legs.len())
+            .ok_or_else(|| KernelError::Corrupt("FX group leg count overflow".into()))?;
+        items.push(FxSettlementItem {
+            carrying: prepared.carrying,
+            base_relief: prepared.base_relief,
+            leg_range: start..end,
+        });
+        match &mut proposal {
+            None => proposal = Some(prepared.proposal),
+            Some(combined) => {
+                let Some(total) = &mut combined.base_totals else {
+                    return Err(KernelError::Corrupt(
+                        "FX component has no base totals".into(),
+                    ));
+                };
+                let Some(next) = prepared.proposal.base_totals else {
+                    return Err(KernelError::Corrupt(
+                        "FX component has no base totals".into(),
+                    ));
+                };
+                let Some(debits) = total.debits.checked_add(next.debits) else {
+                    return Ok(Err(invalid("FX group functional debits overflow")));
+                };
+                let Some(credits) = total.credits.checked_add(next.credits) else {
+                    return Ok(Err(invalid("FX group functional credits overflow")));
+                };
+                total.debits = debits;
+                total.credits = credits;
+                combined.legs.extend(prepared.proposal.legs);
+            }
+        }
+    }
+    if let Err(refusal) = crate::post::check_aggregate_basis(head, db.frontier()?) {
+        return Ok(Err(refusal));
+    }
+    let Some(mut proposal) = proposal else {
+        return Err(KernelError::Corrupt(
+            "nonempty FX group has no proposal".into(),
+        ));
+    };
+    proposal.unit_totals = match EntryPayload::fold_unit_totals(&proposal.legs) {
+        Ok(totals) => totals,
+        Err(error) => return Ok(Err(invalid(error))),
+    };
+    if let Err(error) = proposal.validate() {
+        return Ok(Err(invalid(error)));
+    }
+    Ok(Ok(PreparedFxSettlementGroup { items, proposal }))
+}
+
+/// Ordered components consume every leg exactly once. Identity deliberately
+/// excludes a caller's digest so two handles cannot spend the same source.
+pub(crate) fn settlement_ranges(
+    proposal: &EntryPayload,
+) -> Result<Vec<core::ops::Range<usize>>, Refusal> {
+    let mut starts = Vec::new();
+    let mut targets = BTreeSet::new();
+    for (ordinal, leg) in proposal.legs.iter().enumerate() {
+        if leg.settles.is_empty() {
+            continue;
+        }
+        let [application] = leg.settles.as_slice() else {
+            return Err(invalid("each FX component requires exactly one target"));
+        };
+        if application.amount != leg.amount
+            || !targets.insert((application.target.vid, application.ordinal))
+        {
+            return Err(invalid(
+                "FX components require fully applied, pairwise distinct target legs",
+            ));
+        }
+        starts.push(ordinal);
+    }
+    if starts.first() != Some(&0) {
+        return Err(invalid(
+            "an FX effect vector must start with its applied foreign leg",
+        ));
+    }
+    starts.push(proposal.legs.len());
+    Ok(starts.windows(2).map(|pair| pair[0]..pair[1]).collect())
 }
 
 fn prepare_fx_settlement_inner<V: Vfs + Clone>(
@@ -647,11 +811,28 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     if !is_source_bound(proposal) {
         return Ok(Ok(()));
     }
-    let applying: Vec<_> = proposal
-        .legs
-        .iter()
-        .filter(|leg| !leg.settles.is_empty())
-        .collect();
+    let ranges = match settlement_ranges(proposal) {
+        Ok(ranges) => ranges,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    for range in ranges {
+        if let Err(refusal) = validate_component(db, cx, book, proposal, at, &proposal.legs[range])?
+        {
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(Ok(()))
+}
+
+fn validate_component<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    at: CommitSeq,
+    legs: &[fa_model::LegPayload],
+) -> Outcome<()> {
+    let applying: Vec<_> = legs.iter().filter(|leg| !leg.settles.is_empty()).collect();
     let [leg] = applying.as_slice() else {
         return Ok(Err(invalid(
             "source-bound FX settlement requires exactly one explicitly applied foreign leg",
@@ -704,16 +885,16 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         // finding one plausible pair somewhere in arbitrary extra legs would
         // leave other foreign valuations unchecked.
         let core_len = if expected.mantissa == 0 { 3 } else { 4 };
-        if !(core_len..=core_len + 1).contains(&proposal.legs.len())
-            || proposal.legs[0].settles.len() != 1
+        if !(core_len..=core_len + 1).contains(&legs.len())
+            || legs[0].settles.len() != 1
         {
             return Ok(Err(invalid(
                 "a source-bound settlement has its ordered core legs and, only when needed, one explicit realized-FX leg; a zero base conversion leg is omitted",
             )));
         }
-        let settled = &proposal.legs[0];
-        let conversion_foreign = &proposal.legs[1];
-        let cash = &proposal.legs[core_len - 1];
+        let settled = &legs[0];
+        let conversion_foreign = &legs[1];
+        let cash = &legs[core_len - 1];
         if conversion_foreign.account_ref == settled.account_ref
             || conversion_foreign.account_ref == cash.account_ref
             || settled.account_ref == cash.account_ref
@@ -730,7 +911,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             )));
         }
         if expected.mantissa != 0 {
-            let conversion_base = &proposal.legs[2];
+            let conversion_base = &legs[2];
             if conversion_base.account_ref != conversion_foreign.account_ref
                 || conversion_base.side != settled.side
                 || conversion_base.amount != expected
@@ -743,11 +924,11 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         let difference = cash.amount.mantissa.checked_sub(expected.mantissa)
             .ok_or_else(|| KernelError::Corrupt("settlement difference overflow".into()))?;
         if difference == 0 {
-            if proposal.legs.len() != core_len {
+            if legs.len() != core_len {
                 return Ok(Err(invalid("a zero realized-FX difference has no extra posting")));
             }
         } else {
-            let Some(realized) = proposal.legs.get(core_len) else {
+            let Some(realized) = legs.get(core_len) else {
                 return Ok(Err(invalid("the nonzero realized-FX difference requires its explicit paired leg")));
             };
             let magnitude = difference.checked_abs()

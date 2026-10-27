@@ -63,6 +63,7 @@ impl LaunchProfile {
                 Op::Reconcile,
                 Op::Produce,
                 Op::PartialView,
+                Op::Maintain,
             ],
         }
     }
@@ -728,6 +729,66 @@ mod tests {
         assert!(launch(LaunchProfile::Preparer, &["approve"]).is_err());
         assert_eq!(LaunchProfile::from_name("human"), None);
         assert_eq!(LaunchProfile::from_name("system"), None);
+    }
+
+    #[test]
+    fn launch_ceilings_match_registered_templates_and_maintenance_is_explicit() {
+        use std::collections::BTreeSet;
+
+        for (launch_profile, template) in [
+            (LaunchProfile::Agent, fa_policy::ProfileTemplate::Agent),
+            (
+                LaunchProfile::Preparer,
+                fa_policy::ProfileTemplate::Preparer,
+            ),
+        ] {
+            assert_eq!(
+                launch_profile
+                    .ceiling()
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                template
+                    .ops_ceiling()
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+            );
+            assert!(
+                !launch(launch_profile, &[])
+                    .unwrap()
+                    .capability()
+                    .holds(Op::Maintain)
+            );
+        }
+        assert!(launch(LaunchProfile::Agent, &["maintain"]).is_err());
+        let maintainer = launch(LaunchProfile::Preparer, &["read", "verify", "maintain"]).unwrap();
+        assert_eq!(maintainer.capability().profile(), Profile::Human);
+        assert_eq!(
+            maintainer.capability().ops(),
+            &BTreeSet::from([Op::Read, Op::Verify, Op::Maintain]),
+        );
+        // Maintenance is derived-state work, not an attributable human
+        // judgment. A trusted Preparer can retain its explicit grant over
+        // MCP without relabeling the AI operator as human.
+        let mcp = maintainer.as_mcp_operator().unwrap();
+        assert_eq!(mcp.capability().profile(), Profile::Human);
+        assert_eq!(
+            mcp.capability().operator_kind(),
+            fa_policy::OperatorKind::Agent
+        );
+        assert_eq!(mcp.capability().sod_profile(), Profile::Agent);
+        assert!(mcp.capability().holds(Op::Maintain));
+        assert_eq!(
+            Capability::decode(&mcp.capability().canonical_bytes().unwrap()).unwrap(),
+            *mcp.capability(),
+        );
+        assert!(
+            mcp.capability()
+                .clone()
+                .with_operator_kind(fa_policy::OperatorKind::Human)
+                .is_err()
+        );
     }
 
     /// fa-v62: a token binds the session to its own journaled capability

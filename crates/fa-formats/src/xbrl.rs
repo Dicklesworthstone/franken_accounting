@@ -1434,7 +1434,7 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
         &schema,
         &linkbase,
     )?;
-    let (is_inst, _) = export_statement_lines_to_xbrl(
+    let (mut is_inst, _) = export_statement_lines_to_xbrl(
         &is_stmt,
         &StatementXbrlMapping::us_gaap_type_level_income_statement(),
         &journal.coordinate.book_name,
@@ -1442,6 +1442,19 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
         &schema,
         &linkbase,
     )?;
+
+    // This producer folds every exported entry, including prior-year activity.
+    // Extend the existing January start only when that cumulative fold needs it;
+    // same-year and empty exports retain their existing bytes.
+    if let Some(earliest) = journal
+        .entries
+        .iter()
+        .map(|entry| entry.effective_date)
+        .min()
+        && earliest.year() < journal.coordinate.effective_through.year()
+    {
+        is_inst.period_start = Some(earliest.render());
+    }
 
     let mut combined_facts = bs_inst.facts;
     combined_facts.extend(is_inst.facts);
@@ -1923,5 +1936,118 @@ mod tests {
         assert!(msg.contains("us-gaap:NetIncomeLoss"), "{msg}");
         assert!(msg.contains("Instant"), "{msg}");
         assert!(msg.contains("ctx_current"), "{msg}");
+    }
+
+    #[test]
+    fn cumulative_export_duration_covers_prior_year_and_preserves_same_year_and_empty_bytes() {
+        use crate::{FormatAccount, FormatEntry, FormatLeg};
+        use fa_model::EntryClass;
+        use fa_money::{Amount, Side};
+
+        let cutoff = DateDay::from_ymd(2026, 3, 31).unwrap();
+        let current = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let prior = DateDay::from_ymd(2025, 12, 15).unwrap();
+        let (usd, scale) = UnitCatalog::embedded().unwrap().lookup_code("USD").unwrap();
+        let journal = |dates: &[DateDay]| {
+            FormatJournal::new(
+                "xbrl-cumulative-interval",
+                "USD",
+                scale,
+                cutoff,
+                u64::try_from(dates.len()).unwrap(),
+                [
+                    ("1000", AccountType::ASSET, Side::Debit),
+                    ("4000", AccountType::REVENUE, Side::Credit),
+                ]
+                .into_iter()
+                .map(|(code, account_type, normal_side)| FormatAccount {
+                    code: code.into(),
+                    name: code.into(),
+                    account_type,
+                    normal_side,
+                })
+                .collect(),
+                dates
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &effective_date)| FormatEntry {
+                        entry_id: format!("entry-{index}"),
+                        effective_date,
+                        recorded_seq: u64::try_from(index).unwrap().checked_add(1).unwrap(),
+                        class: EntryClass::ORIGINAL,
+                        description: "cash revenue".into(),
+                        migrated_from: None,
+                        legs: [("1000", Side::Debit), ("4000", Side::Credit)]
+                            .into_iter()
+                            .map(|(account, side)| FormatLeg {
+                                account_code: account.into(),
+                                side,
+                                amount: Amount::new(usd, 100),
+                                unit_code: "USD".into(),
+                                unit_scale: scale,
+                                memo: None,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                Vec::new(),
+            )
+            .unwrap()
+        };
+
+        for (dates, start, earnings) in [
+            (vec![current], "2026-01-01", 100),
+            (Vec::new(), "2026-01-01", 0),
+            (vec![prior, current], "2025-12-15", 200),
+        ] {
+            let journal = journal(&dates);
+            let xml = write_format_journal_xbrl_xml(&journal).unwrap();
+            let (coordinate, report) = verify_format_journal_xbrl_xml(&xml).unwrap();
+            assert_eq!(coordinate, journal.coordinate);
+            assert_eq!(report.checks_passed, 3);
+
+            // Pin the complete existing body for same-year and empty exports,
+            // including concept/context spelling, ordering and exact amounts.
+            // Cross-year pins the extended lower bound and both entries' amounts.
+            let expected = XbrlInstance {
+                entity_identifier: "xbrl-cumulative-interval".into(),
+                period_start: Some(start.into()),
+                period_end: "2026-03-31".into(),
+                facts: [
+                    ("us-gaap:Assets", earnings, false),
+                    ("us-gaap:Liabilities", 0, false),
+                    ("us-gaap:StockholdersEquity", 0, false),
+                    ("us-gaap:RetainedEarningsAccumulatedDeficit", earnings, false),
+                    (
+                        "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                        earnings,
+                        false,
+                    ),
+                    ("us-gaap:LiabilitiesAndStockholdersEquity", earnings, false),
+                    ("us-gaap:Revenues", earnings, true),
+                    ("us-gaap:OperatingExpenses", 0, true),
+                    ("us-gaap:NetIncomeLoss", earnings, true),
+                ]
+                .into_iter()
+                .map(|(concept, mantissa, duration)| XbrlFact {
+                    concept: concept.into(),
+                    context_ref: if duration {
+                        "ctx_duration_current".into()
+                    } else {
+                        "ctx_current".into()
+                    },
+                    unit_code: "USD".into(),
+                    scale,
+                    mantissa,
+                })
+                .collect(),
+            };
+            let body: String = xml
+                .lines()
+                .filter(|line| !line.trim().starts_with("<!-- fa:xbrl-coordinate "))
+                .map(|line| format!("{line}\n"))
+                .collect();
+            assert_eq!(body, write_xbrl_instance_xml(&expected));
+        }
     }
 }

@@ -63,6 +63,82 @@ pub struct OracleFunctionalEntry {
     pub legs: Vec<OracleRealizedLeg>,
 }
 
+/// A fully-valued final-state projection is malformed or exceeds the stock
+/// gross capacity. This oracle does not decide period law or FX admissibility.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OracleCapacityError {
+    InvalidLeg {
+        entry: usize,
+        leg: usize,
+    },
+    Exceeded {
+        entry: usize,
+        account: u128,
+        unit: u32,
+        functional: bool,
+        pending: bool,
+        side: Side,
+    },
+}
+
+/// Independent native/functional capacity admission for a fully-valued final
+/// state. Each account/unit's four nonnegative stock columns must fit i128;
+/// periods and entities are subsets, and arbitrary cross-account report totals
+/// are outside this law. Resolved holds are excluded before any addition.
+///
+/// Sums use the oracle's unbounded limbs, never the production checked-i128
+/// implementation. Callers supply the final migration-visible projection and
+/// resolution state; this function does not infer either from engine output.
+pub fn admit_register_capacity(
+    entries: &[OracleFunctionalEntry],
+    base_unit: u32,
+) -> Result<(), OracleCapacityError> {
+    let mut sums: BTreeMap<(u128, u32, bool, bool, bool), Int> = BTreeMap::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        if entry.is_pending && entry.is_resolved {
+            continue;
+        }
+        for (leg_index, leg) in entry.legs.iter().enumerate() {
+            if leg.mantissa < 0
+                || leg.base_mantissa < 0
+                || leg.base_unit != base_unit
+                || (leg.unit == base_unit && leg.mantissa != leg.base_mantissa)
+            {
+                return Err(OracleCapacityError::InvalidLeg {
+                    entry: entry_index,
+                    leg: leg_index,
+                });
+            }
+            for (unit, functional, amount) in [
+                (leg.unit, false, leg.mantissa),
+                (base_unit, true, leg.base_mantissa),
+            ] {
+                let sum = sums
+                    .entry((
+                        leg.account,
+                        unit,
+                        functional,
+                        entry.is_pending,
+                        leg.side == Side::Credit,
+                    ))
+                    .or_insert_with(Int::zero);
+                *sum = sum.add(&Int::from_i128(amount));
+                if sum.to_i128().is_none() {
+                    return Err(OracleCapacityError::Exceeded {
+                        entry: entry_index,
+                        account: leg.account,
+                        unit,
+                        functional,
+                        pending: entry.is_pending,
+                        side: leg.side,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn pow10(exp: u8) -> Int {
     let mut out = Int::from_u128(1);
     let ten = Int::from_u128(10);
@@ -136,6 +212,29 @@ pub fn round_convert(
     rounded
         .to_i128()
         .ok_or_else(|| "rounded mantissa overflowed i128".to_string())
+}
+
+/// Independent RemainingCarryingValue relief in native/base minor units
+/// (plan §5.7). The final application takes the exact remaining base amount;
+/// partial applications round the exact ratio once, under HalfEven.
+///
+/// Uses this oracle's own unbounded limbs and rounding, never the production
+/// amount, rate or carrying implementation. Units and source admissibility
+/// belong to the caller; these three inputs describe one current open item.
+pub fn remaining_carrying_relief(
+    open_native: i128,
+    open_base: i128,
+    application: i128,
+) -> Result<i128, String> {
+    if open_native <= 0 || open_base < 0 || application <= 0 || application > open_native {
+        return Err("application must be positive and within the nonnegative open item".into());
+    }
+    if application == open_native {
+        return Ok(open_base);
+    }
+    let numerator = u128::try_from(application).map_err(|_| "invalid application".to_string())?;
+    let denominator = u128::try_from(open_native).map_err(|_| "invalid open native".to_string())?;
+    round_convert(open_base, 0, 0, numerator, denominator, "HalfEven")
 }
 
 /// Independently value an entry's legs per legal entity and foreign unit,
@@ -799,6 +898,135 @@ pub fn remeasure_temporal_oracle(
 #[cfg(test)]
 mod carrying_tests {
     use super::*;
+
+    #[test]
+    fn relief_has_literal_half_even_final_zero_and_wide_boundaries() {
+        for (native, base, application, expected) in [
+            (2, 1, 1, 0),
+            (2, 3, 1, 2),
+            (3, 10, 1, 3),
+            (2, 7, 1, 4),
+            (1, 3, 1, 3),
+            (3, 1, 2, 1),
+            (3, 0, 1, 0),
+            (3, 0, 3, 0),
+            (i128::MAX, i128::MAX, i128::MAX - 1, i128::MAX - 1),
+            (i128::MAX, i128::MAX - 1, i128::MAX - 2, i128::MAX - 3),
+            (2, i128::MAX, 1, i128::MAX / 2 + 1),
+            (1, i128::MAX, 1, i128::MAX),
+        ] {
+            assert_eq!(
+                remaining_carrying_relief(native, base, application),
+                Ok(expected),
+                "native={native}, base={base}, application={application}",
+            );
+        }
+        for (native, base, application) in [
+            (0, 1, 1),
+            (-1, 1, 1),
+            (1, -1, 1),
+            (3, 1, 0),
+            (3, 1, -1),
+            (3, 1, 4),
+        ] {
+            assert!(remaining_carrying_relief(native, base, application).is_err());
+        }
+    }
+
+    #[test]
+    fn capacity_checks_stock_gross_columns_and_final_pending_state_with_limbs() {
+        let entry = |amount, base_amount| OracleFunctionalEntry {
+            period: "P1".into(),
+            is_pending: false,
+            is_resolved: false,
+            legs: [Side::Debit, Side::Credit]
+                .into_iter()
+                .enumerate()
+                .map(|(index, side)| OracleRealizedLeg {
+                    side,
+                    account: 10 + index as u128,
+                    unit: 2,
+                    mantissa: amount,
+                    base_unit: 1,
+                    base_mantissa: base_amount,
+                    entity: Some("A".into()),
+                })
+                .collect(),
+        };
+        let maximum = entry(1, i128::MAX);
+        assert_eq!(
+            admit_register_capacity(std::slice::from_ref(&maximum), 1),
+            Ok(())
+        );
+        let mut other_subset = entry(1, 1);
+        other_subset.period = "P2".into();
+        for leg in &mut other_subset.legs {
+            leg.entity = Some("B".into());
+        }
+        assert!(matches!(
+            admit_register_capacity(&[maximum.clone(), other_subset.clone()], 1),
+            Err(OracleCapacityError::Exceeded {
+                entry: 1,
+                account: 10,
+                functional: true,
+                pending: false,
+                side: Side::Debit,
+                ..
+            })
+        ));
+        // Independent accounts do not share a report-total capacity column.
+        let mut other_accounts = maximum.clone();
+        for leg in &mut other_accounts.legs {
+            leg.account += 2;
+        }
+        assert_eq!(
+            admit_register_capacity(&[maximum.clone(), other_accounts], 1),
+            Ok(())
+        );
+        let mut opposite = maximum.clone();
+        for leg in &mut opposite.legs {
+            leg.side = leg.side.flipped();
+        }
+        let mut net_zero = vec![maximum.clone(), opposite];
+        assert_eq!(admit_register_capacity(&net_zero, 1), Ok(()));
+        net_zero.push(entry(1, 1));
+        assert!(matches!(
+            admit_register_capacity(&net_zero, 1),
+            Err(OracleCapacityError::Exceeded {
+                functional: true,
+                ..
+            })
+        ));
+        // Zero functional carrying value never waives native capacity.
+        assert!(matches!(
+            admit_register_capacity(&[entry(i128::MAX, 0), entry(1, 0)], 1),
+            Err(OracleCapacityError::Exceeded {
+                functional: false,
+                ..
+            })
+        ));
+        let mut hold = maximum;
+        hold.is_pending = true;
+        let mut next = other_subset;
+        next.is_pending = true;
+        assert!(matches!(
+            admit_register_capacity(&[hold.clone(), next.clone()], 1),
+            Err(OracleCapacityError::Exceeded { pending: true, .. })
+        ));
+        hold.is_resolved = true;
+        assert_eq!(admit_register_capacity(&[next, hold], 1), Ok(()));
+        for (native, functional, unit, base_unit) in
+            [(-1, 1, 2, 1), (1, -1, 2, 1), (1, 1, 2, 3), (1, 2, 1, 1)]
+        {
+            let mut malformed = entry(native, functional);
+            malformed.legs[0].unit = unit;
+            malformed.legs[0].base_unit = base_unit;
+            assert_eq!(
+                admit_register_capacity(&[malformed], 1),
+                Err(OracleCapacityError::InvalidLeg { entry: 0, leg: 0 })
+            );
+        }
+    }
 
     #[test]
     fn zero_relief_and_exact_undo_preserve_native_effects_and_functional_folds() {

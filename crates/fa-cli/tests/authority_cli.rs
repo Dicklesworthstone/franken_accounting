@@ -437,6 +437,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
             "produce",
             "post",
             "reconcile",
+            "maintain",
         ],
     )
     .unwrap();
@@ -444,7 +445,14 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
     let issued = Capability::new(
         principal_vid("report-preparer"),
         Profile::Human,
-        &[Op::Read, Op::Verify, Op::Produce, Op::Post, Op::Reconcile],
+        &[
+            Op::Read,
+            Op::Verify,
+            Op::Produce,
+            Op::Post,
+            Op::Reconcile,
+            Op::Maintain,
+        ],
         issuer.holder(),
     )
     .unwrap()

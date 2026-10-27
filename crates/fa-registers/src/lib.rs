@@ -92,6 +92,95 @@ pub use reconciliation::{
 
 pub const FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-fold:v2";
 
+/// Shared posting/report law for an unrepresentable registered cell.
+pub const REGISTER_CAPACITY: &str = "FA-REF-198";
+
+/// A retained registered cell cannot be represented. This is a diagnosis of
+/// immutable source, never an instruction to rebalance or edit its history.
+/// `by_entity` distinguishes a partition (`None` is the book's default entity)
+/// from an aggregate across all entities. Cross-account totals are not cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterCapacity {
+    pub account: VId,
+    pub unit_id: u32,
+    pub functional: bool,
+    pub pending: bool,
+    pub side: Side,
+    pub periods: Vec<String>,
+    pub effective_through: Option<DateDay>,
+    pub by_entity: bool,
+    pub entity: Option<String>,
+    pub source: fa_model::EntryRef,
+    pub recorded_at: CommitSeq,
+    pub known_at: CommitSeq,
+    pub accumulated: i128,
+    pub incoming: i128,
+}
+
+impl fmt::Display for RegisterCapacity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "retained {} {} {:?} cell capacity: account {:032x}, unit {}, periods {:?}, effective through {:?}, entity {}; {} + {} exceeds i128::MAX at known-at {}; source entry {:032x} recorded at {}",
+            if self.functional {
+                "functional"
+            } else {
+                "native"
+            },
+            if self.pending { "pending" } else { "posted" },
+            self.side,
+            self.account.0,
+            self.unit_id,
+            self.periods,
+            self.effective_through,
+            if self.by_entity {
+                self.entity.as_deref().unwrap_or("<default>")
+            } else {
+                "<all>"
+            },
+            self.accumulated,
+            self.incoming,
+            self.known_at.0,
+            self.source.vid.0,
+            self.recorded_at.0,
+        )
+    }
+}
+
+impl RegisterCapacity {
+    /// Surface the existing catalog law without partial financial success.
+    #[must_use]
+    pub fn refusal(&self) -> fa_journal::Refusal {
+        fa_journal::Refusal::new(
+            REGISTER_CAPACITY,
+            fa_journal::exit::REFUSAL,
+            self.to_string(),
+            "plan §4.4 / §5.2; limits.toml register_capacity (retained-history diagnosis)",
+            format!(
+                "preserve the immutable book and its source; inspect fa entry show {entry:032x} --json; an authorized owner can create a covering checkpoint with fa checkpoint create --grant witness --json, then export the source with fa proof inclusion --entry {entry:032x} --with-record --state <covering-state-oid> --out <new-file> --json, or the complete payload prefix with fa proof prefix --with-record --state <covering-state-oid> --out <new-file> --json; the checkpoint must cover known-at {known_at}; these bounded proofs preserve payloads, not accounting validity or document bytes; a reversal adds gross activity and cannot repair this historical capacity violation",
+                entry = self.source.vid.0,
+                known_at = self.known_at.0,
+            ),
+        )
+        .at("account", format!("{:032x}", self.account.0))
+        .at("unit", self.unit_id.to_string())
+        .at("entry", format!("{:032x}", self.source.vid.0))
+        .at("known_at", self.known_at.0)
+        .at("recorded_at", self.recorded_at.0)
+    }
+}
+
+pub(crate) fn capacity_add(
+    slot: &mut i128,
+    incoming: i128,
+    diagnosis: impl FnOnce(i128) -> RegisterCapacity,
+) -> Result<(), RegisterError> {
+    *slot = slot
+        .checked_add(incoming)
+        .ok_or_else(|| RegisterError::Capacity(Box::new(diagnosis(*slot))))?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum RegisterError {
     Kernel(KernelError),
@@ -99,6 +188,8 @@ pub enum RegisterError {
     Write(fgdb::WriteError),
     /// A leg sum overflowed `i128` (the register ceiling).
     Overflow,
+    /// A registered cell overflowed; retain its exact source and scope.
+    Capacity(Box<RegisterCapacity>),
     InvalidSelection(String),
     Encoding(fa_model::EncodeError),
     /// A caller supplied an old or modified projection instead of the current fold.
@@ -114,6 +205,7 @@ impl fmt::Display for RegisterError {
             Self::Read(e) => write!(f, "substrate read: {e:?}"),
             Self::Write(e) => write!(f, "substrate write: {e:?}"),
             Self::Overflow => write!(f, "a register sum overflowed"),
+            Self::Capacity(diagnosis) => write!(f, "{diagnosis}"),
             Self::InvalidSelection(e) => write!(f, "invalid report selection: {e}"),
             Self::Encoding(e) => write!(f, "register encoding: {e}"),
             Self::StaleFold => write!(
@@ -476,6 +568,8 @@ fn add_entry(
     cells: &mut BTreeMap<CellKey, Cell>,
     entry: &Entry,
     period: &str,
+    (vid, recorded_at): (VId, CommitSeq),
+    known_at: CommitSeq,
 ) -> Result<(), RegisterError> {
     let mut touched = BTreeSet::new();
     for leg in &entry.proposal.legs {
@@ -494,9 +588,22 @@ fn add_entry(
             Side::Debit => &mut cell.debits,
             Side::Credit => &mut cell.credits,
         };
-        *slot = slot
-            .checked_add(leg.amount.mantissa)
-            .ok_or(RegisterError::Overflow)?;
+        capacity_add(slot, leg.amount.mantissa, |accumulated| RegisterCapacity {
+            account: key.account,
+            unit_id: key.unit_id,
+            functional: false,
+            pending: entry.proposal.class == EntryClass::PENDING,
+            side: leg.side,
+            periods: vec![period.into()],
+            effective_through: None,
+            by_entity: false,
+            entity: None,
+            source: entry.entry_ref(vid),
+            recorded_at,
+            known_at,
+            accumulated,
+            incoming: leg.amount.mantissa,
+        })?;
         touched.insert(key);
     }
     for key in touched {
@@ -565,7 +672,7 @@ pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
             if let Some(release) = resolved.get(&vid) {
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
-                add_entry(&mut pending, &entry, period_code)?;
+                add_entry(&mut pending, &entry, period_code, (vid, created_at), seq)?;
                 legs = legs
                     .checked_add(entry.proposal.legs.len() as u64)
                     .ok_or(RegisterError::Overflow)?;
@@ -574,7 +681,7 @@ pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
             }
         } else {
             count = count.checked_add(1).ok_or(RegisterError::Overflow)?;
-            add_entry(&mut cells, &entry, period_code)?;
+            add_entry(&mut cells, &entry, period_code, (vid, created_at), seq)?;
             legs = legs
                 .checked_add(entry.proposal.legs.len() as u64)
                 .ok_or(RegisterError::Overflow)?;
@@ -1440,7 +1547,17 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
             }
             continue;
         };
-        add_cells(&mut sums, &head.fold)?;
+        match add_cells(&mut sums, &head.fold) {
+            Ok(()) => {}
+            Err(RegisterError::Overflow) => {
+                // Only the literal selected prefix can identify the source
+                // entry of an overflowing cross-period registered cell.
+                return Ok(Err(
+                    "combined maintained cells require a literal capacity diagnosis".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
         served.push((period.code, head.served_at, head.tail_entries));
     }
     Ok(Ok((sums, served)))
@@ -1794,7 +1911,7 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
             .map(|(vid, entry, at)| (*vid, (entry, *at)))
             .collect()
     };
-    for (vid, entry, _) in &entries {
+    for (vid, entry, recorded_at) in &entries {
         if entry.proposal.legs.is_empty() {
             continue;
         }
@@ -1828,9 +1945,28 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
                 (true, Side::Credit) => 3,
             };
             let amount = &mut e[column];
-            *amount = amount
-                .checked_add(leg.amount.mantissa)
-                .ok_or(RegisterError::Overflow)?;
+            capacity_add(amount, leg.amount.mantissa, |accumulated| {
+                RegisterCapacity {
+                    account: leg.account_ref,
+                    unit_id: leg.amount.unit.0,
+                    functional: false,
+                    pending,
+                    side: leg.side,
+                    periods: if through.is_some() {
+                        Vec::new()
+                    } else {
+                        periods.clone()
+                    },
+                    effective_through: through,
+                    by_entity: false,
+                    entity: None,
+                    source: entry.entry_ref(*vid),
+                    recorded_at: *recorded_at,
+                    known_at: seq,
+                    accumulated,
+                    incoming: leg.amount.mantissa,
+                }
+            })?;
         }
     }
     trial_balance_from_sums(db, sums, periods, seq, through)

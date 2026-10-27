@@ -11695,6 +11695,10 @@ fn year_end_close_refuses_nonzero_retired_accounts_with_or_without_a_route() {
             refusal
                 .message
                 .contains("nonzero fiscal-year balance at carrying value")
+                && refusal
+                    .message
+                    .contains("not a posting leaf effective at fiscal-year end"),
+            "{refusal}"
         );
         assert!(refusal.message.contains("6000"));
         assert!(

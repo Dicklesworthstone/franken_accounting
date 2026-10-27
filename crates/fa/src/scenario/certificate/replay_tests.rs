@@ -225,7 +225,10 @@ fn bank_scenario_v1_and_v2_certificates_preserve_exact_retained_cold_replay() {
         NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed),
     ));
     let (mut book, closed_at) = closed_book(&dir);
-    let (_, fork_at) = book.materialize_registers(PERIOD).unwrap();
+    let (_, fork_at) = book
+        .materialize_registers(PRINCIPAL, &cap(&["read", "verify", "maintain"]), PERIOD)
+        .unwrap()
+        .unwrap();
     assert_eq!(fork_at.0, closed_at.0 + 1);
     book.open_scenario(
         cap(&["post"]),

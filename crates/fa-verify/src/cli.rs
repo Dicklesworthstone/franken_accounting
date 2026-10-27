@@ -55,9 +55,8 @@ use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
 use crate::checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
 use crate::document::doc_commit;
 use crate::envelope::LeafEnvelope;
-use crate::proof::{
-    Checkpoint, RecordCheck, VerifyError, verify_consistency, verify_inclusion, verify_prefix,
-};
+use crate::proof::production::derivation::verify_prefix_with_status;
+use crate::proof::{Checkpoint, RecordCheck, VerifyError, verify_consistency, verify_inclusion};
 use crate::scope::{IndexDerivation, ScopeClaim, verify_scope};
 use crate::state::verify_state;
 use crate::verify_balance;
@@ -93,7 +92,7 @@ commands:
                [--witness W... [--quorum N]]    and cosigned by N of the named witnesses (default
                                                 all): witnessed detection, never prevention
   inclusion    <proof> --checkpoint C ANCHOR    an entry recorded within the checkpoint's prefix
-  prefix       <proof> --checkpoint C ANCHOR    every leaf of the prefix (seq_range_complete)
+  prefix       <proof> --checkpoint C ANCHOR    every leaf of the prefix, with payload assurance
   balance      <proof> --checkpoint C ANCHOR    a posted balance refolded (recomputation)
   scope        <proof> --checkpoint C --key K --account A --from D --to D [--prefix P]
                                                 one account's day interval (scope_index_complete)
@@ -140,6 +139,10 @@ options:
   --hex          read every input file as hexadecimal text
 
 Input files are limited to 64 MiB. No book, network or other program is used.
+Native prefix v1 checks envelopes only (record_check: not_supplied). V2 from
+fa proof prefix --with-record recomputes every payload and scope selector
+(record_check: recomputed). Neither establishes accounting validity, posted
+balances or document bytes. Obtain the covering checkpoint independently.
 The raw --proof/--checkpoint grammar (operator-trusted 80-byte checkpoints, balance
 expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
@@ -1134,13 +1137,34 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         ],
                     ),
                 },
-                "prefix" => match verify_prefix(&proof, &cp) {
+                "prefix" => match verify_prefix_with_status(&proof, &cp) {
                     Err(e) => Check::fail("prefix", "seq_range_complete", &e),
-                    Ok(p) => Check::pass(
-                        "prefix",
-                        p.scope,
-                        vec![("leaves", n(p.envelopes.len() as u64))],
-                    ),
+                    Ok(verified) => {
+                        let complete = verified.record_check == RecordCheck::Recomputed;
+                        Check::pass(
+                            "prefix",
+                            verified.prefix.scope,
+                            vec![
+                                ("leaves", n(verified.prefix.envelopes.len() as u64)),
+                                (
+                                    "record_check",
+                                    s(if complete {
+                                        "recomputed"
+                                    } else {
+                                        "not_supplied"
+                                    }),
+                                ),
+                                (
+                                    "scope_derivation",
+                                    s(if complete {
+                                        "all_prefix_payloads_checked"
+                                    } else {
+                                        "not_verified"
+                                    }),
+                                ),
+                            ],
+                        )
+                    }
                 },
                 "balance" => match verify_balance(&proof, &cp) {
                     Err(e) => Check::fail("balance", "recomputation", &e),

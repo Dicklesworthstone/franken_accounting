@@ -122,7 +122,12 @@ impl Fixture {
         // A real maintenance publication must keep its source position in
         // the rehearsal even though its register rows are not copied.
         let before = fixture.book.head().unwrap();
-        let maintained_at = fixture.book.advance_registers(PERIOD).unwrap().published_at;
+        let maintained_at = fixture
+            .book
+            .advance_registers(ADMIN, &cap(ADMIN, &["read", "verify", "maintain"]), PERIOD)
+            .unwrap()
+            .unwrap()
+            .published_at;
         assert!(maintained_at > before);
         fixture
     }

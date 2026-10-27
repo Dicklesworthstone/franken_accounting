@@ -460,14 +460,14 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
             }
             fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
             if entry.proposal.class == EntryClass::PENDING {
-                match crate::add_entry(&mut pending, &entry, period) {
+                match crate::add_entry(&mut pending, &entry, period, (vid, seq), basis) {
                     Ok(()) => {}
                     // Later resolutions in this same suffix may
                     // release an otherwise overflowing hold. The
                     // literal fold selects unresolved holds at
                     // the target frontier before adding them. A
                     // truly oversized final column still fails.
-                    Err(RegisterError::Overflow) => {
+                    Err(RegisterError::Overflow | RegisterError::Capacity(_)) => {
                         return Ok(Tail::Rebuild);
                     }
                     Err(error) => return Err(error),
@@ -483,7 +483,7 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
                 }
             } else {
                 fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
-                crate::add_entry(&mut cells, &entry, period)?;
+                crate::add_entry(&mut cells, &entry, period, (vid, seq), basis)?;
                 legs_folded = legs_folded
                     .checked_add(entry.proposal.legs.len() as u64)
                     .ok_or(RegisterError::Overflow)?;

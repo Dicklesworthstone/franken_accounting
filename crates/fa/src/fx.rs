@@ -24,7 +24,10 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 
-pub use fa_journal::carrying::{FxSettlementRequest, PreparedFxSettlement};
+pub use fa_journal::carrying::{
+    FxSettlementItem, FxSettlementRequest, MAX_FX_SETTLEMENT_ITEMS, PreparedFxSettlement,
+    PreparedFxSettlementGroup,
+};
 pub use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
 
 /// The canonical Rate document's media type; its bytes use the native codec.
@@ -433,6 +436,87 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         template: EntryPayload,
         budget: &mut ArithmeticBudget<'_, impl Sized>,
     ) -> Outcome<PreparedFxSettlement> {
+        if let Err(refusal) = self
+            .prepare_fx_settlement_source(cx, capability, request.rate_document, &template)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = fa_journal::carrying::prepare_fx_settlement(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            request,
+            template,
+            budget,
+        )?;
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, capability.holder(), true, None)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Rehearse several distinct foreign items as one entry, using one
+    /// explicitly shared retained rate and each item's exact carrying basis.
+    pub async fn prepare_fx_settlement_group(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        requests: &[FxSettlementRequest],
+        template: EntryPayload,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Outcome<PreparedFxSettlementGroup> {
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, template.principal_ref, true, None)?
+        {
+            return Ok(Err(refusal));
+        }
+        if requests.is_empty() || requests.len() > MAX_FX_SETTLEMENT_ITEMS {
+            return Ok(Err(invalid(
+                "FX group is empty or exceeds the entry leg work bound",
+            )));
+        }
+        if requests
+            .iter()
+            .any(|request| request.rate_document != requests[0].rate_document)
+        {
+            return Ok(Err(invalid(
+                "FX group requires one shared Settlement Rate document",
+            )));
+        }
+        if let Err(refusal) = self
+            .prepare_fx_settlement_source(cx, capability, requests[0].rate_document, &template)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = fa_journal::carrying::prepare_fx_settlement_group(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            requests,
+            template,
+            budget,
+        )?;
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, capability.holder(), true, None)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    async fn prepare_fx_settlement_source(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        rate_document: Oid,
+        template: &EntryPayload,
+    ) -> Outcome<()> {
         if let Err(refusal) =
             self.authorize_fx_read(cx, capability, template.principal_ref, true, None)?
         {
@@ -450,7 +534,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         let document = match self
-            .read_document_for(cx, capability, &request.rate_document)
+            .read_document_for(cx, capability, &rate_document)
             .await?
         {
             Ok(DocumentRead::Full(document)) => document,
@@ -468,7 +552,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if document.book_id != self.context().book_id
             || document.kind != RATE_DOCUMENT_KIND
             || document.mime != FX_RATE_MIME
-            || document.oid() != request.rate_document
+            || document.oid() != rate_document
         {
             return Ok(Err(invalid(
                 "the settlement source is not this book's canonical Rate document",
@@ -489,21 +573,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             crate::certificate::context_at(db, book, selected)
         })?;
-        let result = fa_journal::carrying::prepare_fx_settlement(
-            &self.db,
-            cx,
-            &self.context,
-            capability,
-            request,
-            template,
-            budget,
-        )?;
-        if let Err(refusal) =
-            self.authorize_fx_read(cx, capability, capability.holder(), true, None)?
-        {
-            return Ok(Err(refusal));
-        }
-        Ok(result)
+        Ok(Ok(()))
     }
 
     /// Functional-currency activity in one period at one retained prefix.

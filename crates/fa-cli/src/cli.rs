@@ -11649,19 +11649,23 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
 
+    let carrying_group = crate::fx::is_carrying_group(&doc);
     let base_fields: Vec<(String, Json)> = fields
         .iter()
         .filter(|(k, _)| {
             !matches!(
                 k.as_str(),
                 "payment_leg" | "targets" | "payments" | "applications"
-            )
+            ) && !(carrying_group && k == "fx")
         })
         .cloned()
         .collect();
     let base_doc = Json::Obj(base_fields);
 
     let mut book = ctx.books.open(args)?;
+    if carrying_group {
+        crate::fx::admit_intent_sources(&book, &capability, &doc)?;
+    }
     let proposal =
         build_proposal_from_intent(out, &mut book, args, &base_doc, who, capability.clone())?;
     let class_name = proposal.class.name().unwrap_or("Original").to_string();
@@ -11692,7 +11696,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             });
         }
         let req = SettlementGroupRequest { proposal, payments };
-        let prepared = book.prepare_settlement_group(req, &capability)??;
+        let prepared = crate::fx::prepare_group_intent(&mut book, &capability, &doc, req)?;
         if review_mode {
             let review = prepared.export_review().map_err(|e| {
                 usage(
@@ -12270,7 +12274,8 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let summary = book.summary_trial_balance(who, &capability, &request)??;
         return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
-    book.read_scope(who, &read_cap)??
+    let admitted_at = book
+        .read_scope(who, &read_cap)??
         .admit_report(&selection.clone().into(), known_at)??;
     let (tb, certificate, served) = if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
@@ -12301,21 +12306,27 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         match (&selection, window) {
             (TrialBalanceSelection::Periods(periods), Some(Ok(()))) => {
-                let (report, served) = book.trial_balance_served(periods)?;
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .trial_balance_served(periods)??;
                 (report, None, Some(served))
             }
             (TrialBalanceSelection::Activity(periods), Some(Ok(()))) => {
-                let (report, served) = book.period_activity_served(periods)?;
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .period_activity_served(periods)??;
                 (report, None, Some(served))
             }
             (TrialBalanceSelection::Periods(periods), Some(Err(refusal))) => (
-                book.trial_balance_at(periods, None)?,
+                book.trial_balance_at(periods, Some(admitted_at))?,
                 None,
                 refused(refusal),
             ),
-            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => {
-                (book.period_activity(periods, None)?, None, refused(refusal))
-            }
+            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => (
+                book.period_activity(periods, Some(admitted_at))?,
+                None,
+                refused(refusal),
+            ),
             (TrialBalanceSelection::AsOf(day), _) => {
                 (book.balance_as_of(*day, known_at)?, None, None)
             }
@@ -20992,7 +21003,13 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("advance") => {
             let principal = ctx.principal(args);
-            let capability = ctx.capability(args, &["read", "verify"])?;
+            let capability = ctx.capability(args, &["read", "verify", "maintain"])?;
+            fa_policy::require(
+                &capability,
+                fa_policy::Op::Maintain,
+                "maintaining derived registers",
+            )
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
             let mut book = ctx.books.open_admitted(args, |book| {
                 admit_registers(
                     book,
@@ -21004,8 +21021,8 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let periods = selected_periods(args, &book)?;
             for p in &periods {
                 out.effective(format!("period:{p}"));
-                let advanced = match book.advance_registers(p) {
-                    Ok(advanced) => advanced,
+                let advanced = match book.advance_registers(principal, &capability, p) {
+                    Ok(advanced) => advanced?,
                     Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(
                         why,
                     ))) => {
@@ -21093,7 +21110,13 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("materialize") => {
             let principal = ctx.principal(args);
-            let capability = ctx.capability(args, &["read", "verify"])?;
+            let capability = ctx.capability(args, &["read", "verify", "maintain"])?;
+            fa_policy::require(
+                &capability,
+                fa_policy::Op::Maintain,
+                "materializing derived registers",
+            )
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
             let mut book = ctx.books.open_admitted(args, |book| {
                 admit_registers(
                     book,
@@ -21143,7 +21166,7 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             }
             for p in &periods {
-                let (fold, seq) = book.materialize_registers(p)?;
+                let (fold, seq) = book.materialize_registers(principal, &capability, p)??;
                 out.at_book(&book)?;
                 out.effective(format!("period:{p}"));
                 out.event(

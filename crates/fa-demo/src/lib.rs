@@ -2496,8 +2496,10 @@ pub fn init_dir(
     }
 
     // 8. Advance registers for every period with activity and publish a signed Notary checkpoint.
+    let maintain_cap = Capability::embedded(operator, &["read", "verify", "maintain"])
+        .map_err(|e| BookError::KeyFile(e.to_string()))?;
     for period_code in ["FY2026-OPEN", "FY2026-P01", "FY2026-P02", "FY2026-P03"] {
-        book.advance_registers(period_code)?;
+        book.advance_registers(operator, &maintain_cap, period_code)??;
     }
     let witness_cap = Capability::embedded(auditor, &["witness"])
         .map_err(|e| BookError::KeyFile(e.to_string()))?;

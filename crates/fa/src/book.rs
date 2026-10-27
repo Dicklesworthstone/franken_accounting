@@ -389,9 +389,10 @@ fn current_process_uid() -> std::io::Result<u32> {
 
 /// Errors a `Book` can return. Each maps to one exit-code class in the CLI
 /// contract (plan Appendix D): `Runtime`, `Open`, `Io`, `KeyFile`,
-/// `KeyFilePermissions`, and `NoBook` are environment errors (4); the rest are
-/// foundation failures (5). Lawful refusals are not errors: they are the `Err`
-/// of the inner result each method returns.
+/// `KeyFilePermissions`, and `NoBook` are environment errors (4). A retained
+/// register-cell capacity diagnosis is a catalog law refusal (3); other storage
+/// failures remain foundation errors (5). Ordinary posting refusals are the
+/// `Err` of the inner result each method returns.
 #[derive(Debug)]
 pub enum BookError {
     Runtime(String),
@@ -425,6 +426,7 @@ impl BookError {
     #[must_use]
     pub fn exit(&self) -> u8 {
         match self {
+            Self::Registers(fa_registers::RegisterError::Capacity(_)) => fa_journal::exit::REFUSAL,
             Self::Registers(fa_registers::RegisterError::InvalidSelection(_))
             | Self::Lantern(
                 fa_lantern::LanternError::Unregistered { .. }
@@ -458,6 +460,9 @@ impl BookError {
     #[must_use]
     pub fn refusal(&self) -> Option<Refusal> {
         match self {
+            Self::Registers(fa_registers::RegisterError::Capacity(diagnosis)) => {
+                Some(diagnosis.refusal())
+            }
             Self::KeyFilePermissions {
                 path,
                 mode,
@@ -3048,6 +3053,25 @@ impl Book {
         )))
     }
 
+    /// Prepare distinct foreign items as one entry under one retained rate.
+    pub fn prepare_fx_settlement_group(
+        &mut self,
+        capability: &fa_journal::Capability,
+        requests: &[crate::FxSettlementRequest],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedFxSettlementGroup> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_group(
+            &purposes, capability, requests, template, &mut budget,
+        )))
+    }
+
     /// Exact functional-currency period activity at a retained journal prefix.
     /// Pending holds stay separate. This is not cumulative stock or a certificate.
     pub fn functional_period_activity(
@@ -4240,10 +4264,12 @@ impl Book {
     /// Materialize a period's registers from a fresh fold.
     pub fn materialize_registers(
         &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
         period_code: &str,
-    ) -> Result<(Fold, CommitSeq), BookError> {
+    ) -> Outcome<(Fold, CommitSeq)> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers(&purposes, period_code)))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers(&purposes, principal, capability, period_code)))
     }
 
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
@@ -4267,10 +4293,12 @@ impl Book {
     /// cache drift is an error requiring an explicit rebuild.
     pub fn advance_registers(
         &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
         period_code: &str,
-    ) -> Result<fa_registers::Advance, BookError> {
+    ) -> Outcome<fa_registers::Advance> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.advance_registers(&purposes, period_code)))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.advance_registers(&purposes, principal, capability, period_code)))
     }
 
     /// Replace native posted/pending period registers and their maintenance
@@ -4278,10 +4306,12 @@ impl Book {
     /// never changed. Reports continue to use their independent literal fold.
     pub fn rebuild_registers(
         &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
         period_code: &str,
-    ) -> Result<fa_registers::Advance, BookError> {
+    ) -> Outcome<fa_registers::Advance> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, period_code)))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, principal, capability, period_code)))
     }
 
     /// The public key this book's transparency checkpoints are signed with
@@ -6690,13 +6720,46 @@ impl ReadScope<'_> {
         )?))
     }
 
+    /// The authorized head trial balance and its actual serving basis.
+    /// Admission precedes the maintained read; the scope's immutable book
+    /// borrow prevents a publication between those operations. This reads
+    /// resident history only and never loads history or repairs a cache.
+    /// Inspecting the delta window requires whole-book authority; a narrower
+    /// admitted report uses its literal fixed-prefix path instead.
+    pub fn trial_balance_served(
+        &self,
+        periods: &[String],
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
+        let seq = match self.admit_report(&selection.into(), None)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self.authority.whole_book(seq) {
+            return Ok(Ok((
+                self.book.trial_balance_at(periods, Some(seq))?,
+                fa_registers::Served::Literal(format!(
+                    "this capability cannot inspect the register window ({}: {}); the read folds the journal",
+                    refusal.code, refusal.message
+                )),
+            )));
+        }
+        Ok(Ok(self.book.trial_balance_served(periods)?))
+    }
+
     /// [`Book::trial_balance_at`] under the scope caveats (see
-    /// [`Self::admit_report`]).
+    /// [`Self::admit_report`]). HEAD uses the maintained path when available;
+    /// an explicit recorded sequence keeps the literal historical path.
     pub fn trial_balance_at(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
+        if known_at.is_none() {
+            return Ok(self
+                .trial_balance_served(periods)?
+                .map(|(report, _)| report));
+        }
         let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
         let seq = match self.admit_report(&selection.into(), known_at)? {
             Ok(seq) => seq,
@@ -6719,13 +6782,45 @@ impl ReadScope<'_> {
         Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
     }
 
+    /// Authorized activity at HEAD, with the actual cache cursor and tail
+    /// or the reason for a literal fallback. Only the selected periods are
+    /// admitted. Like [`Self::trial_balance_served`], this loads no history
+    /// and cannot repair or advance a cache. A period or effective-date caveat
+    /// uses the admitted literal report without inspecting the global window.
+    pub fn period_activity_served(
+        &self,
+        periods: &[String],
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
+        let seq = match self.admit_report(&selection.into(), None)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self.authority.whole_book(seq) {
+            return Ok(Ok((
+                self.book.period_activity(periods, Some(seq))?,
+                fa_registers::Served::Literal(format!(
+                    "this capability cannot inspect the register window ({}: {}); the read folds the journal",
+                    refusal.code, refusal.message
+                )),
+            )));
+        }
+        Ok(Ok(self.book.period_activity_served(periods)?))
+    }
+
     /// [`Book::period_activity`] under the scope caveats: it reaches exactly
-    /// the selected periods.
+    /// the selected periods. HEAD may use maintained cells; an explicit
+    /// recorded sequence remains a literal historical read.
     pub fn period_activity(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
+        if known_at.is_none() {
+            return Ok(self
+                .period_activity_served(periods)?
+                .map(|(report, _)| report));
+        }
         let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
         let seq = match self.admit_report(&selection.into(), known_at)? {
             Ok(seq) => seq,

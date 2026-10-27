@@ -386,9 +386,10 @@ mod tests {
     #[test]
     fn embedded_capability_caveats_load_and_cover_ops_caveats_and_profiles() {
         let reg = CapabilityCaveats::embedded().expect("capability_caveats.toml");
-        assert_eq!(reg.ops.len(), 21);
+        assert_eq!(reg.ops.len(), 22);
         assert_eq!(reg.op_by_name("read").map(|o| o.tag), Some(0));
         assert_eq!(reg.op_by_name("partial_view").map(|o| o.tag), Some(20));
+        assert_eq!(reg.op_by_name("maintain").map(|o| o.tag), Some(21));
         assert_eq!(reg.caveat_by_tag(1).map(|c| c.name.as_str()), Some("books"));
         assert_eq!(
             reg.caveat_by_tag(8).map(|c| c.name.as_str()),

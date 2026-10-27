@@ -661,6 +661,8 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
 
     let post_cap = Capability::embedded(operator, &["post"])
         .map_err(|e| BenchError::Execution(e.to_string()))?;
+    let maintain_cap = Capability::embedded(operator, &["read", "verify", "maintain"])
+        .map_err(|e| BenchError::Execution(e.to_string()))?;
     let day = DateDay::from_ymd(2026, 1, 15).unwrap();
     let cash_vid = account_vid(book_id, "1010");
     let rev_vid = account_vid(book_id, "4000");
@@ -930,8 +932,9 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             .map_err(|e| BenchError::Execution(e.to_string()))?
             .map_err(|r| BenchError::Execution(r.message))?;
             let adv = book
-                .advance_registers("FY2026-P01")
-                .map_err(|e| BenchError::Execution(e.to_string()))?;
+                .advance_registers(operator, &maintain_cap, "FY2026-P01")
+                .map_err(|e| BenchError::Execution(e.to_string()))?
+                .map_err(|r| BenchError::Execution(r.message))?;
             let cells = u32::try_from(adv.fold.cells.len()).unwrap();
             Ok(OpCount {
                 point_reads: cells,
@@ -944,8 +947,9 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
         }
         "verify_per_cell" => {
             let _ = book
-                .materialize_registers("FY2026-P01")
-                .map_err(|e| BenchError::Execution(e.to_string()))?;
+                .materialize_registers(operator, &maintain_cap, "FY2026-P01")
+                .map_err(|e| BenchError::Execution(e.to_string()))?
+                .map_err(|r| BenchError::Execution(r.message))?;
             let ver = book
                 .verify_registers("FY2026-P01")
                 .map_err(|e| BenchError::Execution(e.to_string()))?;

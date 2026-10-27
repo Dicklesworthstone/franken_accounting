@@ -1,7 +1,7 @@
 # Capability operations, caveat vocabulary, and profile templates (plan §14.2, §14.4, bead fa-v62).
 #
 # Every operation the admissibility matrix, SoD policy, or verb registry cites
-# resolves to `[[op]]` in durable tag order (`0..=20`). Every caveat carried by
+# resolves to `[[op]]` in durable tag order (`0..=21`). Every caveat carried by
 # `fa:capability:v1` / v2 is declared in `[[caveat]]` (`status = "live"` for
 # active header fields and v2 tags `1..=10`; `status = "dormant"` with
 # `tracking_bead` for planned caveats). Every §14.4 profile template is
@@ -11,7 +11,7 @@
 schema_version = 1
 
 # ---------------------------------------------------------------------------
-# Closed operation vocabulary (`Op::ALL` in durable tag order 0..=20)
+# Closed operation vocabulary (`Op::ALL` in durable tag order 0..=21)
 # ---------------------------------------------------------------------------
 
 [[op]]
@@ -160,6 +160,13 @@ name = "partial_view"
 agent_forbidden = false
 system_forbidden = false
 summary = "Admit partially visible balance explanations when cross-scope entries exist."
+
+[[op]]
+tag = 21
+name = "maintain"
+agent_forbidden = false
+system_forbidden = false
+summary = "Publish derived register cells and maintenance cursors after current whole-book read and verify admission; never changes journal amounts. Requires an explicit Preparer grant at MCP launch, preserving Agent operator provenance; Agent-profile trunk writes remain forbidden."
 
 # ---------------------------------------------------------------------------
 # Caveat vocabulary (plan §14.2)
@@ -341,7 +348,7 @@ summary = "Branch-confined AI operator: never writes trunk directly, never appro
 name = "Preparer"
 base_profile = "Human"
 external = false
-ops_ceiling = ["read", "post", "post_softclosed", "reconcile", "verify", "produce", "partial_view"]
+ops_ceiling = ["read", "post", "post_softclosed", "reconcile", "verify", "produce", "partial_view", "maintain"]
 default_ops = ["read", "post", "verify"]
 required_caveats = ["ops"]
 summary = "Bounded human preparer for day-to-day posting, soft-close entries, reconciliation, and verification without approval or close authority."
@@ -359,8 +366,8 @@ summary = "Human reviewer authorized to record approvals over proposals and post
 name = "Controller"
 base_profile = "Human"
 external = false
-ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "migrate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "hold", "erase", "privileged", "partial_view"]
-default_ops = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "schema_change", "rule_change", "issue_capability", "verify", "produce"]
+ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "migrate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "hold", "erase", "privileged", "partial_view", "maintain"]
+default_ops = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "maintain"]
 required_caveats = ["ops"]
 summary = "Accounting controller: period close and reopen, restatement cases, chart/rule governance, and capability issuance under SoD."
 
@@ -395,8 +402,8 @@ summary = "Forensic investigator: regulator read/verify/produce capabilities plu
 name = "Receiver"
 base_profile = "Human"
 external = true
-ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "hold", "receivership", "partial_view"]
-default_ops = ["read", "post", "reconcile", "close", "verify", "produce", "hold", "receivership"]
+ops_ceiling = ["read", "post", "post_softclosed", "post_closed", "approve", "reconcile", "close", "reopen", "restate", "schema_change", "rule_change", "issue_capability", "verify", "produce", "hold", "receivership", "partial_view", "maintain"]
+default_ops = ["read", "post", "reconcile", "close", "verify", "produce", "hold", "receivership", "maintain"]
 required_caveats = ["ops", "books"]
 summary = "Receiver or trustee: controller operations plus legal/receivership holds on a receivership branch, never erase."
 

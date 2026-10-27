@@ -28,8 +28,8 @@ use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    RegisterError, contribution_seq, entries_at, entry_period, fold_period_at,
-    migration_activations, period_at, resolutions, resolve_known_at,
+    RegisterCapacity, RegisterError, capacity_add, contribution_seq, entries_at, entry_period,
+    fold_period_at, migration_activations, period_at, resolutions, resolve_known_at,
 };
 
 pub const ENTITY_FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-entity-fold:v1";
@@ -85,6 +85,8 @@ fn add_entry(
     spec: &BookSpec,
     entry: &Entry,
     period: &str,
+    (vid, recorded_at): (VId, CommitSeq),
+    known_at: CommitSeq,
 ) -> Result<(), RegisterError> {
     let mut touched = BTreeSet::new();
     for leg in &entry.proposal.legs {
@@ -104,9 +106,22 @@ fn add_entry(
             Side::Debit => &mut cell.debits,
             Side::Credit => &mut cell.credits,
         };
-        *slot = slot
-            .checked_add(leg.amount.mantissa)
-            .ok_or(RegisterError::Overflow)?;
+        capacity_add(slot, leg.amount.mantissa, |accumulated| RegisterCapacity {
+            account: key.account,
+            unit_id: key.unit_id,
+            functional: false,
+            pending: entry.proposal.class == EntryClass::PENDING,
+            side: leg.side,
+            periods: vec![period.into()],
+            effective_through: None,
+            by_entity: true,
+            entity: key.entity.clone(),
+            source: entry.entry_ref(vid),
+            recorded_at,
+            known_at,
+            accumulated,
+            incoming: leg.amount.mantissa,
+        })?;
         touched.insert(key);
     }
     for key in touched {
@@ -244,13 +259,27 @@ pub fn fold_period_by_entity<V: asupersync::fs::Vfs + Clone>(
             if let Some(release) = resolved.get(vid) {
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
-                add_entry(&mut pending, &spec, entry, period_code)?;
+                add_entry(
+                    &mut pending,
+                    &spec,
+                    entry,
+                    period_code,
+                    (*vid, *created_at),
+                    seq,
+                )?;
                 let hold_digest =
                     fold_entity_entry_contributions([0u8; 32], &spec, *created_at, *vid, entry)?;
                 pending_holds.insert((*created_at, *vid), hold_digest);
             }
         } else {
-            add_entry(&mut cells, &spec, entry, period_code)?;
+            add_entry(
+                &mut cells,
+                &spec,
+                entry,
+                period_code,
+                (*vid, *created_at),
+                seq,
+            )?;
             posted_legs_digest = fold_entity_entry_contributions(
                 posted_legs_digest,
                 &spec,
@@ -312,18 +341,40 @@ pub struct EntityActivity {
 
 type EntitySums = BTreeMap<(Option<String>, VId, u32), (i128, i128)>;
 
-fn add_legs(sums: &mut EntitySums, spec: &BookSpec, entry: &Entry) -> Result<(), RegisterError> {
+fn add_legs(
+    sums: &mut EntitySums,
+    spec: &BookSpec,
+    entry: &Entry,
+    (vid, recorded_at): (VId, CommitSeq),
+    known_at: CommitSeq,
+    periods: &[String],
+    through: Option<DateDay>,
+) -> Result<(), RegisterError> {
     for leg in &entry.proposal.legs {
+        let entity = entity_of(spec, leg);
         let slot = sums
-            .entry((entity_of(spec, leg), leg.account_ref, leg.amount.unit.0))
+            .entry((entity.clone(), leg.account_ref, leg.amount.unit.0))
             .or_insert((0, 0));
         let side = match leg.side {
             Side::Debit => &mut slot.0,
             Side::Credit => &mut slot.1,
         };
-        *side = side
-            .checked_add(leg.amount.mantissa)
-            .ok_or(RegisterError::Overflow)?;
+        capacity_add(side, leg.amount.mantissa, |accumulated| RegisterCapacity {
+            account: leg.account_ref,
+            unit_id: leg.amount.unit.0,
+            functional: false,
+            pending: false,
+            side: leg.side,
+            periods: periods.to_vec(),
+            effective_through: through,
+            by_entity: true,
+            entity,
+            source: entry.entry_ref(vid),
+            recorded_at,
+            known_at,
+            accumulated,
+            incoming: leg.amount.mantissa,
+        })?;
     }
     Ok(())
 }
@@ -356,14 +407,22 @@ pub fn stock_by_entity<V: asupersync::fs::Vfs + Clone>(
     let seq = resolve_known_at(db, known_at)?;
     let spec = book_spec(db, seq)?;
     let mut sums = EntitySums::new();
-    for (_, entry, _) in &entries_at(db, book, seq)? {
+    for (vid, entry, recorded_at) in &entries_at(db, book, seq)? {
         if entry.proposal.legs.is_empty()
             || entry.proposal.class == EntryClass::PENDING
             || entry.proposal.effective_date > day
         {
             continue;
         }
-        add_legs(&mut sums, &spec, entry)?;
+        add_legs(
+            &mut sums,
+            &spec,
+            entry,
+            (*vid, *recorded_at),
+            seq,
+            &[],
+            Some(day),
+        )?;
     }
     Ok(EntityStock {
         known_at: seq,
@@ -398,7 +457,7 @@ pub fn period_activity_by_entity<V: asupersync::fs::Vfs + Clone>(
             .collect()
     };
     let mut sums = EntitySums::new();
-    for (vid, entry, _) in &entries {
+    for (vid, entry, recorded_at) in &entries {
         if entry.proposal.legs.is_empty()
             || entry.proposal.class == EntryClass::PENDING
             || periods.binary_search(&entry_period(book, entry)?).is_err()
@@ -413,7 +472,15 @@ pub fn period_activity_by_entity<V: asupersync::fs::Vfs + Clone>(
         {
             continue;
         }
-        add_legs(&mut sums, &spec, entry)?;
+        add_legs(
+            &mut sums,
+            &spec,
+            entry,
+            (*vid, *recorded_at),
+            seq,
+            &periods,
+            None,
+        )?;
     }
     Ok(EntityActivity {
         known_at: seq,

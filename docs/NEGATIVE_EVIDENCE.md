@@ -693,3 +693,56 @@ mechanizes evidence-bound closure (`scripts/close_bead.sh --verdict`) so future
 code/script beads cannot close without their named `acceptance-tests` passing in
 a verified verdict note.
 
+## 2026-10-24 — fa-94qd: no-entity genesis skipped calendar validation
+
+At `57f52353`, the native `create_book` API committed a monthly-calendar book
+whose opening date was January 2, outside the registered Normal-period starts.
+The new regression expected refusal but received `CommitSeq(1)`. An early
+`db.write` for books without declared entities bypassed `BookSpec::validate`;
+declared-entity books already ran that validator. Empty calendar identifiers
+and overlong names had the same missing admission path.
+
+`93fa44aa` moves the existing validation before both publication paths. The
+unchanged regression checks three malformed inputs in both entity postures,
+exact head/row preservation, and a valid corrected retry in the same database.
+It passes within the source-bound 273-test journal/register/CLI selection.
+The native-entity capacity test also exposed an invalid older FX fixture date;
+the fixture now uses February 1, preserving its locked January 1 Opening period.
+The earlier 10-pass/1-fail FX run is retained; no calendar rule was weakened.
+
+This is bounded constructor evidence, not a historical-book repair or complete
+calendar qualification. Full canonical proof and the original fa-94qd
+acceptance remain open. Beads retains the counterexample, repair and gate limits.
+
+## 2026-10-24 — fa-715: scoped reports exposed whole-book tail metadata
+
+The initial authorized HEAD reader at `e5ef2004` admitted the requested report
+but then inspected a resident delta window covering the whole book. A March
+reader could receive its global decode count, including an April posting.
+This violated authorization before observation even when the reported amounts
+were correct. The preserved local control `d2dfa72b` uses the old handler with
+the final regression: it fails with `Maintained` tail count 3 for that scoped
+reader. The identical test blob passes at `d3c07a1e` after the existing
+whole-book authority check is applied before inspecting the optimization.
+Narrower admitted reports retain explicit-prefix literal reads; no policy is
+relaxed. The native regression and real CLI head/history/restricted-token
+workflow also pass in the later runs. This does not complete the broader
+physical-observation or reader-complexity acceptance.
+
+The broader run exposed a separate `fa-apdv` integration defect: the capacity
+scan added every vertex as an old preparation witness, making an unrelated
+document invalidate a lawful post. `01ae8771` checks current journal capacity
+under the native exclusive writer borrow while retaining the preparation's
+original accounting and authority witnesses. `2f180531` preserves the existing
+exit-6 contract when a competing financial publication exhausts capacity.
+The previously failing unrelated-document case, new capacity-race case and
+all 193 journal integration tests pass at that source. No mutable balance or
+new writer lock is introduced.
+
+At `40368380`, all 122 CLI integration tests, both robot-schema tests and all
+49 daemon tests pass; workspace all-target compilation and affected Clippy
+exit 0. The `fa` library run at `2f180531` remains 548 passed / 11 failed,
+including ten unvalued foreign-application fixtures and an over-cap detector
+fixture. Canonical proof is unavailable, the legacy evidence helper reports
+UNRUN on RCH's completion format, and UBS remains non-pass. No release, main
+landing, complete-project verification or Bead closure follows.

@@ -30,11 +30,12 @@ pub enum Op {
     Privileged,
     Receivership,
     PartialView,
+    Maintain,
 }
 
 impl Op {
     /// Every op, in durable tag order.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Read,
         Self::Post,
         Self::PostSoftclosed,
@@ -56,6 +57,7 @@ impl Op {
         Self::Privileged,
         Self::Receivership,
         Self::PartialView,
+        Self::Maintain,
     ];
 
     /// The registered name, exactly as `admissibility.toml`, `sod_policy.toml`
@@ -84,6 +86,7 @@ impl Op {
             Self::Privileged => "privileged",
             Self::Receivership => "receivership",
             Self::PartialView => "partial_view",
+            Self::Maintain => "maintain",
         }
     }
 
@@ -96,7 +99,7 @@ impl Op {
     #[must_use]
     pub fn tag(self) -> u8 {
         match Self::ALL.iter().position(|op| *op == self) {
-            // ALL holds 21 entries, so the position always fits a u8.
+            // ALL holds 22 entries, so the position always fits a u8.
             Some(i) => u8::try_from(i).unwrap_or(u8::MAX),
             None => u8::MAX,
         }
@@ -155,7 +158,8 @@ mod tests {
             assert_eq!(Op::from_name(op.name()), Some(op));
             assert!(names.insert(op.name()));
         }
-        assert_eq!(Op::from_tag(21), None);
+        assert_eq!(Op::Maintain.tag(), 21);
+        assert_eq!(Op::from_tag(22), None);
         assert_eq!(Op::from_name("POST"), None);
     }
 

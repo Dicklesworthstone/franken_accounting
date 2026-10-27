@@ -4,6 +4,10 @@ use super::*;
 fn functional_capacity_refuses_while_native_cells_still_fit() {
     use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, value_proposal};
     use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+    use fa_reference::fx::{
+        OracleCapacityError, OracleFunctionalEntry, OracleFxLeg, OracleRateQuote,
+        OracleRealizedLeg, admit_register_capacity, value_entity_legs,
+    };
     let mut h = harness();
     let eur = h.book.units.lookup("EUR").unwrap();
     let accounts: Vec<_> = [("1288", 1, 0), ("4088", 4, 1)]
@@ -58,14 +62,26 @@ fn functional_capacity_refuses_while_native_cells_still_fit() {
             .unwrap(),
     )
     .unwrap();
-    for (index, key) in [
-        b"functional-at-cap".as_slice(),
-        b"functional-over-cap".as_slice(),
+    let reference_rates = std::collections::BTreeMap::from([(
+        eur.0,
+        OracleRateQuote {
+            quote_unit: eur.0,
+            quote_scale: h.book.units.get(eur).unwrap().scale,
+            rate_num: i128::MAX as u128,
+            rate_den: 1,
+            rounding_law: "HalfEven".into(),
+        },
+    )]);
+    let mut reference = Vec::new();
+    for (index, (key, flipped)) in [
+        (b"functional-at-cap".as_slice(), false),
+        (b"functional-over-cap".as_slice(), false),
+        (b"functional-over-cap".as_slice(), true),
     ]
     .into_iter()
     .enumerate()
     {
-        let legs = vec![
+        let mut legs = vec![
             LegPayload::simple(
                 Side::Debit,
                 account_vid(h.book.book_id, "1288"),
@@ -77,6 +93,55 @@ fn functional_capacity_refuses_while_native_cells_still_fit() {
                 Amount::new(eur, 1),
             ),
         ];
+        if flipped {
+            for leg in &mut legs {
+                leg.side = leg.side.flipped();
+            }
+        }
+        let oracle_legs: Vec<_> = legs
+            .iter()
+            .map(|leg| OracleFxLeg {
+                side: match leg.side {
+                    Side::Debit => fa_reference::Side::Debit,
+                    Side::Credit => fa_reference::Side::Credit,
+                },
+                account: leg.account_ref.0,
+                unit: leg.amount.unit.0,
+                mantissa: leg.amount.mantissa,
+                entity: None,
+            })
+            .collect();
+        // Compute expectations from the unvalued intent and independent rate
+        // arithmetic, before production valuation or posting has run.
+        let expected = value_entity_legs(
+            &oracle_legs,
+            h.usd.0,
+            h.book.units.get(h.usd).unwrap().scale,
+            &reference_rates,
+        )
+        .unwrap();
+        let next = OracleFunctionalEntry {
+            period: h.march.clone(),
+            is_pending: false,
+            is_resolved: false,
+            legs: oracle_legs
+                .iter()
+                .zip(&expected.base_mantissas)
+                .map(|(leg, &base_mantissa)| OracleRealizedLeg {
+                    side: leg.side,
+                    account: leg.account,
+                    unit: leg.unit,
+                    mantissa: leg.mantissa,
+                    base_unit: h.usd.0,
+                    base_mantissa,
+                    entity: leg.entity.clone(),
+                })
+                .collect(),
+        };
+        let mut candidate = reference.clone();
+        candidate.push(next.clone());
+        let capacity = admit_register_capacity(&candidate, h.usd.0);
+        assert_eq!(capacity.is_ok(), index != 1, "{capacity:?}");
         let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
         let mut budget =
             ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
@@ -89,12 +154,29 @@ fn functional_capacity_refuses_while_native_cells_still_fit() {
             std::slice::from_ref(&rate),
         )
         .unwrap();
+        assert_eq!(
+            proposal
+                .legs
+                .iter()
+                .map(|leg| leg.base_amount.unwrap().mantissa)
+                .collect::<Vec<_>>(),
+            expected.base_mantissas
+        );
         assert_eq!(proposal.legs[0].base_amount.unwrap().mantissa, i128::MAX);
         let head = h.db.frontier().unwrap();
         let result = h.post(h.request(proposal, &["post"]));
-        if index == 0 {
-            result.expect("first functional gross column fits");
+        if capacity.is_ok() {
+            result.expect("independent native/functional capacity admits");
+            reference.push(next);
         } else {
+            assert!(matches!(
+                capacity,
+                Err(OracleCapacityError::Exceeded {
+                    functional: true,
+                    pending: false,
+                    ..
+                })
+            ));
             let refusal = result.unwrap_err();
             assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
             assert!(refusal.message.contains("functional"), "{refusal}");
@@ -927,4 +1009,108 @@ fn a_post_visits_only_the_new_suffix_for_its_reconciliation_witness() {
         "the same rows per post as the book grows: {counts:?}"
     );
     assert!(carried.capacity().is_some_and(|c| c.summarized()));
+}
+
+#[test]
+fn account_scope_precedes_capacity_across_legal_entities_and_keeps_refused_keys_free() {
+    let mut h = harness_with_entities(
+        ["A", "B"]
+            .into_iter()
+            .map(|code| LegalEntitySpec {
+                code: code.into(),
+                name: code.into(),
+                functional_unit: UnitId(0),
+            })
+            .collect(),
+    );
+    let with_entity = |mut proposal: EntryPayload, code: &str| {
+        for leg in &mut proposal.legs {
+            leg.dimension_set = vec![(
+                fa_model::LEGAL_ENTITY_DIMENSION,
+                fa_model::entity_value_vid(h.book.book_id, code),
+            )];
+        }
+        proposal
+    };
+    let maximum = with_entity(
+        h.proposal(
+            h.rent_legs(i128::MAX),
+            b"entity-A-max",
+            EntryClass::ORIGINAL,
+        ),
+        "A",
+    );
+    let over = with_entity(
+        h.proposal(h.rent_legs(1), b"entity-B-retry", EntryClass::ORIGINAL),
+        "B",
+    );
+    h.post(h.request(maximum, &["post"])).unwrap();
+    let head = h.db.frontier().unwrap();
+    let mut request = h.request(over.clone(), &["post"]);
+    request.capability = request.capability.for_accounts(&["6000"]).unwrap();
+    let refusal = h.post(request).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+    assert!(refusal.message.contains("accounts"), "{refusal}");
+    assert!(!refusal.message.contains("stock"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    // The same authorized accounts include their other entity's stock;
+    // disjoint entity dimensions do not authorize an overflowing column.
+    let scoped = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .for_accounts(&["1000", "6000"])
+        .unwrap();
+    let mut request = h.request(over.clone(), &["post"]);
+    request.capability = scoped.clone();
+    let refusal = h.post(request).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let mut corrected = over;
+    for leg in &mut corrected.legs {
+        leg.side = leg.side.flipped();
+    }
+    corrected.unit_totals = EntryPayload::fold_unit_totals(&corrected.legs).unwrap();
+    let mut request = h.request(corrected, &["post"]);
+    request.capability = scoped;
+    h.post(request)
+        .expect("both refusals leave the corrected scoped key free");
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn rejected_account_scope_never_decodes_a_planted_capacity_prefix_canary() {
+    let mut h = harness();
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.create_vertex(
+        VId(0xcafa),
+        vec![fa_model::symbols::label::ENTRY],
+        vec![(
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(vec![0xff; 8]).unwrap(),
+        )],
+    );
+    h.write_raw(damage);
+    let head = h.db.frontier().unwrap();
+    let before = h.db.vertices().unwrap();
+    let proposal = h.proposal(h.rent_legs(1), b"scope-canary", EntryClass::ORIGINAL);
+    let mut request = h.request(proposal.clone(), &["post"]);
+    request.capability = request.capability.for_accounts(&["6000"]).unwrap();
+    let refusal = h.post(request).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+    assert!(refusal.message.contains("accounts"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), before);
+
+    // The canary is active: whole-book authority reaches the malformed
+    // retained prefix and errors instead of producing financial success.
+    let ctx = h.ctx();
+    let request = h.request(proposal, &["post"]);
+    let observed = h.runtime.block_on(post(&mut h.db, &ctx, &h.book, request));
+    assert!(
+        matches!(&observed, Err(fa_journal::refusal::KernelError::Model(_))),
+        "malformed prefix must be observed: {observed:?}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), before);
 }

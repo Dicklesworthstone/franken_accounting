@@ -263,7 +263,7 @@ pub(crate) struct Cycle {
 /// drops this state; no worker, thread, or background task outlives it.
 pub struct TimedWork {
     policy: Policy,
-    // System authority exists only after explicit --bootstrap-system.
+    // Timing System authority exists only after explicit --bootstrap-system.
     capability: Option<Capability>,
     judge: Judge,
     next: Option<Time>,
@@ -311,8 +311,8 @@ impl TimedWork {
         })
     }
 
-    /// Run derived-cache maintenance without granting System authority or
-    /// enabling TimeEvidence, expiries, or reversals.
+    /// Run derived-cache maintenance with its own book-scoped service
+    /// authority, without enabling TimeEvidence, expiries, or reversals.
     pub fn maintenance_only(
         cx: &Cx,
         policy: Policy,
@@ -709,7 +709,7 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
             work.policy.tick_ns, work.policy.sweep_batch, work.policy.sweep_batch,
         )
     } else {
-        "timed accounting effects disabled; no System authority was bootstrapped".into()
+        "timed accounting effects disabled; no System authority was bootstrapped for clock, expiry or reversal work".into()
     };
     if let Some(error) = &work.error {
         text.push_str(&format!("; last cycle refused: {error}"));

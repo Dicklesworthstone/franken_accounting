@@ -330,7 +330,13 @@ fn allocation_driver_to_native_plan_to_journal_and_register_fold() {
     );
     let cx = h.cx();
     h.runtime
-        .block_on(h.book.materialize_registers(&cx, "FY2026-P03"))
+        .block_on(h.book.materialize_registers(
+            &cx,
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "verify", "maintain"]).unwrap(),
+            "FY2026-P03",
+        ))
+        .unwrap()
         .unwrap();
     assert!(
         h.book

@@ -3568,15 +3568,56 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    fn admit_register_maintenance(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<()> {
+        // These checks use only the presented capability and in-memory book
+        // identity. A missing op or narrow scope observes no stored state.
+        let admitted = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(capability, fa_policy::Op::Maintain, "maintaining registers")
+            })
+            .and_then(|()| {
+                fa_policy::require(capability, fa_policy::Op::Verify, "maintaining registers")
+            })
+            .and_then(|()| {
+                fa_policy::admit(
+                    capability,
+                    &fa_policy::Intent {
+                        principal,
+                        trunk: true,
+                        op: fa_policy::Op::Maintain,
+                        book: self.context.book_id,
+                        legs: &[],
+                    },
+                )
+            })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None));
+        if let Err(denial) = admitted {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        self.query(cx, |db, book| {
+            Ok(fa_journal::policy::admit_reads(db, book, principal, capability)?.map(|_| ()))
+        })
+    }
+
     pub async fn materialize_registers(
         &mut self,
         cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
         period: &str,
-    ) -> Result<(Fold, CommitSeq), BookError> {
+    ) -> Outcome<(Fold, CommitSeq)> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let fold = self.fold_period(cx, period)?;
         let seq = fa_registers::materialize(&mut self.db, cx, &self.context, &fold).await?;
-        Ok((fold, seq))
+        Ok(Ok((fold, seq)))
     }
 
     pub fn verify_registers(
@@ -3612,19 +3653,41 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     pub async fn advance_registers(
         &mut self,
         cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
         period: &str,
-    ) -> Result<fa_registers::Advance, BookError> {
+    ) -> Outcome<fa_registers::Advance> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_registers::advance(&mut self.db, cx, &self.context, period).await?)
+        Ok(Ok(fa_registers::advance(
+            &mut self.db,
+            cx,
+            &self.context,
+            period,
+        )
+        .await?))
     }
 
     pub async fn rebuild_registers(
         &mut self,
         cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
         period: &str,
-    ) -> Result<fa_registers::Advance, BookError> {
+    ) -> Outcome<fa_registers::Advance> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_registers::rebuild(&mut self.db, cx, &self.context, period).await?)
+        Ok(Ok(fa_registers::rebuild(
+            &mut self.db,
+            cx,
+            &self.context,
+            period,
+        )
+        .await?))
     }
 
     pub async fn checkpoint(

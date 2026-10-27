@@ -216,6 +216,7 @@ fn add_functional_entry(
     entry_vid: VId,
     entry: &Entry,
     period: &str,
+    (recorded_at, known_at): (CommitSeq, CommitSeq),
 ) -> Result<(), RegisterError> {
     let mut touched = BTreeSet::new();
     let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
@@ -235,28 +236,27 @@ fn add_functional_entry(
             entry_count: 0,
         });
         let entity_slot = by_entity.entry(entity).or_insert((0, 0));
-        match leg.side {
-            Side::Debit => {
-                cell.debits = cell
-                    .debits
-                    .checked_add(mantissa)
-                    .ok_or(RegisterError::Overflow)?;
-                entity_slot.0 = entity_slot
-                    .0
-                    .checked_add(mantissa)
-                    .ok_or(RegisterError::Overflow)?;
-            }
-            Side::Credit => {
-                cell.credits = cell
-                    .credits
-                    .checked_add(mantissa)
-                    .ok_or(RegisterError::Overflow)?;
-                entity_slot.1 = entity_slot
-                    .1
-                    .checked_add(mantissa)
-                    .ok_or(RegisterError::Overflow)?;
-            }
-        }
+        let (amount, total) = match leg.side {
+            Side::Debit => (&mut cell.debits, &mut entity_slot.0),
+            Side::Credit => (&mut cell.credits, &mut entity_slot.1),
+        };
+        crate::capacity_add(amount, mantissa, |accumulated| crate::RegisterCapacity {
+            account: key.account,
+            unit_id: key.unit_id,
+            functional: true,
+            pending: entry.proposal.class == EntryClass::PENDING,
+            side: leg.side,
+            periods: vec![period.into()],
+            effective_through: None,
+            by_entity: true,
+            entity: key.entity.clone(),
+            source: entry.entry_ref(entry_vid),
+            recorded_at,
+            known_at,
+            accumulated,
+            incoming: mantissa,
+        })?;
+        *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
         touched.insert(key);
     }
     for (entity, (debits, credits)) in by_entity {
@@ -455,7 +455,14 @@ pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
             if let Some(release) = resolved.get(vid) {
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
-                add_functional_entry(&mut pending, &spec, *vid, entry, period_code)?;
+                add_functional_entry(
+                    &mut pending,
+                    &spec,
+                    *vid,
+                    entry,
+                    period_code,
+                    (*created_at, seq),
+                )?;
                 let hold_digest = fold_functional_entry_contributions(
                     [0u8; 32],
                     &spec,
@@ -466,7 +473,14 @@ pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
                 pending_holds.insert((*created_at, *vid), hold_digest);
             }
         } else {
-            add_functional_entry(&mut cells, &spec, *vid, entry, period_code)?;
+            add_functional_entry(
+                &mut cells,
+                &spec,
+                *vid,
+                entry,
+                period_code,
+                (*created_at, seq),
+            )?;
             posted_legs_digest = fold_functional_entry_contributions(
                 posted_legs_digest,
                 &spec,
@@ -565,6 +579,7 @@ fn add_functional_stock_entry(
     spec: &BookSpec,
     entry_vid: VId,
     entry: &Entry,
+    (recorded_at, known_at, through): (CommitSeq, CommitSeq, DateDay),
 ) -> Result<(), RegisterError> {
     let mut touched = BTreeSet::new();
     let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
@@ -589,9 +604,22 @@ fn add_functional_stock_entry(
             Side::Debit => (&mut cell.debits, &mut totals.0),
             Side::Credit => (&mut cell.credits, &mut totals.1),
         };
-        *amount = amount
-            .checked_add(mantissa)
-            .ok_or(RegisterError::Overflow)?;
+        crate::capacity_add(amount, mantissa, |accumulated| crate::RegisterCapacity {
+            account: key.account,
+            unit_id: key.unit_id,
+            functional: true,
+            pending: entry.proposal.class == EntryClass::PENDING,
+            side: leg.side,
+            periods: Vec::new(),
+            effective_through: Some(through),
+            by_entity: true,
+            entity: key.entity.clone(),
+            source: entry.entry_ref(entry_vid),
+            recorded_at,
+            known_at,
+            accumulated,
+            incoming: mantissa,
+        })?;
         *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
         touched.insert(key);
     }
@@ -728,10 +756,22 @@ pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
             if let Some(release_at) = resolved.get(vid) {
                 watermark = Some(watermark.map_or(*release_at, |prior| prior.max(*release_at)));
             } else {
-                add_functional_stock_entry(&mut pending, &spec, *vid, entry)?;
+                add_functional_stock_entry(
+                    &mut pending,
+                    &spec,
+                    *vid,
+                    entry,
+                    (*created_at, seq, effective_through),
+                )?;
             }
         } else {
-            add_functional_stock_entry(&mut cells, &spec, *vid, entry)?;
+            add_functional_stock_entry(
+                &mut cells,
+                &spec,
+                *vid,
+                entry,
+                (*created_at, seq, effective_through),
+            )?;
             entries_count = entries_count
                 .checked_add(1)
                 .ok_or(RegisterError::Overflow)?;

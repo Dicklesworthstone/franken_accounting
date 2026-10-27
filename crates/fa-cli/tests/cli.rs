@@ -331,6 +331,459 @@ fn a_batch_intent_posts_atomically_and_its_retry_is_the_recorded_outcome() -> st
 /// The complete portable plan survives a refused later-member rehearsal,
 /// commits in one publication, and recognizes the same bytes on retry.
 #[test]
+fn retained_fx_settlements_use_the_existing_atomic_batch_cli_and_exact_retry() -> std::io::Result<()>
+{
+    retained_fx_cli_workflow(RetainedFxFlow::Batch)
+}
+
+#[test]
+fn retained_fx_group_posts_one_entry_and_one_reversal_after_cold_plan_retry() -> std::io::Result<()>
+{
+    retained_fx_cli_workflow(RetainedFxFlow::DirectGroup)
+}
+
+#[test]
+fn retained_fx_group_review_preserves_unused_targets_approval_and_cold_retry() -> std::io::Result<()>
+{
+    retained_fx_cli_workflow(RetainedFxFlow::ReviewedGroup)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetainedFxFlow {
+    Batch,
+    DirectGroup,
+    ReviewedGroup,
+}
+
+fn retained_fx_cli_workflow(flow: RetainedFxFlow) -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    let group = flow != RetainedFxFlow::Batch;
+    let reviewed_group = flow == RetainedFxFlow::ReviewedGroup;
+    let dir = tmp("independent-fx-batch")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Atomic FX Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"EUR"},{"code":"2990","name":"Conversion","type":"Liability","unit":"any-currency"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"EUR"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let mut rates = Vec::new();
+    for (purpose, numerator) in [("spot_close", "12"), ("settlement", "15")] {
+        let path = write(
+            &dir,
+            &format!("{purpose}.json"),
+            &format!(
+                r#"{{"base_unit":"USD","quote_unit":"EUR","rate_num":"{numerator}","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-10","retrieved_at_ns":1,"purpose":"{purpose}","source":"explicit CLI fixture evidence"}}"#
+            ),
+        );
+        let added = doc(&ok(&["fx", "rate", "add", "--from-json", &path]));
+        rates.push(text(&added, "oid").to_string());
+    }
+    let mut targets = Vec::new();
+    for key in ["first-fx-invoice", "second-fx-invoice"]
+        .into_iter()
+        .chain(reviewed_group.then_some("unused-fx-invoice"))
+    {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1200","amount":"100.00 EUR"}},{{"side":"credit","account":"4000","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+                rates[0]
+            ),
+        );
+        let posted = doc(&ok(&["post", "--intent", &path]));
+        targets.push(text(&posted, "vid").to_string());
+    }
+    let member = |key: &str, target: &str, native: &str, cash: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"{key}","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"{cash} USD"}},{{"side":"credit","account":"1200","amount":"{native} EUR","settles":[{{"entry":"{target}","ordinal":0,"amount":"{native} EUR"}}]}}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{}"],"conversion_account":"2990","realized_fx_account":"4900"}}}}"#,
+            rates[1]
+        )
+    };
+    let first = member("first-fx-receipt", &targets[0], "40.00", "60.00");
+    let second = member("second-fx-receipt", &targets[1], "100.00", "150.00");
+    let group_intent = |key: &str, later_target: &str, later_cash: &str| {
+        if reviewed_group {
+            return format!(
+                r#"{{"effective_date":"2026-03-20","idempotency_key":"{key}","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"60.00 USD","memo":"first wire"}},{{"side":"credit","account":"1200","amount":"40.00 EUR"}},{{"side":"debit","account":"1000","amount":"{later_cash} USD","memo":"second wire"}},{{"side":"credit","account":"1200","amount":"100.00 EUR"}}],"payments":[{{"payment_leg":1,"targets":[{{"entry":"{}","ordinal":0}},{{"entry":"{}","ordinal":0}}]}},{{"payment_leg":3,"targets":[{{"entry":"{later_target}","ordinal":0}}]}}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{}"],"conversion_account":"2990","realized_fx_account":"4900"}}}}"#,
+                targets[0], targets[2], rates[1]
+            );
+        }
+        format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"{key}","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"60.00 USD","memo":"first wire"}},{{"side":"credit","account":"1200","amount":"40.00 EUR","settles":[{{"entry":"{}","ordinal":0,"amount":"40.00 EUR"}}]}},{{"side":"debit","account":"1000","amount":"{later_cash} USD","memo":"second wire"}},{{"side":"credit","account":"1200","amount":"100.00 EUR","settles":[{{"entry":"{later_target}","ordinal":0,"amount":"100.00 EUR"}}]}}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{}"],"conversion_account":"2990","realized_fx_account":"4900"}}}}"#,
+            targets[0], rates[1]
+        )
+    };
+    let verb = if reviewed_group {
+        "settle"
+    } else if group {
+        "post"
+    } else {
+        "batch"
+    };
+    let batch = write(
+        &dir,
+        "batch.json",
+        &if group {
+            group_intent("single-entry-fx-group", &targets[1], "150.00")
+        } else {
+            format!(r#"{{"idempotency_key":"atomic-fx","intents":[{first},{second}]}}"#)
+        },
+    );
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let post_only = dir.join("post-only-review.token").display().to_string();
+    if reviewed_group {
+        ok(&[
+            "capability",
+            "issue",
+            "--holder",
+            "limited-review",
+            "--profile",
+            "human",
+            "--op",
+            "post",
+            "--out",
+            &post_only,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+        ]);
+    }
+    let mut before = open().head().unwrap();
+    let plan_path = dir.join("batch.plan").display().to_string();
+    let review_path = dir.join("fx-group.review").display().to_string();
+    let mut review_digest = String::new();
+    let mut approval_vid = String::new();
+    let mut sealed_review = None;
+    let planned = if reviewed_group {
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "settle",
+                "--intent",
+                &batch,
+                "--review-out",
+                &review_path,
+                "--token",
+                &post_only,
+                "--json",
+            ],
+        );
+        assert_eq!(code, 7, "{out}\n{err}");
+        assert!(!Path::new(&review_path).exists());
+        assert_eq!(open().head().unwrap(), before);
+        let reviewed = doc(&ok(&[
+            "settle",
+            "--intent",
+            &batch,
+            "--review-out",
+            &review_path,
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+        ]));
+        assert_eq!(text(&reviewed, "kind"), "group");
+        assert_eq!(open().head().unwrap(), before);
+        review_digest = text(&reviewed, "review_digest").to_string();
+        let review = fa::SettlementGroupReview::decode(&std::fs::read(&review_path)?).unwrap();
+        assert_eq!(review.known_at(), before);
+        assert_eq!(review.allocations().len(), 2);
+        let first_allocation = &review.allocations()[0];
+        assert_eq!(first_allocation.allocation.request.targets.len(), 2);
+        assert_eq!(first_allocation.allocation.allocations.len(), 1);
+        assert!(
+            first_allocation
+                .allocation
+                .request
+                .targets
+                .iter()
+                .any(|(vid, ordinal)| { format!("{:032x}", vid.0) == targets[2] && *ordinal == 0 })
+        );
+        // A reviewer with no Post grant approves the complete expanded effects.
+        let approved = doc(&ok(&[
+            "settle",
+            "approve",
+            "--review",
+            &review_path,
+            "--digest",
+            &review_digest,
+            "--as",
+            "controller",
+            "--grant",
+            "read",
+            "--grant",
+            "approve",
+        ]));
+        approval_vid = text(&approved, "approval_vid").to_string();
+        assert_eq!(open().head().unwrap().0, before.0 + 1);
+        before = open().head().unwrap();
+        sealed_review = Some(review);
+        doc(&ok(&[
+            "settle",
+            "--review",
+            &review_path,
+            "--digest",
+            &review_digest,
+            "--approval",
+            &approval_vid,
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+        ]))
+    } else {
+        doc(&ok(&[
+            verb,
+            "--intent",
+            &batch,
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+        ]))
+    };
+    if let Some(review) = &sealed_review {
+        let plan = fa::PostPlan::decode(&std::fs::read(&plan_path)?).unwrap();
+        assert_eq!(plan.intent().proposal(), review.proposal());
+        assert_eq!(plan.approvals().len(), 1);
+        assert_eq!(
+            plan.approvals()[0].approved_digest,
+            review.proposal().proposal_digest().unwrap()
+        );
+    }
+    if !group {
+        assert_eq!(arr(&planned, "members").len(), 2);
+    }
+    assert_eq!(int(&planned, "snapshot_seq"), Some(i128::from(before.0)));
+    assert_eq!(open().head().unwrap(), before);
+
+    // Both faults leave the saved good plan's source prefix untouched.
+    for (name, member_key, later_target, later_cash) in [
+        ("wrong-cash", "bad-cash", &targets[1], "149.99"),
+        ("overlap", "overlapping", &targets[0], "150.00"),
+    ] {
+        let path = write(
+            &dir,
+            &format!("{name}.json"),
+            &if group {
+                group_intent(name, later_target, later_cash)
+            } else {
+                let later = member(member_key, later_target, "100.00", later_cash);
+                format!(r#"{{"idempotency_key":"{name}","intents":[{first},{later}]}}"#)
+            },
+        );
+        let review_bytes = reviewed_group.then(|| std::fs::read(&review_path).unwrap());
+        let mut args = vec![verb, "--intent", &path, "--json"];
+        if reviewed_group {
+            args.extend(["--review-out", &review_path]);
+        }
+        let (code, out, err) = fa(Some(&book), &args);
+        if reviewed_group && name == "overlap" {
+            assert_eq!(code, 2, "{name}: {out}\n{err}");
+            assert_eq!(field(&out, "code"), Some("FA-REF-100"));
+        } else {
+            assert_eq!(code, 3, "{name}: {out}\n{err}");
+            assert_eq!(field(&out, "code"), Some("FA-REF-071"));
+        }
+        if let Some(bytes) = review_bytes {
+            assert_eq!(std::fs::read(&review_path)?, bytes);
+        }
+        assert_eq!(open().head().unwrap(), before);
+    }
+    if reviewed_group {
+        // An unused target is still validated; a retained revenue leg cannot
+        // replace the unused receivable merely because allocation stops early.
+        let bad = group_intent("bad-unused-target", &targets[1], "150.00").replace(
+            &format!(r#""entry":"{}","ordinal":0"#, targets[2]),
+            &format!(r#""entry":"{}","ordinal":1"#, targets[2]),
+        );
+        let path = write(&dir, "bad-unused-target.json", &bad);
+        let original = std::fs::read(&review_path)?;
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "settle",
+                "--intent",
+                &path,
+                "--review-out",
+                &review_path,
+                "--json",
+            ],
+        );
+        assert_eq!(code, 2, "{out}\n{err}");
+        assert_eq!(field(&out, "code"), Some("FA-REF-100"));
+        assert_eq!(std::fs::read(&review_path)?, original);
+        assert_eq!(open().head().unwrap(), before);
+    }
+    let committed = doc(&ok(&[
+        "commit", "--plan", &plan_path, "--grant", "read", "--grant", "post",
+    ]));
+    assert_eq!(committed.get("already_recorded"), Some(&Json::Bool(false)));
+    let after = open().head().unwrap();
+    assert_eq!(after.0, before.0 + 1);
+    assert_eq!(int(&committed, "recorded_at"), Some(i128::from(after.0)));
+    {
+        let mut observed = open();
+        let fold = observed
+            .functional_period_activity(
+                &fa_policy::Capability::embedded(fa_model::principal_vid("owner"), &["read"])
+                    .unwrap(),
+                "FY2026-P03",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let account = |code| fa_model::account_vid(observed.context().book_id, code);
+        let cell = |code| {
+            fold.cells
+                .iter()
+                .find(|cell| cell.key.account == account(code))
+                .unwrap()
+        };
+        assert_eq!(
+            (cell("2990").debits, cell("2990").credits),
+            (16_800, 16_800)
+        );
+        assert_eq!(cell("1000").net(), Some(21_000));
+        assert_eq!(
+            cell("1200").net(),
+            Some(if reviewed_group { 19_200 } else { 7_200 })
+        );
+        assert_eq!(cell("4900").net(), Some(-4_200));
+    }
+    let retry = doc(&ok(&[
+        "commit", "--plan", &plan_path, "--grant", "read", "--grant", "post",
+    ]));
+    assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(int(&retry, "recorded_at"), Some(i128::from(after.0)));
+    let direct_out = if reviewed_group {
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "settle",
+                "--review",
+                &review_path,
+                "--digest",
+                &review_digest,
+                "--approval",
+                &approval_vid,
+                "--grant",
+                "read",
+                "--grant",
+                "post",
+                "--json",
+            ],
+        );
+        assert_eq!(code, 2, "{out}\n{err}");
+        assert_eq!(field(&out, "code"), Some("FA-REF-100"));
+        assert_eq!(open().head().unwrap(), after);
+        let (code, out, err) = fa(
+            Some(&book),
+            &[
+                "settle",
+                "approve",
+                "--review",
+                &review_path,
+                "--digest",
+                &review_digest,
+                "--as",
+                "controller",
+                "--grant",
+                "read",
+                "--grant",
+                "approve",
+                "--json",
+            ],
+        );
+        assert_eq!(code, 6, "{out}\n{err}");
+        assert_eq!(field(&out, "code"), Some("FA-REF-034"));
+        assert_eq!(open().head().unwrap(), after);
+        String::new()
+    } else {
+        ok(&[
+            verb, "--intent", &batch, "--grant", "read", "--grant", "post",
+        ])
+    };
+    let direct = if reviewed_group {
+        committed.clone()
+    } else {
+        doc(&direct_out)
+    };
+    if group && !reviewed_group {
+        assert_eq!(field(&direct_out, "event"), Some("recorded"));
+        assert_eq!(text(&direct, "vid"), text(&committed, "vid"));
+        assert_eq!(
+            text(&direct, "entry_digest"),
+            text(&committed, "entry_digest")
+        );
+        assert_eq!(int(&direct, "recorded_at"), Some(i128::from(after.0)));
+    } else if !reviewed_group {
+        assert_eq!(direct.get("already_recorded"), Some(&Json::Bool(true)));
+    }
+    ok(&["verify", "fx-conversion"]);
+    ok(&["verify", "open-items"]);
+    ok(&["tb", "--functional", "--period", "FY2026-P03"]);
+    assert_eq!(open().head().unwrap(), after);
+    if group {
+        let entry = text(&direct, "vid");
+        let reversed = doc(&ok(&["reverse", entry, "--reason", "WrongAccount"]));
+        assert_eq!(int(&reversed, "recorded_at"), Some(i128::from(after.0 + 1)));
+        let mut observed = open();
+        let cap =
+            fa_policy::Capability::embedded(fa_model::principal_vid("owner"), &["read"]).unwrap();
+        let fold = observed
+            .functional_period_activity(&cap, "FY2026-P03", None)
+            .unwrap()
+            .unwrap();
+        for (code, net) in [
+            ("1000", 0),
+            ("1200", if reviewed_group { 36_000 } else { 24_000 }),
+            ("4900", 0),
+            ("2990", 0),
+        ] {
+            let account = fa_model::account_vid(observed.context().book_id, code);
+            assert_eq!(
+                fold.cells
+                    .iter()
+                    .find(|cell| cell.key.account == account)
+                    .unwrap()
+                    .net(),
+                Some(net)
+            );
+        }
+        drop(observed);
+        ok(&["verify", "fx-conversion"]);
+        ok(&["verify", "open-items"]);
+        assert_eq!(open().head().unwrap().0, after.0 + 1);
+    }
+    Ok(())
+}
+
+#[test]
 fn an_atomic_batch_plan_rehearses_in_order_and_commits_its_saved_bytes_once() -> std::io::Result<()>
 {
     use fa::{Book, BookKeys, Entropy};
@@ -1128,7 +1581,8 @@ fn capabilities_and_robot_docs_are_in_tool() {
     );
     let model = caps.get("capability").expect("capability section");
     let ops: Vec<&str> = arr(model, "ops").iter().filter_map(Json::as_str).collect();
-    assert_eq!(ops.len(), 21, "{ops:?}");
+    assert_eq!(ops.len(), 22, "{ops:?}");
+    assert_eq!(&ops[20..], &["partial_view", "maintain"]);
     assert!(ops.contains(&"post_closed") && ops.contains(&"rule_change"));
     let agent = arr(model, "profiles")
         .iter()
@@ -1985,6 +2439,150 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
         !out.contains("\"event\"") && out.contains("accounts"),
         "{out}"
     );
+    Ok(())
+}
+
+/// The actual binary uses the authorized HEAD readers after rehydration;
+/// historical and period-restricted reads retain their declared basis.
+#[test]
+fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pinned()
+-> std::io::Result<()> {
+    let dir = tmp("authorized-head-reports")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = vec!["--book", "book"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&dir)
+            .args(&argv)
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run native fa");
+        let code = output.status.code().unwrap_or(-1);
+        let out = String::from_utf8(output.stdout).unwrap();
+        let err = String::from_utf8(output.stderr).unwrap();
+        check_robot_output(&argv, code, &out);
+        eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
+        (code, out, err)
+    };
+    let ok = |args: &[&str]| {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}: {out}{err}");
+        assert!(err.is_empty(), "{args:?}: {err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Authorized head reads"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    let period = "FY2026-P03";
+    ok(&["period", "open", period]);
+    let evidence = source_doc(&dir, &book);
+    let mut posted_at = Vec::new();
+    let mut cursor = None;
+    for (key, amount) in [("first", "10.00 USD"), ("tail", "2.00 USD")] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{amount}"}},{{"side":"credit","account":"1000","amount":"{amount}"}}]}}"#,
+            ),
+        );
+        let posted = doc(&ok(&["post", "--intent", &intent, "--evidence", &evidence]));
+        posted_at.push(int(&posted, "recorded_at").unwrap());
+        if key == "first" {
+            cursor = int(
+                &doc(&ok(&["registers", "advance", "--period", period])),
+                "through",
+            );
+        }
+    }
+    let cursor = cursor.expect("published maintenance cursor");
+    for activity in [false, true] {
+        let mut args = vec!["tb", "--period", period];
+        if activity {
+            args.push("--activity");
+        }
+        let data = doc(&ok(&args));
+        assert_eq!(int(&data, "known_at"), Some(posted_at[1]));
+        assert!(data.render().contains("\"debits\":\"12.00 USD\""));
+        assert!(data.render().contains("\"credits\":\"12.00 USD\""));
+        let served = data.get("served").unwrap();
+        assert_eq!(
+            served.get("mode").and_then(Json::as_str),
+            Some("maintained")
+        );
+        assert!(int(served, "tail_length").unwrap() > 0);
+        let rows = arr(served, "periods");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(int(&rows[0], "served_at"), Some(cursor));
+        assert_eq!(rows[0].get("period").and_then(Json::as_str), Some(period));
+
+        let before = posted_at[0].to_string();
+        args.extend(["--as-known-at", &before]);
+        let historical = doc(&ok(&args));
+        assert_eq!(int(&historical, "known_at"), Some(posted_at[0]));
+        assert_eq!(historical.get("served"), Some(&Json::Null));
+        assert!(historical.render().contains("\"debits\":\"10.00 USD\""));
+        assert!(historical.render().contains("\"credits\":\"10.00 USD\""));
+    }
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "march-reader",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--period",
+        period,
+        "--out",
+        "march.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+    ]);
+    let restricted = doc(&ok(&[
+        "--token",
+        "march.token",
+        "tb",
+        "--activity",
+        "--period",
+        period,
+    ]));
+    let served = restricted.get("served").unwrap();
+    assert_eq!(served.get("mode").and_then(Json::as_str), Some("literal"));
+    assert!(
+        served
+            .get("reason")
+            .and_then(Json::as_str)
+            .unwrap()
+            .contains("cannot load the register window")
+    );
+    assert!(restricted.render().contains("\"debits\":\"12.00 USD\""));
+    assert!(restricted.render().contains("\"credits\":\"12.00 USD\""));
+    for args in [
+        vec!["--token", "march.token", "tb", "--period", period],
+        vec![
+            "--token",
+            "march.token",
+            "tb",
+            "--activity",
+            "--period",
+            "FY2026-P04",
+        ],
+    ] {
+        let (code, out, _) = run(&args);
+        assert_eq!(code, 7, "{out}");
+        assert!(out.contains("FA-REF-011"), "{out}");
+    }
     Ok(())
 }
 
@@ -18652,6 +19250,44 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     Ok(())
 }
 
+const CORRECTION_GUIDE_BOUNDARIES: &[&str] = &[
+    "Replacement posts only as a pair with its Reversal",
+    "fa reverse <vid> --reason <name> --replace-with <file>",
+    "standalone Replacement is FA-REF-160",
+    "A Reclassification moves part of an entry to another account",
+    "fa reclass <vid>",
+    "FA-REF-185 when it moves more than the target's legs have left",
+    "PriorPeriodAdjustment, a Revision or a Restatement posts only as an approved restatement case's entry",
+    "fa case post <case>",
+    "FA-REF-178 otherwise",
+    "with `revises` or `restates` naming the posting it corrects and the delta legs",
+];
+
+fn correction_guide_boundaries(guide: &str) -> Result<(), String> {
+    for boundary in CORRECTION_GUIDE_BOUNDARIES {
+        if !guide.contains(boundary) {
+            return Err(format!(
+                "correction guide omits its live protocol boundary: {boundary}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn correction_guide_boundary_check_rejects_each_missing_restriction() {
+    let (code, out, err) = fa(None, &["robot-docs", "guide", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let guide_doc = doc(&out);
+    let guide = text(&guide_doc, "text");
+    correction_guide_boundaries(guide).unwrap();
+    for boundary in CORRECTION_GUIDE_BOUNDARIES {
+        let missing = guide.replace(boundary, "unrestricted correction");
+        let refusal = correction_guide_boundaries(&missing).unwrap_err();
+        assert!(refusal.contains(boundary), "{refusal}");
+    }
+}
+
 #[test]
 fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<()> {
     let dir = tmp("teller-truthfulness")?;
@@ -18876,6 +19512,9 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
             );
         }
     }
+    // Each constrained protocol must disclose its exact boundary as well as
+    // its route; mentioning a correction class must not imply unrestricted posting.
+    correction_guide_boundaries(guide_text).unwrap();
 
     // 4. On a launch-bound surface, a kernel refusal whose catalog fix mentions `--grant`
     // (`FA-REF-011`) rewrites its fix so that it never instructs the caller to pass `--grant`.

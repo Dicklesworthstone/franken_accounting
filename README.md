@@ -119,6 +119,15 @@ Register verification compares both amount columns, counts, identity, period mem
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head and historical trial balances and period activity can use checked native cells plus an exact tail bounded by the requested recorded sequence. Historical reads pin the chart, periods, maintenance state and cells to that same snapshot, so later postings and cache repairs cannot enter the result. Missing or damaged historical cells and unavailable delta windows fall back to the literal journal fold; these retained snapshots are not journaled RegisterCheckpoints. Other selections retain literal folds.
 
+Authorized embedded readers use `Book::read_scope` before reading. Its
+`trial_balance_served` and `period_activity_served` methods return the report
+and its actual maintenance cursor/tail or literal fallback reason. The global
+delta window requires whole-book authority; narrower admitted reports fold
+literally without exposing that window's metadata. The existing scope methods
+also use maintained cells for HEAD when authority and resident history permit;
+an explicit known-at sequence remains a literal historical read. These reads
+load no history, repair no cache and preserve the same capability caveats.
+
 `fad serve --book ./books/acme --register-period FY2026-P03` selects native
 register maintenance without granting System authority. It attempts one selected
 period per timer cycle in fair rotation. The commit-wake implementation also
@@ -126,7 +135,14 @@ makes one attempt ready when a served request advances the journal; repeated
 notifications coalesce, and reads or idempotent retries that change nothing do
 not wake it. This early attempt does not record clock evidence, run sweeps or
 postpone the regular timer. Its Rust regressions still require qualification.
-Period selection remains explicit: new periods are not discovered automatically.
+`fad serve --book ./books/acme --register-fiscal-year 2026` selects the complete
+year from the book's actual fiscal calendar, including Opening, Adjustment and
+Closing periods. This is an alternative to exact `--register-period` options.
+The selected cohort includes periods created later in that year, so creating
+the year after startup makes those periods maintainable without a restart.
+Missing periods remain visible as per-period errors until creation; other years
+are outside the selection. Custom calendars accept only their declared years.
+The existing 64-period scheduling bound and one-attempt rotation still apply.
 Native register checkpoints exist as disposable cache objects with a cadence
 decision card; journaled checkpoints at fiscal-year boundaries, functional-value
 maintenance, other register families and the remaining cached report reads are
@@ -774,6 +790,66 @@ collection and rebasing through portable read witnesses remain unfinished
 under `fa-we7`; atomic batches (`fa batch`), draft promotion
 (`fa draft promote`) and issued session tokens (`fa capability issue`) exist.
 
+The library's `PostBatch` and portable `BatchPlan` also accept several
+foreign settlements atomically when every member is an Original or Adjusting
+settlement of a distinct existing target leg. Prepare each member with
+`prepare_fx_settlement`, then use the ordinary batch or batch-plan methods.
+Every member retains its own rate evidence, exact carrying relief and explicit
+realized-FX effects. One publication records them all, and an exact retry
+returns that original outcome. A portable plan requires its exact recorded
+prefix; an intervening publication requires a fresh plan. Mixed mutation
+batches, two applications to the same target leg, staged foreign targets and
+FX draft/case promotion remain unsupported (`fa-pvt7`).
+
+For one accounting entry, `prepare_fx_settlement_group` accepts distinct
+existing target legs under one explicitly shared Settlement Rate document.
+Each item keeps its own ordered conversion, cash and realized-FX effects;
+every carrying amount is derived at the same prefix and checked again by
+posting. One ordinary PostPlan records the complete group, and one reasoned
+reversal restores every item's exact recorded native and base relief. Group
+entries cannot join a batch, replacement or draft/case promotion. Mixed
+mutation, multiple rates, multi-target applying legs and typed payment
+differences remain unfinished on `fa-pvt7`.
+
+The existing `post --intent` path accepts this same group: put consecutive
+cash/application pairs in the intent's `legs`, with one target per application,
+and use the `fx` declaration below. Each cash amount must equal its retained
+rate conversion. Preview and commit the single entry with:
+
+```bash
+fa post --book ./books/acme --intent fx-group.json --dry-run \
+  --plan-out fx-group.plan --grant read --grant post --json
+fa commit --book ./books/acme --plan fx-group.plan \
+  --grant read --grant post --json
+```
+
+For the existing group review workflow, use those cash/control pairs with
+empty `settles` lists and add
+`"payments":[{"payment_leg":1,"targets":[{"entry":"<invoice-vid>","ordinal":0}]}, ...]`.
+Keep the same `fx` declaration. `fa settle --intent fx-group-review.json
+--review-out fx-group.review --grant read --grant post --json` allocates the
+targets before deriving the complete FX entry. Each pair must allocate its
+full foreign amount to one target; additional eligible but unused targets
+remain in the review and are validated. The applying ordinals in the exported
+review refer to the expanded entry. Use the existing `settle approve --review`
+workflow with an independent Read/Approve principal, then `settle --review
+--approval ... --dry-run --plan-out ...` to save the ordinary PostPlan before
+commit. Approval publications may advance the review's basis while its full
+effects and allocation observations stay identical. After an uncertain
+commit, retry the saved PostPlan; a consumed review requires fresh review.
+
+The CLI uses the same construction for each member of a batch intent. Declare
+functional-currency cash and the fully applied foreign control leg, plus
+`"fx":{"law":"SettlementCarryingBasis","rates":["D:<rate-oid>"],"conversion_account":"2990","realized_fx_account":"4900"}`.
+Each target must already exist. Base amounts come from retained history and
+the selected Settlement Rate; caller-supplied base amounts remain refused.
+For an embedded owner, retain the same Read and Post grants on both calls:
+
+```bash
+fa batch --book ./books/acme --intent fx-batch.json --dry-run --plan-out fx-batch.plan --grant read --grant post --json
+fa commit --book ./books/acme --plan fx-batch.plan --grant read --grant post --json
+```
+
 ### Issued Human operator tokens
 
 The ordinary CLI and daemon accept issued Human operator tokens for authorized
@@ -829,8 +905,17 @@ The default principal is `mcp-agent`; the default profile is `agent`.
 Both profiles default to `read`, `post`, and `verify`. An explicit, nonempty
 `--grant` list selects only the named operations within the profile's ceiling.
 Agent permits `read`, `post`, `verify`, `reconcile`, `produce`, and `partial_view`;
-Preparer also permits `post_softclosed`. A grant outside that ceiling refuses
+Preparer also permits `post_softclosed` and `maintain`. A grant outside that ceiling refuses
 startup. Preparer is a bounded Human template, not an unrestricted owner.
+
+Register maintenance (`registers advance` and `registers materialize`) requires
+`read`, `verify`, and `maintain`; read/verify authority alone cannot publish
+cache cells or a cursor. The embedded methods also require the caller's principal
+and current capability. A Preparer session needs an explicit grant list containing
+all required operations; the Agent launch template excludes `maintain`. An MCP
+Preparer retains AI-operator provenance when maintaining derived state, and an
+Agent-profile capability still cannot write trunk. Verification continues to
+require only `read` and `verify`.
 
 An Agent's accounting posts to trunk reach the kernel and refuse with
 `FA-REF-013`. Instead it plans them into a draft (`fa draft new <name>`, then

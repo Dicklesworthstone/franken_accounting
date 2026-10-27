@@ -1699,6 +1699,52 @@ fn verify_realized_fx_settlement(
     leg_entities: &[Option<String>],
     rate_docs: &[FxRateDocument],
 ) -> Result<(), Refusal> {
+    let ranges = if proposal
+        .legs
+        .iter()
+        .filter(|leg| !leg.settles.is_empty())
+        .count()
+        > 1
+    {
+        crate::carrying::settlement_ranges(proposal)?
+    } else {
+        std::iter::once(0..proposal.legs.len()).collect()
+    };
+    for range in ranges {
+        verify_realized_fx_component(
+            budget,
+            proposal,
+            spec,
+            units,
+            leg_entities,
+            rate_docs,
+            range,
+        )?;
+    }
+    Ok(())
+}
+
+fn verify_realized_fx_component(
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+    proposal: &EntryPayload,
+    spec: &BookSpec,
+    units: &UnitRegistry,
+    leg_entities: &[Option<String>],
+    rate_docs: &[FxRateDocument],
+    range: core::ops::Range<usize>,
+) -> Result<(), Refusal> {
+    let leg_entities = leg_entities
+        .get(range.clone())
+        .ok_or_else(|| fx_structure("FX component entity closure is incomplete"))?;
+    if leg_entities
+        .first()
+        .is_some_and(|first| leg_entities.iter().any(|entity| entity != first))
+    {
+        return Err(fx_structure(
+            "each FX component must balance within its own legal entity",
+        ));
+    }
+    let legs = &proposal.legs[range];
     let bt = proposal.base_totals.as_ref().expect("checked in admit");
     if bt.residual.is_some() {
         return Err(fx_structure(
@@ -1721,12 +1767,11 @@ fn verify_realized_fx_settlement(
     // Zero carrying relief omits the zero base conversion posting. The
     // remaining four ordered legs still record every native effect, pair
     // the foreign amount, and show the entire cash amount as realized FX.
-    if proposal
-        .legs
+    if legs
         .first()
         .is_some_and(|leg| leg.base_amount == Some(Amount::new(base_unit, 0)))
     {
-        let [settled, conversion, cash, realized] = proposal.legs.as_slice() else {
+        let [settled, conversion, cash, realized] = legs else {
             return Err(fx_structure(
                 "zero carrying relief requires exactly four settlement legs",
             ));
@@ -1736,7 +1781,7 @@ fn verify_realized_fx_settlement(
             .amount
             .convert(budget, base_unit, &rate, RoundingLaw::HalfEven, units)
             .map_err(fx_structure)?;
-        let distinct: BTreeSet<_> = proposal.legs.iter().map(|leg| leg.account_ref).collect();
+        let distinct: BTreeSet<_> = legs.iter().map(|leg| leg.account_ref).collect();
         if distinct.len() != 4
             || settled.amount.unit != quote_unit
             || conversion.amount != settled.amount
@@ -1761,7 +1806,7 @@ fn verify_realized_fx_settlement(
     // A conversion account must have one leg in `quote_unit` and one leg in `base_unit`
     // on opposite sides with identical `base_amount` (so its functional balance nets to zero).
     let mut by_account: BTreeMap<VId, Vec<(usize, &LegPayload)>> = BTreeMap::new();
-    for (idx, leg) in proposal.legs.iter().enumerate() {
+    for (idx, leg) in legs.iter().enumerate() {
         by_account
             .entry(leg.account_ref)
             .or_default()
@@ -1815,7 +1860,7 @@ fn verify_realized_fx_settlement(
         .map_err(fx_structure)?;
 
     let settled_side = opposite(conv_fx_side);
-    let has_settled_leg = proposal.legs.iter().any(|l| {
+    let has_settled_leg = legs.iter().any(|l| {
         l.account_ref != conv_acct
             && l.side == settled_side
             && l.amount == foreign_amt
@@ -1831,7 +1876,7 @@ fn verify_realized_fx_settlement(
         ));
     }
 
-    let has_settlement_consideration_leg = proposal.legs.iter().any(|l| {
+    let has_settlement_consideration_leg = legs.iter().any(|l| {
         l.account_ref != conv_acct
             && l.side == conv_fx_side
             && l.amount == expected_settlement_base

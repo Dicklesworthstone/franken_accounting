@@ -92,6 +92,7 @@ const REGISTERED_OPS: &[&str] = &[
     "privileged",
     "receivership",
     "partial_view",
+    "maintain",
 ];
 
 const EXPECTED_REGISTRIES: &[&str] = &[

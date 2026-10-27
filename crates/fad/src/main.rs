@@ -126,6 +126,31 @@ fn run(argv: &[String]) -> u8 {
         .into_iter()
         .map(str::to_owned)
         .collect();
+    let fiscal_years = parsed.flag_all("--register-fiscal-year");
+    let register_fiscal_year = if fiscal_years.is_empty() {
+        None
+    } else {
+        if verb != Some("serve") || fiscal_years.len() != 1 || !register_periods.is_empty() {
+            return cli::usage_error(
+                argv,
+                "--register-fiscal-year selects one year for serve and cannot be combined with --register-period",
+                "fad serve --book <dir> --register-fiscal-year <year>",
+                false,
+            ).0;
+        }
+        match fiscal_years[0].parse::<i32>() {
+            Ok(year) => Some(year),
+            Err(_) => {
+                return cli::usage_error(
+                    argv,
+                    "--register-fiscal-year needs an integer fiscal year",
+                    "fad serve --book <dir> --register-fiscal-year 2026",
+                    false,
+                )
+                .0;
+            }
+        }
+    };
     if !register_periods.is_empty() {
         if verb != Some("serve") {
             return cli::usage_error(
@@ -178,7 +203,7 @@ fn run(argv: &[String]) -> u8 {
         .0;
     }
     match verb {
-        Some("serve") => serve(argv, &parsed, d, &dir),
+        Some("serve") => serve(argv, &parsed, d, &dir, register_fiscal_year),
         Some("status") => status(argv, &parsed, d, &dir),
         Some("stop") => stop(argv, &parsed, d, &dir),
         Some(other) => {
@@ -215,7 +240,13 @@ fn fa_mcp_binary() -> PathBuf {
     PathBuf::from("fa-mcp")
 }
 
-fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
+fn serve(
+    argv: &[String],
+    parsed: &Args,
+    d: &Daemon,
+    dir: &Path,
+    register_fiscal_year: Option<i32>,
+) -> u8 {
     let json = parsed.switch("--json");
     let mcp_mode = match parsed.flag("--mcp") {
         None => None,
@@ -352,6 +383,20 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         Ok(b) => b,
         Err(e) => return cli::book_error(argv, e, false).0,
     };
+    // Resolve before socket cleanup/bind or timed work. This is the book's
+    // calendar, including custom and special periods, not a guessed code list.
+    let periods = match register_fiscal_year {
+        Some(year) => match fad::timed::registers::fiscal_year_periods(&book.context().calendar, year) {
+            Ok(periods) => periods,
+            Err(error) => return cli::usage_error(
+                argv,
+                format!("--register-fiscal-year {year}: {error}"),
+                "choose a fiscal year the book calendar defines, or select exact --register-period codes",
+                false,
+            ).0,
+        },
+        None => parsed.flag_all("--register-period").into_iter().map(str::to_owned).collect(),
+    };
     // Holding the lease proves no daemon serves this book, so a socket file
     // left by a crashed one is stale. Anything else at that path is not ours.
     if let Ok(meta) = std::fs::symlink_metadata(&socket) {
@@ -380,11 +425,6 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         Err(e) => return cli::foundation_error(argv, format!("runtime: {e:?}"), false).0,
     };
     let cx = runtime.request_cx_with_budget(Budget::INFINITE);
-    let periods: Vec<String> = parsed
-        .flag_all("--register-period")
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
     let timed = if parsed.switch("--bootstrap-system") || !periods.is_empty() {
         let policy = match fad::timed::Policy::from_registry(d) {
             Ok(policy) => policy,

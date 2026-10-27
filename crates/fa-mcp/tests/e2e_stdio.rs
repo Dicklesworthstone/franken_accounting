@@ -1076,9 +1076,51 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         0
     );
 
-    // This parity test deliberately uses the trusted Preparer template;
-    // default Agent behavior is exercised separately below.
-    let launch = [
+    // Read/verify authority cannot publish derived cells. Rejection precedes
+    // the book open (and any read-only AccessEvent), on the real transport.
+    let before_maintenance = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let mut read_only = Mcp::start_with(
+        &book,
+        &[
+            "--profile",
+            "preparer",
+            "--principal",
+            "operator",
+            "--grant",
+            "read",
+            "--grant",
+            "verify",
+        ],
+    );
+    read_only.discover();
+    for action in ["advance", "materialize"] {
+        let (is_error, text, _) = call_tool(
+            &mut read_only,
+            "fa_book_advance_registers",
+            json!({"action": action, "period": "FY2026-P03"}),
+        );
+        assert!(is_error, "{action} without maintain: {text}");
+        assert!(
+            text.contains("FA-REF-011") && text.contains("maintain"),
+            "{text}"
+        );
+        assert_eq!(
+            cli_data(&["book", "info", "--book", &b, "--json"]),
+            before_maintenance
+        );
+    }
+    let (is_error, text, _) = call_tool(
+        &mut read_only,
+        "fa_book_verify",
+        json!({"target": "open-items"}),
+    );
+    assert!(!is_error, "read/verify remains available: {text}");
+    assert_eq!(read_only.finish(), 0);
+
+    // A trusted Preparer must explicitly receive maintenance authority.
+    // A nonempty grant list replaces defaults, so retain read/post/verify and
+    // produce for the certificate-producing parity routes exercised below.
+    let maintainer_launch = [
         "--profile",
         "preparer",
         "--principal",
@@ -1091,8 +1133,10 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "verify",
         "--grant",
         "produce",
+        "--grant",
+        "maintain",
     ];
-    let mut mcp = Mcp::start_with(&book, &launch);
+    let mut mcp = Mcp::start_with(&book, &maintainer_launch);
     mcp.discover();
 
     // tools/list: exactly the registry's default-surface wire names (plan
@@ -1214,7 +1258,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         envelope["authority"],
         json!({
             "posture": "mcp-launch-config", "principal": "operator", "profile": "preparer",
-            "ops": ["read", "post", "verify", "produce"],
+            "ops": ["read", "post", "verify", "produce", "maintain"],
         })
     );
     assert!(envelope["coordinate"]["known_at"].is_number(), "{envelope}");
@@ -2186,9 +2230,35 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     let code = mcp.finish();
     log(format!("fa-mcp exited {code} after stdin closed"));
     assert_eq!(code, 0);
+
+    // A saved plan binds the complete acting capability, including grants
+    // that the posting operation itself does not need. Dropping Maintain
+    // must not turn a different capability into an exact retry.
+    let before_changed_grants = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let mut changed_grants =
+        Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    changed_grants.discover();
+    let (is_error, text, _) = call_tool(
+        &mut changed_grants,
+        "fa_post_commit_plan",
+        json!({"plan": encoded}),
+    );
+    assert!(
+        is_error,
+        "a changed grant set is not an exact retry: {text}"
+    );
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], "FA-REF-034");
+    assert_eq!(refused["exit"], 6);
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_changed_grants
+    );
+    assert_eq!(changed_grants.finish(), 0);
+
     let plan_file = dir.join("mcp.plan.hex");
     std::fs::write(&plan_file, &encoded).unwrap();
-    let mut reopened = Mcp::start_with(&book, &launch);
+    let mut reopened = Mcp::start_with(&book, &maintainer_launch);
     reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
     for arguments in [

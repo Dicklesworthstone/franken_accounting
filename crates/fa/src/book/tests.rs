@@ -8,6 +8,10 @@ use fa_money::{Amount, Side};
 use fa_time::{FiscalCalendar, PeriodKind};
 use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
 
+fn maintenance_capability(principal: VId) -> Capability {
+    Capability::embedded(principal, &["read", "verify", "maintain"]).unwrap()
+}
+
 /// Storage-layout verification only: tests already own the book's keys
 /// and inspect its private database. Never exposed through the facade.
 fn storage_record(book: &Book, oid: &Oid) -> fa_journal::DocumentRecord {
@@ -217,7 +221,12 @@ fn lab_lifecycle(seed: u64) -> (Fold, [u8; 32], Vec<String>) {
             capability: Capability::embedded(principal, &["post"]).unwrap(),
         };
         let posted = book.post(&cx, request.clone()).await.unwrap().unwrap();
-        let before = book.advance_registers(&cx, &march).await.unwrap().fold;
+        let before = book
+            .advance_registers(&cx, principal, &maintenance_capability(principal), &march)
+            .await
+            .unwrap()
+            .unwrap()
+            .fold;
         assert_eq!(before.entries, 1);
         assert_eq!(before.period, march);
         assert_eq!(before.watermark, Some(posted.recorded_at()));
@@ -280,7 +289,14 @@ fn lab_lifecycle(seed: u64) -> (Fold, [u8; 32], Vec<String>) {
             book.post(&cx, request).await.unwrap().unwrap(),
             Posted::AlreadyRecorded { .. }
         ));
-        assert!(!book.advance_registers(&cx, &march).await.unwrap().wrote);
+        assert!(
+            !book
+                .advance_registers(&cx, principal, &maintenance_capability(principal), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .wrote
+        );
         let source_head = book.head(&cx).unwrap();
         let scratch_path = cx
             .commit()
@@ -776,7 +792,12 @@ fn prepared_post_close_race(runtime: &mut LabRuntime) -> RaceObservation {
                     .state,
                 fa_time::PeriodState::SoftClosed,
             );
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             if post_won {
                 assert_rent_cells(&fold, book.context().book_id, usd, false);
                 assert_eq!(fold.watermark, Some(CommitSeq(basis.0 + 1)));
@@ -1039,8 +1060,9 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
                 assert_eq!(journal_entries(&fixture.book, &cx).len(), entries.len() + 1);
                 let fold = fixture
                     .book
-                    .advance_registers(&cx, &fixture.march)
+                    .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &fixture.march)
                     .await
+                    .unwrap()
                     .unwrap()
                     .fold;
                 assert_rent_cells(&fold, fixture.book.context().book_id, fixture.usd, false);
@@ -1054,6 +1076,45 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
             }
         });
     }
+}
+
+#[test]
+fn prepared_post_checks_capacity_against_intervening_financial_publications() {
+    under_lab(65, |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut fixture = prepared_fixture(&root, 65).await;
+        let mut intervening = fixture.request.clone();
+        intervening.proposal.idempotency_key = b"intervening-capacity-consumer".to_vec();
+        for leg in &mut intervening.proposal.legs {
+            leg.amount.mantissa = i128::MAX - 100_000;
+        }
+        intervening.proposal.unit_totals =
+            EntryPayload::fold_unit_totals(&intervening.proposal.legs).unwrap();
+        let prepared = prepare_fixture_post(&mut fixture.book, &cx, fixture.request);
+        fixture.book.post(&cx, intervening).await.unwrap().unwrap();
+        let head = fixture.book.head(&cx).unwrap();
+        let rows = fixture.book.db.vertices().unwrap();
+        let refusal = prepared
+            .commit(&mut fixture.book.db, &cx)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
+        assert!(
+            refusal
+                .message
+                .contains(&format!("guarded prefix {}", head.0))
+        );
+        assert_eq!(fixture.book.head(&cx).unwrap(), head);
+        assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+        let fold = fixture.book.fold_period(&cx, &fixture.march).unwrap();
+        assert_eq!(fold.entries, 1);
+        assert!(
+            fold.cells
+                .iter()
+                .all(|cell| { cell.debits.max(cell.credits) == i128::MAX - 100_000 })
+        );
+    });
 }
 
 /// The cases every fa-0fl commit crash-point matrix runs: each of the
@@ -1170,7 +1231,12 @@ fn post_crash_matrix() -> Vec<CrashObservation> {
             } else if let Some(expected) = expected {
                 assert_eq!(committed, expected, "{point:?}");
             }
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             if committed {
                 assert_rent_cells(&fold, book_id, usd, false);
             } else {
@@ -1188,7 +1254,12 @@ fn post_crash_matrix() -> Vec<CrashObservation> {
                 "{point:?}: {retried:?}"
             );
             assert_eq!(journal_entries(&book, &cx).len(), before.len() + 1);
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert_rent_cells(&fold, book_id, usd, false);
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
@@ -1471,7 +1542,12 @@ fn case_post_crash_matrix() -> Vec<CrashObservation> {
                         && cell.debits == 50_000
                 })
             };
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert_eq!(receipt_cell(&fold), kept, "{point:?}: {fold:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
@@ -1486,7 +1562,12 @@ fn case_post_crash_matrix() -> Vec<CrashObservation> {
             assert_eq!(retried.already_recorded, kept, "{point:?}");
             assert_eq!(retried.case.state, CaseState::Posted, "{point:?}");
             assert_eq!(journal_entries(&book, &cx).len(), before.len() + 2);
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert!(receipt_cell(&fold), "{point:?}: {fold:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
@@ -1591,7 +1672,12 @@ fn batch_crash_matrix() -> Vec<CrashObservation> {
             } else if let Some(expected) = expected {
                 assert_eq!(kept, expected, "{point:?}");
             }
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert_eq!(fold.entries, if kept { 3 } else { 0 }, "{point:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
@@ -1605,7 +1691,12 @@ fn batch_crash_matrix() -> Vec<CrashObservation> {
                 .unwrap();
             assert_eq!(retried.already_recorded, kept, "{point:?}");
             assert_eq!(journal_entries(&book, &cx).len(), before.len() + 3);
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert_eq!(fold.entries, 3, "{point:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
@@ -1763,7 +1854,12 @@ fn soft_close_crash_matrix() -> Vec<CrashObservation> {
             // post_softclosed, which the fixture's capability lacks.
             assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7), "{point:?}");
             // Nothing reached March: its fold is empty.
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert!(fold.cells.is_empty(), "{point:?}: {fold:?}");
             assert_journal_verifies(&book, &cx, point);
             CrashObservation {
@@ -1818,7 +1914,10 @@ fn register_advance_crash_matrix() -> Vec<CrashObservation> {
             second.proposal.idempotency_key = b"prepared-rent-2".to_vec();
             second.proposal.description = book.seal_text(&cx, "second March rent").unwrap();
             book.post(&cx, request).await.unwrap().unwrap();
-            book.advance_registers(&cx, &march).await.unwrap();
+            book.advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap();
             let old = fa_registers::maintainer::cursor(&book.db, &context, &march).unwrap();
             assert!(old.is_some(), "the first advance publishes a cursor");
             book.post(&cx, second.clone()).await.unwrap().unwrap();
@@ -1875,7 +1974,12 @@ fn register_advance_crash_matrix() -> Vec<CrashObservation> {
                 "{point:?}: the {} state does not verify",
                 if moved { "new" } else { "old" }
             );
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert_eq!(fold.entries, 2, "{point:?}: {fold:?}");
             let cell = |code: &str| {
                 fold.cells
@@ -2179,7 +2283,12 @@ fn expiry_sweep_crash_matrix() -> Vec<CrashObservation> {
                 if expired { 4 } else { 0 },
                 "{point:?}: three resolutions and the SweepControl entry, or nothing"
             );
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert_eq!(
                 fold.pending.is_empty(),
                 expired,
@@ -2199,7 +2308,12 @@ fn expiry_sweep_crash_matrix() -> Vec<CrashObservation> {
             assert!(book.due_holds(&cx).unwrap().is_empty(), "{point:?}");
             assert_eq!(resolved(&book, &holds), 3, "{point:?}");
             assert_eq!(journal_entries(&book, &cx).len(), before.len() + 4);
-            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            let fold = book
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                .await
+                .unwrap()
+                .unwrap()
+                .fold;
             assert!(fold.pending.is_empty(), "{point:?}: {fold:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
@@ -2330,7 +2444,12 @@ fn void_and_sweep_orders() -> Vec<CrashObservation> {
                 );
                 assert_eq!(resolved(&book, &holds), 3);
                 assert!(book.due_holds(&cx).unwrap().is_empty());
-                let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+                let fold = book
+                    .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .fold;
                 assert!(fold.pending.is_empty(), "{fold:?}");
                 assert!(book.verify_registers(&cx, &march).unwrap().is_green());
                 assert_journal_verifies(&book, &cx, None);
@@ -2665,8 +2784,9 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
         for (period, reversed) in [(&fixture.march, false), (&fixture.april, true)] {
             let fold = fixture
                 .book
-                .advance_registers(&cx, period)
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), period)
                 .await
+                .unwrap()
                 .unwrap()
                 .fold;
             assert_rent_cells(&fold, context.book_id, fixture.usd, reversed);
@@ -2894,8 +3014,9 @@ fn async_timing_adapters_expire_and_reverse_under_the_callers_fault_vfs() {
         ] {
             let fold = fixture
                 .book
-                .advance_registers(&cx, period)
+                .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), period)
                 .await
+                .unwrap()
                 .unwrap()
                 .fold;
             assert_rent_cells(&fold, book_id, fixture.usd, reversed);
@@ -3525,6 +3646,424 @@ fn checkpoint_requires_its_holder_witness_authority_and_current_capability() {
     let renewed = PolicyCapability::embedded(principal, &["witness", "read"]).unwrap();
     book.checkpoint(principal, &renewed).unwrap().unwrap();
     assert_eq!(book.verify_accumulator().unwrap().states.len(), 2);
+}
+
+#[test]
+fn register_maintenance_requires_explicit_current_whole_book_authority() {
+    use fa_policy::{Op, Profile, possession_digest};
+
+    type Write = fn(&mut Book, VId, &Capability, &str) -> Outcome<Fold>;
+    let writers: [(&str, Write); 3] = [
+        ("advance", |book, principal, capability, period| {
+            book.advance_registers(principal, capability, period)
+                .map(|result| result.map(|advance| advance.fold))
+        }),
+        ("materialize", |book, principal, capability, period| {
+            book.materialize_registers(principal, capability, period)
+                .map(|result| result.map(|(fold, _)| fold))
+        }),
+        ("rebuild", |book, principal, capability, period| {
+            book.rebuild_registers(principal, capability, period)
+                .map(|result| result.map(|advance| advance.fold))
+        }),
+    ];
+
+    for (name, write) in writers {
+        let (mut book, usd, day, _) = certified_fixture();
+        let principal = VId(1);
+        let period = "FY2026-P03";
+        let book_id = book.context().book_id;
+        let embedded = maintenance_capability(principal);
+        let issuer =
+            Capability::embedded(VId(47), &["issue_capability", "read", "verify", "maintain"])
+                .unwrap();
+        let issued = Capability::new(
+            principal,
+            Profile::Human,
+            &[Op::Read, Op::Verify, Op::Maintain],
+            issuer.holder(),
+        )
+        .unwrap()
+        .for_books(&[book_id])
+        .unwrap()
+        .holder_bound(possession_digest(&[0x71; 32]));
+        book.issue_capability(
+            issuer.clone(),
+            issued.clone(),
+            day,
+            b"issue-maintainer",
+            "Maintain derived registers",
+        )
+        .unwrap()
+        .unwrap();
+        let before = book.head().unwrap();
+        let expected = book.fold_period(period).unwrap();
+        assert_eq!(expected.entries, 1, "{name}");
+        assert_eq!(expected.cells.len(), 2, "{name}");
+        assert!(expected.cells.iter().all(|cell| cell.key.unit_id == usd.0));
+
+        for (case, actor, capability, code) in [
+            (
+                "missing maintain",
+                principal,
+                Capability::embedded(principal, &["read", "verify"]).unwrap(),
+                "FA-REF-011",
+            ),
+            (
+                "missing read",
+                principal,
+                Capability::embedded(principal, &["verify", "maintain"]).unwrap(),
+                "FA-REF-011",
+            ),
+            (
+                "missing verify",
+                principal,
+                Capability::embedded(principal, &["read", "maintain"]).unwrap(),
+                "FA-REF-011",
+            ),
+            ("wrong holder", VId(2), embedded.clone(), "FA-REF-011"),
+            (
+                "wrong book",
+                principal,
+                embedded.clone().for_books(&[Id128([0x72; 16])]).unwrap(),
+                "FA-REF-011",
+            ),
+            (
+                "account scope",
+                principal,
+                embedded.clone().for_accounts(&["6000"]).unwrap(),
+                "FA-REF-011",
+            ),
+            (
+                "period scope",
+                principal,
+                embedded.clone().for_periods(&[period]).unwrap(),
+                "FA-REF-011",
+            ),
+            (
+                "expired",
+                principal,
+                embedded.clone().expiring_at(before),
+                "FA-REF-014",
+            ),
+            (
+                "Agent profile cannot write trunk",
+                principal,
+                Capability::new(
+                    principal,
+                    Profile::Agent,
+                    &[Op::Read, Op::Verify, Op::Maintain],
+                    principal,
+                )
+                .unwrap(),
+                "FA-REF-013",
+            ),
+        ] {
+            let result = write(&mut book, actor, &capability, period).unwrap();
+            assert_eq!(book.head().unwrap(), before, "{name}: {case}");
+            assert_eq!(
+                book.fold_period(period).unwrap(),
+                expected,
+                "{name}: {case}"
+            );
+            let refusal = result.unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (code, 7), "{name}: {case}");
+            if case == "missing maintain" {
+                assert!(refusal.message.contains("maintain"), "{refusal}");
+            }
+        }
+
+        let maintained = write(&mut book, principal, &issued, period)
+            .unwrap()
+            .unwrap();
+        assert_eq!(maintained, expected, "{name}");
+        let published_at = book.head().unwrap();
+        assert!(published_at > before, "{name}: real publication");
+        assert!(book.verify_registers(period).unwrap().is_green(), "{name}");
+        let reader = Capability::embedded(principal, &["read", "verify"]).unwrap();
+        let balance = {
+            let read_scope = book.read_scope(principal, &reader).unwrap().unwrap();
+            read_scope
+                .trial_balance_at(&[period.to_string()], None)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(balance.unit_totals[&usd.0], (150_000, 150_000), "{name}");
+        assert_eq!(
+            book.head().unwrap(),
+            published_at,
+            "{name}: verify is read-only"
+        );
+        let repeated = book
+            .advance_registers(principal, &issued, period)
+            .unwrap()
+            .unwrap();
+        assert!(!repeated.wrote, "{name}: already-current advance");
+        assert_eq!(repeated.fold, expected, "{name}");
+        assert_eq!(book.head().unwrap(), published_at, "{name}: no-op retry");
+
+        let revocation = fa_journal::RevocationRequest {
+            capability: issuer,
+            revoked: issued.commitment().unwrap(),
+            effective_date: day,
+            idempotency_key: b"revoke-maintainer".to_vec(),
+            description: book.seal_text("Revoke register maintenance").unwrap(),
+        };
+        let purposes = book.purposes();
+        let context = book.context().clone();
+        with_store!(&mut book.store, core => book.runtime.block_on(async {
+            fa_journal::revoke_capability(&mut core.db, &purposes, &context, revocation).await
+        }))
+        .unwrap()
+        .unwrap();
+        let revoked_at = book.head().unwrap();
+        let result = write(&mut book, principal, &issued, period).unwrap();
+        assert_eq!(book.head().unwrap(), revoked_at, "{name}: revoked");
+        let refusal = result.unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-023", 7), "{name}");
+        assert!(book.verify_registers(period).unwrap().is_green(), "{name}");
+        assert_eq!(
+            book.head().unwrap(),
+            revoked_at,
+            "{name}: verify is read-only"
+        );
+    }
+}
+
+/// The authorized facade reaches the existing maintained HEAD path while
+/// fixed prefixes, scope caveats and damaged-cache fallback remain exact.
+#[test]
+fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
+    use fa_model::symbols::{property, relation};
+    use fa_registers::Served;
+
+    let book_id = Id128([0xb3; 16]);
+    let (spec, usd) = spec(book_id);
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0xb3),
+        spec,
+        Entropy::deterministic(0xb3),
+    )
+    .unwrap();
+    let principal = VId(0xb3);
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    book.install_chart(
+        &chart(usd),
+        principal,
+        day,
+        b"chart",
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2026,
+        principal,
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let march = "FY2026-P03".to_string();
+    let periods = [march.clone()];
+    book.transition_period(
+        &march,
+        PeriodTransition::Open,
+        principal,
+        1,
+        b"open",
+        &Capability::embedded(principal, &["close"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let first = post_rent(&mut book, usd, principal, day, b"first", 150_000)
+        .unwrap()
+        .unwrap();
+    let first_at = first.recorded_at();
+    let reader = Capability::embedded(principal, &["read"]).unwrap();
+    let snapshot = |book: &Book| {
+        let query = book.purposes().query();
+        query.with_restriction(|| with_store!(&book.store, core => core.db.vertices()).unwrap())
+    };
+
+    // With no cache, the new API reports its literal fallback honestly.
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for (report, served) in [
+        scope.trial_balance_served(&periods).unwrap().unwrap(),
+        scope.period_activity_served(&periods).unwrap().unwrap(),
+    ] {
+        assert!(matches!(served, Served::Literal(_)), "{served:?}");
+        assert_eq!(report.unit_totals[&usd.0], (150_000, 150_000));
+    }
+    assert_eq!(snapshot(&book), before);
+
+    let advance = book
+        .advance_registers(principal, &maintenance_capability(principal), &march)
+        .unwrap()
+        .unwrap();
+    assert!(advance.wrote);
+    post_rent(&mut book, usd, principal, day, b"tail", 150_000)
+        .unwrap()
+        .unwrap();
+    // The resident delta window also contains another period's entries.
+    // A March-only reader may read its report, not that global tail metadata.
+    book.transition_period(
+        "FY2026-P04",
+        PeriodTransition::Open,
+        principal,
+        1,
+        b"open-april",
+        &Capability::embedded(principal, &["close"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    post_rent(
+        &mut book,
+        usd,
+        principal,
+        DateDay::from_ymd(2026, 4, 15).unwrap(),
+        b"outside-period",
+        150_000,
+    )
+    .unwrap()
+    .unwrap();
+    let head = book.head().unwrap();
+    let literal_stock = book.trial_balance_at(&periods, Some(head)).unwrap();
+    let literal_activity = book.period_activity(&periods, Some(head)).unwrap();
+    let historical = book.trial_balance_at(&periods, Some(first_at)).unwrap();
+    assert_eq!(literal_stock.unit_totals[&usd.0], (300_000, 300_000));
+    assert_eq!(literal_activity.unit_totals[&usd.0], (300_000, 300_000));
+    assert_eq!(historical.unit_totals[&usd.0], (150_000, 150_000));
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for (actual, served, expected) in [
+        {
+            let (report, served) = scope.trial_balance_served(&periods).unwrap().unwrap();
+            (report, served, &literal_stock)
+        },
+        {
+            let (report, served) = scope.period_activity_served(&periods).unwrap().unwrap();
+            (report, served, &literal_activity)
+        },
+    ] {
+        assert_eq!(
+            actual.canonical_bytes().unwrap(),
+            expected.canonical_bytes().unwrap()
+        );
+        let Served::Maintained(cursors) = served else {
+            panic!("expected maintained cells plus the committed tail: {served:?}");
+        };
+        assert_eq!(cursors.len(), 1);
+        assert_eq!((&cursors[0].0, cursors[0].1), (&march, advance.through));
+        assert!(cursors[0].2 > 0, "the later posting must be decoded");
+    }
+    assert_eq!(
+        scope.trial_balance_at(&periods, None).unwrap().unwrap(),
+        literal_stock
+    );
+    assert_eq!(
+        scope.period_activity(&periods, None).unwrap().unwrap(),
+        literal_activity
+    );
+    assert_eq!(
+        scope
+            .trial_balance_at(&periods, Some(first_at))
+            .unwrap()
+            .unwrap(),
+        historical
+    );
+
+    let limited = reader.clone().for_periods(&[&march]).unwrap();
+    let scope = book.read_scope(principal, &limited).unwrap().unwrap();
+    let (activity, served) = scope.period_activity_served(&periods).unwrap().unwrap();
+    assert_eq!(activity, literal_activity);
+    assert!(
+        matches!(&served, Served::Literal(reason) if reason.contains("`periods` caveat")),
+        "a scoped report must not expose the whole-book tail: {served:?}"
+    );
+    let through_march = reader
+        .clone()
+        .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+    let effective_scope = book.read_scope(principal, &through_march).unwrap().unwrap();
+    let (stock, served) = effective_scope
+        .trial_balance_served(&periods)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stock, literal_stock);
+    assert!(
+        matches!(&served, Served::Literal(reason) if reason.contains("`effective` caveat")),
+        "a date-bound report must not expose the whole-book tail: {served:?}"
+    );
+    let assert_caveat = |refusal: Refusal, name: &str| {
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+        assert!(
+            refusal.message.contains(&format!("`{name}` caveat")),
+            "{refusal:?}"
+        );
+    };
+    assert_caveat(
+        scope.trial_balance_served(&periods).unwrap().unwrap_err(),
+        "periods",
+    );
+    assert_caveat(
+        scope
+            .period_activity_served(&["FY2026-P04".into()])
+            .unwrap()
+            .unwrap_err(),
+        "periods",
+    );
+    let pinned = reader.clone().known_at_most(first_at);
+    let scope = book.read_scope(principal, &pinned).unwrap().unwrap();
+    assert_caveat(
+        scope.trial_balance_served(&periods).unwrap().unwrap_err(),
+        "known_at",
+    );
+    assert_caveat(
+        scope.period_activity_served(&periods).unwrap().unwrap_err(),
+        "known_at",
+    );
+    assert_eq!(
+        scope
+            .trial_balance_at(&periods, Some(first_at))
+            .unwrap()
+            .unwrap(),
+        historical
+    );
+    assert_eq!(book.head().unwrap(), head);
+    assert_eq!(snapshot(&book), before);
+
+    // Corrupt only a derived cell. Reads must abandon it without repairing
+    // it or changing any immutable source; the literal result stays exact.
+    let cell = fa_registers::register_vid(
+        book_id,
+        &fa_registers::CellKey {
+            account: account_vid(book_id, "6000"),
+            unit_id: usd.0,
+            period: march,
+        },
+    );
+    let contexts = book.purposes();
+    let mut change = fgdb::WriteBatch::new(relation::IN_PERIOD);
+    change.set_vertex_property(
+        cell,
+        property::DEBITS_POSTED,
+        Some(fa_journal::rows::mantissa_scalar("damaged register", 999_999).unwrap()),
+    );
+    with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change)))
+        .unwrap();
+    let damaged_at = book.head().unwrap();
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for (report, served) in [
+        scope.trial_balance_served(&periods).unwrap().unwrap(),
+        scope.period_activity_served(&periods).unwrap().unwrap(),
+    ] {
+        assert!(matches!(served, Served::Literal(_)), "{served:?}");
+        assert_eq!(report.known_at, damaged_at);
+        assert_eq!(report.unit_totals[&usd.0], (300_000, 300_000));
+    }
+    assert_eq!(book.head().unwrap(), damaged_at);
+    assert_eq!(snapshot(&book), before);
 }
 
 /// Reads under a capability (fa-llx; fa-t6m "historical read using a
@@ -6790,7 +7329,12 @@ fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
     let historical_prefix = book.head().unwrap();
     // Maintained registers and source-bound report artifacts are not
     // accounting inputs to a scratch book.
-    assert!(book.advance_registers(&march).expect("maintained").wrote);
+    assert!(
+        book.advance_registers(principal, &maintenance_capability(principal), &march)
+            .expect("maintenance I/O")
+            .expect("maintained")
+            .wrote
+    );
     let certificate = book
         .certify_trial_balance(crate::TrialBalanceSelection::AsOf(day), None)
         .unwrap()
@@ -7056,7 +7600,10 @@ fn memory_book_creates_installs_opens_posts_folds_and_refuses() {
         ("FA-REF-001", fa_journal::exit::REFUSAL)
     );
 
-    let (fold, _) = book.materialize_registers(&march).unwrap();
+    let (fold, _) = book
+        .materialize_registers(principal, &maintenance_capability(principal), &march)
+        .unwrap()
+        .unwrap();
     assert_eq!(fold.entries, 1);
     assert!(book.verify_registers(&march).unwrap().is_green());
     let tb = book.trial_balance(&[march]).unwrap();
@@ -7904,7 +8451,8 @@ fn directory_book_persists_across_reopen() {
         .expect("kernel")
         .expect("opens");
         let empty = book
-            .advance_registers(&march)
+            .advance_registers(principal, &maintenance_capability(principal), &march)
+            .expect("maintenance I/O")
             .expect("initialize maintainer");
         assert!(empty.fold.cells.is_empty());
         entry_ref = post_rent(&mut book, usd, principal, day, b"rent", 150_000)
@@ -7954,14 +8502,22 @@ fn directory_book_persists_across_reopen() {
         .expect("the entry survived reopen");
     assert_eq!(entry.entry_digest, entry_ref.entry_digest);
     let advanced = book
-        .advance_registers(&march)
+        .advance_registers(principal, &maintenance_capability(principal), &march)
+        .expect("maintenance I/O")
         .expect("advance after reopen");
     assert_eq!(advanced.entries_decoded, 1);
     assert_eq!(advanced.fold, book.fold_period(&march).unwrap());
     assert!(book.verify_registers(&march).unwrap().is_green());
-    assert!(!book.advance_registers(&march).unwrap().wrote);
+    assert!(
+        !book
+            .advance_registers(principal, &maintenance_capability(principal), &march)
+            .unwrap()
+            .unwrap()
+            .wrote
+    );
     let rebuilt = book
-        .rebuild_registers(&march)
+        .rebuild_registers(principal, &maintenance_capability(principal), &march)
+        .expect("maintenance I/O")
         .expect("rebuild through facade");
     assert_eq!(rebuilt.fold, advanced.fold);
     assert!(book.verify_registers(&march).unwrap().is_green());

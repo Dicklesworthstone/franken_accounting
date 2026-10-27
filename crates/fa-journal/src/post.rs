@@ -357,6 +357,7 @@ impl PreparedPost {
     pub(crate) fn into_member(
         self,
         planning: bool,
+        carrying: Option<crate::batch::IndependentCarryingBatch>,
     ) -> Result<(WriteTxn, BatchMember, crate::batch::TemplateByteTracker), KernelError> {
         let aggregate = match requires_aggregate_basis(&self.request.proposal) {
             Ok(aggregate) => aggregate,
@@ -365,7 +366,12 @@ impl PreparedPost {
                 return Err(error);
             }
         };
-        if self.planning != planning || self.paired_reversal.is_some() || aggregate {
+        let independent_carrying =
+            carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
+        if self.planning != planning
+            || self.paired_reversal.is_some()
+            || (aggregate && !independent_carrying)
+        {
             self.txn.abort();
             return Err(KernelError::Corrupt(
                 "a preparation joins only a matching batch execution mode; replacement pairs and fold-derived entries have separate protocols".into(),
@@ -451,8 +457,22 @@ impl PreparedPost {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        if paired_reversal.is_none() && entry.proposal.class != EntryClass::RESOLUTION {
-            let admitted = match capacity {
+        let admitted = if txn.basis() != db.frontier()? {
+            // A carried summary proves only its prepared prefix. When an
+            // intervening publication moved the frontier, recheck the final
+            // effects there without refreshing the original witnesses.
+            let mut capacity_entries = vec![(entry_ref.vid, &entry)];
+            if let Some(member) = &paired_reversal {
+                capacity_entries.push((member.entry_ref.vid, &member.entry));
+            }
+            crate::register_capacity::admit_publication(
+                db,
+                ctx,
+                entry.proposal.book_id,
+                &capacity_entries,
+            )?
+        } else if paired_reversal.is_none() && entry.proposal.class != EntryClass::RESOLUTION {
+            match capacity {
                 Some(history) => crate::register_capacity::admit_addition_carried(
                     &txn,
                     db,
@@ -469,10 +489,6 @@ impl PreparedPost {
                     entry_ref.vid,
                     &entry,
                 )?,
-            };
-            if let Err(refusal) = admitted {
-                txn.abort();
-                return Ok(Err(refusal));
             }
         } else {
             let accounts = crate::register_capacity::accounts(
@@ -483,7 +499,7 @@ impl PreparedPost {
                 .iter()
                 .map(|m| m.entry_ref.vid)
                 .chain(std::iter::once(entry_ref.vid));
-            let admitted = match capacity {
+            match capacity {
                 Some(history) => crate::register_capacity::admit_carried(
                     &txn,
                     db,
@@ -501,11 +517,31 @@ impl PreparedPost {
                     &accounts,
                     staged,
                 )?,
-            };
-            if let Err(refusal) = admitted {
-                txn.abort();
-                return Ok(Err(refusal));
             }
+        };
+        if let Err(refusal) = admitted {
+            // Two individually fitting preparations may compete for the
+            // remaining capacity. Preserve that race's conflict contract;
+            // a fresh retry then receives the ordinary capacity refusal.
+            let refusal = if refusal.code == code::REGISTER_CAPACITY
+                && txn.basis() != db.frontier()?
+            {
+                Refusal::new(
+                    code::CONFLICT,
+                    exit::CONFLICT,
+                    format!(
+                        "a publication after prepared prefix {} exhausted register capacity: {}",
+                        txn.basis().0,
+                        refusal.message
+                    ),
+                    "plan §5.2 (register capacity at publication)",
+                    "re-plan against the current journal; reduce gross activity if the fresh plan exceeds register capacity",
+                )
+            } else {
+                refusal
+            };
+            txn.abort();
+            return Ok(Err(refusal));
         }
         let aggregate = requires_aggregate_basis(&request.proposal)?;
         if aggregate && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?) {
@@ -1311,18 +1347,18 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
     admission: Admission,
-    carried: Option<WriteTxn>,
+    member: crate::batch::MemberPreparation,
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
     if crate::revaluation::is_source_bound(&req.proposal) {
-        if let Some(txn) = carried {
+        if let Some(txn) = member.txn {
             txn.abort();
         }
         return Ok(Err(crate::revaluation::unsupported_batch()));
     }
-    if crate::carrying::is_source_bound(&req.proposal) {
-        if let Some(txn) = carried {
+    if crate::carrying::is_source_bound(&req.proposal) && member.carrying.is_none() {
+        if let Some(txn) = member.txn {
             txn.abort();
         }
         return Ok(Err(crate::carrying::unsupported_batch()));
@@ -1334,7 +1370,7 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
         req,
         None,
         admission,
-        carried,
+        Some(member),
         carried_tracker,
         reconciliation,
     )
@@ -1768,10 +1804,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     req: PostRequest,
     replacement_basis: Option<ReplacementBasis>,
     admission: Admission,
-    carried: Option<WriteTxn>,
+    member: Option<crate::batch::MemberPreparation>,
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
+    let (carried, carrying_batch) = match member {
+        Some(member) => (member.txn, member.carrying),
+        None => (None, None),
+    };
     let planning = matches!(admission, Admission::Plan);
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
@@ -1900,7 +1940,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some()
+        if (carried.is_some() && carrying_batch.is_none())
             || replacement_basis.is_some()
             || matches!(
                 admission,

@@ -326,6 +326,69 @@ fn denied_uploads_do_not_touch_blobs_or_reveal_existing_metadata() {
 }
 
 #[test]
+fn scoped_external_uploads_leave_new_blobs_absent_and_original_custody_unchanged() {
+    let mut h = Harness::new();
+    let agent = capability(Profile::Agent, 33)
+        .for_books(&[h.book.book_id])
+        .unwrap()
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let original = request(b"original external scoped evidence".to_vec());
+    let added = h.upload(&agent, original.clone()).unwrap();
+    let head = h.db.frontier().unwrap();
+    let custody = fa_journal::custody_chain(&h.db, &added.oid).unwrap();
+    let pending = request(b"unrecorded external scoped evidence".to_vec());
+    let (pending_oid, locator) = identity(&h, &pending);
+    let owner = capability(Profile::Human, 34);
+    let caveats = [
+        ("accounts", owner.clone().for_accounts(&["1000"]).unwrap()),
+        (
+            "periods",
+            owner.clone().for_periods(&["FY2026-P01"]).unwrap(),
+        ),
+        (
+            "effective",
+            owner
+                .clone()
+                .effective_through(DateDay::from_ymd(2026, 1, 31).unwrap()),
+        ),
+        ("known_at", owner.clone().known_at_most(head)),
+        ("branch", owner.clone().on_branch(Id128([35; 16])).unwrap()),
+    ];
+    for (caveat, cap) in caveats {
+        for req in [pending.clone(), original.clone()] {
+            let refusal = h.upload(&cap, req).unwrap_err();
+            assert_eq!(refusal.code, "FA-REF-011", "{caveat}: {refusal}");
+            assert_eq!(refusal.exit, 7, "{caveat}: {refusal}");
+            assert!(refusal.message.contains(caveat), "{caveat}: {refusal}");
+            assert_eq!(h.db.frontier().unwrap(), head);
+            h.no_graph_record(&pending_oid);
+            assert!(
+                h.runtime
+                    .block_on(h.store.get(&h.cx().query(), &locator, 100))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+    assert_eq!(
+        fa_journal::custody_chain(&h.db, &added.oid).unwrap(),
+        custody
+    );
+    let retry = h.upload(&owner, original).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(
+        (retry.grade, retry.recorded_at),
+        (added.grade, added.recorded_at)
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.read(&added.oid).retrieved_by, agent.holder());
+    let fresh = h.upload(&owner, pending).unwrap();
+    assert_eq!(fresh.recorded_at.0, head.0 + 1);
+    assert_eq!(h.read(&fresh.oid).retrieved_by, owner.holder());
+}
+
+#[test]
 fn failed_blob_publication_never_publishes_document_or_receipt() {
     let mut h = Harness::new();
     let req = request(b"blocked shard".to_vec());

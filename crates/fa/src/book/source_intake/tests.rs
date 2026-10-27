@@ -148,6 +148,62 @@ fn rejected_authority_and_metadata_never_poll_the_reader() {
 }
 
 #[test]
+fn scoped_uploads_refuse_before_reading_or_opening_evidence_sources() {
+    let mut book = create(246);
+    let source = source(&book);
+    let before = book.head().unwrap();
+    let owner = human();
+    let caveats = [
+        owner.clone().for_accounts(&["1000"]).unwrap(),
+        owner.clone().for_periods(&["FY2026-P01"]).unwrap(),
+        owner
+            .clone()
+            .effective_through(DateDay::from_ymd(2026, 1, 31).unwrap()),
+        owner.clone().known_at_most(before),
+        owner.on_branch(Id128([247; 16])).unwrap(),
+    ];
+    let missing = Path::new("scoped-intake-missing-source");
+    for capability in caveats {
+        let preflight = book
+            .preflight_intake(&capability, IntakeAction::Upload)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(preflight.code, "FA-REF-011");
+        assert_eq!(preflight.exit, 7);
+        let reader = book
+            .upload_document_from_reader(&capability, &mut Untouched, upload(16))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(reader.code, preflight.code);
+        assert_eq!(reader.exit, preflight.exit);
+        let vfs = book
+            .upload_document_from_vfs(&capability, &source, missing, upload(16))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(vfs.code, preflight.code);
+        let local = book
+            .upload_document_from_path(&capability, missing, upload(16))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(local.code, preflight.code);
+        assert_eq!(book.head().unwrap(), before);
+    }
+    let agent = agent()
+        .for_books(&[book.context().book_id])
+        .unwrap()
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let mut bytes = &b"authorized trunk-bound agent"[..];
+    let added = book
+        .upload_document_from_reader(&agent, &mut bytes, upload(28))
+        .unwrap()
+        .unwrap();
+    assert_eq!(added.recorded_at.0, before.0 + 1);
+    assert!(bytes.is_empty());
+    assert_eq!(book.custody_chain(&added.oid).unwrap().len(), 1);
+}
+
+#[test]
 fn exact_reader_budget_succeeds_overflow_refuses_and_retry_preserves_custody() {
     let mut book = create(243);
     let before = book.head().unwrap();

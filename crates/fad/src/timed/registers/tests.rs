@@ -42,12 +42,127 @@ struct Scripted {
 }
 
 impl RegisterBook for Scripted {
-    async fn advance(&mut self, _cx: &Cx, period: &str) -> Result<Publication, String> {
+    fn book_id(&self) -> Id128 {
+        Id128([0x5a; 16])
+    }
+
+    async fn advance(
+        &mut self,
+        _cx: &Cx,
+        capability: &Capability,
+        period: &str,
+    ) -> Result<Publication, String> {
+        assert_eq!(
+            capability.ops(),
+            &BTreeSet::from([Op::Read, Op::Verify, Op::Maintain])
+        );
+        assert_eq!(capability.books(), Some(&BTreeSet::from([self.book_id()])));
         self.calls.push(period.to_owned());
         self.results
             .pop_front()
             .expect("one result per scripted call")
     }
+}
+
+#[test]
+fn maintenance_service_authority_is_narrow_and_pinned_to_the_first_real_book() {
+    use std::path::Path;
+
+    use fa::{BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_money::UnitRegistry;
+    use fa_time::FiscalCalendar;
+    use fgdb::MemVfs;
+    use fgdb_types::VId;
+
+    async fn book(root: &Cx, seed: u8) -> AsyncBook<MemVfs> {
+        let cx = PurposeContexts::narrow_runtime_root(root);
+        let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
+        let mut book = AsyncBook::create_with_vfs(
+            &cx,
+            vfs,
+            Path::new("register-service-authority"),
+            BookKeys::for_development(seed),
+            BookSpec {
+                book_id: Id128([seed; 16]),
+                name: "Register service authority".into(),
+                base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+                calendar: FiscalCalendar::monthly("service-calendar", 1, 1).unwrap(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            },
+            Entropy::deterministic(u64::from(seed)),
+        )
+        .await
+        .unwrap();
+        let principal = VId(1);
+        book.create_periods(
+            &cx,
+            2026,
+            principal,
+            &Capability::embedded(principal, &["schema_change"]).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        book
+    }
+
+    lab(181, |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut first = book(&root, 181).await;
+        let mut other = book(&root, 182).await;
+        let mut work = RegisterWork::new(vec!["FY2026-P03".into()]).unwrap();
+        assert!(work.authority.is_none());
+        let before = first.head(&cx).unwrap();
+        work.run_cycle(&root, &mut first).await;
+        let publication = work.periods()[0].last_success.clone().unwrap();
+        assert!(publication.wrote);
+        assert!(first.head(&cx).unwrap() > before);
+        assert!(work.periods()[0].error.is_none());
+        assert!(
+            first
+                .verify_registers(&cx, "FY2026-P03")
+                .unwrap()
+                .is_green()
+        );
+
+        let authority = work.authority.as_ref().unwrap().as_ref().unwrap().clone();
+        assert_eq!(authority.profile(), Profile::System);
+        assert_eq!(
+            authority.holder(),
+            fa_journal::rows::system_principal(first.context().book_id)
+        );
+        assert_eq!(
+            authority.ops(),
+            &BTreeSet::from([Op::Read, Op::Verify, Op::Maintain])
+        );
+        assert_eq!(
+            authority.books(),
+            Some(&BTreeSet::from([first.context().book_id]))
+        );
+        let other_before = other.head(&cx).unwrap();
+        let refusal = other
+            .advance_registers(&cx, authority.holder(), &authority, "FY2026-P03")
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.exit, 7);
+        work.run_cycle(&root, &mut other).await;
+        assert_eq!(other.head(&cx).unwrap(), other_before);
+        assert_eq!(work.periods()[0].last_success, Some(publication));
+        assert_eq!(work.periods()[0].error, Some(refusal.to_string()));
+        assert_eq!(
+            work.authority.as_ref().unwrap().as_ref().unwrap().books(),
+            authority.books(),
+            "a different book never causes a new implicit service grant"
+        );
+        assert!(first.latest_tick(&cx).unwrap().is_none());
+        assert!(other.latest_tick(&cx).unwrap().is_none());
+    })
+    .unwrap()
+    .expect("lab completed");
 }
 
 fn publication(through: u64) -> Publication {
@@ -58,6 +173,54 @@ fn publication(through: u64) -> Publication {
         rebuilt: false,
         wrote: true,
     }
+}
+
+#[test]
+fn fiscal_year_selection_uses_custom_boundaries_and_preserves_the_scheduling_bound() {
+    use fa_time::{CustomYear, DateDay, FiscalCalendar};
+    let start = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let calendar = FiscalCalendar::custom(
+        "short",
+        vec![CustomYear {
+            fiscal_year: 2026,
+            bounds: vec![
+                start,
+                start.add_days(10).unwrap(),
+                start.add_days(30).unwrap(),
+            ],
+        }],
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        fiscal_year_periods(&calendar, 2026).unwrap(),
+        [
+            "FY2026-P01",
+            "FY2026-P02",
+            "FY2026-OPEN",
+            "FY2026-A1",
+            "FY2026-A2",
+            "FY2026-CLOSE",
+        ]
+    );
+    assert!(fiscal_year_periods(&calendar, 2027).is_err());
+    let largest = FiscalCalendar::custom(
+        "largest",
+        vec![CustomYear {
+            fiscal_year: 2026,
+            bounds: (0..=fa_time::calendar::MAX_CUSTOM_PERIODS)
+                .map(|n| start.add_days(n as i32).unwrap())
+                .collect(),
+        }],
+        fa_time::calendar::MAX_ADJUSTMENT_PERIODS,
+    )
+    .unwrap();
+    let selected = fiscal_year_periods(&largest, 2026).unwrap();
+    assert_eq!(selected.len(), 59);
+    assert!(selected.len() <= MAX_PERIODS);
+    assert!(
+        fiscal_year_periods(&FiscalCalendar::monthly("monthly", 1, 0).unwrap(), i32::MAX).is_err()
+    );
 }
 
 #[test]

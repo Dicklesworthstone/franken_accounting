@@ -452,6 +452,264 @@ fn workpaper_keeps_control_only_units_exact_amounts_selected_detail_and_uncovere
 }
 
 #[test]
+fn valued_foreign_workpaper_preserves_carrying_relief_controls_and_replay() {
+    use crate::{FxRatePurpose, FxSettlementRequest};
+    use fa_model::LegPayload;
+    use fa_money::{Amount, Side};
+
+    let mut h = Harness::new();
+    let invoice = h.post("usd", "2026-03-01", h.usd, ("ar", "sales"), 100, None);
+    h.post(
+        "fully-paid",
+        "2026-03-15",
+        h.usd,
+        ("cash", "ar"),
+        100,
+        Some(invoice),
+    );
+    let exact = (1_i128 << 90) + 1;
+    let spot = h.fx_rate("2026-03-01", FxRatePurpose::SpotClose, 2);
+    let rate = h.fx_rate("2026-03-15", FxRatePurpose::Settlement, 3);
+    let proposal = h.proposal(
+        "eur",
+        "2026-03-01",
+        vec![
+            LegPayload::simple(Side::Debit, h.id("ar"), Amount::new(h.eur, exact)),
+            LegPayload::simple(Side::Credit, h.id("sales"), Amount::new(h.eur, exact)),
+        ],
+    );
+    let valued = h.value_fx(proposal, spot);
+    assert!(
+        valued
+            .legs
+            .iter()
+            .all(|leg| leg.base_amount == Some(Amount::new(h.usd, 2 * exact)))
+    );
+    let eur = h.try_post(valued).unwrap();
+    // The existing liability leaf serves as the explicit FX clearing account;
+    // its native positions must net to zero in the functional currency.
+    let application = FxSettlementRequest {
+        target: eur,
+        target_ordinal: 0,
+        amount: Amount::new(h.eur, 7),
+        settlement_amount: Amount::new(h.usd, 21),
+        settlement_account: h.id("cash"),
+        conversion_account: h.id("ap"),
+        realized_fx_account: h.id("sales"),
+        rate_document: rate,
+    };
+    let template = h.proposal("partially-paid", "2026-03-15", Vec::new());
+    let before = h.head();
+    let rows = h.book.db.vertices().unwrap();
+    let mut unexplained_cash = application.clone();
+    unexplained_cash.settlement_amount.mantissa = 20;
+    let refusal = h
+        .prepare_fx(&unexplained_cash, template.clone())
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-071", 3));
+    assert_eq!(h.head(), before);
+    assert_eq!(h.book.db.vertices().unwrap(), rows);
+    let prepared = h.prepare_fx(&application, template).unwrap();
+    assert_eq!(
+        prepared.carrying().original_base,
+        Amount::new(h.usd, 2 * exact)
+    );
+    assert_eq!(prepared.base_relief(), Amount::new(h.usd, 14));
+    let refusal = h.try_post(prepared.proposal().clone()).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+    assert_eq!(h.head(), before);
+    assert_eq!(h.book.db.vertices().unwrap(), rows);
+    let mut altered_relief = prepared.proposal().clone();
+    for leg in &mut altered_relief.legs[..2] {
+        leg.base_amount.as_mut().unwrap().mantissa += 1;
+    }
+    let totals = altered_relief.base_totals.as_mut().unwrap();
+    totals.debits += 1;
+    totals.credits += 1;
+    let refusal = h
+        .try_post_as(altered_relief, cap(&["read", "post"]))
+        .unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        ("FA-REF-071", 3),
+        "{refusal:?}"
+    );
+    assert_eq!(h.head(), before);
+    assert_eq!(h.book.db.vertices().unwrap(), rows);
+    h.try_post_as(prepared.into_proposal(), cap(&["read", "post"]))
+        .unwrap();
+
+    let remaining = h
+        .prepare_fx(
+            &FxSettlementRequest {
+                amount: Amount::new(h.eur, exact - 7),
+                settlement_amount: Amount::new(h.usd, 3 * (exact - 7)),
+                ..application
+            },
+            h.proposal("remaining-payment", "2026-03-15", Vec::new()),
+        )
+        .unwrap();
+    assert_eq!(
+        remaining.carrying().open_native,
+        Amount::new(h.eur, exact - 7)
+    );
+    assert_eq!(remaining.carrying().applied_base, Amount::new(h.usd, 14));
+    assert_eq!(
+        remaining.carrying().open_base,
+        Amount::new(h.usd, 2 * exact - 14)
+    );
+    assert_eq!(remaining.base_relief(), remaining.carrying().open_base);
+    let cx = h.cx();
+    let functional = h
+        .runtime
+        .block_on(
+            h.book
+                .functional_period_activity(&cx, &cap(&["read"]), "FY2026-P03", None),
+        )
+        .unwrap()
+        .unwrap();
+    let clearing = functional
+        .cells
+        .iter()
+        .find(|cell| cell.key.account == h.id("ap"))
+        .unwrap();
+    assert_eq!((clearing.debits, clearing.credits), (14, 14));
+    let ar = functional
+        .cells
+        .iter()
+        .find(|cell| cell.key.account == h.id("ar"))
+        .unwrap();
+    assert_eq!(ar.net(), Some(2 * exact - 14));
+    let verification = h.book.verify_fx_conversions(&cx, None).unwrap();
+    assert!(verification.is_green(), "{verification:?}");
+    assert_eq!(verification.checked.values().sum::<u64>(), 2);
+    let request = AgingPortfolioRequest {
+        scope: AgingAccountScope::Selected(vec![h.id("ar"), h.id("idle")]),
+        ..h.request()
+    };
+    let saved = certify(&h, &request);
+    let at = h.head();
+    let text = h
+        .book
+        .aging_portfolio_jsonl(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &saved.certificate,
+            saved.report.request(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        text.matches("\"event\":\"aging_portfolio_unit\"").count(),
+        2
+    );
+    assert_eq!(
+        text.matches("\"event\":\"aging_portfolio_control\"")
+            .count(),
+        2
+    );
+    assert_eq!(
+        text.matches("\"event\":\"aging_portfolio_item\"").count(),
+        1
+    );
+    assert_eq!(
+        text.matches("\"event\":\"aging_portfolio_application\"")
+            .count(),
+        1
+    );
+    assert_eq!(
+        text.matches("\"event\":\"aging_portfolio_account\"")
+            .count(),
+        6
+    );
+    assert!(text.contains(&format!("\"original\":\"{exact}\"")));
+    assert!(text.contains(&format!("\"open\":\"{}\"", exact - 7)));
+    assert!(text.contains("\"posted_debits\":\"100\",\"posted_credits\":\"100\""));
+    assert!(text.contains(
+        "\"complete\":false,\"selected_reconciled\":true,\"complete_and_reconciled\":false"
+    ));
+    assert!(
+        text.contains("\"external_subledger_attestation\":false,\"period_close_authorized\":false")
+    );
+    assert!(!text.contains("Portfolio accounting evidence"));
+    assert_eq!(
+        text,
+        h.book
+            .aging_portfolio_jsonl(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &saved.certificate,
+                saved.report.request()
+            )
+            .unwrap()
+            .unwrap()
+    );
+    assert_eq!(h.head(), at);
+    let cold = h.reopen();
+    assert_eq!(
+        replay(&cold, &saved.certificate, saved.report.request())
+            .unwrap()
+            .unwrap(),
+        saved.report
+    );
+    assert_eq!(
+        cold.book
+            .aging_portfolio_jsonl(
+                &cold.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &saved.certificate,
+                saved.report.request(),
+            )
+            .unwrap()
+            .unwrap(),
+        text
+    );
+    assert_eq!(cold.head(), at);
+}
+
+#[test]
+fn an_unvalued_foreign_application_is_refused_without_changing_the_workpaper_source() {
+    use fa_model::{LegPayload, Settlement};
+    use fa_money::{Amount, Side};
+
+    let mut h = Harness::new();
+    let exact = (1_i128 << 90) + 1;
+    let invoice = h.post(
+        "unvalued-eur",
+        "2026-03-01",
+        h.eur,
+        ("ar", "sales"),
+        exact,
+        None,
+    );
+    let before = h.head();
+    let rows = h.book.db.vertices().unwrap();
+    let report = h.report(&h.request());
+    let mut applying = LegPayload::simple(Side::Credit, h.id("ar"), Amount::new(h.eur, 7));
+    applying.settles.push(Settlement {
+        target: invoice,
+        ordinal: 0,
+        amount: applying.amount,
+    });
+    let proposal = h.proposal(
+        "unvalued-payment",
+        "2026-03-15",
+        vec![
+            LegPayload::simple(Side::Debit, h.id("cash"), Amount::new(h.eur, 7)),
+            applying,
+        ],
+    );
+    let refusal = h.try_post(proposal).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-071", 3));
+    assert_eq!(h.head(), before);
+    assert_eq!(h.book.db.vertices().unwrap(), rows);
+    assert_eq!(h.report(&h.request()), report);
+}
+
+#[test]
 fn present_authority_is_required_even_with_a_saved_producer_and_corrupt_native_data() {
     use fa_model::symbols::{property, relation};
     use fgdb::{WriteBatch, WriteMismatchPolicy};

@@ -247,8 +247,8 @@ pub use fa_statements::{
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
 pub use functional_trial_balance::{FunctionalTrialBalance, FunctionalTrialBalanceCell};
 pub use fx::{
-    FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementRequest,
-    PreparedFxSettlement,
+    FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementItem,
+    FxSettlementRequest, MAX_FX_SETTLEMENT_ITEMS, PreparedFxSettlement, PreparedFxSettlementGroup,
 };
 pub use fx_revaluation::{
     FxRevaluationRequest, FxRevaluationRoute, FxRevaluationRoutes, FxRevaluationRoutesRecorded,
