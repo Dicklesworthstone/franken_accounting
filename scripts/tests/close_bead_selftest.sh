@@ -82,23 +82,25 @@ export STUB_BR_CREATED="$base/br-created.log"
 # Synthetic check.sh that produces test-list.log and test.log
 cat > "$fixture/scripts/check.sh" <<'CHECK'
 #!/usr/bin/env bash
+# CANONICAL_STEPS: test-list, test
 set -eu
 tree_hash="$(git rev-parse 'HEAD^{tree}')"
 toolchain="$(rustc --version 2>/dev/null || echo 'rustc 1.100.0-nightly')"
 log_dir="$CHECK_LOG_DIR"
 manifest="$CHECK_STEP_MANIFEST"
+stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$log_dir"
 : > "$manifest"
 
 if [ "${FAKE_CHECK_MODE:-pass}" = "split-1" ]; then
   printf '  fa_journal::retention::tests::floor_enforced: test\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test-list.log"
   d1="$(sha256sum "$log_dir/test-list.log" | awk '{print $1}')"
-  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-25T00:00:00Z","finished":"2026-10-25T00:00:01Z","duration_secs":1,"log_digest":"%s"}\n' \
-    "$tree_hash" "$toolchain" "$d1" >> "$manifest"
+  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$stamp" "$stamp" "$d1" >> "$manifest"
   printf '  [RCH] worker busy; refusing local fallback\n' > "$log_dir/test.log"
   d2="$(sha256sum "$log_dir/test.log" | awk '{print $1}')"
-  printf '{"step":"test","status":"UNRUN","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-25T00:00:01Z","finished":"2026-10-25T00:00:02Z","duration_secs":1,"log_digest":"%s"}\n' \
-    "$tree_hash" "$toolchain" "$d2" >> "$manifest"
+  printf '{"step":"test","status":"UNRUN","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$stamp" "$stamp" "$d2" >> "$manifest"
   printf 'PASS test-list\nUNRUN test\nFAIL check.sh: 1 gate(s) did not run\nQUALITY GATE RED\n'
   printf 'QUALITY GATE RED\n' >&2
   exit 2
@@ -118,10 +120,10 @@ EOF
 d_test="$(sha256sum "$log_dir/test.log" | awk '{print $1}')"
 
 {
-  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-25T00:00:00Z","finished":"2026-10-25T00:00:01Z","duration_secs":1,"log_digest":"%s"}\n' \
-    "$tree_hash" "$toolchain" "$d_list"
-  printf '{"step":"test","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-25T00:00:01Z","finished":"2026-10-25T00:00:02Z","duration_secs":1,"log_digest":"%s"}\n' \
-    "$tree_hash" "$toolchain" "$d_test"
+  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$stamp" "$stamp" "$d_list"
+  printf '{"step":"test","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$stamp" "$stamp" "$d_test"
 } > "$manifest"
 printf 'PASS test-list\nPASS test\nALL GATES GREEN\n'
 CHECK
@@ -162,11 +164,7 @@ beads = [
         "status": "in_progress",
         "description": "Code bead trying none loophole.\n\n```acceptance-tests\nnone: trying to skip tests on crates/ edit\n```\n",
     },
-    {
-        "id": "fa-forged-note",
-        "status": "in_progress",
-        "description": "Bead offered a forged verdict note (fa-0hs4.1).\n\n```acceptance-tests\nfa-journal::retention::tests::floor_enforced\n```\n",
-    },
+    {"id": "fa-no-block", "status": "in_progress", "description": "Code without an acceptance block"},
 ]
 path.write_text("\n".join(json.dumps(b) for b in beads) + "\n")
 PY
@@ -177,7 +175,7 @@ git config user.name "Close Bead Self-Test"
 git config user.email "close-bead@example.invalid"
 printf 'pub fn init() {}\n' > crates/fa/src/lib.rs
 git add .
-git commit -q -m "feat: initial implementation (fa-good, fa-missing-test, fa-failed-test, fa-code-loophole, fa-forged-note)"
+git commit -q -m "feat: initial implementation (fa-good, fa-missing-test, fa-failed-test, fa-code-loophole, fa-no-block)"
 
 printf '# Guide\n' > docs/guide.md
 git add docs/guide.md
@@ -274,9 +272,9 @@ PY
   out="$(bash scripts/close_bead.sh fa-failed-test --verdict "$main_commit" --repository "$fixture" --reason "should fail" 2>&1)" || rc=$?
   printf '%s\n' "$orig_note" | git notes --ref=fa-verdict add -f -F - "$main_commit" 2>/dev/null
   [ "$rc" -ne 0 ] || fail "refuses_failed_test: close_bead.sh accepted a bead whose test FAILED in the verdict ($out)"
-  grep -Fq "FAILED in verdict" <<< "$out" \
-    || fail "refuses_failed_test: expected FAILED-test refusal diagnostic ($out)"
-  gate_pass "refuses_failed_test (bead whose acceptance test failed in verdict is refused)"
+  grep -Eq 'FAILED in verdict|note test witness differs from retained log' <<< "$out" \
+    || fail "refuses_failed_test: neither failure admission nor retained-result binding refused the forged metadata ($out)"
+  gate_pass "refuses_failed_test (forged failure metadata cannot override the retained executed result)"
 }
 
 # 4. Acceptance test: planted negative — a verdict on a tree lacking the landing commit is refused
@@ -354,65 +352,143 @@ process_closure_and_regression_checks() {
   gate_pass "process_closure_and_regression_checks (none: loophole blocked on code commits, closure-debt=0, 30-day regression check green)"
 }
 
-# fa-0hs4.1: rewrite main_commit's note the way the 2026-10-25 notes were
-# forged, offer it for fa-forged-note, restore the note, and require refusal.
-forged_note_is_refused() {
-  local case_name="$1" mode="$2" expect="$3"
-  local orig_note out rc=0
-  orig_note="$(git notes --ref=fa-verdict show "$main_commit")"
-  python3 - "$main_commit" "$mode" <<'PY'
-import json, subprocess, sys
-commit, mode = sys.argv[1], sys.argv[2]
+# These are producer-generated synthetic proofs, not evidence that Rust ran.
+# Every negative invokes the real closure command in dry-run mode and retains
+# stdout/stderr plus the untouched fixture graph. Old admission must lose here.
+retained_evidence_refusal() {
+  local mutation="$1" label="$2" target_bead="${3:-fa-good}"
+  local altered="$base/note-$mutation" original_note out rc=0
+  original_note="$(git notes --ref=fa-verdict show "$main_commit")"
+  cp -R "$pass_proof" "$altered"
+  cp "$STUB_BEADS_JSONL" "$altered.graph-before"
+  python3 -B - "$altered" "$mutation" "$main_commit" <<'PY' || fail "cannot plant $mutation"
+import hashlib, json, pathlib, subprocess, sys
+root, mutation, commit = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 note = subprocess.check_output(["git", "notes", "--ref=fa-verdict", "show", commit], text=True)
-out, moved, forged = [], [], None
+fields, summaries = {}, []
 for line in note.splitlines():
-    if mode == "early-start" and line.startswith("started_utc="):
-        line = "started_utc=2000-01-01T00:00:00Z"
-    if line.startswith("step_verdict="):
-        rec = json.loads(line.removeprefix("step_verdict="))
-        if mode == "foreign-step-tree" and rec.get("step") == "test":
-            rec["tree_hash"] = "0" * 40
-        if mode == "names-outside-test-step" and rec.get("step") == "test":
-            # The forged step looks complete; only its name and the place of
-            # the test names differ from the real test step.
-            forged = json.loads(json.dumps(rec))
-            forged["step"] = "check-classify"
-            w = rec.get("witness", {})
-            moved = w.pop("passed_test_names", [])
-            rec["witness"] = w
-            forged["witness"] = {"log_digest": w.get("log_digest"), "passed_test_names": moved}
-        line = "step_verdict=" + json.dumps(rec, separators=(",", ":"))
-    out.append(line)
-if mode == "names-outside-test-step":
-    out.append("step_verdict=" + json.dumps(forged, separators=(",", ":")))
-subprocess.run(["git", "notes", "--ref=fa-verdict", "add", "-f", "-m", "\n".join(out) + "\n", commit],
-               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    key, value = line.split("=", 1)
+    if key == "step_verdict": summaries.append(json.loads(value))
+    else: fields[key] = value
+records = [json.loads(line) for line in (root / "step-verdicts.jsonl").read_text().splitlines()]
+fields["proof_dir"] = str(root)
+if mutation == "step-tree":
+    records[0]["tree_hash"] = summaries[0]["tree_hash"] = "0" * 40
+elif mutation == "before-commit":
+    fields["started_utc"] = "2000-01-01T00:00:00Z"
+    manifest = (root / "manifest.txt").read_text().splitlines()
+    (root / "manifest.txt").write_text("\n".join("started_utc=" + fields["started_utc"]
+        if line.startswith("started_utc=") else line for line in manifest) + "\n")
+elif mutation == "step-before-run":
+    for key in ("started", "finished"):
+        records[0][key] = summaries[0][key] = "2000-01-01T00:00:00Z"
+elif mutation == "outside-test":
+    with (root / "steps/test-list.log").open("a") as log:
+        log.write("test fa_journal::retention::tests::does_not_exist ... ok\n")
+    summaries[0]["witness"]["passed_test_names"] = ["fa_journal::retention::tests::does_not_exist"]
+elif mutation == "without-test":
+    records = records[:1]
+    summaries = summaries[:1]
+    summaries[0]["witness"]["passed_test_names"] = [
+        "fa_journal::retention::tests::floor_enforced", "fa_journal::retention::tests::cadence_checked"]
+    (root / "check.stdout.log").write_text("PASS test-list\nALL GATES GREEN\n")
+elif mutation == "missing-proof":
+    fields["proof_dir"] = str(root / "not-retained")
+elif mutation == "checksum-identity":
+    fields["proof_sums_sha256"] = "0" * 64
+elif mutation == "direct-test-name":
+    fields["passed_test"] = "fa_journal::retention::tests::does_not_exist"
+elif mutation == "failed-log":
+    log = root / "steps/test.log"
+    log.write_text(log.read_text().replace("cadence_checked ... ok", "cadence_checked ... FAILED")
+        .replace("2 passed; 0 failed", "1 passed; 1 failed"))
+    summaries[1]["witness"]["passed_test_names"].remove("fa_journal::retention::tests::cadence_checked")
+    summaries[1]["witness"]["failed_test_names"] = ["fa_journal::retention::tests::cadence_checked"]
+elif mutation != "mutated-log":
+    raise ValueError(mutation)
+for record, summary in zip(records, summaries):
+    digest = hashlib.sha256((root / "steps" / (record["step"] + ".log")).read_bytes()).hexdigest()
+    record["log_digest"] = summary["log_digest"] = summary["witness"]["log_digest"] = digest
+lines = [json.dumps(record, separators=(",", ":")) for record in records]
+(root / "step-verdicts.jsonl").write_text("\n".join(lines) + "\n")
+tools = [line for line in (root / "tools.txt").read_text().splitlines() if not line.startswith("step_verdict=")]
+(root / "tools.txt").write_text("\n".join(tools + ["step_verdict=" + line for line in lines]) + "\n")
+sums = []
+for path in sorted(root.rglob("*")):
+    if path.is_file() and path.name != "SHA256SUMS":
+        sums.append(hashlib.sha256(path.read_bytes()).hexdigest() + "  ./" + path.relative_to(root).as_posix())
+(root / "SHA256SUMS").write_text("\n".join(sums) + "\n")
+if mutation != "checksum-identity":
+    fields["proof_sums_sha256"] = hashlib.sha256((root / "SHA256SUMS").read_bytes()).hexdigest()
+if mutation == "mutated-log":
+    with (root / "steps/test.log").open("a") as log: log.write("changed byte\n")
+body = "\n".join([key + "=" + value for key, value in fields.items()]
+    + ["step_verdict=" + json.dumps(summary, separators=(",", ":")) for summary in summaries]) + "\n"
+subprocess.run(["git", "notes", "--ref=fa-verdict", "add", "-f", "-F", "-", commit], input=body, text=True, check=True)
 PY
-  out="$(bash scripts/close_bead.sh fa-forged-note --verdict "$main_commit" --repository "$fixture" --reason "forged" 2>&1)" || rc=$?
-  printf '%s\n' "$orig_note" | git notes --ref=fa-verdict add -f -F - "$main_commit" 2>/dev/null
-  [ "$rc" -ne 0 ] || fail "$case_name: close_bead.sh accepted a forged note ($out)"
-  grep -Fq "$expect" <<< "$out" || fail "$case_name: expected \`$expect\` ($out)"
-  python3 - "$STUB_BEADS_JSONL" <<'PY' || fail "$case_name: bead status changed after refusal"
-import json, pathlib, sys
-rows = {r["id"]: r for r in map(json.loads, pathlib.Path(sys.argv[1]).read_text().splitlines())}
-assert rows["fa-forged-note"]["status"] == "in_progress"
-PY
-  gate_pass "$case_name (forged note refused: $expect)"
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh "$target_bead" --verdict "$main_commit" \
+    --repository "$fixture" --reason "synthetic $mutation control" \
+    >"$altered.stdout" 2>"$altered.stderr"
+  rc=$?
+  printf '%s\n' "$original_note" | git notes --ref=fa-verdict add -f -F - "$main_commit" 2>/dev/null \
+    || fail "could not restore original fixture note"
+  cmp "$STUB_BEADS_JSONL" "$altered.graph-before" || fail "$label: refusal changed the fixture graph"
+  if [ "$rc" -eq 0 ]; then
+    gate_fail "$label: original defect admitted $mutation (logs $altered.stdout and .stderr)"
+  else
+    out="$(cat "$altered.stderr")"
+    case "$out" in
+      *local-proof-verify:*|*"failed local_proof_verify.sh"*)
+        gate_pass "$label (synthetic $mutation refused exit=$rc; graph unchanged)" ;;
+      *"FAILED in verdict"*)
+        [ "$mutation" = failed-log ] || fail "$label: unrelated failed-test refusal ($out)"
+        gate_pass "$label (retained failed test refused exit=$rc; graph unchanged)" ;;
+      *) fail "$label: unrelated failure ($out)" ;;
+    esac
+  fi
 }
 
 refuses_note_whose_step_tree_differs_from_commit_tree() {
-  forged_note_is_refused refuses_note_whose_step_tree_differs_from_commit_tree \
-    foreign-step-tree "step tree_hash mismatch"
+  retained_evidence_refusal step-tree close_bead_selftest::refuses_note_whose_step_tree_differs_from_commit_tree
 }
-
 refuses_note_started_before_its_commit() {
-  forged_note_is_refused refuses_note_started_before_its_commit \
-    early-start "before commit"
+  retained_evidence_refusal before-commit close_bead_selftest::refuses_note_started_before_its_commit
+}
+refuses_test_names_reported_outside_the_test_step() {
+  retained_evidence_refusal outside-test close_bead_selftest::refuses_test_names_reported_outside_the_test_step fa-missing-test
+}
+refuses_note_without_test_step_for_code_bead() {
+  retained_evidence_refusal without-test close_bead_selftest::refuses_note_without_test_step_for_code_bead
+}
+refuses_bundle_with_mutated_step_log() {
+  retained_evidence_refusal mutated-log close_bead_selftest::refuses_bundle_with_mutated_step_log
+}
+accepts_genuine_full_scope_bundle_with_scraped_test_name() {
+  local relocated="$base/relocated-proof"
+  cp -R "$pass_proof" "$relocated"
+  bash scripts/local_proof_verify.sh --repository "$fixture" --note "$main_commit" "$relocated" \
+    >"$base/relocated.stdout" 2>"$base/relocated.stderr" \
+    || fail "relocated producer-generated fixture failed verification"
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-good --verdict "$note_id" \
+    --repository "$fixture" --reason "scraped fixture tests" >"$base/scraped.stdout" 2>"$base/scraped.stderr" \
+    || fail "producer-generated full-scope fixture could not authorize its actual test names"
+  gate_pass "close_bead_selftest::accepts_genuine_full_scope_bundle_with_scraped_test_name (producer-generated synthetic fixture; no Rust execution)"
 }
 
-refuses_test_names_reported_outside_the_test_step() {
-  forged_note_is_refused refuses_test_names_reported_outside_the_test_step \
-    names-outside-test-step "ignored_rust_test_names="
+refuses_manifest_without_acceptance_block() {
+  local out rc=0
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-no-block --manifest "$pass_proof" \
+    --repository "$fixture" --reason "manifest cannot bypass acceptance" \
+    >"$base/no-block.stdout" 2>"$base/no-block.stderr" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    gate_fail "refuses_manifest_without_acceptance_block: manifest bypassed named acceptance"
+  else
+    out="$(cat "$base/no-block.stderr")"
+    case "$out" in
+      *"lacks an"*"acceptance-tests"*) gate_pass "refuses_manifest_without_acceptance_block (manifest alias still requires named acceptance)" ;;
+      *) fail "refuses_manifest_without_acceptance_block: unrelated refusal ($out)" ;;
+    esac
+  fi
 }
 
 parser_unit_tests
@@ -420,6 +496,15 @@ closes_with_cited_note
 refuses_note_whose_step_tree_differs_from_commit_tree
 refuses_note_started_before_its_commit
 refuses_test_names_reported_outside_the_test_step
+refuses_note_without_test_step_for_code_bead
+refuses_bundle_with_mutated_step_log
+retained_evidence_refusal missing-proof refuses_note_without_retained_proof
+retained_evidence_refusal checksum-identity refuses_note_with_copied_checksum_identity
+retained_evidence_refusal step-before-run refuses_step_started_before_its_proof
+retained_evidence_refusal direct-test-name refuses_unbound_direct_test_names fa-missing-test
+retained_evidence_refusal failed-log refuses_retained_failed_test fa-failed-test
+accepts_genuine_full_scope_bundle_with_scraped_test_name
+refuses_manifest_without_acceptance_block
 refuses_missing_test
 refuses_failed_test
 refuses_verdict_without_landing_commit

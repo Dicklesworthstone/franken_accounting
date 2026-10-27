@@ -1385,6 +1385,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
+                                } else if report.functional_trial_balance.is_some() {
+                                    if report.activity {
+                                        "functional_activity"
+                                    } else {
+                                        "functional_stock"
+                                    }
                                 } else if report.equity_roll_forward.is_some() {
                                     "equity_roll_forward"
                                 } else if let Some(cash) = &report.cash_flow {
@@ -1412,6 +1418,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
+                                } else if let Some(functional) = &report.functional_trial_balance {
+                                    functional.cells.len() + functional.pending.len()
                                 } else if let Some(equity) = &report.equity_roll_forward {
                                     equity.units.len()
                                 } else if let Some(cash) = &report.cash_flow {
@@ -1506,6 +1514,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(equity) = &report.equity_roll_forward {
                         checks.extend(equity_checks(equity));
+                    }
+                    if let Some(functional) = &report.functional_trial_balance {
+                        checks.extend(functional_checks(functional));
                     }
                     if let Some(cash) = &report.cash_flow {
                         checks.extend(cash_flow_checks(cash));
@@ -2042,6 +2053,60 @@ fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
                 ("item_count", n(total.amounts.item_count)),
             ],
         ));
+    }
+    checks
+}
+
+fn functional_checks(report: &crate::report::VerifiedFunctionalTrialBalance) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "functional_basis",
+        "recomputation",
+        vec![
+            ("base_unit", n(u64::from(report.base_unit))),
+            ("effective_through", day(report.effective_through)),
+            ("activity", Json::Bool(report.activity)),
+            ("entries", n(report.entries)),
+            ("watermark", report.watermark.map_or(Json::Null, n)),
+            ("fold_digest", h(&report.fold_digest)),
+            (
+                "valuation_laws",
+                s("original SpotClose/PeriodAverage v1; exact inherited reversals"),
+            ),
+            (
+                "rounding",
+                s("HalfEven; deterministic per-entity/unit residual"),
+            ),
+            (
+                "rate_visibility",
+                s("complete signed ImportReceipt history through first use"),
+            ),
+            ("book_parameters_source", s(report.book_parameters_source)),
+            ("genesis_registration", s("not_judged")),
+            ("registry_activation", s("not_judged")),
+            ("external_rate_truth", s("not_judged")),
+        ],
+    )];
+    for (column, cells) in [("posted", &report.cells), ("pending", &report.pending)] {
+        for cell in cells {
+            let account = &report.accounts[&cell.account];
+            checks.push(Check::pass(
+                "functional_trial_balance_cell",
+                "recomputation",
+                vec![
+                    ("column", s(column)),
+                    ("account", s(format!("{:032x}", cell.account))),
+                    ("code", s(&account.code)),
+                    ("name", s(&account.name)),
+                    ("account_type", n(u64::from(account.account_type))),
+                    ("account_created_at", n(account.created_at)),
+                    ("unit", n(u64::from(cell.unit_id))),
+                    ("entity", cell.entity.as_ref().map_or(Json::Null, s)),
+                    ("debits", amount(cell.debits)),
+                    ("credits", amount(cell.credits)),
+                    ("entry_count", n(cell.entry_count)),
+                ],
+            ));
+        }
     }
     checks
 }

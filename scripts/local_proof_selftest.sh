@@ -21,6 +21,7 @@ cp "$source_root/scripts/lib/gate_verdict.sh" "$fixture/scripts/lib/gate_verdict
 
 cat > "$fixture/scripts/check.sh" <<'CHECK'
 #!/usr/bin/env bash
+# CANONICAL_STEPS: check, test-list, test
 set -eu
 if [ -n "${FAKE_PROOF_CHECK_MARKER:-}" ]; then
   printf 'ran\n' > "$FAKE_PROOF_CHECK_MARKER"
@@ -52,7 +53,9 @@ emit_step() {
     printf 'Remote command finished: exit=0\n' >>"$LOG_DIR/$step.log"
     printf '[RCH] remote fixture-worker (1s)\n' >>"$LOG_DIR/$step.log"
   fi
-  record_step_verdict "$step" "$status" "2026-10-20T00:00:00Z" "2026-10-20T00:00:01Z" 1 "$LOG_DIR/$step.log"
+  local stamp
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  record_step_verdict "$step" "$status" "$stamp" "$stamp" 0 "$LOG_DIR/$step.log"
 }
 
 case "${FAKE_PROOF_MODE:-pass}" in
@@ -155,6 +158,10 @@ git init -q -b main
 git config user.name "Local Proof Self-Test"
 git config user.email "local-proof-selftest@example.invalid"
 printf 'stable\n' > tracked.txt
+mkdir .beads
+cat > .beads/issues.jsonl <<'BEADS'
+{"id":"fa-test-1","status":"in_progress","description":"```acceptance-tests\nsample::one\nsample::two\n```"}
+BEADS
 git add .
 git commit -q -m "initial (fa-test-1)"
 commit_a="$(git rev-parse HEAD)"
@@ -231,7 +238,7 @@ fi
 # marker/inventory controls, rather than only checksum mismatch, must reject.
 compile_proof="$base/compile-controls"
 FAKE_PROOF_MODE=compile-controls bash scripts/local_proof.sh --output "$compile_proof" >/dev/null
-for mutation in completion inventory duplicate-key contradictory worker uncertain; do
+for mutation in completion inventory extra duplicate-key contradictory worker uncertain standard-names; do
   altered="$base/compile-$mutation"
   cp -R "$compile_proof" "$altered"
   python3 -B - "$altered" "$mutation" <<'PY'
@@ -243,6 +250,12 @@ path = root / ('steps/check.log' if mutation == 'completion' else 'steps/test.lo
 text = path.read_text()
 if mutation == 'completion': text = text.replace('Remote command finished: exit=0', 'remote command status unknown')
 if mutation == 'inventory': text = text.replace('test sample::two ... ok\n', '')
+if mutation == 'extra': text += 'test sample::invented ... ok\n'
+if mutation == 'standard-names':
+    text += 'test sample::panic - should panic ... ok\ntest sample::ignored ... ignored, fixture reason\n'
+    text = text.replace('2 passed; 0 failed; 0 ignored', '3 passed; 0 failed; 1 ignored')
+    listing = root / 'steps/test-list.log'
+    listing.write_text(listing.read_text() + 'sample::panic: test\nsample::ignored: test\n')
 if mutation == 'uncertain': text += 'RCH_SCOPED_COMPLETION_UNCONFIRMED\n'
 if mutation == 'contradictory': text += 'test sample::three ... FAILED\n'
 if mutation == 'worker': text = text.replace('remote fixture-worker (', 'remote different-worker (')
@@ -256,7 +269,11 @@ tools = [line for line in (root / 'tools.txt').read_text().splitlines() if not l
 (root / 'tools.txt').write_text('\n'.join(tools + ['step_verdict=' + line for line in lines]) + '\n')
 PY
   rehash "$altered"
-  if [ "$mutation" = uncertain ]; then
+  if [ "$mutation" = standard-names ]; then
+    bash scripts/local_proof_verify.sh --repository "$fixture" --for-close "$altered" \
+      >"$base/standard-names.stdout" 2>"$base/standard-names.stderr" \
+      || fail "verifier refused standard should-panic and reasoned-ignored test names"
+  elif [ "$mutation" = uncertain ]; then
     if bash scripts/local_proof_verify.sh --repository "$fixture" --for-resume "$altered" \
         >"$base/uncertain.stdout" 2>"$base/uncertain.stderr"; then
       fail "resume accepted an uncertain completion for automatic retry"
@@ -366,17 +383,19 @@ fi
 # Bead-close tree attribution: manifest for commit_a (tree A) can close fa-test-1,
 # but CANNOT close fa-test-2 landed in commit_b (tree B)
 FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-test-1 \
-  --manifest "$pass_proof" --repository "$fixture" --reason "landed in commit A" >/dev/null
+  --manifest "$compile_proof" --repository "$fixture" --reason "landed in commit A" >/dev/null
 
 printf 'second tree\n' >> tracked.txt
 git add tracked.txt
 git commit -q -m "second change (fa-test-2)"
 commit_b="$(git rev-parse HEAD)"
 if FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-test-2 \
-    --manifest "$pass_proof" --commit "$commit_b" --repository "$fixture" --reason "wrong tree" \
+    --manifest "$compile_proof" --commit "$commit_b" --repository "$fixture" --reason "wrong tree" \
     >"$base/close-wrong-tree.stdout" 2>"$base/close-wrong-tree.stderr"; then
   fail "close_bead.sh accepted a manifest from tree A for a bead landed in tree B"
 fi
+grep -Fq 'does not contain landing commit' "$base/close-wrong-tree.stderr" \
+  || fail "wrong-tree closure was not refused at its ancestry boundary"
 
 move_proof="$base/move"
 set +e
