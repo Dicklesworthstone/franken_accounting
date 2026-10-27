@@ -483,6 +483,115 @@ fn timed_cycle_reads_the_paged_sweep_index() {
     .expect("lab completed");
 }
 
+/// fa-0bi: the daemon mints approved recurring occurrences. A corroborated
+/// timer cycle posts the occurrence its tick made due, through the ordinary
+/// posting law, exactly once; a same-day cycle mints nothing, and the next
+/// month's corroborated cycle mints the next occurrence.
+#[test]
+fn daemon_cycles_mint_approved_recurring_occurrences_exactly_once() {
+    lab(75, |root| async move {
+        let mut fixture = fixture(&root, 75).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let poster = Capability::embedded(VId(1), &["post", "read"]).unwrap();
+        let mut template = fixture.request.proposal.clone();
+        template.idempotency_key = b"recurring-template".to_vec();
+        template.effective_date = DateDay::from_ymd(2026, 3, 20).unwrap();
+        let spec = fa::RecurringSpec {
+            name: "monthly-rent".into(),
+            template,
+            every_months: 1,
+            month_end: fa_time::MonthEndPolicy::ClampToMonthEnd,
+            end: Some(DateDay::from_ymd(2026, 4, 30).unwrap()),
+        };
+        let plan = fixture
+            .book
+            .plan_recurring(&cx, &poster, spec)
+            .unwrap()
+            .unwrap();
+        let approval = fixture
+            .book
+            .approve(
+                &cx,
+                Capability::embedded(VId(70), &["approve"]).unwrap(),
+                plan.proposal_digest().unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .approval();
+        fixture
+            .book
+            .create_recurring(&cx, &poster, plan, vec![approval])
+            .await
+            .unwrap()
+            .unwrap();
+        let day_ns = |day: DateDay| u64::try_from(day.0).unwrap() * 86_400_000_000_000;
+        let march = day_ns(DateDay::from_ymd(2026, 3, 20).unwrap());
+        let first = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, march - 100)),
+            )
+            .await
+            .unwrap();
+        assert!(!first.corroborated && first.recurring == 0, "{first:?}");
+        advance(&root, 100).await;
+        let due = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, march)))
+            .await
+            .unwrap();
+        assert!(due.corroborated, "{due:?}");
+        assert_eq!((due.recurring, due.blocked_recurring), (1, 0), "{due:?}");
+        advance(&root, 10).await;
+        let again = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, march + 10)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (again.recurring, again.blocked_recurring),
+            (0, 0),
+            "{again:?}"
+        );
+        // One month later on both clocks, so the observation is corroborated
+        // progress, not a jump.
+        let month = day_ns(DateDay::from_ymd(2026, 4, 20).unwrap()) - march;
+        advance(&root, month).await;
+        let april = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, march + 10 + month)),
+            )
+            .await
+            .unwrap();
+        assert!(april.corroborated, "{april:?}");
+        assert_eq!(
+            (april.recurring, april.blocked_recurring),
+            (1, 0),
+            "{april:?}"
+        );
+        let schedules = fixture
+            .book
+            .recurring_schedules(&cx, &poster)
+            .unwrap()
+            .unwrap();
+        assert_eq!(schedules.len(), 1, "{schedules:?}");
+        assert_eq!(schedules[0].next_index, 2, "{schedules:?}");
+        assert!(
+            fixture
+                .book
+                .verify_projections(&cx, None)
+                .unwrap()
+                .is_green()
+        );
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
 #[test]
 fn forward_jump_rollback_and_old_true_tick_retry_do_not_sweep() {
     lab(73, |root| async move {
