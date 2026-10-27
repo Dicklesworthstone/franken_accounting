@@ -157,10 +157,12 @@ fn admitted_chain<V: Vfs + Clone>(
     // Admission precedes even the current authority frontier. Prefix proofs
     // reveal every envelope; PrefixWithRecords, v3 balances and suffixes
     // disclose every entry payload. All require whole-book read plus the
-    // production operation. Current capabilities support book caveats, not
-    // silently filtered views.
+    // production operation. Even a proof naming an earlier checkpoint
+    // verifies the complete chain at HEAD before selecting that checkpoint;
+    // its apparent output scope must not widen the caller's read authority.
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id)
         .and_then(|()| fa_policy::require(capability, Op::Produce, "exporting accounting proofs"))
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
     {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
@@ -405,8 +407,12 @@ pub(crate) fn witness<V: Vfs + Clone>(
     witness: &dyn fa_notary::CheckpointSigner,
     request: WitnessRequest<'_>,
 ) -> Outcome<Witnessed> {
+    // Witnessing recomputes the whole current journal just like proof export.
+    // Judge that reach before observing the frontier, inspecting requested
+    // checkpoints, or invoking the witness signer.
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id)
         .and_then(|()| fa_policy::require(capability, Op::Witness, "witnessing a checkpoint"))
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
     {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
