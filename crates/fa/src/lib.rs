@@ -117,8 +117,9 @@ pub use aging::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,
     AgingBuckets, AgingCell, AgingCertificate, AgingReconciliation, AgingReconciliationCertificate,
     AgingReconciliationRequest, AgingReconciliationRow, AgingRequest, AgingTotal, CertifiedAging,
-    CertifiedAgingReconciliation, EffectiveDateAging, MAX_AGING_BUCKET_BOUNDS,
-    MAX_AGING_CERTIFICATE_BYTES, MAX_AGING_RECONCILIATION_BYTES, OpenItemSnapshot,
+    CertifiedAgingReconciliation, DueDateAgedItem, DueDateAging, EffectiveDateAging,
+    MAX_AGING_BUCKET_BOUNDS, MAX_AGING_CERTIFICATE_BYTES, MAX_AGING_RECONCILIATION_BYTES,
+    OpenItemSnapshot, Unscheduled, UnscheduledItem,
 };
 pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCATION_REVIEW_BYTES};
 pub use async_book::AsyncBook;
