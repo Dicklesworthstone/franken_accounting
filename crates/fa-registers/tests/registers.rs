@@ -17,16 +17,17 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
-    CacheStatus, Cell, CellKey, Fold, RegisterError, Verification, balance_as_of, fold_period,
-    fold_period_at, fold_periods_at, materialize, period_activity,
-    period_activity_excluding_classes, register_vid, trial_balance, trial_balance_at,
-    verify_period, verify_period_with_context, verify_periods_with_context,
+    Advance, CacheStatus, Cell, CellKey, Fold, RegisterError, Verification, balance_as_of,
+    fold_period, fold_period_at, fold_periods_at, materialize, materialize_periods,
+    period_activity, period_activity_excluding_classes, rebuild, rebuild_periods,
+    rebuild_reads_are_shared, register_vid, trial_balance, trial_balance_at, verify_period,
+    verify_period_with_context, verify_periods_with_context,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
-use fgdb_types::{CanonicalScalar, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(7);
 
@@ -1647,6 +1648,285 @@ fn verifying_periods_together_equals_verifying_each_alone() {
             "{:?}",
             verify_period_with_context(&h.db, &query, &h.book, "FY2099-P01").unwrap_err()
         )
+    );
+}
+
+/// A book whose March cache is stale, whose April cache has one rewritten
+/// cell and whose third period was never materialized; `entangled` also
+/// links a March register to April, so both periods would write it.
+fn rebuild_book(entangled: bool) -> (Harness, [String; 3]) {
+    let mut h = harness();
+    let april = h.open_april();
+    let march = h.march.clone();
+    let unused = h
+        .book
+        .calendar
+        .periods_for_year(2026)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.kind == PeriodKind::Normal && p.code != march && p.code != april)
+        .unwrap()
+        .code;
+    h.post_rent(1_000, b"march-1");
+    let march_fold = h.materialize_march();
+    h.post_rent(5, b"march-2");
+    let mut april_rent = h.proposal(h.expense_legs(300), b"april-1", EntryClass::ORIGINAL);
+    april_rent.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    h.commit(april_rent);
+    let april_fold = h.materialize_period(&april);
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    batch.set_vertex_property(
+        register_vid(h.book.book_id, &april_fold.cells[0].key),
+        property::DEBITS_POSTED,
+        Some(CanonicalScalar::bytes(7i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    if entangled {
+        let rvid = register_vid(h.book.book_id, &march_fold.cells[0].key);
+        let april_vid = period_vid(&h.book.calendar.id, &april);
+        batch.add_edge(
+            edge_id(relation::IN_PERIOD, rvid, april_vid),
+            rvid,
+            april_vid,
+            vec![],
+        );
+    }
+    h.write_derived(batch);
+    (h, [march, april, unused])
+}
+
+#[test]
+fn a_one_pass_rebuild_equals_every_per_period_rebuild() {
+    for entangled in [false, true] {
+        let (mut alone, periods) = rebuild_book(entangled);
+        let (mut together, _) = rebuild_book(entangled);
+        let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+        // The entangled book is the planted negative: sharing is refused,
+        // and each period is rebuilt alone.
+        assert_eq!(
+            rebuild_reads_are_shared(&together.db, &together.book, &codes),
+            !entangled
+        );
+        let ctx = alone.ctx();
+        let each: Vec<Advance> = codes
+            .iter()
+            .map(|period| {
+                alone
+                    .runtime
+                    .block_on(rebuild(&mut alone.db, &ctx, &alone.book, period))
+                    .unwrap()
+            })
+            .collect();
+        let ctx = together.ctx();
+        let once: Vec<Advance> = together
+            .runtime
+            .block_on(rebuild_periods(
+                &mut together.db,
+                &ctx,
+                &together.book,
+                &codes,
+            ))
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(once, each, "entangled={entangled}");
+        assert!(each.iter().all(|advance| advance.rebuilt && advance.wrote));
+        // The books are the same graph afterwards, every period green.
+        assert_eq!(
+            together.db.frontier().unwrap(),
+            alone.db.frontier().unwrap()
+        );
+        assert_eq!(
+            together.db.vertices().unwrap(),
+            alone.db.vertices().unwrap()
+        );
+        assert_eq!(together.db.edges().unwrap(), alone.db.edges().unwrap());
+        for period in &codes {
+            let verified = verify_period(&together.db, &together.book, period).unwrap();
+            assert!(verified.is_green() && !verified.stale, "{verified:?}");
+        }
+    }
+
+    // Materializing equals each period folded and materialized alone.
+    let (mut alone, periods) = rebuild_book(false);
+    let (mut together, _) = rebuild_book(false);
+    let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+    let ctx = alone.ctx();
+    let each: Vec<(Fold, CommitSeq)> = codes
+        .iter()
+        .map(|period| {
+            let fold = fold_period(&alone.db, &alone.book, period).unwrap();
+            let seq = alone
+                .runtime
+                .block_on(materialize(&mut alone.db, &ctx, &alone.book, &fold))
+                .unwrap();
+            (fold, seq)
+        })
+        .collect();
+    let ctx = together.ctx();
+    let once: Vec<(Fold, CommitSeq)> = together
+        .runtime
+        .block_on(materialize_periods(
+            &mut together.db,
+            &ctx,
+            &together.book,
+            &codes,
+        ))
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(once, each);
+    assert_eq!(
+        together.db.vertices().unwrap(),
+        alone.db.vertices().unwrap()
+    );
+    assert_eq!(together.db.edges().unwrap(), alone.db.edges().unwrap());
+
+    // A period the book does not declare ends the results with the error
+    // rebuilding it alone gives; the periods after it are not rebuilt.
+    let (mut alone, periods) = rebuild_book(false);
+    let (mut together, _) = rebuild_book(false);
+    let codes = [periods[0].as_str(), "FY2099-P01", periods[1].as_str()];
+    assert!(rebuild_reads_are_shared(
+        &together.db,
+        &together.book,
+        &codes
+    ));
+    let ctx = alone.ctx();
+    let first = alone
+        .runtime
+        .block_on(rebuild(&mut alone.db, &ctx, &alone.book, codes[0]))
+        .unwrap();
+    let undeclared = alone
+        .runtime
+        .block_on(rebuild(&mut alone.db, &ctx, &alone.book, codes[1]))
+        .unwrap_err();
+    let ctx = together.ctx();
+    let stopped = together.runtime.block_on(rebuild_periods(
+        &mut together.db,
+        &ctx,
+        &together.book,
+        &codes,
+    ));
+    assert_eq!(stopped.len(), 2);
+    assert_eq!(stopped[0].as_ref().unwrap(), &first);
+    assert_eq!(
+        format!("{:?}", stopped[1].as_ref().unwrap_err()),
+        format!("{undeclared:?}")
+    );
+    assert_eq!(
+        together.db.vertices().unwrap(),
+        alone.db.vertices().unwrap()
+    );
+}
+
+#[test]
+fn materialize_deletes_the_same_membership_edges_as_the_full_scan() {
+    let mut h = harness();
+    let april = h.open_april();
+    h.post_rent(123, b"rent");
+    let march_fold = h.materialize_march();
+    let mut april_rent = h.proposal(h.expense_legs(40), b"april-rent", EntryClass::ORIGINAL);
+    april_rent.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    h.commit(april_rent);
+    let april_fold = h.materialize_period(&april);
+    let calendar = h.book.calendar.id.clone();
+    let march = period_vid(&calendar, &h.march);
+    let april_vid = period_vid(&calendar, &april);
+    let january = period_vid(&calendar, "FY2026-P01");
+    let rent = register_vid(h.book.book_id, &march_fold.cells[0].key);
+    let april_cell = register_vid(h.book.book_id, &april_fold.cells[0].key);
+    let phantom = VId(0x0fa0_7b53);
+    // Stray memberships from a March cell, a phantom March register linked
+    // to two periods, and an April cell also linked to March.
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    batch.create_vertex(
+        phantom,
+        vec![label::REGISTER],
+        vec![(
+            property::EFFECTIVE_PERIOD,
+            fa_journal::rows::scalar_text("effective_period", &h.march).unwrap(),
+        )],
+    );
+    for (src, dst) in [
+        (rent, april_vid),
+        (rent, january),
+        (phantom, march),
+        (phantom, april_vid),
+        (april_cell, march),
+    ] {
+        batch.add_edge(edge_id(relation::IN_PERIOD, src, dst), src, dst, vec![]);
+    }
+    h.write_derived(batch);
+
+    // The reference is the literal scan: every edge of the book, for every
+    // register the March fold writes.
+    let before = h.db.edges().unwrap();
+    let expected: std::collections::BTreeSet<VId> = march_fold
+        .cells
+        .iter()
+        .chain(&march_fold.pending)
+        .map(|cell| register_vid(h.book.book_id, &cell.key))
+        .collect();
+    let linked: std::collections::BTreeSet<VId> = before
+        .iter()
+        .filter(|e| e.entry.relation == relation::IN_PERIOD && e.entry.dst == march)
+        .map(|e| e.entry.src)
+        .collect();
+    let mut reference = std::collections::BTreeSet::new();
+    for row in h.db.vertices().unwrap() {
+        let named = matches!(
+            fa_journal::rows::prop(&row, property::EFFECTIVE_PERIOD),
+            Some(CanonicalScalar::Text(p)) if p.as_str() == h.march
+        );
+        if !(expected.contains(&row.vid)
+            || (row.labels.contains(&label::REGISTER) && (linked.contains(&row.vid) || named)))
+        {
+            continue;
+        }
+        for edge in &before {
+            if edge.entry.relation == relation::IN_PERIOD
+                && edge.entry.src == row.vid
+                && (!expected.contains(&row.vid) || edge.entry.dst != march)
+            {
+                reference.insert(edge.entry.eid);
+            }
+        }
+    }
+    assert_eq!(
+        reference,
+        [
+            (rent, april_vid),
+            (rent, january),
+            (phantom, march),
+            (phantom, april_vid),
+            (april_cell, march),
+        ]
+        .into_iter()
+        .map(|(src, dst)| edge_id(relation::IN_PERIOD, src, dst))
+        .chain(
+            before
+                .iter()
+                .filter(|e| e.entry.src == april_cell && e.entry.dst == april_vid)
+                .map(|e| e.entry.eid)
+        )
+        .collect::<std::collections::BTreeSet<_>>(),
+        "the planted strays, and the April cell's own membership once it is a stray March register"
+    );
+
+    assert_eq!(h.materialize_march(), march_fold);
+    let after: std::collections::BTreeSet<_> =
+        h.db.edges().unwrap().iter().map(|e| e.entry.eid).collect();
+    let deleted: std::collections::BTreeSet<_> = before
+        .iter()
+        .map(|e| e.entry.eid)
+        .filter(|eid| !after.contains(eid))
+        .collect();
+    assert_eq!(deleted, reference);
+    assert!(
+        h.db.in_neighbours(march, relation::IN_PERIOD)
+            .unwrap()
+            .contains(&rent),
+        "the cell's own membership stays"
     );
 }
 

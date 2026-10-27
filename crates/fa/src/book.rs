@@ -4329,6 +4329,19 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers(&purposes, principal, capability, period_code)))
     }
 
+    /// [`Book::materialize_registers`] for each period, in order, reading
+    /// the book once for all of them where that is exact; the results stop
+    /// after the first error, as a loop over the periods stops.
+    pub fn materialize_registers_each(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_codes: &[&str],
+    ) -> Outcome<Vec<Result<(Fold, CommitSeq), BookError>>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers_each(&purposes, principal, capability, period_codes)))
+    }
+
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
     pub fn verify_registers(&self, period_code: &str) -> Result<Verification, BookError> {
         with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
@@ -4379,6 +4392,19 @@ impl Book {
     ) -> Outcome<fa_registers::Advance> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, principal, capability, period_code)))
+    }
+
+    /// [`Book::rebuild_registers`] for each period, in order, reading the
+    /// book once for all of them where that is exact; the results stop after
+    /// the first error, as a loop over the periods stops.
+    pub fn rebuild_registers_each(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_codes: &[&str],
+    ) -> Outcome<Vec<Result<fa_registers::Advance, BookError>>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers_each(&purposes, principal, capability, period_codes)))
     }
 
     /// The public key this book's transparency checkpoints are signed with

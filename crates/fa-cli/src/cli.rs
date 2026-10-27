@@ -21198,9 +21198,14 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     )?;
                 }
             }
-            for p in &periods {
-                let (fold, seq) = book.materialize_registers(principal, &capability, p)??;
+            let materialized =
+                book.materialize_registers_each(principal, &capability, &codes)??;
+            for (p, result) in periods.iter().zip(materialized) {
+                let (fold, seq) = result?;
+                // Every period is published before the first event, so each
+                // event names the frontier its own period left.
                 out.at_book(&book)?;
+                out.known_at(seq);
                 out.effective(format!("period:{p}"));
                 out.event(
                     "registers_materialized",

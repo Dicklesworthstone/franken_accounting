@@ -3648,6 +3648,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(Ok((fold, seq)))
     }
 
+    /// [`AsyncBook::materialize_registers`] for each of `periods`, in order,
+    /// from one read of the book where that is exact (fa-rbs3); the results
+    /// stop after the first error.
+    pub async fn materialize_registers_each(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        periods: &[&str],
+    ) -> Outcome<Vec<Result<(Fold, CommitSeq), BookError>>> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(fa_registers::materialize_periods(
+            &mut self.db,
+            cx,
+            &self.context,
+            periods,
+        )
+        .await
+        .into_iter()
+        .map(|result| result.map_err(BookError::from))
+        .collect()))
+    }
+
     pub fn verify_registers(
         &self,
         cx: &PurposeContexts,
@@ -3733,6 +3759,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             period,
         )
         .await?))
+    }
+
+    /// [`AsyncBook::rebuild_registers`] for each of `periods`, in order, from
+    /// one read of the book where that is exact (fa-rbs3); the results stop
+    /// after the first error.
+    pub async fn rebuild_registers_each(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        periods: &[&str],
+    ) -> Outcome<Vec<Result<fa_registers::Advance, BookError>>> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(fa_registers::rebuild_periods(
+            &mut self.db,
+            cx,
+            &self.context,
+            periods,
+        )
+        .await
+        .into_iter()
+        .map(|result| result.map_err(BookError::from))
+        .collect()))
     }
 
     pub async fn checkpoint(

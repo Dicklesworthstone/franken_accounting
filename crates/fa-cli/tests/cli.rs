@@ -14131,6 +14131,71 @@ fn envelope_book(name: &str) -> std::io::Result<(PathBuf, String, PathBuf)> {
     Ok((book, ev, dir))
 }
 
+/// `fa registers materialize --fiscal-year` folds and publishes every
+/// period from one read of the book (fa-rbs3). Each event still names its
+/// own period's publication, the coordinate that publication left, and the
+/// fold `fa verify registers` then refolds.
+#[test]
+fn materializing_a_fiscal_year_publishes_each_period_in_turn() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("materialize-year")?;
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    for (date, key) in [("2026-03-05", "rent-march"), ("2026-04-05", "rent-april")] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"50.00 USD"}},{{"side":"credit","account":"1000","amount":"50.00 USD"}}]}}"#
+            ),
+        );
+        ok(&["post", "--intent", &intent, "--evidence", &ev, "--json"]);
+    }
+    let out = ok(&["registers", "materialize", "--fiscal-year", "2026", "--json"]);
+    let events: Vec<Json> = out
+        .lines()
+        .filter(|line| field(line, "event") == Some("registers_materialized"))
+        .map(robot_line)
+        .collect();
+    let verified = doc(&ok(&[
+        "verify",
+        "registers",
+        "--fiscal-year",
+        "2026",
+        "--json",
+    ]));
+    let checks = arr(&verified, "periods");
+    assert!(checks.len() >= 12, "{verified:?}");
+    assert_eq!(events.len(), checks.len(), "{out}");
+    let mut published = Vec::new();
+    for (event, check) in events.iter().zip(checks) {
+        let data = event.get("data").expect("event data");
+        let period = text(data, "period");
+        assert_eq!(period, text(check, "period"), "{out}");
+        assert_eq!(check.get("green"), Some(&Json::Bool(true)), "{check:?}");
+        assert_eq!(text(data, "fold_digest"), text(check, "refold_digest"));
+        let recorded = int(data, "recorded_at").expect("recorded_at");
+        let coordinate = event.get("coordinate").expect("coordinate");
+        assert_eq!(int(coordinate, "known_at"), Some(recorded), "{event:?}");
+        if int(data, "cells").is_some_and(|cells| cells > 0) {
+            assert_eq!(check.get("stale"), Some(&Json::Bool(false)), "{check:?}");
+            published.push((period.to_string(), recorded));
+        }
+    }
+    // March and April each publish once, in turn; the empty periods write
+    // nothing and name the frontier as they found it.
+    assert_eq!(
+        published.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+        ["FY2026-P03", "FY2026-P04"],
+        "{out}"
+    );
+    assert!(published[0].1 < published[1].1, "{published:?}");
+    Ok(())
+}
+
 /// Every robot line carries the plan Appendix D envelope: `v`; `book` and
 /// `coordinate` (branch, the recorded sequence the line describes, its
 /// effective selector) on a line about a book, null on a bookless one; the
