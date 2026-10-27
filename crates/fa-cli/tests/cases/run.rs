@@ -307,6 +307,10 @@ pub struct BookRun<'c> {
     pub assertions: BTreeMap<String, super::reads::Assertion>,
     /// Each period label's issued report certificates, in step order (A7b).
     pub issuances: BTreeMap<String, Vec<String>>,
+    /// Each opened `[[case]]`'s runs, by its id (A7b).
+    pub cases: BTreeMap<String, super::lifecycle::CaseRun>,
+    /// Each certified scenario diff: the scenario and its certificate file.
+    pub scenario_diffs: Vec<(String, String)>,
 }
 
 impl<'c> BookRun<'c> {
@@ -348,6 +352,8 @@ impl<'c> BookRun<'c> {
             reads: BTreeMap::new(),
             assertions: BTreeMap::new(),
             issuances: BTreeMap::new(),
+            cases: BTreeMap::new(),
+            scenario_diffs: Vec::new(),
         }
     }
 
@@ -755,7 +761,7 @@ impl<'c> BookRun<'c> {
     }
 
     /// The citation-stub bytes of a `[[document]] stub_of`.
-    fn stub_bytes(&self, stub_of: &str) -> Option<Vec<u8>> {
+    pub(crate) fn stub_bytes(&self, stub_of: &str) -> Option<Vec<u8>> {
         if let Some(fact) = stub_of.strip_prefix("placeholder:") {
             return Some(stub::placeholder(fact));
         }
@@ -896,6 +902,16 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::FillerBatch) => self.filler_batch(step),
                 Some(StepKind::AssertBalance) => self.assert_balance(step),
                 Some(StepKind::Issue) => self.issue(step),
+                Some(StepKind::CaseOpen) => self.case_open(step),
+                Some(StepKind::CaseDetermine) => self.case_determine(step),
+                Some(StepKind::ScenarioFork) => self.scenario_fork(step),
+                Some(StepKind::ScenarioRun) => self.scenario_run(step),
+                Some(StepKind::ScenarioDiff) => self.scenario_diff(step),
+                Some(StepKind::CaseRehearse) => self.case_rehearse(step),
+                Some(StepKind::CaseApprove) => self.case_approve(step),
+                Some(StepKind::CasePost) => self.case_post(step),
+                Some(StepKind::CaseDisclose) => self.case_disclose(step),
+                Some(StepKind::CaseClose) => self.case_close(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1757,8 +1773,10 @@ impl<'c> BookRun<'c> {
                 call.exit
             ))
         });
-        // The history's end is also where every T and R row reads (A7b).
+        // The history's end is also where every T and R row reads, and
+        // each case is shown for its generated row (A7b).
         self.reads();
+        self.case_reads();
     }
 
     /// The trial balance of each period (plan §3.3 step 7); a failure here
@@ -1933,8 +1951,11 @@ pub fn run_case_with(
         out.lines.append(&mut run.lines);
         out.steps.append(&mut run.steps);
         for t in twins.values_mut() {
-            out.lines
-                .extend(t.lines.drain(..).filter(|l| !l.starts_with("PERIODS ")));
+            out.lines.extend(
+                t.lines
+                    .drain(..)
+                    .filter(|l| !l.starts_with("PERIODS ") && !l.starts_with("CASES ")),
+            );
             out.steps.append(&mut t.steps);
         }
         for ev in rows {
@@ -2150,7 +2171,7 @@ fn push_swept(out: &mut RunOutcome, case: &Case, swept: cells::Swept) {
         swept
             .lines
             .into_iter()
-            .filter(|l| !l.starts_with("PERIODS ")),
+            .filter(|l| !l.starts_with("PERIODS ") && !l.starts_with("CASES ")),
     );
     out.steps.extend(swept.steps);
     for c in swept.cells {

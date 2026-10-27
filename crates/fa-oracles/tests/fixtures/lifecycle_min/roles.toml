@@ -1,0 +1,31 @@
+# Lifecycle fixture roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "selftest-preparer-1"
+kind = "harness"
+description = "prepares the fixture's synthetic entry"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the fixture book's period transitions and issuance"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "approves the fixture's issuance and lock, and reviews its documents"
+
+[[role]]
+label = "case-approver-1"
+kind = "harness"
+description = "approves the fixture's restatement case"
+
+[[role]]
+label = "case-approver-2"
+kind = "harness"
+description = "approves the fixture's restatement case"
+
+[[role]]
+label = "case-poster-1"
+kind = "harness"
+description = "plans and posts the fixture's restatement delta"

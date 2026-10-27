@@ -1,0 +1,12 @@
+# Lifecycle fixture (fa-yugf.16, A7b): one quarter, one expense entry A, issued and locked, then
+# restated by a case delta through the full restatement case life cycle, on a micro-book, for
+# fa-cli's tests/cases.rs. Never copied to cases/; claims nothing.
+id = "lifecycle"
+title = "Lifecycle fixture: issuance, lock and a full restatement case"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's issue step and restatement case steps (case open, scenario fork/run/diff, rehearse, approve, post, disclose, close) and the generated case read-back row"
+claims = []
+capabilities = ["verb:post", "verb:statement", "verb:case", "verb:scenario", "verb:explain"]
+pinned_commit = "b4fe3e23c"
+variants = ["native"]

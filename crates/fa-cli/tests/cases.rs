@@ -1932,6 +1932,51 @@ fn second_issuance_of_a_period_binds_its_own_placeholder() {
     }
 }
 
+/// A7b (§3.3 step 7): the same quarter read off the certified statements
+/// and trial balance: the balance sheet's assets line as currently stated
+/// (1,250.00), the income statement's revenue line as originally reported
+/// (1,000.00, the first issuance's) and the trial balance's 1100 row
+/// (1,250.00).
+#[test]
+fn statement_and_trial_balance_reads_return_their_lines() {
+    let o = reads_run(&[]);
+    let text = o.text();
+    for (id, row) in [
+        (
+            "reads-R-05",
+            "PASS reads-R-05 R native -/default kind=read_back read=balance-sheet,assets,2026Q1,as-currently-stated value=1250.00",
+        ),
+        (
+            "reads-R-06",
+            "PASS reads-R-06 R native -/default kind=read_back read=income-statement,revenue,2026Q1,as-originally-reported value=1000.00",
+        ),
+        (
+            "reads-R-07",
+            "PASS reads-R-07 R native -/default kind=read_back read=tb,1100,2026Q1 value=1250.00",
+        ),
+    ] {
+        assert_eq!(o.row(id), Some(row), "{text}");
+    }
+}
+
+/// A7b: a statement read names a line the definition has not: no read, so
+/// the row fails naming the line, never reading zero.
+#[test]
+fn statement_read_of_an_unknown_line_fails() {
+    let o = reads_run(&[PlantedEdit {
+        file: "expectations.toml",
+        old: "read_verb = \"balance-sheet\"\nread_target = \"assets\"",
+        new: "read_verb = \"balance-sheet\"\nread_target = \"assetz\"",
+    }]);
+    let text = o.text();
+    assert!(
+        o.row("reads-R-05")
+            .is_some_and(|r| r.starts_with("FAIL reads-R-05 ")
+                && r.contains("reason=expected a balance-sheet line assetz in USD observed none")),
+        "{text}"
+    );
+}
+
 /// A7b: a published value the book does not reach fails the T row, naming
 /// both values, and the kernel refuses its assertion FA-REF-140; the
 /// read-backs of the same value fail too.
@@ -2014,6 +2059,157 @@ fn as_originally_reported_without_issuance_or_lock_is_refused_fa_ref_161() {
         Some(
             "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
         ),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("reads-R-06"),
+        Some(
+            "FAIL reads-R-06 R native -/default kind=read_back read=income-statement,revenue,2026Q1,as-originally-reported reason=expected exit=0 from statement income-statement observed exit=3 FA-REF-161"
+        ),
+        "{text}"
+    );
+    assert!(!o.rows_ok, "{text}");
+}
+
+/// The lifecycle fixture (`crates/fa-oracles/tests/fixtures/lifecycle_min/`,
+/// A7b): an issued and locked quarter restated by a full case.
+const LIFECYCLE: [(&str, &str); 6] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/roles.toml"),
+    ),
+    (
+        "sources.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/sources.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/lifecycle_min/expectations.toml"),
+    ),
+];
+
+fn lifecycle_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
+    match run_files("lifecycle", &LIFECYCLE, edits, HARNESS_VERBS) {
+        Ok(o) => Box::new(o),
+        Err(o) => o,
+    }
+}
+
+/// The fixture's `case_disclose` step, which a planted edit removes.
+const DISCLOSE_STEP: &str =
+    "[[step]]\nseq = 17\nkind = \"case_disclose\"\nref = \"rc\"\nprincipal = \"case-poster-1\"\n\n";
+
+/// A7b (§3.3 steps 4 and 5): the quarter is issued and locked, then case rc
+/// runs its whole life cycle: open (determined on the restating filing's
+/// date, the declared default), scenario fork/run/diff, rehearse, two
+/// approvals, post by a non-approver, statement diff, disclose and close.
+/// The case's number is logged once, every case and scenario call
+/// succeeds but the disclosure twin (FA-REF-179), and the generated row
+/// reads the case Closed with its kind, day, authority and reviewed
+/// disclosure (the target's lineage names Restates). The quarter reads
+/// 1,000.00 as originally reported and as reported in its issuance, and
+/// 1,200.00 as currently stated.
+#[test]
+fn issue_lock_and_full_restatement_lifecycle_run() {
+    let o = lifecycle_run(&[]);
+    let text = o.text();
+    let cases: Vec<&String> = o.lines.iter().filter(|l| l.starts_with("CASES ")).collect();
+    assert_eq!(cases, ["CASES native rc=1"], "{text}");
+    assert_eq!(
+        o.row("lifecycle-CASE-rc"),
+        Some(
+            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3"
+        ),
+        "{text}"
+    );
+    let refused: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| s.exit != 0)
+        .map(|s| {
+            format!(
+                "{} {}",
+                // After `--book $BOOK`.
+                s.argv_redacted.get(2..4).unwrap_or_default().join(" "),
+                s.refusal_id.as_deref().unwrap_or("-")
+            )
+        })
+        .collect();
+    assert_eq!(refused, ["case disclose FA-REF-179"], "{text}");
+    for (id, row) in [
+        (
+            "lifecycle-R-01",
+            "PASS lifecycle-R-01 R native -/default kind=read_back read=balance,6100,2026Q1,as-originally-reported value=1000.00",
+        ),
+        (
+            "lifecycle-R-02",
+            "PASS lifecycle-R-02 R native -/default kind=read_back read=balance,6100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00",
+        ),
+        (
+            "lifecycle-R-03",
+            "PASS lifecycle-R-03 R native -/default kind=read_back read=balance,6100,2026Q1,as-currently-stated value=1200.00",
+        ),
+    ] {
+        assert_eq!(o.row(id), Some(row), "{text}");
+    }
+    assert!(o.rows_ok, "{text}");
+}
+
+/// A7b (§3.3 step 5): a history that ends before its `case_close` step
+/// (X3's walking skeleton ends at `case_post`) leaves the case's row UNRUN,
+/// never PASS.
+#[test]
+fn case_row_is_unrun_never_pass_without_a_case_close_step() {
+    let o = lifecycle_run(&[
+        PlantedEdit {
+            file: "books/native.toml",
+            old: DISCLOSE_STEP,
+            new: "",
+        },
+        PlantedEdit {
+            file: "books/native.toml",
+            old: "[[step]]\nseq = 18\nkind = \"case_close\"\nref = \"rc\"\nprincipal = \"case-poster-1\"\n\n",
+            new: "",
+        },
+    ]);
+    let text = o.text();
+    assert_eq!(
+        o.row("lifecycle-CASE-rc"),
+        Some(
+            "UNRUN lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc reason=needs:case_close step"
+        ),
+        "{text}"
+    );
+}
+
+/// A7b (§3.3 step 5): without its `case_disclose` step, `fa case close` is
+/// refused (it moves only Disclosed to Closed), the case stays Posted, and
+/// the generated row fails naming the state it observed.
+#[test]
+fn case_show_without_disclosure_fails() {
+    let o = lifecycle_run(&[PlantedEdit {
+        file: "books/native.toml",
+        old: DISCLOSE_STEP,
+        new: "",
+    }]);
+    let text = o.text();
+    let row = o.row("lifecycle-CASE-rc").expect("the case row");
+    assert!(
+        row.starts_with(
+            "FAIL lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Posted case_kind=Restatement "
+        ) && row.contains("reason=expected Closed observed Posted"),
         "{text}"
     );
     assert!(!o.rows_ok, "{text}");

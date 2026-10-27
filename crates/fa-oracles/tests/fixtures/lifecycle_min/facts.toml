@@ -1,0 +1,49 @@
+# Lifecycle fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "A-1"
+provenance = "synthetic"
+reason = "a 1,000.00 expense entry A, posted, issued and locked in its quarter"
+discipline = "never cited by a case; the as-reported value"
+
+[[fact]]
+id = "D-1"
+provenance = "synthetic"
+reason = "a 200.00 restatement of A (the case delta)"
+discipline = "never cited by a case; the delta the case posts into the locked quarter"
+
+[[fact]]
+id = "P-1"
+provenance = "synthetic"
+reason = "the restated 6100 balance of 1,200.00 (A plus the delta)"
+discipline = "never cited by a case; the as-currently-stated value"
+
+[[value]]
+fact = "A-1"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "D-1"
+ordinal = 1
+literal = "200"
+rule = "scale"
+param = 0
+value = "20000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "P-1"
+ordinal = 1
+literal = "1,200"
+rule = "scale"
+param = 0
+value = "120000"
+unit = "USD"
+precision = 0
