@@ -1172,5 +1172,8 @@ fn instant_open_items_prove_the_tick_bucket_and_exclude_later_applications() {
 #[path = "aging.rs"]
 mod aging;
 
+#[path = "due_date.rs"]
+mod due_date;
+
 #[path = "roll_forward.rs"]
 mod roll_forward;

@@ -131,7 +131,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &SummaryRequest,
     ) -> Outcome<SummaryTrialBalance> {
         let book = self.context();
-        if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id) {
+        let admitted = fa_policy::admit_read(capability, principal, book.book_id).and_then(|()| {
+            fa_policy::reach(
+                capability,
+                &fa_policy::Reach {
+                    observes: request
+                        .known_at
+                        .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                    ..fa_policy::Reach::whole_book(true)
+                },
+                None,
+            )
+        });
+        if let Err(denial) = admitted {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let query = cx.query();

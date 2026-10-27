@@ -30,12 +30,14 @@ pub(super) enum Expected {
     /// own question (Book::replay_effective_date_aging_for), and the aging
     /// workpaper needs it.
     Aging(fa::AgingRequest),
+    DueDateAging(fa::AgingRequest),
 }
 
 impl Expected {
     pub(super) fn borrowed(&self) -> fa::ReportArtifactExpectation<'_> {
         match self {
             Self::AsSupplied => fa::ReportArtifactExpectation::AsSupplied,
+            Self::DueDateAging(request) => fa::ReportArtifactExpectation::DueDateAging(request),
             Self::CashFlow(request, definition) => fa::ReportArtifactExpectation::CashFlow {
                 request,
                 definition,
@@ -457,7 +459,7 @@ pub(super) fn parse(
         "aging-reconciliation" => Ok(Expected::Reconciliation(reconciliation_request(
             &doc, book,
         )?)),
-        "aging" => {
+        kind @ ("aging" | "due-date-aging") => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
             // An omitted account is the whole-book aging the producer chose by
             // omitting --account; it is never filled in from the certificate.
@@ -465,12 +467,17 @@ pub(super) fn parse(
                 None => None,
                 Some(_) => Some(account(string(&doc, "account")?, book)?),
             };
-            Ok(Expected::Aging(fa::AgingRequest {
+            let request = fa::AgingRequest {
                 account: selected,
                 effective_through: day(&doc, "through")?,
                 known_at: Some(fixed_prefix(&doc)?),
                 buckets: aging_buckets(&doc)?,
-            }))
+            };
+            Ok(if kind == "due-date-aging" {
+                Expected::DueDateAging(request)
+            } else {
+                Expected::Aging(request)
+            })
         }
         "aging-portfolio" => {
             let selected = match string(&doc, "scope")? {
@@ -842,7 +849,15 @@ pub(crate) fn reconciliation_expectation_json(request: &AgingReconciliationReque
 }
 
 pub(crate) fn aging_expectation_json(request: &fa::AgingRequest) -> Json {
-    let mut fields = vec![("kind", s("aging"))];
+    aging_expectation_with_kind(request, "aging")
+}
+
+pub(crate) fn due_date_aging_expectation_json(request: &fa::AgingRequest) -> Json {
+    aging_expectation_with_kind(request, "due-date-aging")
+}
+
+fn aging_expectation_with_kind(request: &fa::AgingRequest, kind: &str) -> Json {
+    let mut fields = vec![("kind", s(kind))];
     if let Some(account) = request.account {
         fields.push(("account", s(format!("{:032x}", account.0))));
     }
@@ -901,6 +916,9 @@ fn aging_buckets(doc: &Json) -> Result<AgingBuckets, Fail> {
 /// Otherwise certification could publish a replay command the CLI must reject.
 pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) -> Result<(), Fail> {
     let doc = match expected {
+        fa::ReportArtifactExpectation::DueDateAging(request) => {
+            due_date_aging_expectation_json(request)
+        }
         fa::ReportArtifactExpectation::CashFlow {
             request,
             definition,

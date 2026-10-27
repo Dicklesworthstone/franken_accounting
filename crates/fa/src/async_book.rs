@@ -138,6 +138,7 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
 enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
     Aging(&'a crate::AgingCertificate),
+    DueDateAging(&'a crate::DueDateAgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
     EquityRollForward(&'a crate::EquityRollForwardCertificate),
     CashFlow(&'a crate::CashFlowCertificate),
@@ -153,6 +154,7 @@ impl<'a> ReportBundleCertificate<'a> {
         match self {
             Self::Native(certificate) => certificate,
             Self::Aging(certificate) => certificate.source(),
+            Self::DueDateAging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
             Self::EquityRollForward(certificate) => {
                 certificate.source_certificate().source_certificate()
@@ -3896,6 +3898,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export contractual-maturity aging over the complete signed prefix.
+    /// The outer certificate binds the basis, cutoff, installment relief and
+    /// unscheduled items; extension 33 is retained inside its original entries.
+    pub async fn produce_due_date_aging_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::DueDateAgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::DueDateAging(certificate),
+        )
+        .await
+    }
+
     /// Export an exact account lead schedule over one authenticated prefix.
     /// Its explicit account/unit/date selection, opening stock, every posted
     /// movement and closing stock remain bound by the outer certificate.
@@ -4097,6 +4120,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ReportBundleCertificate::Aging(certificate) => {
                 if let Err(refusal) =
                     self.replay_effective_date_aging(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::DueDateAging(certificate) => {
+                if let Err(refusal) =
+                    self.replay_due_date_aging(cx, principal, capability, certificate)?
                 {
                     return Ok(Err(refusal));
                 }
@@ -4406,6 +4437,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(bytes) => bytes,
                 Err(refusal) => return Ok(Err(refusal)),
             },
+            ReportBundleCertificate::DueDateAging(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
             ReportBundleCertificate::RollForward(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,

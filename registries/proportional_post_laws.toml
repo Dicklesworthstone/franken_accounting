@@ -1,0 +1,15 @@
+# Plan §5.4 / fa-0hs4.10. Arithmetic over the authenticated pending legs;
+# posting still passes all native/base/dimension/account/lifecycle laws.
+schema_version = 1
+max_legs = 4096
+
+[[law]]
+id = 1
+version = 1
+name = "BalancedLargestRemainder"
+domain = "positive-native-monetary-legs; exact-rate-in-[0,1]"
+partition = "unit-and-normalized-legal-entity"
+target = "common-pending-debit-credit-total-times-rate; HalfEven"
+allocation = "same-target-per-side; largest-remainder; ties-lowest-source-ordinal"
+zero = "omit-zero-posted-legs; empty-result-refuses-with-VoidReserve"
+remainder = "released-per-original-leg; never-a-new-posting"

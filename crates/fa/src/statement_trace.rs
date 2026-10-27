@@ -534,6 +534,11 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
                 Ok(())
             }
         })
+        .and_then(|()| {
+            // Historical attribution still performs current genesis/context
+            // checks; certificate routes also verify current journal integrity.
+            fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+        })
     {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }

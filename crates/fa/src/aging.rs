@@ -1,4 +1,4 @@
-//! Historical open-item and effective-date aging reads through the caller's
+//! Historical open-item and aging reads through the caller's
 //! query context. These projections neither create a runtime nor write.
 
 use asupersync::fs::Vfs;
@@ -12,6 +12,12 @@ mod certificate;
 pub use certificate::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgingCertificate, AgingRequest, CertifiedAging,
     MAX_AGING_BUCKET_BOUNDS, MAX_AGING_CERTIFICATE_BYTES,
+};
+
+mod due_date;
+pub use due_date::{
+    CertifiedDueDateAging, DUE_DATE_AGING_CERTIFICATE_FORMAT, DUE_DATE_AGING_OUTPUT_FORMAT,
+    DueDateAgingCertificate,
 };
 
 mod reconciliation;

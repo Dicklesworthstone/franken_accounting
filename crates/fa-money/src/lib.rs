@@ -32,6 +32,7 @@
 pub mod allocation;
 pub mod amount;
 pub mod lot;
+pub mod proportional_post;
 pub mod rate;
 pub mod rounding;
 pub mod unit;

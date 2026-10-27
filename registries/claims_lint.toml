@@ -162,6 +162,11 @@ kind = "file"
 owner_bead = "fa-joq"
 
 [[g0_registry]]
+path = "proportional_post_laws.toml"
+kind = "file"
+owner_bead = "fa-0hs4.10"
+
+[[g0_registry]]
 path = "fx_laws.toml"
 kind = "file"
 owner_bead = "fa-s3c"

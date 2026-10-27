@@ -26,9 +26,10 @@ use crate::cash_flow_policy::{CashFlowPolicy, CashFlowPolicyCertificate};
 use crate::cash_flow_split::{CashFlowSplitCertificate, CashFlowSplitDefinition};
 use crate::{
     AgingCertificate, AgingReconciliationCertificate, AgingReconciliationRequest, AsyncBook,
-    BookError, CashFlowCertificate, CashFlowDefinition, IndirectCashFlowCertificate,
-    IndirectCashFlowRequest, Outcome, ReportCertificate, RollForwardCertificate,
-    RollForwardRequest, StatementDiffCertificate, StatementTraceCertificate, SummaryCertificate,
+    BookError, CashFlowCertificate, CashFlowDefinition, DueDateAgingCertificate,
+    IndirectCashFlowCertificate, IndirectCashFlowRequest, Outcome, ReportCertificate,
+    RollForwardCertificate, RollForwardRequest, StatementDiffCertificate,
+    StatementTraceCertificate, SummaryCertificate,
 };
 
 /// Total encoded input bound, including the complete nested native closure.
@@ -40,6 +41,7 @@ pub enum ReportArtifactFamily {
     Native,
     Summary,
     EffectiveDateAging,
+    DueDateAging,
     RollForward,
     EquityRollForward,
     ExternalFeed,
@@ -72,6 +74,7 @@ impl ReportArtifactFamily {
             Self::Native => "native",
             Self::Summary => "summary",
             Self::EffectiveDateAging => "effective-date-aging",
+            Self::DueDateAging => "due-date-aging",
             Self::RollForward => "roll-forward",
             Self::EquityRollForward => "equity-roll-forward",
             Self::ExternalFeed => "external-feed-reconciliation",
@@ -100,6 +103,8 @@ pub enum ReportArtifactExpectation<'a> {
     /// statement-diff and statement-trace artifacts.
     /// This does not certify that the artifact answers a separate request.
     AsSupplied,
+    /// A contractual-maturity aging request chosen apart from the delivery.
+    DueDateAging(&'a crate::AgingRequest),
     CashFlow {
         request: &'a RollForwardRequest,
         definition: &'a CashFlowDefinition,
@@ -126,6 +131,7 @@ enum Artifact {
     Native(Box<ReportCertificate>),
     Summary(Box<SummaryCertificate>),
     Aging(Box<AgingCertificate>),
+    DueDateAging(Box<DueDateAgingCertificate>),
     RollForward(Box<RollForwardCertificate>),
     EquityRollForward(Box<crate::EquityRollForwardCertificate>),
     ExternalFeed(Box<crate::ExternalFeedCertificate>),
@@ -222,6 +228,8 @@ impl ReportArtifact {
             Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))
         } else if format == crate::AGING_CERTIFICATE_FORMAT {
             Artifact::Aging(Box::new(AgingCertificate::decode(bytes)?))
+        } else if format == crate::DUE_DATE_AGING_CERTIFICATE_FORMAT {
+            Artifact::DueDateAging(Box::new(DueDateAgingCertificate::decode(bytes)?))
         } else if format == crate::ROLL_FORWARD_CERTIFICATE_FORMAT {
             Artifact::RollForward(Box::new(RollForwardCertificate::decode(bytes)?))
         } else if format == crate::EQUITY_CERTIFICATE_FORMAT {
@@ -278,6 +286,7 @@ impl ReportArtifact {
             Artifact::Native(_) => ReportArtifactFamily::Native,
             Artifact::Summary(_) => ReportArtifactFamily::Summary,
             Artifact::Aging(_) => ReportArtifactFamily::EffectiveDateAging,
+            Artifact::DueDateAging(_) => ReportArtifactFamily::DueDateAging,
             Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
             Artifact::EquityRollForward(_) => ReportArtifactFamily::EquityRollForward,
             Artifact::ExternalFeed(_) => ReportArtifactFamily::ExternalFeed,
@@ -308,6 +317,7 @@ impl ReportArtifact {
             Artifact::Native(c) => c,
             Artifact::Summary(c) => c.source_certificate(),
             Artifact::Aging(c) => c.source(),
+            Artifact::DueDateAging(c) => c.source(),
             Artifact::RollForward(c) => c.source_certificate(),
             Artifact::EquityRollForward(c) => c.source_certificate().source_certificate(),
             Artifact::ExternalFeed(c) => c.source_certificate(),
@@ -387,6 +397,7 @@ impl ReportArtifact {
             Artifact::Native(c) => &c.digest,
             Artifact::Summary(c) => c.digest(),
             Artifact::Aging(c) => c.digest(),
+            Artifact::DueDateAging(c) => c.digest(),
             Artifact::RollForward(c) => c.digest(),
             Artifact::EquityRollForward(c) => c.digest(),
             Artifact::ExternalFeed(c) => c.digest(),
@@ -413,6 +424,7 @@ impl ReportArtifact {
             Artifact::Native(c) => &c.output,
             Artifact::Summary(c) => c.output(),
             Artifact::Aging(c) => c.output(),
+            Artifact::DueDateAging(c) => c.output(),
             Artifact::RollForward(c) => c.output(),
             Artifact::EquityRollForward(c) => c.output(),
             Artifact::ExternalFeed(c) => c.output(),
@@ -447,6 +459,7 @@ impl ReportArtifact {
             Artifact::Native(c) => c.canonical_bytes().map_err(|e| invalid(e.to_string())),
             Artifact::Summary(c) => c.canonical_bytes(),
             Artifact::Aging(c) => c.canonical_bytes(),
+            Artifact::DueDateAging(c) => c.canonical_bytes(),
             Artifact::RollForward(c) => c.canonical_bytes(),
             Artifact::EquityRollForward(c) => c.canonical_bytes(),
             Artifact::ExternalFeed(c) => c.canonical_bytes(),
@@ -484,6 +497,7 @@ from_certificate!(
     ReportCertificate,
     SummaryCertificate,
     AgingCertificate,
+    DueDateAgingCertificate,
     RollForwardCertificate,
     crate::EquityRollForwardCertificate,
     crate::ExternalFeedCertificate,
@@ -696,6 +710,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .map(|_| ()),
             (Artifact::Aging(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_effective_date_aging(cx, principal, capability, c)?
+                .map(|_| ()),
+            (Artifact::DueDateAging(c), ReportArtifactExpectation::AsSupplied) => self
+                .replay_due_date_aging(cx, principal, capability, c)?
+                .map(|_| ()),
+            (Artifact::DueDateAging(c), ReportArtifactExpectation::DueDateAging(request)) => self
+                .replay_due_date_aging_for(cx, principal, capability, c, request)?
                 .map(|_| ()),
             (Artifact::RollForward(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_roll_forward(cx, principal, capability, c)?

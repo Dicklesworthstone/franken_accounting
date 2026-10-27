@@ -260,7 +260,9 @@ pub fn rows(
 /// `<case>-CASE-<case id>`: `fa case show` after the history must report the
 /// case Closed, of its row's kind, determined on its sourced or declared day
 /// under its authority document, and disclosed under a reviewed document;
-/// the disclosure's unreviewed twin was refused FA-REF-179, and each restated
+/// the disclosure's unreviewed twin was refused FA-REF-179, one approval
+/// alone was refused FA-REF-012 and left the case Rehearsed, each delta
+/// posted outside its case was refused FA-REF-178, and each restated
 /// target's lineage names Restates. A history with no `case_close` step for
 /// the case leaves the row UNRUN, never PASS.
 fn case_rows(run: &BookRun<'_>) -> Vec<Evaluated> {
@@ -398,12 +400,65 @@ fn case_show(run: &BookRun<'_>, c: &CaseDef) -> (Vec<(String, String)>, Vec<Stri
         }
         None => fails.push("expected the unreviewed disclosure twin observed none".into()),
     }
-    let lineages = r.map(|r| r.lineages.as_slice()).unwrap_or_default();
-    let posts = run
-        .book
-        .steps
+    let has = |kind: StepKind| {
+        run.book
+            .steps
+            .iter()
+            .any(|x| x.step_kind() == Some(kind) && x.reference == c.id)
+    };
+    match r.and_then(|r| r.one_approval.as_ref()) {
+        Some((twin, state)) => {
+            let id = twin.refusal_id();
+            tokens.push((
+                "one_approval".to_string(),
+                format!(
+                    "refused:{}:exit={}:{state}",
+                    id.as_deref().unwrap_or("none"),
+                    twin.exit
+                ),
+            ));
+            if id.as_deref() != Some("FA-REF-012") || twin.exit != 7 || state != "Rehearsed" {
+                fails.push(format!(
+                    "expected one approval refused FA-REF-012 exit=7 leaving the case Rehearsed observed {} exit={} state={state}",
+                    id.as_deref().unwrap_or("admitted"),
+                    twin.exit
+                ));
+            }
+        }
+        None if has(StepKind::CaseApprove) => {
+            fails.push("expected the one-approval twin observed none".into());
+        }
+        None => {}
+    }
+    let outside = r.map(|r| r.outside.as_slice()).unwrap_or_default();
+    let posts = has(StepKind::CasePost);
+    if posts && outside.is_empty() {
+        fails.push("expected each delta posted outside its case observed none".into());
+    }
+    let mut observed: Vec<String> = outside
         .iter()
-        .any(|x| x.step_kind() == Some(StepKind::CasePost) && x.reference == c.id);
+        .map(|(_, twin)| {
+            format!(
+                "refused:{}:exit={}",
+                twin.refusal_id().as_deref().unwrap_or("none"),
+                twin.exit
+            )
+        })
+        .collect();
+    observed.dedup();
+    if !observed.is_empty() {
+        tokens.push(("outside_case".to_string(), observed.join(",")));
+    }
+    for (intent, twin) in outside {
+        if twin.refusal_id().as_deref() != Some("FA-REF-178") || twin.exit != 3 {
+            fails.push(format!(
+                "expected {intent} posted outside its case refused FA-REF-178 exit=3 observed {} exit={}",
+                twin.refusal_id().as_deref().unwrap_or("admitted"),
+                twin.exit
+            ));
+        }
+    }
+    let lineages = r.map(|r| r.lineages.as_slice()).unwrap_or_default();
     if posts && lineages.is_empty() {
         fails.push("expected the lineage of a restated target observed none".into());
     }

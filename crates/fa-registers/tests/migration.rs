@@ -10,7 +10,7 @@
 //! only where its run is finalized. Crash points (lab VFS) show the
 //! activation is all or nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
@@ -2122,6 +2122,279 @@ fn a_scratch_book_with_equal_folds_but_other_entries_is_refused() {
     let r = verify(&a, &b_scratch, &a_map).expect_err("other objects");
     assert_eq!((r.code, r.exit), ("FA-REF-135", exit::VERIFICATION), "{r}");
     assert!(r.message.contains("different entries"), "{r}");
+}
+
+/// Deliberately literal pair oracle for the carried replay reader (fa-vr7q).
+/// The map's source commit/marker checks remain the production verifier's;
+/// these fixtures use real replay maps and compare selection and folds by
+/// rereading each complete prefix, independently of the carried selector.
+fn literal_replay_pairs(
+    k: &Kernel,
+    scratch: &Database<MemVfs>,
+    map: &SeqMap,
+) -> Result<fa_registers::replay::ReplayVerification, String> {
+    let mut entries_checked = 0;
+    let mut folds_checked = 0;
+    for pair in &map.pairs {
+        let source = fa_registers::entries_at(&k.db, &k.book, pair.source_seq)
+            .map_err(|error| format!("kernel: {error}"))?;
+        let target = fa_registers::entries_at(scratch, &k.book, pair.scratch_seq)
+            .map_err(|error| format!("kernel: {error}"))?;
+        let identities = |entries: &[(VId, fa_model::Entry, CommitSeq)]| {
+            entries
+                .iter()
+                .map(|(vid, entry, _)| (*vid, entry.entry_digest))
+                .collect::<BTreeMap<_, _>>()
+        };
+        if identities(&source) != identities(&target) {
+            return Err(format!(
+                "FA-REF-135: at source {} / scratch {} the books select different entries ({} vs {})",
+                pair.source_seq.0,
+                pair.scratch_seq.0,
+                source.len(),
+                target.len(),
+            ));
+        }
+        entries_checked += source.len();
+        let periods: BTreeSet<_> = source
+            .iter()
+            .filter(|(_, entry, _)| !entry.proposal.legs.is_empty())
+            .map(|(_, entry, _)| fa_registers::entry_period(&k.book, entry))
+            .collect::<Result<_, _>>()
+            .map_err(|error| format!("kernel: {error}"))?;
+        for period in periods {
+            let a = fold_period_at(&k.db, &k.book, &period, Some(pair.source_seq))
+                .map_err(|error| format!("kernel: {error}"))?;
+            let b = fold_period_at(scratch, &k.book, &period, Some(pair.scratch_seq))
+                .map_err(|error| format!("kernel: {error}"))?;
+            if a.cells != b.cells || a.pending != b.pending || a.entries != b.entries {
+                return Err(format!(
+                    "FA-REF-135: at source {} / scratch {} period `{period}` folds differently",
+                    pair.source_seq.0, pair.scratch_seq.0,
+                ));
+            }
+            folds_checked += 1;
+        }
+    }
+    Ok(fa_registers::replay::ReplayVerification {
+        seq_map_digest: map.digest().unwrap(),
+        pairs_checked: map.pairs.len(),
+        entries_checked,
+        folds_checked,
+    })
+}
+
+fn replay_result(
+    result: Result<
+        Result<fa_registers::replay::ReplayVerification, Refusal>,
+        fa_registers::RegisterError,
+    >,
+) -> Result<fa_registers::replay::ReplayVerification, String> {
+    result
+        .map_err(|error| format!("kernel: {error}"))?
+        .map_err(|refusal| format!("{}: {}", refusal.code, refusal.message))
+}
+
+fn post_replay_native(k: &mut Kernel, index: usize) -> Posted {
+    let trunk = trunk_intent(
+        &format!("replay-carried-{index}"),
+        vec![
+            leg(fa_reference::Side::Debit, "6000", 500),
+            leg(fa_reference::Side::Credit, "1000", 500),
+        ],
+    );
+    let proposal = EntryPayload {
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
+        ..chunk_payload(k, VId(0), &trunk, Shape::NoRun, None)
+    };
+    kernel_post(k, proposal, &["post"], false).expect("native posting")
+}
+
+#[test]
+fn replay_verification_decodes_only_each_pairs_new_rows() {
+    let (mut k, _) = setup();
+    let mut prefixes = Vec::new();
+    for index in 0..32 {
+        post_replay_native(&mut k, index);
+        if matches!(index, 7 | 15 | 31) {
+            prefixes.push(k.db.frontier().unwrap());
+        }
+    }
+    let head = k.db.frontier().unwrap();
+    let mut scratch = empty_scratch(&k);
+    let map = replay(&mut k, &mut scratch, head).unwrap();
+    let mut previous = None;
+    for prefix in prefixes {
+        let selected = SeqMap {
+            source_book: map.source_book,
+            source_prefix: prefix,
+            pairs: map
+                .pairs
+                .iter()
+                .filter(|pair| pair.source_seq <= prefix)
+                .cloned()
+                .collect(),
+        };
+        let (result, work) =
+            fa_registers::replay::verify_replay_counted(&k.db, &scratch, &k.book, &selected)
+                .expect("counted replay");
+        let verified = result.expect("the real replay verifies");
+        assert_eq!(
+            Ok(verified.clone()),
+            literal_replay_pairs(&k, &scratch, &selected)
+        );
+        let entries = fa_registers::entries_at(&k.db, &k.book, prefix)
+            .unwrap()
+            .len();
+        eprintln!("replay prefix={prefix:?} entries={entries} work={work:?}");
+        for side in [&work.source, &work.scratch] {
+            assert_eq!(
+                side.full_reads, 1,
+                "native suffixes never rescan the prefix"
+            );
+            assert_eq!(
+                side.entries_decoded, entries,
+                "decode each immutable entry once"
+            );
+            assert!(side.vertices_read >= side.entries_decoded);
+            assert!(side.delta_rows > 0);
+        }
+        if let Some((old_entries, old_decoded)) = previous {
+            assert_eq!(
+                work.source.entries_decoded - old_decoded,
+                entries - old_entries
+            );
+        }
+        previous = Some((entries, work.source.entries_decoded));
+        assert!(
+            verified.entries_checked > work.source.entries_decoded,
+            "every historical pair is still checked despite decoding only its suffix"
+        );
+    }
+}
+
+#[test]
+fn replay_verification_meets_every_planted_tamper_as_a_full_read_does() {
+    use fa_model::symbols::{label, property, relation};
+    use fgdb_types::CanonicalScalar;
+
+    for planted in ["delete", "relabel", "rewrite", "rewrite-then-restore"] {
+        let (mut k, _) = setup();
+        let entry = post_replay_native(&mut k, 0).entry_ref();
+        post_replay_native(&mut k, 1);
+        let mut scratch = empty_scratch(&k);
+        let head = k.db.frontier().unwrap();
+        let mut map = replay(&mut k, &mut scratch, head).unwrap();
+        assert_eq!(
+            replay_result(fa_registers::replay::verify_replay(
+                &k.db, &scratch, &k.book, &map
+            )),
+            literal_replay_pairs(&k, &scratch, &map),
+        );
+        let original = fa_journal::rows::bytes(
+            &scratch.vertex(entry.vid).unwrap().unwrap(),
+            property::FA_PAYLOAD,
+            "entry.payload",
+        )
+        .unwrap();
+        let rounds = if planted == "rewrite-then-restore" {
+            2
+        } else {
+            1
+        };
+        for round in 0..rounds {
+            // A mapped accounting metadata commit with no new postings.
+            // Only the scratch side is damaged; the source map and markers
+            // remain authentic, so the pair selection must detect it.
+            let mut metadata = WriteBatch::new(relation::IN_BOOK);
+            metadata.set_vertex_property(
+                fa_journal::rows::book_root(),
+                property::NAME,
+                Some(
+                    fa_journal::rows::scalar_text("book.name", &format!("Replay round {round}"))
+                        .unwrap(),
+                ),
+            );
+            write_raw(&mut k, metadata.clone());
+            let mut changed = metadata;
+            match (planted, round) {
+                ("delete", _) => changed.delete_vertex(entry.vid),
+                ("relabel", _) => changed.set_vertex_label(entry.vid, label::ENTRY, false),
+                (_, 1) => changed.set_vertex_property(
+                    entry.vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(original.clone()).unwrap()),
+                ),
+                _ => {
+                    let mut body = fa_model::Entry::decode(&original).unwrap();
+                    body.proposal.description = Erasable::seal(
+                        &"changed after posting".to_string(),
+                        None,
+                        &k.book.seal_key,
+                        [0x44; 32],
+                        [0x55; 24],
+                    );
+                    let rewritten = body
+                        .proposal
+                        .seal(body.approvals, body.plan_certificate)
+                        .unwrap();
+                    changed.set_vertex_property(
+                        entry.vid,
+                        property::FA_PAYLOAD,
+                        Some(CanonicalScalar::bytes(rewritten.encode().unwrap()).unwrap()),
+                    );
+                }
+            }
+            let ctx = k.ctx();
+            k.runtime
+                .block_on(scratch.write(&ctx.commit(), changed))
+                .unwrap();
+            let source_seq = k.db.frontier().unwrap();
+            map.source_prefix = source_seq;
+            map.pairs.push(fa_journal::scratch::SeqPair {
+                source_seq,
+                source_marker: k
+                    .db
+                    .delta_since(CommitSeq(source_seq.0 - 1))
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .commit_marker_identity()
+                    .marker_oid
+                    .0,
+                scratch_seq: scratch.frontier().unwrap(),
+            });
+        }
+        let expected = literal_replay_pairs(&k, &scratch, &map);
+        assert!(
+            expected.as_ref().unwrap_err().contains("different entries"),
+            "{planted}"
+        );
+        let actual = replay_result(fa_registers::replay::verify_replay(
+            &k.db, &scratch, &k.book, &map,
+        ));
+        assert_eq!(
+            actual, expected,
+            "{planted}: same first bad pair and refusal"
+        );
+        if planted == "rewrite-then-restore" {
+            let restored =
+                fa_registers::entries_at(&scratch, &k.book, scratch.frontier().unwrap()).unwrap();
+            assert_eq!(
+                restored
+                    .iter()
+                    .find(|(vid, _, _)| *vid == entry.vid)
+                    .unwrap()
+                    .1
+                    .entry_digest,
+                entry.entry_digest,
+                "a valid-looking head cannot hide the damaged historical pair",
+            );
+        }
+    }
 }
 
 #[test]

@@ -8,10 +8,10 @@ mod expectations;
 mod procedure;
 
 pub(crate) use expectations::{
-    aging_expectation_json, cash_flow_expectation_json, equity_expectation_json,
-    external_feed_expectation_json, indirect_expectation_json, native_subledger_expectation_json,
-    policy_cash_flow_expectation_json, portfolio_expectation_json,
-    reconciliation_bundle_expectation, reconciliation_expectation_json,
+    aging_expectation_json, cash_flow_expectation_json, due_date_aging_expectation_json,
+    equity_expectation_json, external_feed_expectation_json, indirect_expectation_json,
+    native_subledger_expectation_json, policy_cash_flow_expectation_json,
+    portfolio_expectation_json, reconciliation_bundle_expectation, reconciliation_expectation_json,
     split_cash_flow_expectation_json,
 };
 
@@ -1047,6 +1047,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let due_date_aging = if artifact.family() == ReportArtifactFamily::DueDateAging {
+        let certificate = fa::DueDateAgingCertificate::decode(&bytes)?;
+        Some(match &expected {
+            expectations::Expected::DueDateAging(request) => {
+                book.replay_due_date_aging_for(principal, &capability, &certificate, request)??
+            }
+            _ => book.replay_due_date_aging(principal, &capability, &certificate)??,
+        })
+    } else {
+        None
+    };
     let equity = if artifact.family() == ReportArtifactFamily::EquityRollForward {
         let expectations::Expected::Equity(request) = &expected else {
             return Err(certificate_invalid(
@@ -1219,6 +1230,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(report) = aging {
         crate::cli::render_aging(&ctx.out, &book, &report, Some(&digest))?;
         true
+    } else if let Some(report) = due_date_aging {
+        crate::cli::render_due_date_aging(&ctx.out, &book, &report, Some(&digest))?;
+        true
     } else if let Some(report) = equity {
         crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
         true
@@ -1259,6 +1273,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ReportArtifactFamily::Summary
                 | ReportArtifactFamily::RollForward
                 | ReportArtifactFamily::EffectiveDateAging
+                | ReportArtifactFamily::DueDateAging
                 | ReportArtifactFamily::EquityRollForward
                 | ReportArtifactFamily::ExternalFeed
                 | ReportArtifactFamily::NativeSubledger

@@ -626,6 +626,182 @@ fn current_holder_read_and_produce_admission_precedes_even_a_corrupt_chart() {
 }
 
 #[test]
+fn summary_scope_admission_keeps_snapshot_reads_and_requires_head_for_certificates() {
+    fn denied<T: std::fmt::Debug>(outcome: Outcome<T>, caveat: &str) {
+        let refusal = outcome.unwrap().unwrap_err();
+        assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
+        assert_eq!(refusal.exit, exit::SAFETY);
+        assert!(refusal.message.contains(caveat), "{refusal:?}");
+    }
+
+    let mut h = Harness::new();
+    h.post("retained", "2026-03-10", h.usd, 100, false);
+    let pin = h.head();
+    let mut request = h.request(h.selected(&["assets"]), march());
+    request.known_at = Some(pin);
+    let good = h.certify(&request);
+    h.post("later", "2026-03-20", h.usd, 25, false);
+    let head = h.head();
+    assert!(head > pin);
+    let cx = h.cx();
+    let authority = cap(&["read", "produce"]);
+    let admitted = authority
+        .clone()
+        .for_books(&[BOOK])
+        .unwrap()
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let pinned = admitted.clone().known_at_most(pin);
+    assert_eq!(
+        h.book
+            .summary_trial_balance(&cx, PRINCIPAL, &pinned, &request)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    assert_eq!(
+        h.book
+            .certify_summary_trial_balance(&cx, PRINCIPAL, &admitted, &request)
+            .unwrap()
+            .unwrap(),
+        good
+    );
+    assert_eq!(
+        h.book
+            .replay_summary_trial_balance(&cx, PRINCIPAL, &admitted, &good.certificate)
+            .unwrap()
+            .unwrap(),
+        good.report
+    );
+    // Certificate generation/replay inspects current immutable-entry and
+    // registry integrity; its selected report prefix is not its full reach.
+    denied(
+        h.book
+            .certify_summary_trial_balance(&cx, PRINCIPAL, &pinned, &request),
+        "known_at",
+    );
+    denied(
+        h.book
+            .replay_summary_trial_balance(&cx, PRINCIPAL, &pinned, &good.certificate),
+        "known_at",
+    );
+
+    // Even selecting one root and one effective cutoff reads the full
+    // native source, including uncovered leaves and retained input closure.
+    for (caveat, scoped) in [
+        (
+            "accounts",
+            authority.clone().for_accounts(&["assets"]).unwrap(),
+        ),
+        (
+            "periods",
+            authority.clone().for_periods(&["FY2026-P03"]).unwrap(),
+        ),
+        (
+            "effective",
+            authority.clone().effective_through(day("2026-03-31")),
+        ),
+        (
+            "known_at",
+            authority.clone().known_at_most(CommitSeq(pin.0 - 1)),
+        ),
+        (
+            "branch",
+            authority.clone().on_branch(Id128([0xd1; 16])).unwrap(),
+        ),
+        (
+            "books",
+            authority.clone().for_books(&[Id128([0xf1; 16])]).unwrap(),
+        ),
+    ] {
+        denied(
+            h.book
+                .summary_trial_balance(&cx, PRINCIPAL, &scoped, &request),
+            caveat,
+        );
+        denied(
+            h.book
+                .certify_summary_trial_balance(&cx, PRINCIPAL, &scoped, &request),
+            caveat,
+        );
+        denied(
+            h.book
+                .replay_summary_trial_balance(&cx, PRINCIPAL, &scoped, &good.certificate),
+            caveat,
+        );
+        denied(
+            h.book
+                .summary_certificate_status(&cx, PRINCIPAL, &scoped, &good.certificate),
+            caveat,
+        );
+        let mut damaged = good.certificate.clone();
+        damaged.source.output_digest[0] ^= 1;
+        denied(
+            h.book
+                .replay_summary_trial_balance(&cx, PRINCIPAL, &scoped, &damaged),
+            caveat,
+        );
+        denied(
+            h.book
+                .summary_certificate_status(&cx, PRINCIPAL, &scoped, &damaged),
+            caveat,
+        );
+    }
+
+    let mut at_head = request.clone();
+    at_head.known_at = None;
+    denied(
+        h.book
+            .summary_trial_balance(&cx, PRINCIPAL, &pinned, &at_head),
+        "known_at",
+    );
+    denied(
+        h.book
+            .certify_summary_trial_balance(&cx, PRINCIPAL, &pinned, &at_head),
+        "known_at",
+    );
+    denied(
+        h.book
+            .summary_certificate_status(&cx, PRINCIPAL, &pinned, &good.certificate),
+        "known_at",
+    );
+    let mut damaged = good.certificate.clone();
+    damaged.digest[0] ^= 1;
+    // Freshness must judge its eventual HEAD read before attempting replay.
+    denied(
+        h.book
+            .summary_certificate_status(&cx, PRINCIPAL, &pinned, &damaged),
+        "known_at",
+    );
+    assert_eq!(
+        h.book
+            .replay_summary_trial_balance(&cx, PRINCIPAL, &admitted, &damaged)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        crate::certificate::code::CERTIFICATE_INVALID
+    );
+    let mut moved = good.certificate.clone();
+    moved.source.known_at = head;
+    denied(
+        h.book
+            .replay_summary_trial_balance(&cx, PRINCIPAL, &pinned, &moved),
+        "known_at",
+    );
+    let expired = h
+        .book
+        .summary_trial_balance(&cx, PRINCIPAL, &pinned.expiring_at(head), &request)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(expired.code, "FA-REF-014");
+    assert_eq!(expired.exit, exit::SAFETY);
+    assert!(
+        matches!(h.status(&good.certificate), SummaryCertificateStatus::Changed { checked_at, .. } if checked_at == head)
+    );
+    assert_eq!(h.head(), head);
+}
+
+#[test]
 fn foreign_books_and_rewritten_journal_history_cannot_be_reported_as_current() {
     let mut h = Harness::new();
     let certified = h.certify(&h.request(SummaryScope::AllRoots, march()));

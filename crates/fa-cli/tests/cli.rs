@@ -6516,6 +6516,7 @@ fn law_and_unit_listings_name_every_registered_law_and_unit() {
     for (family, name) in [
         ("rounding", "HalfEven"),
         ("allocation", "LargestRemainder"),
+        ("proportional-post", "BalancedLargestRemainder"),
         ("fx", "SpotClose"),
     ] {
         assert!(
@@ -6532,6 +6533,7 @@ fn law_and_unit_listings_name_every_registered_law_and_unit() {
             "conversion",
             "fx",
             "lot",
+            "proportional-post",
             "rounding",
             "tracing"
         ]
@@ -14269,7 +14271,8 @@ fn due_date_aging_reads_journaled_maturity_through_the_binary() -> std::io::Resu
     assert_eq!(text(&unscheduled[0], "open"), "10.00 USD");
     assert_eq!(arr(&data, "unscheduled_totals").len(), 1, "{out}");
 
-    // Not certified yet, and the basis belongs to gl aging alone.
+    // Control reconciliation remains a separate path, and the basis belongs
+    // to gl aging alone. Certification is covered by proofs::aging.
     for (args, says) in [
         (
             vec![
@@ -14279,10 +14282,10 @@ fn due_date_aging_reads_journaled_maturity_through_the_binary() -> std::io::Resu
                 "2026-04-01",
                 "--basis",
                 "due-date",
-                "--certify",
+                "--reconcile",
                 "--json",
             ],
-            "cannot yet be certified",
+            "control reconciliation is not yet supported",
         ),
         (
             vec![

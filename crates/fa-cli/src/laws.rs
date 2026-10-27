@@ -9,7 +9,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, usage};
 use crate::json::{Json, obj, s};
 
-const LAW_EXAMPLE: &str = "fa law list [--family rounding|allocation|conversion|fx|lot|tracing] --json; fa law show <name> [--family <family>] --json";
+const LAW_EXAMPLE: &str = "fa law list [--family rounding|allocation|proportional-post|conversion|fx|lot|tracing] --json; fa law show <name> [--family <family>] --json";
 
 /// One registered law: its family, id, name and version, and every other
 /// field of its registry row as text, in key order.

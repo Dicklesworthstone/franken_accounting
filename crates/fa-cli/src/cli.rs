@@ -17399,25 +17399,15 @@ fn aging_source_flags(
     Ok((from_source, saved_pair))
 }
 
-/// `gl aging --reconcile` over every posting leaf or a selected list: one
-/// chart, one whole-book aging fold and one control trial balance at a single
-/// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
-/// never printed as zero. This is an internal consistency report, not a close
-/// permit or an external subledger attestation. With `saved`, the aging and
-/// control sources are retained certificates reused byte-for-byte.
-#[allow(clippy::too_many_arguments)]
-/// `fa gl aging --basis due-date`: open amounts aged by days past each due
-/// date the journal records (fa-0hs4.13). An uncertified read.
-fn due_date_aging_report(
+/// Render the original contractual-maturity result, including replayed reports.
+pub(crate) fn render_due_date_aging(
     out: &Out,
     book: &Book,
-    account: Option<VId>,
-    through: DateDay,
-    known_at: Option<CommitSeq>,
-    buckets: &AgingBuckets,
+    aging: &fa::DueDateAging,
+    digest: Option<&str>,
 ) -> Result<(), Fail> {
-    let aging = book.due_date_aging(account, through, known_at, buckets)?;
     out.known_at(aging.known_at);
+    out.effective(format!("as-of:{}", aging.effective_through));
     let units = &book.context().units;
     let accounts_by_vid: std::collections::BTreeMap<VId, String> = book
         .accounts()?
@@ -17425,7 +17415,7 @@ fn due_date_aging_report(
         .filter(|r| r.created_at <= aging.known_at)
         .map(|r| (r.vid, r.code))
         .collect();
-    if let Some(acc) = account
+    if let Some(acc) = aging.account
         && !accounts_by_vid.contains_key(&acc)
     {
         return Err(
@@ -17559,7 +17549,7 @@ fn due_date_aging_report(
         aging.cells.len(),
         aging.unscheduled.len()
     );
-    out.event(
+    out.event_with_certificate(
         "due_date_aging",
         vec![
             (
@@ -17583,10 +17573,18 @@ fn due_date_aging_report(
             ),
         ],
         &human,
+        digest,
     );
     Ok(())
 }
 
+/// `gl aging --reconcile` over every posting leaf or a selected list: one
+/// chart, one whole-book aging fold and one control trial balance at a single
+/// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
+/// never printed as zero. This is an internal consistency report, not a close
+/// permit or an external subledger attestation. With `saved`, the aging and
+/// control sources are retained certificates reused byte-for-byte.
+#[allow(clippy::too_many_arguments)]
 fn gl_aging_portfolio(
     out: &Out,
     files: &Files,
@@ -18298,12 +18296,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ));
                 }
             };
-            // Due-date aging is a read for now: its certificate, replay and
-            // control reconciliation are not built (fa-0hs4.13).
-            if due_date && (certify || reconcile || from_source.is_some()) {
+            if due_date && reconcile {
                 return Err(usage(
-                    "due-date aging cannot yet be certified, reconciled or aged from a saved source",
-                    "fa gl aging --basis due-date --as-of YYYY-MM-DD without --certify, --certificate-out, --reconcile or --from-source; certify the effective-date aging instead",
+                    "due-date aging control reconciliation is not yet supported",
+                    "certify due-date aging without --reconcile; use --basis effective-date --reconcile for the control comparison",
                 ));
             }
             if !reconcile && account_codes.len() > 1 {
@@ -18356,9 +18352,6 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             };
             book.prepare_report_history(who, &capability, known_at)??;
-            if due_date {
-                return due_date_aging_report(out, &book, account, day, known_at, &buckets);
-            }
             // Saved certificates are read after admission, and their own
             // prefix is prepared before the library replays them.
             let saved = match saved_pair {
@@ -18426,6 +18419,55 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "--all-posting selects the accounts of an aging reconciliation",
                     "fa gl aging --all-posting --as-of YYYY-MM-DD --reconcile --book <dir>",
                 ));
+            }
+            if due_date {
+                let certified = if let Some(source) = &source {
+                    Some(book.certify_due_date_aging_from_source(
+                        who,
+                        &capability,
+                        source,
+                        day,
+                        &buckets,
+                    )??)
+                } else if certify {
+                    Some(book.certify_due_date_aging(
+                        who,
+                        &capability,
+                        &fa::AgingRequest {
+                            account,
+                            effective_through: day,
+                            known_at,
+                            buckets: buckets.clone(),
+                        },
+                    )??)
+                } else {
+                    None
+                };
+                if let Some(certified) = certified {
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    let request = certified.certificate.request()?;
+                    let (bytes, retained) = notary::retain_report_artifact(
+                        &mut book,
+                        &ctx.files,
+                        args,
+                        &artifact,
+                        &capability,
+                    )?;
+                    let digest = hex(artifact.digest());
+                    render_due_date_aging(out, &book, &certified.report, Some(&digest))?;
+                    notary::emit_report_artifact_for(
+                        out,
+                        args,
+                        &artifact,
+                        "fa:due-date-aging:v1",
+                        &bytes,
+                        &retained,
+                        &notary::due_date_aging_expectation_json(&request),
+                    );
+                    return Ok(());
+                }
+                let report = book.due_date_aging(account, day, known_at, &buckets)?;
+                return render_due_date_aging(out, &book, &report, None);
             }
             if reconcile {
                 // One code keeps the single-leaf report. Several codes, or the
