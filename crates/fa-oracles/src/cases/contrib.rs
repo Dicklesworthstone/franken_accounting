@@ -23,6 +23,9 @@
 //! ([`line_terms`]), on the definition's basis: a balance sheet is stock,
 //! and maps the Revenue and Expense accounts as unclosed earnings of every
 //! year; an income statement is activity, with Closing entries set aside.
+//! [`union`] folds one account's per-period explanations: every period of
+//! the fold explained and no other, the excluded classes' legs set aside and
+//! reported (`excluded_by_definition`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -210,6 +213,93 @@ pub fn fold_periods(book: &BookVariant, stock: bool, coordinate: &str) -> Option
     };
     periods.sort_by(|a, b| a.end.cmp(&b.end));
     Some(periods.into_iter().map(|p| p.code.clone()).collect())
+}
+
+/// One posted leg `fa explain balance` reported in a cell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplainedLeg {
+    /// The entry's vid.
+    pub entry: String,
+    /// Its entry class (`Original`, `Closing`, …).
+    pub class: String,
+    /// Its amount in minor units, debits positive.
+    pub signed: i128,
+}
+
+/// One period's `fa explain balance` of one account, in the read's unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Explanation {
+    /// The declared period code it explains.
+    pub period: String,
+    /// The cell's net; `None` when the account holds no cell in the unit
+    /// there.
+    pub net: Option<i128>,
+    pub legs: Vec<ExplainedLeg>,
+}
+
+/// One account's fold: the union of its explanations ([`union`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Union {
+    /// The nets summed, the set-aside legs taken out.
+    pub total: i128,
+    pub contributions: Vec<Contribution>,
+    /// The legs the read's definition sets aside (`excluded_by_definition`),
+    /// each with its period and class.
+    pub excluded: Vec<(String, String, Contribution)>,
+}
+
+/// The union of `account`'s explanations over `periods`, the read's fold
+/// ([`fold_periods`]). Every period of the fold must be explained, and only
+/// those: `missing explanation of <period>` is never answered from the other
+/// periods alone. A leg whose class `excluded` lists (the income
+/// statement's Closing entries, [`excluded_classes`]) is set aside, outside
+/// both the total and the contributions; every other leg contributes, named
+/// by the intent `posted_by` maps its entry to (none: an unnamed
+/// contribution).
+///
+/// # Errors
+/// The missing or extra period, or an overflow.
+pub fn union(
+    account: &str,
+    periods: &[String],
+    explained: &[Explanation],
+    excluded: &[String],
+    posted_by: &BTreeMap<String, String>,
+) -> Result<Union, String> {
+    if let Some(e) = explained.iter().find(|e| !periods.contains(&e.period)) {
+        return Err(format!("explanation of {} outside the fold", e.period));
+    }
+    let mut out = Union::default();
+    for period in periods {
+        let Some(e) = explained.iter().find(|e| &e.period == period) else {
+            return Err(format!("missing explanation of {period}"));
+        };
+        let mut set_aside = 0_i128;
+        for leg in &e.legs {
+            let c = Contribution {
+                entry: leg.entry.clone(),
+                intent: posted_by.get(&leg.entry).cloned(),
+                account: account.to_string(),
+                signed: leg.signed,
+            };
+            if excluded.contains(&leg.class) {
+                set_aside = set_aside
+                    .checked_add(leg.signed)
+                    .ok_or("the set-aside legs overflow")?;
+                out.excluded.push((period.clone(), leg.class.clone(), c));
+            } else {
+                out.contributions.push(c);
+            }
+        }
+        if let Some(net) = e.net {
+            out.total = out
+                .total
+                .checked_add(net)
+                .and_then(|t| t.checked_sub(set_aside))
+                .ok_or("the fold overflows")?;
+        }
+    }
+    Ok(out)
 }
 
 /// The intent ids a T read names as its inputs (module doc).
@@ -537,6 +627,117 @@ mod tests {
             assert_eq!(
                 witness(&case, book, read, &bridge(), 90_000, None).token(),
                 "retyped(extra contribution A-1)"
+            );
+        });
+    }
+
+    fn leg(entry: &str, class: &str, signed: i128) -> ExplainedLeg {
+        ExplainedLeg {
+            entry: entry.to_string(),
+            class: class.to_string(),
+            signed,
+        }
+    }
+
+    fn explanation(period: &str, net: i128, legs: Vec<ExplainedLeg>) -> Explanation {
+        Explanation {
+            period: period.to_string(),
+            net: Some(net),
+            legs,
+        }
+    }
+
+    fn posted_by(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(e, i)| ((*e).to_string(), (*i).to_string()))
+            .collect()
+    }
+
+    /// The bridge's A explained in 2026Q1 and its delta in 2026Q2: the
+    /// stock fold through 2026Q2 unions both and the witness holds on it;
+    /// without Q1's explanation the union fails, never a value from Q2
+    /// alone; a flow fold of Q2 refuses Q1's explanation.
+    #[test]
+    fn stock_witness_missing_an_earlier_periods_explanation_fails() {
+        let case = selftest();
+        let book = two_quarters();
+        let by = posted_by(&[("a", "A-1"), ("d", "delta-A-1")]);
+        let q1 = explanation("2026Q1", 100_000, vec![leg("a", "Original", 100_000)]);
+        let q2 = explanation("2026Q2", -10_000, vec![leg("d", "Restatement", -10_000)]);
+        let stock = fold_periods(&book, true, "2026Q2").expect("the stock fold");
+        let both = union("1100", &stock, &[q1.clone(), q2.clone()], &[], &by)
+            .expect("both quarters explained");
+        assert_eq!((both.total, both.contributions.clone()), (90_000, bridge()));
+        with_read(&case, |book, read| {
+            assert_eq!(
+                witness(&case, book, read, &both.contributions, both.total, None),
+                ContribVerdict::Holds
+            );
+        });
+        assert_eq!(
+            union("1100", &stock, std::slice::from_ref(&q2), &[], &by),
+            Err("missing explanation of 2026Q1".to_string())
+        );
+        let flow = fold_periods(&book, false, "2026Q2").expect("the flow fold");
+        assert_eq!(
+            union("1100", &flow, &[q1, q2], &[], &by),
+            Err("explanation of 2026Q1 outside the fold".to_string())
+        );
+    }
+
+    /// A Revenue account's 500.00 credit sale and the Closing entry that
+    /// zeroes it: on the income line (its definition excludes Closing) the
+    /// Closing leg is set aside and reported, and the line folds the sale
+    /// alone; a `tb` per-account read of the same account has no
+    /// definition, so the Closing leg is an unnamed contribution and the
+    /// witness re-types the T.
+    #[test]
+    fn closing_entry_is_set_aside_on_an_income_line_only() {
+        let case = selftest();
+        let by = posted_by(&[("s", "sale-1")]);
+        let q1 = explanation(
+            "2026Q1",
+            0,
+            vec![leg("s", "Original", -50_000), leg("x", "Closing", 50_000)],
+        );
+        let periods = ["2026Q1".to_string()];
+        let is = definition("income-statement").expect("the income statement");
+        let line = union(
+            "4000",
+            &periods,
+            std::slice::from_ref(&q1),
+            &excluded_classes(is),
+            &by,
+        )
+        .expect("the income line");
+        let contribution = |entry: &str, intent: Option<&str>, signed| Contribution {
+            entry: entry.to_string(),
+            intent: intent.map(str::to_string),
+            account: "4000".to_string(),
+            signed,
+        };
+        assert_eq!(line.total, -50_000);
+        assert_eq!(
+            line.contributions,
+            [contribution("s", Some("sale-1"), -50_000)]
+        );
+        assert_eq!(
+            line.excluded,
+            [(
+                "2026Q1".to_string(),
+                "Closing".to_string(),
+                contribution("x", None, 50_000)
+            )]
+        );
+        let tb = union("4000", &periods, &[q1], &[], &by).expect("the tb read");
+        assert_eq!(tb.total, 0);
+        assert!(tb.excluded.is_empty());
+        assert!(tb.contributions.contains(&contribution("x", None, 50_000)));
+        with_read(&case, |book, read| {
+            assert_eq!(
+                witness(&case, book, read, &tb.contributions, tb.total, None).token(),
+                "retyped(extra contribution x)"
             );
         });
     }

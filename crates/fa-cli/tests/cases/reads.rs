@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::StepDef;
-use fa_oracles::cases::contrib::{self, Contribution};
+use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::json::Json;
 
@@ -276,11 +276,14 @@ impl BookRun<'_> {
         }
     }
 
-    /// `fa explain balance <account> --certify` in each of `periods`: the
-    /// sum of the cells' nets in `unit`, the last period's certificate, and
-    /// each posted leg (debits positive) mapped to the intent that posted
-    /// it. A leg of a class in `excluded` (a definition's Closing entries)
-    /// is set aside, outside both the sum and the legs.
+    /// `fa explain balance <account> --certify` in each of `periods`, folded
+    /// by [`contrib::union`]: the sum of the cells' nets in `unit`, the last
+    /// period's certificate, and each posted leg (debits positive) mapped to
+    /// the intent that posted it. A leg of a class in `excluded` (a
+    /// definition's Closing entries) is set aside, outside both the sum and
+    /// the legs, and logged as an `EXCLUDED <reference> <account> <period>
+    /// class=<class> amount=<minor units> intent=<id|-> excluded_by_definition`
+    /// line.
     fn explain(
         &mut self,
         reference: &str,
@@ -304,7 +307,7 @@ impl BookRun<'_> {
                 None => Ok(None),
             }
         };
-        let (mut total, mut certificate, mut legs) = (0_i128, None, Vec::new());
+        let (mut certificate, mut explained) = (None, Vec::new());
         for label in periods {
             let code =
                 self.periods.get(label).cloned().ok_or_else(|| {
@@ -332,7 +335,7 @@ impl BookRun<'_> {
                 .to_string());
             }
             certificate = call.str_field("balance_explained", "certificate");
-            let mut set_aside = 0_i128;
+            let mut legs = Vec::new();
             for c in call.array_field("balance_explained", "contributions") {
                 if c.get("column").and_then(Json::as_str) != Some("posted") {
                     continue;
@@ -347,22 +350,11 @@ impl BookRun<'_> {
                 } else {
                     minor.checked_neg().ok_or("a contribution overflows")?
                 };
+                let entry = c.get("entry").and_then(Json::as_str).unwrap_or_default();
                 let class = c.get("class").and_then(Json::as_str).unwrap_or_default();
-                if excluded.iter().any(|x| x == class) {
-                    set_aside = set_aside
-                        .checked_add(signed)
-                        .ok_or("the set-aside legs overflow")?;
-                    continue;
-                }
-                let entry = c
-                    .get("entry")
-                    .and_then(Json::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                legs.push(Contribution {
-                    intent: posted_by.get(&entry).cloned(),
-                    entry,
-                    account: account.to_string(),
+                legs.push(ExplainedLeg {
+                    entry: entry.to_string(),
+                    class: class.to_string(),
                     signed,
                 });
             }
@@ -372,16 +364,28 @@ impl BookRun<'_> {
                 .iter()
                 .find(|c| c.get("unit").and_then(Json::as_str) == Some(unit))
                 .and_then(|c| c.get("net").and_then(Json::as_str).map(str::to_string));
-            if let Some(n) = net {
-                let v = in_unit(&n)?
-                    .ok_or_else(|| format!("expected a net in {unit} observed `{n}`"))?;
-                total = total
-                    .checked_add(v)
-                    .and_then(|t| t.checked_sub(set_aside))
-                    .ok_or("the explained nets overflow")?;
-            }
+            let net = match net {
+                Some(n) => Some(
+                    in_unit(&n)?
+                        .ok_or_else(|| format!("expected a net in {unit} observed `{n}`"))?,
+                ),
+                None => None,
+            };
+            explained.push(Explanation {
+                period: label.clone(),
+                net,
+                legs,
+            });
         }
-        Ok((total, certificate, legs))
+        let folded = contrib::union(account, periods, &explained, excluded, &posted_by)?;
+        for (period, class, leg) in &folded.excluded {
+            self.lines.push(format!(
+                "EXCLUDED {reference} {account} {period} class={class} amount={} intent={} excluded_by_definition",
+                leg.signed,
+                leg.intent.as_deref().unwrap_or("-")
+            ));
+        }
+        Ok((folded.total, certificate, folded.contributions))
     }
 
     /// A `balance` read: `fa explain balance --certify` in each period of
