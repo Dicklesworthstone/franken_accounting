@@ -261,6 +261,7 @@ out = [manifest_text.rstrip("\n")]
 out.append("no_claim_boundary=a PASS note proves the named steps passed on that tree, not product correctness beyond them")
 out.append(f"toolchain={toolchain}")
 out.append(f"proof_sums_sha256={sums_sha256}")
+out.append(f"proof_dir={root.resolve()}")
 out.append(f"test_inventory_digest={test_inv_digest}")
 
 step_file = root / "step-verdicts.jsonl"
@@ -291,7 +292,7 @@ if step_file.is_file():
                 witness["evidence_artifacts"] = ev_ids
             passed_names = []
             failed_names = []
-            for m in re.finditer(r"^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)$", text, re.M):
+            for m in re.finditer(r"^test\s+(\S+)(?: - should panic)?\s+\.\.\.\s+(ok|FAILED)$", text if step_name == "test" else "", re.M):
                 if m.group(2) == "ok":
                     passed_names.append(m.group(1))
                 else:
