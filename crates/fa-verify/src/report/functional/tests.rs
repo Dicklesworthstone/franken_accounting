@@ -1,5 +1,8 @@
 //! Independent amount vectors and hostile complete-bundle fixtures.
 
+mod settlement;
+mod statements;
+
 use super::super::{
     FUNCTIONAL_CERTIFICATE_FORMAT, REPORT_BUNDLE_FORMAT, certificate, verify_report_with_inputs,
 };
@@ -780,7 +783,7 @@ fn unsupported_laws_and_wrong_date_do_not_become_trusted_base_amounts() {
         10,
         b"unsupported",
         &residual_legs(),
-        Some((4, &rate, Some((1, 1)))),
+        Some((2, &rate, Some((1, 1)))),
         None,
         None,
     );
@@ -818,7 +821,78 @@ fn pack(
     rates: &[RateFixture],
     output: &[u8],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
-    let docs = registries();
+    pack_with_registries(
+        records,
+        selected,
+        known_at,
+        spec,
+        rates,
+        output,
+        &registries(),
+    )
+}
+
+fn pack_with_registries(
+    records: &[Record],
+    selected: &Selection,
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    docs: &[(String, Vec<u8>)],
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    let mut selector = Writer::default();
+    selector.u8(8);
+    selection(&mut selector, selected).unwrap();
+    pack_profile_with_registries(
+        records,
+        known_at,
+        spec,
+        rates,
+        output,
+        CertificateProfile {
+            format: FUNCTIONAL_CERTIFICATE_FORMAT,
+            output_format: OUTPUT_FORMAT,
+            selector: &selector.buf,
+        },
+        docs,
+    )
+}
+
+struct CertificateProfile<'a> {
+    format: &'a [u8],
+    output_format: &'a [u8],
+    selector: &'a [u8],
+}
+
+fn pack_profile(
+    records: &[Record],
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    profile: CertificateProfile<'_>,
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    pack_profile_with_registries(
+        records,
+        known_at,
+        spec,
+        rates,
+        output,
+        profile,
+        &registries(),
+    )
+}
+
+fn pack_profile_with_registries(
+    records: &[Record],
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    profile: CertificateProfile<'_>,
+    docs: &[(String, Vec<u8>)],
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let mut last = None;
     let mut ordinal = 0u32;
     let historical: Vec<_> = records
@@ -838,16 +912,15 @@ fn pack(
         })
         .collect();
     let mut cert = Writer::default();
-    cert.fixed(FUNCTIONAL_CERTIFICATE_FORMAT)
+    cert.fixed(profile.format)
         .bytes(b"fa-fold-over-prefix")
         .bytes(b"embedded-owner")
-        .bytes(OUTPUT_FORMAT)
+        .bytes(profile.output_format)
         .fixed(&BOOK)
         .fixed(&[0; 16])
         .u64(known_at)
-        .u8(8);
-    selection(&mut cert, selected).unwrap();
-    cert.fixed(&closure(&docs))
+        .fixed(profile.selector);
+    cert.fixed(&closure(docs))
         .fixed(&root_of(&historical))
         .u64(historical.len() as u64)
         .count(8);
@@ -857,7 +930,7 @@ fn pack(
     cert.bytes(output)
         .fixed(&hash_parts(b"fa:report-output:v1", &[output]))
         .u8(0);
-    let pin = hash_parts(FUNCTIONAL_CERTIFICATE_FORMAT, &[&cert.buf]);
+    let pin = hash_parts(profile.format, &[&cert.buf]);
     cert.fixed(&pin);
     assert!(certificate(&cert.buf).unwrap().functional);
     let all: Vec<_> = records
@@ -896,7 +969,7 @@ fn pack(
     }
     w.count(0).count(docs.len());
     for (name, bytes) in docs {
-        w.bytes(name.as_bytes()).bytes(&bytes);
+        w.bytes(name.as_bytes()).bytes(bytes);
     }
     w.bytes(spec).count(rates.len());
     let mut rates: Vec<_> = rates.iter().collect();

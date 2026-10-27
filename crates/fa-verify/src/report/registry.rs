@@ -540,6 +540,14 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             "period_end_date",
             ["Original", "Adjusting", "Reversal"].as_slice(),
         ),
+        (
+            4,
+            "settlement_carrying_basis",
+            "SettlementCarryingBasis",
+            "Settlement",
+            "settlement_and_settled_item_dates",
+            ["Original", "Adjusting", "Reversal", "Resolution"].as_slice(),
+        ),
     ] {
         let row = laws
             .iter()
@@ -547,7 +555,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
                 matches!(row.get("id"), Some(Value::Int(value)) if *value == id)
                     && matches!(row.get("version"), Some(Value::Int(1)))
             })
-            .ok_or_else(|| invalid("missing supported direct FX law version"))?;
+            .ok_or_else(|| invalid("missing supported FX law version"))?;
         if string(row, "code")? != code
             || string(row, "name")? != name
             || string(row, "rate_purpose")? != purpose
@@ -561,7 +569,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
                 .ne(classes.iter().copied())
         {
             return Err(invalid(
-                "direct FX law semantics differ from this verifier's supported version",
+                "FX law semantics differ from this verifier's supported version",
             ));
         }
     }

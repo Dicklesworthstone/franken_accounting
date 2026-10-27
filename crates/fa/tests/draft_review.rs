@@ -185,6 +185,74 @@ impl Fixture {
 }
 
 #[test]
+fn atomic_batch_draft_review_counts_members_and_replays_after_promotion() {
+    let mut f = Fixture::new();
+    let view = f.book.draft(DRAFT).unwrap().unwrap();
+    let members = view
+        .intents
+        .iter()
+        .enumerate()
+        .map(|(index, old)| {
+            let mut proposal = old.intent.proposal().clone();
+            proposal.idempotency_key = format!("batch-member-{index}").into_bytes();
+            for leg in &mut proposal.legs {
+                leg.amount.mantissa = if index == 0 { 50 } else { 75 };
+            }
+            proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+            PostIntent::new(proposal, Vec::new()).unwrap()
+        })
+        .collect();
+    let batch = fa_intents::PostBatch::new(b"reviewed-batch".to_vec(), members).unwrap();
+    f.book
+        .plan_batch_into_draft(planner(), DRAFT, batch)
+        .unwrap()
+        .unwrap();
+    let before = f.book.head().unwrap();
+    let certified = f
+        .book
+        .certify_draft_diff(REVIEWER, &producer(), DRAFT, PERIOD)
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.book.head().unwrap(), before);
+    assert_eq!(certified.certificate.source().plans.len(), 3);
+    assert_eq!(certified.report.plans, 4);
+    assert_eq!(certified.report.entries.len(), 4);
+    assert_eq!(
+        certified
+            .report
+            .rows
+            .iter()
+            .map(|row| (row.code.as_str(), row.delta))
+            .collect::<Vec<_>>(),
+        [("1000", -1_625), ("6000", 1_625)]
+    );
+    let bytes = certified.certificate.canonical_bytes().unwrap();
+    let certificate = DraftDiffCertificate::decode(&bytes).unwrap();
+    assert_eq!(
+        certificate.output(),
+        certified.report.canonical_bytes().unwrap()
+    );
+    f.book
+        .promote_draft(
+            cap(ADMIN, &["approve"]),
+            DRAFT,
+            day(),
+            "independent batch review",
+        )
+        .unwrap()
+        .unwrap();
+    let promoted = f.book.head().unwrap();
+    assert_eq!(
+        f.book
+            .replay_draft_diff(REVIEWER, &cap(REVIEWER, &["read"]), &certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    assert_eq!(f.book.head().unwrap(), promoted);
+}
+
+#[test]
 fn retained_review_replays_under_a_historical_ceiling_but_requires_current_authority() {
     let mut f = Fixture::new();
     let original_head = f.book.head().unwrap();

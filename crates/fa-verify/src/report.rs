@@ -32,14 +32,15 @@
 //! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
-//! histories and functional-currency statements remain unsupported. Native v8
+//! histories remain unsupported. Native v8
 //! dimension trial balances reconstruct declarations and closes from the signed
 //! journal, then fold only legs tagged with the authenticated value hierarchy.
 //! A filtered view need not balance across the selected legs. The scope is accounting
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
 //!
-//! Version 3 independently replays v10 functional trial balances under direct
+//! Version 3 independently replays v10 functional trial balances and v5
+//! functional balance sheets and income statements under direct
 //! SpotClose/PeriodAverage laws with exact Rate bodies, signed intake receipts,
 //! six registries and explicit Book parameters. Recipient pins or production
 //! receipts authenticate those parameters; Book genesis is not proved.
@@ -75,7 +76,9 @@ pub use explain::{
     ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
     ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
 };
-pub use functional::{VerifiedFunctionalCell, VerifiedFunctionalTrialBalance};
+pub use functional::{
+    VerifiedFunctionalCell, VerifiedFunctionalStatement, VerifiedFunctionalTrialBalance,
+};
 pub(crate) use metadata::{DeclaredAccount, declared_chart};
 pub use open_items::VerifiedOpenItemAccount as VerifiedReportAccount;
 pub use open_items::{
@@ -109,6 +112,7 @@ const CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v1";
 const INSTANT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v2";
 const OPEN_ITEMS_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v3";
 const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
+const FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v5";
 const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
 const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v10";
@@ -194,6 +198,8 @@ pub struct VerifiedReport {
     pub equity_roll_forward: Option<VerifiedEquityRollForward>,
     /// Functional cells independently repriced from original Rate evidence.
     pub functional_trial_balance: Option<VerifiedFunctionalTrialBalance>,
+    /// Financial-statement rows computed from independently repriced base amounts.
+    pub functional_statement: Option<VerifiedFunctionalStatement>,
     /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -247,13 +253,15 @@ fn strings(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<String>, Repor
 }
 fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
-    let functional = bytes.starts_with(FUNCTIONAL_CERTIFICATE_FORMAT);
-    let format = if functional {
+    let functional_trial_balance = bytes.starts_with(FUNCTIONAL_CERTIFICATE_FORMAT);
+    let format = if functional_trial_balance {
         r.fixed::<25>("certificate.format")?.to_vec()
     } else {
         r.fixed::<24>("certificate.format")?.to_vec()
     };
-    let statement = format.as_slice() == STATEMENT_CERTIFICATE_FORMAT;
+    let functional_statement = format.as_slice() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT;
+    let functional = functional_trial_balance || functional_statement;
+    let statement = format.as_slice() == STATEMENT_CERTIFICATE_FORMAT || functional_statement;
     let instant = format.as_slice() == INSTANT_CERTIFICATE_FORMAT;
     let dimension = format.as_slice() == DIMENSION_CERTIFICATE_FORMAT;
     let open_items = format.as_slice() == OPEN_ITEMS_CERTIFICATE_FORMAT;
@@ -266,7 +274,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v8 dimension trial balance, or v10 functional trial balance",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v8 dimension trial balance, or v10 functional trial balance",
         ));
     }
     for (field, expected) in [
@@ -282,7 +290,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let branch = r.fixed("certificate.branch")?;
     let known_at = r.u64("certificate.known_at")?;
     let selector = r.u8("certificate.selector")?;
-    let selector = if functional {
+    let selector = if functional_trial_balance {
         if selector != 8 {
             return Err(failed(
                 "supported_report",
@@ -302,10 +310,10 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         selector
     };
     let selection = if statement {
-        if selector != 2 {
+        if selector != if functional_statement { 3 } else { 2 } {
             return Err(failed(
                 "supported_report",
-                "native v4 requires a statement selector",
+                "native v4/v5 requires its native/functional statement selector",
             ));
         }
         let definition = r.bytes(64 * 1024, "certificate.definition")?;
@@ -348,6 +356,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let expected_format = match &selection {
         Selection::ExplainBalance { .. } => "fa:balance-explanation:v1",
         Selection::OpenItems(_) => "fa:open-items:v1",
+        Selection::Statement(_) if functional => "fa:functional-statement:v1",
         Selection::Statement(_) => "fa:statement:v1",
         _ if dimension => "fa:dimension-trial-balance:v1",
         _ if functional => "fa:functional-trial-balance:v1",
@@ -672,13 +681,13 @@ fn verify_report_with_inputs(
     if cert.functional != (major == 3) {
         return Err(failed(
             "supported_report",
-            "functional v10 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
+            "functional v5/v10 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
         ));
     }
     let is_statement = matches!(cert.selection, Selection::Statement(_));
     let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
     let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
-    if (!is_statement && recipient_units.is_some())
+    if ((!is_statement || cert.functional) && recipient_units.is_some())
         || (!is_statement
             && !is_open_items
             && !is_explanation
@@ -919,24 +928,61 @@ fn verify_report_with_inputs(
             .ok_or_else(|| failed("registry_closure", "missing functional registries"))?;
         let book =
             functional_book.ok_or_else(|| failed("functional_book", "missing Book parameters"))?;
-        let (functional_trial_balance, output) = functional::replay(
-            &cert,
-            definitions,
-            book,
-            &functional_rates,
-            &schema,
-            envelopes,
-            &records,
-            &legs,
-            &infos,
-            &releases,
-        )?;
+        let (functional_trial_balance, functional_statement, output) =
+            if let Selection::Statement(selection) = &cert.selection {
+                let (report, output) = functional::replay_statement(
+                    &cert,
+                    selection,
+                    definitions,
+                    book,
+                    &functional_rates,
+                    &schema,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &infos,
+                    &resolved,
+                )?;
+                (None, Some(report), output)
+            } else {
+                let (report, output) = functional::replay(
+                    &cert,
+                    definitions,
+                    book,
+                    &functional_rates,
+                    &schema,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &infos,
+                    &releases,
+                )?;
+                (Some(report), None, output)
+            };
         if output != cert.output {
             return Err(failed(
                 "report_recomputation",
-                "functional cells, pending reservations, historical metadata, source watermark or exact fold digest differ from independent Rate replay",
+                "functional amounts, statement lines, historical metadata, source commitments or exact canonical bytes differ from independent Rate replay",
             ));
         }
+        let (effective_through, activity, periods) = if let Some(report) = &functional_trial_balance
+        {
+            (
+                report.effective_through,
+                report.activity,
+                report.periods.clone(),
+            )
+        } else {
+            let report = &functional_statement
+                .as_ref()
+                .ok_or_else(|| failed("supported_report", "functional report family is absent"))?
+                .statement;
+            (
+                Some(report.columns[0].effective_through),
+                report.kind == "IncomeStatement",
+                report.columns[0].periods.clone(),
+            )
+        };
         return Ok(VerifiedReport {
             scope: "recomputation",
             bundle_digest: digest,
@@ -945,9 +991,9 @@ fn verify_report_with_inputs(
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
-            effective_through: functional_trial_balance.effective_through,
-            activity: functional_trial_balance.activity,
-            periods: functional_trial_balance.periods.clone(),
+            effective_through,
+            activity,
+            periods,
             rows: Vec::new(),
             statement: None,
             dimension: None,
@@ -958,7 +1004,8 @@ fn verify_report_with_inputs(
             roll_forward: None,
             cash_flow: None,
             equity_roll_forward: None,
-            functional_trial_balance: Some(functional_trial_balance),
+            functional_trial_balance,
+            functional_statement,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1057,6 +1104,7 @@ fn verify_report_with_inputs(
                     cash_flow: None,
                     equity_roll_forward: None,
                     functional_trial_balance: None,
+                    functional_statement: None,
                     unit_universe_source: "authenticated-registry",
                     output,
                     checked_records: records.len(),
@@ -1085,6 +1133,7 @@ fn verify_report_with_inputs(
                 cash_flow: None,
                 equity_roll_forward: None,
                 functional_trial_balance: None,
+                functional_statement: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1113,6 +1162,7 @@ fn verify_report_with_inputs(
             cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
+            functional_statement: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1162,6 +1212,7 @@ fn verify_report_with_inputs(
             cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
+            functional_statement: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1217,6 +1268,7 @@ fn verify_report_with_inputs(
             cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
+            functional_statement: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -1288,6 +1340,7 @@ fn verify_report_with_inputs(
                 cash_flow: None,
                 equity_roll_forward: Some(equity_roll_forward),
                 functional_trial_balance: None,
+                functional_statement: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1331,6 +1384,7 @@ fn verify_report_with_inputs(
                 cash_flow: Some(cash_flow),
                 equity_roll_forward: None,
                 functional_trial_balance: None,
+                functional_statement: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1359,6 +1413,7 @@ fn verify_report_with_inputs(
             cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
+            functional_statement: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1387,6 +1442,7 @@ fn verify_report_with_inputs(
         cash_flow: None,
         equity_roll_forward: None,
         functional_trial_balance: None,
+        functional_statement: None,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

@@ -154,6 +154,70 @@ fn releases(entry: &Entry) -> bool {
     )
 }
 
+/// Success is emitted only after the entire ordered append committed. One
+/// ordinary draft_planned event per member preserves the existing robot
+/// schema; all members name the same atomic Plan control and preview.
+pub(super) fn emit_draft(
+    out: &Out,
+    book: &Book,
+    name: &str,
+    batch: &fa::PostBatch,
+    planned: &fa_journal::DraftPlanned,
+) -> Result<(), Fail> {
+    out.at_book(book)?;
+    let preview = planned.plan.as_ref();
+    let start = preview
+        .map(|preview| {
+            preview
+                .members()
+                .len()
+                .checked_sub(batch.members().len())
+                .ok_or_else(|| {
+                    Fail::Internal("a draft batch preview omits appended members".into())
+                })
+        })
+        .transpose()?;
+    let digest = preview
+        .map(|preview| {
+            preview
+                .digest()
+                .map(|digest| hex(&digest))
+                .map_err(|error| {
+                    Fail::Internal(format!("encode the ordered draft preview: {error}"))
+                })
+        })
+        .transpose()?;
+    for (index, intent) in batch.members().iter().enumerate() {
+        let entry = proposal_vid(intent.proposal())?;
+        let member = preview
+            .zip(start)
+            .map(|(preview, start)| &preview.members()[start + index]);
+        let mut fields = super::draft_record_fields(name, &planned.recorded);
+        fields.push(("entry", s(format!("{:032x}", entry.0))));
+        fields.push(("plan_digest", digest.as_ref().map_or(Json::Null, s)));
+        fields.push((
+            "proposal_digest",
+            member.map_or(Json::Null, |member| s(hex(&member.entry.proposal_digest))),
+        ));
+        fields.push(("requested", Json::Null));
+        fields.push(("moved", Json::Null));
+        out.event(
+            "draft_planned",
+            fields,
+            &format!(
+                "draft {name}: atomic batch member {index}, entry {:032x} on promotion{}",
+                entry.0,
+                if planned.recorded.already_recorded {
+                    "; already planned"
+                } else {
+                    ""
+                }
+            ),
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn emit(
     out: &Out,
     book: &Book,
@@ -342,7 +406,7 @@ pub(super) fn emit(
     };
     let actions = if rehearsal || bound_release {
         let warning = if rehearsal {
-            "This Agent-profile batch is a rehearsal and cannot commit to trunk (FA-REF-013). A Human must independently prepare and review the batch; atomic batch drafts are not supported."
+            "This Agent-profile batch is a rehearsal and cannot commit to trunk (FA-REF-013). Append the complete batch with --draft <name>; another authorized principal reviews and promotes the draft."
         } else {
             "MCP cannot confirm a batch that releases a reservation. Ask the operator to independently prepare, review and confirm the complete batch."
         };

@@ -37,3 +37,31 @@ read_target = "6100"
 read_coordinate = "2026Q1"
 read_selector = "currently_stated"
 posted = "P-1"
+
+# The as-filed assertion of A (1,000.00 on 6100) drifts once the case restates A by 200.00:
+# recon.assertion_drift reports it, Critical, citing the attestation, the account, the period and
+# the delta recorded after it, with the drift's magnitude |sum of deltas| = 200.00 (plan §5.3).
+
+[[expectation]]
+id = "lifecycle-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["D-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:recon.assertion_drift@1"]
+procedure = "recon.assertion_drift"
+version = 1
+
+[[target]]
+expectation = "lifecycle-D-01"
+fact = "D-1"
+basis = ["D-1"]
+cite = ["6100", "attestation:lifecycle-R-01", "period:2026Q1"]
+cite_status = "S"
+severity = "Critical"
+severity_status = "S"
+statistic_name = "assertion_drift"
+statistic_value = "20000"
+statistic_scale = 2
+statistic_status = "S"

@@ -1409,6 +1409,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
+                                } else if report.functional_statement.is_some() {
+                                    "functional_statement"
                                 } else if report.functional_trial_balance.is_some() {
                                     if report.activity {
                                         "functional_activity"
@@ -1442,6 +1444,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
+                                } else if let Some(functional) = &report.functional_statement {
+                                    functional.statement.lines.len()
                                 } else if let Some(functional) = &report.functional_trial_balance {
                                     functional.cells.len() + functional.pending.len()
                                 } else if let Some(equity) = &report.equity_roll_forward {
@@ -1519,6 +1523,13 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
+                    if let Some(functional) = &report.functional_statement {
+                        checks.extend(functional_statement_checks(functional));
+                        checks.extend(statement_checks(
+                            &functional.statement,
+                            report.unit_universe_source,
+                        ));
                     }
                     if let Some(open_items) = &report.open_items {
                         checks.extend(open_items_checks(open_items));
@@ -2081,6 +2092,37 @@ fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
     checks
 }
 
+fn functional_statement_checks(report: &crate::report::VerifiedFunctionalStatement) -> Vec<Check> {
+    vec![Check::pass(
+        "functional_statement_basis",
+        "recomputation",
+        vec![
+            ("base_unit", n(u64::from(report.base_unit))),
+            ("valuation_basis", s("retained-base-amounts")),
+            (
+                "valuation_laws",
+                s(
+                    "original SpotClose/PeriodAverage/SettlementCarryingBasis v1; exact inherited reversals",
+                ),
+            ),
+            (
+                "rounding",
+                s(
+                    "HalfEven; deterministic per-entity/unit residual; remaining carrying relief and exact final remainder",
+                ),
+            ),
+            (
+                "rate_visibility",
+                s("complete signed ImportReceipt history through first use"),
+            ),
+            ("book_parameters_source", s(report.book_parameters_source)),
+            ("genesis_registration", s("not_judged")),
+            ("registry_activation", s("not_judged")),
+            ("external_rate_truth", s("not_judged")),
+        ],
+    )]
+}
+
 fn functional_checks(report: &crate::report::VerifiedFunctionalTrialBalance) -> Vec<Check> {
     let mut checks = vec![Check::pass(
         "functional_basis",
@@ -2094,11 +2136,15 @@ fn functional_checks(report: &crate::report::VerifiedFunctionalTrialBalance) -> 
             ("fold_digest", h(&report.fold_digest)),
             (
                 "valuation_laws",
-                s("original SpotClose/PeriodAverage v1; exact inherited reversals"),
+                s(
+                    "original SpotClose/PeriodAverage/SettlementCarryingBasis v1; exact inherited reversals",
+                ),
             ),
             (
                 "rounding",
-                s("HalfEven; deterministic per-entity/unit residual"),
+                s(
+                    "HalfEven; deterministic per-entity/unit residual; remaining carrying relief and exact final remainder",
+                ),
             ),
             (
                 "rate_visibility",

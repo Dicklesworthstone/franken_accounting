@@ -987,13 +987,23 @@ waiver = "forbidden"
 invariant = "FA-INV-13"
 id = "core"
 status = "live"
-statement = "Intercompany pairs match under the FX law or carry an explicit difference leg; eliminations derive deterministically; consolidated equity reconciles."
+statement = "Consolidation derives eliminations deterministically from matched intercompany pairs and the ownership graph; consolidated equity reconciles to the entities' equity plus eliminations and non-controlling interest; book-to-book bridges explain every difference by rule version. (Commit-time matching of declared pairs is clause `declared-pairs`.)"
 evidence_class = "invariant"
 checker_strength = "differential"
 first_gate = "G3"
 owner = "fa-9ae"
 checkers = ["fa-statements::lib::concordat::tests::intercompany_pairs_eliminations_and_consolidated_equity_reconcile_exactly", "fa-statements::lib::concordat::tests::book_to_book_bridge_explains_every_difference_by_rule_version_and_m1_m3_reason"]
 negatives = ["fa-statements::lib::concordat::tests::unmatched_intercompany_pair_and_unexplained_bridge_or_restated_parent_are_refused"]
+waiver = "forbidden"
+
+[[clause]]
+invariant = "FA-INV-13"
+id = "declared-pairs"
+status = "dormant"
+statement = "Declared intercompany pairs (`pair_key`) are matched by the kernel at commit when both sides exist: amounts match under the FX law, or the matching rule posts the difference to the registered intercompany-difference account; unmatched pairs are reported continuously (plan §12.3). No kernel path declares or matches a pair yet."
+evidence_class = "invariant"
+first_gate = "G3"
+activating = ["fa-22v5"]
 waiver = "forbidden"
 
 [[clause]]

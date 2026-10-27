@@ -483,6 +483,133 @@ fn timed_cycle_reads_the_paged_sweep_index() {
     .expect("lab completed");
 }
 
+/// The real book, except that its paged sweep index cannot advance.
+struct IndexFails<'a>(&'a mut AsyncBook<MemVfs>);
+
+impl TimedBook for IndexFails<'_> {
+    fn latest_tick(&self, cx: &Cx) -> Result<Option<Tick>, BookError> {
+        TimedBook::latest_tick(&*self.0, cx)
+    }
+
+    fn corroborated_tick_at(&self, cx: &Cx, at: CommitSeq) -> Result<Option<Tick>, BookError> {
+        TimedBook::corroborated_tick_at(&*self.0, cx, at)
+    }
+
+    async fn record_tick(
+        &mut self,
+        cx: &Cx,
+        ns: u64,
+        ok: bool,
+        cap: &Capability,
+    ) -> Outcome<Ticked> {
+        TimedBook::record_tick(&mut *self.0, cx, ns, ok, cap).await
+    }
+
+    async fn sweep_expiry(
+        &mut self,
+        cx: &Cx,
+        cap: &Capability,
+        max: usize,
+    ) -> Outcome<Option<SweepBatch>> {
+        TimedBook::sweep_expiry(&mut *self.0, cx, cap, max).await
+    }
+
+    async fn sweep_reversals(
+        &mut self,
+        cx: &Cx,
+        cap: &Capability,
+        max: usize,
+    ) -> Outcome<Option<ReversalBatch>> {
+        TimedBook::sweep_reversals(&mut *self.0, cx, cap, max).await
+    }
+
+    async fn sweep_recurring(
+        &mut self,
+        cx: &Cx,
+        cap: &Capability,
+        max: usize,
+    ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
+        TimedBook::sweep_recurring(&mut *self.0, cx, cap, max).await
+    }
+
+    async fn advance_sweep_index(
+        &mut self,
+        _cx: &Cx,
+    ) -> Result<fa_journal::SweepIndexState, BookError> {
+        Err(BookError::Runtime("planted index failure".into()))
+    }
+}
+
+/// fa-0hs4.11: an index that cannot advance never stops a cycle (discovery
+/// falls back to the exact scan) and is never dropped silently: status
+/// names it until a later cycle advances the index again.
+#[test]
+fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
+    lab(79, |root| async move {
+        let mut fixture = fixture(&root, 79).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let midnight = u64::try_from(april.0).unwrap() * 86_400_000_000_000;
+        work.run_observation(
+            &root,
+            &mut fixture.book,
+            Ok(observation(&root, midnight - 100)),
+        )
+        .await
+        .unwrap();
+        let fields = fa_cli::json::obj(status_fields(Some(&work)));
+        assert_eq!(fields.get("sweep_index_current"), Some(&Json::Null));
+        hold(&mut fixture, &cx, b"index-fails", 5).await;
+        advance(&root, 100).await;
+        let failed = work
+            .run_observation(
+                &root,
+                &mut IndexFails(&mut fixture.book),
+                Ok(observation(&root, midnight)),
+            )
+            .await
+            .unwrap();
+        assert!(
+            failed.corroborated && !failed.sweep_index_current,
+            "{failed:?}"
+        );
+        assert_eq!(failed.expired, 1, "the exact scan still found the due hold");
+        let fields = fa_cli::json::obj(status_fields(Some(&work)));
+        assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(false)));
+        assert!(
+            matches!(fields.get("sweep_index_error"),
+                Some(Json::Str(error)) if error.contains("planted index failure")),
+            "{fields:?}"
+        );
+        assert_eq!(fields.get("timed_work_error"), Some(&Json::Null));
+        assert!(
+            status_text(Some(&work)).contains("discovery fell back to the full scan"),
+            "{}",
+            status_text(Some(&work))
+        );
+        assert!(!fixture.book.verify_sweep_index(&cx).unwrap().index_present);
+
+        advance(&root, 10).await;
+        let recovered = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, midnight + 10)),
+            )
+            .await
+            .unwrap();
+        assert!(recovered.sweep_index_current, "{recovered:?}");
+        let fields = fa_cli::json::obj(status_fields(Some(&work)));
+        assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(true)));
+        assert_eq!(fields.get("sweep_index_error"), Some(&Json::Null));
+        assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
 /// fa-0bi: the daemon mints approved recurring occurrences. A corroborated
 /// timer cycle posts the occurrence its tick made due, through the ordinary
 /// posting law, exactly once; a same-day cycle mints nothing, and the next

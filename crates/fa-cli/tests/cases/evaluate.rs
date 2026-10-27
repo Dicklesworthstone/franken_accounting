@@ -542,6 +542,28 @@ pub fn project(run: &BookRun<'_>, finding: &Json) -> Projected {
                     .and_then(|v| run.accounts.get(v).cloned());
                 p.cites.insert(code.unwrap_or_else(|| "?account".into()));
             }
+            // An attestation by the `assert_balance` step that recorded it,
+            // a period by its label (recon.assertion_drift cites both).
+            "attestation" => {
+                let step = c
+                    .get("attestation")
+                    .and_then(Json::as_str)
+                    .and_then(|v| run.attestations.get(v));
+                p.cites.insert(
+                    step.map_or_else(|| "?attestation".into(), |r| format!("attestation:{r}")),
+                );
+            }
+            "period" => {
+                let code = c.get("period").and_then(Json::as_str);
+                let label = code.and_then(|code| {
+                    run.periods
+                        .iter()
+                        .find(|(_, v)| v.as_str() == code)
+                        .map(|(label, _)| label.clone())
+                });
+                p.cites
+                    .insert(label.map_or_else(|| "?period".into(), |l| format!("period:{l}")));
+            }
             other => {
                 p.cites.insert(format!("?{other}"));
             }

@@ -1549,6 +1549,20 @@ impl Book {
         )))
     }
 
+    /// Append an ordered PostBatch to a draft atomically, without posting its
+    /// members to trunk. Current authority and every posting law still apply.
+    pub fn plan_batch_into_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        batch: fa_journal::PostBatch,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_batch_into_draft(
+            &purposes, capability, name, batch,
+        )))
+    }
+
     /// Rehearse this owner's retained draft members without publishing them.
     /// Returns their resolved entries, or `None` for an empty open draft.
     pub fn preview_draft(
@@ -4315,6 +4329,19 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers(&purposes, principal, capability, period_code)))
     }
 
+    /// [`Book::materialize_registers`] for each period, in order, reading
+    /// the book once for all of them where that is exact; the results stop
+    /// after the first error, as a loop over the periods stops.
+    pub fn materialize_registers_each(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_codes: &[&str],
+    ) -> Outcome<Vec<Result<(Fold, CommitSeq), BookError>>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.materialize_registers_each(&purposes, principal, capability, period_codes)))
+    }
+
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
     pub fn verify_registers(&self, period_code: &str) -> Result<Verification, BookError> {
         with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
@@ -4365,6 +4392,19 @@ impl Book {
     ) -> Outcome<fa_registers::Advance> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers(&purposes, principal, capability, period_code)))
+    }
+
+    /// [`Book::rebuild_registers`] for each period, in order, reading the
+    /// book once for all of them where that is exact; the results stop after
+    /// the first error, as a loop over the periods stops.
+    pub fn rebuild_registers_each(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_codes: &[&str],
+    ) -> Outcome<Vec<Result<fa_registers::Advance, BookError>>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_registers_each(&purposes, principal, capability, period_codes)))
     }
 
     /// The public key this book's transparency checkpoints are signed with
@@ -5014,6 +5054,20 @@ impl Book {
         buckets: &crate::AgingBuckets,
     ) -> Result<crate::EffectiveDateAging, BookError> {
         with_store!(&self.store, core => core.effective_date_aging(
+            &self.purposes(), account, effective_through, known_at, buckets
+        ))
+    }
+
+    /// Group historical open amounts by days past their journaled due dates
+    /// ([`AsyncBook::due_date_aging`](crate::AsyncBook::due_date_aging)).
+    pub fn due_date_aging(
+        &self,
+        account: Option<VId>,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+        buckets: &crate::AgingBuckets,
+    ) -> Result<crate::DueDateAging, BookError> {
+        with_store!(&self.store, core => core.due_date_aging(
             &self.purposes(), account, effective_through, known_at, buckets
         ))
     }

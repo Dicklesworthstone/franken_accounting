@@ -1879,10 +1879,12 @@ mod bound_tests {
         assert_eq!(ops("post", None, None, &[], &[]), names(&["post"]));
         assert_eq!(ops("help", None, None, &[], &[]), names(&[]));
         // Planning matches the read rule before the transition's operation.
-        // A commit names close/reopen for issued operator tokens; MCP's
-        // privilege ceilings and independent confirmation are checked by the
-        // CLI, not by this registry lookup. Commit inputs cannot select read
-        // authority merely by adding a planning flag.
+        // A commit names close or reopen for an issued operator token. An
+        // issued Human operator runs period transitions (ead3caec5); a dry
+        // run that consumes a plan needs `close`, and reopen is its own
+        // operation. MCP privilege ceilings and independent confirmation are
+        // checked by the CLI, not by this registry lookup. Commit inputs
+        // cannot select read authority merely by adding a planning flag.
         for (subcommand, required) in [
             ("open", "close"),
             ("soft-close", "close"),

@@ -25,6 +25,258 @@ mod fixture;
 use fixture::*;
 
 #[test]
+fn atomic_draft_batch_preserves_dependencies_replay_and_retry_after_promotion() {
+    let mut h = Harness::new(None);
+    h.open("atomic-order", agent());
+    let prior = PostIntent::new(
+        h.proposal(100, b"prior", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    h.plan("atomic-order", agent(), prior);
+    let mut pending = h.proposal(500, b"pending", EntryClass::PENDING, AGENT);
+    pending.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    let pending = PostIntent::new(pending, Vec::new()).unwrap();
+    let hold = member_ref(&pending);
+    let mut resolution = h.proposal(250, b"resolve", EntryClass::RESOLUTION, AGENT);
+    resolution.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: Some(hold),
+        disposition: Some(fa_model::Disposition::Posts {
+            source_ordinals: vec![0, 1],
+        }),
+    });
+    let resolution = PostIntent::new(resolution, Vec::new()).unwrap();
+    let tail = PostIntent::new(
+        h.proposal(50, b"tail", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    let batch = PostBatch::new(b"atomic".to_vec(), vec![pending, resolution, tail]).unwrap();
+    let before = h.head();
+    let planned = h
+        .plan_batch("atomic-order", agent(), batch.clone())
+        .unwrap();
+    assert_eq!(planned.recorded.recorded_at, CommitSeq(before.0 + 1));
+    let view = h.draft("atomic-order");
+    assert_eq!(view.intents.len(), 4);
+    for (retained, original) in view.intents[1..].iter().zip(batch.members()) {
+        assert_eq!(&retained.intent, original);
+        assert_eq!(retained.record, planned.recorded.control_entry);
+        assert_eq!(retained.recorded_at, planned.recorded.recorded_at);
+        assert!(retained.resolved_entry.is_some());
+    }
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
+    let reviewed = planned.plan.unwrap();
+    let expected = reviewed
+        .members()
+        .iter()
+        .map(|member| {
+            let vid = if member.entry.proposal.class == EntryClass::RESOLUTION {
+                fa_journal::rows::resolution_vid(hold.vid)
+            } else {
+                member_ref(&member.intent).vid
+            };
+            member.entry.entry_ref(vid)
+        })
+        .collect::<Vec<_>>();
+    for entry in &expected {
+        assert!(read_entry(&h.db, entry.vid).unwrap().is_none());
+    }
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    let (target, _) = h.target();
+    let (scratch, replay) = h
+        .rehearse(target, &reader(), "atomic-order", basis)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replay.source.plans.len(),
+        2,
+        "one source record binds all three incoming members"
+    );
+    assert_eq!(replay.view, view);
+    assert_eq!(replay.batch.entries, expected);
+    assert_eq!(cash_balance(&scratch, h.cash), -400);
+    let retry = h
+        .plan_batch("atomic-order", agent(), batch.clone())
+        .unwrap();
+    assert!(retry.recorded.already_recorded && retry.plan.is_none());
+    assert_eq!(retry.recorded.control_entry, planned.recorded.control_entry);
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let promoted = h.promote("atomic-order");
+    assert_eq!(promoted.entries, expected);
+    assert_eq!(cash_balance(&h.db, h.cash), -400);
+    let after = h.head();
+    let retry = h.plan_batch("atomic-order", agent(), batch).unwrap();
+    assert!(retry.recorded.already_recorded && retry.plan.is_none());
+    assert_eq!(h.head(), after);
+    let (target, _) = h.target();
+    let (_, historical) = h
+        .rehearse(target, &reader(), "atomic-order", basis)
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.source, replay.source);
+    assert_eq!(historical.batch.entries, expected);
+}
+
+#[test]
+fn atomic_draft_batch_refuses_partial_append_changed_order_and_reused_members() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("atomic-refusal", agent());
+    let make = |h: &Harness, amount, key: &[u8]| {
+        PostIntent::new(
+            h.proposal(amount, key, EntryClass::ORIGINAL, AGENT),
+            Vec::new(),
+        )
+        .unwrap()
+    };
+    h.plan("atomic-refusal", agent(), make(&h, 200, b"existing"));
+    let before = h.head();
+    let rows = h.db.vertices().unwrap();
+    let first = make(&h, 500, b"first");
+    let invalid = PostBatch::new(
+        b"batch".to_vec(),
+        vec![first.clone(), make(&h, 500, b"second")],
+    )
+    .unwrap();
+    let refusal = h
+        .plan_batch("atomic-refusal", agent(), invalid)
+        .unwrap_err();
+    assert_eq!(refusal.code, code::AVAILABILITY_LOWER);
+    assert_eq!(h.head(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert_eq!(h.draft("atomic-refusal").intents.len(), 1);
+    let second = make(&h, 300, b"second");
+    let batch = PostBatch::new(b"batch".to_vec(), vec![first.clone(), second.clone()]).unwrap();
+    h.plan_batch("atomic-refusal", agent(), batch.clone())
+        .unwrap();
+    let before = h.head();
+    let rows = h.db.vertices().unwrap();
+    for changed in [
+        PostBatch::new(b"batch".to_vec(), vec![second, first.clone()]).unwrap(),
+        PostBatch::new(b"batch".to_vec(), vec![first.clone()]).unwrap(),
+        PostBatch::new(
+            b"batch".to_vec(),
+            vec![first.clone(), make(&h, 299, b"second")],
+        )
+        .unwrap(),
+    ] {
+        assert_eq!(
+            h.plan_batch("atomic-refusal", agent(), changed)
+                .unwrap_err()
+                .code,
+            code::IDEMPOTENCY_CONFLICT
+        );
+    }
+    let duplicate = PostBatch::new(b"new-batch".to_vec(), vec![first]).unwrap();
+    assert!(h.plan_batch("atomic-refusal", agent(), duplicate).is_err());
+    assert_eq!(h.head(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    h.discard("atomic-refusal");
+    let before = h.head();
+    assert!(
+        h.plan_batch("atomic-refusal", agent(), batch)
+            .unwrap()
+            .recorded
+            .already_recorded
+    );
+    assert_eq!(h.head(), before);
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
+}
+
+#[test]
+fn atomic_draft_batch_requires_current_authority_before_draft_or_outcome_lookup() {
+    let mut h = Harness::new(None);
+    h.open("atomic-private", agent());
+    let batch = PostBatch::new(
+        b"batch".to_vec(),
+        vec![
+            PostIntent::new(
+                h.proposal(100, b"first", EntryClass::ORIGINAL, AGENT),
+                Vec::new(),
+            )
+            .unwrap(),
+            PostIntent::new(
+                h.proposal(200, b"second", EntryClass::ORIGINAL, AGENT),
+                Vec::new(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    h.plan_batch("atomic-private", agent(), batch.clone())
+        .unwrap();
+    let revoked = agent().with_ceiling(h.usd, 500).unwrap();
+    h.revoke(&revoked, b"batch-revoke");
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    for capability in [
+        Capability::new(AGENT, Profile::Agent, &[Op::Read], OWNER).unwrap(),
+        agent().for_books(&[Id128([99; 16])]).unwrap(),
+        agent().for_accounts(&["1000"]).unwrap(),
+        agent().known_at_most(basis),
+        agent().expiring_at(basis),
+        revoked,
+    ] {
+        let existing = h
+            .plan_batch("atomic-private", capability.clone(), batch.clone())
+            .unwrap_err();
+        let absent = h
+            .plan_batch("missing", capability, batch.clone())
+            .unwrap_err();
+        assert_eq!(existing.exit, exit::SAFETY, "{existing}");
+        assert_ne!(existing.code, code::DRAFT_UNKNOWN);
+        assert_eq!(existing.code, absent.code);
+    }
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn atomic_draft_batch_size_refusal_leaves_no_member_or_control() {
+    let mut h = Harness::new(None);
+    h.open("atomic-size", agent());
+    let mut members = Vec::new();
+    for index in 0..12 {
+        let mut proposal = h.proposal(
+            1,
+            format!("large-{index}").as_bytes(),
+            EntryClass::ORIGINAL,
+            AGENT,
+        );
+        proposal.description = Erasable::seal(
+            &"x".repeat(fa_model::limits::MAX_DESCRIPTION_BYTES),
+            None,
+            &h.book.seal_key,
+            [31; 32],
+            [32; 24],
+        );
+        members.push(PostIntent::new(proposal, Vec::new()).unwrap());
+    }
+    let batch = PostBatch::new(b"large".to_vec(), members).unwrap();
+    let before = h.head();
+    let rows = h.db.vertices().unwrap();
+    let refusal = h.plan_batch("atomic-size", agent(), batch).unwrap_err();
+    assert_eq!(refusal.code, code::STRUCTURE, "{refusal}");
+    assert!(refusal.message.contains("native storage"), "{refusal}");
+    assert_eq!(h.head(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert!(h.draft("atomic-size").intents.is_empty());
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
+}
+
+#[test]
 fn agent_rehearsal_matches_atomic_promotion_without_touching_trunk() {
     let mut h = Harness::new(None);
     let planner = agent().with_ceiling(h.usd, 20_000).unwrap();

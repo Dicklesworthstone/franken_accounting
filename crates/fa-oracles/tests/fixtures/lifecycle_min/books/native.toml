@@ -43,6 +43,16 @@ profile = "Human"
 grants = ["read", "approve"]
 
 [[principal]]
+label = "case-reconciler-1"
+profile = "Human"
+grants = ["read", "reconcile"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[principal]]
 label = "case-poster-1"
 profile = "Human"
 grants = ["read", "post", "restate"]
@@ -183,6 +193,13 @@ principal = "case-closer-1"
 approvers = ["case-second-reader"]
 
 [[step]]
+seq = 6
+kind = "assert_balance"
+ref = "lifecycle-R-01"
+principal = "case-reconciler-1"
+evidence = "DOC-LC-0"
+
+[[step]]
 seq = 10
 kind = "case_open"
 ref = "rc"
@@ -233,6 +250,13 @@ seq = 18
 kind = "case_close"
 ref = "rc"
 principal = "case-poster-1"
+
+[[step]]
+seq = 19
+kind = "finding_record"
+ref = "recon.assertion_drift@1"
+known_at = "head"
+principal = "examiner-1"
 
 [[default]]
 attribute = "evidence_attached"

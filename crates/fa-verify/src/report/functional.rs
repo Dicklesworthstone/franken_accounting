@@ -1,14 +1,18 @@
-//! Independently repriced functional-currency trial balances.
+//! Independently repriced functional-currency trial balances and statements.
 //!
 //! Complete signed history supplies entries, chart, fiscal periods and Rate
 //! intake receipts. Book parameters are certificate/receipt-bound inputs, not
-//! a proof of genesis. Carrying transfers and migration activation require
-//! separate source proofs; this profile implements direct SpotClose/Average.
+//! a proof of genesis. This profile verifies SpotClose, PeriodAverage and
+//! source-bound SettlementCarryingBasis, including exact inherited reversals.
+//! Revaluation, closing transfers and migration activation require separate
+//! source proofs and remain unsupported.
 
 mod arithmetic;
 mod valuation;
 
-use super::{Certificate, ReportError, Selection, failed, metadata, open_items, registry, text};
+use super::{
+    Certificate, ReportError, Selection, failed, metadata, open_items, registry, statement, text,
+};
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 use crate::envelope::{LeafEnvelope, Leg};
@@ -17,6 +21,19 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) use valuation::{MAX_RATE_BYTES, MAX_RATES};
 pub(super) const MAX_BOOK_BYTES: usize = 1024 * 1024;
 pub(super) const OUTPUT_FORMAT: &[u8] = b"fa:functional-trial-balance:v1";
+pub(super) const STATEMENT_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement:v1";
+const BOOK_PARAMETERS_SOURCE: &str =
+    "certificate-bound-report-parameters; genesis-registration-not-proved";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedFunctionalStatement {
+    pub base_unit: u32,
+    /// Every line uses independently checked retained base amounts. The
+    /// complete historical chart supplies mappings, including zero balances.
+    pub statement: statement::VerifiedStatement,
+    /// The checkpoint does not authenticate the separate Book root vertex.
+    pub book_parameters_source: &'static str,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedFunctionalCell {
@@ -301,8 +318,11 @@ fn contribution(
     previous
 }
 
+/// Validate the entire retained valuation prefix before any report selection.
+/// An unsupported or forged entry outside a displayed column cannot escape
+/// the functional accounting predicate by choosing a narrower report.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn replay(
+fn sources(
     cert: &Certificate<'_>,
     registry: &registry::FunctionalRegistry,
     book_bytes: &[u8],
@@ -312,19 +332,11 @@ pub(super) fn replay(
     records: &[(usize, &[u8])],
     legs: &[Vec<Leg>],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
-    releases: &BTreeMap<usize, u64>,
-) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
+) -> Result<(BookParameters, BTreeMap<usize, valuation::CheckedEntry>), ReportError> {
     if cert.time_selection.is_some() || cert.branch != [0; 16] {
         return Err(failed(
             "supported_report",
             "functional profile requires a sequence-selected trunk",
-        ));
-    }
-    if matches!(&cert.selection, Selection::Periods(codes) | Selection::Activity(codes) if codes.len() != 1)
-    {
-        return Err(failed(
-            "report_selector",
-            "functional reports select exactly one period",
         ));
     }
     let spec = BookParameters::read(book_bytes, &cert.book)?;
@@ -339,7 +351,6 @@ pub(super) fn replay(
             "declared calendar disagrees with signed period controls or base is not a registered currency",
         ));
     }
-    let (periods, through, activity) = schema.selection(&cert.selection)?;
     let checked = valuation::verify_history(
         cert.known_at,
         &spec,
@@ -351,6 +362,100 @@ pub(super) fn replay(
         legs,
         infos,
     )?;
+    Ok((spec, checked))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn replay_statement(
+    cert: &Certificate<'_>,
+    selection: &statement::Selection,
+    registry: &registry::FunctionalRegistry,
+    book_bytes: &[u8],
+    documents: &[([u8; 32], &[u8])],
+    schema: &metadata::Schema,
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    legs: &[Vec<Leg>],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    resolved: &BTreeSet<usize>,
+) -> Result<(VerifiedFunctionalStatement, Vec<u8>), ReportError> {
+    let (spec, checked) = sources(
+        cert, registry, book_bytes, documents, schema, envelopes, records, legs, infos,
+    )?;
+    // Preserve the authenticated entry selection and lineage while supplying
+    // the statement fold only the independently reproduced functional amounts.
+    // The original native legs remain intact for all source validation.
+    let mut valued_legs = vec![Vec::new(); legs.len()];
+    for (index, entry) in checked {
+        valued_legs[index] = legs[index]
+            .iter()
+            .zip(entry.amounts)
+            .map(|(leg, amount)| Leg {
+                debit: leg.debit,
+                account: leg.account,
+                unit: spec.base,
+                mantissa: amount,
+            })
+            .collect();
+    }
+    let (statement, inner) = statement::replay(
+        selection,
+        &cert.book,
+        &cert.branch,
+        cert.known_at,
+        &[spec.base],
+        schema,
+        envelopes,
+        infos,
+        &valued_legs,
+        &BTreeSet::new(),
+        resolved,
+    )?;
+    let mut output = Writer::default();
+    output
+        .fixed(STATEMENT_OUTPUT_FORMAT)
+        .bytes(b"retained-base-amounts")
+        .bytes(&inner);
+    if output.buf.len() > super::MAX_REPORT_BUNDLE_BYTES {
+        return Err(failed(
+            "bounded_input",
+            "reconstructed functional statement exceeds 64 MiB",
+        ));
+    }
+    Ok((
+        VerifiedFunctionalStatement {
+            base_unit: spec.base,
+            statement,
+            book_parameters_source: BOOK_PARAMETERS_SOURCE,
+        },
+        output.buf,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn replay(
+    cert: &Certificate<'_>,
+    registry: &registry::FunctionalRegistry,
+    book_bytes: &[u8],
+    documents: &[([u8; 32], &[u8])],
+    schema: &metadata::Schema,
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    legs: &[Vec<Leg>],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    releases: &BTreeMap<usize, u64>,
+) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
+    if matches!(&cert.selection, Selection::Periods(codes) | Selection::Activity(codes) if codes.len() != 1)
+    {
+        return Err(failed(
+            "report_selector",
+            "functional trial balances select exactly one period",
+        ));
+    }
+    let (spec, checked) = sources(
+        cert, registry, book_bytes, documents, schema, envelopes, records, legs, infos,
+    )?;
+    let (periods, through, activity) = schema.selection(&cert.selection)?;
     let mut indices: Vec<_> = infos.keys().copied().collect();
     indices.sort_by_key(|index| (envelopes[*index].commit_seq, infos[index].identity));
     let mut identities = BTreeSet::new();
@@ -499,7 +604,7 @@ pub(super) fn replay(
         entries,
         fold_digest,
         accounts,
-        book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
+        book_parameters_source: BOOK_PARAMETERS_SOURCE,
     };
     let output = output(&result, &cert.selection, cert.known_at)?;
     Ok((result, output))

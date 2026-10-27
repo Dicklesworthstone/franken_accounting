@@ -890,6 +890,17 @@ fn explicit_key_bootstrap_records_ticks_and_clean_stop_releases_the_timed_book()
         "{status}"
     );
     assert_eq!(field(&status, "timed_work_error"), Some("null"), "{status}");
+    // A corroborated cycle advanced the paged sweep index on the real book.
+    assert_eq!(
+        field(&status, "sweep_index_current"),
+        Some("true"),
+        "{status}"
+    );
+    assert_eq!(
+        field(&status, "sweep_index_error"),
+        Some("null"),
+        "{status}"
+    );
     assert_eq!(
         Lease::holder(&book, &registry().unwrap().daemon.lease),
         None

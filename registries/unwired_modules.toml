@@ -40,7 +40,7 @@ reason = "The interop conformance matrix and its baseline laws (plan §16.3)."
 [[verification]]
 path = "fa_formats::tigerbeetle"
 consumer = "crates/fa-formats/tests/formats_conformance.rs"
-reason = "The TigerBeetle semantic corpus runner, an external oracle (plan §16.3)."
+reason = "The TigerBeetle-semantics corpus runner: a self-consistency check against expectations written by this project, not an external oracle (docs/conformance/tigerbeetle.md, plan §16.3)."
 
 [[verification]]
 path = "fa_lantern::witness"
