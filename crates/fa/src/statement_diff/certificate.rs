@@ -358,13 +358,19 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     produce: bool,
 ) -> Outcome<CommitSeq> {
     let context = book.context();
-    let admitted = fa_policy::admit_read(capability, principal, context.book_id).and_then(|()| {
-        if produce {
-            fa_policy::require(capability, Op::Produce, "certifying statement comparisons")
-        } else {
-            Ok(())
-        }
-    });
+    let admitted = fa_policy::admit_read(capability, principal, context.book_id)
+        .and_then(|()| {
+            if produce {
+                fa_policy::require(capability, Op::Produce, "certifying statement comparisons")
+            } else {
+                Ok(())
+            }
+        })
+        .and_then(|()| {
+            // Historical selectors still reach current genesis/context checks;
+            // certificate routes additionally check current journal integrity.
+            fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+        });
     if let Err(denial) = admitted {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
@@ -397,12 +403,7 @@ fn authorize_sources<V: Vfs + Clone, B: Vfs + Clone>(
     {
         // Complete valuation verification observes the whole book's retained
         // history. A source certificate cannot widen the current reader's scope.
-        if let Err(refusal) =
-            book.admit_functional_report(cx, principal, capability, Some(before.known_at), produce)?
-        {
-            return Ok(Err(refusal));
-        }
-        book.admit_functional_report(cx, principal, capability, Some(after.known_at), produce)
+        book.admit_functional_report(cx, principal, capability, None, produce)
     } else {
         authorize(book, cx, principal, capability, produce)
     }
@@ -511,11 +512,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &StatementDiffRequest,
     ) -> Outcome<StatementDiff> {
-        let head =
-            match self.admit_functional_report(cx, principal, capability, request.after, false)? {
-                Ok(head) => head,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let head = match self.admit_functional_report(cx, principal, capability, None, false)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let request = match resolved(request, head) {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),
@@ -557,11 +557,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &StatementDiffRequest,
     ) -> Outcome<CertifiedStatementDiff> {
-        let head =
-            match self.admit_functional_report(cx, principal, capability, request.after, true)? {
-                Ok(head) => head,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let head = match self.admit_functional_report(cx, principal, capability, None, true)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let request = match resolved(request, head) {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),

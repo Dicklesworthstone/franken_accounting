@@ -287,13 +287,19 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     produce: bool,
 ) -> Outcome<()> {
     let context = book.context();
-    let admitted = fa_policy::admit_read(capability, principal, context.book_id).and_then(|()| {
-        if produce {
-            fa_policy::require(capability, Op::Produce, "certifying summary reports")
-        } else {
-            Ok(())
-        }
-    });
+    let admitted = fa_policy::admit_read(capability, principal, context.book_id)
+        .and_then(|()| {
+            if produce {
+                fa_policy::require(capability, Op::Produce, "certifying summary reports")
+            } else {
+                Ok(())
+            }
+        })
+        .and_then(|()| {
+            // Source certification/replay checks current journal integrity and
+            // retained registry records even for a historical report selector.
+            fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+        });
     if let Err(denial) = admitted {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
