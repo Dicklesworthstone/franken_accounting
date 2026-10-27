@@ -205,7 +205,7 @@ impl LaunchAuthority {
     }
 
     /// Bind an ordinary CLI or daemon request to its holder's exact token.
-    /// Human operators with explicit approval, period-control or witness
+    /// Human operators with explicit approval, period-control, witness or hold
     /// authority may confirm their commands. Every one of those operations
     /// is outside both MCP launch ceilings, so a token relayed by MCP can
     /// never acquire confirmation authority at the daemon.
@@ -223,7 +223,7 @@ impl LaunchAuthority {
         let capability = token.capability();
         let operator = capability.profile() == Profile::Human
             && capability.operator_kind() == fa_policy::OperatorKind::Human
-            && [Op::Approve, Op::Close, Op::Reopen, Op::Witness]
+            && [Op::Approve, Op::Close, Op::Reopen, Op::Witness, Op::Hold]
                 .iter()
                 .any(|op| capability.holds(*op));
         if !operator {
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn human_operator_tokens_preserve_caveats_and_cannot_bind_mcp() {
         let secret = [0x31; 32];
-        for op in [Op::Approve, Op::Close, Op::Reopen, Op::Witness] {
+        for op in [Op::Approve, Op::Close, Op::Reopen, Op::Witness, Op::Hold] {
             // The daemon sees only token bytes, so these sets must remain
             // disjoint even if an MCP launch ceiling changes in the future.
             for profile in [LaunchProfile::Agent, LaunchProfile::Preparer] {

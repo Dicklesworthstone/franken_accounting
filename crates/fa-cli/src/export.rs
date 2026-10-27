@@ -136,9 +136,24 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     };
-    let mut selected = None;
     let mut proved = None;
-    let book = ctx.books.open_admitted(args, |book| {
+    let mut book = ctx.books.open_admitted(args, |book| {
+        let known_at = if with_proofs {
+            match capability.known_at_pin() {
+                Some(pin) => Some(pin.min(book.head()?)),
+                None => None,
+            }
+        } else {
+            known_at_read_flag(args, book, &ctx.out, &capability)?.0
+        };
+        book.read_scope(capability.holder(), &capability)??
+            .admit_report(&selection.clone().into(), known_at)??;
+        Ok(())
+    })?;
+    // open_admitted commits the access receipt after admission. Only now may
+    // an export observe its journal or construct proof bytes; HEAD resolves
+    // after that receipt, while explicit historical/proof cuts stay pinned.
+    let journal = {
         // The bundle is produced first (its own admission precedes every
         // read of the journal); the read scope borrows the book after it.
         // An account's bundle ends at the cutoff, so a --period cutoff is
@@ -198,7 +213,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let scope = book.read_scope(capability.holder(), &capability)??;
         let known_at = match proved_at {
             Some(through) => Some(through),
-            None => known_at_read_flag(args, book, &ctx.out, &capability)?.0,
+            None => known_at_read_flag(args, &book, &ctx.out, &capability)?.0,
         };
         // An export is cumulative stock, even when --period names its
         // boundary. Admit that reach before reading any period or entry.
@@ -253,7 +268,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })?;
             proved = Some((again, key));
         }
-        selected = Some(match account {
+        match account {
             None => journal,
             Some(code) => journal.scoped_to_account(code).map_err(|_| {
                 usage(
@@ -261,10 +276,8 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "name a chart account (fa chart show --json)",
                 )
             })?,
-        });
-        Ok(())
-    })?;
-    let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
+        }
+    };
     // One account's proof is its scope-index run: it holds no migration
     // run's lifecycle controls and no balance, so fa-verify cannot decide
     // whether a migration entry in it counts (fa-mv0f), and refuses it.

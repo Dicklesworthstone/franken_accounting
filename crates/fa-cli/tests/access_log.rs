@@ -367,7 +367,7 @@ fn bound_agent_and_preparer_reads_audit_documents_findings_and_streams_once() {
             assert_eq!(
                 number(result.get("coordinate").unwrap(), "known_at"),
                 number(access, "recorded_at"),
-                "the read cannot disclose an observation made before its receipt commits"
+                "{principal}: {args:?}: the read cannot disclose an observation made before its receipt commits"
             );
             match args[0] {
                 "document" => {
@@ -469,6 +469,65 @@ fn a_bound_plan_audits_before_its_basis_and_commit_does_not_invalidate_the_plan(
 }
 
 #[test]
+fn a_historical_export_keeps_its_prefix_after_recording_current_access() {
+    let f = Fixture::new();
+    let authority = LaunchAuthority::new(
+        f.dir.join("book"),
+        None,
+        "historical-export-reader",
+        LaunchProfile::Preparer,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let selected = f.head();
+    std::fs::write(
+        f.dir.join("later.json"),
+        r#"{"idempotency_key":"later-sale","effective_date":"2026-03-11","legs":[{"side":"debit","account":"1000","amount":"7.00 USD"},{"side":"credit","account":"4000","amount":"7.00 USD"}]}"#,
+    )
+    .unwrap();
+    f.ok(&["post", "--intent", "later.json", "--evidence", &f.evidence]);
+    let before = f.head();
+    assert!(before > selected);
+    let prefix = selected.to_string();
+    let (exit, result) = f.bound(
+        &authority,
+        &[
+            "export",
+            "ndjson",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &prefix,
+        ],
+        None,
+    );
+    assert_eq!(exit, 0, "{result:?}");
+    assert_eq!(
+        number(result.get("coordinate").unwrap(), "known_at"),
+        selected
+    );
+    assert_eq!(number(data(&result), "entries"), 1);
+    let files = data(&result).get("files").and_then(Json::as_arr).unwrap();
+    let stream = files
+        .iter()
+        .find(|file| text(file, "name") == "gl.ndjson")
+        .unwrap();
+    let content = text(stream, "content");
+    assert_eq!(
+        fa_formats::csv_gl::verify_ndjson_gl_stream(content).unwrap(),
+        2
+    );
+    let header = json::parse(content.lines().next().unwrap()).unwrap();
+    assert_eq!(number(&header, "known_at"), selected);
+    let log = f.log(&["--since", &before.to_string()]);
+    assert_eq!(number(&log, "count"), 1);
+    let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(number(access, "observed_at"), before);
+    assert_eq!(number(access, "recorded_at"), before + 1);
+    assert_eq!(f.head(), before + 1);
+}
+
+#[test]
 fn unauthorized_and_revoked_readers_disclose_nothing_and_publish_no_access_event() {
     let f = Fixture::new();
     let writer = LaunchAuthority::new(
@@ -492,7 +551,14 @@ fn unauthorized_and_revoked_readers_disclose_nothing_and_publish_no_access_event
     let before = f.head();
     for args in [
         vec!["document", "read", &f.evidence],
-        vec!["finding", "list"],
+        // A syntactically valid certificate selector must never be looked up
+        // for a caller without current authority. Omitting it is only usage.
+        vec![
+            "finding",
+            "list",
+            "--certificate",
+            "C:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
         vec!["export", "ndjson", "--period", "FY2026-P03"],
     ] {
         let (exit, refused) = f.bound(&writer, &args, None);
