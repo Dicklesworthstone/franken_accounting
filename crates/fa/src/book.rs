@@ -5058,6 +5058,20 @@ impl Book {
         ))
     }
 
+    /// Group historical open amounts by days past their journaled due dates
+    /// ([`AsyncBook::due_date_aging`](crate::AsyncBook::due_date_aging)).
+    pub fn due_date_aging(
+        &self,
+        account: Option<VId>,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+        buckets: &crate::AgingBuckets,
+    ) -> Result<crate::DueDateAging, BookError> {
+        with_store!(&self.store, core => core.due_date_aging(
+            &self.purposes(), account, effective_through, known_at, buckets
+        ))
+    }
+
     /// Certify one explicit effective-date aging request under current read+produce authority.
     pub fn certify_effective_date_aging(
         &self,

@@ -1,10 +1,22 @@
-//! Effective-date aging of historical open amounts (plan §5.7 and §7.5).
+//! Aging of historical open amounts (plan §5.7, §7.5 and §11.7).
 //!
-//! This is explicitly **not due-date aging**: the current payload has no
-//! contractual due date. Ages are civil days since the item's effective
-//! date. The report retains both time coordinates, exact native-unit debit
-//! and credit columns, bucket definitions, and item-level drilldown.
-//! It never adds different units or treats credit balances as receivables.
+//! **Effective-date aging** ([`effective_date_aging`]) measures civil days
+//! since the item's effective date. It is not a claim that anything is due.
+//!
+//! **Due-date aging** ([`due_date_aging`]) measures civil days past each
+//! contractual due date the journal records: the obligation maturity terms an
+//! entry carries on its leg (extension 33, `fa:obligation-maturity:v1`).
+//! - Settlements relieve a schedule's earliest installments first, as
+//!   `solvency.cash_flow_test` does, and each open remainder is aged from its
+//!   own due date.
+//! - An item without contractual terms is listed as unscheduled, with the
+//!   reason, and is never given a guessed due date.
+//! - The kernel admits terms on credit legs only, where an obligation is
+//!   booked, so receivables are unscheduled until terms can name a debit leg.
+//!
+//! Both keep both time coordinates, exact native-unit debit and credit
+//! columns, bucket definitions, and item-level drilldown. They never add
+//! different units or treat credit balances as receivables.
 //!
 //! Results are literal journal folds, not certificates. The caller must
 //! supply a recorded prefix and explicit effective date for stable replay.
@@ -12,15 +24,17 @@
 use std::collections::BTreeMap;
 
 use fa_journal::genesis::BookContext;
-use fa_model::Id128;
+use fa_model::entry::OBLIGATION_MATURITY_EXTENSION;
+use fa_model::obligation::{InlineObligationTerms, ObligationStatus};
+use fa_model::{Entry, Id128};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
 use super::OpenItem;
-use super::history::{OpenItemSnapshot, open_items_as_of};
-use crate::{KernelError, RegisterError};
+use super::history::{OpenItemSnapshot, open_items_as_of, snapshot_of};
+use crate::{KernelError, RegisterError, entries_at, resolve_known_at};
 
 /// Inclusive upper ages for successive buckets, strictly increasing. The
 /// last bucket is open-ended. An empty list means one bucket for all ages.
@@ -93,14 +107,12 @@ pub struct AgingAmounts {
 }
 
 impl AgingAmounts {
-    fn add(&mut self, item: &OpenItem) -> Result<(), RegisterError> {
-        let column = match item.side {
+    fn add(&mut self, side: Side, open: i128) -> Result<(), RegisterError> {
+        let column = match side {
             Side::Debit => &mut self.debits,
             Side::Credit => &mut self.credits,
         };
-        *column = column
-            .checked_add(item.open)
-            .ok_or(RegisterError::Overflow)?;
+        *column = column.checked_add(open).ok_or(RegisterError::Overflow)?;
         self.item_count = self
             .item_count
             .checked_add(1)
@@ -172,27 +184,7 @@ pub fn age_snapshot(
     let mut totals: BTreeMap<(VId, u32), AgingAmounts> = BTreeMap::new();
     let mut items = Vec::new();
     for item in snapshot.items {
-        let expected_open = item
-            .original
-            .checked_sub(item.applied_out)
-            .and_then(|amount| amount.checked_sub(item.applied))
-            .ok_or(RegisterError::Overflow)?;
-        if item.original < 0
-            || item.applied < 0
-            || item.applied_out < 0
-            || item.open < 0
-            || item.open != expected_open
-        {
-            return Err(KernelError::Corrupt(format!(
-                "inconsistent open amount for entry {:?} leg {}",
-                item.entry, item.ordinal
-            ))
-            .into());
-        }
-        let age = i64::from(snapshot.effective_through.0) - i64::from(item.effective_date.0);
-        let age_days = u64::try_from(age).map_err(|_| {
-            KernelError::Corrupt("open-item snapshot includes a future effective date".into())
-        })?;
+        let age_days = checked_age(&item, snapshot.effective_through)?;
         if item.open == 0 {
             continue;
         }
@@ -200,11 +192,11 @@ pub fn age_snapshot(
         cells
             .entry((item.account, item.unit_id, bucket))
             .or_default()
-            .add(&item)?;
+            .add(item.side, item.open)?;
         totals
             .entry((item.account, item.unit_id))
             .or_default()
-            .add(&item)?;
+            .add(item.side, item.open)?;
         items.push(AgedOpenItem {
             item,
             age_days,
@@ -246,6 +238,262 @@ pub fn age_snapshot(
                 amounts,
             })
             .collect(),
+    })
+}
+
+/// An open item's civil days since its effective date, once its amounts are
+/// consistent and its date is not after the cutoff.
+fn checked_age(item: &OpenItem, effective_through: DateDay) -> Result<u64, RegisterError> {
+    let expected_open = item
+        .original
+        .checked_sub(item.applied_out)
+        .and_then(|amount| amount.checked_sub(item.applied))
+        .ok_or(RegisterError::Overflow)?;
+    if item.original < 0
+        || item.applied < 0
+        || item.applied_out < 0
+        || item.open < 0
+        || item.open != expected_open
+    {
+        return Err(KernelError::Corrupt(format!(
+            "inconsistent open amount for entry {:?} leg {}",
+            item.entry, item.ordinal
+        ))
+        .into());
+    }
+    let age = i64::from(effective_through.0) - i64::from(item.effective_date.0);
+    u64::try_from(age).map_err(|_| {
+        KernelError::Corrupt("open-item snapshot includes a future effective date".into()).into()
+    })
+}
+
+/// Why due-date aging lists an open item without a due date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unscheduled {
+    /// Its leg carries no obligation maturity terms.
+    NoTerms,
+    /// Its terms declare its maturity unknown.
+    MissingMaturity,
+    /// Its terms declare it disputed, with the reason code.
+    Disputed { reason_code: u16 },
+}
+
+/// An open item due-date aging lists without a due date.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnscheduledItem {
+    pub item: OpenItem,
+    pub reason: Unscheduled,
+}
+
+/// The part of an open item that falls due on one contractual date.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DueDateAgedItem {
+    pub item: OpenItem,
+    pub due_date: DateDay,
+    /// What remains open of the installment due on `due_date`: settlements
+    /// relieve a schedule's earliest installments first.
+    pub open: i128,
+    /// Civil days from `due_date` to the cutoff, and 0 while not yet due.
+    pub days_past_due: u64,
+    /// Index into the report's `bands`.
+    pub bucket: usize,
+}
+
+/// Open amounts aged by days past their journaled due dates. `items`,
+/// `cells` and `totals` cover the scheduled parts. `unscheduled` lists every
+/// other open item, with `unscheduled_totals` per account and unit, so the
+/// two together are the whole open fold. Fully applied items are absent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DueDateAging {
+    pub book_id: Id128,
+    pub known_at: CommitSeq,
+    pub effective_through: DateDay,
+    pub account: Option<VId>,
+    pub bands: Vec<AgingBand>,
+    pub items: Vec<DueDateAgedItem>,
+    pub cells: Vec<AgingCell>,
+    pub totals: Vec<AgingTotal>,
+    pub unscheduled: Vec<UnscheduledItem>,
+    pub unscheduled_totals: Vec<AgingTotal>,
+}
+
+/// Each leg's obligation maturity terms, by `(entry, leg ordinal)`. The
+/// kernel validated them at admission, so bytes that no longer decode are
+/// corruption.
+pub type ObligationTerms = BTreeMap<(VId, u16), InlineObligationTerms>;
+
+fn obligation_terms(entries: &[(VId, Entry, CommitSeq)]) -> Result<ObligationTerms, RegisterError> {
+    let mut terms = BTreeMap::new();
+    for (vid, entry, _) in entries {
+        for (tag, bytes) in &entry.proposal.extensions {
+            if *tag != OBLIGATION_MATURITY_EXTENSION {
+                continue;
+            }
+            for term in InlineObligationTerms::decode_list(bytes).map_err(|e| {
+                KernelError::Corrupt(format!(
+                    "entry {vid:?} carries obligation terms that do not decode: {e}"
+                ))
+            })? {
+                terms.insert((*vid, term.ordinal), term);
+            }
+        }
+    }
+    Ok(terms)
+}
+
+/// Age the historical open-item fold by days past each journaled due date,
+/// at one inclusive effective cutoff and one resolved recorded prefix. The
+/// terms are those recorded in that prefix; a term recorded later does not
+/// change a historical aging.
+pub fn due_date_aging<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    account: Option<VId>,
+    effective_through: DateDay,
+    known_at: Option<CommitSeq>,
+    buckets: &AgingBuckets,
+) -> Result<DueDateAging, RegisterError> {
+    let known_at = resolve_known_at(db, known_at)?;
+    let entries = entries_at(db, book, known_at)?;
+    let terms = obligation_terms(&entries)?;
+    let snapshot = snapshot_of(book, entries, account, effective_through, known_at)?;
+    age_by_due_date(snapshot, &terms, buckets)
+}
+
+/// Bucket an already-selected snapshot by days past due under `terms`.
+pub fn age_by_due_date(
+    snapshot: OpenItemSnapshot,
+    terms: &ObligationTerms,
+    buckets: &AgingBuckets,
+) -> Result<DueDateAging, RegisterError> {
+    let through = snapshot.effective_through;
+    let mut cells: BTreeMap<(VId, u32, usize), AgingAmounts> = BTreeMap::new();
+    let mut totals: BTreeMap<(VId, u32), AgingAmounts> = BTreeMap::new();
+    let mut unscheduled_totals: BTreeMap<(VId, u32), AgingAmounts> = BTreeMap::new();
+    let mut items = Vec::new();
+    let mut unscheduled = Vec::new();
+    for item in snapshot.items {
+        checked_age(&item, through)?;
+        if item.open == 0 {
+            continue;
+        }
+        let term = terms.get(&(item.entry, item.ordinal));
+        let reason = match term.map(|term| term.status) {
+            None => Some(Unscheduled::NoTerms),
+            Some(ObligationStatus::MissingMaturity) => Some(Unscheduled::MissingMaturity),
+            Some(ObligationStatus::Disputed { reason_code }) => {
+                Some(Unscheduled::Disputed { reason_code })
+            }
+            Some(ObligationStatus::Contractual) => None,
+        };
+        let (Some(term), None) = (term, reason) else {
+            unscheduled_totals
+                .entry((item.account, item.unit_id))
+                .or_default()
+                .add(item.side, item.open)?;
+            unscheduled.push(UnscheduledItem {
+                item,
+                reason: reason.unwrap_or(Unscheduled::NoTerms),
+            });
+            continue;
+        };
+        let mut installments = term.installments.clone();
+        installments.sort();
+        let mut scheduled: i128 = 0;
+        for installment in &installments {
+            scheduled = scheduled
+                .checked_add(installment.amount)
+                .ok_or(RegisterError::Overflow)?;
+        }
+        if scheduled != item.original {
+            return Err(KernelError::Corrupt(format!(
+                "the installments of entry {:?} leg {} total {scheduled}, not the leg's {}",
+                item.entry, item.ordinal, item.original
+            ))
+            .into());
+        }
+        let mut relief = item
+            .original
+            .checked_sub(item.open)
+            .ok_or(RegisterError::Overflow)?;
+        for installment in installments {
+            let relieved = relief.min(installment.amount);
+            relief -= relieved;
+            let open = installment.amount - relieved;
+            if open == 0 {
+                continue;
+            }
+            let days = i64::from(through.0) - i64::from(installment.due_date.0);
+            let days_past_due = u64::try_from(days).unwrap_or(0);
+            let bucket = buckets.index(days_past_due);
+            cells
+                .entry((item.account, item.unit_id, bucket))
+                .or_default()
+                .add(item.side, open)?;
+            totals
+                .entry((item.account, item.unit_id))
+                .or_default()
+                .add(item.side, open)?;
+            items.push(DueDateAgedItem {
+                item: item.clone(),
+                due_date: installment.due_date,
+                open,
+                days_past_due,
+                bucket,
+            });
+        }
+    }
+    items.sort_by_key(|row| {
+        (
+            row.item.account,
+            row.item.unit_id,
+            row.bucket,
+            row.due_date,
+            row.item.effective_date,
+            row.item.recorded_at,
+            row.item.entry,
+            row.item.ordinal,
+        )
+    });
+    unscheduled.sort_by_key(|row| {
+        (
+            row.item.account,
+            row.item.unit_id,
+            row.item.effective_date,
+            row.item.recorded_at,
+            row.item.entry,
+            row.item.ordinal,
+        )
+    });
+    let aging_totals = |totals: BTreeMap<(VId, u32), AgingAmounts>| {
+        totals
+            .into_iter()
+            .map(|((account, unit_id), amounts)| AgingTotal {
+                account,
+                unit_id,
+                amounts,
+            })
+            .collect()
+    };
+    Ok(DueDateAging {
+        book_id: snapshot.book_id,
+        known_at: snapshot.known_at,
+        effective_through: through,
+        account: snapshot.account,
+        bands: buckets.bands(),
+        items,
+        cells: cells
+            .into_iter()
+            .map(|((account, unit_id, bucket), amounts)| AgingCell {
+                account,
+                unit_id,
+                bucket,
+                amounts,
+            })
+            .collect(),
+        totals: aging_totals(totals),
+        unscheduled,
+        unscheduled_totals: aging_totals(unscheduled_totals),
     })
 }
 
@@ -431,6 +679,47 @@ mod tests {
                 Err(RegisterError::Overflow)
             ));
         }
+    }
+
+    #[test]
+    fn installments_are_relieved_earliest_first_and_must_tie_to_the_leg() {
+        use fa_model::obligation::ObligationInstallment;
+        let mut paid = item(1, 40, Side::Credit, 1, 300);
+        paid.original = 1_000;
+        paid.applied = 700;
+        let schedule = |amounts: [(i32, i128); 2]| InlineObligationTerms {
+            ordinal: 0,
+            status: ObligationStatus::Contractual,
+            installments: amounts
+                .into_iter()
+                .map(|(day, amount)| ObligationInstallment {
+                    due_date: DateDay(day),
+                    amount,
+                })
+                .collect(),
+        };
+        // Stated out of order, the schedule is still relieved by due date:
+        // 700 clears the -20 installment and 100 of the +10 one.
+        let terms = ObligationTerms::from([((VId(1), 0), schedule([(10, 400), (-20, 600)]))]);
+        let report = age_by_due_date(
+            snapshot(vec![paid.clone()]),
+            &terms,
+            &AgingBuckets::thirty_day(),
+        )
+        .unwrap();
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].due_date, DateDay(10));
+        assert_eq!(report.items[0].open, 300);
+        // Due ten days after the cutoff: not yet past due.
+        assert_eq!(report.items[0].days_past_due, 0);
+        assert_eq!(report.totals[0].amounts.credits, 300);
+        assert!(report.unscheduled.is_empty());
+        // A schedule that does not total the leg is corruption, not a report.
+        let short = ObligationTerms::from([((VId(1), 0), schedule([(10, 300), (-20, 600)]))]);
+        assert!(matches!(
+            age_by_due_date(snapshot(vec![paid]), &short, &AgingBuckets::thirty_day()),
+            Err(RegisterError::Kernel(KernelError::Corrupt(_)))
+        ));
     }
 
     #[test]

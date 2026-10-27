@@ -23,7 +23,8 @@ pub use reconciliation::{
 };
 
 pub use fa_registers::open_items::aging::{
-    AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, EffectiveDateAging,
+    AgedOpenItem, AgingAmounts, AgingBand, AgingBuckets, AgingCell, AgingTotal, DueDateAgedItem,
+    DueDateAging, EffectiveDateAging, Unscheduled, UnscheduledItem,
 };
 pub use fa_registers::open_items::history::OpenItemSnapshot;
 
@@ -69,6 +70,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         query.checkpoint().map_err(BookError::Context)?;
         query.with_restriction(|| {
             fa_registers::open_items::aging::effective_date_aging(
+                &self.db,
+                self.context(),
+                account,
+                effective_through,
+                known_at,
+                buckets,
+            )
+            .map_err(BookError::from)
+        })
+    }
+
+    /// Group historical open amounts by days past each contractual due date
+    /// the journal records (obligation maturity terms, extension 33), the
+    /// earliest installments relieved first. Items without contractual terms
+    /// are listed as unscheduled, never given a guessed due date. An embedded
+    /// read, not a certified report.
+    pub fn due_date_aging(
+        &self,
+        cx: &PurposeContexts,
+        account: Option<VId>,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+        buckets: &AgingBuckets,
+    ) -> Result<DueDateAging, BookError> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            fa_registers::open_items::aging::due_date_aging(
                 &self.db,
                 self.context(),
                 account,

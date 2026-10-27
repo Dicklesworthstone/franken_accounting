@@ -9,6 +9,7 @@ use fa_journal::evidence::{Document, add_document};
 use fa_journal::fx::FxRateTerms;
 use fa_journal::rows::edge_id;
 use fa_journal::*;
+use fa_model::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     AccountType, ControlPayload, Disposition, EntryClass, EntryOrigin, EntryPayload, Erasable,
@@ -16,6 +17,9 @@ use fa_model::{
     SymbolTable, account_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
+use fa_registers::open_items::aging::{
+    AgingBuckets, DueDateAging, Unscheduled, due_date_aging, effective_date_aging,
+};
 use fa_registers::{
     Advance, CacheStatus, Cell, CellKey, Fold, RegisterError, Verification, balance_as_of,
     fold_period, fold_period_at, fold_periods_at, materialize, materialize_periods,
@@ -1928,6 +1932,210 @@ fn materialize_deletes_the_same_membership_edges_as_the_full_scan() {
             .contains(&rent),
         "the cell's own membership stays"
     );
+}
+
+/// A rent invoice effective `date` whose credit leg (ordinal 1) carries
+/// `terms`, the leg's obligation maturity (extension 33).
+fn invoice_with_terms(
+    h: &mut Harness,
+    cents: i128,
+    key: &[u8],
+    date: DateDay,
+    terms: Option<(ObligationStatus, Vec<(DateDay, i128)>)>,
+) -> Posted {
+    let mut invoice = h.proposal(h.expense_legs(cents), key, EntryClass::ORIGINAL);
+    invoice.effective_date = date;
+    if let Some((status, installments)) = terms {
+        invoice.extensions.push(
+            InlineObligationTerms::to_extension(&[InlineObligationTerms {
+                ordinal: 1,
+                status,
+                installments: installments
+                    .into_iter()
+                    .map(|(due_date, amount)| ObligationInstallment { due_date, amount })
+                    .collect(),
+            }])
+            .unwrap(),
+        );
+    }
+    h.commit(invoice)
+}
+
+#[test]
+fn due_date_aging_uses_journaled_maturity_terms() {
+    let mut h = harness();
+    h.open_april();
+    let day = |m, d| DateDay::from_ymd(2026, m, d).unwrap();
+    let buckets = AgingBuckets::thirty_day();
+    // 600 due 03-31 and 400 due 04-30 on the invoice's credit leg.
+    let invoice = invoice_with_terms(
+        &mut h,
+        1_000,
+        b"invoice-terms",
+        day(3, 1),
+        Some((
+            ObligationStatus::Contractual,
+            vec![(day(3, 31), 600), (day(4, 30), 400)],
+        )),
+    );
+    let invoice_vid = invoice.entry_ref().vid;
+    let scheduled = |aging: &DueDateAging| -> Vec<(DateDay, i128, u64, usize)> {
+        aging
+            .items
+            .iter()
+            .map(|part| (part.due_date, part.open, part.days_past_due, part.bucket))
+            .collect()
+    };
+    // On its due date an installment is 0 days past due; the day after, 1.
+    let at_due = due_date_aging(&h.db, &h.book, None, day(3, 31), None, &buckets).unwrap();
+    assert_eq!(
+        scheduled(&at_due),
+        [(day(3, 31), 600, 0, 0), (day(4, 30), 400, 0, 0)]
+    );
+    let next_day = due_date_aging(&h.db, &h.book, None, day(4, 1), None, &buckets).unwrap();
+    assert_eq!(
+        scheduled(&next_day),
+        [(day(4, 30), 400, 0, 0), (day(3, 31), 600, 1, 1)]
+    );
+    // The debit leg carries no terms: listed, never aged.
+    assert_eq!(next_day.unscheduled.len(), 1);
+    assert_eq!(next_day.unscheduled[0].item.ordinal, 0);
+    assert_eq!(next_day.unscheduled[0].reason, Unscheduled::NoTerms);
+    assert!(
+        next_day
+            .items
+            .iter()
+            .all(|part| part.item.entry == invoice_vid)
+    );
+
+    // A 700 payment on 04-15 relieves the earliest installment first: the
+    // 300 left of the second is all that remains, aged from 04-30.
+    let mut payment = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.cash, Amount::new(h.usd, 700)),
+            LegPayload::simple(Side::Credit, h.rent, Amount::new(h.usd, 700)),
+        ],
+        b"payment",
+        EntryClass::ORIGINAL,
+    );
+    payment.effective_date = day(4, 15);
+    payment.legs[0].settles = vec![fa_model::Settlement {
+        target: invoice.entry_ref(),
+        ordinal: 1,
+        amount: Amount::new(h.usd, 700),
+    }];
+    h.commit(payment);
+    let paid = due_date_aging(&h.db, &h.book, None, day(5, 1), None, &buckets).unwrap();
+    assert_eq!(scheduled(&paid), [(day(4, 30), 300, 1, 1)]);
+    assert_eq!(paid.items[0].item.open, 300);
+    // Before the payment's effective date the schedule is untouched.
+    let before_payment = due_date_aging(&h.db, &h.book, None, day(4, 1), None, &buckets).unwrap();
+    assert_eq!(scheduled(&before_payment), scheduled(&next_day));
+
+    // A term recorded after the selected known-at does not change the
+    // historical aging: the later invoice and its terms are absent.
+    let known = h.db.frontier().unwrap();
+    invoice_with_terms(
+        &mut h,
+        50,
+        b"later-invoice",
+        day(3, 2),
+        Some((ObligationStatus::Contractual, vec![(day(3, 10), 50)])),
+    );
+    let historical =
+        due_date_aging(&h.db, &h.book, None, day(5, 1), Some(known), &buckets).unwrap();
+    assert_eq!(historical, paid);
+    let current = due_date_aging(&h.db, &h.book, None, day(5, 1), None, &buckets).unwrap();
+    assert_eq!(current.items.len(), 2, "{current:?}");
+
+    // Scheduled and unscheduled amounts together are the whole open fold,
+    // per account and unit, as effective-date aging reports it.
+    let effective = effective_date_aging(&h.db, &h.book, None, day(5, 1), None, &buckets).unwrap();
+    let mut whole: std::collections::BTreeMap<(VId, u32), (i128, i128)> =
+        std::collections::BTreeMap::new();
+    for total in current.totals.iter().chain(&current.unscheduled_totals) {
+        let sums = whole.entry((total.account, total.unit_id)).or_default();
+        sums.0 += total.amounts.debits;
+        sums.1 += total.amounts.credits;
+    }
+    let expected: std::collections::BTreeMap<(VId, u32), (i128, i128)> = effective
+        .totals
+        .iter()
+        .map(|t| {
+            (
+                (t.account, t.unit_id),
+                (t.amounts.debits, t.amounts.credits),
+            )
+        })
+        .collect();
+    assert_eq!(whole, expected);
+}
+
+#[test]
+fn items_without_terms_are_listed_not_defaulted() {
+    let mut h = harness();
+    let day = |m, d| DateDay::from_ymd(2026, m, d).unwrap();
+    let plain = invoice_with_terms(&mut h, 100, b"plain", day(3, 1), None);
+    let unknown = invoice_with_terms(
+        &mut h,
+        200,
+        b"unknown-maturity",
+        day(3, 2),
+        Some((ObligationStatus::MissingMaturity, Vec::new())),
+    );
+    let disputed = invoice_with_terms(
+        &mut h,
+        300,
+        b"disputed",
+        day(3, 3),
+        Some((
+            ObligationStatus::Disputed { reason_code: 7 },
+            vec![(day(3, 10), 300)],
+        )),
+    );
+    let aging = due_date_aging(
+        &h.db,
+        &h.book,
+        None,
+        day(3, 31),
+        None,
+        &AgingBuckets::thirty_day(),
+    )
+    .unwrap();
+    // Nothing is aged: no installment is contractual, and a disputed
+    // schedule is not treated as due.
+    assert!(aging.items.is_empty(), "{aging:?}");
+    assert!(aging.cells.is_empty() && aging.totals.is_empty());
+    let reasons: Vec<(VId, u16, Unscheduled)> = aging
+        .unscheduled
+        .iter()
+        .map(|row| (row.item.entry, row.item.ordinal, row.reason))
+        .collect();
+    for (posted, credit_reason) in [
+        (&plain, Unscheduled::NoTerms),
+        (&unknown, Unscheduled::MissingMaturity),
+        (&disputed, Unscheduled::Disputed { reason_code: 7 }),
+    ] {
+        let vid = posted.entry_ref().vid;
+        assert!(
+            reasons.contains(&(vid, 0, Unscheduled::NoTerms)),
+            "{reasons:?}"
+        );
+        assert!(reasons.contains(&(vid, 1, credit_reason)), "{reasons:?}");
+    }
+    assert_eq!(aging.unscheduled.len(), 6);
+    // Their open amounts are still reported, per account and unit.
+    let credits: i128 = aging
+        .unscheduled_totals
+        .iter()
+        .map(|t| t.amounts.credits)
+        .sum();
+    let debits: i128 = aging
+        .unscheduled_totals
+        .iter()
+        .map(|t| t.amounts.debits)
+        .sum();
+    assert_eq!((debits, credits), (600, 600));
 }
 
 #[test]

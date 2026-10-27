@@ -11940,6 +11940,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["gl", "aging", "--as-of", "2026-03-25", "--account", "1000"]);
     run2(&[
+        "gl",
+        "aging",
+        "--as-of",
+        "2026-03-25",
+        "--account",
+        "1000",
+        "--basis",
+        "due-date",
+    ]);
+    run2(&[
         "aging",
         "--as-of",
         "2026-03-25",
@@ -14154,7 +14164,13 @@ fn materializing_a_fiscal_year_publishes_each_period_in_turn() -> std::io::Resul
         );
         ok(&["post", "--intent", &intent, "--evidence", &ev, "--json"]);
     }
-    let out = ok(&["registers", "materialize", "--fiscal-year", "2026", "--json"]);
+    let out = ok(&[
+        "registers",
+        "materialize",
+        "--fiscal-year",
+        "2026",
+        "--json",
+    ]);
     let events: Vec<Json> = out
         .lines()
         .filter(|line| field(line, "event") == Some("registers_materialized"))
@@ -14188,11 +14204,126 @@ fn materializing_a_fiscal_year_publishes_each_period_in_turn() -> std::io::Resul
     // March and April each publish once, in turn; the empty periods write
     // nothing and name the frontier as they found it.
     assert_eq!(
-        published.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+        published
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect::<Vec<_>>(),
         ["FY2026-P03", "FY2026-P04"],
         "{out}"
     );
     assert!(published[0].1 < published[1].1, "{published:?}");
+    Ok(())
+}
+
+/// `fa gl aging --basis due-date` (fa-0hs4.13) ages each open amount by the
+/// days past the due dates its leg's journaled maturity terms record, and
+/// lists every open item without contractual terms instead of guessing.
+#[test]
+fn due_date_aging_reads_journaled_maturity_through_the_binary() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("due-date-aging")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"invoice-terms","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}],"obligation_maturity":[{"ordinal":1,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"6.00 USD"},{"due_date":"2026-04-30","amount":"4.00 USD"}]}]}"#,
+    );
+    let (code, out, err) = run(&["post", "--intent", &invoice, "--evidence", &ev, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let args = [
+        "gl",
+        "aging",
+        "--as-of",
+        "2026-04-01",
+        "--basis",
+        "due-date",
+        "--json",
+    ];
+    let (code, out, err) = run(&args);
+    assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("due_date_aging"), "{out}");
+    let data = doc(&out);
+    let parts: Vec<(&str, &str, Option<i128>, Option<i128>)> = arr(&data, "items")
+        .iter()
+        .map(|part| {
+            (
+                text(part, "due_date"),
+                text(part, "open"),
+                int(part, "days_past_due"),
+                int(part, "bucket"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            ("2026-04-30", "4.00 USD", Some(0), Some(0)),
+            ("2026-03-31", "6.00 USD", Some(1), Some(1)),
+        ],
+        "{out}"
+    );
+    // The rent debit leg carries no terms: listed with its reason.
+    let unscheduled = arr(&data, "unscheduled");
+    assert_eq!(unscheduled.len(), 1, "{out}");
+    assert_eq!(text(&unscheduled[0], "reason"), "no_terms");
+    assert_eq!(text(&unscheduled[0], "account"), "6000");
+    assert_eq!(text(&unscheduled[0], "open"), "10.00 USD");
+    assert_eq!(arr(&data, "unscheduled_totals").len(), 1, "{out}");
+
+    // Not certified yet, and the basis belongs to gl aging alone.
+    for (args, says) in [
+        (
+            vec![
+                "gl",
+                "aging",
+                "--as-of",
+                "2026-04-01",
+                "--basis",
+                "due-date",
+                "--certify",
+                "--json",
+            ],
+            "cannot yet be certified",
+        ),
+        (
+            vec![
+                "gl",
+                "aging",
+                "--as-of",
+                "2026-04-01",
+                "--basis",
+                "weekly",
+                "--json",
+            ],
+            "unknown aging basis",
+        ),
+        (
+            vec![
+                "gl",
+                "detail",
+                "--account",
+                "1000",
+                "--from",
+                "2026-03-01",
+                "--to",
+                "2026-03-31",
+                "--basis",
+                "due-date",
+                "--json",
+            ],
+            "--basis selects gl aging",
+        ),
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+        assert!(
+            err.contains(says) || out.contains(says),
+            "{args:?}\n{out}\n{err}"
+        );
+    }
+    // The effective-date basis is unchanged and stays the default.
+    let (code, out, _) = run(&["gl", "aging", "--as-of", "2026-04-01", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("aging"), "{out}");
     Ok(())
 }
 

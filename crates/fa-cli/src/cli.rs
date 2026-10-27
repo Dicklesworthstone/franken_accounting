@@ -17406,6 +17406,187 @@ fn aging_source_flags(
 /// permit or an external subledger attestation. With `saved`, the aging and
 /// control sources are retained certificates reused byte-for-byte.
 #[allow(clippy::too_many_arguments)]
+/// `fa gl aging --basis due-date`: open amounts aged by days past each due
+/// date the journal records (fa-0hs4.13). An uncertified read.
+fn due_date_aging_report(
+    out: &Out,
+    book: &Book,
+    account: Option<VId>,
+    through: DateDay,
+    known_at: Option<CommitSeq>,
+    buckets: &AgingBuckets,
+) -> Result<(), Fail> {
+    let aging = book.due_date_aging(account, through, known_at, buckets)?;
+    out.known_at(aging.known_at);
+    let units = &book.context().units;
+    let accounts_by_vid: std::collections::BTreeMap<VId, String> = book
+        .accounts()?
+        .into_iter()
+        .filter(|r| r.created_at <= aging.known_at)
+        .map(|r| (r.vid, r.code))
+        .collect();
+    if let Some(acc) = account
+        && !accounts_by_vid.contains_key(&acc)
+    {
+        return Err(
+            BookError::Registers(fa_registers::RegisterError::InvalidSelection(format!(
+                "unknown account {:032x} at sequence {}",
+                acc.0, aging.known_at.0
+            )))
+            .into(),
+        );
+    }
+    let code_of = |vid: VId| -> Result<&str, Fail> {
+        accounts_by_vid
+            .get(&vid)
+            .map(String::as_str)
+            .ok_or_else(|| Fail::Internal(format!("aging omits account {:032x}", vid.0)))
+    };
+    // The fields an open item shows in either list, with its whole open amount.
+    let item_fields = |i: &fa_registers::OpenItem, open_key: &'static str| {
+        let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(i.unit_id), m), units);
+        Ok::<_, Fail>(vec![
+            ("entry", s(format!("{:032x}", i.entry.0))),
+            ("ordinal", Json::Int(i128::from(i.ordinal))),
+            ("account", s(code_of(i.account)?)),
+            (
+                "side",
+                s(if i.side == Side::Debit {
+                    "debit"
+                } else {
+                    "credit"
+                }),
+            ),
+            ("effective_date", s(i.effective_date.render())),
+            ("recorded_at", Json::Int(i128::from(i.recorded_at.0))),
+            ("original", s(fmt(i.original)?)),
+            ("applied", s(fmt(i.applied)?)),
+            ("applied_out", s(fmt(i.applied_out)?)),
+            (open_key, s(fmt(i.open)?)),
+        ])
+    };
+    let totals_json = |totals: &[fa::AgingTotal]| {
+        totals
+            .iter()
+            .map(|t| {
+                let fmt =
+                    |m: i128| render_amount(Amount::new(fa_money::UnitId(t.unit_id), m), units);
+                Ok(obj(vec![
+                    ("account", s(code_of(t.account)?)),
+                    (
+                        "unit",
+                        s(registered_unit_code(fa_money::UnitId(t.unit_id), units)?),
+                    ),
+                    ("debits", s(fmt(t.amounts.debits)?)),
+                    ("credits", s(fmt(t.amounts.credits)?)),
+                    ("item_count", Json::Int(i128::from(t.amounts.item_count))),
+                ]))
+            })
+            .collect::<Result<Vec<Json>, Fail>>()
+    };
+    let bands: Vec<Json> = aging
+        .bands
+        .iter()
+        .map(|b| {
+            obj(vec![
+                ("lower_inclusive", Json::Int(i128::from(b.lower_inclusive))),
+                (
+                    "upper_inclusive",
+                    b.upper_inclusive
+                        .map_or(Json::Null, |u| Json::Int(i128::from(u))),
+                ),
+            ])
+        })
+        .collect();
+    let items: Vec<Json> = aging
+        .items
+        .iter()
+        .map(|part| {
+            let mut fields = item_fields(&part.item, "item_open")?;
+            fields.extend([
+                ("due_date", s(part.due_date.render())),
+                (
+                    "open",
+                    s(render_amount(
+                        Amount::new(fa_money::UnitId(part.item.unit_id), part.open),
+                        units,
+                    )?),
+                ),
+                ("days_past_due", Json::Int(i128::from(part.days_past_due))),
+                ("bucket", Json::Int(part.bucket as i128)),
+            ]);
+            Ok(obj(fields))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let unscheduled: Vec<Json> = aging
+        .unscheduled
+        .iter()
+        .map(|row| {
+            let mut fields = item_fields(&row.item, "open")?;
+            let (reason, code) = match row.reason {
+                fa::Unscheduled::NoTerms => ("no_terms", Json::Null),
+                fa::Unscheduled::MissingMaturity => ("missing_maturity", Json::Null),
+                fa::Unscheduled::Disputed { reason_code } => {
+                    ("disputed", Json::Int(i128::from(reason_code)))
+                }
+            };
+            fields.extend([("reason", s(reason)), ("reason_code", code)]);
+            Ok(obj(fields))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let cells: Vec<Json> = aging
+        .cells
+        .iter()
+        .map(|c| {
+            let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(c.unit_id), m), units);
+            Ok(obj(vec![
+                ("account", s(code_of(c.account)?)),
+                (
+                    "unit",
+                    s(registered_unit_code(fa_money::UnitId(c.unit_id), units)?),
+                ),
+                ("bucket", Json::Int(c.bucket as i128)),
+                ("debits", s(fmt(c.amounts.debits)?)),
+                ("credits", s(fmt(c.amounts.credits)?)),
+                ("item_count", Json::Int(i128::from(c.amounts.item_count))),
+            ]))
+        })
+        .collect::<Result<_, Fail>>()?;
+    let human = format!(
+        "due-date aging through {}: {} scheduled part(s) across {} cell(s); {} open item(s) without contractual terms",
+        aging.effective_through.render(),
+        aging.items.len(),
+        aging.cells.len(),
+        aging.unscheduled.len()
+    );
+    out.event(
+        "due_date_aging",
+        vec![
+            (
+                "account",
+                aging
+                    .account
+                    .map(code_of)
+                    .transpose()?
+                    .map_or(Json::Null, s),
+            ),
+            ("known_at", Json::Int(i128::from(aging.known_at.0))),
+            ("effective_through", s(aging.effective_through.render())),
+            ("bands", Json::Arr(bands)),
+            ("items", Json::Arr(items)),
+            ("cells", Json::Arr(cells)),
+            ("totals", Json::Arr(totals_json(&aging.totals)?)),
+            ("unscheduled", Json::Arr(unscheduled)),
+            (
+                "unscheduled_totals",
+                Json::Arr(totals_json(&aging.unscheduled_totals)?),
+            ),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
 fn gl_aging_portfolio(
     out: &Out,
     files: &Files,
@@ -17820,6 +18001,12 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "use gl detail|roll-forward|aging|cash-flow --certify",
         ));
     }
+    if sub != Some("aging") && args.flag("--basis").is_some() {
+        return Err(usage(
+            "--basis selects gl aging's age measure, not this subcommand's",
+            "fa gl aging --basis due-date --as-of YYYY-MM-DD --book <dir>",
+        ));
+    }
     let who = ctx.principal(args);
     let capability = ctx.capability(
         args,
@@ -18101,6 +18288,24 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .collect();
             let reconcile = args.switch("--reconcile");
             let (from_source, saved_pair) = aging_source_flags(args, certify, reconcile)?;
+            let due_date = match args.flag("--basis") {
+                None | Some("effective-date") => false,
+                Some("due-date") => true,
+                Some(other) => {
+                    return Err(usage(
+                        format!("unknown aging basis `{other}`"),
+                        "--basis effective-date (the default) or --basis due-date",
+                    ));
+                }
+            };
+            // Due-date aging is a read for now: its certificate, replay and
+            // control reconciliation are not built (fa-0hs4.13).
+            if due_date && (certify || reconcile || from_source.is_some()) {
+                return Err(usage(
+                    "due-date aging cannot yet be certified, reconciled or aged from a saved source",
+                    "fa gl aging --basis due-date --as-of YYYY-MM-DD without --certify, --certificate-out, --reconcile or --from-source; certify the effective-date aging instead",
+                ));
+            }
             if !reconcile && account_codes.len() > 1 {
                 return Err(usage(
                     "gl aging ages one --account, or every account when --account is omitted",
@@ -18151,6 +18356,9 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             };
             book.prepare_report_history(who, &capability, known_at)??;
+            if due_date {
+                return due_date_aging_report(out, &book, account, day, known_at, &buckets);
+            }
             // Saved certificates are read after admission, and their own
             // prefix is prepared before the library replays them.
             let saved = match saved_pair {
