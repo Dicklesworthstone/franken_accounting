@@ -30,11 +30,12 @@
 //!   placeholder text;
 //! - [`server`] wires the tools, the 4 workflow macros (`fa.macro.prepare_close`,
 //!   `fa.macro.inspect_cash_matching`, `fa.macro.investigate_account`,
-//!   `fa.macro.certify_period_reports`), and the 11 resources (`resource://fa/book`,
+//!   `fa.macro.certify_period_reports`), and the 12 resources (`resource://fa/book`,
 //!   `resource://fa/chart/{book}`, `resource://fa/periods/{book}`,
 //!   `resource://fa/laws`, `resource://fa/exit-codes`, `resource://fa/intents`,
 //!   `resource://fa/open-items/{book}/{party}`, `resource://fa/findings/{book}`,
-//!   `resource://fa/drafts/{book}`, `resource://fa/certificates/{id}`,
+//!   `resource://fa/drafts/{book}`, `resource://fa/cases/{book}`,
+//!   `resource://fa/certificates/{id}`,
 //!   `resource://fa/capabilities/{token}`)
 //!   into a fastmcp server; the `fa-mcp` binary serves it over stdio directly
 //!   or hosted by `fad serve --book <dir> --mcp stdio --token <file>`.
