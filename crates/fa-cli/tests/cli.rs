@@ -24694,17 +24694,17 @@ fn atomic_batches_enter_drafts_together_and_promote_with_retained_order() -> std
         1,
         "one source control binds both members"
     );
+    let before_denial = open().head().unwrap();
+    let draft_before_denial = open().draft("invoices").unwrap().unwrap();
+    // An Agent cannot supply host confirmation. Leave that forbidden override
+    // out so this valid request reaches the actual promotion authority guard.
+    let (code, refusal) = run(&["--token", "agent.token", "draft", "promote", "invoices"]);
+    assert_eq!(code, 7, "{refusal}");
+    assert!(refusal.contains(fa_journal::refusal::code::CAPABILITY));
+    assert_eq!(open().head().unwrap(), before_denial);
     assert_eq!(
-        run(&[
-            "--token",
-            "agent.token",
-            "draft",
-            "promote",
-            "invoices",
-            "--yes"
-        ])
-        .0,
-        7
+        open().draft("invoices").unwrap().unwrap(),
+        draft_before_denial
     );
     let (code, promoted) = run(&[
         "draft",

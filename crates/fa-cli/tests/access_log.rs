@@ -388,7 +388,10 @@ fn bound_agent_and_preparer_reads_audit_documents_findings_and_streams_once() {
                         4
                     );
                     let header = json::parse(content.lines().next().unwrap()).unwrap();
-                    assert_eq!(number(&header, "known_at"), number(access, "recorded_at"));
+                    assert_eq!(
+                        number(&header, "known_at_seq"),
+                        number(access, "recorded_at")
+                    );
                 }
                 "query" => {
                     let rows = data(&result).get("events").and_then(Json::as_arr).unwrap();
@@ -518,7 +521,7 @@ fn a_historical_export_keeps_its_prefix_after_recording_current_access() {
         2
     );
     let header = json::parse(content.lines().next().unwrap()).unwrap();
-    assert_eq!(number(&header, "known_at"), selected);
+    assert_eq!(number(&header, "known_at_seq"), selected);
     let log = f.log(&["--since", &before.to_string()]);
     assert_eq!(number(&log, "count"), 1);
     let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];

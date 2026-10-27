@@ -839,3 +839,29 @@ The complete baseline run and combined successor qualification remain
 pending. Foreign settlement-group fixtures still require lawful source
 valuation and carrying-value inputs; their currencies and positive scope
 remain intact. Full Tier 1 and original Beads acceptance remain open.
+
+The frozen `e58191e8` workspace run subsequently completed with exit 101:
+4,444 passed, 43 failed and 3 ignored in 20 failing targets. All 4,490
+inventory names have an outcome after normalizing only Rust's `should panic`,
+`compile` and `compile fail` display suffixes. This is the older baseline's
+result, not the newer main's failure count. The three ignored cases remain
+unexecuted; no filtered subset replaces the original full scope.
+
+At `05c193bb` plus the five declared repair overlays, migration-proof and
+served-read targets passed all six tests. The broader CLI candidate passed
+76 library, 4 disclosure and 9 scope tests; access-log passed 5 and failed 2,
+and CLI passed 137 and failed 1. Both remaining access checks requested
+`known_at` from the NDJSON header, whose actual field is `known_at_seq`.
+This agent copied that wrong field into the new historical regression.
+The candidate now checks the documented header field against the same exact
+receipt or historical sequence; the response-coordinate assertions remain.
+No export format or expected sequence changes to accommodate the fixture.
+
+The CLI failure was a newly added draft-batch negative that supplied `--yes`
+with an Agent token. Launch-bound Agents cannot supply host confirmation,
+so usage exit 2 preceded the intended promotion safety check. The candidate
+omits that invalid override, retains expected exit 7 and additionally
+requires the capability refusal, unchanged head and unchanged complete draft.
+The original lawful Human promotion, exact member order, retry, rejection of
+overapplication and historical replay assertions remain. These last fixture
+corrections still require native execution.
