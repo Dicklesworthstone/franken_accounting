@@ -1220,11 +1220,8 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
         result.drift.clear();
         result.pending_drift.clear();
         result.cells_checked = 0;
-        result.lag_entries = db
-            .vertices_at(head)?
-            .into_iter()
-            .filter(|row| row.labels.contains(&label::ENTRY))
-            .count();
+        reads.load_entry_rows(head, head)?;
+        result.lag_entries = reads.entry_rows(head)?.len();
     }
     if basis < head {
         reads.load_entry_rows(basis, head)?;
