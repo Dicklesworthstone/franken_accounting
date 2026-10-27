@@ -17399,13 +17399,6 @@ fn aging_source_flags(
     Ok((from_source, saved_pair))
 }
 
-/// `gl aging --reconcile` over every posting leaf or a selected list: one
-/// chart, one whole-book aging fold and one control trial balance at a single
-/// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
-/// never printed as zero. This is an internal consistency report, not a close
-/// permit or an external subledger attestation. With `saved`, the aging and
-/// control sources are retained certificates reused byte-for-byte.
-#[allow(clippy::too_many_arguments)]
 /// `fa gl aging --basis due-date`: open amounts aged by days past each due
 /// date the journal records (fa-0hs4.13). An uncertified read.
 fn due_date_aging_report(
@@ -17587,6 +17580,13 @@ fn due_date_aging_report(
     Ok(())
 }
 
+/// `gl aging --reconcile` over every posting leaf or a selected list: one
+/// chart, one whole-book aging fold and one control trial balance at a single
+/// coordinate (plan §5.6–§5.7). Unselected leaves are listed as uncovered,
+/// never printed as zero. This is an internal consistency report, not a close
+/// permit or an external subledger attestation. With `saved`, the aging and
+/// control sources are retained certificates reused byte-for-byte.
+#[allow(clippy::too_many_arguments)]
 fn gl_aging_portfolio(
     out: &Out,
     files: &Files,

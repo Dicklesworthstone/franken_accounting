@@ -418,8 +418,13 @@ pub fn age_by_due_date(
             .ok_or(RegisterError::Overflow)?;
         for installment in installments {
             let relieved = relief.min(installment.amount);
-            relief -= relieved;
-            let open = installment.amount - relieved;
+            relief = relief
+                .checked_sub(relieved)
+                .ok_or(RegisterError::Overflow)?;
+            let open = installment
+                .amount
+                .checked_sub(relieved)
+                .ok_or(RegisterError::Overflow)?;
             if open == 0 {
                 continue;
             }
