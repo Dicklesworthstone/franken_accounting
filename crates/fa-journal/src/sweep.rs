@@ -3396,4 +3396,53 @@ mod tests {
                 .is_green()
         );
     }
+
+    /// fa-0hs4.11: a page whose bytes no longer match its sealed digest is
+    /// never trusted. The next advance (the daemon's per-cycle call) falls
+    /// back to the exact rebuild instead of carrying the corrupt page
+    /// forward, so the index refolds green and holds every live hold.
+    #[test]
+    fn a_corrupt_index_page_falls_back_to_the_exact_rebuild_on_advance() {
+        let t0 = 1_773_532_800_000_000_000_u64;
+        let mut env = SweepTestEnv::new();
+        env.record_tick_at(t0, b"tick-0");
+        env.post_timed_hold(60_000_000_000, b"hold-1");
+        let ctx = env.ctx();
+        env.runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .expect("advance_sweep_index");
+        assert!(verify_sweep_index(&env.db, &env.book).unwrap().is_green());
+
+        // Flip one payload bit of the hold page without resealing it.
+        let page = sweep_index_page_vid(SWEEP_EXPIRY, 0);
+        let row = env.db.vertex(page).expect("read").expect("page 0");
+        let mut payload = bytes(&row, property::FA_PAYLOAD, "page0").expect("payload");
+        let last = payload.len() - 1;
+        payload[last] ^= 0x01;
+        let mut tamper = WriteBatch::new(relation::IN_BOOK);
+        tamper.set_vertex_property(
+            page,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("tampered page", payload).expect("scalar")),
+        );
+        env.runtime
+            .block_on(env.db.write(&ctx.commit(), tamper))
+            .expect("write tampered page");
+        let corrupt = verify_sweep_index(&env.db, &env.book).expect("verify corrupt");
+        assert!(
+            corrupt
+                .drift
+                .iter()
+                .any(|d| d.contains("hold page 0 is missing, corrupted")),
+            "{corrupt:?}"
+        );
+
+        env.post_timed_hold(90_000_000_000, b"hold-2");
+        env.runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .expect("a corrupt page is rebuilt, never an advance failure");
+        let verified = verify_sweep_index(&env.db, &env.book).expect("verify rebuilt");
+        assert!(verified.is_green(), "{verified:?}");
+        assert_eq!(verified.holds_checked, 2);
+    }
 }

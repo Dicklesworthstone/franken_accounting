@@ -247,6 +247,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
     }
 }
 
+/// Record a paged sweep index advance for status; whether it reached head.
+fn noted(
+    advanced: Result<fa_journal::SweepIndexState, BookError>,
+    current: &mut Option<bool>,
+    error: &mut Option<String>,
+) -> bool {
+    *current = Some(advanced.is_ok());
+    *error = advanced.err().map(|e| e.to_string());
+    error.is_none()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Cycle {
     pub corroborated: bool,
@@ -271,6 +282,11 @@ pub struct TimedWork {
     last_tick_utc_ns: Option<u64>,
     last_tick_monotonic_ok: Option<bool>,
     error: Option<String>,
+    // The last attempt to advance the paged sweep index, and why it failed.
+    // A failure never stops the cycle (discovery falls back to the exact
+    // scan), so it is reported here instead of being dropped.
+    sweep_index_current: Option<bool>,
+    sweep_index_error: Option<String>,
     registers: Option<registers::RegisterWork>,
     register_wake: bool,
 }
@@ -306,6 +322,8 @@ impl TimedWork {
             last_tick_utc_ns: None,
             last_tick_monotonic_ok: None,
             error: None,
+            sweep_index_current: None,
+            sweep_index_error: None,
             registers: None,
             register_wake: false,
         })
@@ -337,6 +355,8 @@ impl TimedWork {
             last_tick_utc_ns: None,
             last_tick_monotonic_ok: None,
             error: None,
+            sweep_index_current: None,
+            sweep_index_error: None,
             registers: Some(registers::RegisterWork::new(periods)?),
             register_wake: false,
         })
@@ -570,7 +590,11 @@ impl TimedWork {
         // the committed delta instead of a whole-book scan (fa-gpd4,
         // fa-0hs4.11). It is derived state: when it cannot advance, discovery
         // falls back to the exact scan and the cycle still runs.
-        cycle.sweep_index_current = book.advance_sweep_index(cx).await.is_ok();
+        cycle.sweep_index_current = noted(
+            book.advance_sweep_index(cx).await,
+            &mut self.sweep_index_current,
+            &mut self.sweep_index_error,
+        );
         if let Some(batch) = admitted(
             book.sweep_expiry(cx, capability, self.policy.sweep_batch)
                 .await,
@@ -596,7 +620,11 @@ impl TimedWork {
         // Carry the index over this cycle's own effects, so the next cycle
         // reads only what commits in between.
         if cycle.expired + cycle.reversed + cycle.recurring > 0 {
-            cycle.sweep_index_current = book.advance_sweep_index(cx).await.is_ok();
+            cycle.sweep_index_current = noted(
+                book.advance_sweep_index(cx).await,
+                &mut self.sweep_index_current,
+                &mut self.sweep_index_error,
+            );
         }
         Ok(cycle)
     }
@@ -685,6 +713,16 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
             work.and_then(|w| w.error.as_deref()).map_or(Json::Null, s),
         ),
         (
+            "sweep_index_current",
+            work.and_then(|w| w.sweep_index_current)
+                .map_or(Json::Null, Json::Bool),
+        ),
+        (
+            "sweep_index_error",
+            work.and_then(|w| w.sweep_index_error.as_deref())
+                .map_or(Json::Null, s),
+        ),
+        (
             "register_maintenance",
             work.and_then(|w| w.registers.as_ref())
                 .map_or(Json::Null, registers::RegisterWork::status),
@@ -713,6 +751,11 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
     };
     if let Some(error) = &work.error {
         text.push_str(&format!("; last cycle refused: {error}"));
+    }
+    if let Some(error) = &work.sweep_index_error {
+        text.push_str(&format!(
+            "; paged sweep index did not advance ({error}); discovery fell back to the full scan"
+        ));
     }
     if let Some(registers) = &work.registers {
         text.push_str(&format!("; {}", registers.status_text()));
