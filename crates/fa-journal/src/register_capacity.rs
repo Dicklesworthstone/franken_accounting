@@ -234,9 +234,20 @@ pub struct CapacityHistory {
     /// witness), an entry that does not decode or whose leg is invalid, a
     /// column past the maximum, or a change to a committed entry.
     cells: Option<Cells>,
+    /// The delta rows examined to carry this summary forward, or `None` when
+    /// it was summarized from the whole book.
+    carried_rows: Option<u64>,
 }
 
 impl CapacityHistory {
+    /// The delta rows examined to carry this summary forward from the
+    /// previous one, or `None` when the book was summarized in full (fa-rcw1's
+    /// work witness: a carried post reads the new commits, not the book).
+    #[must_use]
+    pub fn carried_rows(&self) -> Option<u64> {
+        self.carried_rows
+    }
+
     /// The committed prefix this summary describes.
     #[must_use]
     pub fn verified_at(&self) -> CommitSeq {
@@ -379,6 +390,7 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
         at,
         marker,
         cells: None,
+        carried_rows: None,
     };
     let Some(spec) = crate::genesis::read_book_spec_at(db, at)? else {
         return Ok(unusable);
@@ -409,6 +421,7 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
         at,
         marker,
         cells: Some(cells),
+        carried_rows: None,
     })
 }
 
@@ -435,11 +448,13 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
             at,
             marker,
             cells: None,
+            carried_rows: Some(0),
         }));
     };
     let mut born = Vec::new();
     let mut usable = true;
     let mut through = history.at.0;
+    let mut examined = 0u64;
     for batch in db.delta_since(history.at)? {
         let seq = batch.commit_seq();
         if seq > at {
@@ -451,6 +466,7 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
         for coordinate in batch.coordinate_entries() {
             for delta in &coordinate.rows {
                 ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+                examined = examined.saturating_add(1);
                 match delta {
                     DeltaRow::CreateVertex { vid, labels, .. } => {
                         if labels.contains(&label::ENTRY) {
@@ -513,6 +529,7 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
         at,
         marker,
         cells: usable.then_some(cells),
+        carried_rows: Some(examined),
     }))
 }
 

@@ -1052,6 +1052,9 @@ pub struct ReconciliationHistory {
     /// history is only carried forward on the database it was verified on.
     marker: Option<MarkerRef>,
     recorded: Vec<BankReconciliationRecorded>,
+    /// The delta rows examined to carry this history forward, or `None` when
+    /// it was verified in full: the work witness of a carried post.
+    carried_rows: Option<u64>,
 }
 
 impl ReconciliationHistory {
@@ -1059,6 +1062,14 @@ impl ReconciliationHistory {
     #[must_use]
     pub fn verified_at(&self) -> CommitSeq {
         self.at
+    }
+
+    /// The delta rows examined to carry this history forward from the
+    /// previous one, or `None` when it was verified in full (fa-rcw1's work
+    /// witness: a carried post reads the new commits, not the book).
+    #[must_use]
+    pub fn carried_rows(&self) -> Option<u64> {
+        self.carried_rows
     }
 }
 
@@ -1101,6 +1112,7 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
         })
         .collect();
     let mut through = history.at.0;
+    let mut examined = 0u64;
     for batch in db.delta_since(history.at)? {
         let seq = batch.commit_seq();
         if seq > at {
@@ -1112,6 +1124,7 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
         for coordinate in batch.coordinate_entries() {
             for delta in &coordinate.rows {
                 checkpoint(cx)?;
+                examined = examined.saturating_add(1);
                 let unchanged = match delta {
                     DeltaRow::CreateVertex { labels, .. } => !labels.contains(&label::ATTESTATION),
                     DeltaRow::CreateEdge { .. } => true,
@@ -1152,6 +1165,7 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
         at,
         marker: marker_at(db, at)?,
         recorded: history.recorded.clone(),
+        carried_rows: Some(examined),
     }))
 }
 
@@ -1191,6 +1205,7 @@ pub fn witness_reconciliation_locks<V: Vfs + Clone>(
                 at,
                 marker: marker_at(db, at)?,
                 recorded,
+                carried_rows: None,
             },
             Err(refusal) => return Ok(Err(refusal)),
         },
