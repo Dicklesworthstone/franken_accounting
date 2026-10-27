@@ -76,12 +76,23 @@ pub struct Proposal {
 }
 
 pub fn proposal(citations: &[EvidenceCitation]) -> Proposal {
+    proposal_of(citations, 1, &[(0, 10), (1, 20)])
+}
+
+/// A control record of `class` (>= 16): no monetary legs and no totals, as
+/// the verifier requires before it allocates a leg.
+pub fn control_proposal(citations: &[EvidenceCitation], class: u16) -> Proposal {
+    assert!(class >= 16, "control classes are 16 and above");
+    proposal_of(citations, class, &[])
+}
+
+fn proposal_of(citations: &[EvidenceCitation], class: u16, legs: &[(u8, u128)]) -> Proposal {
     let mut p = Wire::default();
     p.u16(1)
         .u16(1)
         .fixed(&BOOK)
         .fixed(&[0; 16])
-        .u16(1)
+        .u16(class)
         .fixed(&20_527i32.to_le_bytes())
         .u8(0)
         .fixed(&[0; 32])
@@ -89,8 +100,8 @@ pub fn proposal(citations: &[EvidenceCitation]) -> Proposal {
         .fixed(&[0; 24])
         .bytes(SECRET)
         .u8(0)
-        .u32(2);
-    for (side, account) in [(0, 10), (1, 20)] {
+        .u32(u32::try_from(legs.len()).unwrap());
+    for &(side, account) in legs {
         p.u8(side)
             .u128(account)
             .u32(1)
@@ -100,12 +111,13 @@ pub fn proposal(citations: &[EvidenceCitation]) -> Proposal {
             .u8(0)
             .u32(0);
     }
+    p.u8(0);
+    if legs.is_empty() {
+        p.u32(0);
+    } else {
+        p.u32(1).u32(1).i128(123).i128(123);
+    }
     p.u8(0)
-        .u32(1)
-        .u32(1)
-        .i128(123)
-        .i128(123)
-        .u8(0)
         .bytes(b"evidence-inventory")
         .u8(0)
         .fixed(&[9; 32])

@@ -21,7 +21,20 @@ pub struct Entry {
 }
 
 pub fn entry(citations: &[EvidenceCitation], sequence: u64, day: i32) -> Entry {
-    let mut proposal = fixture::proposal(citations).bytes;
+    entry_of(fixture::proposal(citations).bytes, sequence, day)
+}
+
+/// A wire-only control record of `class`: zero legs, as the verifier
+/// requires of every control (fa-verify refuses a control that carries legs).
+pub fn control(citations: &[EvidenceCitation], sequence: u64, day: i32, class: u16) -> Entry {
+    entry_of(
+        fixture::control_proposal(citations, class).bytes,
+        sequence,
+        day,
+    )
+}
+
+fn entry_of(mut proposal: Vec<u8>, sequence: u64, day: i32) -> Entry {
     // Fixed v1 prefix: schema 4, book 16, branch 16, class 2, civil day 4.
     proposal[38..42].copy_from_slice(&day.to_le_bytes());
     Entry {

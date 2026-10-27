@@ -14,7 +14,7 @@ use fa_verify::evidence::inventory::production::{
 use fa_verify::proof::production::{
     MAX_PRODUCTION_BYTES, MAX_PRODUCTION_RECORDS, ProductionError, verify_production_for,
 };
-use production_fixture::{entry, journal};
+use production_fixture::{control, entry, journal};
 
 #[test]
 fn complete_map_keeps_empty_entries_repeated_documents_and_all_role_associations() {
@@ -284,8 +284,7 @@ fn aggregate_citation_boundary_retains_associations_and_refuses_one_more_row() {
 #[test]
 fn envelope_only_scope_selection_does_not_invent_control_dates_or_posted_semantics() {
     // Deliberately a wire-only fixture, not a kernel-admissible control entry.
-    let mut control = entry(&fixture::citations(), 7, 10);
-    control.proposal[36..38].copy_from_slice(&19u16.to_le_bytes());
+    let control = control(&fixture::citations(), 7, 10, 19);
     let j = journal(&[control]);
     assert!(
         verify_evidence_production_for(&j.prefix, &j.records(), &j.checkpoint, &j.scope()).is_ok()

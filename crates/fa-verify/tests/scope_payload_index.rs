@@ -16,7 +16,7 @@ use fa_verify::scope::payloads::{
 use fa_verify::scope::{SCOPE_FORMAT, SCOPE_LEAF_DOMAIN, SCOPE_NODE_DOMAIN, SCOPE_ROOT_DOMAIN};
 use fa_verify::tree::{leaf_hash, root_of, root_of_with};
 use fa_verify::{Checkpoint, IndexDerivation, ScopeClaim, SignedCheckpoint};
-use production::{entry, journal};
+use production::{control, entry, journal};
 
 fn u32_at(bytes: &[u8], at: &mut usize) -> usize {
     let value = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap()) as usize;
@@ -107,8 +107,7 @@ fn encoded_prefix(
 
 #[test]
 fn complete_payloads_derive_both_accounts_with_late_effective_and_undated_records() {
-    let mut control = entry(&[], 11, 999);
-    control.proposal[36..38].copy_from_slice(&17u16.to_le_bytes());
+    let control = control(&[], 11, 999, 17);
     let j = journal(&[entry(&[], 7, 100), control, entry(&[], 30, -10)]);
     let (envelopes, _) = split(&j.prefix);
     let signed = signed(j.checkpoint, &envelopes);

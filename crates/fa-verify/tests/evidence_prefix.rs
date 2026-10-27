@@ -16,7 +16,7 @@ use fa_verify::proof::production::{
     MAX_PRODUCTION_BYTES, MAX_PRODUCTION_RECORDS, ProductionError, ProductionScope,
 };
 use fa_verify::proof::{PREFIX_FORMAT, VerifyError};
-use production_fixture::{entry, journal};
+use production_fixture::{control, entry, journal};
 
 #[test]
 fn direct_and_separate_proof_inventories_are_identical_for_recipient_scopes() {
@@ -72,8 +72,7 @@ fn empty_scopes_and_undated_controls_still_authenticate_the_entire_prefix() {
             .entries
             .is_empty()
     );
-    let mut control = entry(&fixture::citations(), 7, 10);
-    control.proposal[36..38].copy_from_slice(&19u16.to_le_bytes());
+    let control = control(&fixture::citations(), 7, 10, 19);
     let j = journal(&[control]);
     assert_eq!(
         verify_evidence_prefix_for(&j.prefix, &j.checkpoint, &j.scope())
