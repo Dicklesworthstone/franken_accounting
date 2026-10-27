@@ -3953,6 +3953,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             || !matches!(
                 &certificate.selection,
                 crate::ReportSelection::TrialBalance(_)
+                    | crate::ReportSelection::FunctionalTrialBalance(_)
                     | crate::ReportSelection::DimensionTrialBalance { .. }
                     | crate::ReportSelection::Statement(_)
                     | crate::ReportSelection::OpenItems { .. }
@@ -3962,9 +3963,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's native trial-balance, dimension-filtered trial-balance, statement, open-item or balance-explanation certificate",
+                "offline report production requires this book's native or functional trial-balance, dimension-filtered trial-balance, statement, open-item or balance-explanation certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb (optionally --dimension kind=value), fa statement, fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
+                "certify fa tb (optionally --functional or --dimension kind=value), fa statement, fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
+            )));
+        }
+        if matches!(
+            &certificate.selection,
+            crate::ReportSelection::FunctionalTrialBalance(_)
+        ) && (certificate.branch_id != fa_model::Id128::TRUNK
+            || certificate.time_selection.is_some())
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "portable functional trial balances require a sequence-selected trunk certificate",
+                "plan §5.3 / §13.3 (the independent valuation profile has explicit source coordinates)",
+                "certify fa tb --functional at a fixed recorded sequence before exporting",
             )));
         }
         if let Err(refusal) = self
@@ -4092,6 +4107,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &certificate.selection,
             crate::ReportSelection::OpenItems { .. }
                 | crate::ReportSelection::ExplainBalance { .. }
+                | crate::ReportSelection::FunctionalTrialBalance(_)
         );
         let registries = if requires_registry_closure
             || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
@@ -4183,6 +4199,94 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify the report at its resolved recorded sequence before producing an offline report bundle",
             )));
         }
+        let functional_source = if matches!(
+            &certificate.selection,
+            crate::ReportSelection::FunctionalTrialBalance(_)
+        ) {
+            let rate_oids =
+                match fa_notary::report::functional_rate_oids(&journal, certificate.known_at)? {
+                    Ok(oids) => oids,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+            // Stock digests bind these exact historical bytes. Re-encoding a
+            // legacy BookSpec could silently change the version and digest.
+            let book_spec = self.query(cx, |db, _| {
+                let row = db
+                    .vertex_at(fa_journal::rows::book_root(), certificate.known_at)
+                    .map_err(KernelError::from)?
+                    .filter(|row| row.labels.contains(&fa_model::symbols::label::BOOK))
+                    .ok_or_else(|| {
+                        KernelError::Corrupt("functional report has no historical Book root".into())
+                    })?;
+                Ok(fa_journal::rows::bytes(
+                    &row,
+                    fa_model::symbols::property::FA_PAYLOAD,
+                    "functional report BookSpec",
+                )?)
+            })?;
+            if !book_spec.starts_with(&2u16.to_le_bytes())
+                || book_spec.len() > fa_notary::report::MAX_FUNCTIONAL_BOOK_BYTES
+            {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable functional trial balances require the canonical version-2 book basis",
+                    "plan §13.3 (preserve the original historical source bytes)",
+                    "replay legacy book certificates locally; do not rewrite their genesis metadata",
+                )));
+            }
+            let query = cx.query();
+            let mut rates = Vec::with_capacity(rate_oids.len());
+            for oid in rate_oids {
+                query.checkpoint().map_err(BookError::Context)?;
+                // Use the producer's admitted reach, including its known-at
+                // caveat. Redaction and current revocation are decided before
+                // loading bytes; a redacted quote cannot prove exact arithmetic.
+                let read = query
+                    .with_restriction_async(fa_journal::read_document_for_with(
+                        &mut self.db,
+                        cx,
+                        &self.context,
+                        capability,
+                        &reach,
+                        &self.blobs,
+                        oid,
+                        |record| {
+                            if record.kind != 11
+                                || record.size > fa_notary::report::MAX_FUNCTIONAL_RATE_BYTES as u64
+                            {
+                                return Err(fa_journal::Refusal::new(
+                                    fa_notary::code::SCOPE_UNSUPPORTED,
+                                    fa_journal::exit::REFUSAL,
+                                    "functional proof requires a bounded canonical Rate document",
+                                    "plan §5.2 / §13.3 (exact original valuation evidence)",
+                                    "retain the original Rate document cited by the certified journal",
+                                ));
+                            }
+                            Ok(())
+                        },
+                    ))
+                    .await?;
+                match read {
+                    Ok(fa_journal::DocumentRead::Full(document)) => {
+                        rates.push((oid, document.canonical_bytes()?));
+                    }
+                    Ok(fa_journal::DocumentRead::Redacted(_)) => {
+                        return Ok(Err(fa_journal::Refusal::new(
+                            fa_notary::code::INLINE_WITHHELD,
+                            fa_journal::exit::REFUSAL,
+                            "a functional Rate document is withheld by the current disclosure policy",
+                            "plan §9.1 / §13.3 (governed exact evidence closure)",
+                            "use an authorized full-document capability or replay the certificate within the book",
+                        )));
+                    }
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            Some((book_spec, rates))
+        } else {
+            None
+        };
         let bodies = match self.query(cx, |db, _| {
             Ok(fa_notary::report::run_bodies(
                 db,
@@ -4230,41 +4334,60 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
         };
-        let assembled = match (report, registries.as_deref()) {
-            (ReportBundleCertificate::AgingReconciliation { .. }, Some(registries)) => {
-                fa_notary::report::assemble_reconciliation_with_registries(
-                    &journal,
-                    &checkpoint,
-                    &bytes,
-                    closure_frontier,
-                    &bodies,
-                    registries,
+        let assembled = if let Some((book_spec, rates)) = &functional_source {
+            let Some(registries) = registries.as_deref() else {
+                return Err(KernelError::Corrupt(
+                    "functional proof lost its required registry closure".into(),
                 )
-            }
-            (ReportBundleCertificate::AgingReconciliation { .. }, None) => {
-                return Ok(Err(fa_journal::Refusal::new(
-                    fa_notary::code::SCOPE_UNSUPPORTED,
-                    fa_journal::exit::REFUSAL,
-                    "portable aging/control reconciliation requires the complete original registry closure",
-                    "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
-                    "retain the source certificates' original account, entry-class, unit and foundation registries",
-                )));
-            }
-            (_, Some(registries)) => fa_notary::report::assemble_with_registries(
+                .into());
+            };
+            fa_notary::report::assemble_functional_with_registries(
                 &journal,
                 &checkpoint,
                 &bytes,
                 closure_frontier,
                 &bodies,
                 registries,
-            ),
-            (_, None) => fa_notary::report::assemble(
-                &journal,
-                &checkpoint,
-                &bytes,
-                closure_frontier,
-                &bodies,
-            ),
+                book_spec,
+                rates,
+            )
+        } else {
+            match (report, registries.as_deref()) {
+                (ReportBundleCertificate::AgingReconciliation { .. }, Some(registries)) => {
+                    fa_notary::report::assemble_reconciliation_with_registries(
+                        &journal,
+                        &checkpoint,
+                        &bytes,
+                        closure_frontier,
+                        &bodies,
+                        registries,
+                    )
+                }
+                (ReportBundleCertificate::AgingReconciliation { .. }, None) => {
+                    return Ok(Err(fa_journal::Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        fa_journal::exit::REFUSAL,
+                        "portable aging/control reconciliation requires the complete original registry closure",
+                        "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                        "retain the source certificates' original account, entry-class, unit and foundation registries",
+                    )));
+                }
+                (_, Some(registries)) => fa_notary::report::assemble_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                ),
+                (_, None) => fa_notary::report::assemble(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                ),
+            }
         }?;
         let bundle = match assembled {
             Ok(bundle) => bundle,
@@ -4287,7 +4410,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             bundle,
             receipt,
             checkpoint,
-            documents: Vec::new(),
+            documents: functional_source
+                .map(|(_, rates)| rates.into_iter().map(|(oid, _)| oid).collect())
+                .unwrap_or_default(),
         })))
     }
 

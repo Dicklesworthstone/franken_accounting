@@ -43,6 +43,7 @@ pub enum ReportArtifactFamily {
     RollForward,
     EquityRollForward,
     ExternalFeed,
+    NativeSubledger,
     CashFlow,
     IndirectCashFlow,
     AgingReconciliation,
@@ -74,6 +75,7 @@ impl ReportArtifactFamily {
             Self::RollForward => "roll-forward",
             Self::EquityRollForward => "equity-roll-forward",
             Self::ExternalFeed => "external-feed-reconciliation",
+            Self::NativeSubledger => "native-subledger-reconciliation",
             Self::CashFlow => "cash-flow",
             Self::IndirectCashFlow => "indirect-cash-flow",
             Self::AgingReconciliation => "aging-reconciliation",
@@ -105,6 +107,7 @@ pub enum ReportArtifactExpectation<'a> {
     IndirectCashFlow(&'a IndirectCashFlowRequest),
     EquityRollForward(&'a crate::EquityRollForwardRequest),
     ExternalFeed(&'a crate::ExternalFeedRequest),
+    NativeSubledger(&'a crate::NativeSubledgerRequest),
     AgingReconciliation(&'a AgingReconciliationRequest),
     AgingPortfolio(&'a AgingPortfolioRequest),
     SplitCashFlow {
@@ -126,6 +129,7 @@ enum Artifact {
     RollForward(Box<RollForwardCertificate>),
     EquityRollForward(Box<crate::EquityRollForwardCertificate>),
     ExternalFeed(Box<crate::ExternalFeedCertificate>),
+    NativeSubledger(Box<crate::NativeSubledgerCertificate>),
     CashFlow(Box<CashFlowCertificate>),
     IndirectCashFlow(Box<IndirectCashFlowCertificate>),
     AgingReconciliation(Box<AgingReconciliationCertificate>),
@@ -224,6 +228,8 @@ impl ReportArtifact {
             Artifact::EquityRollForward(Box::new(crate::EquityRollForwardCertificate::decode(
                 bytes,
             )?))
+        } else if format == crate::NATIVE_SUBLEDGER_CERTIFICATE_FORMAT {
+            Artifact::NativeSubledger(Box::new(crate::NativeSubledgerCertificate::decode(bytes)?))
         } else if format == crate::EXTERNAL_FEED_CERTIFICATE_FORMAT {
             Artifact::ExternalFeed(Box::new(crate::ExternalFeedCertificate::decode(bytes)?))
         } else if format == crate::CASH_FLOW_CERTIFICATE_FORMAT {
@@ -275,6 +281,7 @@ impl ReportArtifact {
             Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
             Artifact::EquityRollForward(_) => ReportArtifactFamily::EquityRollForward,
             Artifact::ExternalFeed(_) => ReportArtifactFamily::ExternalFeed,
+            Artifact::NativeSubledger(_) => ReportArtifactFamily::NativeSubledger,
             Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
             Artifact::IndirectCashFlow(_) => ReportArtifactFamily::IndirectCashFlow,
             Artifact::AgingReconciliation(_) => ReportArtifactFamily::AgingReconciliation,
@@ -304,6 +311,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.source_certificate(),
             Artifact::EquityRollForward(c) => c.source_certificate().source_certificate(),
             Artifact::ExternalFeed(c) => c.source_certificate(),
+            Artifact::NativeSubledger(c) => c.source_certificate(),
             Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
             Artifact::IndirectCashFlow(c) => c.source_certificate().native_source_certificate(),
             Artifact::AgingReconciliation(c) => c.aging_source().source(),
@@ -382,6 +390,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.digest(),
             Artifact::EquityRollForward(c) => c.digest(),
             Artifact::ExternalFeed(c) => c.digest(),
+            Artifact::NativeSubledger(c) => c.digest(),
             Artifact::CashFlow(c) => c.digest(),
             Artifact::IndirectCashFlow(c) => c.digest(),
             Artifact::AgingReconciliation(c) => c.digest(),
@@ -407,6 +416,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.output(),
             Artifact::EquityRollForward(c) => c.output(),
             Artifact::ExternalFeed(c) => c.output(),
+            Artifact::NativeSubledger(c) => c.output(),
             Artifact::CashFlow(c) => c.output(),
             Artifact::IndirectCashFlow(c) => c.output(),
             Artifact::AgingReconciliation(c) => c.output(),
@@ -440,6 +450,7 @@ impl ReportArtifact {
             Artifact::RollForward(c) => c.canonical_bytes(),
             Artifact::EquityRollForward(c) => c.canonical_bytes(),
             Artifact::ExternalFeed(c) => c.canonical_bytes(),
+            Artifact::NativeSubledger(c) => c.canonical_bytes(),
             Artifact::CashFlow(c) => c.canonical_bytes(),
             Artifact::IndirectCashFlow(c) => c.canonical_bytes(),
             Artifact::AgingReconciliation(c) => c.canonical_bytes(),
@@ -476,6 +487,7 @@ from_certificate!(
     RollForwardCertificate,
     crate::EquityRollForwardCertificate,
     crate::ExternalFeedCertificate,
+    crate::NativeSubledgerCertificate,
     CashFlowCertificate,
     IndirectCashFlowCertificate,
     AgingReconciliationCertificate,
@@ -694,6 +706,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ) => self
                 .replay_equity_roll_forward(cx, principal, capability, c, request)?
                 .map(|_| ()),
+            (Artifact::NativeSubledger(c), ReportArtifactExpectation::NativeSubledger(request)) => {
+                self.replay_native_subledger(cx, principal, capability, c, request)?
+                    .map(|_| ())
+            }
             (Artifact::ExternalFeed(c), ReportArtifactExpectation::ExternalFeed(request)) => self
                 .replay_external_feed(cx, principal, capability, c, request)?
                 .map(|_| ()),

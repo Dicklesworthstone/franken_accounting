@@ -484,8 +484,8 @@ pub(super) fn replay(
     };
     let mut accounts = BTreeMap::new();
     for cell in cells.iter().chain(&pending) {
-        if !accounts.contains_key(&cell.account) {
-            accounts.insert(cell.account, open_items::account(cell.account, schema)?);
+        if let std::collections::btree_map::Entry::Vacant(account) = accounts.entry(cell.account) {
+            account.insert(open_items::account(cell.account, schema)?);
         }
     }
     let result = VerifiedFunctionalTrialBalance {

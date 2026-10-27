@@ -1211,6 +1211,43 @@ impl Book {
         ))
     }
 
+    /// Certify the complete native party detail and independent control fold.
+    pub fn certify_native_subledger(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::NativeSubledgerRequest,
+    ) -> Outcome<crate::CertifiedNativeSubledger> {
+        with_store!(&self.store, core => core.certify_native_subledger(
+            &self.purposes(), principal, capability, request,
+        ))
+    }
+
+    /// Replay an original certificate against independently retained scope.
+    pub fn replay_native_subledger(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::NativeSubledgerCertificate,
+        expected: &crate::NativeSubledgerRequest,
+    ) -> Outcome<crate::NativeSubledgerReconciliation> {
+        with_store!(&self.store, core => core.replay_native_subledger(
+            &self.purposes(), principal, capability, certificate, expected,
+        ))
+    }
+
+    /// Attribute a native reconciliation's later changes to journal entries.
+    pub fn native_subledger_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::NativeSubledgerCertificate,
+    ) -> Outcome<crate::CertificateStatus> {
+        with_store!(&self.store, core => core.native_subledger_certificate_status(
+            &self.purposes(), principal, capability, certificate,
+        ))
+    }
+
     /// Journal and materialize a `Party` vertex (`SchemaChange` `kind = 5`, plan §4.5, bead `fa-l2h`).
     #[allow(clippy::too_many_arguments)]
     pub fn create_party(

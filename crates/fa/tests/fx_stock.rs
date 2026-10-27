@@ -162,12 +162,16 @@ impl Fixture {
     }
 
     fn rate(&mut self, effective: DateDay, numerator: u128, source: &str) -> Oid {
+        let divisor = [10, 5, 2, 1]
+            .into_iter()
+            .find(|divisor| numerator.is_multiple_of(*divisor))
+            .unwrap();
         let rate = FxRateDocument::new(
             FxRateTerms {
                 base_unit: self.usd,
                 quote_unit: self.eur,
-                rate_num: numerator,
-                rate_den: 10,
+                rate_num: numerator / divisor,
+                rate_den: 10 / divisor,
                 rounding: RoundingLaw::HalfEven,
             },
             effective,
@@ -642,3 +646,6 @@ fn functional_statement_refuses_unvalued_foreign_contributions_at_the_selected_p
     ));
     assert_eq!(f.book.head().unwrap(), head);
 }
+
+#[path = "fx_stock/portable.rs"]
+mod portable;

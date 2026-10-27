@@ -227,9 +227,15 @@ impl Fixture {
     }
 
     fn rate(&self, name: &str, date: &str, numerator: u32) -> String {
+        let divisor = [10, 5, 2, 1]
+            .into_iter()
+            .find(|divisor| numerator.is_multiple_of(*divisor))
+            .unwrap();
+        let numerator = numerator / divisor;
+        let denominator = 10 / divisor;
         let path = self.file(
             &format!("{name}-rate.json"),
-            &format!(r#"{{"base_unit":"USD","quote_unit":"EUR","rate_num":"{numerator}","rate_den":"10","rounding":"HalfEven","as_of":"{date}","retrieved_at_ns":1767571200000000000,"purpose":"spot_close","source":"{name}"}}"#),
+            &format!(r#"{{"base_unit":"USD","quote_unit":"EUR","rate_num":"{numerator}","rate_den":"{denominator}","rounding":"HalfEven","as_of":"{date}","retrieved_at_ns":1767571200000000000,"purpose":"spot_close","source":"{name}"}}"#),
         );
         let rate = ok(&self.book, &["fx", "rate", "add", "--from-json", &path]);
         text(data(&rate), "oid").into()
@@ -1654,3 +1660,5 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
         }
     }
 }
+#[path = "fx_stock/portable.rs"]
+mod portable;

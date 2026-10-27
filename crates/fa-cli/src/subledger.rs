@@ -9,13 +9,13 @@ use fa_time::DateDay;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, date_flag, known_at_read_flag, registered_unit_code, render_amount, usage,
+    Ctx, Fail, date_flag, hex, known_at_read_flag, registered_unit_code, render_amount, usage,
 };
 use crate::json::{Json, obj, s};
 
 const ADD: &str =
     "fa subledger add AR --control 1200 --kind receivables --name \"Trade receivables\"";
-const VERIFY: &str = "fa subledger verify AR --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>]";
+const VERIFY: &str = "fa subledger verify AR --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>] [--certify | --certificate-out <new-file>]";
 const HELP: &str = "fa subledger add <code> --control <account> --kind receivables|payables [--name <name>] | fa subledger list | fa subledger show <code> | fa subledger verify <code> --as-of YYYY-MM-DD";
 
 pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -26,9 +26,11 @@ pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     ) {
         return crate::external_subledger::command(ctx, args);
     }
-    if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+    if sub != Some("verify")
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
         return Err(usage(
-            "subledger certification is available for reconcile-feed",
+            "subledger certification requires verify or reconcile-feed",
             HELP,
         ));
     }
@@ -38,7 +40,7 @@ pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let allowed: &[&str] = match sub {
         Some("add") => &["--control", "--kind", "--name", "--date", "--key"],
         Some("list" | "show") => &["--as-known-at"],
-        Some("verify") => &["--as-of", "--as-known-at"],
+        Some("verify") => &["--as-of", "--as-known-at", "--certificate-out"],
         _ => return Err(usage("subledger needs add, list, show or verify", HELP)),
     };
     for flag in [
@@ -54,6 +56,7 @@ pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "--document",
         "--description",
         "--plan-out",
+        "--certificate-out",
     ] {
         let values = args.flag_all(flag);
         if !values.is_empty() && !allowed.contains(&flag) {
@@ -259,14 +262,124 @@ fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let date_text = args.require("--as-of", "YYYY-MM-DD")?;
     let as_of = DateDay::parse(date_text)
         .map_err(|error| usage(format!("invalid --as-of: {error:?}"), VERIFY))?;
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    if certify
+        && args
+            .flag("--as-known-at")
+            .is_some_and(|value| value != "HEAD" && value.parse::<u64>().is_err())
+    {
+        return Err(usage(
+            "native subledger certification requires HEAD or a recorded sequence",
+            VERIFY,
+        ));
+    }
     let who = ctx.principal(args);
-    let cap = ctx.capability(args, &["read"])?;
-    let book = ctx
-        .books
-        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        if certify
+            && let Err(denial) = fa_policy::require(
+                &cap,
+                fa_policy::Op::Produce,
+                "certifying a native subledger",
+            )
+        {
+            return Err(fa_journal::policy::refusal(&denial).into());
+        }
+        crate::rea::admit_read(book, who, &cap)
+    })?;
     let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
-    let report = book.reconcile_native_subledger(&code, as_of, known_at, &cap)??;
+    book.prepare_report_history(who, &cap, known_at)??;
+    let at = known_at.unwrap_or(book.head()?);
+    let (report, certificate) = if certify {
+        let definitions = book.native_subledgers(Some(at), &cap)??;
+        let definition = definitions
+            .iter()
+            .find(|item| item.spec.code == code)
+            .ok_or_else(|| {
+                usage(
+                    format!("no native subledger {code} at sequence {}", at.0),
+                    "fa subledger list --as-known-at <seq> --json",
+                )
+            })?;
+        let request = fa::NativeSubledgerRequest {
+            code: code.clone(),
+            control_account: definition.spec.control_account,
+            effective_through: as_of,
+            known_at: Some(at),
+        };
+        let certified = book.certify_native_subledger(who, &cap, &request)??;
+        (certified.report, Some(certified.certificate))
+    } else {
+        (
+            book.reconcile_native_subledger(&code, as_of, Some(at), &cap)??,
+            None,
+        )
+    };
+    let request = fa::NativeSubledgerRequest {
+        code: code.clone(),
+        control_account: report.subledger.spec.control_account,
+        effective_through: as_of,
+        known_at: Some(report.known_at),
+    };
     let accounts = book.accounts_at(report.known_at, &cap)??;
+    let retained = if let Some(certificate) = &certificate {
+        let artifact = fa::ReportArtifact::try_from(certificate)?;
+        let (bytes, retained) = crate::notary::retain_report_artifact_for(
+            &mut book,
+            &ctx.files,
+            args,
+            &artifact,
+            &cap,
+            fa::ReportArtifactExpectation::NativeSubledger(&request),
+        )?;
+        Some((artifact, bytes, retained))
+    } else {
+        None
+    };
+    ctx.out.at_book(&book)?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(certificate.digest()));
+    render_native(&ctx.out, &book, &report, &accounts, digest.as_deref())?;
+    if let Some((artifact, bytes, retained)) = retained {
+        let expected = crate::notary::native_subledger_expectation_json(&request);
+        crate::notary::emit_report_artifact_for(
+            &ctx.out,
+            args,
+            &artifact,
+            fa::NATIVE_SUBLEDGER_REPORT_FORMAT,
+            &bytes,
+            &retained,
+            &expected,
+        );
+    }
+    if !report.reconciled {
+        return Err(Fail::Verification {
+            message: format!("native subledger {code} does not reconcile with its control account"),
+            detail: obj(vec![("subledger", s(&code)), ("known_at", Json::Int(i128::from(report.known_at.0)))]),
+            cite: Some("plan §5.6".to_string()),
+            fix: Some("Preserve the book and investigate the party-detail/control-account discrepancy at this coordinate.".to_string()),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn render_native(
+    out: &crate::cli::Out,
+    book: &fa::Book,
+    report: &fa::NativeSubledgerReconciliation,
+    accounts: &[fa_journal::AccountRow],
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let code = &report.subledger.spec.code;
+    let as_of = report.effective_through;
     let mut rows = Vec::with_capacity(report.rows.len());
     let mut human = Vec::with_capacity(report.rows.len());
     for row in &report.rows {
@@ -280,16 +393,16 @@ fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &book.context().units,
                 )?),
             ),
-            ("debits", amount(&book, row.unit_id, row.debits)?),
-            ("credits", amount(&book, row.unit_id, row.credits)?),
-            ("net", net(&book, row.unit_id, row.debits, row.credits)?),
+            ("debits", amount(book, row.unit_id, row.debits)?),
+            ("credits", amount(book, row.unit_id, row.credits)?),
+            ("net", net(book, row.unit_id, row.debits, row.credits)?),
             (
                 "debits_pending",
-                amount(&book, row.unit_id, row.debits_pending)?,
+                amount(book, row.unit_id, row.debits_pending)?,
             ),
             (
                 "credits_pending",
-                amount(&book, row.unit_id, row.credits_pending)?,
+                amount(book, row.unit_id, row.credits_pending)?,
             ),
         ]));
         human.push(format!(
@@ -325,52 +438,51 @@ fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ),
                 (
                     "detail_debits",
-                    amount(&book, row.unit_id, row.detail_debits)?,
+                    amount(book, row.unit_id, row.detail_debits)?,
                 ),
                 (
                     "detail_credits",
-                    amount(&book, row.unit_id, row.detail_credits)?,
+                    amount(book, row.unit_id, row.detail_credits)?,
                 ),
                 (
                     "detail_debits_pending",
-                    amount(&book, row.unit_id, row.detail_debits_pending)?,
+                    amount(book, row.unit_id, row.detail_debits_pending)?,
                 ),
                 (
                     "detail_credits_pending",
-                    amount(&book, row.unit_id, row.detail_credits_pending)?,
+                    amount(book, row.unit_id, row.detail_credits_pending)?,
                 ),
                 (
                     "control_debits",
-                    amount(&book, row.unit_id, row.control_debits)?,
+                    amount(book, row.unit_id, row.control_debits)?,
                 ),
                 (
                     "control_credits",
-                    amount(&book, row.unit_id, row.control_credits)?,
+                    amount(book, row.unit_id, row.control_credits)?,
                 ),
                 (
                     "control_debits_pending",
-                    amount(&book, row.unit_id, row.control_debits_pending)?,
+                    amount(book, row.unit_id, row.control_debits_pending)?,
                 ),
                 (
                     "control_credits_pending",
-                    amount(&book, row.unit_id, row.control_credits_pending)?,
+                    amount(book, row.unit_id, row.control_credits_pending)?,
                 ),
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    ctx.out.at_book(&book)?;
-    ctx.out.known_at(report.known_at);
-    ctx.out.effective(format!("through:{as_of}"));
+    out.known_at(report.known_at);
+    out.effective(format!("through:{as_of}"));
     human.push(format!(
         "{}: party detail {} control-account posted and pending amounts at sequence {} through {as_of}",
         code,
         if report.reconciled { "equals" } else { "does not equal" },
         report.known_at.0,
     ));
-    ctx.out.event(
+    out.event_with_certificate(
         "subledger_reconciled",
         vec![
-            ("subledger", summary(&report.subledger, &accounts)?),
+            ("subledger", summary(&report.subledger, accounts)?),
             ("known_at", Json::Int(i128::from(report.known_at.0))),
             ("effective_through", s(as_of.to_string())),
             ("rows", Json::Arr(rows)),
@@ -378,14 +490,7 @@ fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("reconciled", Json::Bool(report.reconciled)),
         ],
         &human.join("\n"),
+        certificate,
     );
-    if !report.reconciled {
-        return Err(Fail::Verification {
-            message: format!("native subledger {code} does not reconcile with its control account"),
-            detail: obj(vec![("subledger", s(&code)), ("known_at", Json::Int(i128::from(report.known_at.0)))]),
-            cite: Some("plan §5.6".to_string()),
-            fix: Some("Preserve the book and investigate the party-detail/control-account discrepancy at this coordinate.".to_string()),
-        });
-    }
     Ok(())
 }

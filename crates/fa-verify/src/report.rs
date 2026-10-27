@@ -578,7 +578,7 @@ fn verify_report_with_inputs(
         ));
     }
     let major = r.u16("report_bundle.major")?;
-    if !matches!(major, 1 | 2 | 3) || r.u16("report_bundle.minor")? != 0 {
+    if !matches!(major, 1..=3) || r.u16("report_bundle.minor")? != 0 {
         return Err(failed(
             "supported_report",
             "unsupported report bundle format",

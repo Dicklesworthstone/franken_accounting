@@ -2,7 +2,8 @@
 //!
 //! These reports fold immutable journal legs by party and compare their exact
 //! native-unit columns with an independent stock trial balance of the control
-//! leaf. They are not external-feed attestations or replay certificates.
+//! leaf. Retained certificates replay the complete historical assertion; these
+//! reports do not attest to an external feed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,6 +19,14 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError, Outcome};
+
+mod certificate;
+pub use certificate::{
+    CertifiedNativeSubledger, MAX_NATIVE_SUBLEDGER_CERTIFICATE_BYTES,
+    NATIVE_SUBLEDGER_CERTIFICATE_FORMAT, NativeSubledgerCertificate, NativeSubledgerRequest,
+};
+
+pub const NATIVE_SUBLEDGER_REPORT_FORMAT: &str = "fa:native-subledger-reconciliation:v1";
 
 pub use fa_journal::subledger::{
     NativeSubledger, NativeSubledgerKind, NativeSubledgerRecorded, NativeSubledgerSpec,
@@ -72,10 +81,18 @@ pub struct NativeSubledgerReconciliation {
 }
 
 impl NativeSubledgerReconciliation {
+    fn same_assertion(&self, other: &Self) -> bool {
+        self.subledger == other.subledger
+            && self.effective_through == other.effective_through
+            && self.rows == other.rows
+            && self.totals == other.totals
+            && self.reconciled == other.reconciled
+    }
+
     /// Canonical report bytes, not a signature or certification claim.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
         let mut w = Writer::new();
-        w.fixed(b"fa:native-subledger-reconciliation:v1")
+        w.fixed(NATIVE_SUBLEDGER_REPORT_FORMAT.as_bytes())
             .u128(self.subledger.vid.0)
             .bytes(&self.subledger.spec.encode()?)
             .u128(self.subledger.entry.vid.0)
