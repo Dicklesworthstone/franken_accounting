@@ -189,6 +189,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::Aging(c) => {
                 return self.aging_artifact_status(cx, principal, capability, c);
             }
+            Artifact::DueDateAging(c) => {
+                return self.due_date_aging_artifact_status(cx, principal, capability, c);
+            }
             Artifact::AgingReconciliation(c) => {
                 return self.aging_reconciliation_artifact_status(cx, principal, capability, c);
             }
@@ -328,6 +331,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &request.buckets,
         )?;
         Ok(unchanged(head, same_aging(&original, &current)))
+    }
+
+    fn due_date_aging_artifact_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &DueDateAgingCertificate,
+    ) -> Outcome<CertificateStatus> {
+        let request = match certificate.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let head = self.head(cx)?;
+        let later_entries = match self.later_artifact_entries(
+            cx,
+            certificate.source().known_at,
+            head,
+            MetadataScope::None,
+            |entry, entries| {
+                if entry.proposal.effective_date > request.effective_through {
+                    return Ok(false);
+                }
+                crate::certificate::open_item_selected(entry, entries, request.account)
+            },
+        )? {
+            Ok(entries) => entries,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !later_entries.is_empty() {
+            return Ok(Ok(CertificateStatus::SupersededBy {
+                checked_at: head,
+                later_entries,
+            }));
+        }
+        let original = match self.replay_due_date_aging(cx, principal, capability, certificate)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut current = self.due_date_aging(
+            cx,
+            request.account,
+            request.effective_through,
+            Some(head),
+            &request.buckets,
+        )?;
+        current.known_at = original.known_at;
+        Ok(unchanged(head, original == current))
     }
 
     fn aging_reconciliation_artifact_status(

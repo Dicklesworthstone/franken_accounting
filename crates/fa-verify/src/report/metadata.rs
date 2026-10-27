@@ -27,6 +27,9 @@ pub(super) struct EntryInfo<'a> {
     /// Authenticated presence only; functional source replay must refuse this
     /// basis until its cumulative revaluation law is independently supported.
     pub has_fx_revaluation_basis: bool,
+    /// Immutable extension 33 bytes. Due-date reports independently decode
+    /// and validate these against the authenticated monetary legs.
+    pub obligation_maturity: Option<&'a [u8]>,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
@@ -273,6 +276,7 @@ pub(super) fn entry_info<'a>(
     }
     let mut recurring = None;
     let mut has_fx_revaluation_basis = false;
+    let mut obligation_maturity = None;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
         let mut previous = None;
@@ -287,6 +291,9 @@ pub(super) fn entry_info<'a>(
             }
             previous = Some(tag);
             has_fx_revaluation_basis |= tag == 16;
+            if tag == 33 {
+                obligation_maturity = Some(bytes);
+            }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
                 if marker.u16("recurring.version")? != 1 {
@@ -371,6 +378,7 @@ pub(super) fn entry_info<'a>(
         supersession_reasons,
         rule_version_oid,
         has_fx_revaluation_basis,
+        obligation_maturity,
         evidence,
         identity,
         legacy_identity,

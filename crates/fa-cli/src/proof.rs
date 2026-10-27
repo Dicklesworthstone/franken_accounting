@@ -928,6 +928,10 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let certificate = fa::AgingCertificate::decode(&bytes)?;
                 book.produce_aging_bundle(principal, &capability, state, &certificate)??
             }
+            fa::ReportArtifactFamily::DueDateAging => {
+                let certificate = fa::DueDateAgingCertificate::decode(&bytes)?;
+                book.produce_due_date_aging_bundle(principal, &capability, state, &certificate)??
+            }
             fa::ReportArtifactFamily::AgingReconciliation => {
                 let expected = crate::notary::reconciliation_bundle_expectation(args, &book)?;
                 let certificate = fa::AgingReconciliationCertificate::decode(&bytes)?;

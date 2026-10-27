@@ -4617,6 +4617,22 @@ impl Book {
         )))
     }
 
+    /// Produce a portable contractual-maturity aging report. The complete
+    /// signed prefix retains original terms and application history so an
+    /// independent verifier can reconstruct scheduled and unscheduled amounts.
+    pub fn produce_due_date_aging_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::DueDateAgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_due_date_aging_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce a portable account lead schedule for `fa-verify report`.
     /// Replays the complete roll-forward at its historical recorded prefix
     /// under current whole-book read/produce authority. The signed complete
@@ -5069,6 +5085,57 @@ impl Book {
     ) -> Result<crate::DueDateAging, BookError> {
         with_store!(&self.store, core => core.due_date_aging(
             &self.purposes(), account, effective_through, known_at, buckets
+        ))
+    }
+
+    /// Certify contractual due-date aging under current read+produce authority.
+    pub fn certify_due_date_aging(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AgingRequest,
+    ) -> Outcome<crate::CertifiedDueDateAging> {
+        with_store!(&self.store, core => core.certify_due_date_aging(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Age a retained OpenItems prefix using only its journaled maturity terms.
+    pub fn certify_due_date_aging_from_source(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        source: &crate::ReportCertificate,
+        effective_through: DateDay,
+        buckets: &crate::AgingBuckets,
+    ) -> Outcome<crate::CertifiedDueDateAging> {
+        with_store!(&self.store, core => core.certify_due_date_aging_from_source(
+            &self.purposes(), principal, capability, source, effective_through, buckets
+        ))
+    }
+
+    /// Replay every installment and unscheduled item at the retained prefix.
+    pub fn replay_due_date_aging(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::DueDateAgingCertificate,
+    ) -> Outcome<crate::DueDateAging> {
+        with_store!(&self.store, core => core.replay_due_date_aging(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Replay due-date aging against an independently selected fixed question.
+    pub fn replay_due_date_aging_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::DueDateAgingCertificate,
+        expected: &crate::AgingRequest,
+    ) -> Outcome<crate::DueDateAging> {
+        with_store!(&self.store, core => core.replay_due_date_aging_for(
+            &self.purposes(), principal, capability, certificate, expected
         ))
     }
 

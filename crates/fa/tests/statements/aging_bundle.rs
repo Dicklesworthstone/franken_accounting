@@ -403,3 +403,436 @@ fn aging_bundle_production_checks_current_whole_book_authority_before_exporting_
     );
     assert_eq!(fixture.book.head().unwrap(), before);
 }
+
+fn obligation(
+    fixture: &mut Fixture,
+    key: &[u8],
+    amount: i128,
+    terms: Option<(fa_model::obligation::ObligationStatus, Vec<(DateDay, i128)>)>,
+) -> Posted {
+    use fa_model::obligation::{InlineObligationTerms, ObligationInstallment};
+    let mut proposal = fixture.proposal(
+        day(2026, 1, 1),
+        key,
+        EntryClass::ORIGINAL,
+        fixture.legs(fixture.usd, ("6000", "2000"), amount),
+    );
+    if let Some((status, installments)) = terms {
+        proposal.extensions.push(
+            InlineObligationTerms::to_extension(&[InlineObligationTerms {
+                ordinal: 1,
+                status,
+                installments: installments
+                    .into_iter()
+                    .map(|(due_date, amount)| ObligationInstallment { due_date, amount })
+                    .collect(),
+            }])
+            .unwrap(),
+        );
+    }
+    fixture.commit(proposal)
+}
+
+fn due_date_certificate(fixture: &Fixture, cutoff: DateDay) -> fa::CertifiedDueDateAging {
+    fixture
+        .book
+        .certify_due_date_aging(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &fa::AgingRequest {
+                account: Some(account_vid(fixture.book.context().book_id, "2000")),
+                effective_through: cutoff,
+                known_at: None,
+                buckets: fa::AgingBuckets::thirty_day(),
+            },
+        )
+        .unwrap()
+        .unwrap()
+}
+
+fn produce_due_date(
+    book: &mut Book,
+    certificate: &fa::DueDateAgingCertificate,
+) -> fa::ProducedBundle {
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce", "witness"]).unwrap();
+    let checkpoint = book.checkpoint(PRINCIPAL, &capability).unwrap().unwrap();
+    let state = checkpoint.checkpoint.checkpoint.body.state_oid;
+    let before = book.head().unwrap();
+    let produced = book
+        .produce_due_date_aging_bundle(PRINCIPAL, &capability, Some(state), certificate)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let repeated = book
+        .produce_due_date_aging_bundle(PRINCIPAL, &capability, Some(state), certificate)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(produced.bundle.bytes, repeated.bundle.bytes);
+    assert_eq!(produced.receipt, repeated.receipt);
+    assert_eq!(book.head().unwrap(), before, "due-date export is a read");
+    produced
+}
+
+fn verify_due_date(
+    book: &Book,
+    certificate: &fa::DueDateAgingCertificate,
+    produced: &fa::ProducedBundle,
+) -> fa_verify::report::VerifiedReport {
+    let key = book.checkpoint_public_key();
+    let checkpoint = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        Some(&checkpoint.checkpoint),
+        Some(&produced.receipt),
+        Some(certificate.digest()),
+    )
+    .expect("the independent verifier derives maturity from the signed journal prefix");
+    assert_eq!(verified.output, certificate.output());
+    assert_eq!(verified.certificate_digest, *certificate.digest());
+    assert_eq!(verified.known_at, certificate.source().known_at.0);
+    assert_eq!(verified.scope, "recomputation");
+    assert_eq!(verified.unit_universe_source, "authenticated-registry");
+    assert!(verified.aging.is_none());
+    assert!(verified.open_items.is_none());
+    assert!(verified.receipt.is_some());
+    let aging = verified.due_date_aging.as_ref().unwrap();
+    assert_eq!(aging.source_certificate_digest, certificate.source().digest);
+    assert_eq!(
+        aging.effective_through,
+        certificate.request().unwrap().effective_through.0,
+    );
+    verified
+}
+
+#[test]
+fn due_date_aging_bundles_recompute_installments_partial_settlements_and_unscheduled_terms() {
+    use fa_model::obligation::ObligationStatus;
+    use fa_verify::report::VerifiedUnscheduled;
+    let mut fixture = Fixture::new(0x88);
+    let invoice = obligation(
+        &mut fixture,
+        b"due-installments",
+        1_000,
+        Some((
+            ObligationStatus::Contractual,
+            vec![(day(2026, 1, 31), 600), (day(2026, 2, 28), 400)],
+        )),
+    );
+    let plain = obligation(&mut fixture, b"due-no-terms", 50, None);
+    let missing = obligation(
+        &mut fixture,
+        b"due-missing",
+        70,
+        Some((ObligationStatus::MissingMaturity, Vec::new())),
+    );
+    let disputed = obligation(
+        &mut fixture,
+        b"due-disputed",
+        90,
+        Some((
+            ObligationStatus::Disputed { reason_code: 19 },
+            vec![(day(2026, 1, 15), 90)],
+        )),
+    );
+    let mut legs = fixture.legs(fixture.usd, ("2000", "1000"), 700);
+    legs[0].settles.push(fa_model::Settlement {
+        target: invoice.entry_ref(),
+        ordinal: 1,
+        amount: Amount::new(fixture.usd, 700),
+    });
+    fixture.commit(fixture.proposal(
+        day(2026, 2, 15),
+        b"due-partial-payment",
+        EntryClass::ORIGINAL,
+        legs,
+    ));
+    let before_effective_payment = due_date_certificate(&fixture, day(2026, 2, 1));
+    let after_payment = due_date_certificate(&fixture, day(2026, 3, 1));
+    let original_source = after_payment
+        .certificate
+        .source()
+        .canonical_bytes()
+        .unwrap();
+    let later = obligation(
+        &mut fixture,
+        b"due-later-backdated-terms",
+        999,
+        Some((ObligationStatus::Contractual, vec![(day(2026, 1, 2), 999)])),
+    );
+    for (certified, expected_open, expected_parts) in [
+        (&before_effective_payment, 1_000, 2),
+        (&after_payment, 300, 1),
+    ] {
+        let produced = produce_due_date(&mut fixture.book, &certified.certificate);
+        let verified = verify_due_date(&fixture.book, &certified.certificate, &produced);
+        let aging = verified.due_date_aging.unwrap();
+        assert_eq!(aging.items.len(), expected_parts);
+        assert!(
+            aging
+                .items
+                .iter()
+                .all(|part| part.item.entry == invoice.entry_ref().vid.0)
+        );
+        assert!(
+            aging
+                .items
+                .iter()
+                .all(|part| part.item.entry != later.entry_ref().vid.0)
+        );
+        assert_eq!(aging.totals[0].amounts.credits, expected_open);
+        assert_eq!(aging.totals[0].amounts.debits, 0);
+        assert_eq!(aging.unscheduled.len(), 3);
+        assert_eq!(aging.unscheduled_totals[0].amounts.credits, 210);
+        for (entry, reason) in [
+            (plain.entry_ref().vid.0, VerifiedUnscheduled::NoTerms),
+            (
+                missing.entry_ref().vid.0,
+                VerifiedUnscheduled::MissingMaturity,
+            ),
+            (
+                disputed.entry_ref().vid.0,
+                VerifiedUnscheduled::Disputed { reason_code: 19 },
+            ),
+        ] {
+            assert_eq!(
+                aging
+                    .unscheduled
+                    .iter()
+                    .find(|row| row.item.entry == entry)
+                    .unwrap()
+                    .reason,
+                reason
+            );
+        }
+        if expected_parts == 1 {
+            let part = &aging.items[0];
+            assert_eq!(
+                (part.open, part.item.applied, part.days_past_due),
+                (300, 700, 1)
+            );
+            assert_eq!(part.due_date, day(2026, 2, 28).0);
+        } else {
+            let part = aging
+                .items
+                .iter()
+                .find(|part| part.due_date == day(2026, 1, 31).0)
+                .unwrap();
+            assert_eq!(
+                (part.open, part.item.applied, part.days_past_due),
+                (600, 0, 1)
+            );
+        }
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &produced.bundle.bytes,
+                &[fixture.book.checkpoint_public_key()],
+                None,
+                None,
+                Some(&certified.certificate.source().digest),
+            )
+            .is_err(),
+            "a pin for the all-time source cannot authorize a due-date report"
+        );
+    }
+    let from_source = fixture
+        .book
+        .certify_due_date_aging_from_source(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            after_payment.certificate.source(),
+            day(2026, 3, 1),
+            &fa::AgingBuckets::thirty_day(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(from_source.certificate, after_payment.certificate);
+    assert_eq!(
+        from_source.certificate.source().canonical_bytes().unwrap(),
+        original_source
+    );
+}
+
+fn reseal_due_date_output(
+    certificate: &fa::DueDateAgingCertificate,
+    output: &[u8],
+) -> fa::DueDateAgingCertificate {
+    let request = certificate.request().unwrap();
+    let mut writer = fa_model::Writer::new();
+    writer
+        .bytes(fa::DUE_DATE_AGING_CERTIFICATE_FORMAT)
+        .u128(certificate.producer().0)
+        .fixed(certificate.capability_commitment())
+        .bytes(&certificate.source().canonical_bytes().unwrap())
+        .i32(request.effective_through.0)
+        .list(request.buckets.upper_bounds(), |writer, bound| {
+            writer.u32(*bound);
+        })
+        .bytes(output);
+    let mut bytes = writer.finish().unwrap();
+    let digest = fa_model::domain_digest(b"fa:due-date-aging-certificate-digest:v1", &[&bytes]);
+    bytes.extend_from_slice(&digest);
+    fa::DueDateAgingCertificate::decode(&bytes).unwrap()
+}
+
+fn replace_due_date_outer(bundle: &[u8], outer: &[u8]) -> Vec<u8> {
+    let at = 4 + fa_notary::report::REPORT_BUNDLE_FORMAT.len() + 4;
+    let old_len = u32::from_le_bytes(bundle[at..at + 4].try_into().unwrap()) as usize;
+    let mut bytes = bundle[..at].to_vec();
+    bytes.extend_from_slice(&u32::try_from(outer.len()).unwrap().to_le_bytes());
+    bytes.extend_from_slice(outer);
+    bytes.extend_from_slice(&bundle[at + 4 + old_len..]);
+    bytes
+}
+
+#[test]
+fn due_date_aging_bundles_reject_resealed_reported_due_dates() {
+    use fa_model::obligation::ObligationStatus;
+    let mut fixture = Fixture::new(0x89);
+    obligation(
+        &mut fixture,
+        b"due-forgery",
+        1_000,
+        Some((
+            ObligationStatus::Contractual,
+            vec![(day(2026, 1, 31), 1_000)],
+        )),
+    );
+    let certified = due_date_certificate(&fixture, day(2026, 2, 1));
+    let produced = produce_due_date(&mut fixture.book, &certified.certificate);
+    verify_due_date(&fixture.book, &certified.certificate, &produced);
+    // Change the reported maturity, preserving the native source and fixing
+    // the public outer checksum. The verifier must derive the real date.
+    let mut output = certified.certificate.output().to_vec();
+    let mut reader = fa_model::Reader::new(&output);
+    assert_eq!(
+        reader.bytes(64, "format").unwrap(),
+        fa::DUE_DATE_AGING_OUTPUT_FORMAT
+    );
+    reader.fixed::<16>("book").unwrap();
+    reader.u64("known-at").unwrap();
+    reader.i32("cutoff").unwrap();
+    reader.opt("account", |r| r.u128("account")).unwrap();
+    for _ in 0..reader.count(129, "bands").unwrap() {
+        reader.u64("lower").unwrap();
+        reader.opt("upper", |r| r.u64("upper")).unwrap();
+    }
+    assert_eq!(reader.count(1, "scheduled items").unwrap(), 1);
+    reader.fixed::<115>("open-item fields").unwrap();
+    for _ in 0..reader.count(10, "applications").unwrap() {
+        reader.fixed::<43>("application").unwrap();
+    }
+    let offset = reader.offset();
+    output[offset..offset + 4].copy_from_slice(&day(2026, 1, 30).0.to_le_bytes());
+    let fake = reseal_due_date_output(&certified.certificate, &output);
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
+    assert!(
+        fixture
+            .book
+            .produce_due_date_aging_bundle(PRINCIPAL, &capability, None, &fake)
+            .unwrap()
+            .is_err()
+    );
+    let bundle = replace_due_date_outer(&produced.bundle.bytes, &fake.canonical_bytes().unwrap());
+    let error = fa_verify::report::verify_report_expected(
+        &bundle,
+        &[fixture.book.checkpoint_public_key()],
+        None,
+        None,
+        Some(fake.digest()),
+    )
+    .unwrap_err();
+    assert_eq!(error.predicate, "report_recomputation");
+}
+
+/// Replace one admitted entry with a well-formed, resealed alternate record.
+/// The original checkpoint remains the trust anchor, so repaired public hashes
+/// cannot remove or change a term that its authenticated prefix committed.
+fn alter_maturity_record(bundle: &[u8], remove: bool) -> Vec<u8> {
+    use fa_model::obligation::InlineObligationTerms;
+    let bound = fa_notary::report::MAX_REPORT_BUNDLE_BYTES;
+    let mut reader = fa_model::Reader::new(bundle);
+    assert_eq!(
+        reader.bytes(64, "format").unwrap(),
+        fa_notary::report::REPORT_BUNDLE_FORMAT
+    );
+    assert_eq!(reader.u16("major").unwrap(), 2);
+    reader.u16("minor").unwrap();
+    reader.bytes(bound, "certificate").unwrap();
+    reader.bytes(bound, "checkpoint").unwrap();
+    reader.bytes(bound, "prefix").unwrap();
+    for _ in 0..reader.count(1_000, "records").unwrap() {
+        let start = reader.offset();
+        reader.u32("proposal length").unwrap();
+        let payload = reader.bytes(bound, "payload").unwrap();
+        let Ok(mut entry) = fa_model::Entry::decode(payload) else {
+            continue;
+        };
+        let Some(index) = entry
+            .proposal
+            .extensions
+            .iter()
+            .position(|(tag, _)| *tag == fa_model::entry::OBLIGATION_MATURITY_EXTENSION)
+        else {
+            continue;
+        };
+        if remove {
+            entry.proposal.extensions.remove(index);
+        } else {
+            let mut terms =
+                InlineObligationTerms::decode_list(&entry.proposal.extensions[index].1).unwrap();
+            terms[0].installments[0].due_date = day(2026, 1, 30);
+            entry.proposal.extensions[index] = InlineObligationTerms::to_extension(&terms).unwrap();
+        }
+        let proposal_len = entry.proposal.canonical_bytes().unwrap().len();
+        let changed = entry
+            .proposal
+            .seal(entry.approvals, entry.plan_certificate)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut writer = fa_model::Writer::new();
+        writer
+            .u32(u32::try_from(proposal_len).unwrap())
+            .bytes(&changed);
+        let mut bytes = bundle[..start].to_vec();
+        bytes.extend_from_slice(&writer.finish().unwrap());
+        bytes.extend_from_slice(&bundle[reader.offset()..]);
+        return bytes;
+    }
+    panic!("fixture must contain a journaled maturity record");
+}
+
+#[test]
+fn due_date_aging_bundles_authenticate_changed_or_missing_maturity_terms() {
+    use fa_model::obligation::ObligationStatus;
+    let mut fixture = Fixture::new(0x8a);
+    obligation(
+        &mut fixture,
+        b"due-retained-terms",
+        1_000,
+        Some((
+            ObligationStatus::Contractual,
+            vec![(day(2026, 1, 31), 1_000)],
+        )),
+    );
+    let certified = due_date_certificate(&fixture, day(2026, 2, 1));
+    let produced = produce_due_date(&mut fixture.book, &certified.certificate);
+    verify_due_date(&fixture.book, &certified.certificate, &produced);
+    for remove in [false, true] {
+        let changed = alter_maturity_record(&produced.bundle.bytes, remove);
+        let error = fa_verify::report::verify_report_expected(
+            &changed,
+            &[fixture.book.checkpoint_public_key()],
+            None,
+            None,
+            Some(certified.certificate.digest()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.predicate, "record_derivation",
+            "remove={remove}: {error:?}"
+        );
+    }
+}

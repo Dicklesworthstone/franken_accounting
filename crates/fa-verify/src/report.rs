@@ -21,6 +21,8 @@
 //! digest binds every age band and output row. AgingReconciliationCertificate v1
 //! additionally binds an independently recomputed stock trial balance at the
 //! same prefix and cutoff; nonzero per-unit differences are verified data.
+//! DueDateAgingCertificate v1 independently decodes journaled maturity terms,
+//! relieves the earliest installments, and retains every unscheduled open item.
 //! RollForwardCertificate v1 wraps a native as-of trial balance and recomputes
 //! opening, every classified posted movement, closing and exact leg citations.
 //! Direct CashFlowCertificate v1 further reproduces the complete general ledger,
@@ -48,6 +50,7 @@
 mod aging;
 mod cash_flow;
 mod dimension;
+mod due_date;
 mod equity;
 mod explain;
 mod functional;
@@ -69,6 +72,9 @@ pub use cash_flow::{
     VerifiedGeneralLedger,
 };
 pub use dimension::VerifiedDimensionSelection;
+pub use due_date::{
+    VerifiedDueDateAgedItem, VerifiedDueDateAging, VerifiedUnscheduled, VerifiedUnscheduledItem,
+};
 pub use equity::{
     EquityActivityKind, EquityMovement, EquityRollForwardUnit, VerifiedEquityRollForward,
 };
@@ -187,6 +193,8 @@ pub struct VerifiedReport {
     pub explanation: Option<VerifiedBalanceExplanation>,
     /// Present for independently reconstructed historical effective-date aging.
     pub aging: Option<VerifiedAging>,
+    /// Contractual installments and unscheduled items from journaled maturity terms.
+    pub due_date_aging: Option<VerifiedDueDateAging>,
     /// Both source folds and their selected-account consistency comparison.
     pub aging_reconciliation: Option<VerifiedAgingReconciliation>,
     /// Complete account/unit lead schedule with every classified posted leg.
@@ -632,6 +640,11 @@ fn verify_report_with_inputs(
     } else {
         None
     };
+    let due_date = if due_date::recognizes(certificate_bytes) {
+        Some(due_date::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     let roll_forward = if roll_forward::recognizes(roll_forward_bytes) {
         Some(roll_forward::decode(roll_forward_bytes)?)
     } else {
@@ -640,15 +653,16 @@ fn verify_report_with_inputs(
     let source = aging
         .as_ref()
         .map(|value| value.source)
+        .or_else(|| due_date.as_ref().map(|value| value.source))
         .or_else(|| roll_forward.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
     let cert = certificate(source)?;
-    if aging.is_some()
+    if (aging.is_some() || due_date.is_some())
         && (!matches!(cert.selection, Selection::OpenItems(_)) || cert.time_selection.is_some())
     {
         return Err(failed(
             "supported_report",
-            "effective-date aging requires a sequence-selected native OpenItems source",
+            "aging requires a sequence-selected native OpenItems source",
         ));
     }
     if let Some(request) = &roll_forward
@@ -676,6 +690,7 @@ fn verify_report_with_inputs(
         .or_else(|| cash.as_ref().map(|value| value.digest))
         .or_else(|| reconciliation.as_ref().map(|value| value.digest))
         .or_else(|| aging.as_ref().map(|value| value.digest))
+        .or_else(|| due_date.as_ref().map(|value| value.digest))
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     if cert.functional != (major == 3) {
@@ -1000,6 +1015,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: None,
             aging: None,
+            due_date_aging: None,
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1030,6 +1046,59 @@ fn verify_report_with_inputs(
                 "report_recomputation",
                 "open-item amounts, complete application history, account metadata or canonical bytes differ from independent replay",
             ));
+        }
+        if let Some(request) = &due_date {
+            let historical = open_items::replay_as_of(
+                cert.known_at,
+                *account_filter,
+                request.effective_through,
+                &units,
+                &schema,
+                envelopes,
+                &infos,
+                &legs,
+                &records,
+                &visible_migrations,
+                &migration_activations,
+            )?;
+            let (report, output) = due_date::replay(
+                request,
+                cert.book,
+                cert.known_at,
+                cert.digest,
+                historical,
+                &infos,
+                &legs,
+            )?;
+            return Ok(VerifiedReport {
+                scope: "recomputation",
+                bundle_digest: digest,
+                certificate_digest,
+                output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                checkpoint: signed,
+                known_at: cert.known_at,
+                time_selection: None,
+                effective_through: Some(report.effective_through),
+                activity: false,
+                periods: Vec::new(),
+                rows: Vec::new(),
+                statement: None,
+                dimension: None,
+                open_items: None,
+                explanation: None,
+                aging: None,
+                due_date_aging: Some(report),
+                aging_reconciliation: None,
+                roll_forward: None,
+                cash_flow: None,
+                equity_roll_forward: None,
+                functional_trial_balance: None,
+                functional_statement: None,
+                unit_universe_source: "authenticated-registry",
+                output,
+                checked_records: records.len(),
+                receipt,
+            });
         }
         if let Some(aging_certificate) = &aging {
             let historical = open_items::replay_as_of(
@@ -1099,6 +1168,7 @@ fn verify_report_with_inputs(
                     open_items: None,
                     explanation: None,
                     aging: None,
+                    due_date_aging: None,
                     aging_reconciliation: Some(comparison),
                     roll_forward: None,
                     cash_flow: None,
@@ -1128,6 +1198,7 @@ fn verify_report_with_inputs(
                 open_items: None,
                 explanation: None,
                 aging: Some(aging),
+                due_date_aging: None,
                 aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
@@ -1157,6 +1228,7 @@ fn verify_report_with_inputs(
             open_items: Some(open_items),
             explanation: None,
             aging: None,
+            due_date_aging: None,
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1207,6 +1279,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: Some(explanation),
             aging: None,
+            due_date_aging: None,
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1263,6 +1336,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: None,
             aging: None,
+            due_date_aging: None,
             aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1335,6 +1409,7 @@ fn verify_report_with_inputs(
                 open_items: None,
                 explanation: None,
                 aging: None,
+                due_date_aging: None,
                 aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
@@ -1379,6 +1454,7 @@ fn verify_report_with_inputs(
                 open_items: None,
                 explanation: None,
                 aging: None,
+                due_date_aging: None,
                 aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: Some(cash_flow),
@@ -1408,6 +1484,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: None,
             aging: None,
+            due_date_aging: None,
             aging_reconciliation: None,
             roll_forward: Some(roll_forward),
             cash_flow: None,
@@ -1437,6 +1514,7 @@ fn verify_report_with_inputs(
         open_items: None,
         explanation: None,
         aging: None,
+        due_date_aging: None,
         aging_reconciliation: None,
         roll_forward: None,
         cash_flow: None,

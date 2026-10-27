@@ -104,7 +104,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
                                                 trial balances, statements, open items, balance explanations,
-                                                effective-date aging, reconciliation, account roll-forwards,
+                                                effective-date or due-date aging, reconciliation, account roll-forwards,
                                                 direct cash flows or changes in equity.
                                                 V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
@@ -1409,6 +1409,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
+                                } else if report.due_date_aging.is_some() {
+                                    "due_date_aging"
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
                                 } else if report.functional_trial_balance.is_some() {
@@ -1444,6 +1446,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
+                                } else if let Some(aging) = &report.due_date_aging {
+                                    aging.items.len() + aging.unscheduled.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
                                 } else if let Some(functional) = &report.functional_trial_balance {
@@ -1539,6 +1543,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(aging) = &report.aging {
                         checks.extend(aging_checks(aging));
+                    }
+                    if let Some(aging) = &report.due_date_aging {
+                        checks.extend(due_date_aging_checks(aging));
                     }
                     if let Some(comparison) = &report.aging_reconciliation {
                         checks.extend(reconciliation_checks(comparison));
@@ -2088,6 +2095,170 @@ fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
                 ("item_count", n(total.amounts.item_count)),
             ],
         ));
+    }
+    checks
+}
+
+fn due_date_aging_checks(report: &crate::report::VerifiedDueDateAging) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "due_date_aging_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "account_filter",
+                report
+                    .account_filter
+                    .map_or(Json::Null, |id| s(format!("{id:032x}"))),
+            ),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "age_basis",
+                s("civil days past journaled contractual due dates"),
+            ),
+            (
+                "settlement_order",
+                s("earliest contractual installment first"),
+            ),
+            (
+                "missing_terms",
+                s("explicitly unscheduled; no inferred maturity"),
+            ),
+            (
+                "economic_truth",
+                s("not judged; the journal authenticates the recorded terms"),
+            ),
+        ],
+    )];
+    for (index, band) in report.bands.iter().enumerate() {
+        checks.push(Check::pass(
+            "due_date_aging_band",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("lower_inclusive", n(band.lower_inclusive)),
+                (
+                    "upper_inclusive",
+                    band.upper_inclusive.map_or(Json::Null, n),
+                ),
+            ],
+        ));
+    }
+    for row in &report.items {
+        let item = &row.item;
+        checks.push(Check::pass(
+            "due_date_aging_item",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", item.entry))),
+                ("ordinal", n(u64::from(item.ordinal))),
+                ("account", s(format!("{:032x}", item.account))),
+                ("unit", n(u64::from(item.unit_id))),
+                ("side", s(if item.debit { "debit" } else { "credit" })),
+                ("effective_date", day(Some(item.effective_date))),
+                ("recorded_at", n(item.recorded_at)),
+                ("original", s(item.original.to_string())),
+                ("applied", s(item.applied.to_string())),
+                ("applied_out", s(item.applied_out.to_string())),
+                ("item_open", s(item.open.to_string())),
+                ("due_date", day(Some(row.due_date))),
+                ("open", s(row.open.to_string())),
+                ("days_past_due", n(row.days_past_due)),
+                ("bucket", n(row.bucket as u64)),
+            ],
+        ));
+    }
+    for row in &report.unscheduled {
+        let item = &row.item;
+        let (reason, reason_code) = match row.reason {
+            crate::report::VerifiedUnscheduled::NoTerms => ("no_terms", Json::Null),
+            crate::report::VerifiedUnscheduled::MissingMaturity => ("missing_maturity", Json::Null),
+            crate::report::VerifiedUnscheduled::Disputed { reason_code } => {
+                ("disputed", n(u64::from(reason_code)))
+            }
+        };
+        checks.push(Check::pass(
+            "due_date_aging_unscheduled",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", item.entry))),
+                ("ordinal", n(u64::from(item.ordinal))),
+                ("account", s(format!("{:032x}", item.account))),
+                ("unit", n(u64::from(item.unit_id))),
+                ("side", s(if item.debit { "debit" } else { "credit" })),
+                ("open", s(item.open.to_string())),
+                ("reason", s(reason)),
+                ("reason_code", reason_code),
+            ],
+        ));
+    }
+    // A scheduled item may contribute several installments; emit its history
+    // once, identified by the immutable original entry/ordinal.
+    let mut shown = std::collections::BTreeSet::new();
+    for item in report
+        .items
+        .iter()
+        .map(|row| &row.item)
+        .chain(report.unscheduled.iter().map(|row| &row.item))
+    {
+        if !shown.insert((item.entry, item.ordinal)) {
+            continue;
+        }
+        for application in &item.applications {
+            checks.push(Check::pass(
+                "due_date_aging_application",
+                "recomputation",
+                vec![
+                    ("target_entry", s(format!("{:032x}", item.entry))),
+                    ("target_ordinal", n(u64::from(item.ordinal))),
+                    ("entry", s(format!("{:032x}", application.entry))),
+                    ("ordinal", n(u64::from(application.ordinal))),
+                    ("amount", s(application.amount.to_string())),
+                    ("recorded_at", n(application.recorded_at)),
+                    ("live", Json::Bool(application.live)),
+                ],
+            ));
+        }
+    }
+    for cell in &report.cells {
+        checks.push(Check::pass(
+            "due_date_aging_cell",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", cell.account))),
+                ("unit", n(u64::from(cell.unit_id))),
+                ("bucket", n(cell.bucket as u64)),
+                ("debits", s(cell.amounts.debits.to_string())),
+                ("credits", s(cell.amounts.credits.to_string())),
+                ("item_count", n(cell.amounts.item_count)),
+            ],
+        ));
+    }
+    for (name, totals) in [
+        ("due_date_aging_total", &report.totals),
+        (
+            "due_date_aging_unscheduled_total",
+            &report.unscheduled_totals,
+        ),
+    ] {
+        for total in totals {
+            checks.push(Check::pass(
+                name,
+                "recomputation",
+                vec![
+                    ("account", s(format!("{:032x}", total.account))),
+                    ("unit", n(u64::from(total.unit_id))),
+                    ("debits", s(total.amounts.debits.to_string())),
+                    ("credits", s(total.amounts.credits.to_string())),
+                    ("item_count", n(total.amounts.item_count)),
+                ],
+            ));
+        }
     }
     checks
 }
@@ -3394,6 +3565,118 @@ mod tests {
         assert!(render(3).contains("\"live\":false"));
         assert!(render(4).contains(&format!("\"debits\":\"{}\"", i128::MAX)));
         assert!(render(5).contains("\"credits\":\"0\""));
+    }
+
+    #[test]
+    fn due_date_aging_renders_installments_unscheduled_reasons_and_history_once() {
+        use crate::report::*;
+        let item = VerifiedOpenItem {
+            entry: 1,
+            ordinal: 1,
+            account: 9,
+            unit_id: 1,
+            debit: false,
+            effective_date: 10,
+            recorded_at: 3,
+            original: 100,
+            applied: 40,
+            applied_out: 0,
+            open: 60,
+            applications: vec![VerifiedApplication {
+                entry: 2,
+                ordinal: 0,
+                amount: 40,
+                recorded_at: 4,
+                live: true,
+            }],
+        };
+        let mut disputed = item.clone();
+        disputed.entry = 3;
+        disputed.original = i128::MAX;
+        disputed.applied = 0;
+        disputed.open = i128::MAX;
+        disputed.applications.clear();
+        let report = VerifiedDueDateAging {
+            book_id: [3; 16],
+            known_at: 9,
+            effective_through: 40,
+            account_filter: Some(9),
+            source_certificate_digest: [4; 32],
+            bands: vec![
+                VerifiedAgingBand {
+                    lower_inclusive: 0,
+                    upper_inclusive: Some(0),
+                },
+                VerifiedAgingBand {
+                    lower_inclusive: 1,
+                    upper_inclusive: None,
+                },
+            ],
+            items: vec![
+                VerifiedDueDateAgedItem {
+                    item: item.clone(),
+                    due_date: 60,
+                    open: 50,
+                    days_past_due: 0,
+                    bucket: 0,
+                },
+                VerifiedDueDateAgedItem {
+                    item,
+                    due_date: 30,
+                    open: 10,
+                    days_past_due: 10,
+                    bucket: 1,
+                },
+            ],
+            cells: vec![],
+            totals: vec![VerifiedAgingTotal {
+                account: 9,
+                unit_id: 1,
+                amounts: VerifiedAgingAmounts {
+                    debits: 0,
+                    credits: 60,
+                    item_count: 2,
+                },
+            }],
+            unscheduled: vec![VerifiedUnscheduledItem {
+                item: disputed,
+                reason: VerifiedUnscheduled::Disputed { reason_code: 9 },
+            }],
+            unscheduled_totals: vec![VerifiedAgingTotal {
+                account: 9,
+                unit_id: 1,
+                amounts: VerifiedAgingAmounts {
+                    debits: 0,
+                    credits: i128::MAX,
+                    item_count: 1,
+                },
+            }],
+        };
+        let checks = due_date_aging_checks(&report);
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|c| c.name == "due_date_aging_application")
+                .count(),
+            1
+        );
+        let render = |name: &str| {
+            let mut rendered = String::new();
+            for check in checks.iter().filter(|c| c.name == name) {
+                Json::Obj(check.detail.clone()).write(&mut rendered);
+            }
+            rendered
+        };
+        assert!(render("due_date_aging_parameters").contains("no inferred maturity"));
+        assert!(render("due_date_aging_item").contains("\"days_past_due\":10"));
+        assert!(render("due_date_aging_item").contains("\"item_open\":\"60\""));
+        assert!(render("due_date_aging_item").contains("\"open\":\"10\""));
+        assert!(render("due_date_aging_unscheduled").contains("\"reason\":\"disputed\""));
+        assert!(render("due_date_aging_unscheduled").contains("\"reason_code\":9"));
+        assert!(
+            render("due_date_aging_unscheduled_total")
+                .contains(&format!("\"credits\":\"{}\"", i128::MAX))
+        );
     }
 
     #[test]

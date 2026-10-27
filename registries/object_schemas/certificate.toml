@@ -7,8 +7,26 @@ schema_version = 1
 name = "Certificate"
 owner = "fa::certificate::ReportCertificate"
 major = 1
-minor = 3
-format_domains = ["fa:report-certificate:v1", "fa:report-certificate:v2", "fa:report-certificate:v3", "fa:report-certificate:v4", "fa:post-plan:v1"]
+minor = 4
+format_domains = ["fa:report-certificate:v1", "fa:report-certificate:v2", "fa:report-certificate:v3", "fa:report-certificate:v4", "fa:post-plan:v1", "fa:due-date-aging-certificate:v1"]
 externally_verifiable = true
 
 fields = ["format_domain:bytes", "book_id:bytes16", "branch_id:bytes16", "known_at:system_selector", "resolved_sequence:u64", "effective_selection:tagged_selection", "native_inputs:list<native_result_certificate>", "journal_prefix:list<entry_digest_pair>", "registry_digests:registry_closure", "output_digest:bytes32", "output_bytes:bytes"]
+
+# Due-date aging is an additive family, leaving effective-date aging v1 intact.
+# Outer wire: bytes(format), producer:u128, capability:bytes32,
+# bytes(native OpenItems certificate), cutoff:i32, list(bucket_bound:u32),
+# bytes(output), digest:bytes32. The digest domain is
+# fa:due-date-aging-certificate-digest:v1 over the framed outer body.
+# Output domain: fa:due-date-aging:v1; coordinates and bands precede scheduled
+# items, cells, totals, unscheduled items and unscheduled totals. Scheduled
+# items retain the complete OpenItem encoding followed by due_date:i32,
+# installment_open:i128, days_past_due:u64 and bucket:u32. Unscheduled items
+# retain OpenItem followed by reason:u8 (0 no terms, 1 missing maturity,
+# 2 disputed plus reason_code:u32). All integers are little-endian.
+# Extension 33 terms are authenticated inside the complete native prefix;
+# the verifier derives earliest-installment relief from historical applications.
+# Native amounts stay separate by account/unit and debit/credit side. No
+# due date is inferred for an unscheduled item. Maximum encoded size: 64 MiB;
+# at most 128 strictly ascending finite bucket bounds. Decoding establishes
+# content integrity; full source replay establishes the accounting result.

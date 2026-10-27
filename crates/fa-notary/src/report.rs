@@ -141,6 +141,7 @@ pub fn assemble_with_registries(
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
+        || due_date_aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
         || equity_certificate(certificate)
@@ -317,9 +318,17 @@ fn v3_certificate(certificate: &[u8], output: &str, selector: u8) -> bool {
 /// replays the complete outer certificate before assembly, and the independent
 /// verifier checks its digest, source, cutoff and exact output again.
 fn aging_certificate(certificate: &[u8]) -> bool {
+    aging_certificate_with_format(certificate, b"fa:aging-certificate:v1")
+}
+
+fn due_date_aging_certificate(certificate: &[u8]) -> bool {
+    aging_certificate_with_format(certificate, b"fa:due-date-aging-certificate:v1")
+}
+
+fn aging_certificate_with_format(certificate: &[u8], format: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "aging format")? != b"fa:aging-certificate:v1" {
+        if reader.bytes(64, "aging format")? != format {
             return Ok(false);
         }
         reader.u128("aging producer")?;
@@ -484,6 +493,7 @@ fn assemble_inner(
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)
                 || aging_certificate(certificate)
+                || due_date_aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
                 || equity_certificate(certificate)
