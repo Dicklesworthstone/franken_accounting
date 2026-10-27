@@ -71,12 +71,13 @@ impl RunOutcome {
         self.lines.join("\n")
     }
 
-    /// The printed row line of `id`, if any.
+    /// The printed row line of `id`, if any: a `PASS`, `FAIL` or `UNRUN`
+    /// line, never a load check's `RETYPE` line of the same id.
     pub fn row(&self, id: &str) -> Option<&str> {
-        self.lines
-            .iter()
-            .map(String::as_str)
-            .find(|l| l.split(' ').nth(1) == Some(id))
+        self.lines.iter().map(String::as_str).find(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN")) && words.next() == Some(id)
+        })
     }
 }
 
@@ -316,6 +317,8 @@ pub struct BookRun<'c> {
     pub cases: BTreeMap<String, super::lifecycle::CaseRun>,
     /// Each certified scenario diff: the scenario and its certificate file.
     pub scenario_diffs: Vec<(String, String)>,
+    /// Intent id -> the entry vid `fa scenario run` planned it as (A11b).
+    pub planned_entries: BTreeMap<String, String>,
     /// The outsider stage's checks, for a book with a checkpoint (A8a).
     pub outsider: Option<super::outsider::Outsider>,
 }
@@ -362,6 +365,7 @@ impl<'c> BookRun<'c> {
             issuances: BTreeMap::new(),
             cases: BTreeMap::new(),
             scenario_diffs: Vec::new(),
+            planned_entries: BTreeMap::new(),
             outsider: None,
         }
     }
@@ -1619,7 +1623,7 @@ impl<'c> BookRun<'c> {
     /// Reads the posted entry back and maps its legs, in order, to the
     /// intent's `[[leg]]` rows (sorted by ordinal, as rendered), checking
     /// each side; this is what projects a leg or account cite to its fact.
-    fn map_legs(&mut self, seq: i128, intent_id: &str, vid: &str) {
+    pub(crate) fn map_legs(&mut self, seq: i128, intent_id: &str, vid: &str) {
         let shown = self.call(
             seq,
             intent_id,

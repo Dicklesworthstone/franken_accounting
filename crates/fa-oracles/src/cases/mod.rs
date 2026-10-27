@@ -52,6 +52,7 @@ pub mod amount;
 pub mod book;
 pub mod branch;
 pub mod check;
+pub mod contrib;
 pub mod date;
 pub mod derive;
 pub mod embedded;
