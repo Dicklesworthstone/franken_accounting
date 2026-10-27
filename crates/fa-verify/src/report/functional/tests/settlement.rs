@@ -886,6 +886,172 @@ fn full_portable_settlement_bundle_recomputes_and_rejects_a_resealed_wrong_resul
 }
 
 #[test]
+fn resealed_settlement_registry_cannot_redefine_the_interpreted_law() {
+    let (mut records, rates, source) = history(100, 110, (11, 10), (3, 2));
+    records.push(payment(
+        6,
+        20,
+        b"registry-payment",
+        &component(&source, 0, "1100", true, 100, 110, 150),
+        &rates[1],
+    ));
+    let selected = Selection::AsOf(58);
+    let spec = book(&[]);
+    let (expected, output) = replay_fixture(&records, selected.clone(), 6, &spec, &rates).unwrap();
+    let original_docs = registries();
+    let (bundle, signed, pin) = pack_with_registries(
+        &records,
+        &selected,
+        6,
+        &spec,
+        &rates,
+        &output,
+        &original_docs,
+    );
+    let valid = verify_report_with_inputs(&bundle, &[], None, None, Some(&pin), None, |_, _| {
+        Ok(signed.clone())
+    })
+    .unwrap();
+    assert_eq!(valid.functional_trial_balance, Some(expected));
+
+    // Independently encode canonical registry fields. Changing their lengths
+    // rewrites the length prefixes too: these are valid canonical documents,
+    // with changed accounting semantics rather than damaged framing.
+    let text_field = |key: &str, value: &str| {
+        let mut w = Writer::default();
+        w.u64(key.len() as u64)
+            .fixed(key.as_bytes())
+            .u8(1)
+            .u64(value.len() as u64)
+            .fixed(value.as_bytes());
+        w.buf
+    };
+    let int_field = |key: &str, value: i128| {
+        let mut w = Writer::default();
+        w.u64(key.len() as u64)
+            .fixed(key.as_bytes())
+            .u8(2)
+            .i128(value);
+        w.buf
+    };
+    let class_field = |classes: &[&str]| {
+        let mut w = Writer::default();
+        w.u64(16)
+            .fixed(b"admitted_classes")
+            .u8(4)
+            .u64(classes.len() as u64);
+        for class in classes {
+            w.u8(1).u64(class.len() as u64).fixed(class.as_bytes());
+        }
+        w.buf
+    };
+    let original_classes = class_field(&["Original", "Adjusting", "Reversal", "Resolution"]);
+    let code = text_field("code", "settlement_carrying_basis");
+    let mut start_marker = 12_u64.to_le_bytes().to_vec();
+    start_marker.extend_from_slice(&original_classes);
+    start_marker.extend_from_slice(&code);
+    let fx = &original_docs[4].1;
+    let start = fx
+        .windows(start_marker.len())
+        .position(|window| window == start_marker)
+        .unwrap();
+    let version = int_field("version", 1);
+    let end = start
+        + fx[start..]
+            .windows(version.len())
+            .position(|window| window == version)
+            .unwrap()
+        + version.len();
+    let original_row = &fx[start..end];
+    let semantics = "FX law semantics differ from this verifier's supported version";
+    let missing = "missing supported FX law version";
+    for (field, original, replacement, expected_detail) in [
+        (
+            "code",
+            code,
+            text_field("code", "different_carrying_basis"),
+            semantics,
+        ),
+        (
+            "name",
+            text_field("name", "SettlementCarryingBasis"),
+            text_field("name", "DifferentCarryingBasis"),
+            semantics,
+        ),
+        (
+            "purpose",
+            text_field("rate_purpose", "Settlement"),
+            text_field("rate_purpose", "SpotClose"),
+            semantics,
+        ),
+        (
+            "date",
+            text_field("date_selector", "settlement_and_settled_item_dates"),
+            text_field("date_selector", "entry_effective_date"),
+            semantics,
+        ),
+        (
+            "rounding",
+            text_field("rounding_law", "HalfEven"),
+            text_field("rounding_law", "HalfUp"),
+            semantics,
+        ),
+        (
+            "residual",
+            text_field("residual_mode", "designated_leg"),
+            text_field("residual_mode", "none"),
+            semantics,
+        ),
+        (
+            "classes",
+            original_classes,
+            class_field(&["Original", "Adjusting", "Reversal", "Pending"]),
+            semantics,
+        ),
+        (
+            "status",
+            text_field("status", "live"),
+            text_field("status", "reserved"),
+            semantics,
+        ),
+        ("id", int_field("id", 4), int_field("id", 404), missing),
+        ("version", version, int_field("version", 2), missing),
+    ] {
+        let matches: Vec<_> = original_row
+            .windows(original.len())
+            .enumerate()
+            .filter_map(|(at, bytes)| (bytes == original).then_some(at))
+            .collect();
+        let [at] = matches.as_slice() else {
+            panic!("{field} must name exactly one field in the original law-4 row");
+        };
+        let mut changed_row = original_row.to_vec();
+        changed_row.splice(*at..*at + original.len(), replacement);
+        let mut docs = original_docs.clone();
+        docs[4].1.splice(start..end, changed_row);
+        assert_ne!(closure(&docs), closure(&original_docs), "{field}");
+        // Rebind the canonical registry closure, certificate digest and
+        // recipient pin together. The unchanged checkpoint still authenticates
+        // every journal record; no stale hash or wrong pin can cause refusal.
+        let (bundle, signed, changed_pin) =
+            pack_with_registries(&records, &selected, 6, &spec, &rates, &output, &docs);
+        assert_ne!(changed_pin, pin, "{field}");
+        let error = verify_report_with_inputs(
+            &bundle,
+            &[],
+            None,
+            None,
+            Some(&changed_pin),
+            None,
+            |_, _| Ok(signed.clone()),
+        )
+        .unwrap_err();
+        assert_eq!(error.predicate, "registry_closure", "{field}: {error}");
+        assert_eq!(error.detail, expected_detail, "{field}");
+    }
+}
+
+#[test]
 fn a_prior_settlement_quote_and_period_average_source_are_supported() {
     let (mut records, mut rates, _) = history(10, 15, (3, 2), (2, 1));
     rates[0] = rate_fixture(3, 2, 3, 30);

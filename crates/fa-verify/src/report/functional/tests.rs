@@ -821,10 +821,30 @@ fn pack(
     rates: &[RateFixture],
     output: &[u8],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    pack_with_registries(
+        records,
+        selected,
+        known_at,
+        spec,
+        rates,
+        output,
+        &registries(),
+    )
+}
+
+fn pack_with_registries(
+    records: &[Record],
+    selected: &Selection,
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    docs: &[(String, Vec<u8>)],
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let mut selector = Writer::default();
     selector.u8(8);
     selection(&mut selector, selected).unwrap();
-    pack_profile(
+    pack_profile_with_registries(
         records,
         known_at,
         spec,
@@ -835,6 +855,7 @@ fn pack(
             output_format: OUTPUT_FORMAT,
             selector: &selector.buf,
         },
+        docs,
     )
 }
 
@@ -852,7 +873,26 @@ fn pack_profile(
     output: &[u8],
     profile: CertificateProfile<'_>,
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
-    let docs = registries();
+    pack_profile_with_registries(
+        records,
+        known_at,
+        spec,
+        rates,
+        output,
+        profile,
+        &registries(),
+    )
+}
+
+fn pack_profile_with_registries(
+    records: &[Record],
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    profile: CertificateProfile<'_>,
+    docs: &[(String, Vec<u8>)],
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let mut last = None;
     let mut ordinal = 0u32;
     let historical: Vec<_> = records
@@ -880,7 +920,7 @@ fn pack_profile(
         .fixed(&[0; 16])
         .u64(known_at)
         .fixed(profile.selector);
-    cert.fixed(&closure(&docs))
+    cert.fixed(&closure(docs))
         .fixed(&root_of(&historical))
         .u64(historical.len() as u64)
         .count(8);
@@ -929,7 +969,7 @@ fn pack_profile(
     }
     w.count(0).count(docs.len());
     for (name, bytes) in docs {
-        w.bytes(name.as_bytes()).bytes(&bytes);
+        w.bytes(name.as_bytes()).bytes(bytes);
     }
     w.bytes(spec).count(rates.len());
     let mut rates: Vec<_> = rates.iter().collect();
