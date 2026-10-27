@@ -151,8 +151,8 @@ fn head(book: &Path) -> i128 {
     integer(output.get("coordinate").unwrap(), "known_at")
 }
 
-/// AccessEvents recorded after `since` (fa-7dw): a read-only token's command
-/// records one before it observes the book, refused or not.
+/// AccessEvents recorded after `since` (fa-7dw): bound reads record one
+/// before observing the book, including writing and Agent sessions.
 fn access_events_since(book: &Path, since: i128) -> i128 {
     let log = ok(book, &["access", "log", "--since", &since.to_string()]);
     integer(log.get("data").unwrap(), "count")
@@ -2266,6 +2266,7 @@ fn governed_sources_need_explicit_privilege_and_redacted_views_never_enable_matc
         )
         .unwrap();
         let args = ["bank", "match", "--import", manifest, "--json"].map(str::to_string);
+        let before_match = head(&f.book);
         let (status, captured) = fa_with_authority(
             &args,
             Files {
@@ -2279,12 +2280,18 @@ fn governed_sources_need_explicit_privilege_and_redacted_views_never_enable_matc
         let refused = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
         assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
         assert!(!captured.stdout.contains("SALE-1"));
-        assert_eq!(head(&f.book), after_view);
+        assert_eq!(access_events_since(&f.book, before_match), 1);
+        assert_eq!(
+            head(&f.book),
+            before_match + 1,
+            "only the attempted read is published"
+        );
 
         // The same session reads the governed source through its derived
         // view (fa-0x0): a document read is read admission, never the
         // trunk-write rule an Agent's posts meet.
         let args = ["document", "read", source, "--json"].map(str::to_string);
+        let before_read = head(&f.book);
         let (status, captured) = fa_with_authority(
             &args,
             Files {
@@ -2299,8 +2306,15 @@ fn governed_sources_need_explicit_privilege_and_redacted_views_never_enable_matc
         assert_eq!(text(data(&read), "view"), "redacted", "{profile:?}");
         assert_eq!(data(&read).get("text"), Some(&Json::Null));
         assert!(!captured.stdout.contains("BANK-123"));
-        assert_eq!(head(&f.book), after_view);
+        assert_eq!(access_events_since(&f.book, before_read), 1);
+        assert_eq!(
+            head(&f.book),
+            before_read + 1,
+            "redacted delivery is audited too"
+        );
     }
+    assert_eq!(access_events_since(&f.book, after_view), 4);
+    let after_bound_reads = head(&f.book);
 
     let full = ok_privileged(&f.book, &["document", "read", source]);
     assert_eq!(text(data(&full), "view"), "full");
@@ -2311,7 +2325,7 @@ fn governed_sources_need_explicit_privilege_and_redacted_views_never_enable_matc
     let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
     assert_eq!(integer(data(&matched), "line_count"), 3);
     assert_eq!(data(&matched).get("confirmed"), Some(&Json::Bool(false)));
-    assert_eq!(head(&f.book), after_view);
+    assert_eq!(head(&f.book), after_bound_reads);
 }
 
 #[test]

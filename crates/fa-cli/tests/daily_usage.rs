@@ -257,11 +257,21 @@ impl Fixture {
         let before = self.head();
         let event = self.ok(&["--token", token, "verify", "usage"]);
         assert_eq!(text(&event, "event"), "usage_verified");
-        assert_eq!(number(data(&event), "known_at"), before);
+        assert_eq!(number(data(&event), "known_at"), before + 1);
         assert_eq!(number(data(&event), "charges_checked"), charges);
         assert_eq!(number(data(&event), "cells_checked"), cells);
         assert_eq!(data(&event).get("drift"), Some(&Json::Arr(Vec::new())));
-        assert_eq!(self.head(), before, "verification must be read only");
+        let log = self.ok(&["access", "log", "--since", &before.to_string()]);
+        assert_eq!(number(data(&log), "count"), 1);
+        let access = &data(&log).get("events").and_then(Json::as_arr).unwrap()[0];
+        assert_eq!(text(access, "command"), "verify usage");
+        assert_eq!(number(access, "observed_at"), before);
+        assert_eq!(number(access, "recorded_at"), before + 1);
+        assert_eq!(
+            self.head(),
+            before + 1,
+            "verification publishes only its AccessEvent, never usage charges"
+        );
     }
 }
 
@@ -311,10 +321,16 @@ fn cli_root_issue_enforces_cumulative_gross_debits_and_retries_do_not_recharge()
         first_prefix,
         "the verification result and envelope bind the same retained prefix"
     );
+    let log = fixture.ok(&["access", "log", "--since", &current.to_string()]);
+    assert_eq!(number(data(&log), "count"), 1);
+    let access = &data(&log).get("events").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(text(access, "command"), "verify usage");
+    assert_eq!(number(access, "observed_at"), current);
+    assert_eq!(number(access, "recorded_at"), current + 1);
     assert_eq!(
         fixture.head(),
-        current,
-        "historical verification cannot rewrite the live usage cell"
+        current + 1,
+        "historical verification writes only its AccessEvent, never the live usage cell"
     );
 }
 

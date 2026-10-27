@@ -1,8 +1,8 @@
 //! `fa access log` (plan §9.7, §14.5; bead fa-7dw): who read what. Every
-//! command a read-only Human bound session runs (a capability whose ops stay
-//! within read, produce and verify) commits an AccessEvent before it observes
-//! the book; this lists them. Reading the log under such a session records that
-//! read too.
+//! bound read and plan-only delivery commits an AccessEvent before it observes
+//! the book, including Agent and write-capable sessions. This lists those
+//! attempts, not a claim that every attempted response was delivered. Reading
+//! the log records that query once, never recursively for its result rows.
 
 use fa_model::principal_vid;
 use fgdb_types::CommitSeq;

@@ -258,10 +258,24 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
     open(&f);
     plan(&f, "review-one", "Original", "6000", "1000", "3.00");
     let before = head(&f.book);
+    let original_rows = rows(&f.book);
     let (code, output) = bound(&f, &["read"], &dry_run());
     assert_eq!(code, 0, "{output:?}");
     assert_eq!(text(&output[0], "event"), "draft_diff");
-    assert_eq!(head(&f.book), before);
+    let log = ok(&f.book, &["access", "log", "--since", &before.to_string()]);
+    assert_eq!(integer(&log, "count"), 1);
+    let access = &get(&log, "events").as_arr().unwrap()[0];
+    assert_eq!(text(access, "command"), "close dry-run");
+    assert_eq!(text(access, "principal_name"), "review-agent");
+    assert_eq!(integer(access, "observed_at"), before);
+    assert_eq!(integer(access, "recorded_at"), before + 1);
+    let after_read = head(&f.book);
+    assert_eq!(
+        after_read,
+        before + 1,
+        "draft rehearsal publishes only its access receipt"
+    );
+    assert_eq!(rows(&f.book), original_rows);
 
     let mut certify = dry_run().to_vec();
     certify.push("--certify");
@@ -269,7 +283,7 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
     assert_eq!(code, 7, "{output:?}");
     assert_eq!(output.len(), 1, "{output:?}");
     assert_eq!(text(&output[0], "event"), "error");
-    assert_eq!(head(&f.book), before);
+    assert_eq!(head(&f.book), after_read);
     let (code, output) = bound(
         &f,
         &["produce"],
@@ -283,7 +297,7 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
         ],
     );
     assert_eq!(code, 7, "authority before draft existence: {output:?}");
-    assert_eq!(head(&f.book), before);
+    assert_eq!(head(&f.book), after_read);
 
     let (code, output) = bound(&f, &["read", "produce"], &certify);
     assert_eq!(code, 0, "{output:?}");

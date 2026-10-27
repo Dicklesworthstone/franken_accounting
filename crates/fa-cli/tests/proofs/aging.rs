@@ -192,7 +192,7 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
     let refused = fa_verify::cli::run(&wrong_pin, &|path| std::fs::read(path));
     assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
     assert!(!refused.stdout.contains("\"verdict\":\"verified\""));
-    assert_eq!(fixture.head(), before, "all three exports are reads");
+    fixture.assert_proof_accesses_since(before, "aging-reader", 1);
 }
 
 #[test]
@@ -402,11 +402,7 @@ fn retained_aging_reconciliation_exports_both_sources_and_the_outer_recipient_pi
     assert_eq!(exit, 0, "{}{}", output.stdout, output.stderr);
     let produced = parse_line(&output.stdout, &output.stderr);
     assert_eq!(bytes(&produced), original_bundle.unwrap());
-    assert_eq!(
-        fixture.head(),
-        before,
-        "all exports preserve the retained book"
-    );
+    fixture.assert_proof_accesses_since(before, "reconciliation-reader", 1);
 }
 
 #[test]

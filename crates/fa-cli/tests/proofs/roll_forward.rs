@@ -206,9 +206,5 @@ fn retained_lead_schedule_and_detail_source_export_by_oid_file_and_bound_stdin()
     wrong_pin[7] = fa_verify::blake3::hex(&certificate.source_certificate().digest);
     let result = fa_verify::cli::run(&wrong_pin, &|path| std::fs::read(path));
     assert_eq!(result.exit, 8, "{}{}", result.stdout, result.stderr);
-    assert_eq!(
-        fixture.head(),
-        before,
-        "all export routes leave the book unchanged"
-    );
+    fixture.assert_proof_accesses_since(before, "lead-reader", 1);
 }

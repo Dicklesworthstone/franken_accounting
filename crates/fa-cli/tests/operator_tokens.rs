@@ -530,18 +530,28 @@ fn operator_confirmation_preserves_identity_paths_and_exact_void_plan_capability
             &[verb, "--intent", "-", "--dry-run"],
             Some(&intent),
         );
-        assert_eq!(f.book.head().unwrap(), before);
+        let access = f.book.access_log(before).unwrap();
+        assert_eq!(access.len(), 1);
+        assert_eq!(access[0].record.command, verb);
+        assert_eq!(access[0].record.principal_name, "operator-a");
+        assert_eq!(access[0].observed_at, before);
+        assert_eq!(access[0].recorded_at.0, before.0 + 1);
+        let prepared_at = f.book.head().unwrap();
+        assert_eq!(
+            prepared_at, access[0].recorded_at,
+            "plan delivery publishes only its audit receipt"
+        );
         assert_eq!(text(&plan, "authority"), "issued-token");
         operator_action(&plan, &f.dir.join("book"));
         let bytes = text(&plan, "bytes");
         let (exit, wrong) = f.run(&other, &["commit", "--plan", "-"], Some(bytes));
         assert_eq!(exit, 6, "{}", wrong.render());
         assert_eq!(text(&wrong, "refusal_id"), "FA-REF-034");
-        assert_eq!(f.book.head().unwrap(), before);
+        assert_eq!(f.book.head().unwrap(), prepared_at);
         let (exit, refused) = f.run(&preparer, &["commit", "--plan", "-"], Some(bytes));
         assert_eq!(exit, 7, "{}", refused.render());
         assert_eq!(text(&refused, "refusal_id"), "FA-REF-007");
-        assert_eq!(f.book.head().unwrap(), before);
+        assert_eq!(f.book.head().unwrap(), prepared_at);
         let committed = f.ok(&operator, &["commit", "--plan", "-"], Some(bytes));
         assert_eq!(
             text(&committed, "event"),
