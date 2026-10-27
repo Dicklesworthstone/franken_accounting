@@ -185,6 +185,53 @@ fn _selftest_neg_read_back_t_never_passes_as_t() {
     );
 }
 
+/// A7b and A11b (§3.3 step 7): a stock T is explained in every period up
+/// to its own. A planted copy reads the bridge T on 1100 (an Asset) at
+/// 2026Q2: the runner explains 1100 certified in 2026Q1 and then 2026Q2,
+/// and the union of both still holds and re-adds to B, since nothing posts
+/// to 1100 in Q2.
+#[test]
+fn stock_t_is_explained_in_every_period_up_to_its_own() {
+    let o = match run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "read_coordinate = \"2026Q1\"\nread_selector = \"currently_stated\"\npublished = \"B-1\"",
+            new: "read_coordinate = \"2026Q2\"\nread_selector = \"currently_stated\"\npublished = \"B-1\"",
+        }],
+        HARNESS_VERBS,
+    ) {
+        Ok(o) => o,
+        Err(o) => *o,
+    };
+    let text = o.text();
+    let periods: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| {
+            s.reference == "_selftest-T-01/-" && words(&s.argv_redacted) == "explain balance"
+        })
+        .map(|s| {
+            let at = s.argv_redacted.iter().position(|a| a == "--period");
+            let code = at.and_then(|i| s.argv_redacted.get(i + 1));
+            assert!(s.argv_redacted.iter().any(|a| a == "--certify"), "{text}");
+            format!("{} exit={}", code.map_or("-", String::as_str), s.exit)
+        })
+        .collect();
+    assert_eq!(
+        periods,
+        ["FY2026-P01 exit=0", "FY2026-P02 exit=0"],
+        "{text}"
+    );
+    assert_eq!(
+        o.row("_selftest-T-01"),
+        Some(
+            "UNRUN _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds reason=outsider"
+        ),
+        "{text}"
+    );
+}
+
 /// A11b: an extra posting on 1100 in the T's quarter (P-1 moved onto it,
 /// and B raised by its 75.00 so the read still equals B) is a contribution
 /// the predicate does not name: the row is re-typed R.
