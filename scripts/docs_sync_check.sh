@@ -11,6 +11,7 @@
 #       and every step is invoked in scripts/check.sh
 #
 # Logs every mismatch with file:line on both sides.
+# A default repository check also runs --self-test; fixtures are retained.
 # =============================================================================
 
 set -uo pipefail
@@ -20,7 +21,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/gate_verdict.sh"
 
 TARGET_ROOT="${1:-$ROOT}"
-gate_init "docs-sync"
+if [ "$TARGET_ROOT" = --self-test ]; then
+  gate_init "docs-sync-selftest"
+else
+  gate_init "docs-sync"
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   gate_unrun "docs-sync" "python3 is not installed"
@@ -28,16 +33,82 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit $?
 fi
 
-TMP_EVAL="$(mktemp "${TMPDIR:-/tmp}/fa-docs-sync.XXXXXX")"
-cleanup() {
-  rm -f "$TMP_EVAL"
-}
-trap cleanup EXIT
+if [ "$TARGET_ROOT" = --self-test ]; then
+  python3 - "$ROOT" <<'PY'
+import pathlib
+import subprocess
+import sys
+import tempfile
 
-python3 - "$TARGET_ROOT" >"$TMP_EVAL" <<'PY'
+source = pathlib.Path(sys.argv[1])
+base = pathlib.Path(tempfile.mkdtemp(prefix="fa-docs-sync-selftest-"))
+registry = '''[global]
+flags = ["--token", "--book"]
+switches = ["--json"]
+flag_aliases = ["--robot=--json"]
+[[verb]]
+name = "period"
+subcommands = ["close"]
+'''
+cases = [
+    ("plain", "fa period close FY2026-P03", 0, "PASS readme-commands"),
+    ("registered-prefix", 'fa --token "controller token" --book ./book --json period close FY2026-P03', 0, "PASS readme-commands"),
+    ("inline-alias-prefix", "fa --token=controller.token --robot period close FY2026-P03", 0, "PASS readme-commands"),
+    ("unknown-prefix", "fa --invented t period close", 1, "unregistered verb `--invented`"),
+    ("missing-value", "fa --token", 1, "needs a value"),
+    ("unknown-verb", "fa --token t invented", 1, "unregistered verb `invented`"),
+    ("unknown-subcommand", "fa --token t period teleport", 1, "missing valid subcommand"),
+    ("evaluator-failure", "fa period close FY2026-P03", 1, "Python evaluation failed"),
+    ("missing-files", "", 2, "missing required file"),
+]
+failures = 0
+for name, command, expected, diagnostic in cases:
+    fixture = base / name
+    fixture.mkdir()
+    if name != "missing-files":
+        (fixture / "registries").mkdir()
+        (fixture / "scripts").mkdir()
+        (fixture / "registries/verbs.toml").write_text(registry)
+        (fixture / "scripts/check.sh").write_text("# CANONICAL_STEPS: fmt\n")
+        (fixture / "AGENTS.md").write_text("<!-- check-sh-steps: fmt -->\n")
+        date = "2026-99-99" if name == "evaluator-failure" else "2026-10-25"
+        (fixture / "README.md").write_text(f"> **Status ({date}):** fixture\n```bash\n{command}\n```\n## TL;DR\n")
+    result = subprocess.run(["bash", str(source / "scripts/docs_sync_check.sh"), str(fixture)],
+                            cwd=source, text=True, capture_output=True)
+    (base / (name + ".stdout")).write_text(result.stdout)
+    (base / (name + ".stderr")).write_text(result.stderr)
+    if result.returncode == expected and diagnostic in result.stdout + result.stderr:
+        print(f"PASS docs_sync_selftest::{name} exit={result.returncode}")
+    else:
+        failures += 1
+        print(f"FAIL docs_sync_selftest::{name} expected={expected} actual={result.returncode}; logs={base}")
+print(f"fixtures={base}")
+print(f"cases={len(cases)} failures={failures}")
+sys.exit(1 if failures else 0)
+PY
+  selftest_rc=$?
+  if [ "$selftest_rc" -eq 0 ]; then
+    gate_pass "docs-sync-selftest" "all registry-prefix and evaluator-failure controls executed"
+  else
+    gate_fail "docs-sync-selftest" "controls failed (exit $selftest_rc)"
+  fi
+  gate_verdict
+  exit $?
+fi
+
+if [ "$#" -eq 0 ]; then
+  bash "$ROOT/scripts/docs_sync_check.sh" --self-test
+  selftest_rc=$?
+  if [ "$selftest_rc" -ne 0 ]; then
+    gate_fail "docs-sync-selftest" "controls failed (exit $selftest_rc)"
+  fi
+fi
+
+EVAL_LINES="$(python3 - "$TARGET_ROOT" <<'PY'
 import datetime
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 
@@ -89,6 +160,14 @@ else:
 
 # (b) Every `fa ` command in fenced shell blocks above `## TL;DR` in README.md exists in verbs.toml
 verbs_text = (reg_dir / "verbs.toml").read_text(encoding="utf-8")
+global_match = re.search(r"^\[global\]\s*\n(.*?)(?=^\[|\Z)", verbs_text, re.M | re.S)
+global_text = global_match.group(1) if global_match else ""
+def global_values(field):
+    match = re.search(r"^" + field + r"\s*=\s*\[([^\]]*)\]", global_text, re.M)
+    return re.findall(r'"([^"]+)"', match.group(1)) if match else []
+global_flags = set(global_values("flags"))
+global_switches = set(global_values("switches"))
+flag_aliases = dict(value.split("=", 1) for value in global_values("flag_aliases"))
 verb_subs = {}
 for block in verbs_text.split("[[verb]]")[1:]:
     nm = re.search(r'^\s*name\s*=\s*"([^"]+)"', block, re.M)
@@ -141,7 +220,30 @@ for lineno, raw in enumerate(above_tldr.splitlines(), 1):
     if not joined.startswith("fa "):
         continue
     cmd_count += 1
-    words = joined.split()[1:]
+    try:
+        words = shlex.split(joined)[1:]
+    except ValueError as error:
+        cmd_mismatches.append(f"README.md:{pending_line}: malformed command `{joined}`: {error}")
+        continue
+    # The same registry defines global prefixes accepted by the real CLI.
+    # Consume only registered options; an unknown prefix still fails below.
+    while words:
+        name, equals, _value = words[0].partition("=")
+        name = flag_aliases.get(name, name)
+        if name in global_flags:
+            if not equals and len(words) < 2:
+                cmd_mismatches.append(f"README.md:{pending_line}: global flag `{name}` needs a value")
+                words = []
+                break
+            words = words[1 if equals else 2:]
+        elif name in global_switches:
+            if equals:
+                cmd_mismatches.append(f"README.md:{pending_line}: global switch `{name}` takes no value")
+                words = []
+                break
+            words = words[1:]
+        else:
+            break
     if not words:
         continue
     # Expand alias (2-word then 1-word)
@@ -243,6 +345,13 @@ else:
         f"PASS\tcheck-steps-sync\tAGENTS.md:{agents_steps_line} and scripts/check.sh:{check_steps_line} agree on all {len(check_steps)} steps"
     )
 PY
+)"
+eval_rc=$?
+if [ "$eval_rc" -ne 0 ]; then
+  gate_fail "docs-sync" "Python evaluation failed (exit $eval_rc); no complete evaluation"
+  gate_verdict
+  exit $?
+fi
 
 while IFS=$'\t' read -r kind step detail; do
   [ -z "$kind" ] && continue
@@ -260,7 +369,7 @@ while IFS=$'\t' read -r kind step detail; do
       gate_unrun "$step" "$detail"
       ;;
   esac
-done <"$TMP_EVAL"
+done <<< "$EVAL_LINES"
 
 cd "$ROOT" || exit 1
 gate_verdict
