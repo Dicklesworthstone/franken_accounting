@@ -15,6 +15,9 @@
 //!   predecessors' effects. Previously reviewed effects must still match.
 //!   Its identity derives from the draft and the
 //!   intent's key, so a retry is its recorded outcome.
+//!   A v4 Plan record atomically appends a complete ordered PostBatch, retaining
+//!   each member's v3 reviewed entry. The batch key uses a distinct record
+//!   namespace; membership and order are part of its retry comparison.
 //! - **Promote** (`Open → Promoted`) replays the planned intents to trunk in
 //!   one `PostBatch`, in planning order, in the same transaction as the
 //!   record (FA-INV-09). The promoter holds `approve` (the `draft-promote`
@@ -52,7 +55,10 @@ use crate::post::Admission;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
+mod batch;
 mod rehearsal;
+use batch::decode_plan_record;
+pub use batch::plan_batch_into_draft;
 pub(crate) use rehearsal::Rehearsing;
 pub use rehearsal::{
     DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftSourceRecord,
@@ -468,6 +474,7 @@ pub struct DraftPromoted {
 enum Kind {
     Open,
     Plan,
+    PlanBatch,
     Promote,
     Discard,
 }
@@ -476,7 +483,7 @@ impl Kind {
     fn transition(self) -> &'static str {
         match self {
             Self::Open => "Open",
-            Self::Plan => "Plan",
+            Self::Plan | Self::PlanBatch => "Plan",
             Self::Promote => "Promote",
             Self::Discard => "Discard",
         }
@@ -488,13 +495,14 @@ impl Kind {
             Self::Plan => 1,
             Self::Promote => 2,
             Self::Discard => 3,
+            Self::PlanBatch => 4,
         }
     }
 
     fn states(self) -> (u8, DraftState) {
         match self {
             Self::Open => (0, DraftState::Open),
-            Self::Plan => (DraftState::Open.tag(), DraftState::Open),
+            Self::Plan | Self::PlanBatch => (DraftState::Open.tag(), DraftState::Open),
             Self::Promote => (DraftState::Open.tag(), DraftState::Promoted),
             Self::Discard => (DraftState::Open.tag(), DraftState::Discarded),
         }
@@ -956,13 +964,13 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     view: &DraftView,
-    candidate: Option<(PostIntent, &Capability)>,
+    candidates: &[(PostIntent, &Capability)],
 ) -> Outcome<DraftPreview> {
     let mut members: Vec<_> = view.intents.iter().map(|i| i.intent.clone()).collect();
     let mut capabilities: Vec<_> = view.intents.iter().map(|i| i.capability.clone()).collect();
-    if let Some((intent, capability)) = candidate {
-        members.push(intent);
-        capabilities.push(capability.clone());
+    for (intent, capability) in candidates {
+        members.push(intent.clone());
+        capabilities.push((*capability).clone());
     }
     let batch = match PostBatch::new(promotion_key(view.vid), members) {
         Ok(batch) => batch,
@@ -1106,7 +1114,7 @@ pub async fn preview_draft<V: asupersync::fs::Vfs + Clone>(
     if view.intents.is_empty() {
         return Ok(Ok(None));
     }
-    Ok(preview_ordered(db, ctx, book, &view, None).await?.map(Some))
+    Ok(preview_ordered(db, ctx, book, &view, &[]).await?.map(Some))
 }
 
 /// Original resolved entries retained with the owner's planned requests.
@@ -1140,7 +1148,7 @@ pub async fn draft_entries<V: asupersync::fs::Vfs + Clone>(
     if view.state != DraftState::Open {
         return Ok(Err(not_open(&view.body, view.state)));
     }
-    Ok(preview_ordered(db, ctx, book, &view, None)
+    Ok(preview_ordered(db, ctx, book, &view, &[])
         .await?
         .map(|preview| {
             preview
@@ -1288,18 +1296,11 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     // Rehearse (plan §15.3): each member sees its predecessors' effects.
-    let plan = match preview_ordered(
-        db,
-        ctx,
-        book,
-        &view,
-        Some((intent.clone(), &req.capability)),
-    )
-    .await?
-    {
-        Err(refusal) => return Ok(Err(refusal)),
-        Ok(plan) => plan,
-    };
+    let plan =
+        match preview_ordered(db, ctx, book, &view, &[(intent.clone(), &req.capability)]).await? {
+            Err(refusal) => return Ok(Err(refusal)),
+            Ok(plan) => plan,
+        };
     let resolved_entry = &plan
         .members()
         .last()
@@ -1684,16 +1685,18 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                         e.src.0
                     )));
                 };
-                let (intent, capability, resolved_entry_digest, resolved_entry) =
-                    decode_intent(ext)?;
-                intents.push(PlannedIntent {
-                    record: e.src,
-                    recorded_at,
-                    intent,
-                    capability,
-                    resolved_entry_digest,
-                    resolved_entry,
-                });
+                for (intent, capability, resolved_entry_digest, resolved_entry) in
+                    decode_plan_record(ext)?.members
+                {
+                    intents.push(PlannedIntent {
+                        record: e.src,
+                        recorded_at,
+                        intent,
+                        capability,
+                        resolved_entry_digest,
+                        resolved_entry,
+                    });
+                }
             }
             (f, t)
                 if f == open
@@ -1731,6 +1734,8 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
+    // This sort must stay stable: members of a v4 batch share the record
+    // and sequence, and their authenticated inner order is their execution order.
     intents.sort_by_key(|i| (i.recorded_at, i.record.0));
     // The row's own created_at starts its current version, which a
     // promotion or discard moves; the Open record is the draft's birth.
@@ -1751,7 +1756,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
 mod tests {
     use super::*;
 
-    fn codec_intent() -> PostIntent {
+    pub(super) fn codec_intent() -> PostIntent {
         use fa_model::{LegPayload, Oid, SealKey};
         use fa_money::{Amount, Side, UnitRegistry};
 

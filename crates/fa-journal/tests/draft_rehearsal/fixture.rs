@@ -255,6 +255,26 @@ impl Harness {
             .unwrap()
     }
 
+    pub(super) fn plan_batch(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        batch: PostBatch,
+    ) -> Result<DraftPlanned, Refusal> {
+        let request = self.request(capability);
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(plan_batch_into_draft(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                name,
+                batch,
+                request,
+            ))
+            .unwrap()
+    }
+
     /// Write the authentic historical v1 Plan format, whose writer rehearsed
     /// only its new member. This fixture creates original immutable bytes;
     /// it never edits a journaled entry to manufacture an old version.

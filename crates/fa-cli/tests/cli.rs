@@ -24293,6 +24293,264 @@ fn book_create_entity_functional_unit_guard_e2e() -> std::io::Result<()> {
 /// planned entry, its retry is the recorded promotion, and the promoted
 /// draft takes no further intents (FA-REF-158).
 #[test]
+fn atomic_batches_enter_drafts_together_and_promote_with_retained_order() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    let dir = tmp("atomic-batch-draft")?;
+    let path = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = vec!["--book", "book"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&dir)
+            .args(&argv)
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run fa");
+        let code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        check_robot_output(&argv, code, &stdout);
+        eprintln!(
+            "$ fa {} -> {code}\n{}{}",
+            argv.join(" "),
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (code, stdout)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Atomic Draft Co"]).0, 0);
+    write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", "chart.json"]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let evidence = source_doc(&dir, &path);
+    let keys = BookKeys::load(&path.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&path, keys.clone(), Entropy::production()).unwrap();
+    let actor = "batch-agent";
+    let invoice_vid = fa_model::entry_vid(
+        open().context().book_id,
+        &fa_model::principal_vid(actor).0.to_le_bytes(),
+        b"draft-invoice",
+    );
+    let invoice_hex = format!("{:032x}", invoice_vid.0);
+    let invoice = format!(
+        r#"{{"effective_date":"2026-03-15","idempotency_key":"draft-invoice","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1200","amount":"50.00 USD"}},{{"side":"credit","account":"4000","amount":"50.00 USD"}}]}}"#
+    );
+    let receipt = format!(
+        r#"{{"effective_date":"2026-03-16","idempotency_key":"draft-receipt","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"20.00 USD"}},{{"side":"credit","account":"1200","amount":"20.00 USD","settles":[{{"entry":"{invoice_hex}","ordinal":0,"amount":"20.00 USD"}}]}}]}}"#
+    );
+    write(
+        &dir,
+        "batch.json",
+        &format!(r#"{{"idempotency_key":"atomic-agent","intents":[{invoice},{receipt}]}}"#),
+    );
+    let (code, issued) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        actor,
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--op",
+        "post",
+        "--out",
+        "agent.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+    ]);
+    assert_eq!(code, 0, "{issued}");
+    assert_eq!(
+        run(&["--token", "agent.token", "draft", "new", "invoices"]).0,
+        0
+    );
+    let before = open().head().unwrap();
+    let (code, rehearsal) = run(&["--token", "agent.token", "batch", "--intent", "batch.json"]);
+    assert_eq!(code, 0, "{rehearsal}");
+    assert_eq!(field(&rehearsal, "event"), Some("batch_plan"));
+    assert_eq!(
+        open().head().unwrap(),
+        before,
+        "Agent trunk rehearsal publishes nothing"
+    );
+    let append = [
+        "--token",
+        "agent.token",
+        "batch",
+        "--intent",
+        "batch.json",
+        "--draft",
+        "invoices",
+    ];
+    let (code, planned) = run(&append);
+    assert_eq!(code, 0, "{planned}");
+    let rows: Vec<_> = planned.lines().map(doc).collect();
+    assert_eq!(rows.len(), 2, "{planned}");
+    assert_eq!(text(&rows[0], "entry"), invoice_hex);
+    assert_eq!(
+        text(&rows[0], "control_entry"),
+        text(&rows[1], "control_entry")
+    );
+    assert_eq!(int(&rows[0], "recorded_at"), int(&rows[1], "recorded_at"));
+    assert_eq!(
+        open().head().unwrap().0,
+        before.0 + 1,
+        "the append is one publication"
+    );
+    let view = open().draft("invoices").unwrap().unwrap();
+    assert_eq!(view.intents.len(), 2);
+    let held = view.intents[0].resolved_entry.as_ref().unwrap();
+    assert_eq!(
+        view.intents[1].intent.proposal().legs[1].settles[0]
+            .target
+            .entry_digest,
+        held.entry_digest
+    );
+    assert!(open().read_entry(invoice_vid).unwrap().is_none());
+    let before = open().head().unwrap();
+    let (code, retry) = run(&append);
+    assert_eq!(code, 0, "{retry}");
+    assert!(
+        retry
+            .lines()
+            .all(|line| field(line, "already_recorded") == Some("true"))
+    );
+    assert_eq!(
+        open().head().unwrap(),
+        before,
+        "fresh sealing salts preserve the original retry"
+    );
+    write(
+        &dir,
+        "reordered.json",
+        &format!(r#"{{"idempotency_key":"atomic-agent","intents":[{receipt},{invoice}]}}"#),
+    );
+    let (code, refusal) = run(&[
+        "--token",
+        "agent.token",
+        "batch",
+        "--intent",
+        "reordered.json",
+        "--draft",
+        "invoices",
+    ]);
+    assert_eq!(code, 6, "{refusal}");
+    assert!(
+        refusal.contains(fa_journal::refusal::code::IDEMPOTENCY_CONFLICT),
+        "{refusal}"
+    );
+    assert_eq!(open().head().unwrap(), before);
+    let invalid = invoice
+        .replace("50.00 USD", "60.00 USD")
+        .replace("draft-invoice", "new-invoice");
+    let unbalanced = receipt
+        .replace("draft-receipt", "invalid-receipt")
+        .replace("20.00 USD", "999.00 USD");
+    write(
+        &dir,
+        "invalid.json",
+        &format!(r#"{{"idempotency_key":"invalid-batch","intents":[{invalid},{unbalanced}]}}"#),
+    );
+    let (code, refusal) = run(&[
+        "--token",
+        "agent.token",
+        "batch",
+        "--intent",
+        "invalid.json",
+        "--draft",
+        "invoices",
+    ]);
+    assert_eq!(code, 3, "{refusal}");
+    assert_eq!(open().head().unwrap(), before);
+    assert_eq!(
+        open().draft("invoices").unwrap().unwrap(),
+        view,
+        "no member of a refused batch enters the draft"
+    );
+    let (code, review) = run(&[
+        "close",
+        "dry-run",
+        "--period",
+        "FY2026-P03",
+        "--draft",
+        "invoices",
+        "--certificate-out",
+        "batch-draft.cert",
+    ]);
+    assert_eq!(code, 0, "{review}");
+    let reviewed = doc(review.lines().next().unwrap());
+    assert_eq!(int(&reviewed, "plans"), Some(2));
+    assert_eq!(arr(&reviewed, "entries").len(), 2);
+    let certificate =
+        fa::DraftDiffCertificate::decode(&std::fs::read(dir.join("batch-draft.cert"))?).unwrap();
+    assert_eq!(
+        certificate.source().plans.len(),
+        1,
+        "one source control binds both members"
+    );
+    assert_eq!(
+        run(&[
+            "--token",
+            "agent.token",
+            "draft",
+            "promote",
+            "invoices",
+            "--yes"
+        ])
+        .0,
+        7
+    );
+    let (code, promoted) = run(&[
+        "draft",
+        "promote",
+        "invoices",
+        "--as",
+        "controller",
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{promoted}");
+    let stored = open().read_entry(invoice_vid).unwrap().unwrap();
+    assert_eq!(stored.0, *held);
+    let after = open().head().unwrap();
+    let (code, retry) = run(&append);
+    assert_eq!(code, 0, "{retry}");
+    assert!(
+        retry
+            .lines()
+            .all(|line| field(line, "already_recorded") == Some("true"))
+    );
+    assert_eq!(open().head().unwrap(), after);
+    let (code, replayed) = run(&["replay", "batch-draft.cert"]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(
+        doc(&replayed),
+        reviewed,
+        "historical batch review survives promotion"
+    );
+    assert_eq!(open().head().unwrap(), after);
+    let (code, tb) = run(&["tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{tb}");
+    let tb = doc(&tb);
+    let receivable = arr(&tb, "rows")
+        .iter()
+        .find(|row| text(row, "code") == "1200")
+        .unwrap();
+    assert_eq!(text(receivable, "debits"), "50.00 USD");
+    assert_eq!(text(receivable, "credits"), "20.00 USD");
+    Ok(())
+}
+
+#[test]
 fn a_draft_reaches_trunk_only_through_another_principals_promotion() -> std::io::Result<()> {
     let dir = tmp("draft-flow")?;
     let book = dir.join("book");

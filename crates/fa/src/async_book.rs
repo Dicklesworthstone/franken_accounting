@@ -1073,6 +1073,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::plan_into_draft(&mut self.db, cx, &self.context, name, intent, req).await?)
     }
 
+    /// Append a complete ordered batch as one draft Plan record. A refusal
+    /// records none of its members; promotion preserves all reviewed effects.
+    pub async fn plan_batch_into_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        batch: fa_journal::PostBatch,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let date = batch.members()[0].proposal().effective_date;
+        let description = format!("plan batch into draft {name}");
+        let req = self.draft_request(cx, capability, date, &description)?;
+        Ok(
+            fa_journal::plan_batch_into_draft(&mut self.db, cx, &self.context, name, batch, req)
+                .await?,
+        )
+    }
+
     /// Rehearse this owner's retained draft members without publishing them.
     /// Returns their resolved entries, or `None` for an empty open draft.
     pub async fn preview_draft(
