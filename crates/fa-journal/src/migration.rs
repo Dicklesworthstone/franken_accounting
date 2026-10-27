@@ -1506,6 +1506,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     // Summarized legacy detail remains invisible under the same migration
     // predicate as ordinary folds and cannot establish a spurious touch.
     let mut activated_accounts: BTreeMap<(VId, UnitId), DateDay> = BTreeMap::new();
+    let mut activation = crate::limit::MigrationActivation::default();
     if control_kind == kind::FINALIZE {
         for chunk in &tie.chunks {
             ctx.query()
@@ -1527,6 +1528,10 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
             if counts_from(&run.body).is_some_and(|from| effective < from) {
                 continue;
             }
+            if let Err(refusal) = activation.add(&txn, db, book, &entry.proposal)? {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
             for leg in &entry.proposal.legs {
                 activated_accounts
                     .entry((leg.account_ref, leg.amount.unit))
@@ -1545,6 +1550,17 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         &mut None,
     )? {
         Ok(citations) => citations,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    // Activation is one monetary movement. Judge the full counted run
+    // against current posted amounts and reservations, not its individual
+    // staging prefixes. The same transaction witnesses and moves every
+    // affected cell, so a concurrent post or hold invalidates this plan.
+    let limit_moves = match activation.judge(&txn, db, book)? {
+        Ok(moves) => moves,
         Err(refusal) => {
             txn.abort();
             return Ok(Err(refusal));
@@ -1583,6 +1599,21 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         vec![],
     );
     let mut batches = vec![in_run];
+    if !limit_moves.is_empty() {
+        let mut cells = WriteBatch::new(relation::HAS_LEG);
+        for movement in &limit_moves {
+            tracker.record_limit_cell_move(
+                relation::HAS_LEG,
+                movement.cell,
+                &movement.before,
+                &movement.after,
+            )?;
+            movement
+                .before
+                .stage(&movement.after, movement.cell, &mut cells)?;
+        }
+        batches.push(cells);
+    }
     let mut affected = WriteBatch::new(relation::CITES);
     for account in activated_accounts
         .keys()

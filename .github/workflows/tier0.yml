@@ -81,3 +81,12 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cli proportional_post --jobs 1 -- --test-threads=1
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-mcp --lib post_reserve_proportion --jobs 1 -- --test-threads=1
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test robot_schema --jobs 1 -- --test-threads=1
+      - name: Focused migration availability invariants
+        if: ${{ inputs.focused_accounting_tests }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis migration_limit_tests:: --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test migration migration_limits:: --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test migration kernel_and_oracle_agree_on_migration_runs --jobs 1 -- --test-threads=1
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-reference --lib --jobs 1 -- --test-threads=1

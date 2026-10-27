@@ -6,7 +6,8 @@
 //! per period for a budget cap (a period-scoped limit). This module
 //! recomputes every expected cell from the immutable payloads alone —
 //! posted legs of posting classes, reserved legs of unresolved holds, the
-//! full original legs of a resolved hold released — keyed the way the kernel
+//! full original legs of a resolved hold released, and counted migration
+//! chunks activated together by Finalize — keyed the way the kernel
 //! keys them (posted and reserved legs in the entry's period, released legs
 //! in the hold's period), compares it with the stored cell, generation
 //! included, and checks that the stored cell is bound to its account (its
@@ -29,12 +30,15 @@ use fa_journal::limit::{
 };
 use fa_journal::rows::{AccountRow, PeriodRow};
 use fa_model::symbols::label;
-use fa_model::{Entry, EntryClass};
+use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin};
 use fa_money::Side;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{KernelError, RegisterError, entries_at, entry_period, resolutions, resolve_known_at};
+use crate::{
+    KernelError, RegisterError, contribution_seq, entries_at, entry_period, migration_activations,
+    resolutions, resolve_known_at,
+};
 
 /// One expected cell as the refold sees it, in its account's normal-balance
 /// sign: a limited account's lifetime cell (`period: None`), or one period
@@ -173,10 +177,21 @@ fn fold_entry(
                 }
             }
         }
-        // Control entries carry no legs; classes the kernel does not admit
-        // carry none on a limited account.
+        // Migration legs are accumulated separately and move their cells once
+        // at Finalize. Staging, abandonment, and other controls move no cell.
         _ => {}
     }
+    apply_movements(cells, moves, zero_duration)
+}
+
+/// A migration activation is one movement per cell even when several chunks
+/// touch it; ordinary entries and reservation transitions retain their own
+/// generation advances.
+fn apply_movements(
+    cells: &mut BTreeMap<CellKey, LimitCell>,
+    moves: BTreeMap<CellKey, Movement>,
+    zero_duration: bool,
+) -> Result<(), RegisterError> {
     for (k, m) in moves {
         let cell = cells.get_mut(&k).ok_or_else(|| {
             KernelError::Corrupt(format!(
@@ -267,6 +282,30 @@ pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
     }
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
+    let activated = migration_activations(&entries)?;
+    let mut migration_moves: BTreeMap<VId, BTreeMap<CellKey, Movement>> = BTreeMap::new();
+    // entries_at has already authenticated each run's historical visibility,
+    // including FullDetail's opening cutoff. Recheck the immutable Finalize
+    // sequence and retain each counted chunk's original effective period.
+    for (_, entry, created_at) in &entries {
+        let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
+            continue;
+        };
+        contribution_seq(entry, *created_at, &activated)?;
+        for leg in &entry.proposal.legs {
+            let period = match scopes.get(&leg.account_ref) {
+                None => continue,
+                Some(LimitScope::Lifetime) => None,
+                Some(LimitScope::Period) => Some(entry_period(book, entry)?),
+            };
+            migration_moves
+                .entry(*run_ref)
+                .or_default()
+                .entry((leg.account_ref, period))
+                .or_default()
+                .post(leg.side, leg.amount.mantissa)?;
+        }
+    }
     let by_id: BTreeMap<_, _> = entries.iter().map(|(v, e, seq)| (*v, (e, *seq))).collect();
     let mut ordered: Vec<&(VId, Entry, CommitSeq)> = entries.iter().collect();
     // Reservation intervals are half-open in recorded time. At each atomic
@@ -275,6 +314,15 @@ pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
     // Zero-length intervals are handled without pending arithmetic above.
     ordered.sort_by_key(|(v, e, seq)| (*seq, e.proposal.class != EntryClass::RESOLUTION, *v));
     for recorded in ordered {
+        if let Some(ControlPayload::MigrationControl {
+            run_ref,
+            kind: fa_journal::migration::kind::FINALIZE,
+            ..
+        }) = &recorded.1.proposal.control
+            && let Some(moves) = migration_moves.remove(run_ref)
+        {
+            apply_movements(&mut cells, moves, false)?;
+        }
         fold_entry(&mut cells, &scopes, book, recorded, &by_id, &resolved)?;
     }
     let mut accounts = Vec::with_capacity(cells.len());

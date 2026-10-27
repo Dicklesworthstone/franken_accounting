@@ -37,9 +37,12 @@ const BOB: VId = VId(8);
 const CAROL: VId = VId(9);
 const OPENING: &str = "FY2026-OPEN";
 const P01: &str = "FY2026-P01";
-/// Accounts a chunk may move; "1500" is limited (a staged chunk never
-/// moves a limit in this slice).
+/// Unrestricted accounts in the seeded history. Account "1500" is limited;
+/// staged chunks affect it only when their run finalizes.
 const FREE: [&str; 6] = ["1000", "1200", "2000", "3000", "4000", "6000"];
+
+#[path = "migration/limits.rs"]
+mod migration_limits;
 
 /// xorshift64*: deterministic, dependency-free.
 struct Rng(u64);
@@ -172,6 +175,17 @@ fn setup() -> (Kernel, Oracle) {
 /// live period it starts, which is the one opened; every Normal period before
 /// it is born Historical and Locked. `None`: no opening date, and P01 opens.
 fn setup_with(go_live: Option<(DateDay, &str)>) -> (Kernel, Oracle) {
+    setup_with_limit(
+        go_live,
+        BalanceLimit {
+            lower: Some(0),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        },
+    )
+}
+
+fn setup_with_limit(go_live: Option<(DateDay, &str)>, limit: BalanceLimit) -> (Kernel, Oracle) {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -236,11 +250,7 @@ fn setup_with(go_live: Option<(DateDay, &str)>) -> (Kernel, Oracle) {
         is_leaf: true,
         unit_policy: UnitPolicy::Single(usd),
         parent_code: None,
-        limit: Some(BalanceLimit {
-            lower: Some(0),
-            upper: None,
-            scope: LimitScope::Lifetime,
-        }),
+        limit: Some(limit),
     });
     runtime
         .block_on(async {
@@ -312,9 +322,9 @@ fn setup_with(go_live: Option<(DateDay, &str)>) -> (Kernel, Oracle) {
         "1500",
         Limit {
             normal: fa_reference::Side::Debit,
-            lower: Some(0),
-            upper: None,
-            per_period: false,
+            lower: limit.lower,
+            upper: limit.upper,
+            per_period: limit.scope == LimitScope::Period,
         },
     );
     if let Some((day, _)) = go_live {
@@ -626,7 +636,7 @@ fn chunk_payload(
                     Side::Credit
                 },
                 account_vid(k.book.book_id, &l.account),
-                Amount::new(usd(), l.mantissa),
+                Amount::new(UnitId(l.unit), l.mantissa),
             )
         })
         .collect();
@@ -1004,9 +1014,12 @@ fn kernel_and_oracle_agree_on_migration_runs() {
                     advances = false;
                 }
                 5 => {
-                    // A limited account: not in this slice (102).
-                    intent.legs[0].account = "1500".into();
-                    intent.key = format!("lim-{serial}").into_bytes();
+                    // Balanced in EUR, but the chart accounts require USD (003).
+                    let eur = UnitRegistry::with_defaults().lookup("EUR").unwrap().0;
+                    for leg in &mut intent.legs {
+                        leg.unit = eur;
+                    }
+                    intent.key = format!("unit-{serial}").into_bytes();
                     advances = false;
                 }
                 6 => {
@@ -1263,7 +1276,7 @@ fn kernel_and_oracle_agree_on_migration_runs() {
         "FA-REF-132", // outside a run: no run, provenance on an Original, a Normal period
         "FA-REF-012", // a chunk or a Finalize without its approvals
         "FA-REF-032", // a run key reused, or a chunk key with new content
-        "FA-REF-102", // a chunk on a limited account
+        "FA-REF-003", // a balanced chunk in a unit its accounts do not admit
     ] {
         let got = f.refused.get(code).copied().unwrap_or(0);
         assert!(got >= 3, "{code} planted {got} times: {:?}", f.refused);

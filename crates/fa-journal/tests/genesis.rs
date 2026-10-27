@@ -43,6 +43,8 @@ mod closing_carrying_tests;
 mod external_subledger_tests;
 #[path = "genesis/fx_law.rs"]
 mod fx_law_tests;
+#[path = "genesis/migration_limits.rs"]
+mod migration_limit_tests;
 #[path = "genesis/outcome_batch_integrity.rs"]
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]

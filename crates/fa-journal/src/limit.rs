@@ -192,7 +192,7 @@ pub fn period_code(book: &BookContext, p: &EntryPayload) -> Result<String, Kerne
 
 /// The reservation cell of one limited account: monotone posted sums and
 /// outstanding reservations per side, as mantissas in the account's unit,
-/// and the number of entries that moved it.
+/// and the number of admitted movements (entries or run activations).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LimitCell {
     pub debits_posted: i128,
@@ -586,8 +586,9 @@ fn shape_refusal(why: String) -> Refusal {
 /// of first appearance (the entry's legs, then a resolved hold's legs).
 /// Each cell is read through `txn` (a point-read witness) and must be bound
 /// to its account (and period). Pending legs reserve, a resolution releases
-/// the hold's full original legs (in the hold's period), and every other leg
-/// posts (in the entry's period). `Ok(Ok(moves))` are the cells to stage.
+/// the hold's full original legs (in the hold's period). Migration chunks
+/// are staged without moving cells; their counted legs move together at
+/// Finalize. Every other leg posts (in the entry's period).
 pub fn judge<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
@@ -664,6 +665,16 @@ pub fn judge<V: asupersync::fs::Vfs + Clone>(
             )
         }
     };
+    // A staged chunk is invisible. Its limits are judged only when the
+    // authenticated run is activated, over the whole counted movement.
+    // Keep this after balancing validation: Migration never gains an
+    // implicit amount-changing exception to its declared trial balance.
+    if proposal.class == EntryClass::MIGRATION {
+        return Ok(Ok(Judged {
+            moves: Vec::new(),
+            resolved_legs: None,
+        }));
+    }
     let legs = resolved_legs.as_deref().unwrap_or(&proposal.legs);
     let mut moves: Vec<((VId, Option<String>), Movement)> = Vec::new();
     let effects = legs.iter().map(|l| (l, false)).chain(
@@ -718,58 +729,177 @@ pub fn judge<V: asupersync::fs::Vfs + Clone>(
         let account = rows
             .get(account_vid)
             .ok_or_else(|| KernelError::Corrupt("judged account row".into()))?;
-        let limit = account
-            .limit
-            .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
-        let cvid = cell_vid(*account_vid, cell_period.as_deref());
-        let row = txn
-            .vertex(db, cvid)?
-            .filter(|r| r.labels.contains(&label::LIMIT_CELL))
-            .ok_or_else(|| {
-                KernelError::Corrupt(format!(
-                    "limited account `{}` has no limit cell{}; `fa verify availability` names it; nothing is admitted on it",
-                    account.code,
-                    cell_period
-                        .as_deref()
-                        .map_or_else(String::new, |p| format!(" for period `{p}`"))
-                ))
-            })?;
-        // The cell must be bound to this account (and period), not merely
-        // found at the derived identity.
-        let before = LimitCell::decode_bound(&row, *account_vid, cell_period.as_deref())?;
-        let normal = if account.normal_balance == 0 {
-            Side::Debit
-        } else {
-            Side::Credit
-        };
-        match apply(&before, normal, &limit, m)? {
-            Ok(after) => out.push(CellMove {
-                cell: cvid,
-                before,
-                after,
-            }),
-            Err(breach) => {
-                // install_chart admits a limit only on a single-unit account.
-                let UnitPolicy::Single(unit) = account.unit_policy else {
-                    return Err(KernelError::Corrupt(format!(
-                        "limited account `{}` has no single unit",
-                        account.code
-                    )));
-                };
-                return Ok(Err(refusal(
-                    &breach,
-                    &account.code,
-                    cell_period.as_deref(),
-                    unit,
-                    &book.units,
-                )));
-            }
+        match judge_movement(txn, db, book, account, cell_period.as_deref(), m)? {
+            Ok(movement) => out.push(movement),
+            Err(refusal) => return Ok(Err(refusal)),
         }
     }
     Ok(Ok(Judged {
         moves: out,
         resolved_legs,
     }))
+}
+
+/// Counted migration chunks become one movement per account/period at
+/// Finalize. Retain only account rows and exact totals, not every decoded
+/// chunk. The caller authenticates the run/chunk set and applies the same
+/// inclusion predicate as the register fold before adding a chunk.
+#[derive(Default)]
+pub(crate) struct MigrationActivation {
+    accounts: BTreeMap<VId, AccountRow>,
+    movements: BTreeMap<(VId, Option<String>), Movement>,
+    order: Vec<(VId, Option<String>)>,
+}
+
+impl MigrationActivation {
+    pub(crate) fn add<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        txn: &WriteTxn,
+        db: &Database<V>,
+        book: &BookContext,
+        chunk: &EntryPayload,
+    ) -> Outcome<()> {
+        if chunk.class != EntryClass::MIGRATION {
+            return Err(KernelError::Corrupt(
+                "migration activation contains a non-Migration entry".into(),
+            ));
+        }
+        let period = period_code(book, chunk)?;
+        for leg in &chunk.legs {
+            let account = match self.accounts.entry(leg.account_ref) {
+                MapEntry::Occupied(row) => row.into_mut(),
+                MapEntry::Vacant(slot) => {
+                    let row = txn.vertex(db, leg.account_ref)?.ok_or_else(|| {
+                        KernelError::Corrupt("a migration activation account is missing".into())
+                    })?;
+                    slot.insert(AccountRow::decode(&row)?)
+                }
+            };
+            let Some(limit) = account.limit else {
+                continue;
+            };
+            let UnitPolicy::Single(unit) = account.unit_policy else {
+                return Err(KernelError::Corrupt(
+                    "a limited migration account has no single unit".into(),
+                ));
+            };
+            if unit != leg.amount.unit || leg.amount.mantissa <= 0 {
+                return Err(KernelError::Corrupt(
+                    "a counted migration leg differs from its admitted account unit or amount"
+                        .into(),
+                ));
+            }
+            let cell_period = match limit.scope {
+                LimitScope::Lifetime => None,
+                LimitScope::Period => Some(period.clone()),
+            };
+            let key = (leg.account_ref, cell_period.clone());
+            let movement = match self.movements.entry(key.clone()) {
+                MapEntry::Occupied(row) => row.into_mut(),
+                MapEntry::Vacant(slot) => {
+                    self.order.push(key);
+                    slot.insert(Movement::default())
+                }
+            };
+            let posted = match leg.side {
+                Side::Debit => &mut movement.posted_debits,
+                Side::Credit => &mut movement.posted_credits,
+            };
+            let Some(total) = posted.checked_add(leg.amount.mantissa) else {
+                return Ok(Err(refusal(
+                    &Breach::Ceiling,
+                    &account.code,
+                    cell_period.as_deref(),
+                    unit,
+                    &book.units,
+                )));
+            };
+            *posted = total;
+        }
+        Ok(Ok(()))
+    }
+
+    pub(crate) fn judge<V: asupersync::fs::Vfs + Clone>(
+        self,
+        txn: &WriteTxn,
+        db: &Database<V>,
+        book: &BookContext,
+    ) -> Outcome<Vec<CellMove>> {
+        let mut out = Vec::with_capacity(self.movements.len());
+        // Preserve ordinary posting's first-appearance refusal order: the
+        // authenticated chunk order, then each chunk's original leg order.
+        for (account, period) in self.order {
+            let row = self.accounts.get(&account).ok_or_else(|| {
+                KernelError::Corrupt("a migration activation lost its account row".into())
+            })?;
+            let movement = self
+                .movements
+                .get(&(account, period.clone()))
+                .ok_or_else(|| {
+                    KernelError::Corrupt("a migration activation lost its movement".into())
+                })?;
+            match judge_movement(txn, db, book, row, period.as_deref(), movement)? {
+                Ok(movement) => out.push(movement),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        }
+        Ok(Ok(out))
+    }
+}
+
+/// Ordinary entries and run activation use the same witnessed cell law.
+/// One aggregate movement produces one generation CAS, including a
+/// movement whose debit and credit totals cancel in net balance.
+fn judge_movement<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    account: &AccountRow,
+    period: Option<&str>,
+    movement: &Movement,
+) -> Outcome<CellMove> {
+    let limit = account
+        .limit
+        .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
+    let cvid = cell_vid(account.vid, period);
+    let row = txn
+        .vertex(db, cvid)?
+        .filter(|r| r.labels.contains(&label::LIMIT_CELL))
+        .ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "limited account `{}` has no limit cell{}; `fa verify availability` names it; nothing is admitted on it",
+                account.code,
+                period.map_or_else(String::new, |p| format!(" for period `{p}`"))
+            ))
+        })?;
+    let before = LimitCell::decode_bound(&row, account.vid, period)?;
+    let normal = if account.normal_balance == 0 {
+        Side::Debit
+    } else {
+        Side::Credit
+    };
+    match apply(&before, normal, &limit, movement)? {
+        Ok(after) => Ok(Ok(CellMove {
+            cell: cvid,
+            before,
+            after,
+        })),
+        Err(breach) => {
+            let UnitPolicy::Single(unit) = account.unit_policy else {
+                return Err(KernelError::Corrupt(format!(
+                    "limited account `{}` has no single unit",
+                    account.code
+                )));
+            };
+            Ok(Err(refusal(
+                &breach,
+                &account.code,
+                period,
+                unit,
+                &book.units,
+            )))
+        }
+    }
 }
 
 /// The largest amount one leg on `side` may move against `cell` under

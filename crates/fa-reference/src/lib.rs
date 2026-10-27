@@ -2932,18 +2932,8 @@ impl Oracle {
                 }
             }
         }
-        // 6'. A staged chunk never moves a limit (not modelled until the
-        //     migration availability slice).
-        if run.is_some()
-            && intent
-                .legs
-                .iter()
-                .any(|l| self.limits.contains_key(&l.account))
-        {
-            return Verdict::Refused {
-                code: code::CLASS_NOT_IMPLEMENTED,
-            };
-        }
+        // Staged migration chunks are invisible to availability. Their
+        // aggregate movement is judged atomically when the run finalizes.
         // 7a. Application law (plan §5.7): a witnessed, live, posted target
         //     leg on the same account and unit with the opposite side, within
         //     its open amount (counting earlier settlements of this intent).
@@ -3226,7 +3216,8 @@ impl Oracle {
             .map(|l| (l, false))
             .chain(released.iter().map(|l| (l, true)))
         {
-            if let Some(k) = cell_of(&l.account, release)
+            if run.is_none()
+                && let Some(k) = cell_of(&l.account, release)
                 && !order.contains(&k)
             {
                 order.push(k);
@@ -3591,6 +3582,7 @@ impl Oracle {
             return Err(code::APPROVALS);
         }
         if finalize {
+            self.migration_limits_accept(run)?;
             let accounts = self.runs[run]
                 .chunks
                 .iter()
@@ -3611,6 +3603,96 @@ impl Oracle {
         }
         self.control_keys
             .insert(control_key.to_vec(), (content, run));
+        Ok(())
+    }
+
+    /// Independently sum the activating run's counted legs in each limit
+    /// cell, preserving current posted and pending amounts. No entry or run
+    /// state is mutated until every cell passes.
+    fn migration_limits_accept(&self, run: usize) -> Result<(), &'static str> {
+        let r = &self.runs[run];
+        let mut movements: BTreeMap<(String, Option<String>), (Int, Int)> = BTreeMap::new();
+        let mut order = Vec::new();
+        for i in &r.chunks {
+            let entry = &self.journal[*i];
+            if r.spec.counts_from().is_some_and(|day| entry.date < day) {
+                continue;
+            }
+            for leg in &entry.legs {
+                let Some(limit) = self.limits.get(&leg.account) else {
+                    continue;
+                };
+                let period = limit.per_period.then(|| entry.period.clone());
+                let key = (leg.account.clone(), period);
+                if !movements.contains_key(&key) {
+                    order.push(key.clone());
+                }
+                let (debits, credits) = movements
+                    .entry(key)
+                    .or_insert_with(|| (Int::zero(), Int::zero()));
+                let slot = match leg.side {
+                    Side::Debit => debits,
+                    Side::Credit => credits,
+                };
+                *slot = slot.add(&Int::from_i128(leg.mantissa));
+                if slot.to_i128().is_none() {
+                    return Err(code::LIMIT_CEILING);
+                }
+            }
+        }
+        // Match the declared journal/leg order, independently of physical
+        // vertex hashes or lexical account-code ordering.
+        for (account, period) in order {
+            let (debits, credits) = &movements[&(account.clone(), period.clone())];
+            let limit = &self.limits[&account];
+            let before = self.availability_in(&account, period.as_deref());
+            let mut after = before.clone();
+            after.debits_posted = after.debits_posted.add(debits);
+            after.credits_posted = after.credits_posted.add(credits);
+            if [
+                &after.debits_posted,
+                &after.credits_posted,
+                &after.debits_pending,
+                &after.credits_pending,
+            ]
+            .iter()
+            .any(|v| v.to_i128().is_none())
+            {
+                return Err(code::LIMIT_CEILING);
+            }
+            let bounds = |a: &Availability| {
+                let (normal, opposite, incoming, outgoing) = match limit.normal {
+                    Side::Debit => (
+                        &a.debits_posted,
+                        &a.credits_posted,
+                        &a.debits_pending,
+                        &a.credits_pending,
+                    ),
+                    Side::Credit => (
+                        &a.credits_posted,
+                        &a.debits_posted,
+                        &a.credits_pending,
+                        &a.debits_pending,
+                    ),
+                };
+                let net = normal.sub(opposite);
+                (net.sub(outgoing), net.add(incoming))
+            };
+            let (old_lower, old_upper) = bounds(&before);
+            let (new_lower, new_upper) = bounds(&after);
+            if let Some(lower) = limit.lower
+                && new_lower.sub(&old_lower).is_negative()
+                && new_lower.sub(&Int::from_i128(lower)).is_negative()
+            {
+                return Err(code::AVAILABILITY_LOWER);
+            }
+            if let Some(upper) = limit.upper
+                && old_upper.sub(&new_upper).is_negative()
+                && Int::from_i128(upper).sub(&new_upper).is_negative()
+            {
+                return Err(code::AVAILABILITY_UPPER);
+            }
+        }
         Ok(())
     }
 
@@ -4144,7 +4226,7 @@ impl Oracle {
 
     /// The literal availability fold of one account over the whole journal:
     /// posted legs of posting entries, legs of holds with no resolution yet,
-    /// and the count of entries that posted, reserved, or released on it.
+    /// and the count of entry movements and migration activations on it.
     #[must_use]
     pub fn availability(&self, account: &str) -> Availability {
         self.availability_in(account, None)
@@ -4156,7 +4238,27 @@ impl Oracle {
     /// cell.
     #[must_use]
     pub fn availability_in(&self, account: &str, period: Option<&str>) -> Availability {
+        self.availability_known(account, period, self.known())
+    }
+
+    /// Availability at an independently recorded journal/control prefix.
+    /// Counted migration chunks contribute only after Finalize and advance
+    /// each touched cell once for the run, regardless of its chunk count.
+    #[must_use]
+    pub fn availability_known(
+        &self,
+        account: &str,
+        period: Option<&str>,
+        known: Known,
+    ) -> Availability {
         let in_period = |e: &Entry| period.is_none_or(|p| e.period == p);
+        let resolved: BTreeSet<_> = self
+            .journal
+            .iter()
+            .take(known.entries)
+            .filter_map(|e| e.resolves)
+            .collect();
+        let mut activated = BTreeSet::new();
         let mut a = Availability {
             debits_posted: Int::zero(),
             credits_posted: Int::zero(),
@@ -4164,7 +4266,10 @@ impl Oracle {
             credits_pending: Int::zero(),
             generation: 0,
         };
-        for (i, e) in self.journal.iter().enumerate() {
+        for (i, e) in self.journal.iter().enumerate().take(known.entries) {
+            if !self.visible(e, known) {
+                continue;
+            }
             let mut touched = false;
             for l in e
                 .legs
@@ -4174,7 +4279,7 @@ impl Oracle {
                 touched = true;
                 let m = Int::from_i128(l.mantissa);
                 let slot = match (e.class.as_str(), l.side) {
-                    ("Pending", _) if self.resolved.contains_key(&i) => continue,
+                    ("Pending", _) if resolved.contains(&i) => continue,
                     ("Pending", Side::Debit) => &mut a.debits_pending,
                     ("Pending", Side::Credit) => &mut a.credits_pending,
                     (_, Side::Debit) => &mut a.debits_posted,
@@ -4190,9 +4295,14 @@ impl Oracle {
                 touched = true;
             }
             if touched {
-                a.generation += 1;
+                if let Some(run) = e.run {
+                    activated.insert(run);
+                } else {
+                    a.generation += 1;
+                }
             }
         }
+        a.generation += activated.len() as u64;
         a
     }
 }
@@ -4577,6 +4687,142 @@ mod tests {
         assert_eq!(o.transition(april, reopen), Err(code::SOD));
     }
 
+    #[test]
+    fn migration_limits_activate_once_and_preserve_historical_reservations() {
+        let mut o = Oracle::new(FiscalCalendar::monthly("cal", 1, 1).unwrap());
+        for account in ["1500", "3000", "6000"] {
+            o.add_account(Account {
+                code: account.into(),
+                is_leaf: true,
+                unit: Some(1),
+            });
+        }
+        o.set_limit(
+            "1500",
+            Limit {
+                normal: Side::Debit,
+                lower: Some(0),
+                upper: None,
+                per_period: false,
+            },
+        );
+        o.create_periods(2026);
+        for transition in [
+            PeriodTransition::Open,
+            PeriodTransition::SoftClose,
+            PeriodTransition::Close,
+            PeriodTransition::Lock,
+        ] {
+            o.transition("FY2026-OPEN", transition).unwrap();
+        }
+        o.transition("FY2026-P01", PeriodTransition::Open).unwrap();
+        let opening = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let ops = vec!["post".into(), "migrate".into()];
+        let intent = |class: &str, key: &[u8], debit: &str, credit: &str, amount| Intent {
+            class: class.into(),
+            date: if class == "Migration" {
+                opening
+            } else {
+                DateDay::from_ymd(2026, 1, 15).unwrap()
+            },
+            discriminator: (class == "Migration").then(|| "FY2026-OPEN".into()),
+            legs: vec![
+                Leg {
+                    side: Side::Debit,
+                    account: debit.into(),
+                    unit: 1,
+                    entity: None,
+                    mantissa: amount,
+                },
+                Leg {
+                    side: Side::Credit,
+                    account: credit.into(),
+                    unit: 1,
+                    entity: None,
+                    mantissa: amount,
+                },
+            ],
+            key: key.to_vec(),
+            ops: ops.clone(),
+            approvals: usize::from(class == "Migration") * 2,
+            reverses: None,
+            supersession_reason: 1,
+            resolves: None,
+            settles: Vec::new(),
+        };
+        for entry in [
+            intent("Original", b"fund", "1500", "3000", 100),
+            intent("Pending", b"hold", "6000", "1500", 80),
+        ] {
+            assert!(matches!(o.post(&entry), Verdict::Posted { .. }));
+        }
+        let before = o.known();
+        let spec = RunSpec {
+            key: "first".into(),
+            opening_date: opening,
+            lines: vec![
+                ("1500".into(), 1, 50),
+                ("3000".into(), 1, -60),
+                ("6000".into(), 1, 10),
+            ],
+            periods: Vec::new(),
+            full_detail: None,
+        };
+        let run = o.open_run(&spec, b"open", &ops).unwrap();
+        for entry in [
+            intent("Migration", b"debit", "1500", "3000", 60),
+            intent("Migration", b"credit", "6000", "1500", 10),
+        ] {
+            assert!(matches!(
+                o.post_migration(run, &entry),
+                Verdict::Posted { .. }
+            ));
+        }
+        let amounts = |a: Availability| {
+            (
+                a.debits_posted.to_i128(),
+                a.credits_posted.to_i128(),
+                a.debits_pending.to_i128(),
+                a.credits_pending.to_i128(),
+                a.generation,
+            )
+        };
+        let unchanged = (Some(100), Some(0), Some(0), Some(80), 2);
+        assert_eq!(amounts(o.availability("1500")), unchanged);
+        o.finalize_run(run, 2, b"activate", &ops, 2).unwrap();
+        let active = (Some(160), Some(10), Some(0), Some(80), 3);
+        assert_eq!(amounts(o.availability("1500")), active);
+        assert_eq!(
+            amounts(o.availability_known("1500", None, before)),
+            unchanged
+        );
+        let known = o.known();
+        o.finalize_run(run, 2, b"activate", &ops, 0).unwrap();
+        assert_eq!(o.known(), known);
+        assert_eq!(amounts(o.availability("1500")), active);
+
+        let over = RunSpec {
+            key: "over".into(),
+            lines: vec![("1500".into(), 1, -80), ("6000".into(), 1, 80)],
+            ..spec
+        };
+        let run = o.open_run(&over, b"open-over", &ops).unwrap();
+        let chunk = intent("Migration", b"staged-over", "6000", "1500", 80);
+        assert!(matches!(
+            o.post_migration(run, &chunk),
+            Verdict::Posted { .. }
+        ));
+        let staged = o.known();
+        assert_eq!(
+            o.finalize_run(run, 1, b"activate-over", &ops, 2),
+            Err(code::AVAILABILITY_LOWER)
+        );
+        assert_eq!(o.known(), staged);
+        assert_eq!(o.run_state(run), Some(RunState::Open));
+        o.abandon_run(run, 1, b"abandon-over", &ops).unwrap();
+        assert_eq!(amounts(o.availability("1500")), active);
+    }
+
     /// The fa-ctf example (plan §5.4): cash 100 with a floor of 0; a pending
     /// outflow of 80 blocks a second 80 and an unrelated posted 30, a pending
     /// inflow never finances, and resolving the hold releases all of it.
@@ -4673,6 +4919,7 @@ mod tests {
         );
         // Posting 60 of the 80 hold releases all 80: pending −80, posted +60,
         // and is admitted although it moves value out.
+        let before_resolution = o.known();
         let posts = Resolve {
             target: 1,
             posts: Some(vec![0, 1]),
@@ -4716,6 +4963,18 @@ mod tests {
             Verdict::Posted { index: 5, .. }
         ));
         assert_eq!(o.availability("1000").debits_pending.to_i128(), Some(0));
+        let earlier = o.availability_known("1000", None, before_resolution);
+        assert_eq!(
+            (
+                earlier.debits_posted.to_i128(),
+                earlier.credits_posted.to_i128(),
+                earlier.debits_pending.to_i128(),
+                earlier.credits_pending.to_i128(),
+                earlier.generation,
+            ),
+            (Some(100), Some(0), Some(500), Some(80), 3),
+            "later settlement and voiding preserve the historical reservations"
+        );
     }
 
     /// Plan §5.4, §7.1a in the model: strictly increasing ticks, the anchor

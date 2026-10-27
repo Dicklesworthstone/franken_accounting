@@ -908,9 +908,6 @@ fn not_implemented(class_name: &str) -> Refusal {
         "Replacement" => "fa-omi (supersession beyond exact reversal)",
         "Closing" => "the incremental closing slice (plan §7.5)",
         "Revaluation" | "Elimination" => "Canon rules (plan §10)",
-        "Migration into a limited account" => {
-            "the migration availability slice (a staged chunk must not move a LimitCell before Finalize)"
-        }
         _ => "a later slice",
     };
     Refusal::new(
@@ -3465,11 +3462,6 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    if migration_run.is_some() && accounts.iter().any(|a| a.limit.is_some()) {
-        txn.abort();
-        return Ok(Err(not_implemented("Migration into a limited account")));
-    }
-
     // 7a. Application law (plan §5.7): each settlement names a witnessed,
     //     posted, unreversed target leg on the same account and unit with
     //     the opposite side, and the amount fits the target's open amount
@@ -4141,7 +4133,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //     moves through this transaction (point witnesses, bound to their
     //     account and period), resolves a balancing request's legs from its
     //     leg's cell, and applies the law; the moves are staged as
-    //     compare-and-sets on each cell's generation (step 8).
+    //     compare-and-sets on each cell's generation (step 8). Migration
+    //     chunks have no cell effects until their run's atomic Finalize.
     let judged = match limit::judge(
         &txn,
         db,
