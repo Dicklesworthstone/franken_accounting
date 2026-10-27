@@ -595,8 +595,8 @@ independent verifier reconstructs the effective-date aging and the control accou
 as-of trial balance from the same authenticated journal prefix and canonical registry
 documents. It then checks each native unit's posted net, open net and difference;
 pending debits and credits remain separate. The result includes the item drilldown,
-control-account cells, historical account metadata and both source digests. A valid
-proof can report a nonzero difference: `reconciled: false` is an accounting result.
+control-account cells, historical account metadata and both source digests. A bundle
+that verifies can still report a nonzero difference: `reconciled: false` is an accounting result.
 
 Export's `--expect` is the independent JSON request, with a fixed integer
 `known_at`; it is required for this family. The recipient's

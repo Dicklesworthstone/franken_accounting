@@ -330,30 +330,66 @@ def load_verdict_inventory(repo, verdict_spec):
         ["git", "-C", repo, "notes", "--ref=fa-verdict", "show", commit],
         text=True, stderr=subprocess.DEVNULL
     )
+    # A note is git metadata anyone with push access can write (fa-0hs4.1):
+    # on 2026-10-25 notes carried start times that predate their commits and
+    # Rust test names under a step that runs no tests, and beads closed on them.
     kv = {}
+    steps = []
     for line in note_text.splitlines():
         if not line.strip() or "=" not in line:
             continue
         k, v = line.split("=", 1)
         if k == "step_verdict":
-            rec = json.loads(v)
-            sname = rec.get("step", "")
-            st = rec.get("status", "")
-            if st == "PASS":
-                passed.add(sname)
-            elif st == "FAIL":
-                failed.add(sname)
-            w = rec.get("witness", {})
-            for pt in w.get("passed_test_names", []):
-                passed.add(pt)
-            for ft in w.get("failed_test_names", []):
-                failed.add(ft)
+            steps.append(json.loads(v))
         elif k == "passed_test":
             passed.add(v.strip())
         elif k == "failed_test":
             failed.add(v.strip())
         else:
             kv[k] = v
+    # Step and note trees are bound to the commit by local_proof_verify.sh
+    # --note, which runs before this. It does not bind time or test steps.
+    note_commit = kv.get("commit", commit)
+    try:
+        committed = subprocess.check_output(
+            ["git", "-C", repo, "log", "-1", "--format=%cI", note_commit],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        die(f"verdict note {note_id[:12]} names commit `{note_commit}`, which {repo} cannot resolve")
+    started = kv.get("started_utc", "")
+    if started:
+        try:
+            started_at = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
+            committed_at = datetime.datetime.fromisoformat(committed)
+        except ValueError:
+            die(f"verdict note {note_id[:12]} has an unreadable started_utc `{started}`")
+        # A run cannot start before its commit exists; allow ten minutes of
+        # clock skew between the committing host and the gate host.
+        if started_at < committed_at - datetime.timedelta(minutes=10):
+            die(f"verdict note {note_id[:12]} started at {started}, before commit {note_commit[:12]} was committed ({committed})")
+    # Rust test names count only from the steps that run cargo tests (the
+    # steps local_proof.sh counts tests in); gate selftest case names may come
+    # from any step.
+    test_steps = {"test", "registry-check", "robot-schema"}
+    ignored = 0
+    for rec in steps:
+        sname = rec.get("step", "")
+        st = rec.get("status", "")
+        if st == "PASS":
+            passed.add(sname)
+        elif st == "FAIL":
+            failed.add(sname)
+        w = rec.get("witness", {})
+        for pt in w.get("passed_test_names", []):
+            if sname in test_steps or not re.match(r"^[a-z][a-z0-9_-]*::", pt):
+                passed.add(pt)
+            else:
+                ignored += 1
+        for ft in w.get("failed_test_names", []):
+            failed.add(ft)
+    if ignored:
+        print(f"CLOSE_BEAD_LOG note_id={note_id[:12]} ignored_rust_test_names={ignored} reason=reported outside the test-running steps ({', '.join(sorted(test_steps))})", file=sys.stderr)
     return {
         "commit": kv.get("commit", commit),
         "tree": kv.get("tree", ""),

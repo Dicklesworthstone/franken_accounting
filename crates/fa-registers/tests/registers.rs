@@ -1125,8 +1125,15 @@ fn missing_register_membership_is_detected_and_repaired() {
     for remove_label in [false, true] {
         let mut h = harness();
         h.post_rent(123, b"rent");
-        // Nonempty journal without its materialization cannot verify green.
-        h.assert_not_green("unmaterialized journal cells");
+        // A nonempty journal never materialized has no cache to disagree with
+        // it: uninitialized lag, never corruption (fa-0hs4.5; the corruption
+        // negatives are an_unmaterialized_period_with_entries_is_stale_lag_not_corruption).
+        let unmaterialized = verify_period(&h.db, &h.book, &h.march).unwrap();
+        assert!(
+            unmaterialized.is_green() && unmaterialized.stale,
+            "{unmaterialized:?}"
+        );
+        assert_eq!(unmaterialized.cache_status, CacheStatus::Uninitialized);
         let fold = h.materialize_march();
         let rvid = register_vid(h.book.book_id, &fold.cells[0].key);
         let pvid = period_vid(&h.book.calendar.id, &h.march);
