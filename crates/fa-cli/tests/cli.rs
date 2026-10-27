@@ -4194,8 +4194,9 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
         r#"{"effective_date":"2026-03-16","idempotency_key":"rent","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
     );
     ok(&["post", "--intent", &rent, "--evidence", &evidence, "--json"]);
-    // A register cache never advanced differs from its refold (fa-q2z):
-    // advance March's so the registers target can pass.
+    // Advance March's cache so the registers target checks stored cells; a
+    // never-advanced cache is uninitialized lag and passes too (fa-0hs4.5,
+    // verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones).
     ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
     let out = ok(&["verify", "book", "--json"]);
     for event in [
@@ -4230,6 +4231,163 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
         &["verify", "book", "--fiscal-year", "2026", "--json"],
     );
     assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// fa-0hs4.5: a period whose register cache was never materialized has no
+/// cache to disagree with the journal. `fa verify book` and `fa verify
+/// registers` pass it as uninitialized lag (exit 0), naming the unread
+/// entries and the command that initializes it. A materialized cell that
+/// disagrees with the refold still fails with exit 8, and the failure names
+/// only the period whose cells drifted.
+#[test]
+fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> std::io::Result<()> {
+    use asupersync::runtime::RuntimeBuilder;
+    use asupersync::types::Budget;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_model::symbols::{property, relation};
+    use fgdb::{Database, DatabaseKeys, WriteBatch};
+    use fgdb_types::CanonicalScalar;
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    let dir = tmp("verify-unmaterialized")?;
+    let book = dir.join("book");
+    let book_id = Id128([57; 16]);
+    let keys = BookKeys::for_development(57);
+    let handle = Book::create_dir(
+        &book,
+        keys.clone(),
+        BookSpec {
+            book_id,
+            name: "Unmaterialized registers".into(),
+            base_unit: fa_money::UnitRegistry::embedded()
+                .unwrap()
+                .lookup("USD")
+                .unwrap(),
+            calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(57),
+    )
+    .unwrap();
+    keys.save(&book.join("book.keys")).unwrap();
+    drop(handle);
+    let run = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        eprintln!("fa {args:?} -> exit {code}\n{out}{err}");
+        (code, out, err)
+    };
+    let ok = |args: &[&str]| {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        (out, err)
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    for (period, date, key) in [
+        ("FY2026-P03", "2026-03-15", "march"),
+        ("FY2026-P04", "2026-04-15", "april"),
+    ] {
+        ok(&["period", "open", period, "--json"]);
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"10.00 USD"}},{{"side":"credit","account":"1000","amount":"10.00 USD"}}]}}"#
+            ),
+        );
+        ok(&[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &evidence,
+            "--json",
+        ]);
+    }
+
+    // Neither period was ever materialized: both pass as uninitialized lag.
+    let (out, err) = ok(&["verify", "book", "--json"]);
+    let registers = out
+        .lines()
+        .find(|l| field(l, "event") == Some("registers_verified"))
+        .expect("registers target ran");
+    for period in ["FY2026-P03", "FY2026-P04"] {
+        let row = arr(&doc(registers), "periods")
+            .iter()
+            .find(|p| text(p, "period") == period)
+            .cloned()
+            .unwrap_or_else(|| panic!("{period} verified: {registers}"));
+        assert_eq!(text(&row, "cache_status"), "uninitialized", "{registers}");
+        assert_eq!(row.get("green"), Some(&Json::Bool(true)), "{registers}");
+        assert_eq!(row.get("stale"), Some(&Json::Bool(true)), "{registers}");
+        assert!(int(&row, "lag_entries").unwrap() > 0, "{registers}");
+        assert!(arr(&row, "drift").is_empty(), "{registers}");
+        assert!(
+            format!("{out}{err}").contains(&format!(
+                "initialize it with fa registers advance --period {period} --json"
+            )),
+            "{out}{err}"
+        );
+    }
+    let verdict = doc(out.lines().last().unwrap());
+    assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
+
+    // Materialize March only, then damage one of its stored cells. April
+    // stays uninitialized; the failure names March alone.
+    ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = runtime
+        .block_on(Database::open(
+            &ctx.commit(),
+            &book.join("store"),
+            DatabaseKeys::new([57; 32], DatabaseSecurityNamespaceId([58; 32]), [59; 32]),
+        ))
+        .unwrap();
+    let key = fa_registers::CellKey {
+        account: fa_model::account_vid(book_id, "1000"),
+        unit_id: fa_money::UnitRegistry::embedded()
+            .unwrap()
+            .lookup("USD")
+            .unwrap()
+            .0,
+        period: "FY2026-P03".into(),
+    };
+    let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+    batch.set_vertex_property(
+        fa_registers::register_vid(book_id, &key),
+        property::CREDITS_POSTED,
+        Some(CanonicalScalar::bytes(2_999i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    runtime.block_on(db.write(&ctx.commit(), batch)).unwrap();
+    drop(db);
+    for args in [
+        &["verify", "registers", "--fiscal-year", "2026", "--json"][..],
+        &["verify", "book", "--json"][..],
+    ] {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 8, "args={args:?}\n{out}\n{err}");
+        let message = format!("{out}{err}");
+        let failing = message
+            .split("stored registers differ from the refold in ")
+            .nth(1)
+            .and_then(|rest| rest.split([';', '"']).next())
+            .unwrap_or_else(|| panic!("names the drifting periods: {message}"));
+        assert_eq!(failing.trim(), "FY2026-P03", "{message}");
+    }
     Ok(())
 }
 

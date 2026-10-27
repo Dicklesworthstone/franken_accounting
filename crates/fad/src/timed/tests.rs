@@ -424,6 +424,65 @@ fn daemon_cycle_records_real_ticks_and_bounds_both_kinds_of_effects() {
     .expect("lab completed");
 }
 
+/// fa-0hs4.11: a corroborated timer cycle advances the disposable paged
+/// sweep index (fa-gpd4), so discovery reads the committed delta instead of
+/// scanning every vertex. The index refolds green against the journal after
+/// the cycle's own expiry, and the cycle's effects are unchanged by it.
+#[test]
+fn timed_cycle_reads_the_paged_sweep_index() {
+    lab(73, |root| async move {
+        let mut fixture = fixture(&root, 73).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let midnight = u64::try_from(april.0).unwrap() * 86_400_000_000_000;
+        let first = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, midnight - 100)),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !first.corroborated && !first.sweep_index_current,
+            "{first:?}"
+        );
+        assert!(
+            !fixture.book.verify_sweep_index(&cx).unwrap().index_present,
+            "no cycle has advanced an index yet"
+        );
+        for key in [b"index-a", b"index-b"] {
+            hold(&mut fixture, &cx, key, 5).await;
+        }
+        advance(&root, 100).await;
+        let due = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, midnight)))
+            .await
+            .unwrap();
+        assert!(due.corroborated && due.sweep_index_current, "{due:?}");
+        assert_eq!(due.expired, 1, "{due:?}");
+        let index = fixture.book.verify_sweep_index(&cx).unwrap();
+        assert!(index.index_present && index.is_green(), "{index:?}");
+        assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 1);
+        advance(&root, 10).await;
+        let next = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, midnight + 10)),
+            )
+            .await
+            .unwrap();
+        assert!(next.sweep_index_current && next.expired == 1, "{next:?}");
+        assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
+        assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
 #[test]
 fn forward_jump_rollback_and_old_true_tick_retry_do_not_sweep() {
     lab(73, |root| async move {

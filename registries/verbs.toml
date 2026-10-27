@@ -998,7 +998,7 @@ flags = []
 switches = []
 events = ["book_triage"]
 exits = [0, 2, 4, 5, 7]
-usage = ["triage   (next_actions: what to run next, computed from the book's state)", "Requires current read authority over the whole book at its head; scoped tokens are refused before the survey.", "Open findings are counted across every recorded finding run at their current review status. drafts_awaiting_promotion counts open drafts holding planned intents: no other approval is persisted before its commit (a plan is portable bytes until then), and a draft never holds an intent the kernel refused. Bank lines are not surveyed here: fa bank status needs reconcile and privileged authority."]
+usage = ["triage   (next_actions: what to run next, computed from the book's state)", "Requires current read authority over the whole book at its head; scoped tokens are refused before the survey.", "Open findings are counted across every recorded finding run at their current review status. drafts_awaiting_promotion counts open drafts holding planned intents: no other approval is persisted before its commit (a plan is portable bytes until then), and a draft never holds an intent the kernel refused. Unconfirmed bank lines are counted; fa bank status lists them under reconcile and privileged authority."]
 example = "fa triage --book ./books/myco --json"
 
 [[verb]]
@@ -1059,7 +1059,7 @@ flags = ["--scenario", "--seed"]
 switches = []
 events = ["demo_initialized"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["demo init [--scenario retail|bank|ponzi|shell-network|worldcom|channel-stuffing|ghost-payroll] [--seed <N>]", "Creates a self-contained demo book in --book <dir> (with keys at --keys <file> or <dir>/book.keys), installs the scenario's chart, opens FY2026 periods, finalizes an OpeningOnly MigrationRun, posts operating and planted forensic entries, advances registers, and creates a signed checkpoint."]
+usage = ["demo init --scenario retail|bank|ponzi|shell-network|worldcom|channel-stuffing|ghost-payroll [--seed <N>]", "Creates a self-contained demo book in --book <dir> (with keys at --keys <file> or <dir>/book.keys), installs the scenario's chart, opens FY2026 periods, finalizes an OpeningOnly MigrationRun, posts operating and planted forensic entries, advances registers, and creates a signed checkpoint."]
 example = "fa demo init --scenario retail --seed 7 --book ./books/retail-demo --json"
 
 # Spellings agents try first (plan §15.3 intent inference). An alias expands

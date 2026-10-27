@@ -527,7 +527,9 @@ fn case_docs_name_every_postable_kind_and_make_no_stale_posting_claim() {
 /// The `--scenario` list in a `demo init` usage line, split on `|`.
 fn demo_usage_scenarios(usage: &str) -> Option<Vec<String>> {
     let start = usage.find("--scenario ")? + "--scenario ".len();
-    let end = start + usage[start..].find(']')?;
+    // `--scenario` is required, so its list ends at the next space; the old
+    // bracketed form (the planted negative below) ends at its `]`.
+    let end = start + usage[start..].find([' ', ']'])?;
     Some(usage[start..end].split('|').map(str::to_string).collect())
 }
 
