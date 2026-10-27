@@ -20,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod access_event;
 pub mod account;
 pub mod bank_csv;
 pub mod canon;
@@ -37,6 +38,7 @@ pub mod symbols;
 pub mod unit;
 pub mod valuation;
 
+pub use access_event::{AccessEvent, AccessRecord};
 pub use account::AccountType;
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
 pub use closing::YearEndCloseBasis;

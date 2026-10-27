@@ -474,23 +474,10 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     through: Option<i32>,
     mode: ProofMode,
 ) -> Outcome<Vec<u8>> {
-    let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
+    let journal = match crate::state::supported(db, book, state)? {
         Ok(journal) => journal,
         Err(r) => return Ok(Err(r)),
     };
-    if AccumulatorState::of_journal(&journal, state.prev_state_oid) != *state {
-        return Ok(Err(Refusal::new(
-            code::ACCUMULATOR_DRIFT,
-            exit::VERIFICATION,
-            "the journal does not reproduce the accumulator state",
-            "FA-INV-14 (states are recomputed from their journal prefix)",
-            "run `fa verify accumulator`; do not issue proofs against an unsupported state",
-        )));
-    }
-    if let Err(r) = journal.verify_unchanged_at(db, observed_at)? {
-        return Ok(Err(r));
-    }
     let (records, needed) = match select(
         &journal,
         account,

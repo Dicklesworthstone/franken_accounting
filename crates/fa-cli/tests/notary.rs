@@ -111,6 +111,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_eq!(integer(&first, "leaf_count"), 0);
     // A fresh book's first state accumulates evidence after the first commit.
     assert_eq!(integer(&first, "evidence_after_seq"), 1);
+    assert_eq!(integer(&first, "access_after_seq"), 1);
     let kinds = get(&first, "leaf_kinds").expect("leaf_kinds");
     for kind in [
         "entries",
@@ -118,6 +119,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
         "import_receipts",
         "custody_transfers",
         "supplemental_evidence",
+        "access_events",
     ] {
         assert_eq!(integer(kinds, kind), 0, "{kind}");
     }
@@ -194,10 +196,12 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     // itself, and accumulator states are not leaves.
     assert_eq!(integer(&second, "leaf_count"), 5);
     assert_eq!(integer(&second, "evidence_after_seq"), 1);
+    assert_eq!(integer(&second, "access_after_seq"), 1);
     let kinds = get(&second, "leaf_kinds").expect("leaf_kinds");
     assert_eq!(integer(kinds, "entries"), 4);
     assert_eq!(integer(kinds, "import_receipts"), 1);
     assert_eq!(integer(kinds, "attestations"), 0);
+    assert_eq!(integer(kinds, "access_events"), 0);
     assert!(integer(&second, "through_seq") >= integer(&posted, "recorded_at"));
     let verified_bytes = ok(&book, &["verify", "accumulator", "--json"]);
     let verified = parsed(&verified_bytes);
@@ -208,6 +212,7 @@ fn checkpoints_and_verification_survive_reopen_and_include_later_postings() {
     assert_eq!(integer(&verified, "states_checked"), 2);
     for state in array(&verified, "states") {
         assert_eq!(integer(state, "evidence_after_seq"), 1);
+        assert_eq!(integer(state, "access_after_seq"), 1);
         assert_eq!(
             integer(
                 get(state, "leaf_kinds").expect("leaf_kinds"),

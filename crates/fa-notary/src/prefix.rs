@@ -156,19 +156,10 @@ pub fn prove_prefix_with_records<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     state: &AccumulatorState,
 ) -> Outcome<Vec<u8>> {
-    let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
+    let journal = match crate::state::supported(db, book, state)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if AccumulatorState::of_journal(&journal, state.prev_state_oid) != *state {
-        return Ok(Err(drift(
-            "the journal does not reproduce the selected accumulator state",
-        )));
-    }
-    if let Err(refusal) = journal.verify_unchanged_at(db, observed_at)? {
-        return Ok(Err(refusal));
-    }
     journal.prefix_proof_with_records()
 }
 
@@ -185,19 +176,10 @@ pub fn prove_suffix_with_records<V: asupersync::fs::Vfs + Clone>(
     state: &AccumulatorState,
     remaining_bytes: usize,
 ) -> Outcome<suffix::RecordSuffix> {
-    let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
+    let journal = match crate::state::supported(db, book, state)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if AccumulatorState::of_journal(&journal, state.prev_state_oid) != *state {
-        return Ok(Err(drift(
-            "the journal does not reproduce the selected accumulator state",
-        )));
-    }
-    if let Err(refusal) = journal.verify_unchanged_at(db, observed_at)? {
-        return Ok(Err(refusal));
-    }
     journal.suffix_proofs_with_records(previous, remaining_bytes)
 }
 

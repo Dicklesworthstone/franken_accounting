@@ -818,9 +818,15 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
 
     // Plant a state whose root is not the journal's, chained from b and
     // installed as the head — what an insider rewriting history would do.
-    let head = Journal::read(&h.db, &h.book, None, Some(fa_notary::state::FIRST_COMMIT))
-        .unwrap()
-        .unwrap();
+    let head = Journal::read_with_boundaries(
+        &h.db,
+        &h.book,
+        None,
+        b.state.evidence_after,
+        b.state.access_after,
+    )
+    .unwrap()
+    .unwrap();
     let mut forged = AccumulatorState::of_journal(&head, Some(b.oid));
     forged.root[0] ^= 1;
     let bytes = forged.canonical_bytes().unwrap();
@@ -848,7 +854,13 @@ fn recomputation_finds_a_forged_state_and_blocks_checkpoints_over_it() {
 
     let found = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
     assert!(!found.is_green());
-    assert!(found.states[0].finding.is_some(), "{found:?}");
+    assert!(
+        found.states[0]
+            .finding
+            .as_deref()
+            .is_some_and(|finding| finding.contains("recomputed")),
+        "{found:?}"
+    );
     assert!(found.states[1..].iter().all(|s| s.finding.is_none()));
 
     let refused = h.checkpoint_refusal();
@@ -1258,9 +1270,15 @@ fn checkpoint_refuses_a_predecessor_that_claims_its_own_recording_commit() {
     h.post(h.rent, 1, b"g1");
     let a = h.checkpoint();
     let next = CommitSeq(h.db.frontier().unwrap().0 + 1);
-    let journal = Journal::read(&h.db, &h.book, None, Some(fa_notary::state::FIRST_COMMIT))
-        .unwrap()
-        .unwrap();
+    let journal = Journal::read_with_boundaries(
+        &h.db,
+        &h.book,
+        None,
+        a.state.evidence_after,
+        a.state.access_after,
+    )
+    .unwrap()
+    .unwrap();
     let mut early = AccumulatorState::of_journal(&journal, Some(a.oid));
     early.through_seq = next;
     let (_, recorded_at) = h.plant_state(&early, Some(a.oid));
@@ -4654,6 +4672,10 @@ fn rewritten(record: fa_notary::Record) -> fa_notary::Record {
             bump(&mut s.attached_by);
             fa_notary::Record::Supplement(s)
         }
+        fa_notary::Record::Access(mut event) => {
+            bump(&mut event.record.principal);
+            fa_notary::Record::Access(event)
+        }
         entry @ fa_notary::Record::Entry(_) => entry,
     }
 }
@@ -4843,16 +4865,28 @@ fn a_rewrite_of_any_evidence_record_is_found() {
 #[test]
 fn a_state_that_moves_its_evidence_boundary_is_found() {
     let mut h = harness();
-    let a = h.checkpoint();
     let ev = record_evidence(&mut h);
+    let a = h
+        .plant_first_checkpoint(h.db.frontier().unwrap(), None)
+        .stored;
     let b = h.checkpoint();
     assert_eq!(b.state.evidence_after, a.state.evidence_after);
-    let hidden = Journal::read(&h.db, &h.book, None, Some(b.state.through_seq))
-        .unwrap()
-        .unwrap();
+    assert_eq!(b.state.access_after, Some(a.state.through_seq));
+    // Move only evidence coverage: the upgraded access boundary stays
+    // correct, so the independent evidence chain rule must catch this.
+    let hidden = Journal::read_with_boundaries(
+        &h.db,
+        &h.book,
+        None,
+        Some(a.state.through_seq),
+        b.state.access_after,
+    )
+    .unwrap()
+    .unwrap();
     assert!(hidden.leaf_index(ev.review).is_none());
     let forged = AccumulatorState::of_journal(&hidden, Some(b.oid));
-    assert_eq!(forged.evidence_after, Some(b.state.through_seq));
+    assert_eq!(forged.evidence_after, Some(a.state.through_seq));
+    assert_eq!(forged.access_after, b.state.access_after);
     let bytes = forged.canonical_bytes().unwrap();
     let oid = state_oid(&bytes);
     let mut batch = WriteBatch::new(relation::DERIVED_FROM);
@@ -4885,3 +4919,6 @@ fn a_state_that_moves_its_evidence_boundary_is_found() {
     );
     assert!(found.states[1..].iter().all(|s| s.finding.is_none()));
 }
+
+#[path = "notary/access_events.rs"]
+mod access_events;

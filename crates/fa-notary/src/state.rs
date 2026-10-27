@@ -1,11 +1,12 @@
 //! Journaled accumulator states (plan §13.2, Appendix A `AccumulatorState`).
 //!
 //! ```text
-//! AccumulatorState { schema_major: u16 (1), schema_minor: u16 (0 | 1),
+//! AccumulatorState { schema_major: u16 (1), schema_minor: u16 (0 | 1 | 2),
 //!                    book_id: [16], branch_id: [16], through_seq: u64,
 //!                    leaf_count: u64, root: [32], peaks: [[32]],
 //!                    prev_state_oid: Option<[32]>,
-//!                    evidence_after_seq: u64 (minor 1 only) }
+//!                    evidence_after_seq: u64 (minor >= 1),
+//!                    access_after_seq: u64 (minor 2 only) }
 //! oid = BLAKE3("fa:accumulator-state:v1" ‖ canonical bytes)
 //! vid = low 128 bits of BLAKE3("fa:vid:accumulator-state:v1" ‖ oid)
 //! ```
@@ -13,7 +14,7 @@
 //! Minor 0 states accumulate entries alone. A minor 1 state also
 //! accumulates the evidence records created after `evidence_after_seq`
 //! (bead fa-va02; [`crate::journal`]'s evidence boundary), which lies in
-//! `1..=through_seq`. Every new state is minor 1, and the boundary is a
+//! `1..=through_seq`. The evidence boundary is a
 //! property of the chain, never a choice: a book's first state takes
 //! [`FIRST_COMMIT`] (the substrate's first commit, which is or precedes the
 //! book's genesis and records no evidence, so every evidence record is a
@@ -21,6 +22,13 @@
 //! sequence, and a state after a minor 1 predecessor keeps its boundary.
 //! [`verify_accumulator`] refuses any other boundary, so a key holder
 //! cannot drop evidence by moving it.
+//!
+//! New states use minor 2 and additionally accumulate AccessEvents after
+//! `access_after_seq`. Its first boundary is the first commit for a fresh
+//! chain, or the last legacy state's `through_seq` on upgrade. Thereafter
+//! it is immutable: changing or removing it cannot hide an already covered
+//! access event. The existing evidence boundary remains unchanged, and
+//! every minor 0/1 state retains its original bytes and leaf population.
 //!
 //! A state is a payload object: immutable, content-addressed, written by
 //! the notary in its own transaction — never inside a posting transaction,
@@ -71,6 +79,8 @@ pub const STATE_SCHEMA_MAJOR: u16 = 1;
 pub const STATE_SCHEMA_MINOR: u16 = 0;
 /// States that also accumulate evidence records after a recorded boundary.
 pub const STATE_SCHEMA_MINOR_BOUNDARY: u16 = 1;
+/// States that additionally accumulate AccessEvents after their own boundary.
+pub const STATE_SCHEMA_MINOR_ACCESS: u16 = 2;
 /// The substrate's first commit (an empty database's frontier is 0): the
 /// evidence boundary of a book's first state. No commit at or before a
 /// book's genesis records evidence, so the state accumulates all of it.
@@ -82,7 +92,8 @@ const MAX_PEAKS: usize = 64;
 pub struct AccumulatorState {
     pub book_id: Id128,
     pub branch_id: Id128,
-    /// The prefix is every entry recorded at or before this sequence.
+    /// The prefix covers entries and the evidence/access records admitted
+    /// by their respective boundaries at or before this sequence.
     pub through_seq: CommitSeq,
     pub leaf_count: u64,
     pub root: Digest,
@@ -92,13 +103,16 @@ pub struct AccumulatorState {
     /// The evidence boundary: `None` for a minor 0 state (entries alone),
     /// otherwise the commit after which evidence records are leaves.
     pub evidence_after: Option<CommitSeq>,
+    /// The AccessEvent boundary, absent in legacy minor 0/1 states.
+    pub access_after: Option<CommitSeq>,
 }
 
 impl AccumulatorState {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
-        let minor = match self.evidence_after {
-            None => STATE_SCHEMA_MINOR,
-            Some(_) => STATE_SCHEMA_MINOR_BOUNDARY,
+        let minor = match (self.evidence_after, self.access_after) {
+            (_, Some(_)) => STATE_SCHEMA_MINOR_ACCESS,
+            (Some(_), None) => STATE_SCHEMA_MINOR_BOUNDARY,
+            (None, None) => STATE_SCHEMA_MINOR,
         };
         let mut w = Writer::with_capacity(136 + 32 * self.peaks.len());
         w.u16(STATE_SCHEMA_MAJOR)
@@ -114,7 +128,12 @@ impl AccumulatorState {
             .opt(self.prev_state_oid.as_ref(), |w, o| {
                 w.fixed(&o.0);
             });
-        if let Some(boundary) = self.evidence_after {
+        if minor >= STATE_SCHEMA_MINOR_BOUNDARY {
+            // As with the legacy encoder, malformed fields remain encodable
+            // for planted controls but cannot pass either decoder.
+            w.u64(self.evidence_after.map_or(0, |boundary| boundary.0));
+        }
+        if let Some(boundary) = self.access_after {
             w.u64(boundary.0);
         }
         w.finish()
@@ -126,7 +145,7 @@ impl AccumulatorState {
             return Err(r.invalid("state.schema_major"));
         }
         let minor = r.u16("state.schema_minor")?;
-        if minor != STATE_SCHEMA_MINOR && minor != STATE_SCHEMA_MINOR_BOUNDARY {
+        if minor > STATE_SCHEMA_MINOR_ACCESS {
             return Err(r.invalid("state.schema_minor"));
         }
         let mut state = Self {
@@ -140,13 +159,26 @@ impl AccumulatorState {
                 r.fixed("state.prev_state_oid").map(Oid)
             })?,
             evidence_after: None,
+            access_after: None,
         };
-        if minor == STATE_SCHEMA_MINOR_BOUNDARY {
+        if minor >= STATE_SCHEMA_MINOR_BOUNDARY {
             let boundary = r.u64("state.evidence_after_seq")?;
             if boundary == 0 || boundary > state.through_seq.0 {
                 return Err(r.invalid("state.evidence_after_seq"));
             }
             state.evidence_after = Some(CommitSeq(boundary));
+        }
+        if minor == STATE_SCHEMA_MINOR_ACCESS {
+            let boundary = r.u64("state.access_after_seq")?;
+            if boundary == 0
+                || boundary > state.through_seq.0
+                || state
+                    .evidence_after
+                    .is_none_or(|evidence| boundary < evidence.0)
+            {
+                return Err(r.invalid("state.access_after_seq"));
+            }
+            state.access_after = Some(CommitSeq(boundary));
         }
         r.finish()?;
         Ok(state)
@@ -168,7 +200,7 @@ impl AccumulatorState {
     }
 
     /// The state that commits `journal` after `prev`, with the journal's
-    /// evidence boundary.
+    /// evidence and access boundaries.
     #[must_use]
     pub fn of_journal(journal: &Journal, prev_state_oid: Option<Oid>) -> Self {
         Self {
@@ -180,6 +212,7 @@ impl AccumulatorState {
             peaks: journal.peaks(),
             prev_state_oid,
             evidence_after: journal.evidence_after,
+            access_after: journal.access_after,
         }
     }
 
@@ -628,13 +661,24 @@ pub fn chained_boundary(prev: Option<&AccumulatorState>) -> CommitSeq {
     prev.map_or(FIRST_COMMIT, AccumulatorState::successor_boundary)
 }
 
+/// The AccessEvent boundary follows the same append-only law, independently
+/// of older evidence coverage. A legacy checkpoint excludes AccessEvents
+/// through its complete prefix; its successor starts coverage after that
+/// prefix without changing any already signed leaf.
+#[must_use]
+pub fn chained_access_boundary(prev: Option<&AccumulatorState>) -> CommitSeq {
+    prev.map_or(FIRST_COMMIT, |state| {
+        state.access_after.unwrap_or(state.through_seq)
+    })
+}
+
 /// Recompute the accumulator over the whole journal at the head and journal
 /// it as the next `AccumulatorState` with its `TransparencyCheckpoint`
 /// signed by `signer`, after checking that the journal still extends the
 /// previous state and reproduces its checkpoint (a rewritten history or a
 /// forged checkpoint is refused with exit 8, never papered over). The new
-/// state accumulates evidence records after the boundary the chain implies
-/// ([`chained_boundary`]).
+/// state accumulates evidence and access records after the boundaries its
+/// chain implies ([`chained_boundary`], [`chained_access_boundary`]).
 pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -689,7 +733,14 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
         }
     };
     let boundary = chained_boundary(prev.as_ref().map(|p| &p.state));
-    let journal = match Journal::read(db, book, Some(through), Some(boundary)) {
+    let access_boundary = chained_access_boundary(prev.as_ref().map(|p| &p.state));
+    let journal = match Journal::read_with_boundaries(
+        db,
+        book,
+        Some(through),
+        Some(boundary),
+        Some(access_boundary),
+    ) {
         Ok(Ok(journal)) => journal,
         Ok(Err(refusal)) => {
             txn.abort();
@@ -889,6 +940,8 @@ pub struct StateCheck {
     pub recorded_at: CommitSeq,
     /// The state's evidence boundary (`None`: entries alone).
     pub evidence_after: Option<CommitSeq>,
+    /// The state's AccessEvent boundary (`None`: access events not covered).
+    pub access_after: Option<CommitSeq>,
     /// The recomputed prefix's leaves by kind; `None` when the prefix was
     /// not read (the state was refused before recomputation).
     pub leaf_kinds: Option<LeafKinds>,
@@ -919,14 +972,106 @@ impl AccumulatorVerification {
     }
 }
 
-/// The evidence boundaries a state may carry after `prev` (`None` for the
-/// oldest state on the chain): an entries-only state may follow only an
-/// entries-only predecessor (or start the chain); otherwise exactly the
-/// boundary [`chained_boundary`] derives.
+/// The coverage boundaries a state may carry after `prev` (`None` for the
+/// oldest state on the chain). Each legacy boundary can be activated only
+/// once, at its derived sequence, and can never move or disappear.
 fn boundary_admitted(state: &AccumulatorState, prev: Option<&AccumulatorState>) -> bool {
-    match state.evidence_after {
+    let evidence = match state.evidence_after {
         None => prev.is_none_or(|p| p.evidence_after.is_none()),
         Some(b) => b == chained_boundary(prev),
+    };
+    let access = match state.access_after {
+        None => prev.is_none_or(|p| p.access_after.is_none()),
+        Some(b) => {
+            b == chained_access_boundary(prev)
+                && state.evidence_after.is_some_and(|evidence| evidence <= b)
+        }
+    };
+    evidence && access
+}
+
+fn boundary_finding(state: &AccumulatorState, prev: Option<&AccumulatorState>) -> String {
+    format!(
+        "its evidence boundary {} or access boundary {} is not the one its place on the chain implies ({} / {})",
+        state
+            .evidence_after
+            .map_or_else(|| "none".to_string(), |b| b.0.to_string()),
+        state
+            .access_after
+            .map_or_else(|| "none".to_string(), |b| b.0.to_string()),
+        chained_boundary(prev).0,
+        chained_access_boundary(prev).0
+    )
+}
+
+/// A selected state cannot choose its own coverage, or inherit coverage
+/// from an ancestor that illegally moved or removed a boundary. Follow
+/// its retained ancestry at one observed frontier; this checks identities,
+/// coverage, and recorded prefix order without replaying every old prefix.
+fn admit_boundary_chain<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    observed_at: CommitSeq,
+) -> Outcome<()> {
+    let mut state = state.clone();
+    let mut seen = BTreeSet::new();
+    loop {
+        if state.book_id != book.book_id || state.branch_id != Id128::TRUNK {
+            return Ok(Err(drift(
+                "the selected state's coverage chain names another book or branch".into(),
+            )));
+        }
+        let previous = match state.prev_state_oid {
+            None => None,
+            Some(oid) => {
+                if !seen.insert(oid) {
+                    return Ok(Err(drift(
+                        "the selected state's coverage chain has a cycle".into(),
+                    )));
+                }
+                match load(db, &oid, observed_at) {
+                    Ok(previous) => Some(previous),
+                    Err(KernelError::Corrupt(why)) => {
+                        return Ok(Err(drift(format!(
+                            "the selected state's coverage chain is broken: {why}"
+                        ))));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        };
+        if !boundary_admitted(&state, previous.as_ref().map(|p| &p.state)) {
+            return Ok(Err(drift(boundary_finding(
+                &state,
+                previous.as_ref().map(|p| &p.state),
+            ))));
+        }
+        match previous {
+            None => return Ok(Ok(())),
+            Some(previous) => {
+                if previous.recorded_at <= previous.state.through_seq {
+                    return Ok(Err(drift(format!(
+                        "the selected state's coverage ancestor was recorded at {} but claims a prefix through {}",
+                        previous.recorded_at.0, previous.state.through_seq.0
+                    ))));
+                }
+                if previous.state.through_seq >= state.through_seq
+                    || previous.recorded_at > state.through_seq
+                    || previous.state.leaf_count > state.leaf_count
+                {
+                    return Ok(Err(drift(format!(
+                        "the selected state's coverage chain does not extend its predecessor (through {}, {} leaves, recorded at {}) with its prefix through {} and {} leaves",
+                        previous.state.through_seq.0,
+                        previous.state.leaf_count,
+                        previous.recorded_at.0,
+                        state.through_seq.0,
+                        state.leaf_count
+                    ))));
+                }
+                state = previous.state;
+            }
+        }
     }
 }
 
@@ -935,7 +1080,7 @@ fn boundary_admitted(state: &AccumulatorState, prev: Option<&AccumulatorState>) 
 /// is rebuilt from the same prefix and signed again by `signer` (Ed25519 is
 /// deterministic) and must match byte for byte; each state extends its
 /// predecessor; each was recorded after the prefix it covers; each carries
-/// the evidence boundary its place on the chain implies; and every state
+/// the coverage boundaries its place on the chain implies; and every state
 /// and checkpoint vertex in the store is on the chain. Every checkpointed
 /// record must also retain its label, creating sequence, payload and digest
 /// at the observed head: historical MVCC versions alone cannot show a later
@@ -962,14 +1107,15 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
                 s.recorded_at.0, st.through_seq.0
             ))
         } else if !boundary_admitted(st, prev) {
-            Some(format!(
-                "its evidence boundary {} is not the one its place on the chain implies ({})",
-                st.evidence_after
-                    .map_or_else(|| "none".to_string(), |b| b.0.to_string()),
-                chained_boundary(prev).0
-            ))
+            Some(boundary_finding(st, prev))
         } else {
-            match Journal::read(db, book, Some(st.through_seq), st.evidence_after)? {
+            match Journal::read_with_boundaries(
+                db,
+                book,
+                Some(st.through_seq),
+                st.evidence_after,
+                st.access_after,
+            )? {
                 Err(r) => Some(r.message),
                 Ok(journal) => {
                     leaf_kinds = Some(journal.leaf_kinds());
@@ -1026,6 +1172,7 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
             leaf_count: st.leaf_count,
             recorded_at: s.recorded_at,
             evidence_after: st.evidence_after,
+            access_after: st.access_after,
             leaf_kinds,
             finding,
         });
@@ -1055,17 +1202,26 @@ fn hex(d: &[u8]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Read the journal prefix a journaled state names and confirm it
-/// reproduces the state and remains unchanged at the observed head;
+/// Admit the selected state's coverage chain, then read its journal prefix
+/// and confirm it reproduces the state and remains unchanged at the head;
 /// refusing (exit 8) when either check fails, so retained historical
 /// versions cannot conceal a later rewrite while a new proof is issued.
-fn supported<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn supported<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     state: &AccumulatorState,
 ) -> Outcome<Journal> {
     let observed_at = db.frontier()?;
-    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
+    if let Err(refusal) = admit_boundary_chain(db, book, state, observed_at)? {
+        return Ok(Err(refusal));
+    }
+    let journal = match Journal::read_with_boundaries(
+        db,
+        book,
+        Some(state.through_seq),
+        state.evidence_after,
+        state.access_after,
+    )? {
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
     };
@@ -1252,8 +1408,84 @@ mod tests {
             assert!(fa_verify::verify_state(&bytes).is_err(), "{boundary}");
         }
         let mut unknown = new;
-        unknown[2] = 2;
+        unknown[2] = 3;
         assert!(AccumulatorState::decode(&unknown).is_err());
+    }
+
+    #[test]
+    fn access_coverage_is_an_additive_minor_with_bounded_coordinates() {
+        let legacy = state(Some(4));
+        let old = legacy.canonical_bytes().unwrap();
+        let current = AccumulatorState {
+            access_after: Some(CommitSeq(7)),
+            ..legacy.clone()
+        };
+        let bytes = current.canonical_bytes().unwrap();
+        assert_eq!(bytes[2..4], STATE_SCHEMA_MINOR_ACCESS.to_le_bytes());
+        assert_eq!(bytes[4..bytes.len() - 8], old[4..]);
+        assert_eq!(bytes[bytes.len() - 8..], 7u64.to_le_bytes());
+        assert_eq!(AccumulatorState::decode(&bytes).unwrap(), current);
+        assert_eq!(
+            fa_verify::verify_state(&bytes).unwrap().oid,
+            current.oid().unwrap().0
+        );
+        for access in [0, 3, 10] {
+            let invalid = AccumulatorState {
+                access_after: Some(CommitSeq(access)),
+                ..legacy.clone()
+            }
+            .canonical_bytes()
+            .unwrap();
+            assert!(AccumulatorState::decode(&invalid).is_err(), "{access}");
+            assert!(fa_verify::verify_state(&invalid).is_err(), "{access}");
+        }
+        let without_evidence = AccumulatorState {
+            access_after: Some(CommitSeq(7)),
+            ..state(None)
+        }
+        .canonical_bytes()
+        .unwrap();
+        assert!(AccumulatorState::decode(&without_evidence).is_err());
+        assert!(fa_verify::verify_state(&without_evidence).is_err());
+    }
+
+    #[test]
+    fn access_boundary_is_derived_once_and_never_downgraded_or_moved() {
+        let entries = state(None);
+        let evidence = state(Some(4));
+        let fresh = AccumulatorState {
+            access_after: Some(FIRST_COMMIT),
+            ..state(Some(1))
+        };
+        assert!(boundary_admitted(&fresh, None));
+        assert_eq!(chained_access_boundary(None), FIRST_COMMIT);
+        assert_eq!(chained_access_boundary(Some(&entries)), entries.through_seq);
+        assert_eq!(
+            chained_access_boundary(Some(&evidence)),
+            evidence.through_seq
+        );
+        let from_entries_only = AccumulatorState {
+            evidence_after: Some(entries.through_seq),
+            access_after: Some(entries.through_seq),
+            ..entries.clone()
+        };
+        assert!(boundary_admitted(&from_entries_only, Some(&entries)));
+        let upgraded = AccumulatorState {
+            access_after: Some(evidence.through_seq),
+            ..evidence.clone()
+        };
+        assert!(boundary_admitted(&upgraded, Some(&evidence)));
+        assert!(boundary_admitted(&upgraded, Some(&upgraded)));
+        assert!(!boundary_admitted(&evidence, Some(&upgraded)));
+        assert!(!boundary_admitted(&entries, Some(&upgraded)));
+        for access in [1, 8, 10] {
+            let moved = AccumulatorState {
+                access_after: Some(CommitSeq(access)),
+                ..upgraded.clone()
+            };
+            assert!(!boundary_admitted(&moved, Some(&upgraded)), "{access}");
+        }
+        assert!(!boundary_admitted(&upgraded, None));
     }
 
     /// The boundary is a property of the chain: the first commit for the

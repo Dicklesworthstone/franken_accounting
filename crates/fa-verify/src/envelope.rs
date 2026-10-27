@@ -25,23 +25,26 @@
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason, Writer};
 
+mod access;
 mod reconciled;
 
 /// Record kinds covered by the accumulator (plan §13.2, bead `fa-va02`):
 /// journal entries (posting and control classes), attestations (`Reviewed`,
 /// `ManualAssertion`, `RegisterEquals`, `Reconciled`), custody receipts and transfers, and
-/// supplemental evidence attachments.
+/// supplemental evidence attachments, and recorded access events.
 pub const KIND_ENTRY: u8 = 1;
 pub const KIND_ATTESTATION: u8 = 2;
 pub const KIND_IMPORT_RECEIPT: u8 = 3;
 pub const KIND_CUSTODY_TRANSFER: u8 = 4;
 pub const KIND_SUPPLEMENTAL_EVIDENCE: u8 = 5;
+pub const KIND_ACCESS_EVENT: u8 = 6;
 
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
 pub const ENTRY_DIGEST_DOMAIN: &[u8] = b"fa:entry:v1";
 pub const ATTESTATION_DIGEST_DOMAIN: &[u8] = b"fa:attestation:v1";
 pub const CUSTODY_DIGEST_DOMAIN: &[u8] = b"fa:custody:v1";
 pub const SUPPLEMENTAL_DIGEST_DOMAIN: &[u8] = b"fa:supplemental-evidence:v1";
+pub const ACCESS_EVENT_DIGEST_DOMAIN: &[u8] = b"fa:access-event-digest:v1";
 pub const REGISTER_CELL_DOMAIN: &[u8] = b"fa:register-cell:v1";
 
 /// The entry classes that are book-scoped and undated (`SchemaControl`,
@@ -88,6 +91,7 @@ impl LeafEnvelope {
                 | KIND_IMPORT_RECEIPT
                 | KIND_CUSTODY_TRANSFER
                 | KIND_SUPPLEMENTAL_EVIDENCE
+                | KIND_ACCESS_EVENT
         ) {
             return Err(r.error("envelope.kind", Reason::BadTag(kind)));
         }
@@ -1079,7 +1083,7 @@ pub fn envelope_of_entry(
 
 /// The envelope a journaled record of `kind` (`KIND_ENTRY`,
 /// `KIND_ATTESTATION`, `KIND_IMPORT_RECEIPT`, `KIND_CUSTODY_TRANSFER`,
-/// `KIND_SUPPLEMENTAL_EVIDENCE`) determines at journal position
+/// `KIND_SUPPLEMENTAL_EVIDENCE`, `KIND_ACCESS_EVENT`) determines at journal position
 /// `(commit_seq, ordinal)`.
 pub fn envelope_of_record(
     kind: u8,
@@ -1101,6 +1105,9 @@ pub fn envelope_of_record(
         }
         KIND_SUPPLEMENTAL_EVIDENCE => {
             supplemental_evidence_record(payload, proposal_len, commit_seq, within_commit_ordinal)
+        }
+        KIND_ACCESS_EVENT => {
+            access::record(payload, proposal_len, commit_seq, within_commit_ordinal)
         }
         other => Err(RecordError::Decode(DecodeError {
             offset: 0,
@@ -1202,6 +1209,7 @@ mod tests {
             KIND_IMPORT_RECEIPT,
             KIND_CUSTODY_TRANSFER,
             KIND_SUPPLEMENTAL_EVIDENCE,
+            KIND_ACCESS_EVENT,
         ] {
             let mut evidence = undated.clone();
             evidence.kind = kind;
@@ -1225,10 +1233,10 @@ mod tests {
             Reason::Unsorted
         );
         let mut foreign = bytes.clone();
-        foreign[0] = 6;
+        foreign[0] = 7;
         assert_eq!(
             LeafEnvelope::decode(&foreign).unwrap_err().reason,
-            Reason::BadTag(6)
+            Reason::BadTag(7)
         );
         let mut long = bytes.clone();
         long.push(0);

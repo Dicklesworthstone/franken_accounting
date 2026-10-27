@@ -3,7 +3,8 @@
 //! Every committed entry — posting and control classes alike — and every
 //! journaled evidence record after the state's evidence boundary
 //! (attestations, import receipts, custody transfers, supplemental
-//! evidence; bead fa-va02) is one leaf of a Merkle Mountain Range, in
+//! evidence; bead fa-va02), plus AccessEvents after their separate access
+//! boundary (bead fa-0hs4.12), is one leaf of a Merkle Mountain Range, in
 //! commit order, over a domain-separated leaf envelope that binds the
 //! record's kind and digest, its recorded commit sequence, and its
 //! selection fields ([`journal`]). The accumulator is a
@@ -16,7 +17,7 @@
 //! pointer — and [`verify_accumulator`] recomputes every one of them from
 //! the journal. Proofs are issued only against a state the journal
 //! reproduces, in the byte formats the dependency-free `fa-verify` checks:
-//! inclusion of an entry (optionally with its own payload), consistency
+//! inclusion of a record (optionally with its own payload), consistency
 //! between two states, the complete prefix (`SeqRangeComplete`), and one
 //! account's effective-day interval (`ScopeIndexComplete`, [`scope`]).
 //!
@@ -112,8 +113,8 @@ pub mod code {
 }
 
 /// What a checkpoint commits: the root over the first `leaf_count` leaves
-/// of a book branch's journal — exactly the entries recorded at or before
-/// `through_seq`. Encoded as `book_id ‖ branch_id ‖ through_seq u64 ‖
+/// of a book branch's journal — the entries and covered evidence/access
+/// records at or before `through_seq`. Encoded as `book_id ‖ branch_id ‖ through_seq u64 ‖
 /// leaf_count u64 ‖ root` (80 bytes), the form every proof embeds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Statement {

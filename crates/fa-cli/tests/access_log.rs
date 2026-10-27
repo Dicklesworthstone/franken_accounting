@@ -178,6 +178,67 @@ impl Fixture {
 }
 
 #[test]
+fn recorded_token_reads_are_counted_in_signed_checkpoint_coverage() {
+    let f = Fixture::new();
+    let (token, _) = f.issue("checkpoint-auditor", &["read"]);
+    let before = f.ok(&["checkpoint", "create", "--grant", "witness"]);
+    let before = data(&before);
+    assert_eq!(number(before, "access_after_seq"), 1);
+    assert_eq!(
+        number(before.get("leaf_kinds").unwrap(), "access_events"),
+        0
+    );
+
+    f.ok(&["--token", &token, "tb", "--period", "FY2026-P03"]);
+    let log = f.log(&[]);
+    assert_eq!(number(&log, "count"), 1);
+    let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];
+    let after = f.ok(&["checkpoint", "create", "--grant", "witness"]);
+    let after = data(&after);
+    assert_eq!(text(after, "signatures"), "ed25519");
+    assert_eq!(text(after, "prev_state_oid"), text(before, "oid"));
+    assert_ne!(text(after, "root"), text(before, "root"));
+    assert_eq!(
+        number(after, "leaf_count"),
+        number(before, "leaf_count") + 1
+    );
+    assert_eq!(number(after, "access_after_seq"), 1);
+    assert_eq!(number(after.get("leaf_kinds").unwrap(), "access_events"), 1);
+    assert!(number(after, "through_seq") >= number(access, "recorded_at"));
+
+    let verified = f.ok(&["verify", "accumulator"]);
+    assert_eq!(text(data(&verified), "status"), "verified");
+    let states = data(&verified)
+        .get("states")
+        .and_then(Json::as_arr)
+        .unwrap();
+    assert_eq!(states.len(), 2);
+    for (state, expected) in states.iter().zip([1, 0]) {
+        assert_eq!(number(state, "access_after_seq"), 1);
+        assert_eq!(
+            number(state.get("leaf_kinds").unwrap(), "access_events"),
+            expected
+        );
+    }
+    let listed = f.ok(&["checkpoint", "list"]);
+    let states = data(&listed)
+        .get("checkpoints")
+        .and_then(Json::as_arr)
+        .unwrap();
+    assert_eq!(states.len(), 2);
+    assert!(
+        states
+            .iter()
+            .all(|state| number(state, "access_after_seq") == 1)
+    );
+    assert_eq!(
+        number(&f.log(&[]), "count"),
+        1,
+        "owner verification records no extra access"
+    );
+}
+
+#[test]
 fn token_reads_are_recorded_before_observation_even_when_the_holder_can_write() {
     let f = Fixture::new();
     let (auditor, commitment) = f.issue("auditor-1", &["read"]);

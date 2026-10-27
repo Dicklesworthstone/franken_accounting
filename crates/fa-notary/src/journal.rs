@@ -1,7 +1,8 @@
 //! The journal as the accumulator sees it: every committed `Entry` (posting
 //! and control classes alike) and, after the prefix's evidence boundary,
 //! every journaled evidence record (attestations, import receipts, custody
-//! transfers, supplemental evidence) as one leaf, in `(commit_seq, ordinal)`
+//! transfers, supplemental evidence) and, after a separate access boundary,
+//! every AccessEvent as one leaf, in `(commit_seq, ordinal)`
 //! order, read from the authoritative payloads at a fixed known-at sequence.
 //!
 //! Leaf envelope (plan §13.2, Appendix A), canonical bytes under the model's
@@ -29,7 +30,8 @@
 //! and `class` names its variant: the claim tag of an attestation (kind 2),
 //! the intake-source tag of an import receipt (kind 3), 2 for a custody
 //! transfer (kind 4) and 1 for supplemental evidence (kind 5) — exactly as
-//! `fa-verify` rebuilds them from the payload.
+//! `fa-verify` rebuilds them from the payload. An AccessEvent (kind 6) has
+//! class 1, no selectors, and a digest over its complete unchanged v1 payload.
 //!
 //! **The evidence boundary.** Accumulator states journaled before evidence
 //! records were leaves (state schema minor 0) cover entries only. Their
@@ -41,6 +43,12 @@
 //! evidence, so every evidence record is a leaf. A book whose last state
 //! predates the boundary takes that state's sequence, so the next state
 //! still extends it (consistency).
+//!
+//! **The access boundary.** AccessEvents enter only after `access_after`.
+//! Legacy states do not retroactively acquire new leaves. The first state
+//! of a fresh chain includes every AccessEvent after genesis; an upgraded
+//! chain begins access coverage after its last legacy state's prefix, then
+//! preserves that boundary for every successor.
 
 use std::collections::btree_map::Entry as MapEntry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,7 +62,8 @@ use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_journal::rows::bytes;
 use fa_model::symbols::{label, property};
 use fa_model::{
-    ControlPayload, EncodeError, Entry, EntryClass, EntryOrigin, Id128, IntakeSource, Writer,
+    AccessEvent, ControlPayload, EncodeError, Entry, EntryClass, EntryOrigin, Id128, IntakeSource,
+    Writer,
 };
 use fa_money::Side;
 use fgdb::{Database, VertexRow};
@@ -65,13 +74,14 @@ use crate::{Statement, code};
 
 /// Record kinds (plan §13.2, bead fa-va02): journal entries (posting and
 /// control classes), attestations (`Reviewed`, `ManualAssertion`,
-/// `RegisterEquals`, `Reconciled`), import receipts, custody transfers, and supplemental
-/// evidence. The tags are `fa-verify`'s.
+/// `RegisterEquals`, `Reconciled`), import receipts, custody transfers,
+/// supplemental evidence, and access events. The tags are `fa-verify`'s.
 pub const KIND_ENTRY: u8 = 1;
 pub const KIND_ATTESTATION: u8 = 2;
 pub const KIND_IMPORT_RECEIPT: u8 = 3;
 pub const KIND_CUSTODY_TRANSFER: u8 = 4;
 pub const KIND_SUPPLEMENTAL_EVIDENCE: u8 = 5;
+pub const KIND_ACCESS_EVENT: u8 = 6;
 
 /// An attestation's payload ends with its `signed_digest` and the
 /// authentication trailer (scheme, profile, capability commitment).
@@ -175,7 +185,7 @@ impl LeafEnvelope {
 }
 
 /// A journaled record the accumulator folds, decoded and verified against
-/// the digest its payload carries.
+/// its canonical digest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
     Entry(Box<Entry>),
@@ -183,6 +193,8 @@ pub enum Record {
     /// An import receipt (custody event 0) or a custody transfer.
     Custody(CustodyEvent),
     Supplement(SupplementalEvidence),
+    /// A pre-disclosure access attempt, with the original v1 payload.
+    Access(AccessEvent),
 }
 
 impl From<Entry> for Record {
@@ -196,6 +208,14 @@ impl Record {
     /// record kind (a derived, metadata or chart vertex).
     pub fn of_row(row: &VertexRow) -> Result<Option<Self>, KernelError> {
         let decode = |what: &'static str| bytes(row, property::FA_PAYLOAD, what);
+        if row.labels.contains(&label::ACCESS_EVENT)
+            && row.labels.as_slice() != [label::ACCESS_EVENT]
+        {
+            return Err(corrupt(format!(
+                "access event {:032x} carries other labels",
+                row.vid.0
+            )));
+        }
         let record = if row.labels.contains(&label::ENTRY) {
             Self::Entry(Box::new(Entry::decode(&decode("entry.payload")?)?))
         } else if row.labels.contains(&label::ATTESTATION) {
@@ -208,6 +228,11 @@ impl Record {
             Self::Supplement(SupplementalEvidence::decode(&decode(
                 "supplement.payload",
             )?)?)
+        } else if row.labels.contains(&label::ACCESS_EVENT) {
+            Self::Access(
+                AccessEvent::decode(&decode("access_event.payload")?)
+                    .map_err(|e| KernelError::Model(e.into()))?,
+            )
         } else {
             return Ok(None);
         };
@@ -216,6 +241,19 @@ impl Record {
                 "vertex {:032x}: its label is not the record kind its payload holds",
                 row.vid.0
             )));
+        }
+        if let Self::Access(event) = &record {
+            if event.observed_at >= row.created_at
+                || event.vid().map_err(encode_failed)? != row.vid
+                || bytes(row, property::FA_DIGEST, "access_event.digest")?
+                    != event.digest().map_err(encode_failed)?
+                || bytes(row, property::BOOK_ID, "access_event.book")? != event.book_id.0
+            {
+                return Err(corrupt(format!(
+                    "access event {:032x} does not match its identity or recording coordinate",
+                    row.vid.0
+                )));
+            }
         }
         Ok(Some(record))
     }
@@ -229,6 +267,9 @@ impl Record {
                 Self::Custody(CustodyEvent::decode(payload)?)
             }
             KIND_SUPPLEMENTAL_EVIDENCE => Self::Supplement(SupplementalEvidence::decode(payload)?),
+            KIND_ACCESS_EVENT => Self::Access(
+                AccessEvent::decode(payload).map_err(|e| KernelError::Model(e.into()))?,
+            ),
             other => return Err(corrupt(format!("record kind {other} is not accumulated"))),
         };
         if record.kind() != kind {
@@ -248,6 +289,7 @@ impl Record {
             Self::Custody(e) if e.index == 0 => KIND_IMPORT_RECEIPT,
             Self::Custody(_) => KIND_CUSTODY_TRANSFER,
             Self::Supplement(_) => KIND_SUPPLEMENTAL_EVIDENCE,
+            Self::Access(_) => KIND_ACCESS_EVENT,
         }
     }
 
@@ -258,6 +300,7 @@ impl Record {
             Self::Attestation(a) => a.attestation.book_id,
             Self::Custody(e) => e.book_id,
             Self::Supplement(s) => s.book_id,
+            Self::Access(a) => a.book_id,
         }
     }
 
@@ -271,13 +314,19 @@ impl Record {
     }
 
     /// The canonical `_fa_payload` bytes: the record body followed by its
-    /// digest (and, for an attestation, its authentication trailer).
+    /// digest (and, for an attestation, its authentication trailer). The
+    /// existing AccessEvent payload has no trailer; its complete body is
+    /// digested and kept unchanged.
     pub fn payload(&self) -> Result<Vec<u8>, KernelError> {
         match self {
             Self::Entry(e) => Ok(e.encode()?),
             Self::Attestation(a) => a.attestation.canonical_bytes(&a.binding),
             Self::Custody(e) => e.canonical_bytes(),
             Self::Supplement(s) => s.canonical_bytes(),
+            Self::Access(a) => {
+                a.record.validate().map_err(corrupt)?;
+                a.canonical_bytes().map_err(encode_failed)
+            }
         }
     }
 
@@ -289,6 +338,7 @@ impl Record {
             Self::Entry(e) => return Ok(e.proposal.canonical_bytes()?.len()),
             Self::Attestation(_) => ATTESTATION_TRAILER,
             Self::Custody(_) | Self::Supplement(_) => DIGEST_TRAILER,
+            Self::Access(_) => return Ok(payload.len()),
         };
         payload
             .len()
@@ -304,6 +354,7 @@ impl Record {
             Self::Attestation(a) => Ok(a.signed_digest),
             Self::Custody(e) => e.digest(),
             Self::Supplement(s) => s.body_digest(),
+            Self::Access(a) => a.digest().map_err(encode_failed),
         }
     }
 
@@ -329,6 +380,14 @@ impl Record {
             }) => intake_tag(source),
             Self::Custody(_) => 2,
             Self::Supplement(_) => 1,
+            Self::Access(a) => {
+                if a.observed_at >= commit_seq {
+                    return Err(corrupt(
+                        "an access event observed its own recording sequence",
+                    ));
+                }
+                1
+            }
         };
         Ok(LeafEnvelope {
             kind: self.kind(),
@@ -363,6 +422,7 @@ fn has_record_label(row: &VertexRow, kind: u8) -> bool {
         KIND_IMPORT_RECEIPT => label::IMPORT_RECEIPT,
         KIND_CUSTODY_TRANSFER => label::CUSTODY_TRANSFER,
         KIND_SUPPLEMENTAL_EVIDENCE => label::SUPPLEMENTAL_EVIDENCE,
+        KIND_ACCESS_EVENT => label::ACCESS_EVENT,
         _ => return false,
     };
     row.labels.contains(&want)
@@ -415,6 +475,7 @@ pub struct LeafKinds {
     pub import_receipts: u64,
     pub custody_transfers: u64,
     pub supplemental_evidence: u64,
+    pub access_events: u64,
 }
 
 /// The journal prefix through `through_seq`, with its accumulator.
@@ -426,6 +487,9 @@ pub struct Journal {
     /// The evidence boundary: evidence records created after this commit
     /// are leaves; `None` accumulates entries alone (see the module docs).
     pub evidence_after: Option<CommitSeq>,
+    /// The separate AccessEvent coverage boundary. `None` retains the
+    /// original entry/evidence-only prefix.
+    pub access_after: Option<CommitSeq>,
     pub leaves: Vec<Leaf>,
     tree: Tree,
 }
@@ -463,8 +527,28 @@ impl Journal {
         book_id: Id128,
         through_seq: CommitSeq,
         evidence_after: Option<CommitSeq>,
+        records: Vec<(VId, Record, CommitSeq)>,
+    ) -> Result<Self, KernelError> {
+        Self::from_records_with_boundaries(book_id, through_seq, evidence_after, None, records)
+    }
+
+    /// Accumulate a prefix with independent evidence and access-event
+    /// boundaries. Keeping the original constructor separate preserves the
+    /// exact leaf set of every legacy state and caller.
+    pub fn from_records_with_boundaries(
+        book_id: Id128,
+        through_seq: CommitSeq,
+        evidence_after: Option<CommitSeq>,
+        access_after: Option<CommitSeq>,
         mut records: Vec<(VId, Record, CommitSeq)>,
     ) -> Result<Self, KernelError> {
+        if access_after.is_some_and(|access| {
+            access.0 == 0
+                || access > through_seq
+                || evidence_after.is_none_or(|evidence| evidence.0 == 0 || evidence > access)
+        }) {
+            return Err(corrupt("invalid access-event accumulation boundary"));
+        }
         records.sort_by_key(|(vid, _, seq)| (*seq, vid.0));
         let mut leaves: Vec<Leaf> = Vec::with_capacity(records.len());
         let mut tree = Tree::new();
@@ -482,11 +566,28 @@ impl Journal {
                     vid.0, seq.0, through_seq.0
                 )));
             }
-            if record.kind() != KIND_ENTRY && evidence_after.is_none_or(|b| seq <= b) {
+            let boundary = if record.kind() == KIND_ACCESS_EVENT {
+                access_after
+            } else {
+                evidence_after
+            };
+            if record.kind() != KIND_ENTRY && boundary.is_none_or(|b| seq <= b) {
+                let history = if record.kind() == KIND_ACCESS_EVENT {
+                    "outside the prefix's access-event coverage"
+                } else {
+                    "inside the prefix's entries-only history"
+                };
                 return Err(corrupt(format!(
-                    "evidence record {:032x} was recorded at {}, inside the prefix's entries-only history",
+                    "evidence record {:032x} was recorded at {}, {history}",
                     vid.0, seq.0
                 )));
+            }
+            if let Record::Access(event) = &record {
+                if event.vid().map_err(encode_failed)? != vid {
+                    return Err(corrupt(
+                        "an access event does not match its content-derived identity",
+                    ));
+                }
             }
             ordinal = match leaves.last() {
                 Some(prev) if prev.envelope.commit_seq == seq => ordinal
@@ -514,6 +615,7 @@ impl Journal {
             branch_id: Id128::TRUNK,
             through_seq,
             evidence_after,
+            access_after,
             leaves,
             tree,
         })
@@ -529,6 +631,19 @@ impl Journal {
         book: &BookContext,
         known_at: Option<CommitSeq>,
         evidence_after: Option<CommitSeq>,
+    ) -> Outcome<Self> {
+        Self::read_with_boundaries(db, book, known_at, evidence_after, None)
+    }
+
+    /// Read the same authoritative prefix with an explicit AccessEvent
+    /// boundary, as recorded by an upgraded accumulator state. The legacy
+    /// [`Journal::read`] retains its original leaf population.
+    pub fn read_with_boundaries<V: asupersync::fs::Vfs + Clone>(
+        db: &Database<V>,
+        book: &BookContext,
+        known_at: Option<CommitSeq>,
+        evidence_after: Option<CommitSeq>,
+        access_after: Option<CommitSeq>,
     ) -> Outcome<Self> {
         let head = db.frontier()?;
         let seq = known_at.unwrap_or(head);
@@ -547,17 +662,23 @@ impl Journal {
         let mut records = Vec::new();
         for row in db.vertices_at(seq)? {
             let entry = row.labels.contains(&label::ENTRY);
-            if !entry && evidence_after.is_none_or(|b| row.created_at <= b) {
+            let boundary = if row.labels.contains(&label::ACCESS_EVENT) {
+                access_after
+            } else {
+                evidence_after
+            };
+            if !entry && boundary.is_none_or(|b| row.created_at <= b) {
                 continue;
             }
             if let Some(record) = Record::of_row(&row)? {
                 records.push((row.vid, record, row.created_at));
             }
         }
-        Ok(Ok(Self::from_records_with_evidence(
+        Ok(Ok(Self::from_records_with_boundaries(
             book.book_id,
             seq,
             evidence_after,
+            access_after,
             records,
         )?))
     }
@@ -616,6 +737,18 @@ impl Journal {
                     "lost its record label"
                 })));
             }
+            if leaf.envelope.kind == KIND_ACCESS_EVENT {
+                if row.labels.as_slice() != [label::ACCESS_EVENT] {
+                    return Ok(Err(changed("has an altered AccessEvent label set")));
+                }
+                if bytes(&row, property::BOOK_ID, "checkpointed access-event book")
+                    .ok()
+                    .as_deref()
+                    != Some(leaf.envelope.book_id.0.as_slice())
+                {
+                    return Ok(Err(changed("has a rewritten or missing book identity")));
+                }
+            }
             if row.created_at != leaf.envelope.commit_seq {
                 return Ok(Err(changed("has a different creating sequence")));
             }
@@ -652,6 +785,7 @@ impl Journal {
                 KIND_IMPORT_RECEIPT => &mut kinds.import_receipts,
                 KIND_CUSTODY_TRANSFER => &mut kinds.custody_transfers,
                 KIND_SUPPLEMENTAL_EVIDENCE => &mut kinds.supplemental_evidence,
+                KIND_ACCESS_EVENT => &mut kinds.access_events,
                 _ => &mut kinds.entries,
             };
             *slot += 1;
@@ -977,7 +1111,7 @@ mod tests {
         Attestation, AttestationClaim, CapabilityBinding, ReconciledClaim, Subject,
     };
     use fa_journal::import::{BankFormat, BankImportManifest};
-    use fa_model::{EntryRef, EvidenceRef, Oid};
+    use fa_model::{AccessRecord, EntryRef, EvidenceRef, Oid};
 
     use super::*;
 
@@ -1027,6 +1161,21 @@ mod tests {
             }],
             attached_by: VId(7),
         })
+    }
+
+    fn access() -> AccessEvent {
+        AccessEvent {
+            book_id: BOOK,
+            record: AccessRecord {
+                principal: VId(7),
+                principal_name: "examiner".into(),
+                capability_commitment: [7; 32],
+                ops: vec!["read".into()],
+                command: "statement".into(),
+                request_digest: [8; 32],
+            },
+            observed_at: CommitSeq(4),
+        }
     }
 
     fn review() -> Record {
@@ -1171,6 +1320,7 @@ mod tests {
             (receipt(1, 7), KIND_IMPORT_RECEIPT, 3),
             (transfer(), KIND_CUSTODY_TRANSFER, 2),
             (supplement(), KIND_SUPPLEMENTAL_EVIDENCE, 1),
+            (Record::Access(access()), KIND_ACCESS_EVENT, 1),
         ] {
             assert_eq!(record.kind(), kind);
             let envelope = record.envelope(CommitSeq(9), 2).expect("envelope");
@@ -1189,6 +1339,72 @@ mod tests {
         // A receipt is never read back as a transfer, nor the reverse.
         let payload = receipt(1, 7).payload().unwrap();
         assert!(Record::decode(KIND_CUSTODY_TRANSFER, &payload).is_err());
+    }
+
+    #[test]
+    fn access_leaves_require_their_own_boundary_identity_and_recorded_coordinate() {
+        let event = access();
+        let vid = event.vid().unwrap();
+        let records = || vec![(vid, Record::Access(event.clone()), CommitSeq(5))];
+        assert!(
+            Journal::from_records_with_evidence(BOOK, CommitSeq(6), Some(CommitSeq(1)), records())
+                .is_err(),
+            "legacy constructors must not silently acquire access leaves"
+        );
+        let journal = Journal::from_records_with_boundaries(
+            BOOK,
+            CommitSeq(6),
+            Some(CommitSeq(1)),
+            Some(CommitSeq(4)),
+            records(),
+        )
+        .unwrap();
+        assert_eq!(journal.leaf_kinds().access_events, 1);
+        assert_eq!(journal.leaf_kinds().entries, 0);
+        assert_eq!(journal.access_after, Some(CommitSeq(4)));
+        let leaf = &journal.leaves[0];
+        assert_eq!(leaf.proposal_len, leaf.payload.len());
+        assert_eq!(
+            leaf.authenticated_record().unwrap(),
+            Some(Record::Access(event.clone()))
+        );
+
+        for (evidence_after, access_after) in [
+            (None, Some(4)),
+            (Some(5), Some(4)),
+            (Some(1), None),
+            (Some(1), Some(0)),
+            (Some(1), Some(5)),
+            (Some(1), Some(7)),
+        ] {
+            assert!(
+                Journal::from_records_with_boundaries(
+                    BOOK,
+                    CommitSeq(6),
+                    evidence_after.map(CommitSeq),
+                    access_after.map(CommitSeq),
+                    records(),
+                )
+                .is_err(),
+                "evidence={evidence_after:?}, access={access_after:?}"
+            );
+        }
+        assert!(
+            Journal::from_records_with_boundaries(
+                BOOK,
+                CommitSeq(6),
+                Some(CommitSeq(1)),
+                Some(CommitSeq(4)),
+                vec![(VId(vid.0 ^ 1), Record::Access(event), CommitSeq(5))],
+            )
+            .is_err(),
+            "the leaf cannot name a different content-derived identity"
+        );
+        for observed_at in [5, 6] {
+            let mut event = access();
+            event.observed_at = CommitSeq(observed_at);
+            assert!(Record::Access(event).envelope(CommitSeq(5), 0).is_err());
+        }
     }
 
     /// Records of one commit are ranked by vertex id whatever their kind,

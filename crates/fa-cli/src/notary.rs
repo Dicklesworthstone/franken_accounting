@@ -1540,6 +1540,7 @@ fn checkpoint_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("through_seq", Json::Int(i128::from(state.through_seq.0))),
                 ("leaf_count", Json::Int(i128::from(state.leaf_count))),
                 ("evidence_after_seq", evidence_after(state.evidence_after)),
+                ("access_after_seq", evidence_after(state.access_after)),
                 ("root", s(hex(&state.root))),
                 (
                     "prev_state_oid",
@@ -1599,6 +1600,7 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("through_seq", Json::Int(i128::from(state.through_seq.0))),
             ("leaf_count", Json::Int(i128::from(state.leaf_count))),
             ("evidence_after_seq", evidence_after(state.evidence_after)),
+            ("access_after_seq", evidence_after(state.access_after)),
             ("leaf_kinds", leaf_kinds(&created.leaf_kinds)),
             ("root", s(hex(&state.root))),
             ("prev_state_oid", state.prev_state_oid.map_or(Json::Null, |oid| s(hex(&oid.0)))),
@@ -1608,9 +1610,10 @@ pub(crate) fn checkpoint_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             ("scope", s("entry_prefix")),
         ],
         &format!(
-            "Created entry accumulator checkpoint {}: {} leaves ({} entries, {} evidence records) through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
+            "Created entry accumulator checkpoint {}: {} leaves ({} entries, {} evidence records, {} access events) through sequence {}, recorded at {}. Root {}.\nSigned TransparencyCheckpoint {} (Ed25519 public key {}); export it with `fa proof signed-checkpoint` and check it with `fa-verify checkpoint <file> --key <public key>`.",
             hex(&stored.oid.0), state.leaf_count, created.leaf_kinds.entries,
-            state.leaf_count.saturating_sub(created.leaf_kinds.entries), state.through_seq.0,
+            state.leaf_count.saturating_sub(created.leaf_kinds.entries).saturating_sub(created.leaf_kinds.access_events),
+            created.leaf_kinds.access_events, state.through_seq.0,
             stored.recorded_at.0, hex(&state.root),
             hex(&created.checkpoint.oid.0), hex(&book.checkpoint_public_key()),
         ),
@@ -1795,7 +1798,7 @@ fn checkpoint_witness(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-/// A state's evidence boundary: null for an entries-only state.
+/// A state's record-kind boundary: null when that kind is not accumulated.
 fn evidence_after(boundary: Option<fgdb_types::CommitSeq>) -> Json {
     boundary.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))
 }
@@ -1817,6 +1820,7 @@ fn leaf_kinds(kinds: &fa::LeafKinds) -> Json {
             "supplemental_evidence",
             Json::Int(i128::from(kinds.supplemental_evidence)),
         ),
+        ("access_events", Json::Int(i128::from(kinds.access_events))),
     ])
 }
 
@@ -1847,6 +1851,7 @@ pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
                 ("recorded_at", Json::Int(i128::from(state.recorded_at.0))),
                 ("leaf_count", Json::Int(i128::from(state.leaf_count))),
                 ("evidence_after_seq", evidence_after(state.evidence_after)),
+                ("access_after_seq", evidence_after(state.access_after)),
                 (
                     "leaf_kinds",
                     state.leaf_kinds.as_ref().map_or(Json::Null, leaf_kinds),
