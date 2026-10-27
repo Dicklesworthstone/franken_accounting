@@ -69,11 +69,13 @@ where
 {
     let mut runtime = LabRuntime::new(LabConfig::new(seed).with_auto_advance());
     let root = runtime.state.create_root_region(Budget::INFINITE);
+    // Keep the task wrapper's Send proof independent of the fixture's deeply
+    // nested future type. The fixture still starts inside the ambient task Cx.
+    let future: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> =
+        Box::pin(async move { test(Cx::current().expect("ambient lab context")).await });
     let (task, mut handle) = runtime
         .state
-        .create_task(root, Budget::INFINITE, async move {
-            test(Cx::current().expect("ambient lab context")).await
-        })
+        .create_task(root, Budget::INFINITE, future)
         .expect("spawn lab task");
     runtime
         .scheduler
@@ -4032,14 +4034,14 @@ fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
     assert_eq!(book.head().unwrap(), head);
     assert_eq!(snapshot(&book), before);
 
-    // Corrupt only a derived cell. Reads must abandon it without repairing
-    // it or changing any immutable source; the literal result stays exact.
+    // Reject a damaged cell, then recover from the independently validated
+    // immutable checkpoint and its exact tail without repairing either cache.
     let cell = fa_registers::register_vid(
         book_id,
         &fa_registers::CellKey {
             account: account_vid(book_id, "6000"),
             unit_id: usd.0,
-            period: march,
+            period: march.clone(),
         },
     );
     let contexts = book.purposes();
@@ -4048,6 +4050,57 @@ fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
         cell,
         property::DEBITS_POSTED,
         Some(fa_journal::rows::mantissa_scalar("damaged register", 999_999).unwrap()),
+    );
+    with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change)))
+        .unwrap();
+    let damaged_at = book.head().unwrap();
+    let context = book.context().clone();
+    let query = contexts.query();
+    query.checkpoint().unwrap();
+    let (_, mutable_cells) = query
+        .with_restriction(|| {
+            with_store!(&book.store, core => fa_registers::period_activity_served_at(
+                &core.db, &context, &periods, Some(damaged_at),
+            ))
+        })
+        .unwrap();
+    assert!(matches!(mutable_cells, Served::Literal(_)));
+    assert!(!book.verify_registers(&march).unwrap().is_green());
+    let literal_stock = book.trial_balance_at(&periods, Some(damaged_at)).unwrap();
+    let literal_activity = book.period_activity(&periods, Some(damaged_at)).unwrap();
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for ((report, served), literal) in [
+        scope.trial_balance_served(&periods).unwrap().unwrap(),
+        scope.period_activity_served(&periods).unwrap().unwrap(),
+    ]
+    .into_iter()
+    .zip([literal_stock, literal_activity])
+    {
+        let Served::Maintained(cursors) = served else {
+            panic!("the intact checkpoint must recover the damaged cells: {served:?}");
+        };
+        assert_eq!(cursors.len(), 1);
+        assert_eq!((&cursors[0].0, cursors[0].1), (&march, advance.through));
+        assert!(cursors[0].2 > 0);
+        assert_eq!(report.known_at, damaged_at);
+        assert_eq!(report.unit_totals[&usd.0], (300_000, 300_000));
+        assert_eq!(
+            report.canonical_bytes().unwrap(),
+            literal.canonical_bytes().unwrap()
+        );
+    }
+    assert_eq!(book.head().unwrap(), damaged_at);
+    assert_eq!(snapshot(&book), before);
+
+    // When the disposable checkpoint pointer is also unusable, both report
+    // families must fold the journal literally. Immutable checkpoint bodies
+    // and entries remain untouched, and a read still repairs nothing.
+    let mut change = fgdb::WriteBatch::new(relation::IN_PERIOD);
+    change.set_vertex_property(
+        fa_registers::checkpoint::head_vid(book_id, &march),
+        property::TARGET_REF,
+        None,
     );
     with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change)))
         .unwrap();
