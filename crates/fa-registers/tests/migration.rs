@@ -2345,9 +2345,9 @@ fn replay_verification_meets_every_planted_tamper_as_a_full_read_does() {
                         entry.vid,
                         property::FA_PAYLOAD,
                         Some(CanonicalScalar::bytes(rewritten.encode().unwrap()).unwrap()),
-                    );
+                    )
                 }
-            }
+            };
             let ctx = k.ctx();
             k.runtime
                 .block_on(scratch.write(&ctx.commit(), changed))
