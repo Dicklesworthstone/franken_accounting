@@ -634,13 +634,16 @@ fn fiscal_year_cohort_picks_up_later_period_creation_without_widening_to_another
     .into_iter()
     .enumerate()
     {
-        let (response, _) = server.handle(Request {
-            op: Op::Run,
-            argv: args.iter().map(|arg| (*arg).to_owned()).collect(),
-            cwd: None,
-            stdin: None,
-            token: None,
-        });
+        let (response, _) = runtime.block_on(server.handle(
+            &cx,
+            Request {
+                op: Op::Run,
+                argv: args.iter().map(|arg| (*arg).to_owned()).collect(),
+                cwd: None,
+                stdin: None,
+                token: None,
+            },
+        ));
         assert_eq!(
             response.exit, 0,
             "{args:?}: {}{}",

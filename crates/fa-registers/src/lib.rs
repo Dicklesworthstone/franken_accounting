@@ -791,6 +791,8 @@ struct PeriodFold {
 /// and decoded once for every period rather than once per period (fa-rbs3);
 /// a single period's fold is this with one code, so a period folds the same
 /// whether alone or beside others. An error is the first one the stream meets.
+/// `seq` is the prefix the entries were read at, the known-at a capacity
+/// witness names.
 pub(crate) fn fold_entries(
     book: &BookContext,
     entries: &[(VId, Entry, CommitSeq)],

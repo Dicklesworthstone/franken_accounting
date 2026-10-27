@@ -4,20 +4,30 @@
 //! A T holds only if none of the postings its certified value folds carries
 //! the published comparison value B (directly, or through a derivation that
 //! traces to B), those postings are exactly the ones its predicate names as
-//! inputs, and they re-add to the certified value, checked in that order. Any failure re-types the T
-//! as R, its condition named: `extra contribution <id>`, `missing named
-//! input <id>`, `contribution carries B` or `does not re-add`.
+//! inputs, and they re-add to the certified value, checked in that order.
+//! Any failure re-types the T as R, its condition named: `extra
+//! contribution <id>`, `missing named input <id>`, `contribution carries B`
+//! or `does not re-add`.
 //!
 //! The named inputs are computed, never authored: every intent of the T's
 //! `basis` facts other than its `published` one, every intent (or intent of
 //! a fact) its `inputs_named` lists, and every delta (`restates` or
 //! `revises`) whose target is one of those. A `delta` T's named inputs are
 //! its deltas alone: an A posting does not move a delta.
+//!
+//! The fold is the read's, never the account's. `fa explain balance`
+//! explains one period's cells, so a stock read is explained in every
+//! declared period through its own and a flow read in its own periods
+//! only ([`fold_periods`]). A statement line folds each account its
+//! registered definition maps to it, signed as the line signs it
+//! ([`line_terms`]), on the definition's basis: a balance sheet is stock,
+//! and maps the Revenue and Expense accounts as unclosed earnings of every
+//! year; an income statement is activity, with Closing entries set aside.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::Case;
-use super::book::BookVariant;
+use super::book::{BookVariant, PeriodDef};
 use super::check::taut::published_closure;
 use super::expect::TKind;
 use super::trace::{Read, posted_from};
@@ -57,6 +67,149 @@ impl ContribVerdict {
             condition: condition.into(),
         }
     }
+}
+
+/// The registered standard statement definition a read verb names.
+#[must_use]
+pub fn definition(verb: &str) -> Option<&'static str> {
+    match verb {
+        "balance-sheet" => Some(include_str!(
+            "../../../../registries/statements/balance-sheet.toml"
+        )),
+        "income-statement" => Some(include_str!(
+            "../../../../registries/statements/income-statement.toml"
+        )),
+        _ => None,
+    }
+}
+
+/// Whether a statement definition's basis is stock (`basis = "stock"`).
+#[must_use]
+pub fn stock_basis(definition: &str) -> bool {
+    fa_registry::toml::parse(definition)
+        .ok()
+        .and_then(|d| {
+            d.root
+                .get("basis")
+                .and_then(|b| b.as_str().map(str::to_string))
+        })
+        .as_deref()
+        == Some("stock")
+}
+
+/// The entry classes a statement definition sets aside
+/// (`excluded_classes`): Closing, on the income statement.
+#[must_use]
+pub fn excluded_classes(definition: &str) -> Vec<String> {
+    fa_registry::toml::parse(definition)
+        .ok()
+        .and_then(|d| d.root.get("excluded_classes").cloned())
+        .and_then(|v| {
+            v.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|c| c.as_str().map(str::to_string))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// A statement line's terms: each account type it folds and the sign it
+/// applies to that type's debit-positive net (+1 for a `debit` line, -1 for
+/// a `credit` one), through the `add` and `subtract` lines it composes.
+///
+/// # Errors
+/// The definition does not parse, names no such line, or composes in a
+/// cycle.
+pub fn line_terms(definition: &str, line: &str) -> Result<BTreeMap<String, i128>, String> {
+    let doc = fa_registry::toml::parse(definition).map_err(|e| format!("definition: {e:?}"))?;
+    let lines = doc
+        .arrays
+        .get("line")
+        .ok_or("a definition with no [[line]]")?;
+    let mut terms = BTreeMap::new();
+    add_terms(lines, line, 1, 0, &mut terms)?;
+    terms.retain(|_, m| *m != 0);
+    Ok(terms)
+}
+
+fn add_terms(
+    lines: &[fa_registry::toml::Table],
+    code: &str,
+    sign: i128,
+    depth: usize,
+    terms: &mut BTreeMap<String, i128>,
+) -> Result<(), String> {
+    if depth > 16 {
+        return Err(format!("line {code} composes in a cycle"));
+    }
+    let row = lines
+        .iter()
+        .find(|l| l.get("code").and_then(|c| c.as_str()) == Some(code))
+        .ok_or_else(|| format!("no line {code}"))?;
+    let strs = |key: &str| -> Vec<String> {
+        row.get(key)
+            .and_then(|v| v.as_array())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    };
+    let types = strs("account_types");
+    if !types.is_empty() {
+        let side = if row.get("sign").and_then(|s| s.as_str()) == Some("credit") {
+            -1
+        } else {
+            1
+        };
+        for ty in types {
+            *terms.entry(ty).or_insert(0) += sign * side;
+        }
+        return Ok(());
+    }
+    for part in strs("add") {
+        add_terms(lines, &part, sign, depth + 1, terms)?;
+    }
+    for part in strs("subtract") {
+        add_terms(lines, &part, -sign, depth + 1, terms)?;
+    }
+    Ok(())
+}
+
+/// Whether account `code` is a stock account (Asset, Liability, Equity).
+#[must_use]
+pub fn is_stock(book: &BookVariant, code: &str) -> bool {
+    book.accounts.iter().any(|a| {
+        a.code == code && matches!(a.account_type.as_str(), "Asset" | "Liability" | "Equity")
+    })
+}
+
+/// The declared periods a read at `coordinate` folds, in calendar order:
+/// every period through the read's end for a stock fold, the read's own
+/// periods for a flow fold (a fiscal year, `FY<yyyy>`, is each of its).
+#[must_use]
+pub fn fold_periods(book: &BookVariant, stock: bool, coordinate: &str) -> Option<Vec<String>> {
+    let own: Vec<&PeriodDef> = match book.periods.iter().find(|p| p.code == coordinate) {
+        Some(p) => vec![p],
+        None => {
+            let fy: i128 = coordinate.strip_prefix("FY")?.parse().ok()?;
+            book.periods
+                .iter()
+                .filter(|p| p.fiscal_year == fy)
+                .collect()
+        }
+    };
+    let end = own.iter().map(|p| p.end.as_str()).max()?;
+    let mut periods: Vec<&PeriodDef> = if stock {
+        book.periods
+            .iter()
+            .filter(|p| p.end.as_str() <= end)
+            .collect()
+    } else {
+        own
+    };
+    periods.sort_by(|a, b| a.end.cmp(&b.end));
+    Some(periods.into_iter().map(|p| p.code.clone()).collect())
 }
 
 /// The intent ids a T read names as its inputs (module doc).
@@ -201,6 +354,69 @@ mod tests {
             c("a", Some("A-1"), 100_000),
             c("d", Some("delta-A-1"), -10_000),
         ]
+    }
+
+    fn two_quarters() -> BookVariant {
+        selftest().books.get("native").expect("native").clone()
+    }
+
+    #[test]
+    fn stock_read_unions_every_period_through_the_t_period() {
+        let book = two_quarters();
+        assert_eq!(
+            fold_periods(&book, true, "2026Q2"),
+            Some(vec!["2026Q1".to_string(), "2026Q2".to_string()])
+        );
+        assert_eq!(
+            fold_periods(&book, true, "2026Q1"),
+            Some(vec!["2026Q1".to_string()])
+        );
+        assert!(is_stock(&book, "1100"));
+        assert!(!is_stock(&book, "4000"));
+    }
+
+    #[test]
+    fn flow_read_explains_only_its_coordinates_periods() {
+        let book = two_quarters();
+        assert_eq!(
+            fold_periods(&book, false, "2026Q2"),
+            Some(vec!["2026Q2".to_string()])
+        );
+        // A fiscal-year flow read is each of the year's periods.
+        assert_eq!(
+            fold_periods(&book, false, "FY2026"),
+            Some(vec!["2026Q1".to_string(), "2026Q2".to_string()])
+        );
+        assert_eq!(fold_periods(&book, false, "2027Q1"), None);
+    }
+
+    #[test]
+    fn balance_sheet_total_equity_unions_its_unclosed_earnings_accounts() {
+        let bs = definition("balance-sheet").expect("the balance sheet");
+        assert!(stock_basis(bs));
+        assert!(excluded_classes(bs).is_empty());
+        assert_eq!(
+            // Credit equity plus credit revenue less debit expense, in
+            // debit-positive terms: every type at -1.
+            line_terms(bs, "total_equity").expect("total_equity"),
+            [("Equity", -1), ("Expense", -1), ("Revenue", -1)]
+                .map(|(t, m)| (t.to_string(), m))
+                .into()
+        );
+        assert_eq!(
+            line_terms(bs, "assets").expect("assets"),
+            [("Asset".to_string(), 1)].into()
+        );
+        let is = definition("income-statement").expect("the income statement");
+        assert!(!stock_basis(is));
+        assert_eq!(excluded_classes(is), ["Closing".to_string()]);
+        assert_eq!(
+            line_terms(is, "net_income").expect("net_income"),
+            [("Expense", -1), ("Revenue", -1)]
+                .map(|(t, m)| (t.to_string(), m))
+                .into()
+        );
+        assert!(line_terms(is, "goodwill").is_err());
     }
 
     #[test]
