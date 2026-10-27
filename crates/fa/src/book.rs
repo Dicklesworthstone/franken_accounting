@@ -3806,6 +3806,12 @@ impl Book {
         with_store!(&self.store, core => core.fold_period(&self.purposes(), period_code))
     }
 
+    /// The register fold of each period, in order, from one read of the
+    /// journal: each equals that period's [`Book::fold_period`].
+    pub fn fold_periods(&self, period_codes: &[&str]) -> Result<Vec<Fold>, BookError> {
+        with_store!(&self.store, core => core.fold_periods(&self.purposes(), period_codes))
+    }
+
     /// Certify a trial balance without writing to the book. Retain the returned
     /// canonical certificate bytes to replay the exact historical report.
     pub fn certify_trial_balance(

@@ -724,10 +724,12 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         .map(|p| p.code.clone())
         .collect();
     let accounts = book.accounts()?.len();
-    let mut pending_cells = 0usize;
-    for code in &open {
-        pending_cells += book.fold_period(code)?.pending.len();
-    }
+    let open_codes: Vec<&str> = open.iter().map(String::as_str).collect();
+    let pending_cells: usize = book
+        .fold_periods(&open_codes)?
+        .iter()
+        .map(|fold| fold.pending.len())
+        .sum();
     // FA-CFG-02: a due-but-unswept hold is still pending; it is reported
     // as due until the sweep expires it.
     let due_holds = book.due_holds()?.len();

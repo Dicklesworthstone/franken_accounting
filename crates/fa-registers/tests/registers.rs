@@ -18,8 +18,8 @@ use fa_model::{
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
     CacheStatus, Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at,
-    materialize, period_activity, period_activity_excluding_classes, register_vid, trial_balance,
-    trial_balance_at, verify_period,
+    fold_periods_at, materialize, period_activity, period_activity_excluding_classes, register_vid,
+    trial_balance, trial_balance_at, verify_period,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -1459,6 +1459,66 @@ fn april_void_releases_only_its_march_hold_and_never_posts() {
             "known-at before the void retains both original holds"
         );
     }
+}
+
+#[test]
+fn folding_periods_together_equals_folding_each_alone() {
+    let mut h = harness();
+    let april = h.open_april();
+    let march = h.march.clone();
+    h.post_rent(1_200, b"march-rent");
+    let voided = h.hold(h.expense_legs(700), b"march-hold-voided");
+    h.hold(h.expense_legs(900), b"march-hold-kept");
+    let mut april_rent = h.proposal(h.expense_legs(300), b"april-rent", EntryClass::ORIGINAL);
+    april_rent.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    let before_void = h.commit(april_rent).recorded_at();
+    // An April void of a March hold moves March's fold from an April entry.
+    let mut void = h.proposal(Vec::new(), b"april-void", EntryClass::RESOLUTION);
+    void.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    void.control = Some(ControlPayload::ReservationRelease);
+    void.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: Some(voided.entry_ref()),
+        disposition: Some(Disposition::Voids),
+    });
+    h.commit(void);
+    for known_at in [None, Some(before_void)] {
+        let alone: Vec<Fold> = [march.as_str(), april.as_str()]
+            .iter()
+            .map(|period| fold_period_at(&h.db, &h.book, period, known_at).unwrap())
+            .collect();
+        let together = fold_periods_at(&h.db, &h.book, &[&march, &april], known_at).unwrap();
+        assert_eq!(together, alone, "known at {known_at:?}");
+        // The request's order is kept, and a repeated code repeats its fold.
+        let reordered =
+            fold_periods_at(&h.db, &h.book, &[&april, &march, &april], known_at).unwrap();
+        assert_eq!(
+            reordered,
+            vec![alone[1].clone(), alone[0].clone(), alone[1].clone()]
+        );
+    }
+    let [m, a] =
+        <[Fold; 2]>::try_from(fold_periods_at(&h.db, &h.book, &[&march, &april], None).unwrap())
+            .unwrap();
+    assert_cell(&m.cells, h.rent, (1_200, 0, 1));
+    assert_cell(&m.pending, h.rent, (900, 0, 1));
+    assert_cell(&a.cells, h.rent, (300, 0, 1));
+    assert!(a.pending.is_empty());
+    // A period the book does not declare is refused as a single fold refuses it.
+    assert_eq!(
+        format!(
+            "{:?}",
+            fold_periods_at(&h.db, &h.book, &[&march, "FY2099-P01"], None).unwrap_err()
+        ),
+        format!(
+            "{:?}",
+            fold_period_at(&h.db, &h.book, "FY2099-P01", None).unwrap_err()
+        )
+    );
+    assert_eq!(
+        fold_periods_at(&h.db, &h.book, &[], None).unwrap(),
+        Vec::<Fold>::new()
+    );
 }
 
 #[test]

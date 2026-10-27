@@ -531,6 +531,36 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     fold_period_counted(db, book, period_code, known_at).map(|(fold, _)| fold)
 }
 
+/// [`fold_period_at`] for each of `periods`, in their order, reading and
+/// decoding the journal once for all of them rather than once per period
+/// (fa-rbs3). Each fold is the one [`fold_period_at`] returns for its period.
+pub fn fold_periods_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[&str],
+    known_at: Option<CommitSeq>,
+) -> Result<Vec<Fold>, RegisterError> {
+    // An empty request reads nothing, as no single-period fold would.
+    if periods.is_empty() {
+        return Ok(Vec::new());
+    }
+    let seq = resolve_known_at(db, known_at)?;
+    for period in periods {
+        period_at(db, book, period, seq)?;
+    }
+    let entries = entries_at(db, book, seq)?;
+    let folds = fold_entries(book, &entries, &periods.iter().copied().collect())?;
+    periods
+        .iter()
+        .map(|period| {
+            folds
+                .get(*period)
+                .map(|(fold, _)| fold.clone())
+                .ok_or_else(|| KernelError::Corrupt("a requested period has no fold".into()).into())
+        })
+        .collect()
+}
+
 /// [`fold_period_at`], with the number of legs it added to cells, posted
 /// and held: the fold's own count of the work it did, which a rebuild
 /// reports as its work witness (plan §17, fa-ykbp).
@@ -542,69 +572,112 @@ pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<(Fold, u64), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
-    let mut cells: BTreeMap<CellKey, Cell> = BTreeMap::new();
-    let mut pending = BTreeMap::new();
-    let mut watermark: Option<CommitSeq> = None;
-    let mut count = 0u64;
-    let mut legs = 0u64;
-    let mut posted_legs_digest = [0u8; 32];
-    let mut pending_holds = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
-    let resolved = resolutions(&entries)?;
-    let activated = migration_activations(&entries)?;
+    fold_entries(book, &entries, &BTreeSet::from([period_code]))?
+        .into_values()
+        .next()
+        .ok_or_else(|| KernelError::Corrupt("a requested period has no fold".into()).into())
+}
+
+/// One period's fold while the entry stream passes ([`fold_entries`]).
+#[derive(Default)]
+struct PeriodFold {
+    cells: BTreeMap<CellKey, Cell>,
+    pending: BTreeMap<CellKey, Cell>,
+    watermark: Option<CommitSeq>,
+    count: u64,
+    legs: u64,
+    posted_legs_digest: [u8; 32],
+    pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
+}
+
+/// Fold each of `periods` from one entry stream, as [`entries_at`] returns
+/// it for the fold's prefix, with each fold's leg count. The journal is read
+/// and decoded once for every period rather than once per period (fa-rbs3);
+/// a single period's fold is this with one code, so a period folds the same
+/// whether alone or beside others. An error is the first one the stream meets.
+pub(crate) fn fold_entries(
+    book: &BookContext,
+    entries: &[(VId, Entry, CommitSeq)],
+    periods: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, (Fold, u64)>, RegisterError> {
+    let resolved = resolutions(entries)?;
+    let activated = migration_activations(entries)?;
+    let mut folds: BTreeMap<&str, PeriodFold> = periods
+        .iter()
+        .map(|period| (*period, PeriodFold::default()))
+        .collect();
     for (vid, entry, created_at) in entries {
         if entry.proposal.legs.is_empty() {
             continue;
         }
-        if entry_period(book, &entry)? != period_code {
+        let period = entry_period(book, entry)?;
+        let Some(period_code) = periods.get(period.as_str()).copied() else {
             continue;
-        }
-        let contribution = contribution_seq(&entry, created_at, &activated)?;
-        watermark = Some(watermark.map_or(contribution, |w: CommitSeq| w.max(contribution)));
+        };
+        let Some(fold) = folds.get_mut(period_code) else {
+            continue;
+        };
+        let (vid, created_at) = (*vid, *created_at);
+        let contribution = contribution_seq(entry, created_at, &activated)?;
+        fold.watermark = Some(
+            fold.watermark
+                .map_or(contribution, |w: CommitSeq| w.max(contribution)),
+        );
         if entry.proposal.class == EntryClass::PENDING {
             if let Some(release) = resolved.get(&vid) {
-                watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
+                fold.watermark = Some(fold.watermark.map_or(*release, |w| w.max(*release)));
             } else {
-                add_entry(&mut pending, &entry, period_code)?;
-                legs = legs
+                add_entry(&mut fold.pending, entry, period_code)?;
+                fold.legs = fold
+                    .legs
                     .checked_add(entry.proposal.legs.len() as u64)
                     .ok_or(RegisterError::Overflow)?;
-                let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, &entry)?;
-                pending_holds.insert((created_at, vid), hold_digest);
+                let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, entry)?;
+                fold.pending_holds.insert((created_at, vid), hold_digest);
             }
         } else {
-            count = count.checked_add(1).ok_or(RegisterError::Overflow)?;
-            add_entry(&mut cells, &entry, period_code)?;
-            legs = legs
+            fold.count = fold.count.checked_add(1).ok_or(RegisterError::Overflow)?;
+            add_entry(&mut fold.cells, entry, period_code)?;
+            fold.legs = fold
+                .legs
                 .checked_add(entry.proposal.legs.len() as u64)
                 .ok_or(RegisterError::Overflow)?;
-            posted_legs_digest =
-                fold_entry_contributions(posted_legs_digest, created_at, vid, &entry)?;
+            fold.posted_legs_digest =
+                fold_entry_contributions(fold.posted_legs_digest, created_at, vid, entry)?;
         }
     }
-    let cells: Vec<Cell> = cells.into_values().collect();
-    let pending: Vec<Cell> = pending.into_values().collect();
-    let fold_digest = digest_of(
-        period_code,
-        &cells,
-        &pending,
-        watermark,
-        posted_legs_digest,
-        &pending_holds,
-    )?;
-    Ok((
-        Fold {
-            period: period_code.to_string(),
-            cells,
-            pending,
-            watermark,
-            entries: count,
-            fold_digest,
-            posted_legs_digest,
-            pending_holds,
-        },
-        legs,
-    ))
+    folds
+        .into_iter()
+        .map(|(period_code, fold)| {
+            let cells: Vec<Cell> = fold.cells.into_values().collect();
+            let pending: Vec<Cell> = fold.pending.into_values().collect();
+            let fold_digest = digest_of(
+                period_code,
+                &cells,
+                &pending,
+                fold.watermark,
+                fold.posted_legs_digest,
+                &fold.pending_holds,
+            )?;
+            Ok((
+                period_code.to_string(),
+                (
+                    Fold {
+                        period: period_code.to_string(),
+                        cells,
+                        pending,
+                        watermark: fold.watermark,
+                        entries: fold.count,
+                        fold_digest,
+                        posted_legs_digest: fold.posted_legs_digest,
+                        pending_holds: fold.pending_holds,
+                    },
+                    fold.legs,
+                ),
+            ))
+        })
+        .collect()
 }
 
 type CellValues = (i128, i128, u64);

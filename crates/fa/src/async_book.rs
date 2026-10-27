@@ -3532,6 +3532,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    pub fn fold_periods(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[&str],
+    ) -> Result<Vec<Fold>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::fold_periods_at(db, book, periods, None)?)
+        })
+    }
+
     pub async fn materialize_registers(
         &mut self,
         cx: &PurposeContexts,
