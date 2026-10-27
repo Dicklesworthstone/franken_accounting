@@ -201,6 +201,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::ExternalFeed(c) => {
                 return self.external_feed_certificate_status(cx, principal, capability, c);
             }
+            Artifact::NativeSubledger(c) => {
+                return self.native_subledger_certificate_status(cx, principal, capability, c);
+            }
             Artifact::IndirectCashFlow(c) => {
                 let ReportArtifactExpectation::IndirectCashFlow(request) = expected else {
                     return Ok(Err(expectation_required(artifact.family())));

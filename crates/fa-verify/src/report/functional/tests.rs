@@ -26,6 +26,7 @@ struct RateFixture {
     commitment: [u8; 32],
     document: Vec<u8>,
 }
+type ValuationClaim<'a> = (u16, &'a RateFixture, Option<(u16, i128)>);
 #[derive(Clone)]
 struct TestLeg {
     code: &'static str,
@@ -208,7 +209,7 @@ fn entry(
     day: i32,
     key: &[u8],
     legs: &[TestLeg],
-    claim: Option<(u16, &RateFixture, Option<(u16, i128)>)>,
+    claim: Option<ValuationClaim<'_>>,
     reverses: Option<&Record>,
     resolves: Option<&Record>,
 ) -> Record {
@@ -328,8 +329,13 @@ fn unhex(s: &str) -> Vec<u8> {
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect();
-    bytes
-        .chunks_exact(2)
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    assert!(
+        remainder.is_empty(),
+        "hex fixture must contain complete byte pairs"
+    );
+    pairs
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
@@ -479,8 +485,14 @@ fn direct_conversion_residual_and_pending_cells_replay_in_all_three_selectors() 
         Selection::Periods(vec!["P1".into()]),
         Selection::Activity(vec!["P1".into()]),
     ] {
-        let (result, _) =
-            replay_fixture(&records, selected, 5, &book(&[]), &[rate.clone()]).unwrap();
+        let (result, _) = replay_fixture(
+            &records,
+            selected,
+            5,
+            &book(&[]),
+            std::slice::from_ref(&rate),
+        )
+        .unwrap();
         let cash = result
             .cells
             .iter()
@@ -526,7 +538,7 @@ fn later_effective_release_changes_historical_stock_and_preserves_its_witness() 
         Selection::AsOf(20),
         5,
         &book(&[]),
-        &[rate.clone()],
+        std::slice::from_ref(&rate),
     )
     .unwrap();
     let (after, _) = replay_fixture(&records, Selection::AsOf(20), 6, &book(&[]), &[rate]).unwrap();
@@ -561,7 +573,7 @@ fn exact_reversals_preserve_original_rate_date_and_residual_assignment() {
         Selection::AsOf(58),
         6,
         &book(&[]),
-        &[rate.clone()],
+        std::slice::from_ref(&rate),
     )
     .unwrap();
     assert!(
@@ -610,7 +622,7 @@ fn average_date_is_the_authenticated_period_end_and_out_of_scope_claims_are_chec
         Selection::Activity(vec!["P1".into()]),
         4,
         &book(&[]),
-        &[rate.clone()],
+        std::slice::from_ref(&rate),
     )
     .unwrap();
     assert_eq!(
@@ -642,7 +654,7 @@ fn entity_fallback_is_declared_and_residuals_cannot_cross_partitions() {
         Selection::AsOf(20),
         5,
         &book(&["A"]),
-        &[rate.clone()],
+        std::slice::from_ref(&rate),
     )
     .unwrap();
     assert!(
@@ -657,7 +669,7 @@ fn entity_fallback_is_declared_and_residuals_cannot_cross_partitions() {
             Selection::AsOf(20),
             5,
             &book(&["A", "B"]),
-            &[rate.clone()]
+            std::slice::from_ref(&rate)
         )
         .unwrap_err()
         .predicate,
@@ -736,7 +748,7 @@ fn rate_closure_rejects_missing_extra_tampered_and_late_or_missing_intake() {
             Selection::AsOf(20),
             5,
             &book(&[]),
-            &[rate.clone()]
+            std::slice::from_ref(&rate)
         )
         .unwrap_err()
         .predicate,
@@ -745,9 +757,15 @@ fn rate_closure_rejects_missing_extra_tampered_and_late_or_missing_intake() {
     let mut late = records;
     late[2] = intake(&rate, 5);
     assert_eq!(
-        replay_fixture(&late, Selection::AsOf(20), 5, &book(&[]), &[rate.clone()])
-            .unwrap_err()
-            .predicate,
+        replay_fixture(
+            &late,
+            Selection::AsOf(20),
+            5,
+            &book(&[]),
+            std::slice::from_ref(&rate)
+        )
+        .unwrap_err()
+        .predicate,
         "functional_rate_visibility"
     );
     late[2] = intake(&rate, 4);
@@ -905,9 +923,22 @@ fn v3_complete_bundle_requires_independent_inputs_and_rejects_resealed_output() 
     let (records, rate) = basic();
     let selected = Selection::AsOf(20);
     let spec = book(&[]);
-    let (expected, output) =
-        replay_fixture(&records, selected.clone(), 5, &spec, &[rate.clone()]).unwrap();
-    let (bundle, signed, pin) = pack(&records, &selected, 5, &spec, &[rate.clone()], &output);
+    let (expected, output) = replay_fixture(
+        &records,
+        selected.clone(),
+        5,
+        &spec,
+        std::slice::from_ref(&rate),
+    )
+    .unwrap();
+    let (bundle, signed, pin) = pack(
+        &records,
+        &selected,
+        5,
+        &spec,
+        std::slice::from_ref(&rate),
+        &output,
+    );
     let verify = |bytes: &[u8], pin: Option<&[u8; 32]>| {
         verify_report_with_inputs(bytes, &[], None, None, pin, None, |_, _| Ok(signed.clone()))
     };

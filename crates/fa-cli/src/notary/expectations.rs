@@ -21,6 +21,7 @@ pub(super) enum Expected {
     Indirect(IndirectCashFlowRequest),
     Equity(fa::EquityRollForwardRequest),
     ExternalFeed(fa::ExternalFeedRequest),
+    NativeSubledger(fa::NativeSubledgerRequest),
     Reconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
     PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
@@ -42,6 +43,9 @@ impl Expected {
             Self::Indirect(request) => fa::ReportArtifactExpectation::IndirectCashFlow(request),
             Self::Equity(request) => fa::ReportArtifactExpectation::EquityRollForward(request),
             Self::ExternalFeed(request) => fa::ReportArtifactExpectation::ExternalFeed(request),
+            Self::NativeSubledger(request) => {
+                fa::ReportArtifactExpectation::NativeSubledger(request)
+            }
             Self::Reconciliation(request) => {
                 fa::ReportArtifactExpectation::AgingReconciliation(request)
             }
@@ -328,6 +332,18 @@ pub(super) fn parse(
                 definition: indirect,
             }))
         }
+        "native-subledger-reconciliation" => {
+            exact_fields(
+                &doc,
+                &["kind", "code", "control_account", "through", "known_at"],
+            )?;
+            Ok(Expected::NativeSubledger(fa::NativeSubledgerRequest {
+                code: string(&doc, "code")?.to_string(),
+                control_account: account(string(&doc, "control_account")?, book)?,
+                effective_through: day(&doc, "through")?,
+                known_at: Some(fixed_prefix(&doc)?),
+            }))
+        }
         "external-feed-reconciliation" => {
             exact_fields(
                 &doc,
@@ -531,6 +547,24 @@ fn scope_fields(request: &RollForwardRequest) -> Vec<(&'static str, Json)> {
                 .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
         ),
     ]
+}
+
+pub(crate) fn native_subledger_expectation_json(request: &fa::NativeSubledgerRequest) -> Json {
+    obj(vec![
+        ("kind", s("native-subledger-reconciliation")),
+        ("code", s(&request.code)),
+        (
+            "control_account",
+            s(format!("{:032x}", request.control_account.0)),
+        ),
+        ("through", s(request.effective_through.render())),
+        (
+            "known_at",
+            request
+                .known_at
+                .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
+        ),
+    ])
 }
 
 pub(crate) fn external_feed_expectation_json(request: &fa::ExternalFeedRequest) -> Json {
@@ -873,6 +907,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
         } => cash_flow_expectation_json(request, definition),
         fa::ReportArtifactExpectation::ExternalFeed(request) => {
             external_feed_expectation_json(request)
+        }
+        fa::ReportArtifactExpectation::NativeSubledger(request) => {
+            native_subledger_expectation_json(request)
         }
         fa::ReportArtifactExpectation::EquityRollForward(request) => {
             equity_expectation_json(request)

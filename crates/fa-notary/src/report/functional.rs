@@ -102,8 +102,7 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     received_by,
                     ..
                 } = event.body
-                {
-                    if event.book_id != journal.book_id
+                    && (event.book_id != journal.book_id
                         || event.index != 0
                         || event.prev_digest != [0; 32]
                         || receipts
@@ -111,12 +110,11 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                                 event.document_oid,
                                 (digest_at_receipt, leaf.envelope.commit_seq, received_by),
                             )
-                            .is_some()
-                    {
-                        return Ok(Err(refused(
-                            "functional source contains an invalid import receipt",
-                        )));
-                    }
+                            .is_some())
+                {
+                    return Ok(Err(refused(
+                        "functional source contains an invalid import receipt",
+                    )));
                 }
             }
             _ => {}

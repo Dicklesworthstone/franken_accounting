@@ -218,7 +218,7 @@ impl Fixture {
     fn rate(&self, name: &str, date: &str, numerator: u32) -> String {
         let divisor = [10, 5, 2, 1]
             .into_iter()
-            .find(|divisor| numerator % *divisor == 0)
+            .find(|divisor| numerator.is_multiple_of(*divisor))
             .unwrap();
         let numerator = numerator / divisor;
         let denominator = 10 / divisor;

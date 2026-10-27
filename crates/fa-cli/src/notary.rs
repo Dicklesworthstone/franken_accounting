@@ -9,8 +9,9 @@ mod procedure;
 
 pub(crate) use expectations::{
     aging_expectation_json, cash_flow_expectation_json, equity_expectation_json,
-    external_feed_expectation_json, indirect_expectation_json, policy_cash_flow_expectation_json,
-    portfolio_expectation_json, reconciliation_bundle_expectation, reconciliation_expectation_json,
+    external_feed_expectation_json, indirect_expectation_json, native_subledger_expectation_json,
+    policy_cash_flow_expectation_json, portfolio_expectation_json,
+    reconciliation_bundle_expectation, reconciliation_expectation_json,
     split_cash_flow_expectation_json,
 };
 
@@ -1057,6 +1058,20 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let native_subledger = if artifact.family() == ReportArtifactFamily::NativeSubledger {
+        let expectations::Expected::NativeSubledger(request) = &expected else {
+            return Err(certificate_invalid(
+                "native subledger replay needs an independent native-subledger-reconciliation expectation",
+            ));
+        };
+        let certificate = fa::NativeSubledgerCertificate::decode(&bytes)?;
+        let report =
+            book.replay_native_subledger(principal, &capability, &certificate, request)??;
+        let accounts = book.accounts_at(report.known_at, &capability)??;
+        Some((report, accounts))
+    } else {
+        None
+    };
     let external_feed = if artifact.family() == ReportArtifactFamily::ExternalFeed {
         let expectations::Expected::ExternalFeed(request) = &expected else {
             return Err(certificate_invalid(
@@ -1207,6 +1222,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(report) = equity {
         crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
         true
+    } else if let Some((report, accounts)) = native_subledger {
+        crate::subledger::render_native(&ctx.out, &book, &report, &accounts, Some(&digest))?;
+        true
     } else if let Some(report) = external_feed {
         crate::external_subledger::render_feed(&ctx.out, &book, &report, Some(&digest))?;
         true
@@ -1243,6 +1261,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 | ReportArtifactFamily::EffectiveDateAging
                 | ReportArtifactFamily::EquityRollForward
                 | ReportArtifactFamily::ExternalFeed
+                | ReportArtifactFamily::NativeSubledger
         )
     {
         ctx.out.known_at(replayed.known_at);
