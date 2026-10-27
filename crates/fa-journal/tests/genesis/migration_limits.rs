@@ -3,7 +3,7 @@ use fa_journal::limit::{LimitCell, LimitScope, cell_vid};
 use fa_journal::migration::{self, RunBody, RunControlRequest, RunControlled, RunMode, RunState};
 
 fn limited(scope: LimitScope) -> Harness {
-    harness_configured(
+    let mut h = harness_configured(
         Vec::new(),
         None,
         Some(BalanceLimit {
@@ -11,7 +11,27 @@ fn limited(scope: LimitScope) -> Harness {
             upper: Some(1_000),
             scope,
         }),
-    )
+    );
+    // This fixture has no opening_date, so its Opening period is born
+    // Future. Migration requires the real, dual-controlled Locked state.
+    let period = opening(&h);
+    for (i, transition) in [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        h.transition(
+            &period,
+            transition,
+            format!("migration-opening-{i}").as_bytes(),
+        )
+        .expect("the opening period is locked through journaled transitions");
+    }
+    h
 }
 
 fn cell(h: &Harness, period: Option<&str>) -> LimitCell {

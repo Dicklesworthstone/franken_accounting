@@ -169,6 +169,9 @@ fn proportional_post_releases_the_entire_original_period_reservation_exactly_onc
         .unwrap()
         .entry_ref();
     assert_eq!(cash_period(&h, &h.march).credits_pending, 10_000);
+    let april = h.april.clone();
+    h.transition(&april, PeriodTransition::Open, b"proportional-open-april")
+        .unwrap();
     let mut resolution = proposal(
         &h,
         target,

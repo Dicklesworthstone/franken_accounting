@@ -423,14 +423,18 @@ fn migration_limits_refuse_gross_chunk_overflow_even_when_the_net_ties() {
         full_detail: None,
     };
     let run = open_both(&mut k, &mut oracle, &spec);
+    // Each large chunk is itself zero-net. Tie-out is independent of the
+    // substrate's vertex iteration order; aggregate gross totals still
+    // exceed the cell domain before any movement can be published.
+    let amount = i128::MAX / 2 + 1;
     let chunks = [
         chunk_intent(
             "large-debit",
-            vec![leg(dr, "1500", i128::MAX), leg(cr, "3000", i128::MAX)],
+            vec![leg(dr, "1500", amount), leg(cr, "1500", amount)],
         ),
         chunk_intent(
             "large-credit",
-            vec![leg(dr, "3000", i128::MAX), leg(cr, "1500", i128::MAX)],
+            vec![leg(dr, "1500", amount), leg(cr, "1500", amount)],
         ),
         chunk_intent("one-more", vec![leg(dr, "1500", 1), leg(cr, "3000", 1)]),
     ];
