@@ -11,7 +11,7 @@ use fa_model::{Id128, SealKey, SymbolTable};
 use fa_money::UnitRegistry;
 use fa_policy::{Capability, Op, Profile};
 use fa_registry::evidence_policy::EvidencePolicy;
-use fa_time::FiscalCalendar;
+use fa_time::{DateDay, FiscalCalendar};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
@@ -224,6 +224,67 @@ fn missing_authority_excluded_books_and_expiry_refuse_without_writes() {
     let denial = h.upload(&expired, request(b"expired")).unwrap_err();
     assert!(denial.message.contains("expir"), "{denial}");
     assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn scoped_uploads_refuse_before_new_content_or_recorded_metadata() {
+    let mut h = Harness::new();
+    let agent = cap(Profile::Agent, 41)
+        .for_books(&[h.book.book_id])
+        .unwrap()
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let original = request(b"original scoped upload evidence");
+    let added = h.upload(&agent, original.clone()).unwrap();
+    assert_eq!(added.grade, grade("AgentUpload"));
+    let head = h.db.frontier().unwrap();
+    let custody = fa_journal::custody_chain(&h.db, &added.oid).unwrap();
+    let owner = cap(Profile::Human, 42);
+    let caveats = [
+        ("accounts", owner.clone().for_accounts(&["1000"]).unwrap()),
+        (
+            "periods",
+            owner.clone().for_periods(&["FY2026-P01"]).unwrap(),
+        ),
+        (
+            "effective",
+            owner
+                .clone()
+                .effective_through(DateDay::from_ymd(2026, 1, 31).unwrap()),
+        ),
+        ("known_at", owner.clone().known_at_most(head)),
+        ("branch", owner.clone().on_branch(Id128([43; 16])).unwrap()),
+    ];
+    for (caveat, capability) in caveats {
+        for req in [
+            request(b"unrecorded scoped upload"),
+            original.clone(),
+            request(b""),
+        ] {
+            let refusal = h.upload(&capability, req).unwrap_err();
+            assert_eq!(refusal.code, "FA-REF-011", "{caveat}: {refusal}");
+            assert_eq!(refusal.exit, 7, "{caveat}: {refusal}");
+            assert!(refusal.message.contains(caveat), "{caveat}: {refusal}");
+            assert_eq!(h.db.frontier().unwrap(), head);
+        }
+    }
+    assert_eq!(
+        fa_journal::custody_chain(&h.db, &added.oid).unwrap(),
+        custody
+    );
+    let retry = h.upload(&owner, original).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(
+        (retry.grade, retry.recorded_at),
+        (added.grade, added.recorded_at)
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    let human = owner.for_books(&[h.book.book_id]).unwrap();
+    let fresh = h
+        .upload(&human, request(b"authorized human upload"))
+        .unwrap();
+    assert_eq!(fresh.grade, grade("HumanUpload"));
+    assert_eq!(fresh.recorded_at.0, head.0 + 1);
 }
 
 #[test]
