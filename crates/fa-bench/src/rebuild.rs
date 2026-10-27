@@ -270,17 +270,17 @@ impl RebuildBook {
     pub fn rebuild(&mut self) -> Result<Rebuilt, BenchError> {
         let maintain = Capability::embedded(self.ledger.operator, &["read", "verify", "maintain"])
             .map_err(exec)?;
+        let periods: Vec<&str> = self.ledger.periods.iter().map(String::as_str).collect();
         let start = Instant::now();
-        let mut advances = Vec::with_capacity(self.ledger.periods.len());
-        for period in &self.ledger.periods {
-            advances.push(
-                self.ledger
-                    .book
-                    .rebuild_registers(self.ledger.operator, &maintain, period)
-                    .map_err(exec)?
-                    .map_err(|refusal| exec(refusal.message))?,
-            );
-        }
+        let advances = self
+            .ledger
+            .book
+            .rebuild_registers_each(self.ledger.operator, &maintain, &periods)
+            .map_err(exec)?
+            .map_err(|refusal| exec(refusal.message))?
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(exec)?;
         let elapsed_us = u64::try_from(start.elapsed().as_micros()).map_err(exec)?;
         let mut legs_folded = 0u64;
         for ((advance, period), maintained) in advances

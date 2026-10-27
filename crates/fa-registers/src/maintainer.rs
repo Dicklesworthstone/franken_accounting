@@ -20,7 +20,7 @@ use fa_journal::rows::{AccountRow, bytes, prop, scalar_bytes, scalar_text};
 use fa_model::symbols::{label, property};
 use fa_model::{ControlPayload, Entry, EntryClass, Id128, Reader, Writer};
 use fa_money::Side;
-use fgdb::{Database, WriteMismatchPolicy};
+use fgdb::{Database, VertexRow, WriteMismatchPolicy};
 use fgdb_crypto::Hasher;
 use fgdb_delta_types::{DeltaRow, ElementId, IndexError};
 use fgdb_types::context::PurposeContexts;
@@ -265,7 +265,7 @@ fn load<V: asupersync::fs::Vfs + Clone>(
         }
         Err(error) => return Err(error),
     }
-    for row in crate::stored_registers(db, book, &fold)?.values() {
+    for row in crate::stored_registers_in(db, book, &fold, &db.vertices()?)?.values() {
         let account: [u8; 16] = bytes(row, property::ACCOUNT_REF, "register.account")?
             .try_into()
             .map_err(|_| drift("register account identity"))?;
@@ -1063,6 +1063,19 @@ pub async fn publish_advance_with_crash<V: asupersync::fs::Vfs + Clone>(
     prepared: PreparedAdvance,
     crash_at: Option<fgdb::CrashPoint>,
 ) -> Result<Advance, RegisterError> {
+    publish_advance_in(db, ctx, book, prepared, crash_at, None).await
+}
+
+/// [`publish_advance_with_crash`], its registers written among `scans`,
+/// the book's current vertices and period memberships, when they are held.
+async fn publish_advance_in<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    prepared: PreparedAdvance,
+    crash_at: Option<fgdb::CrashPoint>,
+    scans: Option<(&[VertexRow], &crate::Memberships)>,
+) -> Result<Advance, RegisterError> {
     if prepared.book_id != book.book_id
         || prepared.basis != db.frontier()?
         || prepared.basis_root != db.partition_root()?.0
@@ -1073,7 +1086,12 @@ pub async fn publish_advance_with_crash<V: asupersync::fs::Vfs + Clone>(
     if !result.wrote {
         return Ok(result);
     }
-    let mut batch = crate::materialize_batch(db, book, &result.fold)?;
+    let mut batch = match scans {
+        Some((rows, memberships)) => {
+            crate::materialize_batch_in(db, book, &result.fold, rows, memberships)?
+        }
+        None => crate::materialize_batch(db, book, &result.fold)?,
+    };
     let state = prepared.state;
     batch.ensure_vertex(state, vec![label::REGISTER_STATE], Vec::new());
     batch.set_vertex_label(state, label::REGISTER_STATE, true);
@@ -1171,4 +1189,168 @@ pub async fn rebuild<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<Advance, RegisterError> {
     let prepared = prepare_rebuild(db, book, period, true)?;
     publish_advance(db, ctx, book, prepared).await
+}
+
+/// [`rebuild`] of each of `periods`, in order, from one read of the book
+/// where that is exact (`SharedRebuild`). Each result, an error included,
+/// is the one [`rebuild`] of that period gives at its turn, and the results
+/// stop after the first error (fa-rbs3).
+pub async fn rebuild_periods<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    periods: &[&str],
+) -> Vec<Result<Advance, RegisterError>> {
+    let mut shared = SharedRebuild::read(db, book, periods);
+    let mut results = Vec::with_capacity(periods.len());
+    for period in periods {
+        let held = shared.as_mut().and_then(|reads| reads.fold(db, period));
+        let result = match (shared.as_mut(), held) {
+            (Some(reads), Some((fold, legs))) => reads.rebuild(db, ctx, book, fold, legs).await,
+            _ => rebuild(db, ctx, book, period).await,
+        };
+        let stop = result.is_err();
+        results.push(result);
+        if stop {
+            break;
+        }
+    }
+    results
+}
+
+/// Whether [`rebuild_periods`] of `periods` would rebuild them from one
+/// shared read rather than each alone. For tests that pin which path ran.
+#[doc(hidden)]
+#[must_use]
+pub fn rebuild_reads_are_shared<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[&str],
+) -> bool {
+    SharedRebuild::read(db, book, periods).is_some()
+}
+
+/// What rebuilding several periods reads of the book, read once: every
+/// requested period's literal fold from one entry stream, and the current
+/// vertices and period memberships, all at `at`.
+///
+/// It is used only while the frontier is still `at`, the frontier it was
+/// read at or the last of its own publications. A period's publication adds
+/// no entry and writes only:
+/// - its fold's register identities and the stored registers it found;
+/// - those registers' period memberships;
+/// - its own maintenance state and checkpoint objects. Their labels must be
+///   exactly `REGISTER_STATE`, or that period fails before writing.
+///
+/// So when no register identity belongs to two of the requested periods, a
+/// later period's fold, stored registers and memberships, as read here, are
+/// exactly what a fresh read returns. Otherwise each period is read alone.
+pub(crate) struct SharedRebuild {
+    at: CommitSeq,
+    folds: crate::PeriodFolds,
+    rows: Vec<VertexRow>,
+    memberships: crate::Memberships,
+}
+
+impl SharedRebuild {
+    /// `None` unless sharing is exact: two or more distinct periods, the
+    /// book read without error, and no register identity, stored or a fold
+    /// cell's, that two of the periods would both write.
+    pub(crate) fn read<V: asupersync::fs::Vfs + Clone>(
+        db: &Database<V>,
+        book: &BookContext,
+        periods: &[&str],
+    ) -> Option<Self> {
+        let distinct: BTreeSet<&str> = periods.iter().copied().collect();
+        if periods.len() < 2 || distinct.len() != periods.len() {
+            return None;
+        }
+        let at = db.frontier().ok()?;
+        let folds = crate::folds_at(db, book, &distinct, at, None);
+        let rows = db.vertices().ok()?;
+        let memberships = crate::period_memberships(&db.edges().ok()?);
+        let mut owners: BTreeMap<VId, &str> = BTreeMap::new();
+        for (period, fold) in &folds {
+            let Ok((fold, _)) = fold else { continue };
+            let stored = crate::stored_registers_in(db, book, fold, &rows).ok()?;
+            let cells = fold
+                .cells
+                .iter()
+                .chain(&fold.pending)
+                .map(|cell| crate::register_vid(book.book_id, &cell.key));
+            for vid in stored.into_keys().chain(cells) {
+                if owners
+                    .insert(vid, period)
+                    .is_some_and(|owner| owner != period.as_str())
+                {
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            at,
+            folds,
+            rows,
+            memberships,
+        })
+    }
+
+    /// The period's fold as read, while the reads still describe the book.
+    /// A fold that failed is refolded alone at its turn, so its error is the
+    /// one that turn gives.
+    pub(crate) fn fold<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        period: &str,
+    ) -> Option<(Fold, u64)> {
+        if db.frontier().ok()? != self.at {
+            return None;
+        }
+        self.folds.remove(period)?.ok()
+    }
+
+    /// [`rebuild`] of the period whose literal `fold` (adding `legs` legs)
+    /// [`SharedRebuild::fold`] returned.
+    async fn rebuild<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+        book: &BookContext,
+        fold: Fold,
+        legs: u64,
+    ) -> Result<Advance, RegisterError> {
+        let prepared = prepare_fold_inner(db, book, fold, legs, true)?;
+        let scans = Some((self.rows.as_slice(), &self.memberships));
+        let advance = publish_advance_in(db, ctx, book, prepared, None, scans).await?;
+        self.at = advance.published_at;
+        Ok(advance)
+    }
+
+    /// [`crate::materialize`] of the literal `fold` (adding `legs` legs)
+    /// that [`SharedRebuild::fold`] returned, with the frontier it leaves.
+    pub(crate) async fn materialize<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+        book: &BookContext,
+        fold: Fold,
+        legs: u64,
+    ) -> Result<(Fold, CommitSeq), RegisterError> {
+        if fold.cells.is_empty()
+            && fold.pending.is_empty()
+            && db.vertex(state_vid(book.book_id, &fold.period))?.is_none()
+            && db
+                .vertex(checkpoint::head_vid(book.book_id, &fold.period))?
+                .is_none()
+            && crate::materialize_batch_in(db, book, &fold, &self.rows, &self.memberships)?
+                .is_empty()
+        {
+            return Ok((fold, db.frontier()?));
+        }
+        let prepared = prepare_fold(db, book, fold.clone(), legs)?;
+        let scans = Some((self.rows.as_slice(), &self.memberships));
+        let advance = publish_advance_in(db, ctx, book, prepared, None, scans).await?;
+        self.at = advance.published_at;
+        Ok((fold, advance.published_at))
+    }
 }

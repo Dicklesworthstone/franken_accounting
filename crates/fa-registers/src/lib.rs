@@ -75,7 +75,7 @@ pub use lots::{
 };
 pub use maintainer::{
     Advance, HeadFold, PreparedAdvance, advance, fold_at, fold_at_with_context, head_fold,
-    prepare_advance, publish_advance, rebuild,
+    prepare_advance, publish_advance, rebuild, rebuild_periods, rebuild_reads_are_shared,
 };
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
@@ -935,6 +935,39 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
         .published_at)
 }
 
+/// [`materialize`] of each of `periods`' literal folds, in order, from one
+/// read of the book where that is exact (`maintainer::SharedRebuild`),
+/// with each fold and the frontier it left. Each result, an error included,
+/// is the one folding that period and materializing the fold gives at its
+/// turn, and the results stop after the first error (fa-rbs3).
+pub async fn materialize_periods<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    periods: &[&str],
+) -> Vec<Result<(Fold, CommitSeq), RegisterError>> {
+    let mut shared = maintainer::SharedRebuild::read(db, book, periods);
+    let mut results = Vec::with_capacity(periods.len());
+    for period in periods {
+        let held = shared.as_mut().and_then(|reads| reads.fold(db, period));
+        let result = match (shared.as_mut(), held) {
+            (Some(reads), Some((fold, legs))) => reads.materialize(db, ctx, book, fold, legs).await,
+            _ => match fold_period_at(db, book, period, None) {
+                Ok(fold) => materialize(db, ctx, book, &fold)
+                    .await
+                    .map(|seq| (fold, seq)),
+                Err(error) => Err(error),
+            },
+        };
+        let stop = result.is_err();
+        results.push(result);
+        if stop {
+            break;
+        }
+    }
+    results
+}
+
 /// Every `IN_PERIOD` edge by its source, as `(eid, dst)` in scan order: one
 /// pass over the book's edges instead of one per register cell (fa-rbs3).
 fn period_memberships(edges: &[fgdb::EdgeRecord]) -> BTreeMap<VId, Vec<(fgdb_types::EId, VId)>> {
@@ -957,6 +990,19 @@ fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     fold: &Fold,
 ) -> Result<WriteBatch, RegisterError> {
+    let rows = db.vertices()?;
+    materialize_batch_in(db, book, fold, &rows, &period_memberships(&db.edges()?))
+}
+
+/// [`materialize_batch`] among `rows`, the book's current vertices, and
+/// `memberships`, its current period memberships by source.
+fn materialize_batch_in<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+    rows: &[VertexRow],
+    memberships: &Memberships,
+) -> Result<WriteBatch, RegisterError> {
     let pvid = period_vid(&book.calendar.id, &fold.period);
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     let expected: BTreeSet<_> = fold
@@ -965,8 +1011,7 @@ fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
         .chain(fold.pending.iter())
         .map(|c| register_vid(book.book_id, &c.key))
         .collect();
-    let candidates = stored_registers(db, book, fold)?;
-    let memberships = period_memberships(&db.edges()?);
+    let candidates = stored_registers_in(db, book, fold, rows)?;
     for row in candidates.values() {
         if row.labels.iter().any(|l| *l != label::REGISTER) {
             return Err(KernelError::Corrupt(
@@ -1126,15 +1171,9 @@ impl Verification {
     }
 }
 
-fn stored_registers<V: asupersync::fs::Vfs + Clone>(
-    db: &Database<V>,
-    book: &BookContext,
-    fold: &Fold,
-) -> Result<BTreeMap<VId, VertexRow>, RegisterError> {
-    stored_registers_in(db, book, fold, &db.vertices()?)
-}
-
-/// [`stored_registers`] among `rows`, the book's current vertices.
+/// The stored registers a fold of `fold`'s period would write, among
+/// `rows`, the book's current vertices: its cells' identities, and every
+/// register linked to or naming the period.
 fn stored_registers_in<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
