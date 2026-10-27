@@ -316,6 +316,8 @@ pub struct BookRun<'c> {
     pub cases: BTreeMap<String, super::lifecycle::CaseRun>,
     /// Each certified scenario diff: the scenario and its certificate file.
     pub scenario_diffs: Vec<(String, String)>,
+    /// The outsider stage's checks, for a book with a checkpoint (A8a).
+    pub outsider: Option<super::outsider::Outsider>,
 }
 
 impl<'c> BookRun<'c> {
@@ -360,6 +362,7 @@ impl<'c> BookRun<'c> {
             issuances: BTreeMap::new(),
             cases: BTreeMap::new(),
             scenario_diffs: Vec::new(),
+            outsider: None,
         }
     }
 
@@ -918,6 +921,7 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::CasePost) => self.case_post(step),
                 Some(StepKind::CaseDisclose) => self.case_disclose(step),
                 Some(StepKind::CaseClose) => self.case_close(step),
+                Some(StepKind::Checkpoint) => self.checkpoint(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1788,6 +1792,9 @@ impl<'c> BookRun<'c> {
         // each case is shown for its generated row (A7b).
         self.reads();
         self.case_reads();
+        // A book with a checkpoint then proves its bundle, replay and
+        // integrity to an outsider (A8a).
+        self.outsider();
     }
 
     /// The trial balance of each period (plan §3.3 step 7); a failure here
@@ -1893,6 +1900,7 @@ pub fn run_case_with(
     }
     // 3–10. Each book variant.
     let mut sweep_failed = false;
+    let mut outsider_failed = false;
     let mut budget = Budget::new(budget_ms);
     for (index, book) in case.books.values().enumerate() {
         let book_started = Instant::now();
@@ -1910,6 +1918,9 @@ pub fn run_case_with(
         if run.failure.is_none() && run.unrun_steps.is_empty() {
             run.trial_balances();
         }
+        // A failed outsider check fails the case whatever its rows say
+        // (§12.1).
+        outsider_failed |= run.outsider.as_ref().is_some_and(|o| !o.ok());
         // Each N row's harness-only twin runs on its own book (A11c), after
         // the target's history ran; a matcher twin (A16) or an exact_gap
         // twin target needs no book of its own.
@@ -2018,6 +2029,7 @@ pub fn run_case_with(
     // claimed expectation's verdict, the worst of its rows, is PASS.
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
     out.rows_ok = !sweep_failed
+        && !outsider_failed
         && verdicts.values().all(|v| *v != RowVerdict::Fail)
         && case
             .header

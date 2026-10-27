@@ -179,7 +179,7 @@ pub struct CaseRun {
 }
 
 /// `args`, run as the step's principal (when it names one), in robot mode.
-fn as_principal(step: &StepDef, mut args: Vec<String>) -> Vec<String> {
+pub(crate) fn as_principal(step: &StepDef, mut args: Vec<String>) -> Vec<String> {
     if let Some(p) = step.principal.as_deref() {
         args.extend([s("--as"), p.to_string()]);
     }

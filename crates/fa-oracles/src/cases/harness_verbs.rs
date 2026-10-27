@@ -55,6 +55,12 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("scenario", Some("run")),
     ("scenario", Some("diff")),
     ("explain", Some("lineage")),
+    // A8a: the outsider stage.
+    ("checkpoint", Some("create")),
+    ("bundle", Some("produce")),
+    ("replay", None),
+    ("registers", Some("advance")),
+    ("verify", Some("book")),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

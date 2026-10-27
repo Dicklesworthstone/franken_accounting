@@ -2,8 +2,9 @@
 # Original entry S-1 post; an Original entry dated in the never-opened quarter is refused by the
 # period law; jet.round_amounts finds S-1 and not N-1. P-1's evidence cells are swept by dry run.
 # Then the bridge: A-1 (1,000.00 on 1100) posts, the quarter is closed and locked, and case
-# selftest-restatement restates A by -100.00 (B = 900.00), disclosed and closed. Synthetic; amounts
-# are fixture values.
+# selftest-restatement restates A by -100.00 (B = 900.00), disclosed and closed; then the book's
+# signed checkpoint, which the outsider stage bundles, replays and verifies against. Synthetic;
+# amounts are fixture values.
 
 [book]
 variant = "native"
@@ -55,6 +56,11 @@ grants = ["read", "approve"]
 label = "case-poster-1"
 profile = "Human"
 grants = ["read", "post", "restate"]
+
+[[principal]]
+label = "examiner-witness"
+profile = "Human"
+grants = ["read", "witness"]
 
 [[principal]]
 label = "examiner-1"
@@ -423,6 +429,12 @@ seq = 18
 kind = "case_close"
 ref = "selftest-restatement"
 principal = "case-poster-1"
+
+[[step]]
+seq = 19
+kind = "checkpoint"
+ref = "selftest-checkpoint"
+principal = "examiner-witness"
 
 [[default]]
 attribute = "evidence_attached"
