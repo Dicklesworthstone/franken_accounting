@@ -2176,14 +2176,31 @@ fn statement_and_trial_balance_reads_return_their_lines() {
     }
 }
 
+/// A11b: a statement line's contributions are every account its registered
+/// definition maps to it, explained over the definition's basis and signed
+/// as the line signs them: the assets line folds R-1's and R-2's debits on
+/// 1100, the revenue line their credits on 4000 (credit-signed), and both
+/// hold to the published 1,250.00.
+#[test]
+fn statement_line_t_holds_on_the_accounts_its_definition_maps() {
+    let o = reads_run(&[]);
+    let text = o.text();
+    for row in [
+        "UNRUN reads-T-02 T native -/default kind=footing read=balance-sheet,assets,2026Q1 value=1250.00 contrib=holds reason=outsider",
+        "UNRUN reads-T-03 T native -/default kind=footing read=income-statement,revenue,2026Q1 value=1250.00 contrib=holds reason=outsider",
+    ] {
+        assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
+    }
+}
+
 /// A7b: a statement read names a line the definition has not: no read, so
 /// the row fails naming the line, never reading zero.
 #[test]
 fn statement_read_of_an_unknown_line_fails() {
     let o = reads_run(&[PlantedEdit {
         file: "expectations.toml",
-        old: "read_verb = \"balance-sheet\"\nread_target = \"assets\"",
-        new: "read_verb = \"balance-sheet\"\nread_target = \"assetz\"",
+        old: "read_target = \"assets\"\nread_coordinate = \"2026Q1\"\nread_selector",
+        new: "read_target = \"assetz\"\nread_coordinate = \"2026Q1\"\nread_selector",
     }]);
     let text = o.text();
     assert!(

@@ -101,3 +101,32 @@ read_verb = "tb"
 read_target = "1100"
 read_coordinate = "2026Q1"
 posted = "P-1"
+
+# Statement-line Ts (A11b): the balance sheet's assets line and the income statement's revenue line,
+# each folding R-1 and R-2 (their named inputs) to the published 1,250.00.
+
+[[expectation]]
+id = "reads-T-02"
+type = "T"
+book_variant = "native"
+statement_template = "T.footing"
+basis = ["R-1", "R-2", "P-1"]
+kind = "footing"
+vintages = []
+read_verb = "balance-sheet"
+read_target = "assets"
+read_coordinate = "2026Q1"
+published = "P-1"
+
+[[expectation]]
+id = "reads-T-03"
+type = "T"
+book_variant = "native"
+statement_template = "T.footing"
+basis = ["R-1", "R-2", "P-1"]
+kind = "footing"
+vintages = []
+read_verb = "income-statement"
+read_target = "revenue"
+read_coordinate = "2026Q1"
+published = "P-1"
