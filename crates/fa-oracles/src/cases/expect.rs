@@ -1849,18 +1849,30 @@ impl<'a> Check<'a, '_> {
             }
             self.rel_rule(f, row);
             for c in f.strs("cite").unwrap_or(&[]) {
-                let ok = match c.split_once('#') {
-                    Some((subject, ordinal)) => {
-                        ordinal.parse::<u32>().is_ok() && self.view.fact_or_intent(variant, subject)
+                let book = self.view.books.get(variant);
+                // A leg, an account, the attestation an `assert_balance` step
+                // recorded (`attestation:<its ref>`), or a declared period
+                // (`period:<code>`): recon.assertion_drift cites all four.
+                let ok = if let Some(r) = c.strip_prefix("attestation:") {
+                    book.is_some_and(|b| {
+                        b.steps.iter().any(|s| {
+                            s.step_kind() == Some(super::book::StepKind::AssertBalance)
+                                && s.reference == r
+                        })
+                    })
+                } else if let Some(code) = c.strip_prefix("period:") {
+                    book.is_some_and(|b| b.periods.iter().any(|p| p.code == code))
+                } else {
+                    match c.split_once('#') {
+                        Some((subject, ordinal)) => {
+                            ordinal.parse::<u32>().is_ok()
+                                && self.view.fact_or_intent(variant, subject)
+                        }
+                        None => book.is_some_and(|b| b.accounts.iter().any(|a| a.code == *c)),
                     }
-                    None => self
-                        .view
-                        .books
-                        .get(variant)
-                        .is_some_and(|b| b.accounts.iter().any(|a| a.code == *c)),
                 };
                 if !ok {
-                    self.push(f.line, row, LoadErrorKind::DanglingKey, format!("cite `{c}` is neither `<fact or intent>#<leg ordinal>` nor an account code of `{variant}`"));
+                    self.push(f.line, row, LoadErrorKind::DanglingKey, format!("cite `{c}` is neither `<fact or intent>#<leg ordinal>`, an account code, `attestation:<assert_balance ref>` nor `period:<code>` of `{variant}`"));
                 }
             }
         }

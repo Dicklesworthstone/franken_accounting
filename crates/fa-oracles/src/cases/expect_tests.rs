@@ -840,3 +840,77 @@ fn rel_rule_outside_the_closed_list_is_refused() {
         "max_vid_debit_leg is listed",
     );
 }
+
+const LC_CASE: &str = include_str!("../../tests/fixtures/lifecycle_min/case.toml");
+const LC_SOURCES: &str = include_str!("../../tests/fixtures/lifecycle_min/sources.toml");
+const LC_FACTS: &str = include_str!("../../tests/fixtures/lifecycle_min/facts.toml");
+const LC_ROLES: &str = include_str!("../../tests/fixtures/lifecycle_min/roles.toml");
+const LC_NATIVE: &str = include_str!("../../tests/fixtures/lifecycle_min/books/native.toml");
+const LC_EXPECTATIONS: &str = include_str!("../../tests/fixtures/lifecycle_min/expectations.toml");
+const LC_CITE: &str = "cite = [\"6100\", \"attestation:lifecycle-R-01\", \"period:2026Q1\"]";
+
+/// The lifecycle fixture with the given expectations text.
+fn lifecycle(expectations: &str) -> Result<Case, Vec<LoadError>> {
+    let files = [
+        ("case.toml", LC_CASE),
+        ("sources.toml", LC_SOURCES),
+        ("facts.toml", LC_FACTS),
+        ("roles.toml", LC_ROLES),
+        ("books/native.toml", LC_NATIVE),
+        ("expectations.toml", expectations),
+    ];
+    load_with(
+        &CaseFiles {
+            id: "lifecycle",
+            files: &files,
+        },
+        CASE_EXTENSIONS,
+    )
+}
+
+/// A7b's drift row: recon.assertion_drift cites the account, the attestation
+/// its `assert_balance` step recorded and the period, and all three resolve.
+#[test]
+fn drift_cite_names_its_account_attestation_and_period() {
+    let case = lifecycle(LC_EXPECTATIONS)
+        .map_err(|errs| render(&errs))
+        .expect("the lifecycle fixture loads");
+    let set = case.expectations.as_ref().expect("expectations.toml");
+    let d = set.get("lifecycle-D-01").expect("lifecycle-D-01");
+    let t = set
+        .targets_of("lifecycle-D-01")
+        .find(|t| t.fact == "D-1")
+        .expect("D-1");
+    let p = t.projection(d).expect("a D target projects");
+    assert_eq!(p.procedure, "recon.assertion_drift");
+    assert_eq!(p.cite.status, Status::S);
+    assert_eq!(
+        p.cite.value.as_deref(),
+        Some("6100,attestation:lifecycle-R-01,period:2026Q1")
+    );
+}
+
+/// An `attestation:` cite names an `assert_balance` step's ref: any other
+/// step's ref, or no step's, is refused; a `period:` cite names a declared
+/// period.
+#[test]
+fn attestation_or_period_cite_naming_nothing_is_refused() {
+    for (cite, part) in [
+        (
+            "attestation:lifecycle-R-99",
+            "cite `attestation:lifecycle-R-99` is neither",
+        ),
+        // seq 10 is a case_open step whose ref is `rc`.
+        ("attestation:rc", "cite `attestation:rc` is neither"),
+        ("period:2026Q2", "cite `period:2026Q2` is neither"),
+    ] {
+        let text = once(
+            LC_EXPECTATIONS,
+            LC_CITE,
+            &format!("cite = [\"6100\", \"{cite}\"]"),
+        );
+        let errs = lifecycle(&text).expect_err("the planted cite is refused");
+        let e = refused(&errs, "expectations.toml", LoadErrorKind::DanglingKey, part);
+        assert_eq!(e.row.as_deref(), Some("D-1"), "{cite}");
+    }
+}
