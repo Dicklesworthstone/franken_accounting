@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
-use fa_oracles::cases::book::StepKind;
+use fa_oracles::cases::book::{CaseDef, StepKind};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
@@ -250,8 +250,171 @@ pub fn rows(
             }
         }
     }
+    out.extend(case_rows(run));
     out.push(self_row(run));
     out
+}
+
+/// The runner's read-back row of each `[[case]]` (§3.3 step 5),
+/// `<case>-CASE-<case id>`: `fa case show` after the history must report the
+/// case Closed, of its row's kind, determined on its sourced or declared day
+/// under its authority document, and disclosed under a reviewed document;
+/// the disclosure's unreviewed twin was refused FA-REF-179, and each restated
+/// target's lineage names Restates. A history with no `case_close` step for
+/// the case leaves the row UNRUN, never PASS.
+fn case_rows(run: &BookRun<'_>) -> Vec<Evaluated> {
+    let case = run.case;
+    run.book
+        .cases
+        .iter()
+        .map(|c| {
+            let id = format!("{}-CASE-{}", selfrow::prefix(case), c.id);
+            let mut row = blank(&id, "R", &run.book.stem, None);
+            if let Some(gated) = gate(run, &row) {
+                return finish(case, gated);
+            }
+            row.projection.push(("kind".into(), "case_show".into()));
+            row.projection
+                .push(("read".into(), format!("case show,{}", c.id)));
+            let closes = run
+                .book
+                .steps
+                .iter()
+                .any(|x| x.step_kind() == Some(StepKind::CaseClose) && x.reference == c.id);
+            if !closes {
+                row.verdict = RowVerdict::Unrun;
+                row.reason = Some("needs:case_close step".into());
+                return finish(case, (row, Vec::new(), None));
+            }
+            let (projection, fails) = case_show(run, c);
+            row.projection.extend(projection);
+            if !fails.is_empty() {
+                row.verdict = RowVerdict::Fail;
+                row.reason = Some(fails.join("; "));
+            }
+            finish(case, (row, Vec::new(), None))
+        })
+        .collect()
+}
+
+/// A case row's tokens and its failures, from the case's runs.
+fn case_show(run: &BookRun<'_>, c: &CaseDef) -> (Vec<(String, String)>, Vec<String>) {
+    let mut tokens = Vec::new();
+    let mut fails = Vec::new();
+    let r = run.cases.get(&c.id);
+    let shown = r
+        .and_then(|r| r.show.as_ref())
+        .and_then(|call| call.event("case"))
+        .and_then(|o| o.field("case"))
+        .cloned();
+    let Some(shown) = shown else {
+        fails.push(format!(
+            "expected `fa case show` of case {} observed none",
+            c.id
+        ));
+        return (tokens, fails);
+    };
+    let text = |path: &[&str]| {
+        shown
+            .at(path)
+            .and_then(Json::as_str)
+            .unwrap_or("none")
+            .to_string()
+    };
+    let state = text(&["state"]);
+    tokens.push(("state".to_string(), state.clone()));
+    if state != "Closed" {
+        fails.push(format!("expected Closed observed {state}"));
+    }
+    let kind = text(&["kind"]);
+    tokens.push(("case_kind".to_string(), kind.clone()));
+    if kind != c.kind {
+        fails.push(format!("expected case_kind={} observed {kind}", c.kind));
+    }
+    let day = text(&["determination", "day"]);
+    tokens.push(("determined_on".to_string(), day.clone()));
+    match run.determination_day(c) {
+        Ok(want) if want == day => {}
+        Ok(want) => fails.push(format!("expected determined_on={want} observed {day}")),
+        Err(why) => fails.push(why),
+    }
+    let authority = text(&["determination", "authority"]);
+    let want = run
+        .documents
+        .get(&c.authority)
+        .map(|o| o.trim_start_matches("D:").to_ascii_lowercase());
+    tokens.push((
+        "authority".to_string(),
+        if want.as_deref() == Some(authority.as_str()) {
+            c.authority.clone()
+        } else {
+            authority.clone()
+        },
+    ));
+    if want.as_deref() != Some(authority.as_str()) {
+        fails.push(format!(
+            "expected authority={} observed {authority}",
+            c.authority
+        ));
+    }
+    let disclosed = text(&["disclosure", "document"]);
+    let reviewed = shown
+        .at(&["disclosure", "attestation"])
+        .is_some_and(|a| a.as_str().is_some());
+    let want = r
+        .and_then(|r| r.disclosure.as_deref())
+        .map(str::to_ascii_lowercase);
+    let disclosure = if want.as_deref() == Some(disclosed.as_str()) && reviewed {
+        "reviewed"
+    } else {
+        "none"
+    };
+    tokens.push(("disclosure".to_string(), disclosure.to_string()));
+    if disclosure != "reviewed" {
+        fails.push(format!(
+            "expected a reviewed disclosure of {} observed {disclosed}",
+            c.disclosure
+        ));
+    }
+    match r.and_then(|r| r.twin.as_ref()) {
+        Some(twin) => {
+            let id = twin.refusal_id();
+            tokens.push((
+                "twin".to_string(),
+                format!(
+                    "refused:{}:exit={}",
+                    id.as_deref().unwrap_or("none"),
+                    twin.exit
+                ),
+            ));
+            if id.as_deref() != Some("FA-REF-179") || twin.exit != 3 {
+                fails.push(format!(
+                    "expected the unreviewed disclosure twin refused FA-REF-179 exit=3 observed {} exit={}",
+                    id.as_deref().unwrap_or("admitted"),
+                    twin.exit
+                ));
+            }
+        }
+        None => fails.push("expected the unreviewed disclosure twin observed none".into()),
+    }
+    let lineages = r.map(|r| r.lineages.as_slice()).unwrap_or_default();
+    let posts = run
+        .book
+        .steps
+        .iter()
+        .any(|x| x.step_kind() == Some(StepKind::CasePost) && x.reference == c.id);
+    if posts && lineages.is_empty() {
+        fails.push("expected the lineage of a restated target observed none".into());
+    }
+    for (target, call) in lineages {
+        if call.exit != 0 || !call.stdout.contains("Restates") {
+            fails.push(format!(
+                "expected the lineage of {target} to name Restates observed exit={}",
+                call.exit
+            ));
+        }
+    }
+    (tokens, fails)
 }
 
 /// A5b's row-level rule (§5.2): a `closed_cites` D states that its targets

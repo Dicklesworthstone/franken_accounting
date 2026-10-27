@@ -1,0 +1,36 @@
+# Lifecycle fixture sources: two synthetic filings (hash-first: the hashes stand for no retrieved
+# bytes; schema fixture only), the quarter as filed and the restating filing. No fact cites them.
+
+[[source]]
+id = "SRC-LC-0"
+title = "Synthetic quarterly filing as filed (lifecycle fixture; no real filing)"
+publisher = "the lifecycle fixture"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-lifecycle-10-q.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "8c1e4b7a2d5f9036e1c4a7b0d3f6928e5b1c4a7d0e3f6928b5c1e4a7d0b3f692"
+format = "txt"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+assurance = "unaudited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2026-04-30"
+
+[[source]]
+id = "SRC-LC-1"
+title = "Synthetic restating filing (lifecycle fixture; no real filing)"
+publisher = "the lifecycle fixture"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-lifecycle-10-q-a.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "3f6928b5c1e4a7d0e3f6928b5c1e4a7d08c1e4b7a2d5f9036e1c4a7b0d3f6928"
+format = "txt"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+assurance = "unaudited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2026-05-15"
