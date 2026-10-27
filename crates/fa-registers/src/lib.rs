@@ -441,20 +441,53 @@ pub fn entries_at<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     seq: CommitSeq,
 ) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
+    entries_at_counted(db, book, seq, &mut EntryReadCount::default())
+}
+
+/// Work performed by the entry selector itself. Migration run lookups and
+/// any subsequent folding are separate work, not hidden in these counts.
+#[derive(Default)]
+pub(crate) struct EntryReadCount {
+    pub vertices_read: usize,
+    pub entries_decoded: usize,
+}
+
+/// The label, payload and coordinate checks shared by a literal selection
+/// and the replay verifier's changed-vertex selection (fa-vr7q).
+pub(crate) fn entry_from_row(
+    row: &VertexRow,
+    book: &BookContext,
+) -> Result<Option<Entry>, RegisterError> {
+    if !row.labels.contains(&label::ENTRY) {
+        return Ok(None);
+    }
+    let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry.payload")?)
+        .map_err(KernelError::from)?;
+    if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
+        return Err(KernelError::Corrupt(
+            "entry coordinate does not belong to this trunk book".into(),
+        )
+        .into());
+    }
+    Ok(Some(entry))
+}
+
+pub(crate) fn entries_at_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    seq: CommitSeq,
+    work: &mut EntryReadCount,
+) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
     let mut entries = Vec::new();
     let mut runs = BTreeMap::new();
     for row in db.vertices_at(seq)? {
-        if !row.labels.contains(&label::ENTRY) {
+        work.vertices_read = work.vertices_read.saturating_add(1);
+        if row.labels.contains(&label::ENTRY) {
+            work.entries_decoded = work.entries_decoded.saturating_add(1);
+        }
+        let Some(entry) = entry_from_row(&row, book)? else {
             continue;
-        }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry.payload")?)
-            .map_err(KernelError::from)?;
-        if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-            return Err(KernelError::Corrupt(
-                "entry coordinate does not belong to this trunk book".into(),
-            )
-            .into());
-        }
+        };
         if !fa_journal::migration::visible_at(db, &entry, seq, &mut runs)? {
             continue;
         }
