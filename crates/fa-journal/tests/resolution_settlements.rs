@@ -492,7 +492,11 @@ fn pending_legs_still_cannot_apply_and_cross_period_resolutions_apply_only_when_
         amount: Amount::new(f.unit, 80),
     }];
     let head = f.db.frontier().unwrap();
-    assert_eq!(f.post(pending).unwrap_err().code, "FA-REF-102");
+    // A hold applies nothing until it posts: the settlement law refuses it
+    // (SETTLE_SHAPE, fa-0hs4.10), not an unfinished slice.
+    let refused = f.post(pending).unwrap_err();
+    assert_eq!(refused.code, "FA-REF-071", "{refused}");
+    assert!(refused.message.contains("carries no settles"), "{refused}");
     assert_eq!(f.db.frontier().unwrap(), head);
     let hold = f.hold(80, b"valid-hold");
     let mut resolution = f.resolution(hold, invoice, 80, b"april-resolution");
