@@ -1,5 +1,7 @@
 //! Independent amount vectors and hostile complete-bundle fixtures.
 
+mod statements;
+
 use super::super::{
     FUNCTIONAL_CERTIFICATE_FORMAT, REPORT_BUNDLE_FORMAT, certificate, verify_report_with_inputs,
 };
@@ -818,6 +820,37 @@ fn pack(
     rates: &[RateFixture],
     output: &[u8],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    let mut selector = Writer::default();
+    selector.u8(8);
+    selection(&mut selector, selected).unwrap();
+    pack_profile(
+        records,
+        known_at,
+        spec,
+        rates,
+        output,
+        CertificateProfile {
+            format: FUNCTIONAL_CERTIFICATE_FORMAT,
+            output_format: OUTPUT_FORMAT,
+            selector: &selector.buf,
+        },
+    )
+}
+
+struct CertificateProfile<'a> {
+    format: &'a [u8],
+    output_format: &'a [u8],
+    selector: &'a [u8],
+}
+
+fn pack_profile(
+    records: &[Record],
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    profile: CertificateProfile<'_>,
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let docs = registries();
     let mut last = None;
     let mut ordinal = 0u32;
@@ -838,15 +871,14 @@ fn pack(
         })
         .collect();
     let mut cert = Writer::default();
-    cert.fixed(FUNCTIONAL_CERTIFICATE_FORMAT)
+    cert.fixed(profile.format)
         .bytes(b"fa-fold-over-prefix")
         .bytes(b"embedded-owner")
-        .bytes(OUTPUT_FORMAT)
+        .bytes(profile.output_format)
         .fixed(&BOOK)
         .fixed(&[0; 16])
         .u64(known_at)
-        .u8(8);
-    selection(&mut cert, selected).unwrap();
+        .fixed(profile.selector);
     cert.fixed(&closure(&docs))
         .fixed(&root_of(&historical))
         .u64(historical.len() as u64)
@@ -857,7 +889,7 @@ fn pack(
     cert.bytes(output)
         .fixed(&hash_parts(b"fa:report-output:v1", &[output]))
         .u8(0);
-    let pin = hash_parts(FUNCTIONAL_CERTIFICATE_FORMAT, &[&cert.buf]);
+    let pin = hash_parts(profile.format, &[&cert.buf]);
     cert.fixed(&pin);
     assert!(certificate(&cert.buf).unwrap().functional);
     let all: Vec<_> = records
