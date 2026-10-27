@@ -1109,6 +1109,35 @@ fn missing_register_membership_is_detected_and_repaired() {
 }
 
 #[test]
+fn a_register_linked_to_another_period_is_detected_and_unlinked() {
+    // fa-rbs3: membership is looked up by source from one edge scan; a cell
+    // also linked to another period must still be found by both verify and
+    // materialize, and only that stray edge removed.
+    let mut h = harness();
+    h.post_rent(123, b"rent");
+    let fold = h.materialize_march();
+    let rvid = register_vid(h.book.book_id, &fold.cells[0].key);
+    let march = period_vid(&h.book.calendar.id, &h.march);
+    let april = period_vid(&h.book.calendar.id, "FY2026-P04");
+    let stray = fa_journal::rows::edge_id(relation::IN_PERIOD, rvid, april);
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    batch.add_edge(stray, rvid, april, vec![]);
+    h.write_derived(batch);
+    h.assert_not_green("a register also linked to another period");
+    assert_eq!(h.materialize_march(), fold);
+    assert!(
+        h.db.edge(stray).unwrap().is_none(),
+        "the stray membership is removed"
+    );
+    assert!(
+        h.db.in_neighbours(march, relation::IN_PERIOD)
+            .unwrap()
+            .contains(&rvid),
+        "the period's own membership stays"
+    );
+}
+
+#[test]
 fn materialize_refuses_stale_or_modified_folds_without_writing() {
     let mut h = harness();
     h.post_rent(1_000, b"r1");
