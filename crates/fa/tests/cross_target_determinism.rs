@@ -668,6 +668,20 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // e83c57d21, x86_64, after both complete fixture executions agreed;
     // the fold and every report-byte pin are unchanged. This does not supply
     // the still-unrun aarch64 qualification.
+    // Re-pinned 2026-10-27 (StormyJay, fa-0hs4.2 red sweep): on a76645baf and
+    // again on 28867aec4 the fold and every report-byte pin were unchanged,
+    // while the tb/bs/is certificate and bundle digests had moved. Since the
+    // previous pin (ef4585e7c), three commits changed registries the
+    // certificate binds: b3756a5c5 (limits, symbols), 117356e90 (limits) and
+    // f60b7172f (limits, symbols). This was not bisected, so a non-registry
+    // certificate change in the same window is not excluded. The new pins are
+    // the values this test printed on x86_64. They still do not supply the
+    // unrun aarch64 qualification.
+    // Prior tb/bs/is certificate and bundle pins (ef4585e7c), retained here:
+    // d5080d0f6aa895594babc1dd1071e132e0b552c284d11843243d60ae951d5608
+    // 564f51a70a5d2dcd1662f5b8839da0212de08a9a59aa90de01d868a85892cb27
+    // acbf4bd4f2dcae1545a05018d9bcd5fc3f6074ea319bee692b99993cf446da77
+    // d04651ce9d377423b5dc000807d818106ef9d457a839f0e2e5f057b8dcccea01
     // Prior tb/bs/is certificate and bundle pins (6a55dfa21), retained here:
     // 87b46764e1ecb79512b9f7bcab837d85af056d8c8d8a65da1856c06e8db229c0
     // 78e5f94d2809bcbeccb95fe722f49c679b11cfc3e9514a830deb00711d89c44c
@@ -709,7 +723,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "d5080d0f6aa895594babc1dd1071e132e0b552c284d11843243d60ae951d5608",
+        "99192ba996d02f03f735c77dccedce7d19c1eff10d4b59f3e4965dcd72addc1e",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -721,7 +735,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "564f51a70a5d2dcd1662f5b8839da0212de08a9a59aa90de01d868a85892cb27",
+        "0e1d3df1844e1721c7b891237646f61dbd5770433d6ffb7f7515471af01cff85",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -733,13 +747,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "acbf4bd4f2dcae1545a05018d9bcd5fc3f6074ea319bee692b99993cf446da77",
+        "37c257f43f2e1e625da94887325c08ad9605de073b3d15fe3ccfe7b14c6b98c1",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "d04651ce9d377423b5dc000807d818106ef9d457a839f0e2e5f057b8dcccea01",
+        "4cda282123726a42fbd17de94fb68c2f74fe5023466c6c417d00d621ed8da0b0",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );
