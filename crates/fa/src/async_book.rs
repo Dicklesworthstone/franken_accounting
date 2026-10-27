@@ -3981,6 +3981,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &certificate.selection,
                 crate::ReportSelection::TrialBalance(_)
                     | crate::ReportSelection::FunctionalTrialBalance(_)
+                    | crate::ReportSelection::FunctionalStatement(_)
                     | crate::ReportSelection::DimensionTrialBalance { .. }
                     | crate::ReportSelection::Statement(_)
                     | crate::ReportSelection::OpenItems { .. }
@@ -3990,23 +3991,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's native or functional trial-balance, dimension-filtered trial-balance, statement, open-item or balance-explanation certificate",
+                "offline report production requires this book's native or functional trial-balance or statement, dimension-filtered trial-balance, open-item or balance-explanation certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify fa tb (optionally --functional or --dimension kind=value), fa statement, fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
+                "certify fa tb (optionally --functional or --dimension kind=value), fa statement (optionally --functional), fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
         }
         if matches!(
             &certificate.selection,
             crate::ReportSelection::FunctionalTrialBalance(_)
+                | crate::ReportSelection::FunctionalStatement(_)
         ) && (certificate.branch_id != fa_model::Id128::TRUNK
             || certificate.time_selection.is_some())
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "portable functional trial balances require a sequence-selected trunk certificate",
+                "portable functional reports require a sequence-selected trunk certificate",
                 "plan §5.3 / §13.3 (the independent valuation profile has explicit source coordinates)",
-                "certify fa tb --functional at a fixed recorded sequence before exporting",
+                "certify fa tb --functional or fa statement --functional at a fixed recorded sequence before exporting",
             )));
         }
         if let Err(refusal) = self
@@ -4135,6 +4137,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             crate::ReportSelection::OpenItems { .. }
                 | crate::ReportSelection::ExplainBalance { .. }
                 | crate::ReportSelection::FunctionalTrialBalance(_)
+                | crate::ReportSelection::FunctionalStatement(_)
         );
         let registries = if requires_registry_closure
             || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
@@ -4229,6 +4232,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let functional_source = if matches!(
             &certificate.selection,
             crate::ReportSelection::FunctionalTrialBalance(_)
+                | crate::ReportSelection::FunctionalStatement(_)
         ) {
             let rate_oids =
                 match fa_notary::report::functional_rate_oids(&journal, certificate.known_at)? {
@@ -4257,7 +4261,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 return Ok(Err(fa_journal::Refusal::new(
                     fa_notary::code::SCOPE_UNSUPPORTED,
                     fa_journal::exit::REFUSAL,
-                    "portable functional trial balances require the canonical version-2 book basis",
+                    "portable functional reports require the canonical version-2 book basis",
                     "plan §13.3 (preserve the original historical source bytes)",
                     "replay legacy book certificates locally; do not rewrite their genesis metadata",
                 )));
