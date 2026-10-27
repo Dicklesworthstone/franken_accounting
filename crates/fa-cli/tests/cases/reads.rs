@@ -4,7 +4,13 @@
 //! After the history, every T and R row's read runs once and is kept on the
 //! run, keyed by `<expectation>/<target fact>` (`-` for a row without
 //! targets). A `balance` read is `fa explain balance <account> --period
-//! <code> --certify --json` (its value the cell's net); a `balance-sheet`
+//! <code> --certify --json` over every period the read's fold spans, since
+//! the command explains one period's cells: every declared period through
+//! the read's for a stock account (Asset, Liability, Equity), the read's own
+//! periods for a flow account (Revenue, Expense; a fiscal year is each of
+//! its periods). Its value is the sum of the cells' nets, and it keeps each
+//! posted leg it explained, mapped to the intent that posted it, for the
+//! contributing-entry witness (A11b). A `balance-sheet`
 //! or `income-statement` read is `fa statement <verb> --for <code>
 //! --certify --json` (its value the current column of the line whose code
 //! is the read's target); a `tb` read is `fa tb --period <code> --certify
@@ -19,8 +25,11 @@
 //! twins, B plus and B minus one minor unit, which the kernel must each
 //! refuse `FA-REF-140` (§5.3, §3.7 item 4).
 
+use std::collections::BTreeMap;
+
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::StepDef;
+use fa_oracles::cases::contrib::Contribution;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::json::Json;
 
@@ -34,6 +43,8 @@ pub struct Read {
     pub value: Result<i128, String>,
     /// The certificate the read retained, if any.
     pub certificate: Option<String>,
+    /// A `balance` read's posted legs, every period it explained (A11b).
+    pub contributions: Option<Vec<Contribution>>,
 }
 
 /// One `assert_balance` step's calls.
@@ -134,6 +145,7 @@ impl BookRun<'_> {
             token,
             value: Err(why),
             certificate: None,
+            contributions: None,
         };
         if !matches!(
             verb,
@@ -156,6 +168,12 @@ impl BookRun<'_> {
         let unit = field(e, t, value_key)
             .and_then(|f| self.value_of(f))
             .map_or_else(|| self.book.book.base_unit.clone(), |(_, u)| u);
+        if verb == "balance" {
+            return match view {
+                Ok(flags) => self.read_balance(e, t, token, &unit, &flags),
+                Err(why) => fail(token, why),
+            };
+        }
         let mut args: Vec<String> = match verb {
             "balance" => ["explain", "balance", target, "--period"]
                 .map(str::to_string)
@@ -247,6 +265,170 @@ impl BookRun<'_> {
             token,
             value,
             certificate,
+            contributions: None,
+        }
+    }
+
+    /// The periods a `balance` read of `account` at `coordinate` folds, in
+    /// calendar order (module doc).
+    fn fold_periods(&self, account: &str, coordinate: &str) -> Option<Vec<String>> {
+        let book = self.book;
+        let own: Vec<&fa_oracles::cases::book::PeriodDef> =
+            match book.periods.iter().find(|p| p.code == coordinate) {
+                Some(p) => vec![p],
+                None => {
+                    let fy: i128 = coordinate.strip_prefix("FY")?.parse().ok()?;
+                    book.periods
+                        .iter()
+                        .filter(|p| p.fiscal_year == fy)
+                        .collect()
+                }
+            };
+        let end = own.iter().map(|p| p.end.as_str()).max()?;
+        let stock = book.accounts.iter().any(|a| {
+            a.code == account && matches!(a.account_type.as_str(), "Asset" | "Liability" | "Equity")
+        });
+        let mut periods: Vec<&fa_oracles::cases::book::PeriodDef> = if stock {
+            book.periods
+                .iter()
+                .filter(|p| p.end.as_str() <= end)
+                .collect()
+        } else {
+            own
+        };
+        periods.sort_by(|a, b| a.end.cmp(&b.end));
+        Some(periods.into_iter().map(|p| p.code.clone()).collect())
+    }
+
+    /// A `balance` read: `fa explain balance --certify` in each period of
+    /// the read's fold (module doc). The certificate kept is the last
+    /// period's, the read's own.
+    fn read_balance(
+        &mut self,
+        e: &Expectation,
+        t: Option<&Target>,
+        token: String,
+        unit: &str,
+        flags: &[String],
+    ) -> Read {
+        let account = field(e, t, "read_target").unwrap_or("-");
+        let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
+        let fail = |token: String, why: String| Read {
+            token,
+            value: Err(why),
+            certificate: None,
+            contributions: None,
+        };
+        let Some(scale) = scale_of(unit) else {
+            return fail(token, format!("unit `{unit}` is not registered"));
+        };
+        let Some(periods) = self.fold_periods(account, coordinate) else {
+            return fail(
+                token,
+                format!("expected a period for `{coordinate}` observed none"),
+            );
+        };
+        let posted_by: BTreeMap<String, String> = self
+            .vids
+            .iter()
+            .map(|(intent, vid)| (vid.clone(), intent.clone()))
+            .collect();
+        let reference = key(e, t);
+        let (mut total, mut certificate, mut contributions) = (0_i128, None, Vec::new());
+        for label in periods {
+            let Some(code) = self.periods.get(&label).cloned() else {
+                return fail(
+                    token,
+                    format!("expected a created period for {label} observed none"),
+                );
+            };
+            let mut args = vec![
+                "explain".to_string(),
+                "balance".to_string(),
+                account.to_string(),
+                "--period".to_string(),
+                code,
+            ];
+            args.extend(flags.iter().cloned());
+            args.extend(["--certify".to_string(), "--json".to_string()]);
+            let call = self.call(self.head, &reference, "explain", args);
+            self.certificate_kind("ExplainBalance");
+            if call.exit != 0 {
+                self.lines.push(reproduce(&call));
+                return fail(
+                    token,
+                    format!(
+                        "expected exit=0 from explain balance of {label} observed exit={} {}",
+                        call.exit,
+                        call.refusal_id().unwrap_or_default()
+                    )
+                    .trim_end()
+                    .to_string(),
+                );
+            }
+            certificate = call.str_field("balance_explained", "certificate");
+            // No cell in the unit: the account holds nothing in it there.
+            let net = call
+                .array_field("balance_explained", "cells")
+                .iter()
+                .find(|c| c.get("unit").and_then(Json::as_str) == Some(unit))
+                .and_then(|c| c.get("net").and_then(Json::as_str).map(str::to_string));
+            let in_unit = |amount: &str| -> Result<Option<i128>, String> {
+                match amount.strip_suffix(unit).map(str::trim_end) {
+                    Some(a) => parse_amount(a, scale)
+                        .map(Some)
+                        .map_err(|err| format!("amount `{amount}`: {err:?}")),
+                    None => Ok(None),
+                }
+            };
+            if let Some(n) = net {
+                match in_unit(&n) {
+                    Ok(Some(v)) => match total.checked_add(v) {
+                        Some(sum) => total = sum,
+                        None => return fail(token, "the explained nets overflow".into()),
+                    },
+                    Ok(None) => {
+                        return fail(token, format!("expected a net in {unit} observed `{n}`"));
+                    }
+                    Err(why) => return fail(token, why),
+                }
+            }
+            for c in call.array_field("balance_explained", "contributions") {
+                if c.get("column").and_then(Json::as_str) != Some("posted") {
+                    continue;
+                }
+                let amount = c.get("amount").and_then(Json::as_str).unwrap_or_default();
+                let minor = match in_unit(amount) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => continue,
+                    Err(why) => return fail(token, why),
+                };
+                let signed = if c.get("side").and_then(Json::as_str) == Some("debit") {
+                    minor
+                } else {
+                    match minor.checked_neg() {
+                        Some(v) => v,
+                        None => return fail(token, "a contribution overflows".into()),
+                    }
+                };
+                let entry = c
+                    .get("entry")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                contributions.push(Contribution {
+                    intent: posted_by.get(&entry).cloned(),
+                    entry,
+                    account: account.to_string(),
+                    signed,
+                });
+            }
+        }
+        Read {
+            token,
+            value: Ok(total),
+            certificate,
+            contributions: Some(contributions),
         }
     }
 

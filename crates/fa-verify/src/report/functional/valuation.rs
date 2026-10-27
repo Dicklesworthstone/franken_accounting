@@ -309,7 +309,6 @@ fn compute(
     legs: &[Leg],
     entry: &ParsedEntry,
     rates: &BTreeMap<[u8; 32], Rate>,
-    law: u16,
     effective: i32,
     period_end: i32,
     base_unit: u32,
@@ -319,6 +318,7 @@ fn compute(
         .base
         .as_ref()
         .ok_or_else(|| failed("functional_valuation", "missing claim"))?;
+    let law = if claim.law == law_oid(1) { 1 } else { 3 };
     let mut by_quote = BTreeMap::new();
     for oid in &claim.rates {
         let rate = rates
@@ -509,18 +509,17 @@ pub(super) fn verify_history(
             continue;
         }
         let (oid, commitment, received_by) = receipt(payload, len)?;
-        if let Some(rate) = rates.get(&oid) {
-            if envelope.book_id != spec.book
+        if let Some(rate) = rates.get(&oid)
+            && (envelope.book_id != spec.book
                 || commitment != rate.commitment
                 || received_by != rate.received_by
                 || envelope.commit_seq > first_use[&oid]
-                || !receipts.insert(oid)
-            {
-                return Err(failed(
-                    "functional_rate_visibility",
-                    "Rate receipt is duplicate, belongs to another intake, or is later than first use",
-                ));
-            }
+                || !receipts.insert(oid))
+        {
+            return Err(failed(
+                "functional_rate_visibility",
+                "Rate receipt is duplicate, belongs to another intake, or is later than first use",
+            ));
         }
     }
     if receipts.iter().ne(rates.keys()) {
@@ -592,14 +591,12 @@ pub(super) fn verify_history(
                 }
             }
             parents.insert(index, target);
-        } else if let Some(claim) = &entry.base {
-            let law = if claim.law == law_oid(1) { 1 } else { 3 };
+        } else if entry.base.is_some() {
             let (_, period_end) = schema.bounds(std::slice::from_ref(&period))?;
             compute(
                 &legs[index],
                 entry,
                 &rates,
-                law,
                 effective,
                 period_end,
                 spec.base,

@@ -332,8 +332,11 @@ pub use statements::{
     UncorrectedStatement, statement_definition_kind,
 };
 pub use subledger::{
-    NativeSubledger, NativeSubledgerKind, NativeSubledgerReconciliation, NativeSubledgerRecorded,
-    NativeSubledgerRow, NativeSubledgerSpec, NativeSubledgerTotal,
+    CertifiedNativeSubledger, MAX_NATIVE_SUBLEDGER_CERTIFICATE_BYTES,
+    NATIVE_SUBLEDGER_CERTIFICATE_FORMAT, NATIVE_SUBLEDGER_REPORT_FORMAT, NativeSubledger,
+    NativeSubledgerCertificate, NativeSubledgerKind, NativeSubledgerReconciliation,
+    NativeSubledgerRecorded, NativeSubledgerRequest, NativeSubledgerRow, NativeSubledgerSpec,
+    NativeSubledgerTotal,
 };
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{

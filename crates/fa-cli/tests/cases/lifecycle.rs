@@ -432,6 +432,9 @@ impl<'c> BookRun<'c> {
                 ));
                 return;
             }
+            if let Some(entry) = call.str_field("scenario_run", "entry") {
+                self.planned_entries.insert(it.id.clone(), entry);
+            }
         }
     }
 
@@ -557,6 +560,42 @@ impl<'c> BookRun<'c> {
         if call.exit != 0 {
             self.lines.push(reproduce(&call));
             return;
+        }
+        // Each delta the post recorded is its intent's entry from now on:
+        // the entry `fa scenario run` planned it as, else its place in the
+        // rehearsed scenario's order.
+        let posted: Vec<String> = call
+            .event("case_posted")
+            .and_then(|o| o.field("case"))
+            .and_then(|c| c.get("posted"))
+            .and_then(Json::as_array)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|p| p.get("entry").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let rehearsed = self.cases.get(&case.id).and_then(|r| r.scenario.clone());
+        let planned = rehearsed
+            .map(|name| self.planned_into(&name))
+            .unwrap_or_default();
+        for (i, it) in planned.iter().enumerate() {
+            let vid = self
+                .planned_entries
+                .get(&it.id)
+                .filter(|v| posted.contains(v))
+                .cloned()
+                .or_else(|| posted.get(i).cloned());
+            if let Some(vid) = vid {
+                self.bind(
+                    &vid,
+                    format!("${}", it.id),
+                    "case_posted.case.posted.entry",
+                    step.seq,
+                    &it.id,
+                );
+                self.vids.insert(it.id.clone(), vid.clone());
+                self.posted_steps.insert(it.id.clone(), step.seq);
+                self.map_legs(step.seq, &it.id, &vid);
+            }
         }
         let args = vec![
             s("case"),

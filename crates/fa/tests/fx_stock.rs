@@ -164,7 +164,7 @@ impl Fixture {
     fn rate(&mut self, effective: DateDay, numerator: u128, source: &str) -> Oid {
         let divisor = [10, 5, 2, 1]
             .into_iter()
-            .find(|divisor| numerator % *divisor == 0)
+            .find(|divisor| numerator.is_multiple_of(*divisor))
             .unwrap();
         let rate = FxRateDocument::new(
             FxRateTerms {
