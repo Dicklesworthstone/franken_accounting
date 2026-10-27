@@ -746,3 +746,37 @@ including ten unvalued foreign-application fixtures and an over-cap detector
 fixture. Canonical proof is unavailable, the legacy evidence helper reports
 UNRUN on RCH's completion format, and UBS remains non-pass. No release, main
 landing, complete-project verification or Bead closure follows.
+
+## 2026-10-27 — fa-ze0y: consolidation broke the runtime verb registry
+
+The consolidation `7f075b7d` rewrote the daemon's eight usage strings as a
+multiline TOML array. Standard TOML accepts it, but the deliberately bounded
+`fa_registry::toml` reader consumes single-line values. This agent introduced
+the incompatible representation. Peer repair `28867aec` reports that every
+`fa` invocation failed before dispatch with exit 5 and
+`verbs.toml: toml line 79: unsupported value '['`.
+
+`28867aec` restores one flat array. An independent standard-TOML comparison
+confirms no parsed registry value changed in that repair; all eight strings
+and their order also match `7f075b7d` and the current source. Standard-parser
+acceptance and Rust formatting are not execution of the production reader.
+The peer commit reports two harness-verbs tests and the real CLI `_selftest`
+passing; those native results were not independently reproduced here.
+
+Once the registry loaded, the peer reported a stale period-routing assertion
+in `fa-verbs`. Local checkpoint `53ea8bf8` tests the current shared operation
+contract: both planning forms select Read first, all five transitions name
+Close or Reopen for commits, and adding planning flags cannot turn commit
+inputs into read authority. Unknown verbs and transitions still have no
+route. This intentionally stops asserting that the shared registry has no
+period-commit route; it does not grant an MCP session confirmation or those
+operations. Production registry rows, launch ceilings, CLI confirmation
+checks and their separate refusal tests are unchanged.
+
+All nine original `fa-verbs` test names remain. Formatting and the scoped UBS
+scan exit 0 (zero critical findings, 156 warnings). A source-derived registry
+diagnostic matches 27 cases and detects reordered rules and a removed
+commit-input guard; it is not native Rust proof. Native tests, Clippy and
+Tier 0/Tier 1 remain UNRUN because the unchanged disk preflight exits 1.
+The original `fa-ze0y` and `fa-mg2j` acceptance remains open; no full-project
+pass or closure follows from this repair.
