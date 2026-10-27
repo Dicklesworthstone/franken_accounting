@@ -499,6 +499,12 @@ fn optional_limit(r: &mut Reader<'_>) -> Result<BalanceLimit, ReportError> {
     })
 }
 impl Schema {
+    pub(super) fn calendar_matches(&self, calendar: &str) -> bool {
+        self.calendar
+            .as_deref()
+            .is_none_or(|declared| declared == calendar)
+    }
+
     pub(super) fn has_historical_periods(&self) -> bool {
         self.periods.values().any(|period| period.kind == 4)
     }
