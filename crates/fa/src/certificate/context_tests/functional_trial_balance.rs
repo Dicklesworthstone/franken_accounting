@@ -177,6 +177,13 @@ fn retained_functional_trial_balance_replays_after_later_rates_and_backdated_ent
     let mut next_rate = rate;
     next_rate.rate_num = 2;
     next_rate.source = "later rate cannot revalue committed amounts".into();
+    let refusal = next_rate.canonical_bytes().unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", 2));
+    assert!(refusal.message.contains("canonical reduced form"));
+    // The intended later rate is 2/4: retain the same rational in the
+    // canonical 1/2 representation required by the unchanged document law.
+    next_rate.rate_num = 1;
+    next_rate.rate_den = 2;
     let document = Document {
         book_id: BOOK,
         kind: RATE_DOCUMENT_KIND,
@@ -536,6 +543,34 @@ fn functional_trial_balance_retains_pending_cells_and_detects_cross_period_relea
         resolution_of: Some(held),
         disposition: Some(fa_model::Disposition::Voids),
     });
+    let before_refusal = h.head();
+    let refused = h
+        .runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal: release.clone(),
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-010", 7));
+    assert_eq!(h.head(), before_refusal);
+    h.runtime
+        .block_on(h.book.transition_period(
+            &cx,
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"functional-tb-release-february-open",
+            &cap(&["close"]),
+        ))
+        .unwrap()
+        .unwrap();
     let posted = h
         .runtime
         .block_on(h.book.post(
