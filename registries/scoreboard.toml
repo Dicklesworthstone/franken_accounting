@@ -1112,9 +1112,10 @@ description = "Published PASS verdict note in refs/notes/fa-verdict is present a
 evidence_class = "registry"
 probe_kind = "registry"
 argv = ["verdict_freshness"]
-expected = "works"
-expected_exit = 0
-expected_event = "registry_ok"
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-ygj2"
 
 [[governance_row]]
 id = "GOV-03"
@@ -1123,6 +1124,7 @@ description = "Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pr
 evidence_class = "registry"
 probe_kind = "registry"
 argv = ["tier0_coverage"]
-expected = "works"
-expected_exit = 0
-expected_event = "registry_ok"
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-0hs4.3"

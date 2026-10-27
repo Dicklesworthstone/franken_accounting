@@ -239,15 +239,20 @@ fn check_non_empty(what: &str, field: &str, value: &str) -> Result<(), RegistryE
 }
 
 fn check_bead_id(what: &str, bead: &str) -> Result<(), RegistryError> {
-    if !bead.starts_with("fa-")
-        || bead.len() < 5
-        || !bead[3..]
+    // `fa-<id>`, optionally with numbered child suffixes (`fa-hlnd.1`,
+    // `fa-yugf.16`): the tracker's ids for children of an epic.
+    let mut parts = bead.split('.');
+    let root = parts.next().unwrap_or_default();
+    let root_ok = root.starts_with("fa-")
+        && root.len() >= 5
+        && root[3..]
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let children_ok = parts.all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if !root_ok || !children_ok {
         return Err(invalid(
             REGISTRY,
-            format!("{what}: invalid bead id `{bead}` (expected `fa-<id>`)"),
+            format!("{what}: invalid bead id `{bead}` (expected `fa-<id>` or `fa-<id>.<n>`)"),
         ));
     }
     Ok(())
@@ -1150,6 +1155,24 @@ fn s_escape(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bead_ids_accept_epic_children_and_refuse_malformed_suffixes() {
+        for good in ["fa-8jcr", "fa-0hs4.3", "fa-yugf.16", "fa-hlnd.1.2"] {
+            assert!(check_bead_id("row", good).is_ok(), "{good}");
+        }
+        for bad in [
+            "fa-0hs4.",
+            "fa-0hs4.x",
+            "fa-.1",
+            "fa-X",
+            "fa-",
+            "ab-0hs4.1",
+            "fa-0hs4..1",
+        ] {
+            assert!(check_bead_id("row", bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn embedded_scoreboard_is_valid_and_covers_all_workflows_and_gates() {

@@ -134,5 +134,5 @@
 | ID | Metric | Evidence Class | Probe | Status | Exit | Bead | Description |
 |---|---|---|---|---|---:|---|---|
 | `GOV-01` | `closure_debt` | `registry` | `registry` | `absent` | `2` | `fa-8jcr` | Zero unbacked closed beads without a machine-verified acceptance-tests block and verdict note (pre-fa-8jcr closures remain in debt until backfilled) |
-| `GOV-02` | `verdict_freshness` | `registry` | `registry` | `works` | `0` | `—` | Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window |
-| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `works` | `0` | `—` | Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active |
+| `GOV-02` | `verdict_freshness` | `registry` | `registry` | `absent` | `2` | `fa-ygj2` | Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window |
+| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `absent` | `2` | `fa-0hs4.3` | Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active |
