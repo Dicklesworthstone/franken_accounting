@@ -1596,6 +1596,19 @@ fn recorded_capability_event<V: asupersync::fs::Vfs + Clone>(
     if !origin_matches || !crate::outcome::verify_capability_recorded(db, row, &stored)? {
         return Ok(Err(conflict()));
     }
+    // A modern claim authenticates the complete original issuance, including
+    // the issuing capability's commitment. A pre-claim legacy row has no such
+    // witness: its issuer origin must match the currently admitted request,
+    // even when a different scoped key only observes the existing target.
+    // Merely requiring a nonzero origin would bless a forged issuer digest.
+    if *kind == CAPABILITY_EVENT_ISSUE
+        && stored.proposal.origin != proposal.origin
+        && db
+            .vertex(crate::outcome::entry_outcome_vid(&stored.proposal))?
+            .is_none()
+    {
+        return Ok(Err(conflict()));
+    }
     if stored.proposal.principal_ref != proposal.principal_ref
         || stored.proposal.idempotency_key != proposal.idempotency_key
         || stored.proposal_digest == requested.proposal_digest
