@@ -890,3 +890,41 @@ fn a_rewritten_committed_entry_ends_the_capacity_summary() {
         "a changed committed entry ends the summary"
     );
 }
+
+#[test]
+fn a_post_visits_only_the_new_suffix_for_its_reconciliation_witness() {
+    // fa-rcw1's counted work witness: each carried post examines only the
+    // delta rows of the commit since the last post, the same count whether
+    // the book holds three entries or forty.
+    let mut h = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    let mut counts = Vec::new();
+    for i in 0..40u32 {
+        let req = h.request(
+            h.proposal(
+                h.rent_legs(100),
+                format!("suffix-{i:02}").as_bytes(),
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        );
+        post_carried(&mut h, req, &mut carried).unwrap();
+        counts.push((
+            carried.reconciliation().and_then(|r| r.carried_rows()),
+            carried.capacity().and_then(|c| c.carried_rows()),
+        ));
+    }
+    assert_eq!(counts[0], (None, None), "the first post verifies in full");
+    let later = &counts[2..];
+    assert!(
+        later
+            .iter()
+            .all(|c| c.0.is_some_and(|n| n > 0) && c.1.is_some_and(|n| n > 0)),
+        "every later post carries both: {counts:?}"
+    );
+    assert!(
+        later.iter().all(|c| *c == later[0]),
+        "the same rows per post as the book grows: {counts:?}"
+    );
+    assert!(carried.capacity().is_some_and(|c| c.summarized()));
+}
