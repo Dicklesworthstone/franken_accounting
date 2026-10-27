@@ -651,7 +651,7 @@ fn incremental_registers_consume_only_new_entries_and_release_the_original_perio
 
 #[test]
 fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
-    for cached_hold in [false, true] {
+    for (atomic, cached_hold) in [(false, false), (false, true), (true, false), (true, true)] {
         let (mut k, mut oracle, periods) = setup();
         let period = &periods[2];
         open_period(&mut k, &mut oracle, period, 1);
@@ -686,38 +686,60 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
             target: 0,
             posts: None,
         });
-        let resolution_vid = fa_journal::rows::resolution_vid(refs[0].vid);
         let mut small = small;
-        for step in 0u64.. {
-            let candidate = format!("small-hold-{step}").into_bytes();
-            if fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &candidate).0
-                < resolution_vid.0
-            {
-                small.key = candidate;
-                break;
+        let small_ref = if atomic {
+            let resolution_vid = fa_journal::rows::resolution_vid(refs[0].vid);
+            for step in 0u64.. {
+                let candidate = format!("small-hold-{step}").into_bytes();
+                if fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &candidate).0
+                    < resolution_vid.0
+                {
+                    small.key = candidate;
+                    break;
+                }
             }
-        }
-        // The rejected key was not consumed; freeing the old reservation in the
-        // same atomic batch makes the one-unit hold legal without changing
-        // either amount, while ordering the hold's VId before its resolution in
-        // that commit exercises the incremental tail's overflow-rebuild path.
-        let batch = [small.clone(), release.clone()];
-        let posted = kernel_batch(&mut k, "release-and-rebook", &batch, usd, &refs).unwrap();
-        refs.extend(posted.entries);
-        assert!(matches!(
-            oracle.post_batch(b"release-and-rebook", &batch),
-            fa_reference::BatchVerdict::Posted { .. }
-        ));
-
-        // A cold cursor replays retained deltas from origin; a cached cursor
-        // consumes only the release and new hold. Neither needs the old
-        // overflow-triggered full-fold fallback now that admission refuses it.
-        let recovered = maintain(&mut k, period);
-        assert!(!recovered.rebuilt, "cached_hold={cached_hold}");
-        if cached_hold {
-            assert_eq!(recovered.entries_decoded, 2);
+            // The rejected key was not consumed; freeing the old reservation in the
+            // same atomic batch makes the one-unit hold legal without changing
+            // either amount, while ordering the hold's VId before its resolution in
+            // that commit exercises the incremental tail's overflow-rebuild path.
+            let batch = [small.clone(), release.clone()];
+            let posted = kernel_batch(&mut k, "release-and-rebook", &batch, usd, &refs).unwrap();
+            refs.extend(posted.entries);
+            assert!(matches!(
+                oracle.post_batch(b"release-and-rebook", &batch),
+                fa_reference::BatchVerdict::Posted { .. }
+            ));
+            1
         } else {
-            assert!(recovered.entries_decoded >= 3);
+            // The rejected key was not consumed; freeing the old reservation
+            // makes this exact proposal legal, without changing either amount.
+            refs.push(
+                kernel_post(&mut k, &release, usd, &refs)
+                    .unwrap()
+                    .entry_ref(),
+            );
+            assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
+            refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
+            assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
+            2
+        };
+
+        let recovered = maintain(&mut k, period);
+        if atomic {
+            // The tail installs a batch's holds before its releases, so the
+            // one-unit hold meets the large one still held and the tail falls
+            // back to the full fold, from a cold cursor or a cached one.
+            assert!(recovered.rebuilt, "cached_hold={cached_hold}");
+        } else {
+            // A cold cursor replays retained deltas from origin; a cached cursor
+            // consumes only the release and new hold. Neither needs the
+            // overflow-triggered full-fold fallback: the release commits first.
+            assert!(!recovered.rebuilt, "cached_hold={cached_hold}");
+            if cached_hold {
+                assert_eq!(recovered.entries_decoded, 2);
+            } else {
+                assert!(recovered.entries_decoded >= 3);
+            }
         }
         maintained_matches_oracle(&recovered, &oracle, k.book.book_id);
         assert_eq!(recovered.fold.pending.len(), 2);
@@ -731,7 +753,7 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
         assert!(!maintain(&mut k, period).wrote);
 
         release.key = b"release-small-hold".to_vec();
-        release.resolves.as_mut().unwrap().target = 1;
+        release.resolves.as_mut().unwrap().target = small_ref;
         kernel_post(&mut k, &release, usd, &refs).unwrap();
         assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
         let empty = maintain(&mut k, period);
