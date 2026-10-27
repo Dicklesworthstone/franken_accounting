@@ -2,8 +2,10 @@
 //!
 //! Complete signed history supplies entries, chart, fiscal periods and Rate
 //! intake receipts. Book parameters are certificate/receipt-bound inputs, not
-//! a proof of genesis. Carrying transfers and migration activation require
-//! separate source proofs; this profile implements direct SpotClose/Average.
+//! a proof of genesis. This profile verifies SpotClose, PeriodAverage and
+//! source-bound SettlementCarryingBasis, including exact inherited reversals.
+//! Revaluation, closing transfers and migration activation require separate
+//! source proofs and remain unsupported.
 
 mod arithmetic;
 mod valuation;

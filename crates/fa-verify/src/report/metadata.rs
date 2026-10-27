@@ -24,6 +24,9 @@ pub(super) struct EntryInfo<'a> {
     /// Literal Rule-origin version, authenticated by the entry payload. This
     /// identifies a movement bucket; it does not prove execution of the rule.
     pub rule_version_oid: Option<[u8; 32]>,
+    /// Authenticated presence only; functional source replay must refuse this
+    /// basis until its cumulative revaluation law is independently supported.
+    pub has_fx_revaluation_basis: bool,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
@@ -269,6 +272,7 @@ pub(super) fn entry_info<'a>(
         }
     }
     let mut recurring = None;
+    let mut has_fx_revaluation_basis = false;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
         let mut previous = None;
@@ -282,6 +286,7 @@ pub(super) fn entry_info<'a>(
                 ));
             }
             previous = Some(tag);
+            has_fx_revaluation_basis |= tag == 16;
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
                 if marker.u16("recurring.version")? != 1 {
@@ -365,6 +370,7 @@ pub(super) fn entry_info<'a>(
         supersession,
         supersession_reasons,
         rule_version_oid,
+        has_fx_revaluation_basis,
         evidence,
         identity,
         legacy_identity,

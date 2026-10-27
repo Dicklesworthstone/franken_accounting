@@ -1,4 +1,6 @@
-//! Rate closure, custody visibility and original direct-law calculations.
+//! Rate closure, custody visibility and independent direct/carrying calculations.
+
+mod settlement;
 
 use super::super::{ReportError, failed, metadata, registry, text};
 use super::{BookParameters, add, framed_hash};
@@ -151,7 +153,7 @@ fn rate(
         || denominator == 0
         || gcd(numerator, denominator) != 1
         || rounding != 3
-        || !matches!(purpose, 1 | 3)
+        || !matches!(purpose, 1 | 3 | 4)
         || source.trim().is_empty()
     {
         return Err(failed(
@@ -254,7 +256,10 @@ fn parsed_entry(
             (None, None) if leg.unit == spec.base => leg.mantissa,
             (Some(_), Some((unit, amount)))
                 if unit == spec.base
-                    && amount > 0
+                    && (amount > 0
+                        || amount == 0
+                            && base.as_ref().is_some_and(|claim| claim.law == law_oid(4))
+                            && leg.unit != spec.base)
                     && (leg.unit != spec.base || amount == leg.mantissa) =>
             {
                 amount
@@ -262,7 +267,7 @@ fn parsed_entry(
             _ => {
                 return Err(failed(
                     "functional_valuation",
-                    "foreign legs require a complete claim; direct base amounts are positive and base-unit legs stay at par",
+                    "foreign legs require a complete claim; only carrying relief may be zero and base-unit legs stay at par",
                 ));
             }
         };
@@ -441,8 +446,15 @@ pub(super) fn verify_history(
     }
     let mut parsed = BTreeMap::new();
     let mut first_use: BTreeMap<[u8; 32], u64> = BTreeMap::new();
+    let mut settlement_use: BTreeMap<[u8; 32], u64> = BTreeMap::new();
     let mut by_digest = BTreeMap::new();
     for (&index, info) in infos {
+        if info.has_fx_revaluation_basis {
+            return Err(failed(
+                "supported_report",
+                "cumulative FX revaluation basis requires independent source replay before a functional claim can verify",
+            ));
+        }
         let envelope = &envelopes[index];
         if envelope.class == 12 && !legs[index].is_empty() {
             return Err(failed(
@@ -457,17 +469,14 @@ pub(super) fn verify_history(
             registry,
         )?;
         if let Some(claim) = &entry.base {
-            if claim.law != law_oid(1) && claim.law != law_oid(3) {
+            if ![law_oid(1), law_oid(3), law_oid(4)].contains(&claim.law) {
                 return Err(failed(
                     "supported_report",
-                    "functional replay supports SpotClose/PeriodAverage v1; carrying, closing, translation and revaluation laws require their own source proofs",
+                    "functional replay supports SpotClose, PeriodAverage and source-bound SettlementCarryingBasis v1; closing, translation and revaluation laws require their own source proofs",
                 ));
             }
             if claim.rates.is_empty() {
-                return Err(failed(
-                    "functional_rates",
-                    "direct FX claim has no Rate evidence",
-                ));
+                return Err(failed("functional_rates", "FX claim has no Rate evidence"));
             }
             for oid in &claim.rates {
                 let rate = rates
@@ -492,6 +501,12 @@ pub(super) fn verify_history(
                     .entry(*oid)
                     .and_modify(|at| *at = (*at).min(envelope.commit_seq))
                     .or_insert(envelope.commit_seq);
+                if claim.law == law_oid(4) && envelope.class != 4 {
+                    settlement_use
+                        .entry(*oid)
+                        .and_modify(|at| *at = (*at).min(envelope.commit_seq))
+                        .or_insert(envelope.commit_seq);
+                }
             }
         }
         by_digest.insert(envelope.record_digest, index);
@@ -514,6 +529,9 @@ pub(super) fn verify_history(
                 || commitment != rate.commitment
                 || received_by != rate.received_by
                 || envelope.commit_seq > first_use[&oid]
+                || settlement_use
+                    .get(&oid)
+                    .is_some_and(|at| envelope.commit_seq >= *at)
                 || !receipts.insert(oid))
         {
             return Err(failed(
@@ -591,7 +609,11 @@ pub(super) fn verify_history(
                 }
             }
             parents.insert(index, target);
-        } else if entry.base.is_some() {
+        } else if entry
+            .base
+            .as_ref()
+            .is_some_and(|claim| claim.law != law_oid(4))
+        {
             let (_, period_end) = schema.bounds(std::slice::from_ref(&period))?;
             compute(
                 &legs[index],
@@ -619,6 +641,9 @@ pub(super) fn verify_history(
         }
         complete.extend(path);
     }
+    settlement::verify(
+        spec, registry, &rates, envelopes, infos, legs, &parsed, &parents,
+    )?;
     Ok(parsed
         .into_iter()
         .map(|(index, entry)| {

@@ -2101,11 +2101,15 @@ fn functional_statement_checks(report: &crate::report::VerifiedFunctionalStateme
             ("valuation_basis", s("retained-base-amounts")),
             (
                 "valuation_laws",
-                s("original SpotClose/PeriodAverage v1; exact inherited reversals"),
+                s(
+                    "original SpotClose/PeriodAverage/SettlementCarryingBasis v1; exact inherited reversals",
+                ),
             ),
             (
                 "rounding",
-                s("HalfEven; deterministic per-entity/unit residual"),
+                s(
+                    "HalfEven; deterministic per-entity/unit residual; remaining carrying relief and exact final remainder",
+                ),
             ),
             (
                 "rate_visibility",
@@ -2132,11 +2136,15 @@ fn functional_checks(report: &crate::report::VerifiedFunctionalTrialBalance) -> 
             ("fold_digest", h(&report.fold_digest)),
             (
                 "valuation_laws",
-                s("original SpotClose/PeriodAverage v1; exact inherited reversals"),
+                s(
+                    "original SpotClose/PeriodAverage/SettlementCarryingBasis v1; exact inherited reversals",
+                ),
             ),
             (
                 "rounding",
-                s("HalfEven; deterministic per-entity/unit residual"),
+                s(
+                    "HalfEven; deterministic per-entity/unit residual; remaining carrying relief and exact final remainder",
+                ),
             ),
             (
                 "rate_visibility",

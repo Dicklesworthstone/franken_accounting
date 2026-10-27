@@ -1,5 +1,6 @@
 //! Independent amount vectors and hostile complete-bundle fixtures.
 
+mod settlement;
 mod statements;
 
 use super::super::{
@@ -782,7 +783,7 @@ fn unsupported_laws_and_wrong_date_do_not_become_trusted_base_amounts() {
         10,
         b"unsupported",
         &residual_legs(),
-        Some((4, &rate, Some((1, 1)))),
+        Some((2, &rate, Some((1, 1)))),
         None,
         None,
     );
