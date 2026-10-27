@@ -196,6 +196,190 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
 }
 
 #[test]
+fn due_date_aging_bundle_verifies_offline() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "payables-chart.json",
+        r#"{"accounts":[{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&fixture.book, &["chart", "import", &chart]);
+    let invoice = write(
+        &fixture.dir,
+        "due-invoice.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"due-invoice","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"2000","amount":"100.00 USD"}],"obligation_maturity":[{"ordinal":1,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"60.00 USD"},{"due_date":"2026-04-30","amount":"40.00 USD"}]}]}"#,
+    );
+    let posted = ok(
+        &fixture.book,
+        &["post", "--intent", &invoice, "--evidence", &evidence],
+    );
+    let payment = write(
+        &fixture.dir,
+        "due-payment.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"due-payment","legs":[{{"side":"debit","account":"2000","amount":"25.00 USD","settles":[{{"entry":"{}","ordinal":1,"amount":"25.00 USD"}}]}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#,
+            text(&posted, "vid"),
+        ),
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &payment, "--evidence", &evidence],
+    );
+    let at = fixture.head();
+    let metadata = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--account",
+            "2000",
+            "--basis",
+            "due-date",
+            "--as-of",
+            "2026-04-01",
+        ],
+    );
+    assert_eq!(text(&metadata, "output_format"), "fa:due-date-aging:v1");
+    assert!(text(&metadata, "replay_command").contains("due-date-aging"));
+    let certificate =
+        fa::DueDateAgingCertificate::decode(&unhex(text(&metadata, "bytes"))).unwrap();
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    assert_eq!(certificate.source().known_at.0, at);
+    let request = format!(
+        r#"{{"kind":"due-date-aging","account":"2000","through":"2026-04-01","known_at":{at},"buckets":[0,30,60,90]}}"#,
+    );
+    // Every command opens the book again. Later backdated data must not
+    // replace either the retained source or the recipient's fixed question.
+    fixture.post("due-later-backdated", "2026-03-10", "9.00", &evidence);
+    let replay_args = [
+        "replay",
+        locator.as_str(),
+        "--expect",
+        request.as_str(),
+        "--json",
+    ];
+    let replayed = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&fixture.book)
+        .args(replay_args)
+        .env_remove("FA_BOOK")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(replayed.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&replayed.stderr);
+    assert!(
+        replayed.status.success(),
+        "argv={replay_args:?}\n{stdout}\n{stderr}"
+    );
+    let registry = fa_cli::verbs::registry().unwrap();
+    let events: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            registry.check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .collect();
+    assert_eq!(text(&events[0], "event"), "due_date_aging");
+    assert_eq!(text(&events[1], "event"), "report_replayed");
+    assert_eq!(text(&events[1], "family"), "due-date-aging");
+    assert_eq!(integer(&events[0], "known_at"), i128::from(at));
+    let Json::Arr(items) = get(&events[0], "items") else {
+        panic!("due-date items");
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        (text(&items[0], "open"), integer(&items[0], "days_past_due")),
+        ("40.00 USD", 0)
+    );
+    assert_eq!(
+        (text(&items[1], "open"), integer(&items[1], "days_past_due")),
+        ("35.00 USD", 1)
+    );
+    let wrong_basis = request.replace("due-date-aging", "aging");
+    let (code, error) = run(
+        &fixture.book,
+        &["replay", &locator, "--expect", &wrong_basis],
+    );
+    assert_eq!(code, 8, "{}", error.render());
+    let wrong_cutoff = request.replace("2026-04-01", "2026-04-02");
+    let (code, error) = run(
+        &fixture.book,
+        &["replay", &locator, "--expect", &wrong_cutoff],
+    );
+    assert_eq!(code, 8, "{}", error.render());
+
+    // A retained native prefix is a first-class input to due-date certification.
+    let at_text = at.to_string();
+    let source = certify(
+        &fixture,
+        &["open-items", "--account", "2000", "--as-known-at", &at_text],
+    );
+    let source_oid = format!("C:{}", text(&source, "oid"));
+    let from_source = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--basis",
+            "due-date",
+            "--from-source",
+            &source_oid,
+            "--as-of",
+            "2026-04-01",
+        ],
+    );
+    let reused = fa::DueDateAgingCertificate::decode(&unhex(text(&from_source, "bytes"))).unwrap();
+    assert_eq!(reused.source(), certificate.source());
+    assert_eq!(reused.output(), certificate.output());
+
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &bytes(&produced),
+        &[key],
+        None,
+        Some(&unhex(text(&produced, "receipt"))),
+        Some(certificate.digest()),
+    )
+    .unwrap();
+    assert_eq!(verified.output, certificate.output());
+    let aging = verified.due_date_aging.unwrap();
+    assert_eq!(aging.known_at, at);
+    assert_eq!(aging.totals[0].amounts.credits, 7_500);
+    assert_eq!(aging.items[1].item.applied, 2_500);
+    assert!(aging.unscheduled.is_empty());
+    assert!(
+        fa_verify::report::verify_report_expected(
+            &bytes(&produced),
+            &[key],
+            None,
+            None,
+            Some(&certificate.source().digest),
+        )
+        .is_err(),
+        "the source digest must not substitute for the due-date question"
+    );
+}
+
+#[test]
 fn retained_equity_exports_recompute_the_outer_report_and_require_its_pin() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();

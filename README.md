@@ -431,13 +431,40 @@ every open item, application, age band and per-account/unit debit and credit
 total, omitting fully settled items. A cutoff splitting a relevant backdated
 settlement or reversal is refused rather than silently losing a balance.
 
-Ages count civil days from posting effective dates; they do not establish
+Default ages count civil days from posting effective dates; they do not establish
 contractual due dates or overdue status. Aging certificates retain sequence
 coordinates and the selected bucket bounds. The receipt and `--expect` pin the
 **outer aging certificate**, including its cutoff, buckets and output; a digest
 of the nested open-item source is insufficient. The complete-prefix authority,
 registry and historical-identity requirements above also apply. MCP accepts the
 retained `C:<oid>` or complete aging certificate hex through `fa_notary_bundle`.
+
+Contractual due-date aging has its own certificate and independent verifier:
+
+```bash
+fa gl aging --account 2000 --as-of 2026-03-31 --basis due-date \
+  --certify --certificate-out payables-due.cert --book ./books/acme --json
+fa replay payables-due.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate payables-due.cert --book ./books/acme \
+  --out payables-due.fab --receipt-out payables-due.receipt --json
+fa-verify report payables-due.fab --key <trusted-checkpoint-public-key> \
+  --receipt payables-due.receipt --json
+```
+
+Each installment is aged from the maturity terms journaled with its entry
+(extension 33), with partial payments relieving the earliest installment first.
+Items without contractual terms, including disputed or missing maturity, remain
+in explicit `unscheduled` detail and totals. Current maturity admission supports
+credit legs; receivable debit legs therefore remain unscheduled. The certificate
+binds the due-date basis, cutoff, bucket bounds, installment detail and complete
+application history. It replays at its original recorded prefix after later
+postings, and `--from-source C:<open-items-certificate>` reuses a saved prefix.
+The `report_certificate` event supplies a replay command with independently
+retainable `--expect` JSON of kind `due-date-aging`. MCP accepts `basis: "due-date"`
+with `certify: true` through `fa_proof_gl`. Due-date control reconciliation and
+JSONL workpaper export remain unsupported; effective-date certificates retain
+their existing formats and behavior.
 
 Roll-forward lead schedules can also be delivered as independently verifiable
 bundles. For example, a cash lead schedule at one fixed recorded frontier:
