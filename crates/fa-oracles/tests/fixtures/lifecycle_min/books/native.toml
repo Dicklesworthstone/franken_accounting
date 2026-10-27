@@ -1,7 +1,9 @@
 # Lifecycle fixture native book: A (Dr 6100 / Cr 1000 1,000.00) is posted, the quarter closed,
 # issued to the SEC and locked; then case rc restates A by 200.00 (planned into scenario restate by
 # case-poster-1, approved by two approvers who planned none of it, posted by case-poster-1),
-# disclosed under the restating filing and closed. Synthetic; amounts are fixture values.
+# disclosed under the restating filing and closed. A is asserted as filed (citing the as-filed stub)
+# before the case and B as restated (citing the restating filing's stub) after it. Synthetic; amounts
+# are fixture values.
 
 [book]
 variant = "native"
@@ -198,6 +200,7 @@ kind = "assert_balance"
 ref = "lifecycle-R-01"
 principal = "case-reconciler-1"
 evidence = "DOC-LC-0"
+asserts = "A-1"
 
 [[step]]
 seq = 10
@@ -257,6 +260,13 @@ kind = "finding_record"
 ref = "recon.assertion_drift@1"
 known_at = "head"
 principal = "examiner-1"
+
+[[step]]
+seq = 20
+kind = "assert_balance"
+ref = "lifecycle-R-03"
+principal = "case-reconciler-1"
+evidence = "DOC-LC-1"
 
 [[default]]
 attribute = "evidence_attached"

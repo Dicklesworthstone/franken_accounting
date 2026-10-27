@@ -50,6 +50,10 @@ pub struct Read {
 /// One `assert_balance` step's calls.
 pub struct Assertion {
     pub asserted: Call,
+    /// The attestation `attestation_recorded` reported: its claim and
+    /// whether it holds.
+    pub claim: Option<String>,
+    pub holds: Option<bool>,
     /// Its twins, each with its offset from B in minor units (+1, then -1).
     pub twins: Vec<(i128, Call)>,
     /// The asserted B, as the step rendered it (`<amount> <UNIT>`).
@@ -603,6 +607,11 @@ impl BookRun<'_> {
         self.assertions.insert(
             step.reference.clone(),
             Assertion {
+                claim: asserted.str_field("attestation_recorded", "claim"),
+                holds: asserted
+                    .event("attestation_recorded")
+                    .and_then(|o| o.field("holds"))
+                    .and_then(Json::as_bool),
                 asserted,
                 twins,
                 balance: format!("{} {unit}", format_amount(minor, scale)),

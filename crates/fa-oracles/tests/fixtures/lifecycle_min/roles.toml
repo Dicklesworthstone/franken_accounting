@@ -33,7 +33,7 @@ description = "plans and posts the fixture's restatement delta"
 [[role]]
 label = "case-reconciler-1"
 kind = "harness"
-description = "records the fixture's balance assertion before the case"
+description = "records the fixture's balance assertions: A as filed before the case, B as restated after it"
 
 [[role]]
 label = "examiner-1"

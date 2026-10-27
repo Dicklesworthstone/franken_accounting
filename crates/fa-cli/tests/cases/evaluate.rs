@@ -1001,8 +1001,9 @@ fn read_against(
 
 /// A T row (§5.3): its certified read equals its published value; a
 /// `per_account` T is kernel-attested, so its `assert_balance` step must
-/// have recorded B and its twin (B plus one minor unit) been refused
-/// `FA-REF-140`. A T that holds still waits on its contributing-entry
+/// have recorded B as a RegisterEquals attestation that holds, and its twins
+/// (B plus and minus one minor unit) been refused `FA-REF-140`. A T that
+/// holds still waits on its contributing-entry
 /// witness (A11b) and its outsider check (A12): never PASS before both.
 fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLine) -> Eval {
     let kind = e.fields.str("kind").unwrap_or("-");
@@ -1025,17 +1026,29 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
                 "expected an assert_balance step for {step} (a per_account T is kernel-attested) observed none"
             )),
             Some(a) => {
-                let recorded = a.asserted.exit == 0;
-                row.projection.push((
-                    "assert".into(),
-                    if recorded { "recorded" } else { "refused" }.into(),
-                ));
-                if !recorded {
+                // Recorded: admitted, as a RegisterEquals attestation that
+                // holds at the fold it was recorded against.
+                let held =
+                    a.claim.as_deref() == Some("RegisterEquals") && a.holds == Some(true);
+                let token = match (a.asserted.exit, held) {
+                    (0, true) => "recorded",
+                    (0, false) => "unheld",
+                    _ => "refused",
+                };
+                row.projection.push(("assert".into(), token.into()));
+                if a.asserted.exit != 0 {
                     fails.push(format!(
                         "expected assert-balance {} recorded observed exit={} {}",
                         a.balance,
                         a.asserted.exit,
                         a.asserted.refusal_id().unwrap_or_default()
+                    ));
+                } else if !held {
+                    fails.push(format!(
+                        "expected assert-balance {} recorded as a RegisterEquals attestation that holds observed claim={} holds={}",
+                        a.balance,
+                        a.claim.as_deref().unwrap_or("none"),
+                        a.holds.map_or("none", |h| if h { "true" } else { "false" })
                     ));
                 }
                 // One token when both twins agree, else one per offset.

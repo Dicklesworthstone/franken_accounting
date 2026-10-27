@@ -2054,6 +2054,12 @@ fn reads_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
     }
 }
 
+/// The reads fixture's unedited run, shared by its tests.
+fn reads() -> &'static RunOutcome {
+    static RUN: std::sync::OnceLock<RunOutcome> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| *reads_run(&[]))
+}
+
 /// A7b (§5.3, §3.3 step 7): the per_account T reads its cell certified,
 /// equal to its published 1,250.00; its assert_balance step recorded B and
 /// both twins (B plus and minus one minor unit) were refused FA-REF-140; the
@@ -2062,7 +2068,7 @@ fn reads_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
 /// issuance (1,000.00, before R-2), and as currently stated the head.
 #[test]
 fn per_account_t_and_its_read_back_are_read_certified() {
-    let o = reads_run(&[]);
+    let o = reads();
     let text = o.text();
     assert_eq!(
         o.row("reads-T-01"),
@@ -2088,6 +2094,33 @@ fn per_account_t_and_its_read_back_are_read_certified() {
     assert!(o.rows_ok, "{text}");
 }
 
+/// A7b (§5.3): an assertion at the fold is recorded as a RegisterEquals
+/// attestation that holds. The per_account T's `assert=recorded` token
+/// requires all three (admitted, claim RegisterEquals, holds = true), and
+/// its two twins at B plus and minus one minor unit are the only refused
+/// assert-balance calls.
+#[test]
+fn assert_balance_at_the_fold_records_register_equals() {
+    let o = reads();
+    let text = o.text();
+    let row = o.row("reads-T-01").unwrap_or_default();
+    assert!(
+        row.contains(" assert=recorded twin=refused:FA-REF-140:exit=3 "),
+        "{text}"
+    );
+    let asserts: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| words(&s.argv_redacted).starts_with("assert-balance "))
+        .map(|s| (s.exit, s.refusal_id.as_deref().unwrap_or("-")))
+        .collect();
+    assert_eq!(
+        asserts,
+        [(0, "-"), (3, "FA-REF-140"), (3, "FA-REF-140")],
+        "{text}"
+    );
+}
+
 /// A7b (§3.3 step 4): each `issue` step certifies the balance sheet, plans
 /// its issuance, has another hand approve it and commits it. The quarter's
 /// first issuance binds `$C_ISSUE_2026Q1` and its second
@@ -2095,7 +2128,7 @@ fn per_account_t_and_its_read_back_are_read_certified() {
 /// the n-th: 1,000.00, then 1,250.00.
 #[test]
 fn second_issuance_of_a_period_binds_its_own_placeholder() {
-    let o = reads_run(&[]);
+    let o = reads();
     let text = o.text();
     assert_eq!(
         o.row("reads-R-02"),
@@ -2156,7 +2189,7 @@ fn second_issuance_of_a_period_binds_its_own_placeholder() {
 /// (1,250.00).
 #[test]
 fn statement_and_trial_balance_reads_return_their_lines() {
-    let o = reads_run(&[]);
+    let o = reads();
     let text = o.text();
     for (id, row) in [
         (
@@ -2183,7 +2216,7 @@ fn statement_and_trial_balance_reads_return_their_lines() {
 /// hold to the published 1,250.00.
 #[test]
 fn statement_line_t_holds_on_the_accounts_its_definition_maps() {
-    let o = reads_run(&[]);
+    let o = reads();
     let text = o.text();
     for row in [
         "UNRUN reads-T-02 T native -/default kind=footing read=balance-sheet,assets,2026Q1 value=1250.00 contrib=holds reason=outsider",
@@ -2391,8 +2424,9 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
         ),
         "{text}"
     );
-    // The as-filed assertion's two twins (B +/- 1 minor unit) and the
-    // case's three twins are the only refused calls.
+    // The as-filed assertion's two twins (A +/- 1 minor unit), the case's
+    // three twins and the restated assertion's two twins (B +/- 1) are the
+    // only refused calls.
     assert_eq!(
         refused_calls(o),
         [
@@ -2400,7 +2434,9 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
             "assert-balance --account FA-REF-140",
             "case approve FA-REF-012",
             "post --intent FA-REF-178",
-            "case disclose FA-REF-179"
+            "case disclose FA-REF-179",
+            "assert-balance --account FA-REF-140",
+            "assert-balance --account FA-REF-140"
         ],
         "{text}"
     );
@@ -2484,6 +2520,49 @@ fn assertion_drift_reports_the_magnitude_of_the_summed_deltas() {
         );
     }
     assert!(down.rows_ok, "{text}");
+}
+
+/// A7b (§5.3): each assert_balance step asserts its fact and cites its own
+/// filing stub. Step 6 names its fact (`asserts = "A-1"`): A as filed,
+/// 1,000.00, citing the as-filed stub before the case. Step 20 asserts its
+/// R's published value by default: B as restated, 1,200.00, citing the
+/// restating filing's stub after it. Both are admitted; their twins are the
+/// refused calls `issue_lock_and_full_restatement_lifecycle_run` lists.
+#[test]
+fn assert_balance_step_asserts_its_named_fact_and_cites_its_evidence_stub() {
+    let o = lifecycle();
+    let text = o.text();
+    let after = |argv: &[String], name: &str| {
+        argv.iter()
+            .position(|a| a == name)
+            .and_then(|i| argv.get(i + 1))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let asserted: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| s.exit == 0 && words(&s.argv_redacted).starts_with("assert-balance "))
+        .map(|s| {
+            (
+                s.step,
+                s.reference.as_str(),
+                after(&s.argv_redacted, "--balance"),
+                after(&s.argv_redacted, "--evidence"),
+            )
+        })
+        .collect();
+    let want = |step, reference, balance: &str, evidence: &str| {
+        (step, reference, balance.to_string(), evidence.to_string())
+    };
+    assert_eq!(
+        asserted,
+        [
+            want(6, "lifecycle-R-01", "1000.00 USD", "$DOC_DOC-LC-0"),
+            want(20, "lifecycle-R-03", "1200.00 USD", "$DOC_DOC-LC-1"),
+        ],
+        "{text}"
+    );
 }
 
 /// A7b (§3.3 step 5): one approval is not dual control. `fa case approve`
