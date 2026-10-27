@@ -216,6 +216,8 @@ pub fn reproduce(call: &Call) -> String {
 /// One recorded finding run.
 #[derive(Clone, Debug)]
 pub struct FindingRun {
+    /// The `finding_record` step that recorded it.
+    pub step: i128,
     pub version: Option<i128>,
     /// Each recorded finding's `finding` object (severity, statistic,
     /// cites, narrative).
@@ -265,6 +267,9 @@ pub struct BookRun<'c> {
     pub documents: BTreeMap<String, String>,
     /// Intent id → entry vid, for the intents that posted.
     pub vids: BTreeMap<String, String>,
+    /// Intent id → the step that posted it (a finding run reads the entries
+    /// posted before its own step).
+    pub posted_steps: BTreeMap<String, i128>,
     /// (entry vid, entry leg ordinal) → `<intent>#<[[leg]] ordinal>`.
     pub legs: BTreeMap<(String, i128), String>,
     /// Account vid → `[[account]] code`, from the posted entries' legs.
@@ -330,6 +335,7 @@ impl<'c> BookRun<'c> {
             periods: BTreeMap::new(),
             documents: BTreeMap::new(),
             vids: BTreeMap::new(),
+            posted_steps: BTreeMap::new(),
             legs: BTreeMap::new(),
             accounts: BTreeMap::new(),
             posts: BTreeMap::new(),
@@ -969,6 +975,7 @@ impl<'c> BookRun<'c> {
         if let Some(vid) = call.str_field("posted", "vid") {
             self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
             self.vids.insert(intent_id.to_string(), vid.clone());
+            self.posted_steps.insert(intent_id.to_string(), seq);
             self.map_legs(seq, intent_id, &vid);
         }
         self.posts.insert(intent_id.to_string(), call);
@@ -1034,6 +1041,7 @@ impl<'c> BookRun<'c> {
                 &it.id,
             );
             self.vids.insert(it.id.clone(), vid.clone());
+            self.posted_steps.insert(it.id.clone(), seq);
             self.map_legs(seq, &it.id, &vid);
         }
         self.posts.insert(it.id.clone(), call);
@@ -1417,6 +1425,7 @@ impl<'c> BookRun<'c> {
         if let Some(vid) = call.str_field("posted", "vid") {
             self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
             self.vids.insert(intent_id.to_string(), vid);
+            self.posted_steps.insert(intent_id.to_string(), seq);
         }
         self.posts.insert(intent_id.to_string(), call);
     }
@@ -1502,6 +1511,7 @@ impl<'c> BookRun<'c> {
                 &it.id,
             );
             self.vids.insert(it.id.clone(), vid.to_string());
+            self.posted_steps.insert(it.id.clone(), seq);
             if self.map_batch_legs {
                 self.map_legs(seq, &it.id, vid);
             }
@@ -1739,6 +1749,7 @@ impl<'c> BookRun<'c> {
         self.runs.insert(
             procedure.to_string(),
             FindingRun {
+                step: seq,
                 version,
                 findings,
                 finding_vids,

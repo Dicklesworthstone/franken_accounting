@@ -780,18 +780,32 @@ fn d_reference(
     found: &FindingRun,
 ) -> (RefVerdict, Vec<(String, String)>) {
     let case_ids: BTreeSet<&str> = run.book.intents.iter().map(|i| i.id.as_str()).collect();
+    // The run read the entries posted before its own step, not the history's
+    // later ones.
     let mut live: Vec<LiveEntry<'_>> = run
         .book
         .intents
         .iter()
         .filter(|i| run.vids.contains_key(&i.id))
+        .filter(|i| run.posted_steps.get(&i.id).is_some_and(|s| *s < found.step))
         .map(|i| LiveEntry {
             intent: i,
             legs: run.book.legs.iter().filter(|l| l.intent == i.id).collect(),
             compared: true,
         })
         .collect();
-    if let Some(f) = &run.filler {
+    let filler_before = |variant: &str| {
+        run.book.steps.iter().any(|s| {
+            s.step_kind() == Some(StepKind::FillerBatch)
+                && s.reference == variant
+                && s.seq < found.step
+        })
+    };
+    if let Some(f) = run
+        .filler
+        .as_ref()
+        .filter(|f| filler_before(&f.spec.variant))
+    {
         live.extend(f.intents.iter().map(|i| LiveEntry {
             intent: i,
             legs: f.legs.iter().filter(|l| l.intent == i.id).collect(),

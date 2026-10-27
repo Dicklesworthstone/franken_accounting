@@ -12,3 +12,77 @@ id = "S-2"
 provenance = "synthetic"
 reason = "an Original entry dated in a period no step opens"
 discipline = "never cited by a case; exercises an observed FA-REF-010 refusal"
+
+[[fact]]
+id = "N-1"
+provenance = "synthetic"
+reason = "an Original entry whose legs are 1,234.56, not a multiple of 1,000 units"
+discipline = "never cited by a case; the N row's target, which jet.round_amounts must not report"
+
+[[fact]]
+id = "P-1"
+provenance = "synthetic"
+reason = "an Original entry in the Open quarter, the P rows' intent"
+discipline = "never cited by a case; its evidence cells are swept by dry run"
+
+[[fact]]
+id = "A-1"
+provenance = "synthetic"
+reason = "the bridge's A: 1,000.00 on 1100 in 2026Q1, posted before the quarter is locked"
+discipline = "never cited by a case; the as-reported value"
+
+[[fact]]
+id = "D-1"
+provenance = "synthetic"
+reason = "the bridge's delta: A restated by -100.00 through the self-test's case"
+discipline = "never cited by a case; the delta the case posts into the locked quarter"
+
+[[fact]]
+id = "B-1"
+provenance = "synthetic"
+reason = "the bridge's B: the restated 1100 balance of 900.00"
+discipline = "never cited by a case; the T row's published value"
+
+[[fact]]
+id = "S-DET"
+provenance = "synthetic"
+reason = "the self-test case's determination day"
+discipline = "never cited by a case; the case's determined_on"
+
+[[value]]
+fact = "A-1"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "D-1"
+ordinal = 1
+literal = "100"
+rule = "scale"
+param = 0
+value = "10000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "B-1"
+ordinal = 1
+literal = "900"
+rule = "scale"
+param = 0
+value = "90000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "S-DET"
+ordinal = 1
+literal = "May 15, 2026"
+rule = "date_literal"
+value = "2026-05-15"
+unit = ""

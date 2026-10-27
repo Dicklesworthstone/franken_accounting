@@ -1,6 +1,9 @@
-# Harness self-test native book: two quarters, one opened; a round-amount Original entry that
-# posts, an Original entry dated in the never-opened quarter that the period law refuses, and the
-# jet.round_amounts run that finds the first. Synthetic; amounts are fixture values.
+# Harness self-test native book: two quarters, one opened. N-1 (legs 1,234.56) and a round-amount
+# Original entry S-1 post; an Original entry dated in the never-opened quarter is refused by the
+# period law; jet.round_amounts finds S-1 and not N-1. P-1's evidence cells are swept by dry run.
+# Then the bridge: A-1 (1,000.00 on 1100) posts, the quarter is closed and locked, and case
+# selftest-restatement restates A by -100.00 (B = 900.00), disclosed and closed. Synthetic; amounts
+# are fixture values.
 
 [book]
 variant = "native"
@@ -39,6 +42,21 @@ profile = "Human"
 grants = ["read", "approve"]
 
 [[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-poster-1"
+profile = "Human"
+grants = ["read", "post", "restate"]
+
+[[principal]]
 label = "examiner-1"
 profile = "Human"
 grants = ["read", "produce", "verify"]
@@ -58,6 +76,46 @@ type = "Expense"
 role = ""
 opened = "2025-12-31"
 role_map_rule = "role_map"
+
+[[account]]
+code = "1100"
+name_fact = "A-1"
+type = "Asset"
+role = ""
+opened = "2025-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "4000"
+name_fact = "A-1"
+type = "Revenue"
+role = ""
+opened = "2025-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-PH-N-1"
+stub_of = "placeholder:N-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-P-1"
+stub_of = "placeholder:P-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-A-1"
+stub_of = "placeholder:A-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-DET"
+stub_of = "placeholder:S-DET"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
 
 [[document]]
 id = "DOC-PH-S-1"
@@ -127,6 +185,143 @@ amount_literal = "125.00"
 amount_rule = "synthetic"
 unit = "USD"
 
+[[intent]]
+id = "N-1"
+fact = "N-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-05"
+memo = "supplies at 1,234.56 (self-test fixture)"
+evidence = "DOC-PH-N-1"
+idempotency_key = "selftest-N-1"
+
+[[leg]]
+intent = "N-1"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "1234.56"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "N-1"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "1234.56"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[intent]]
+id = "P-1"
+fact = "P-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-02"
+memo = "postage (self-test fixture)"
+evidence = "DOC-PH-P-1"
+idempotency_key = "selftest-P-1"
+
+[[leg]]
+intent = "P-1"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "75.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "P-1"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "75.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[intent]]
+id = "A-1"
+fact = "A-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-10"
+memo = "a sale, the bridge's A (self-test fixture)"
+evidence = "DOC-PH-A-1"
+idempotency_key = "selftest-A-1"
+
+[[leg]]
+intent = "A-1"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "1000.00"
+amount_rule = "value:A-1#1"
+unit = "USD"
+
+[[leg]]
+intent = "A-1"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "1000.00"
+amount_rule = "value:A-1#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-A-1"
+fact = "D-1"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2026-03-10"
+evidence = "DOC-PH-DET"
+idempotency_key = "selftest-delta-A-1"
+target = "A-1"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "selftest-restate"
+
+[[leg]]
+intent = "delta-A-1"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "100.00"
+amount_rule = "value:D-1#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-A-1"
+ordinal = 1
+account = "1100"
+side = "Cr"
+amount_literal = "100.00"
+amount_rule = "value:D-1#1"
+unit = "USD"
+
+[[case]]
+id = "selftest-restatement"
+kind = "Restatement"
+periods = ["2026Q1"]
+determined_on = "S-DET"
+authority = "DOC-PH-DET"
+disclosure = "DOC-PH-DET"
+approvers = ["case-approver-1", "case-approver-2"]
+poster = "case-poster-1"
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
+
+[[branch_class]]
+id = "bc-period-state"
+attribute = "period_state_at_commit"
+rule = "period_state_admission"
+values = ["Open", "Closed"]
+
 [[step]]
 seq = 1
 kind = "period_open"
@@ -136,20 +331,105 @@ principal = "case-closer-1"
 [[step]]
 seq = 2
 kind = "intent"
-ref = "S-1"
+ref = "N-1"
 
 [[step]]
 seq = 3
 kind = "intent"
-ref = "S-2"
+ref = "S-1"
 
 [[step]]
 seq = 4
+kind = "intent"
+ref = "S-2"
+
+[[step]]
+seq = 5
 kind = "finding_record"
 ref = "jet.round_amounts@1"
 principal = "examiner-1"
+
+[[step]]
+seq = 6
+kind = "intent"
+ref = "P-1"
+
+[[step]]
+seq = 7
+kind = "intent"
+ref = "A-1"
+
+[[step]]
+seq = 8
+kind = "period_close"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 9
+kind = "period_lock"
+ref = "2026Q1"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+
+[[step]]
+seq = 10
+kind = "case_open"
+ref = "selftest-restatement"
+principal = "case-poster-1"
+
+[[step]]
+seq = 11
+kind = "scenario_fork"
+ref = "selftest-restate"
+principal = "case-poster-1"
+
+[[step]]
+seq = 12
+kind = "scenario_run"
+ref = "selftest-restate"
+principal = "case-poster-1"
+
+[[step]]
+seq = 13
+kind = "scenario_diff"
+ref = "selftest-restate"
+principal = "case-poster-1"
+
+[[step]]
+seq = 14
+kind = "case_rehearse"
+ref = "selftest-restatement"
+principal = "case-poster-1"
+
+[[step]]
+seq = 15
+kind = "case_approve"
+ref = "selftest-restatement"
+
+[[step]]
+seq = 16
+kind = "case_post"
+ref = "selftest-restatement"
+
+[[step]]
+seq = 17
+kind = "case_disclose"
+ref = "selftest-restatement"
+principal = "case-poster-1"
+
+[[step]]
+seq = 18
+kind = "case_close"
+ref = "selftest-restatement"
+principal = "case-poster-1"
 
 [[default]]
 attribute = "evidence_attached"
 rule = "placeholder_reviewed"
 rationale = "the self-test's documents are placeholders reviewed by case-second-reader (plan §2.6)"
+
+[[default]]
+attribute = "reason"
+rule = "WrongAccount"
+rationale = "the self-test's delta moves part of A out of 1100; the correction's reason is the account, never Fraud (K-REASON)"
