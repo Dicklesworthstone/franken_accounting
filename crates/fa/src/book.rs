@@ -4820,6 +4820,46 @@ impl Book {
         )))
     }
 
+    /// Export exact original cash-leg partitions for independent verification.
+    /// Current whole-book read and produce authority precede source access.
+    /// The recipient independently selects the fixed native request and full
+    /// definition, including portions and reasons; the original outer digest
+    /// identifies that complete claim. Returns `None` for an absent checkpoint.
+    pub fn produce_split_cash_flow_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_split::CashFlowSplitCertificate,
+        expected: &crate::RollForwardRequest,
+        expected_definition: &crate::cash_flow_split::CashFlowSplitDefinition,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_split_cash_flow_bundle(
+            &purposes, principal, capability, state, certificate, expected, expected_definition,
+        )))
+    }
+
+    /// Export an indirect earnings-to-cash workpaper for independent replay of
+    /// its original income, non-cash legs and explicit, policy or split cash
+    /// basis. The whole prefix is confidential and requires current whole-book
+    /// read and produce authority. `expected` must be independently retained;
+    /// the supplied artifact cannot choose its own question. Export appends
+    /// nothing and returns `None` for an absent checkpoint.
+    pub fn produce_indirect_cash_flow_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::IndirectCashFlowCertificate,
+        expected: &crate::IndirectCashFlowRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_indirect_cash_flow_bundle(
+            &purposes, principal, capability, state, certificate, expected,
+        )))
+    }
+
     /// Export an aging-to-control reconciliation under current whole-book
     /// read and produce authority. The original aging and AsOf trial-balance
     /// certificates share one signed, complete journal prefix and original

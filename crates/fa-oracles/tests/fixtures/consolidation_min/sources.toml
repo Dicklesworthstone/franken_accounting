@@ -1,0 +1,19 @@
+# Consolidation fixture source: a synthetic group filing (hash-first: the hash stands for no
+# retrieved bytes; schema fixture only). No fact cites it.
+
+[[source]]
+id = "SRC-CN-1"
+title = "Synthetic group quarterly filing (consolidation fixture; no real filing)"
+publisher = "the consolidation fixture"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-consolidation-10-q.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-28T00:00:00Z"
+sha256 = "7c1e3a5b9d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c"
+format = "txt"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+assurance = "unaudited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2026-04-30"

@@ -1,5 +1,8 @@
 //! Mixed original postings, not synthetic split legs, exercise the native path.
 
+#[path = "cash_flow_split/bundles.rs"]
+mod bundles;
+
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa::cash_flow_split::{

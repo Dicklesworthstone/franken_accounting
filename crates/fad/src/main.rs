@@ -383,6 +383,20 @@ fn serve(
         Ok(b) => b,
         Err(e) => return cli::book_error(argv, e, false).0,
     };
+    // Admit the hosted session before configuring timed work, touching the
+    // socket, announcing service or spawning fa-mcp. A failed journal lookup
+    // must not fall through as though the token had been admitted.
+    if let Some((_, authority)) = &hosted_token {
+        match book.admit_current(authority.capability()) {
+            Ok(Ok(())) => {}
+            Ok(Err(refusal)) => {
+                return cli::refuse_with_authority(argv, refusal, authority, false).0;
+            }
+            Err(error) => {
+                return cli::book_error_with_authority(argv, error, authority, false).0;
+            }
+        }
+    }
     // Resolve before socket cleanup/bind or timed work. This is the book's
     // calendar, including custom and special periods, not a guessed code list.
     let periods = match register_fiscal_year {
@@ -521,12 +535,7 @@ fn serve(
             daemon_uid: Some(daemon_uid),
             timings: Vec::new(),
         };
-        let served = if let Some((token_file, authority)) = &hosted_token {
-            if let Ok(Err(refusal)) = server.book.admit_current(authority.capability()) {
-                drop(listener);
-                let _ = region.close().await;
-                return Err(format!("token refused by book: {}", refusal.message));
-            }
+        let served = if let Some((token_file, _)) = &hosted_token {
             let mut cmd = std::process::Command::new(fa_mcp_binary());
             cmd.arg("--book")
                 .arg(dir)

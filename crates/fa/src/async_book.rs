@@ -129,6 +129,15 @@ enum ReportBundleCertificate<'a> {
     EquityRollForward(&'a crate::EquityRollForwardCertificate),
     CashFlow(&'a crate::CashFlowCertificate),
     CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
+    SplitCashFlow {
+        certificate: &'a crate::cash_flow_split::CashFlowSplitCertificate,
+        expected: &'a crate::RollForwardRequest,
+        expected_definition: &'a crate::cash_flow_split::CashFlowSplitDefinition,
+    },
+    IndirectCashFlow {
+        certificate: &'a crate::IndirectCashFlowCertificate,
+        expected: &'a crate::IndirectCashFlowRequest,
+    },
     AgingReconciliation {
         certificate: &'a crate::AgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
@@ -154,6 +163,12 @@ impl<'a> ReportBundleCertificate<'a> {
                 .source_certificate()
                 .source_certificate()
                 .source_certificate(),
+            Self::SplitCashFlow { certificate, .. } => {
+                certificate.source_certificate().source_certificate()
+            }
+            Self::IndirectCashFlow { certificate, .. } => {
+                certificate.source_certificate().native_source_certificate()
+            }
             Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
             Self::DueDateAgingReconciliation { certificate, .. } => {
                 certificate.aging_source().source()
@@ -4021,6 +4036,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export exact portions of original cash legs over one signed complete
+    /// prefix. The independently fixed request and full split definition are
+    /// replayed before export; equal section totals do not substitute for the
+    /// recipient's classifications, original citations or reasons.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn produce_split_cash_flow_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_split::CashFlowSplitCertificate,
+        expected: &crate::RollForwardRequest,
+        expected_definition: &crate::cash_flow_split::CashFlowSplitDefinition,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::SplitCashFlow {
+                certificate,
+                expected,
+                expected_definition,
+            },
+        )
+        .await
+    }
+
+    /// Export an indirect earnings-to-cash workpaper over its original signed
+    /// whole-book prefix. Native replay validates the independently selected
+    /// cash basis, income periods, adjustment citations and exact output before
+    /// any bundle is assembled. Classification judgments remain report inputs.
+    pub async fn produce_indirect_cash_flow_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::IndirectCashFlowCertificate,
+        expected: &crate::IndirectCashFlowRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::IndirectCashFlow {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     /// Export the original aging/control reconciliation and both native
     /// sources over one signed complete prefix. The recipient must independently
     /// select the account, cutoff, fixed sequence and age bands in `expected`.
@@ -4208,6 +4278,38 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::SplitCashFlow {
+                certificate,
+                expected,
+                expected_definition,
+            } => {
+                if let Err(refusal) = self.replay_split_cash_flow(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    expected,
+                    expected_definition,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::IndirectCashFlow {
+                certificate,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_indirect_cash_flow(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    expected,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
             ReportBundleCertificate::AgingReconciliation {
                 certificate: reconciliation,
                 expected,
@@ -4276,6 +4378,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
+                | ReportBundleCertificate::SplitCashFlow { .. }
+                | ReportBundleCertificate::IndirectCashFlow { .. }
                 | ReportBundleCertificate::AgingReconciliation { .. }
                 | ReportBundleCertificate::DueDateAgingReconciliation { .. }
         ) || matches!(
@@ -4505,6 +4609,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             },
             ReportBundleCertificate::CashFlowPolicy(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::SplitCashFlow { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::IndirectCashFlow { certificate, .. } => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

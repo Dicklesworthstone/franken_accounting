@@ -52,6 +52,9 @@ mod capability_retries;
 #[path = "policy/issuance_ancestry.rs"]
 mod issuance_ancestry;
 
+#[path = "policy/read_authority.rs"]
+mod read_authority;
+
 struct Harness {
     runtime: Runtime,
     root: Cx,

@@ -2,6 +2,9 @@
 //! Expectations are assembled from the user's original inputs, never from a
 //! delivered certificate or its generated replay command.
 
+#[path = "indirect_cash_flow_basis/bundles.rs"]
+mod bundles;
+
 use super::*;
 
 const LABEL: &str = "March indirect cash";
@@ -437,4 +440,224 @@ fn policy_basis_replay_binds_unused_rules_overrides_and_the_classification_famil
         &report_args(&file, &inputs.known_at.to_string()),
     ));
     refuse_expectation(&inputs, &locator, &explicit);
+}
+
+#[test]
+fn original_split_cash_certificate_exports_by_oid_file_and_bound_stdin() {
+    let inputs = Inputs::new(true);
+    let f = &inputs.fixture;
+    let sale = inputs.line(&inputs.sale, "1000");
+    let payment = inputs.line(&inputs.payments[0], "1000");
+    let policy = format!(
+        r#"{{"name":"split-March","cash_accounts":["1000"],"splits":[{{"entry_digest":"{}","leg_index":{},"reason":"Cash revenue","portions":[{{"activity":"operating","amount":"200.00 USD"}}]}},{{"entry_digest":"{}","leg_index":{},"reason":"Documented principal and interest","portions":[{{"activity":"operating","amount":"10.00 USD"}},{{"activity":"financing","amount":"100.00 USD"}}]}}]}}"#,
+        text(sale, "entry_digest"),
+        integer(sale, "leg_index"),
+        text(payment, "entry_digest"),
+        integer(payment, "leg_index"),
+    );
+    let expected = format!(
+        r#"{{"kind":"split-cash-flow","accounts":["1000"],"units":["USD"],"label":"March split cash","from":"2026-03-01","through":"2026-03-31","known_at":{},"policy":{policy}}}"#,
+        inputs.known_at,
+    );
+    let policy_path = write(&f.dir, "split-policy.json", &policy);
+    let certificate_path = f.dir.join("split.certificate");
+    let metadata = aging::certify(
+        f,
+        &[
+            "gl",
+            "cash-flow",
+            "--account",
+            "1000",
+            "--unit",
+            "USD",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+            "--label",
+            "March split cash",
+            "--as-known-at",
+            &inputs.known_at.to_string(),
+            "--policy",
+            &policy_path,
+            "--certificate-out",
+            certificate_path.to_str().unwrap(),
+        ],
+    );
+    let encoded = unhex(text(&metadata, "bytes"));
+    let certificate = fa::cash_flow_split::CashFlowSplitCertificate::decode(&encoded).unwrap();
+    assert_eq!(std::fs::read(&certificate_path).unwrap(), encoded);
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    f.post(
+        "split-later-backdated",
+        "2026-03-20",
+        "99.00",
+        &inputs.evidence,
+    );
+    let checkpoint = f.checkpoint();
+    let signed = exported(
+        &f.book,
+        &["signed-checkpoint", "--state", text(&checkpoint, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let anchor = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
+    let before = f.head();
+    let (code, _) = run(&f.book, &["bundle", "produce", "--certificate", &locator]);
+    assert_eq!(
+        code, 2,
+        "export requires independently retained expected inputs"
+    );
+    for (question, exit) in [
+        (expected.replace("split-cash-flow", "indirect-cash-flow"), 2),
+        (
+            expected.replace("Documented principal and interest", "Another judgment"),
+            8,
+        ),
+        (expected.replace("100.00 USD", "101.00 USD"), 8),
+    ] {
+        let (code, error) = run(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--expect",
+                &question,
+            ],
+        );
+        assert_eq!(code, exit, "{}", error.render());
+    }
+    let mut original_bundle = None;
+    for source in [locator.as_str(), certificate_path.to_str().unwrap()] {
+        let produced = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                source,
+                "--expect",
+                &expected,
+                "--state",
+                text(&checkpoint, "oid"),
+            ],
+        );
+        let bundle = bytes(&produced);
+        let receipt = unhex(text(&produced, "receipt"));
+        assert!(text(&produced, "verify").contains(&format!(
+            "--expect {}",
+            fa_verify::blake3::hex(certificate.digest()),
+        )));
+        let verified = fa_verify::report::verify_report_expected(
+            &bundle,
+            &[key],
+            Some(&anchor.checkpoint),
+            Some(&receipt),
+            Some(certificate.digest()),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output());
+        assert_eq!(verified.known_at, inputs.known_at);
+        let split = verified.split_cash_flow.unwrap();
+        assert_eq!(split.ledger.lines.len(), 2);
+        assert_eq!(split.definition.splits.len(), 2);
+        let unit = &split.units[0];
+        assert_eq!(
+            (
+                unit.opening,
+                unit.operating.net,
+                unit.financing.net,
+                unit.net_change,
+                unit.closing
+            ),
+            (100_000, 19_000, -10_000, 9_000, 109_000),
+        );
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &bundle,
+                &[key],
+                None,
+                Some(&receipt),
+                Some(certificate.source_certificate().digest()),
+            )
+            .is_err()
+        );
+        if let Some(original) = &original_bundle {
+            assert_eq!(&bundle, original);
+        } else {
+            original_bundle = Some(bundle);
+        }
+    }
+    assert_eq!(f.head(), before);
+    let authority = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "split-reader",
+        LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let argv = [
+        "bundle",
+        "produce",
+        "--certificate",
+        "-",
+        "--expect",
+        &expected,
+        "--state",
+        text(&checkpoint, "oid"),
+        "--json",
+    ]
+    .map(str::to_string);
+    let (exit, output) = fa_with_authority(
+        &argv,
+        Files {
+            cwd: None,
+            stdin: Stdin::Forwarded(encoded),
+        },
+        &authority,
+        true,
+    );
+    assert_eq!(exit, 0, "{}{}", output.stdout, output.stderr);
+    let produced = parse_line(&output.stdout, &output.stderr);
+    let bundle = bytes(&produced);
+    let receipt = unhex(text(&produced, "receipt"));
+    assert_eq!(bundle, original_bundle.unwrap());
+    let digest = fa_verify::blake3::hex(certificate.digest());
+    let argv = [
+        "report",
+        "split.fab",
+        "--key",
+        text(&signed, "checkpoint_public_key"),
+        "--receipt",
+        "split.receipt",
+        "--expect",
+        &digest,
+        "--json",
+    ]
+    .map(str::to_string);
+    let read = |name: &str| match name {
+        "split.fab" => Ok(bundle.clone()),
+        "split.receipt" => Ok(receipt.clone()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            name.to_string(),
+        )),
+    };
+    let verified = fa_verify::cli::run(&argv, &read);
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    assert!(
+        verified
+            .stdout
+            .contains("\"report_mode\":\"split_cash_flow\"")
+    );
+    assert!(
+        verified
+            .stdout
+            .contains("Documented principal and interest")
+    );
+    f.assert_proof_accesses_since(before, "split-reader", 1);
 }

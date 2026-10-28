@@ -61,8 +61,23 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("replay", None),
     ("registers", Some("advance")),
     ("verify", Some("book")),
-    // A12: the T reads' outsider route exports the checkpoint it checks.
+    // A12: the T reads' outsider route exports the checkpoint it checks;
+    // the append-only witness cosigns checkpoints and proves the restated
+    // book extends the as-filed one.
     ("proof", Some("signed-checkpoint")),
+    ("checkpoint", Some("witness-key")),
+    ("checkpoint", Some("witness")),
+    ("proof", Some("consistency")),
+    ("proof", Some("inclusion")),
+    // and reads each restated period's as-filed certificate's status.
+    ("certificate", Some("status")),
+    // The second read path: each balance read again through the GQL profile.
+    ("query", None),
+    // A D read's outsider replay: its run's canonical workpaper re-executed.
+    ("finding", Some("export")),
+    ("finding", Some("replay")),
+    // The consolidate read (A7b) and its replay route.
+    ("consolidate", None),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

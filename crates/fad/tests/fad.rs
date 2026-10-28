@@ -19,6 +19,9 @@ use fa_cli::lease::Lease;
 use fa_cli::verbs::registry;
 use fa_cli::wire::{Op, Request};
 
+#[path = "fad/session_admission.rs"]
+mod session_admission;
+
 fn tmp(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {

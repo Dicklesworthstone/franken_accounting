@@ -37,7 +37,7 @@ fn replay_refuses(
     assert_eq!(h.head(), before);
 }
 
-fn loan_fixture(k: i128) -> (Harness, IndirectCashFlowRequest) {
+pub(super) fn loan_fixture(k: i128) -> (Harness, IndirectCashFlowRequest) {
     use Side::{Credit as C, Debit as D};
     let mut h = Harness::new();
     h.post(
@@ -161,7 +161,7 @@ fn loan_fixture(k: i128) -> (Harness, IndirectCashFlowRequest) {
     (h, request)
 }
 
-fn policy_request(h: &Harness) -> IndirectCashFlowRequest {
+pub(super) fn policy_request(h: &Harness) -> IndirectCashFlowRequest {
     let mut request = h.request();
     let ledger = h
         .book

@@ -51,12 +51,14 @@
 
 mod aging;
 mod cash_flow;
+mod cash_flow_split;
 mod dimension;
 mod due_date;
 mod due_date_reconciliation;
 mod equity;
 mod explain;
 mod functional;
+mod indirect_cash_flow;
 mod metadata;
 mod open_items;
 mod reconciliation;
@@ -74,6 +76,9 @@ pub use cash_flow::{
     GeneralLedgerCell, GeneralLedgerLine, VerifiedCashFlow, VerifiedCashFlowPolicy,
     VerifiedGeneralLedger,
 };
+pub use cash_flow_split::{
+    CashFlowLegSplit, CashFlowPortion, CashFlowSplitDefinition, VerifiedSplitCashFlow,
+};
 pub use dimension::VerifiedDimensionSelection;
 pub use due_date::{
     VerifiedDueDateAgedItem, VerifiedDueDateAging, VerifiedUnscheduled, VerifiedUnscheduledItem,
@@ -88,6 +93,11 @@ pub use explain::{
 };
 pub use functional::{
     VerifiedFunctionalCell, VerifiedFunctionalStatement, VerifiedFunctionalTrialBalance,
+};
+pub use indirect_cash_flow::{
+    AdjustmentCategory, AdjustmentSign, IndirectCashFlowAdjustment, IndirectCashFlowContribution,
+    IndirectCashFlowDefinition, IndirectCashFlowUnit, VerifiedCashFlowBasis,
+    VerifiedIndirectCashFlow,
 };
 pub(crate) use metadata::{DeclaredAccount, declared_chart};
 pub use open_items::VerifiedOpenItemAccount as VerifiedReportAccount;
@@ -208,6 +218,8 @@ pub struct VerifiedReport {
     /// Complete direct cash flow, with independently derived policy decisions
     /// when its outer certificate carries a counterpart policy.
     pub cash_flow: Option<VerifiedCashFlow>,
+    pub split_cash_flow: Option<VerifiedSplitCashFlow>,
+    pub indirect_cash_flow: Option<VerifiedIndirectCashFlow>,
     /// Complete Statement of Changes in Equity, including owner role inputs.
     pub equity_roll_forward: Option<VerifiedEquityRollForward>,
     /// Functional cells independently repriced from original Rate evidence.
@@ -609,21 +621,35 @@ fn verify_report_with_inputs(
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
     // Each supported composition has a fixed depth. Equity has one roll-forward
-    // source; policy cash flow has one direct-cash source over a roll-forward.
+    // source; split cash flow also retains its original roll-forward directly,
+    // and policy cash flow has one direct-cash source over a roll-forward.
     // No generic recursive certificate dispatch is accepted.
     let equity = if equity::recognizes(certificate_bytes) {
         Some(equity::decode(certificate_bytes)?)
     } else {
         None
     };
-    let cash_policy = if cash_flow::policy::recognizes(certificate_bytes) {
-        Some(cash_flow::policy::decode(certificate_bytes)?)
+    let indirect_cash = if indirect_cash_flow::recognizes(certificate_bytes) {
+        Some(indirect_cash_flow::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let cash_certificate_bytes = indirect_cash
+        .as_ref()
+        .map_or(certificate_bytes, |value| value.source);
+    let cash_policy = if cash_flow::policy::recognizes(cash_certificate_bytes) {
+        Some(cash_flow::policy::decode(cash_certificate_bytes)?)
+    } else {
+        None
+    };
+    let split_cash = if cash_flow_split::recognizes(cash_certificate_bytes) {
+        Some(cash_flow_split::decode(cash_certificate_bytes)?)
     } else {
         None
     };
     let cash_bytes = cash_policy
         .as_ref()
-        .map_or(certificate_bytes, |value| value.source);
+        .map_or(cash_certificate_bytes, |value| value.source);
     let cash = if cash_flow::recognizes(cash_bytes) {
         Some(cash_flow::decode(cash_bytes)?)
     } else {
@@ -633,6 +659,7 @@ fn verify_report_with_inputs(
         .as_ref()
         .map(|value| value.source)
         .or_else(|| equity.as_ref().map(|value| value.source))
+        .or_else(|| split_cash.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
     let reconciliation = if reconciliation::recognizes(certificate_bytes) {
         Some(reconciliation::decode(certificate_bytes)?)
@@ -700,11 +727,13 @@ fn verify_report_with_inputs(
     if let (Some(aging), Some(control)) = (&due_date, &control) {
         due_date_reconciliation::bind(aging, &cert, control)?;
     }
-    let certificate_digest = equity
+    let certificate_digest = indirect_cash
         .as_ref()
         .map(|value| value.digest)
+        .or_else(|| equity.as_ref().map(|value| value.digest))
         .or_else(|| cash_policy.as_ref().map(|value| value.digest))
         .or_else(|| cash.as_ref().map(|value| value.digest))
+        .or_else(|| split_cash.as_ref().map(|value| value.digest))
         .or_else(|| reconciliation.as_ref().map(|value| value.digest))
         .or_else(|| due_date_reconciliation.as_ref().map(|value| value.digest))
         .or_else(|| aging.as_ref().map(|value| value.digest))
@@ -1038,6 +1067,8 @@ fn verify_report_with_inputs(
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance,
             functional_statement,
@@ -1141,6 +1172,8 @@ fn verify_report_with_inputs(
                     due_date_aging_reconciliation: Some(comparison),
                     roll_forward: None,
                     cash_flow: None,
+                    split_cash_flow: None,
+                    indirect_cash_flow: None,
                     equity_roll_forward: None,
                     functional_trial_balance: None,
                     functional_statement: None,
@@ -1172,6 +1205,8 @@ fn verify_report_with_inputs(
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
+                split_cash_flow: None,
+                indirect_cash_flow: None,
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
@@ -1254,6 +1289,8 @@ fn verify_report_with_inputs(
                     due_date_aging_reconciliation: None,
                     roll_forward: None,
                     cash_flow: None,
+                    split_cash_flow: None,
+                    indirect_cash_flow: None,
                     equity_roll_forward: None,
                     functional_trial_balance: None,
                     functional_statement: None,
@@ -1285,6 +1322,8 @@ fn verify_report_with_inputs(
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
+                split_cash_flow: None,
+                indirect_cash_flow: None,
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
@@ -1316,6 +1355,8 @@ fn verify_report_with_inputs(
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
@@ -1368,6 +1409,8 @@ fn verify_report_with_inputs(
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
@@ -1426,6 +1469,8 @@ fn verify_report_with_inputs(
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
@@ -1502,6 +1547,8 @@ fn verify_report_with_inputs(
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
+                split_cash_flow: None,
+                indirect_cash_flow: None,
                 equity_roll_forward: Some(equity_roll_forward),
                 functional_trial_balance: None,
                 functional_statement: None,
@@ -1511,21 +1558,61 @@ fn verify_report_with_inputs(
                 receipt,
             });
         }
-        if let Some(cash_certificate) = &cash {
-            let (mut cash_flow, mut output) =
-                cash_flow::replay(cash_certificate, roll_forward, certificate.digest)?;
-            if let Some(policy) = &cash_policy {
-                output = cash_flow::policy::replay(
-                    policy,
-                    &mut cash_flow,
-                    cash_certificate.digest,
+        if cash.is_some() || split_cash.is_some() {
+            let (basis, output) = if let Some(cash_certificate) = &cash {
+                let (mut cash_flow, mut output) =
+                    cash_flow::replay(cash_certificate, roll_forward, certificate.digest)?;
+                if let Some(policy) = &cash_policy {
+                    output = cash_flow::policy::replay(
+                        policy,
+                        &mut cash_flow,
+                        cash_certificate.digest,
+                        &output,
+                        &schema,
+                        envelopes,
+                        &legs,
+                        &by_digest,
+                    )?;
+                    (VerifiedCashFlowBasis::Policy(cash_flow), output)
+                } else {
+                    (VerifiedCashFlowBasis::Explicit(cash_flow), output)
+                }
+            } else {
+                let split_certificate = split_cash
+                    .as_ref()
+                    .ok_or_else(|| failed("supported_report", "cash source is missing"))?;
+                let (split, output) =
+                    cash_flow_split::replay(split_certificate, roll_forward, certificate.digest)?;
+                (VerifiedCashFlowBasis::Split(split), output)
+            };
+            let effective_through = Some(basis.ledger().effective_through);
+            let (cash_flow, split_cash_flow, indirect_cash_flow, output) = if let Some(indirect) =
+                &indirect_cash
+            {
+                let (report, output) = indirect_cash_flow::replay(
+                    indirect,
+                    basis,
                     &output,
-                    &schema,
-                    envelopes,
-                    &legs,
-                    &by_digest,
+                    indirect_cash_flow::Sources {
+                        native_source_digest: cert.digest,
+                        registered_units: &units,
+                        schema: &schema,
+                        envelopes,
+                        infos: &infos,
+                        legs: &legs,
+                        visible_migrations: &visible_migrations,
+                        resolved: &resolved,
+                        source_rows: &rows,
+                    },
                 )?;
-            }
+                (None, None, Some(report), output)
+            } else {
+                match basis {
+                    VerifiedCashFlowBasis::Explicit(report)
+                    | VerifiedCashFlowBasis::Policy(report) => (Some(report), None, None, output),
+                    VerifiedCashFlowBasis::Split(report) => (None, Some(report), None, output),
+                }
+            };
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 bundle_digest: digest,
@@ -1534,7 +1621,7 @@ fn verify_report_with_inputs(
                 checkpoint: signed,
                 known_at: cert.known_at,
                 time_selection: None,
-                effective_through: Some(cash_flow.ledger.effective_through),
+                effective_through,
                 activity: false,
                 periods: Vec::new(),
                 rows: Vec::new(),
@@ -1547,7 +1634,9 @@ fn verify_report_with_inputs(
                 aging_reconciliation: None,
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
-                cash_flow: Some(cash_flow),
+                cash_flow,
+                split_cash_flow,
+                indirect_cash_flow,
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
@@ -1579,6 +1668,8 @@ fn verify_report_with_inputs(
             due_date_aging_reconciliation: None,
             roll_forward: Some(roll_forward),
             cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
@@ -1610,6 +1701,8 @@ fn verify_report_with_inputs(
         due_date_aging_reconciliation: None,
         roll_forward: None,
         cash_flow: None,
+        split_cash_flow: None,
+        indirect_cash_flow: None,
         equity_roll_forward: None,
         functional_trial_balance: None,
         functional_statement: None,

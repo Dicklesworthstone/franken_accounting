@@ -37,7 +37,7 @@ use run::{PlantedEdit, RunOutcome, fa, outcome, run_case, run_files, run_planted
 
 const SELFTEST: &str = "_selftest";
 
-const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree reason=filler_invariance";
+const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree outsider=replay:verified reason=filler_invariance";
 
 fn selftest_files() -> fa_oracles::cases::CaseFiles<'static> {
     fa_oracles::cases::embedded::SELFTEST.case_files()
@@ -75,17 +75,19 @@ fn _selftest() {
         "PASS _selftest-P-03 P native P-1/period_state_at_commit=Open state=Open refusal=admitted exit=0 ref=agree",
         "PASS _selftest-P-03 P native P-1/period_state_at_commit=Closed state=Closed refusal=FA-REF-010 exit=7 record_consistent=false commit_agrees=ok ref=agree",
         "UNRUN _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:reported reason=filler_invariance",
-        "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00",
+        "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00 gql=ok",
         "PASS _selftest-CASE-selftest-restatement R native -/default kind=case_show read=case show,selftest-restatement state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-PH-DET disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3",
     ] {
         assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
     }
-    // The outsider stage: the checkpoint, the balance sheet's report bundle
-    // verified in process, its replay byte-identical, and the book's
-    // integrity green.
+    // The outsider stage: the as-filed checkpoint and the examiner witness's
+    // cosignature of it, the closing checkpoint, the balance sheet's report
+    // bundle verified in process, its replay byte-identical, the book's
+    // integrity green, and the restated book proved to extend the as-filed
+    // one (A12).
     assert!(
         o.lines.iter().any(|l| l
-            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=green"),
+            == "OUTSIDER native checkpoint=created witness=cosigned checkpoint=created bundle=verified replay=identical verify_book=green append_only=ok:inclusion=1:rollback=FA-REF-124:foreign=FA-REF-100"),
         "{text}"
     );
     assert!(!text.contains("REPRODUCE"), "{text}");
@@ -100,7 +102,7 @@ fn _selftest() {
 /// contributing-entry witness (A11b), and passes its outsider check: its
 /// explain-balance certificate is bundled against a checkpoint, verified by
 /// the literal `fa-verify report` argv, whose recomputed cells equal B, and
-/// replayed byte for byte. The T is claimed,
+/// replayed byte for byte (after its GQL second read). The T is claimed,
 /// and the case passes.
 #[test]
 fn selftest_bridge_t_passes_with_the_outsider_check() {
@@ -109,7 +111,7 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 contrib=holds outsider=report:verified"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 gql=ok contrib=holds outsider=report:verified append_only=ok"
         ),
         "{text}"
     );
@@ -130,13 +132,233 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
     assert_eq!(
         route,
         [
+            "query --book exit=0 Query",
             "bundle --book exit=0 Bundle",
             "fa-verify report exit=0 FaVerifyReport",
             "replay --book exit=0 -",
         ],
         "{text}"
     );
-    assert!(o.ok, "{text}");
+    // The claimed T keeps its claim (its rows; the wall budget depends on
+    // the worker's load and has its own test).
+    assert!(o.rows_ok, "{text}");
+}
+
+/// A12 (§12.7): the append-only witness on the self-test bridge, in every
+/// run of its book that reaches the outsider stage (the base run and its
+/// invariance runs). The examiner
+/// witness cosigned the as-filed checkpoint before the case (step 11);
+/// after it, the witness cosigns the restated book with `--previous`, which
+/// the book proves extends the as-filed statement, and `fa-verify
+/// checkpoint` accepts it at quorum 1. The consistency proof from the
+/// as-filed state and the inclusion proof of A-1 (the entry the delta
+/// restates) verify offline: an examiner who witnessed the as-filed root can
+/// check that the restated book extends it and still includes the as-filed
+/// entry. The bridge T carries `append_only=ok`.
+#[test]
+fn append_only_witness_holds_on_the_selftest_bridge() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    let by_run = |keep: &dyn Fn(&fa_oracles::cases::log::StepRecord) -> bool| {
+        let mut runs: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for s in o.steps.iter().filter(|s| keep(s)) {
+            let what = if s.verb == "fa-verify" {
+                format!(
+                    "fa-verify {}",
+                    s.argv_redacted.first().map_or("-", String::as_str)
+                )
+            } else {
+                words(&s.argv_redacted)
+            };
+            runs.entry(s.book_id.clone().unwrap_or_default())
+                .or_default()
+                .push(format!(
+                    "{what} exit={} {}",
+                    s.exit,
+                    s.refusal_id.as_deref().unwrap_or("-")
+                ));
+        }
+        runs
+    };
+    let cosigned = by_run(&|s| s.step == 11);
+    assert!(!cosigned.is_empty(), "{text}");
+    for (book, run) in &cosigned {
+        assert_eq!(
+            run,
+            &[
+                "checkpoint witness-key exit=0 -",
+                "checkpoint witness exit=0 -"
+            ],
+            "{book}\n{text}"
+        );
+    }
+    // Every run that reaches the outsider stage extends the statement its
+    // own step 11 cosigned (twin and cell runs replay without that stage).
+    let extended = by_run(&|s| s.reference == "append-only");
+    assert!(!extended.is_empty(), "{text}");
+    assert!(
+        extended.keys().all(|book| cosigned.contains_key(book)),
+        "{text}"
+    );
+    for (book, run) in &extended {
+        assert_eq!(
+            run,
+            &[
+                "checkpoint create exit=0 -",
+                "checkpoint witness exit=0 -",
+                "fa-verify checkpoint exit=0 -",
+                "proof signed-checkpoint exit=0 -",
+                "proof signed-checkpoint exit=0 -",
+                "proof consistency exit=0 -",
+                "fa-verify consistency exit=0 -",
+                "proof inclusion exit=0 -",
+                "fa-verify inclusion exit=0 -",
+                "checkpoint witness exit=8 FA-REF-124",
+                "checkpoint witness exit=2 FA-REF-100",
+            ],
+            "{book}\n{text}"
+        );
+    }
+    assert!(
+        o.row("_selftest-T-01")
+            .is_some_and(|r| r.ends_with(" outsider=report:verified append_only=ok")),
+        "{text}"
+    );
+}
+
+/// The witness's cosignature attempts of every run that `keep` selects:
+/// each (exit, refusal).
+fn twin_outcomes(o: &RunOutcome, keep: impl Fn(&[String]) -> bool) -> Vec<(i128, Option<String>)> {
+    o.steps
+        .iter()
+        .filter(|s| s.reference == "append-only" && keep(&s.argv_redacted))
+        .map(|s| (s.exit, s.refusal_id.clone()))
+        .collect()
+}
+
+/// A12 (§12.1, D reads): each recorded finding run's canonical workpaper,
+/// with its review appendix fixed at the head, is exported (`fa finding
+/// export --export-format canonical --include-reviews --known-at <head>`)
+/// and replayed recipient-bound (`fa finding replay --certificate C:<run>
+/// --known-at <head>`) to the same certified run, in every run of the book;
+/// the D row prints `outsider=replay:verified`.
+#[test]
+fn finding_export_replays_for_d_reads() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    let steps: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| {
+            matches!(
+                words(&s.argv_redacted).as_str(),
+                "finding export" | "finding replay"
+            )
+        })
+        .map(|s| {
+            format!(
+                "{} {} exit={}",
+                words(&s.argv_redacted),
+                s.reference,
+                s.exit
+            )
+        })
+        .collect();
+    assert!(!steps.is_empty(), "{text}");
+    assert!(
+        steps.chunks(2).all(|pair| matches!(
+            pair,
+            [export, replay] if export.starts_with("finding export ")
+                && replay.starts_with("finding replay ")
+                && export.ends_with(" exit=0")
+                && replay.ends_with(" exit=0")
+        )),
+        "{steps:?}\n{text}"
+    );
+    assert!(
+        o.row("_selftest-D-01")
+            .is_some_and(|r| r.contains(" ref=agree outsider=replay:verified ")),
+        "{text}"
+    );
+}
+
+/// A12 (§12.7): the second read path. Each balance read is also read with
+/// `fa query --certify` at the sequence its fold path resolved, and nets to
+/// the fold value (`gql=ok`): the bridge T as currently stated at the head,
+/// and the R as originally reported at the sequence its view resolved (the
+/// quarter's lock, before the case), in every run of the book. The view
+/// itself is not certified beside a native read; this slice certifies the
+/// resolved sequence only (the uncertified view read is later work).
+#[test]
+fn gql_view_read_is_certified_at_its_resolved_sequence() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    let mut runs: std::collections::BTreeMap<String, (Option<i128>, Option<i128>)> =
+        std::collections::BTreeMap::new();
+    for s in o.steps.iter().filter(|s| s.verb == "query") {
+        assert_eq!(s.exit, 0, "{text}");
+        assert!(s.argv_redacted.iter().any(|a| a == "--certify"), "{text}");
+        assert_eq!(s.certificate_kind.as_deref(), Some("Query"), "{text}");
+        let statement = s.argv_redacted.get(3).cloned().unwrap_or_default();
+        let seq: i128 = statement
+            .rsplit("AS KNOWN AT ")
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("a known-at in {statement}\n{text}"));
+        let run = runs
+            .entry(s.book_id.clone().unwrap_or_default())
+            .or_default();
+        match s.reference.as_str() {
+            "_selftest-T-01/-" => run.0 = Some(seq),
+            "_selftest-R-01/-" => run.1 = Some(seq),
+            other => panic!("an unexpected query for {other}\n{text}"),
+        }
+    }
+    assert!(!runs.is_empty(), "{text}");
+    for (book, (current, original)) in &runs {
+        assert!(
+            matches!((current, original), (Some(c), Some(r)) if r < c),
+            "{book}: {current:?} {original:?}\n{text}"
+        );
+    }
+    for id in ["_selftest-T-01", "_selftest-R-01"] {
+        assert!(
+            o.row(id).is_some_and(|r| r.contains(" gql=ok")),
+            "{id}\n{text}"
+        );
+    }
+}
+
+/// A12 (§12.7, harness-only twin): a rollback. The restated book's
+/// statement as `--previous` for the as-filed state is a history the
+/// as-filed state does not extend, so the cosignature is refused FA-REF-124
+/// (exit 8) and nothing is signed.
+#[test]
+fn witness_rollback_to_the_as_filed_state_is_refused_fa_ref_124() {
+    let o = outcome(SELFTEST);
+    let rollbacks = twin_outcomes(o, |argv| argv.iter().any(|a| a == "$WORK/rollback.witness"));
+    assert!(!rollbacks.is_empty(), "{}", o.text());
+    for twin in rollbacks {
+        assert_eq!(twin, (8, Some("FA-REF-124".to_string())), "{}", o.text());
+    }
+}
+
+/// A12 (§12.7, harness-only twin): the witness's statement cosigned on
+/// another book. The plan expected FA-REF-124 here; the book refuses it
+/// earlier, as no history this witness signed on it (FA-REF-100, exit 2,
+/// `--previous is a checkpoint of another book`), and signs nothing.
+#[test]
+fn witness_previous_from_another_book_is_refused_as_not_its_history() {
+    let o = outcome(SELFTEST);
+    let foreign = twin_outcomes(o, |argv| {
+        argv.windows(2)
+            .any(|w| w[0] == "--previous" && w[1] == "$WORK/other-book.witness")
+    });
+    assert!(!foreign.is_empty(), "{}", o.text());
+    for twin in foreign {
+        assert_eq!(twin, (2, Some("FA-REF-100".to_string())), "{}", o.text());
+    }
 }
 
 /// A8a (§3.7 item 3): an N twin that keeps the target's 1,234.56 legs is
@@ -252,7 +474,7 @@ fn stock_t_is_explained_in_every_period_up_to_its_own() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds outsider=report:verified"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 gql=ok contrib=holds outsider=report:verified append_only=ok"
         ),
         "{text}"
     );
@@ -310,7 +532,7 @@ fn _selftest_neg_report_recomputation_differing_from_b_fails() {
     let row = o.row("_selftest-T-01").unwrap_or_default();
     assert!(
         row.starts_with(
-            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 outsider=report:failed reason="
+            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 gql=ok outsider=report:failed append_only=ok reason="
         ) && row.contains("outsider report: expected the recomputed 900.01 observed 900.00"),
         "{}",
         o.text()
@@ -340,12 +562,17 @@ fn as_originally_reported_on_a_zero_delta_line_is_flagged_selector_not_exercised
     };
     assert_eq!(
         o.row("_selftest-R-01"),
-        Some(format!("{R_01} selector=not_exercised").as_str()),
+        Some(format!("{R_01} selector=not_exercised gql=ok").as_str()),
         "{}",
         o.text()
     );
     let base = outcome(SELFTEST);
-    assert_eq!(base.row("_selftest-R-01"), Some(R_01), "{}", base.text());
+    assert_eq!(
+        base.row("_selftest-R-01"),
+        Some(format!("{R_01} gql=ok").as_str()),
+        "{}",
+        base.text()
+    );
 }
 
 /// The self-test's claimed rows, which the outsider negatives keep PASS.
@@ -379,8 +606,8 @@ fn bundle_byte_flip_fails_the_case_whatever_its_expectations_say() {
         .expect("the outsider line");
     assert!(
         line.starts_with(
-            "OUTSIDER native checkpoint=created bundle=fail(the report bundle did not verify"
-        ) && line.ends_with(" replay=identical verify_book=green"),
+            "OUTSIDER native checkpoint=created witness=cosigned checkpoint=created bundle=fail(the report bundle did not verify"
+        ) && line.ends_with(" replay=identical verify_book=green append_only=ok:inclusion=1:rollback=FA-REF-124:foreign=FA-REF-100"),
         "{text}"
     );
     assert!(!o.rows_ok && !o.ok, "{text}");
@@ -403,7 +630,7 @@ fn verify_book_exit_8_fails_the_case() {
     }
     assert!(
         o.lines.iter().any(|l| l
-            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=fail(expected fa verify book exit=0 green observed exit=8 green=true)"),
+            == "OUTSIDER native checkpoint=created witness=cosigned checkpoint=created bundle=verified replay=identical verify_book=fail(expected fa verify book exit=0 green observed exit=8 green=true) append_only=ok:inclusion=1:rollback=FA-REF-124:foreign=FA-REF-100"),
         "{text}"
     );
     assert!(!o.rows_ok && !o.ok, "{text}");
@@ -452,7 +679,8 @@ fn _selftest_logs_every_step_and_every_row() {
 /// checks against `verbs.toml` before any book exists, and every
 /// run-variant token in a logged argv is a bound placeholder. The
 /// `fa-verify` steps run in process (A12): each is a literal `fa-verify
-/// report` argv over the runner's work files, never the book directory.
+/// report|checkpoint|consistency|inclusion` argv over the runner's work
+/// files, never the book directory.
 #[test]
 fn every_logged_verb_is_in_the_harness_verb_table() {
     let o = outcome(SELFTEST);
@@ -466,7 +694,12 @@ fn every_logged_verb_is_in_the_harness_verb_table() {
         .collect();
     assert!(!verified.is_empty(), "{}", o.text());
     for argv in verified {
-        assert_eq!(argv.first().map(String::as_str), Some("report"), "{argv:?}");
+        assert!(
+            argv.first().is_some_and(|c| {
+                ["report", "checkpoint", "consistency", "inclusion"].contains(&c.as_str())
+            }),
+            "{argv:?}"
+        );
         assert!(argv.iter().all(|a| !a.contains(book)), "{argv:?}");
     }
     for s in o.steps.iter().filter(|s| s.verb != "fa-verify") {
@@ -701,7 +934,7 @@ fn _selftest_neg_cite_of_the_wrong_fact() {
     assert_eq!(
         o.row("_selftest-D-01"),
         Some(
-            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
+            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree outsider=replay:verified reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
         ),
         "{}",
         o.text()
@@ -2164,6 +2397,79 @@ fn rel_row_agrees_across_book_ids_when_its_rule_holds() {
 /// The reads fixture (`crates/fa-oracles/tests/fixtures/reads/`, A7b): a
 /// per_account T with its assert_balance step, a quarter issued twice, and
 /// read-backs through each selector.
+const CONSOLIDATION: [(&str, &str); 6] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/roles.toml"),
+    ),
+    (
+        "sources.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/sources.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/expectations.toml"),
+    ),
+];
+
+/// A7b and A12 (§12.1, the replay route): a two-entity micro-book, the
+/// parent owning all of its subsidiary, read through `fa consolidate
+/// --period 2026Q1 --certify`. The consolidated balance sheet's assets line
+/// is 5,000.00 (the investment eliminated against the subsidiary's capital),
+/// and the consolidation certificate replays byte for byte (`fa replay`), its
+/// output hashing to the digest it recorded: `outsider=replay:verified`, a
+/// replay in the book (fa-verify has no consolidation recomputation). A
+/// consolidated line has no contributing-entry witness yet, so the T waits
+/// on it.
+#[test]
+fn consolidation_certificate_replays_byte_identically() {
+    let o = match run_files("consolidation_min", &CONSOLIDATION, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => *o,
+    };
+    let text = o.text();
+    assert_eq!(
+        o.row("consolidation_min-T-01"),
+        Some(
+            "UNRUN consolidation_min-T-01 T native -/default kind=footing read=consolidate,assets,2026Q1 value=5000.00 contrib=unrun(needs:A11b consolidate lines) outsider=replay:verified reason=contributing_entry"
+        ),
+        "{text}"
+    );
+    let route: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| s.reference == "consolidation_min-T-01/-")
+        .map(|s| format!("{} exit={}", words(&s.argv_redacted), s.exit))
+        .collect();
+    assert_eq!(route.len(), 2, "{text}");
+    assert!(
+        route[0].starts_with("consolidate --period exit=0"),
+        "{text}"
+    );
+    assert!(
+        route[1].starts_with("replay C:") && route[1].ends_with(" exit=0"),
+        "{text}"
+    );
+    assert!(
+        o.lines
+            .iter()
+            .any(|l| l == "OUTSIDER native verify_book=green"),
+        "{text}"
+    );
+}
+
 const READS: [(&str, &str); 6] = [
     (
         "case.toml",
@@ -2217,21 +2523,21 @@ fn per_account_t_and_its_read_back_are_read_certified() {
     assert_eq!(
         o.row("reads-T-01"),
         Some(
-            "PASS reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified"
+            "PASS reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-01"),
         Some(
-            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00"
+            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00 gql=ok"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-04"),
         Some(
-            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00 gql=ok"
         ),
         "{text}"
     );
@@ -2261,6 +2567,31 @@ fn assert_balance_at_the_fold_records_register_equals() {
     assert_eq!(
         asserts,
         [(0, "-"), (3, "FA-REF-140"), (3, "FA-REF-140")],
+        "{text}"
+    );
+}
+
+/// A12 (§12.7, step 5): book integrity runs on every book variant, not only
+/// on books with a checkpoint step. The reads fixture has none: its book's
+/// registers are advanced and `fa verify book` reports it green, and only
+/// that check runs.
+#[test]
+fn verify_book_runs_on_every_book_variant() {
+    let o = reads();
+    let text = o.text();
+    let outsider: Vec<&String> = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("OUTSIDER native "))
+        .collect();
+    assert!(!outsider.is_empty(), "{text}");
+    for line in outsider {
+        assert_eq!(line, "OUTSIDER native verify_book=green", "{text}");
+    }
+    assert!(
+        o.steps
+            .iter()
+            .any(|s| words(&s.argv_redacted) == "verify book" && s.exit == 0),
         "{text}"
     );
 }
@@ -2359,14 +2690,14 @@ fn second_issuance_of_a_period_binds_its_own_placeholder() {
     assert_eq!(
         o.row("reads-R-02"),
         Some(
-            "PASS reads-R-02 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00"
+            "PASS reads-R-02 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00 gql=ok"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-03"),
         Some(
-            "PASS reads-R-03 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1_2 value=1250.00"
+            "PASS reads-R-03 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1_2 value=1250.00 gql=ok"
         ),
         "{text}"
     );
@@ -2483,7 +2814,7 @@ fn t_whose_read_differs_from_its_published_value_fails() {
     let text = o.text();
     let row = o.row("reads-T-01").expect("the T row");
     assert!(
-        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=refused twin=refused:FA-REF-140:exit=3 ")
+        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 gql=ok assert=refused twin=refused:FA-REF-140:exit=3 ")
             && row.contains("reason=expected value=999.00 observed value=1250.00; expected assert-balance 999.00 USD recorded observed exit=3 FA-REF-140"),
         "{text}"
     );
@@ -2550,7 +2881,7 @@ fn as_originally_reported_without_issuance_or_lock_is_refused_fa_ref_161() {
     assert_eq!(
         o.row("reads-R-04"),
         Some(
-            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00 gql=ok"
         ),
         "{text}"
     );
@@ -2646,7 +2977,7 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
     assert_eq!(
         o.row("lifecycle-CASE-rc"),
         Some(
-            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3"
+            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=2026Q1:SupersededBy:later_entries=1"
         ),
         "{text}"
     );
@@ -2669,15 +3000,15 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
     for (id, row) in [
         (
             "lifecycle-R-01",
-            "PASS lifecycle-R-01 R native -/default kind=read_back read=balance,6100,2026Q1,as-originally-reported value=1000.00",
+            "PASS lifecycle-R-01 R native -/default kind=read_back read=balance,6100,2026Q1,as-originally-reported value=1000.00 gql=ok",
         ),
         (
             "lifecycle-R-02",
-            "PASS lifecycle-R-02 R native -/default kind=read_back read=balance,6100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00",
+            "PASS lifecycle-R-02 R native -/default kind=read_back read=balance,6100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00 gql=ok",
         ),
         (
             "lifecycle-R-03",
-            "PASS lifecycle-R-03 R native -/default kind=read_back read=balance,6100,2026Q1,as-currently-stated value=1200.00",
+            "PASS lifecycle-R-03 R native -/default kind=read_back read=balance,6100,2026Q1,as-currently-stated value=1200.00 gql=ok",
         ),
     ] {
         assert_eq!(o.row(id), Some(row), "{text}");
@@ -2740,8 +3071,9 @@ fn assertion_drift_reports_the_magnitude_of_the_summed_deltas() {
     assert!(drift(&down, "10000"), "{text}");
     for (id, value) in [("lifecycle-R-01", "1000.00"), ("lifecycle-R-03", "900.00")] {
         assert!(
-            down.row(id)
-                .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(&format!(" value={value}"))),
+            down.row(id).is_some_and(
+                |r| r.starts_with("PASS ") && r.ends_with(&format!(" value={value} gql=ok"))
+            ),
             "{id}: {text}"
         );
     }
@@ -2856,12 +3188,12 @@ fn restatement_intent_outside_its_case_is_refused_fa_ref_178() {
     assert!(outside.is_some() && outside < at("post"), "{text}");
     let row = o.row("lifecycle-CASE-rc").unwrap_or_default();
     assert!(
-        row.starts_with("PASS ") && row.ends_with(" outside_case=refused:FA-REF-178:exit=3"),
+        row.starts_with("PASS ") && row.contains(" outside_case=refused:FA-REF-178:exit=3 "),
         "{text}"
     );
     assert!(
         o.row("lifecycle-R-03")
-            .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(" value=1200.00")),
+            .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(" value=1200.00 gql=ok")),
         "{text}"
     );
 }
@@ -2869,6 +3201,48 @@ fn restatement_intent_outside_its_case_is_refused_fa_ref_178() {
 /// The two argv words after `--book $BOOK`.
 fn words(argv: &[String]) -> String {
     argv.get(2..4).unwrap_or_default().join(" ")
+}
+
+/// A12 (§12.7): after the case posts, `fa certificate status` of 2026Q1's
+/// first issuance (its as-filed statement certificate) reports it
+/// SupersededBy exactly the entry the case posted: an independent second
+/// half of the contributing-entry witness.
+#[test]
+fn as_filed_certificate_is_superseded_by_exactly_the_cases_entries() {
+    let o = lifecycle();
+    let text = o.text();
+    let statuses: Vec<(i128, String)> = o
+        .steps
+        .iter()
+        .filter(|s| s.reference == "rc" && words(&s.argv_redacted) == "certificate status")
+        .map(|s| (s.exit, s.argv_redacted.get(4).cloned().unwrap_or_default()))
+        .collect();
+    assert_eq!(statuses, [(0, "C:$C_ISSUE_2026Q1".to_string())], "{text}");
+    assert!(
+        o.row("lifecycle-CASE-rc")
+            .is_some_and(|r| r.ends_with(" superseded=2026Q1:SupersededBy:later_entries=1")),
+        "{text}"
+    );
+}
+
+/// A12 (§12.7): a certificate status whose later entries miss one the case
+/// posted fails the case row. The binary reports the entry, so the
+/// evaluator drops it from the observation.
+#[test]
+fn certificate_status_later_entries_missing_a_delta_fails() {
+    evaluate::DROP_LATER_ENTRY.with(|f| f.set(true));
+    let o = lifecycle_run(&[]);
+    evaluate::DROP_LATER_ENTRY.with(|f| f.set(false));
+    let row = o.row("lifecycle-CASE-rc").unwrap_or_default();
+    assert!(
+        row.starts_with("FAIL lifecycle-CASE-rc R ")
+            && row.contains(" superseded=2026Q1:SupersededBy:later_entries=0 ")
+            && row.contains(
+                "expected the as-filed certificate of 2026Q1 SupersededBy the case's 1 posted entries observed SupersededBy with 0 later entries (0 of them posted by the case)"
+            ),
+        "{}",
+        o.text()
+    );
 }
 
 /// A7b (§3.3 step 5): a history that ends before its `case_close` step

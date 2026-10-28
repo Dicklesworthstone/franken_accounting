@@ -221,6 +221,8 @@ pub struct FindingRun {
     /// The `finding_record` step that recorded it.
     pub step: i128,
     pub version: Option<i128>,
+    /// The run's certificate digest, for its outsider replay (A12).
+    pub certificate: String,
     /// Each recorded finding's `finding` object (severity, statistic,
     /// cites, narrative).
     pub findings: Vec<Json>,
@@ -330,6 +332,17 @@ pub struct BookRun<'c> {
     /// Each T read's outsider check by `<expectation>/<target>`: its route
     /// and whether it verified (A12).
     pub read_checks: BTreeMap<String, (OutsiderKind, Result<(), String>)>,
+    /// Each `checkpoint` step's label -> the state oid it created (A12).
+    pub checkpoints: BTreeMap<String, String>,
+    /// The examiner witness's cosignature of a checkpoint before the case,
+    /// when a `checkpoint_witness` step made one (A12, §12.7).
+    pub witness: Option<super::outsider::Witness>,
+    /// Each `balance` read's second read path by `<expectation>/<target>`:
+    /// whether `fa query` netted to the fold path's value (A12, §12.7).
+    pub gql: BTreeMap<String, Result<(), String>>,
+    /// Each recorded finding run's outsider replay by procedure: its
+    /// canonical workpaper exported and replayed (A12, §12.1).
+    pub run_replays: BTreeMap<String, Result<(), String>>,
 }
 
 impl<'c> BookRun<'c> {
@@ -379,6 +392,10 @@ impl<'c> BookRun<'c> {
             attestations: BTreeMap::new(),
             outsider: None,
             read_checks: BTreeMap::new(),
+            checkpoints: BTreeMap::new(),
+            witness: None,
+            gql: BTreeMap::new(),
+            run_replays: BTreeMap::new(),
         }
     }
 
@@ -939,6 +956,7 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::CaseDisclose) => self.case_disclose(step),
                 Some(StepKind::CaseClose) => self.case_close(step),
                 Some(StepKind::Checkpoint) => self.checkpoint(step),
+                Some(StepKind::CheckpointWitness) => self.checkpoint_witness(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1772,6 +1790,7 @@ impl<'c> BookRun<'c> {
             FindingRun {
                 step: seq,
                 version,
+                certificate: cert,
                 findings,
                 finding_vids,
             },
@@ -1808,8 +1827,10 @@ impl<'c> BookRun<'c> {
         // The history's end is also where every T and R row reads, and
         // each case is shown for its generated row (A7b).
         self.reads();
+        self.gql_reads();
         self.case_reads();
         self.outsider_reads();
+        self.finding_replays();
         // A book with a checkpoint then proves its bundle, replay and
         // integrity to an outsider (A8a).
         self.outsider();

@@ -743,12 +743,20 @@ impl Server<'_> {
         {
             return self.execute(request);
         }
-        let authority = match request.token.as_deref().map(|bytes| self.session(bytes)) {
-            None => None,
-            Some(Ok(authority)) => Some(authority),
-            // The ordinary dispatcher renders the token error. An unbound or
-            // forged request must never cause the System actor to publish.
-            Some(Err(_)) => return self.execute(request),
+        let authority = match self.admitted_session(&request) {
+            Ok(authority) => authority,
+            Err((exit, out)) => {
+                self.requests = self.requests.saturating_add(1);
+                return (
+                    Response {
+                        op: Op::Run,
+                        exit,
+                        stdout: out.stdout,
+                        stderr: out.stderr,
+                    },
+                    Next::Continue,
+                );
+            }
         };
         let preflight = cli::preflight_for_daemon(
             &request.argv,
@@ -816,35 +824,9 @@ impl Server<'_> {
                 // A session token binds the request to its holder's
                 // journaled capability (fa-r3q); without one the same-uid
                 // peer runs in the embedded-owner posture.
-                let bound = match request.token.as_deref().map(|bytes| self.session(bytes)) {
-                    None => None,
-                    Some(Ok(authority)) => {
-                        if let Ok(Err(refusal)) = self.book.admit_current(authority.capability()) {
-                            let (exit, out) = cli::refuse_with_authority(
-                                &request.argv,
-                                refusal,
-                                &authority,
-                                true,
-                            );
-                            return (
-                                Response {
-                                    op: Op::Run,
-                                    exit,
-                                    stdout: out.stdout,
-                                    stderr: out.stderr,
-                                },
-                                Next::Continue,
-                            );
-                        }
-                        Some(authority)
-                    }
-                    Some(Err(message)) => {
-                        let (exit, out) = cli::usage_error(
-                            &request.argv,
-                            format!("fad refused the session token: {message}"),
-                            "present a token issued in this book (`fa capability issue …`), then run `fa --token <file> …`",
-                            true,
-                        );
+                let bound = match self.admitted_session(&request) {
+                    Ok(authority) => authority,
+                    Err((exit, out)) => {
                         return (
                             Response {
                                 op: Op::Run,
@@ -942,6 +924,41 @@ impl Server<'_> {
                     Next::Stop,
                 )
             }
+        }
+    }
+
+    /// Establish current journaled authority before dispatch or a command's
+    /// System tick. An unreadable issuance is a book failure, never permission
+    /// to proceed; preserve its error class and the presented session binding.
+    fn admitted_session(
+        &self,
+        request: &Request,
+    ) -> Result<Option<fa_cli::authority::LaunchAuthority>, (u8, cli::Captured)> {
+        let Some(bytes) = request.token.as_deref() else {
+            return Ok(None);
+        };
+        let authority = self.session(bytes).map_err(|message| {
+            cli::usage_error(
+                &request.argv,
+                format!("fad refused the session token: {message}"),
+                "present a token issued in this book (`fa capability issue …`), then run `fa --token <file> …`",
+                true,
+            )
+        })?;
+        match self.book.admit_current(authority.capability()) {
+            Ok(Ok(())) => Ok(Some(authority)),
+            Ok(Err(refusal)) => Err(cli::refuse_with_authority(
+                &request.argv,
+                refusal,
+                &authority,
+                true,
+            )),
+            Err(error) => Err(cli::book_error_with_authority(
+                &request.argv,
+                error,
+                &authority,
+                true,
+            )),
         }
     }
 

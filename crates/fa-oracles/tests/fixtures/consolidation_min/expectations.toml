@@ -1,0 +1,17 @@
+# Consolidation fixture expectations: a footing T reading the consolidated balance sheet's assets line
+# certified at 2026Q1 (fa consolidate --period --certify) against the published 5,000.00. Its outsider
+# route is the consolidation certificate's byte-identical replay (fa-verify has no consolidation
+# recomputation); a consolidated line has no contributing-entry witness yet.
+
+[[expectation]]
+id = "consolidation_min-T-01"
+type = "T"
+book_variant = "native"
+statement_template = "T.footing"
+basis = ["C-1", "C-2", "C-3", "G-1"]
+kind = "footing"
+vintages = []
+read_verb = "consolidate"
+read_target = "assets"
+read_coordinate = "2026Q1"
+published = "G-1"

@@ -32,6 +32,7 @@ use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::StepDef;
 use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation, Publication};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
+use fa_oracles::cases::gql;
 use fa_oracles::cases::outsider_kind::READ_VERBS;
 use fa_oracles::json::Json;
 
@@ -66,6 +67,23 @@ pub struct Read {
     /// over the history, or why it has none (A11b). `None` for any other
     /// read.
     pub trace: Option<Result<LineTrace, String>>,
+    /// The recorded sequence a `balance` read resolved (its selector's, or
+    /// the head), for the second read path (A12).
+    pub known_at: Option<i128>,
+    /// The output digest its report certificate recorded (statement, tb and
+    /// consolidate reads), for a replay outsider route (A12).
+    pub output_digest: Option<String>,
+}
+
+/// One account's explanations over a read's fold (`BookRun::explain`).
+pub struct Explained {
+    /// The cells' nets summed, the set-aside legs taken out.
+    pub total: i128,
+    /// Each period's certificate, in fold order.
+    pub certificates: Vec<String>,
+    pub contributions: Vec<Contribution>,
+    /// The recorded sequence the explanations resolved.
+    pub known_at: Option<i128>,
 }
 
 /// A statement line's trace from the history's start to the read's head.
@@ -162,6 +180,138 @@ impl BookRun<'_> {
         }
     }
 
+    /// The second read path (A12, §12.7): each T and R `balance` read with a
+    /// value is also read with `fa query --certify` ([`gql::statement`]) at
+    /// the sequence its fold path resolved (its selector's, or the head):
+    /// a stock account's legs effective from the book's opening through the
+    /// read's period end, a flow account's legs of the read's own periods.
+    /// The rows, netted by [`gql::net`], must equal the fold path's value.
+    pub(crate) fn gql_reads(&mut self) {
+        let case = self.case;
+        let Some(set) = case.expectations.as_ref() else {
+            return;
+        };
+        let variant = self.book.stem.as_str();
+        let mut wanted: Vec<(&Expectation, Option<&Target>)> = Vec::new();
+        for e in set.expectations.iter().filter(|e| {
+            matches!(e.kind, ExpectationType::T | ExpectationType::R)
+                && e.fields.str("book_variant") == Some(variant)
+        }) {
+            let targets: Vec<&Target> = set.targets_of(&e.id).collect();
+            if targets.is_empty() {
+                wanted.push((e, None));
+            } else {
+                wanted.extend(targets.into_iter().map(|t| (e, Some(t))));
+            }
+        }
+        for (e, t) in wanted {
+            if field(e, t, "read_verb") != Some("balance") {
+                continue;
+            }
+            let reference = key(e, t);
+            let (value, known_at) = match self.reads.get(&reference) {
+                Some(Read {
+                    value: Ok(value),
+                    known_at: Some(known_at),
+                    ..
+                }) => (*value, *known_at),
+                _ => continue,
+            };
+            let verdict = self.gql_read(e, t, &reference, value, known_at);
+            self.gql.insert(reference, verdict);
+        }
+    }
+
+    fn gql_read(
+        &mut self,
+        e: &Expectation,
+        t: Option<&Target>,
+        reference: &str,
+        value: i128,
+        known_at: i128,
+    ) -> Result<(), String> {
+        let account = field(e, t, "read_target").unwrap_or("-");
+        let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
+        let value_key = if e.kind == ExpectationType::T {
+            "published"
+        } else {
+            "posted"
+        };
+        let unit = field(e, t, value_key)
+            .and_then(|f| self.value_of(f))
+            .map_or_else(|| self.book.book.base_unit.clone(), |(_, u)| u);
+        let scale = scale_of(&unit).ok_or_else(|| format!("unit `{unit}` is not registered"))?;
+        let stock = contrib::is_stock(self.book, account);
+        let periods = contrib::fold_periods(self.book, stock, coordinate)
+            .ok_or_else(|| format!("expected a period for `{coordinate}` observed none"))?;
+        let (first, last) = match (periods.first(), periods.last()) {
+            (Some(f), Some(l)) => (f.clone(), l.clone()),
+            _ => {
+                return Err(format!(
+                    "expected a period for `{coordinate}` observed none"
+                ));
+            }
+        };
+        let selection = if stock {
+            let end = self
+                .book
+                .periods
+                .iter()
+                .find(|p| p.code == last)
+                .map(|p| p.end.clone())
+                .ok_or_else(|| format!("expected a declared period {last} observed none"))?;
+            gql::Selection::Stock {
+                opening: self.book.book.opening_date.clone(),
+                end,
+            }
+        } else {
+            let code = |label: &str| {
+                self.periods
+                    .get(label)
+                    .cloned()
+                    .ok_or_else(|| format!("expected a created period for {label} observed none"))
+            };
+            gql::Selection::Flow {
+                from: code(&first)?,
+                through: code(&last)?,
+            }
+        };
+        let statement = gql::statement(account, &selection, known_at)?;
+        let call = self.call(
+            self.head,
+            reference,
+            "query",
+            vec![
+                "query".to_string(),
+                statement,
+                "--certify".to_string(),
+                "--json".to_string(),
+            ],
+        );
+        self.certificate_kind("Query");
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+            return Err(format!(
+                "expected exit=0 from query observed exit={} {}",
+                call.exit,
+                call.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string());
+        }
+        let net = gql::net(&call.array_field("query_rows", "rows"), &unit, scale)?;
+        if net == value {
+            Ok(())
+        } else {
+            self.lines.push(reproduce(&call));
+            Err(format!(
+                "expected the query's net {} observed {}",
+                format_amount(value, scale),
+                format_amount(net, scale)
+            ))
+        }
+    }
+
     /// A row's read under its own selector. An as-originally-reported read
     /// also reads the same line as currently stated, to tell whether any
     /// delta moved it ([`Read::exercised`]).
@@ -195,6 +345,8 @@ impl BookRun<'_> {
             contributions: None,
             exercised: None,
             trace: None,
+            known_at: None,
+            output_digest: None,
         };
         if !READ_VERBS.contains(&verb) {
             return fail(token, format!("needs:A7b ({verb} reads)"));
@@ -226,6 +378,7 @@ impl BookRun<'_> {
                 .map(str::to_string)
                 .into(),
             "tb" => ["tb", "--period"].map(str::to_string).into(),
+            "consolidate" => ["consolidate", "--period"].map(str::to_string).into(),
             _ => ["statement", verb, "--for"].map(str::to_string).into(),
         };
         args.push(code);
@@ -234,8 +387,8 @@ impl BookRun<'_> {
         let reference = key(e, t);
         let called = args.first().cloned().unwrap_or_default();
         // The command, as a refusal names it: `explain balance`, `statement
-        // <verb>` or `tb`.
-        let command = if verb == "tb" {
+        // <verb>`, `tb` or `consolidate`.
+        let command = if matches!(verb, "tb" | "consolidate") {
             called.clone()
         } else {
             args.get(..2).unwrap_or_default().join(" ")
@@ -270,6 +423,24 @@ impl BookRun<'_> {
                     .filter(|r| r.get("code").and_then(Json::as_str) == Some(target))
                     .filter_map(|r| r.get("net").and_then(Json::as_str))
                     .find(|n| in_unit(n))
+                    .map(str::to_string),
+            ),
+            // The consolidated balance sheet's line, its current column.
+            "consolidate" => (
+                call.str_field("report_certificate", "oid"),
+                call.event("consolidation_run")
+                    .and_then(|o| o.field("balance_sheet"))
+                    .and_then(|b| b.get("lines"))
+                    .and_then(Json::as_array)
+                    .unwrap_or_default()
+                    .iter()
+                    .find(|l| {
+                        l.get("code").and_then(Json::as_str) == Some(target)
+                            && l.get("unit").and_then(Json::as_str) == Some(unit.as_str())
+                    })
+                    .and_then(|l| l.get("amounts").and_then(Json::as_array))
+                    .and_then(<[Json]>::first)
+                    .and_then(Json::as_str)
                     .map(str::to_string),
             ),
             // A statement line's amounts are in column order; the first is
@@ -325,6 +496,8 @@ impl BookRun<'_> {
             contributions,
             exercised: None,
             trace,
+            known_at: None,
+            output_digest: call.str_field("report_certificate", "output_digest"),
         }
     }
 
@@ -444,7 +617,7 @@ impl BookRun<'_> {
         unit: &str,
         flags: &[String],
         excluded: &[String],
-    ) -> Result<(i128, Vec<String>, Vec<Contribution>), String> {
+    ) -> Result<Explained, String> {
         let scale = scale_of(unit).ok_or_else(|| format!("unit `{unit}` is not registered"))?;
         let posted_by: BTreeMap<String, String> = self
             .vids
@@ -459,7 +632,7 @@ impl BookRun<'_> {
                 None => Ok(None),
             }
         };
-        let (mut certificates, mut explained) = (Vec::new(), Vec::new());
+        let (mut certificates, mut explained, mut known_at) = (Vec::new(), Vec::new(), None);
         for label in periods {
             let code =
                 self.periods.get(label).cloned().ok_or_else(|| {
@@ -487,6 +660,7 @@ impl BookRun<'_> {
                 .to_string());
             }
             certificates.extend(call.str_field("balance_explained", "certificate"));
+            known_at = known_at.max(call.known_at());
             let mut legs = Vec::new();
             for c in call.array_field("balance_explained", "contributions") {
                 if c.get("column").and_then(Json::as_str) != Some("posted") {
@@ -537,7 +711,12 @@ impl BookRun<'_> {
                 leg.intent.as_deref().unwrap_or("-")
             ));
         }
-        Ok((folded.total, certificates, folded.contributions))
+        Ok(Explained {
+            total: folded.total,
+            certificates,
+            contributions: folded.contributions,
+            known_at,
+        })
     }
 
     /// A `balance` read: `fa explain balance --certify` in each period of
@@ -558,14 +737,16 @@ impl BookRun<'_> {
             .ok_or_else(|| format!("expected a period for `{coordinate}` observed none"))
             .and_then(|periods| self.explain(&key(e, t), account, &periods, unit, flags, &[]));
         match explained {
-            Ok((total, certificates, legs)) => Read {
+            Ok(explained) => Read {
                 token,
-                value: Ok(total),
-                certificate: certificates.last().cloned(),
-                certificates,
-                contributions: Some(legs),
+                value: Ok(explained.total),
+                certificate: explained.certificates.last().cloned(),
+                certificates: explained.certificates,
+                contributions: Some(explained.contributions),
                 exercised: None,
                 trace: None,
+                known_at: explained.known_at,
+                output_digest: None,
             },
             Err(why) => Read {
                 token,
@@ -575,6 +756,8 @@ impl BookRun<'_> {
                 contributions: None,
                 exercised: None,
                 trace: None,
+                known_at: None,
+                output_digest: None,
             },
         }
     }
@@ -609,9 +792,8 @@ impl BookRun<'_> {
             .collect();
         let mut out = Vec::new();
         for (account, sign) in accounts {
-            let (_, _, legs) =
-                self.explain(reference, &account, &periods, unit, flags, &excluded)?;
-            for mut leg in legs {
+            let explained = self.explain(reference, &account, &periods, unit, flags, &excluded)?;
+            for mut leg in explained.contributions {
                 leg.signed = leg
                     .signed
                     .checked_mul(sign)

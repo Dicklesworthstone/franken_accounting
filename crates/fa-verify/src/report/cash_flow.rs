@@ -264,7 +264,9 @@ fn subtract(a: i128, b: i128) -> Result<i128, ReportError> {
     a.checked_sub(b).ok_or_else(overflow)
 }
 
-fn ledger(mut source: VerifiedRollForward) -> Result<VerifiedGeneralLedger, ReportError> {
+pub(super) fn ledger(
+    mut source: VerifiedRollForward,
+) -> Result<VerifiedGeneralLedger, ReportError> {
     if source.rows.len() > MAX_CELLS || source.movements.len() > MAX_LINES {
         return Err(failed(
             "bounded_input",
@@ -536,7 +538,7 @@ pub(super) fn writer(size: usize) -> Result<Writer, ReportError> {
     Ok(w)
 }
 
-fn ledger_bytes(ledger: &VerifiedGeneralLedger) -> Result<Vec<u8>, ReportError> {
+pub(super) fn ledger_bytes(ledger: &VerifiedGeneralLedger) -> Result<Vec<u8>, ReportError> {
     let mut size = 4 + LEDGER_FORMAT.len() + 16 + 16 + 8 + 4 + ledger.label.len() + 8;
     add_size(
         &mut size,

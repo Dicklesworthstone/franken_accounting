@@ -9,6 +9,7 @@
 //! witness and every P row the reference oracle's verdict, so no row here
 //! can read PASS.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
@@ -31,6 +32,12 @@ use fa_registry::refusal_catalog::RefusalCatalog;
 use fa_oracles::cases::twin::{TwinExpect, TwinKind, TwinSpec};
 
 use super::run::{BookRun, FindingRun, reproduce};
+
+thread_local! {
+    /// Test-only: drop one later entry from each `fa certificate status`
+    /// observation (the negative; the binary reports every entry).
+    pub static DROP_LATER_ENTRY: Cell<bool> = const { Cell::new(false) };
+}
 
 /// One evaluated row, with the `REPRODUCE` line a FAIL prints above it.
 pub struct Evaluated {
@@ -470,6 +477,46 @@ fn case_show(run: &BookRun<'_>, c: &CaseDef) -> (Vec<(String, String)>, Vec<Stri
             ));
         }
     }
+    // A12 (§12.7): each restated period's as-filed statement certificate is
+    // SupersededBy exactly the entries the case posted, an independent
+    // second half of the contributing-entry witness.
+    let post_seq = run
+        .book
+        .steps
+        .iter()
+        .find(|x| x.step_kind() == Some(StepKind::CasePost) && x.reference == c.id)
+        .map(|x| x.seq);
+    let posted: BTreeSet<String> = run
+        .posted_steps
+        .iter()
+        .filter(|(_, seq)| Some(**seq) == post_seq)
+        .filter_map(|(intent, _)| run.vids.get(intent).cloned())
+        .collect();
+    for (period, call) in r.map(|r| r.statuses.as_slice()).unwrap_or_default() {
+        let status = call
+            .str_field("certificate_status", "status")
+            .unwrap_or_else(|| "none".to_string());
+        let mut later: BTreeSet<String> = call
+            .array_field("certificate_status", "later_entries")
+            .iter()
+            .filter_map(|e| e.as_str().map(str::to_string))
+            .collect();
+        if DROP_LATER_ENTRY.with(Cell::get) {
+            later.pop_first();
+        }
+        tokens.push((
+            "superseded".to_string(),
+            format!("{period}:{status}:later_entries={}", later.len()),
+        ));
+        if status != "SupersededBy" || later != posted {
+            fails.push(format!(
+                "expected the as-filed certificate of {period} SupersededBy the case's {} posted entries observed {status} with {} later entries ({} of them posted by the case)",
+                posted.len(),
+                later.len(),
+                later.intersection(&posted).count()
+            ));
+        }
+    }
     (tokens, fails)
 }
 
@@ -837,6 +884,22 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
             "expected ref=agree observed ref=disagree (reference {reference}; kernel {kernel})"
         ));
     }
+    // A12 (§12.1): the run's outsider replay, its canonical workpaper
+    // exported and re-executed to the same certified run.
+    if let Some(replayed) = run.run_replays.get(&p.procedure) {
+        row.projection.push((
+            "outsider".into(),
+            if replayed.is_ok() {
+                "replay:verified"
+            } else {
+                "replay:failed"
+            }
+            .into(),
+        ));
+        if let Err(why) = replayed {
+            fails.push(format!("outsider replay: {why}"));
+        }
+    }
     if fails.is_empty() {
         row.verdict = RowVerdict::Unrun;
         row.reason = Some(FILLER.into());
@@ -975,6 +1038,16 @@ fn read_against(
     if read.exercised == Some(false) {
         row.projection
             .push(("selector".into(), "not_exercised".into()));
+    }
+    // A12 (§12.7): the second read path, an R-class cross-check of two FA
+    // read paths. A query that does not net to the fold path's value fails
+    // the row.
+    if let Some(gql) = run.gql.get(&key) {
+        row.projection
+            .push(("gql".into(), if gql.is_ok() { "ok" } else { "fail" }.into()));
+        if let Err(why) = gql {
+            return Err((RowVerdict::Fail, format!("gql: {why}")));
+        }
     }
     // Exact equality at the published value's declared precision (§5.3);
     // a value stated to a coarser precision needs its rounding rule first.
@@ -1124,8 +1197,28 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
             ),
         )
     });
+    // A12 (§12.7): on a book whose examiner witness cosigned the as-filed
+    // checkpoint, a T holds only if the restated book extends it.
+    let append_only = run.witness.as_ref().and_then(|_| {
+        run.outsider
+            .as_ref()?
+            .checks
+            .iter()
+            .find(|(check, _)| check == "append_only")
+            .map(|(_, verdict)| verdict.clone())
+    });
+    if let Some(Err(why)) = &append_only {
+        fails.push(format!("append_only: {why}"));
+    }
+    let append_token = append_only.map(|verdict| {
+        (
+            "append_only".to_string(),
+            if verdict.is_ok() { "ok" } else { "fail" }.to_string(),
+        )
+    });
     if !fails.is_empty() {
         row.projection.extend(outsider_token);
+        row.projection.extend(append_token);
         row.verdict = RowVerdict::Fail;
         row.reason = Some(fails.join("; "));
         return (row, witnesses, None);
@@ -1180,6 +1273,7 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         }
     }
     row.projection.extend(outsider_token);
+    row.projection.extend(append_token);
     (row, witnesses, reproduce)
 }
 
