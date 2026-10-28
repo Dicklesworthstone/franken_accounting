@@ -2780,7 +2780,7 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
     assert_eq!(
         o.row("lifecycle-CASE-rc"),
         Some(
-            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3"
+            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=2026Q1:SupersededBy:later_entries=1"
         ),
         "{text}"
     );
@@ -2990,7 +2990,7 @@ fn restatement_intent_outside_its_case_is_refused_fa_ref_178() {
     assert!(outside.is_some() && outside < at("post"), "{text}");
     let row = o.row("lifecycle-CASE-rc").unwrap_or_default();
     assert!(
-        row.starts_with("PASS ") && row.ends_with(" outside_case=refused:FA-REF-178:exit=3"),
+        row.starts_with("PASS ") && row.contains(" outside_case=refused:FA-REF-178:exit=3 "),
         "{text}"
     );
     assert!(
@@ -3003,6 +3003,48 @@ fn restatement_intent_outside_its_case_is_refused_fa_ref_178() {
 /// The two argv words after `--book $BOOK`.
 fn words(argv: &[String]) -> String {
     argv.get(2..4).unwrap_or_default().join(" ")
+}
+
+/// A12 (§12.7): after the case posts, `fa certificate status` of 2026Q1's
+/// first issuance (its as-filed statement certificate) reports it
+/// SupersededBy exactly the entry the case posted: an independent second
+/// half of the contributing-entry witness.
+#[test]
+fn as_filed_certificate_is_superseded_by_exactly_the_cases_entries() {
+    let o = lifecycle();
+    let text = o.text();
+    let statuses: Vec<(i128, String)> = o
+        .steps
+        .iter()
+        .filter(|s| s.reference == "rc" && words(&s.argv_redacted) == "certificate status")
+        .map(|s| (s.exit, s.argv_redacted.get(4).cloned().unwrap_or_default()))
+        .collect();
+    assert_eq!(statuses, [(0, "C:$C_ISSUE_2026Q1".to_string())], "{text}");
+    assert!(
+        o.row("lifecycle-CASE-rc")
+            .is_some_and(|r| r.ends_with(" superseded=2026Q1:SupersededBy:later_entries=1")),
+        "{text}"
+    );
+}
+
+/// A12 (§12.7): a certificate status whose later entries miss one the case
+/// posted fails the case row. The binary reports the entry, so the
+/// evaluator drops it from the observation.
+#[test]
+fn certificate_status_later_entries_missing_a_delta_fails() {
+    evaluate::DROP_LATER_ENTRY.with(|f| f.set(true));
+    let o = lifecycle_run(&[]);
+    evaluate::DROP_LATER_ENTRY.with(|f| f.set(false));
+    let row = o.row("lifecycle-CASE-rc").unwrap_or_default();
+    assert!(
+        row.starts_with("FAIL lifecycle-CASE-rc R ")
+            && row.contains(" superseded=2026Q1:SupersededBy:later_entries=0 ")
+            && row.contains(
+                "expected the as-filed certificate of 2026Q1 SupersededBy the case's 1 posted entries observed SupersededBy with 0 later entries (0 of them posted by the case)"
+            ),
+        "{}",
+        o.text()
+    );
 }
 
 /// A7b (§3.3 step 5): a history that ends before its `case_close` step

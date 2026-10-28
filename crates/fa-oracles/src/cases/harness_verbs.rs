@@ -69,6 +69,8 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("checkpoint", Some("witness")),
     ("proof", Some("consistency")),
     ("proof", Some("inclusion")),
+    // and reads each restated period's as-filed certificate's status.
+    ("certificate", Some("status")),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

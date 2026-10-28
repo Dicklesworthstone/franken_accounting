@@ -9,6 +9,7 @@
 //! witness and every P row the reference oracle's verdict, so no row here
 //! can read PASS.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
@@ -31,6 +32,12 @@ use fa_registry::refusal_catalog::RefusalCatalog;
 use fa_oracles::cases::twin::{TwinExpect, TwinKind, TwinSpec};
 
 use super::run::{BookRun, FindingRun, reproduce};
+
+thread_local! {
+    /// Test-only: drop one later entry from each `fa certificate status`
+    /// observation (the negative; the binary reports every entry).
+    pub static DROP_LATER_ENTRY: Cell<bool> = const { Cell::new(false) };
+}
 
 /// One evaluated row, with the `REPRODUCE` line a FAIL prints above it.
 pub struct Evaluated {
@@ -467,6 +474,46 @@ fn case_show(run: &BookRun<'_>, c: &CaseDef) -> (Vec<(String, String)>, Vec<Stri
             fails.push(format!(
                 "expected the lineage of {target} to name Restates observed exit={}",
                 call.exit
+            ));
+        }
+    }
+    // A12 (§12.7): each restated period's as-filed statement certificate is
+    // SupersededBy exactly the entries the case posted, an independent
+    // second half of the contributing-entry witness.
+    let post_seq = run
+        .book
+        .steps
+        .iter()
+        .find(|x| x.step_kind() == Some(StepKind::CasePost) && x.reference == c.id)
+        .map(|x| x.seq);
+    let posted: BTreeSet<String> = run
+        .posted_steps
+        .iter()
+        .filter(|(_, seq)| Some(**seq) == post_seq)
+        .filter_map(|(intent, _)| run.vids.get(intent).cloned())
+        .collect();
+    for (period, call) in r.map(|r| r.statuses.as_slice()).unwrap_or_default() {
+        let status = call
+            .str_field("certificate_status", "status")
+            .unwrap_or_else(|| "none".to_string());
+        let mut later: BTreeSet<String> = call
+            .array_field("certificate_status", "later_entries")
+            .iter()
+            .filter_map(|e| e.as_str().map(str::to_string))
+            .collect();
+        if DROP_LATER_ENTRY.with(Cell::get) {
+            later.pop_first();
+        }
+        tokens.push((
+            "superseded".to_string(),
+            format!("{period}:{status}:later_entries={}", later.len()),
+        ));
+        if status != "SupersededBy" || later != posted {
+            fails.push(format!(
+                "expected the as-filed certificate of {period} SupersededBy the case's {} posted entries observed {status} with {} later entries ({} of them posted by the case)",
+                posted.len(),
+                later.len(),
+                later.intersection(&posted).count()
             ));
         }
     }

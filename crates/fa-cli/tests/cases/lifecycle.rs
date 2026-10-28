@@ -184,6 +184,9 @@ pub struct CaseRun {
     pub lineages: Vec<(String, Call)>,
     /// `fa case show <number>` after the history.
     pub show: Option<Call>,
+    /// `fa certificate status` of each restated period's first issuance
+    /// (its as-filed statement certificate) after the history (A12).
+    pub statuses: Vec<(String, Call)>,
 }
 
 /// `args`, run as the step's principal (when it names one), in robot mode.
@@ -809,6 +812,34 @@ impl<'c> BookRun<'c> {
             let call = self.call(self.head, &label, "case", args);
             if let Some(r) = self.cases.get_mut(&label) {
                 r.show = Some(call);
+            }
+            // A12 (§12.7): each restated period's as-filed statement
+            // certificate, read after the case posted.
+            let book = self.book;
+            let posted = book
+                .steps
+                .iter()
+                .any(|x| x.step_kind() == Some(StepKind::CasePost) && x.reference == label);
+            let Some(case) = book.cases.iter().find(|c| c.id == label) else {
+                continue;
+            };
+            if !posted {
+                continue;
+            }
+            for period in &case.periods {
+                let Some(oid) = self.issuances.get(period).and_then(|v| v.first()).cloned() else {
+                    continue;
+                };
+                let args = vec![
+                    s("certificate"),
+                    s("status"),
+                    format!("C:{oid}"),
+                    s("--json"),
+                ];
+                let call = self.call(self.head, &label, "certificate", args);
+                if let Some(r) = self.cases.get_mut(&label) {
+                    r.statuses.push((period.clone(), call));
+                }
             }
         }
     }
