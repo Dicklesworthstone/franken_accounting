@@ -2,11 +2,15 @@
 
 use super::*;
 
-fn agent(f: &Fixture, principal: &str, ops: &[&str]) -> LaunchAuthority {
+pub(super) fn agent(f: &Fixture, principal: &str, ops: &[&str]) -> LaunchAuthority {
     LaunchAuthority::new(f.book.clone(), None, principal, LaunchProfile::Agent, ops).unwrap()
 }
 
-fn bound(authority: &LaunchAuthority, args: &[&str], input: Option<&str>) -> (u8, Vec<Json>) {
+pub(super) fn bound(
+    authority: &LaunchAuthority,
+    args: &[&str],
+    input: Option<&str>,
+) -> (u8, Vec<Json>) {
     let mut argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     argv.push("--json".to_owned());
     let (exit, output) = fa_with_authority(
@@ -41,13 +45,13 @@ fn bound(authority: &LaunchAuthority, args: &[&str], input: Option<&str>) -> (u8
     (exit, events)
 }
 
-fn corrected(key: &str, amount: &str) -> String {
+pub(super) fn corrected(key: &str, amount: &str) -> String {
     format!(
         r#"{{"idempotency_key":"{key}","description":"Reviewed corrected amount","legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]}}"#,
     )
 }
 
-fn original(f: &Fixture) -> Json {
+pub(super) fn original(f: &Fixture) -> Json {
     ok(
         &f.book,
         &[

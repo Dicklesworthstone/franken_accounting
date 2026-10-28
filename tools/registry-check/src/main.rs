@@ -1785,9 +1785,9 @@ mod tests {
         assert!(summary.markers_checked >= 45);
 
         let g0 = check_g0_report(&root).expect("g0 report valid");
-        assert_eq!(g0.total, 37);
+        assert_eq!(g0.total, 38);
         assert_eq!(g0.missing, 0);
-        assert_eq!(g0.present + g0.owned, 37);
+        assert_eq!(g0.present + g0.owned, 38);
     }
 
     #[test]

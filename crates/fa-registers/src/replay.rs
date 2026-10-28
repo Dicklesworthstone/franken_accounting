@@ -22,11 +22,13 @@
 //! delta stream, rereading every changed vertex at the next mapped sequence
 //! (fa-vr7q). Migration visibility changes, unmodeled rows, a missing delta or
 //! a different retained marker fall back to the literal selector. The folds
-//! carry the already checked cells over additive posting suffixes. Each new
-//! entry identity and each changed cell is compared on both sides. A release,
-//! migration activation, changed historical entry or failed fast-path check
-//! uses the complete literal folds at that pair. No persisted register is an
-//! input, and an error is always decided by the literal path.
+//! carry the already checked cells over native posting and reservation-release
+//! suffixes. Each new entry identity and each changed cell is compared on both
+//! sides. Releases subtract the complete original hold in its original period;
+//! only a resolution's posted subvector enters its own period. A migration
+//! activation, changed historical entry or failed fast-path check uses the
+//! complete literal folds at that pair. No persisted register is an input, and
+//! an error is always decided by the literal path.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -88,16 +90,23 @@ pub struct ReplayWork {
     /// Entry identities actually compared, counting both books. An unchanged,
     /// previously equal prefix needs no second identity comparison.
     pub identities_compared: usize,
-    /// Entries submitted to the additive fold, counting both books and any
+    /// Entries submitted to the incremental fold, counting both books and any
     /// failed attempt before a literal fallback. Includes empty controls.
     pub appended_entries: usize,
-    /// Legs submitted to checked addition on the additive path, on both books.
+    /// Legs submitted to checked addition on the incremental path, on both books.
     /// A failed addition can stop before all the submitted legs are visited.
     pub appended_legs: usize,
+    /// Reservation targets checked on the incremental path, on both books.
+    /// Includes holds created and resolved in one mapped commit.
+    pub resolved_holds: usize,
+    /// Original pending legs submitted to checked subtraction, on both books.
+    /// A hold created and resolved in one mapped commit is never added and
+    /// needs no subtraction. Failed attempts before a fallback are included.
+    pub released_legs: usize,
     /// Pairs evaluated by the original full-prefix fold path. Its internal
     /// error fallbacks and hashing work are not measured by the other fields.
     pub full_fold_pairs: usize,
-    /// Cell comparisons on the additive path, including pending cells.
+    /// Cell comparisons on the incremental path, including pending cells.
     pub cells_compared: usize,
 }
 
@@ -359,15 +368,21 @@ struct ChangedCells {
     pending: BTreeSet<CellKey>,
 }
 
-type CheckedFolds = BTreeMap<String, CheckedPeriod>;
+#[derive(Default)]
+struct CheckedFolds {
+    periods: BTreeMap<String, CheckedPeriod>,
+    /// A literal fallback can accept an empty set of periods without exposing
+    /// an invalid resolution's fold error. Such a prefix cannot seed the
+    /// shortcut: retain `None` and let the literal path decide later pairs too.
+    resolved: Option<BTreeSet<VId>>,
+}
 
-/// Ordinary postings, reversals and newly reserved holds only add to these
-/// columns. Releases and migration visibility require the complete selector
-/// and resolution laws; they never enter this shortcut, even if empty-legged.
-fn additive(entries: &[(VId, Entry, CommitSeq)]) -> bool {
+/// Migration changes visibility of old contributions and requires the literal
+/// selector. Native resolutions have a bounded inverse: remove the complete
+/// original hold, then add the posted subvector (if any) in its own period.
+fn incremental(entries: &[(VId, Entry, CommitSeq)]) -> bool {
     entries.iter().all(|(_, entry, _)| {
-        entry.proposal.class != EntryClass::RESOLUTION
-            && !matches!(entry.proposal.origin, EntryOrigin::Migration { .. })
+        !matches!(entry.proposal.origin, EntryOrigin::Migration { .. })
             && !matches!(
                 entry.proposal.control,
                 Some(ControlPayload::MigrationControl {
@@ -380,20 +395,70 @@ fn additive(entries: &[(VId, Entry, CommitSeq)]) -> bool {
 
 fn append_folds(
     folds: &mut CheckedFolds,
-    entries: &[(VId, Entry, CommitSeq)],
+    selection: &EntrySelection,
+    from: usize,
     period_of: &mut PeriodOf<'_>,
     at: CommitSeq,
     work: &mut ReplayWork,
 ) -> Result<ChangedCells, RegisterError> {
     let mut changed = ChangedCells::default();
+    let resolved = folds.resolved.as_mut().ok_or(RegisterError::Overflow)?;
+    let entries = &selection.entries[from..];
+
+    // Resolve first, as the literal fold does. A batch may release an old MAX
+    // hold while creating a new one, or create and resolve a hold at one seq.
+    // VId order is not staging order; neither case may transiently overflow.
+    for (vid, entry, recorded_at) in entries {
+        if entry.proposal.class != EntryClass::RESOLUTION {
+            continue;
+        }
+        let target = entry
+            .proposal
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.resolution_of)
+            .ok_or(RegisterError::Overflow)?;
+        let original_index = *selection
+            .by_vid
+            .get(&target.vid)
+            .ok_or(RegisterError::Overflow)?;
+        let (_, original, original_seq) = &selection.entries[original_index];
+        // These are the literal `resolutions` predicate over the complete
+        // carried selection, including same-commit targets. A failed check
+        // only disables the shortcut; the literal path supplies the error.
+        if original.proposal.class != EntryClass::PENDING
+            || original.entry_digest != target.entry_digest
+            || original_seq > recorded_at
+            || *vid != fa_journal::rows::resolution_vid(target.vid)
+            || !resolved.insert(target.vid)
+        {
+            return Err(RegisterError::Overflow);
+        }
+        work.resolved_holds = work.resolved_holds.saturating_add(1);
+        if original_index >= from || original.proposal.legs.is_empty() {
+            // The addition pass skips holds already resolved at this pair.
+            continue;
+        }
+        let period = period_of.period(original)?;
+        let fold = folds
+            .periods
+            .get_mut(period)
+            .ok_or(RegisterError::Overflow)?;
+        release_hold(fold, original, period, &mut changed, work)?;
+    }
+
     for (vid, entry, recorded_at) in entries {
         work.appended_entries = work.appended_entries.saturating_add(1);
         if entry.proposal.legs.is_empty() {
             continue;
         }
         let period = period_of.period(entry)?;
-        let fold = folds.entry(period.to_string()).or_default();
+        let fold = folds.periods.entry(period.to_string()).or_default();
+        changed.periods.insert(period.to_string());
         let pending = entry.proposal.class == EntryClass::PENDING;
+        if pending && resolved.contains(vid) {
+            continue;
+        }
         let (cells, keys) = if pending {
             fold.holds = fold.holds.checked_add(1).ok_or(RegisterError::Overflow)?;
             (&mut fold.pending, &mut changed.pending)
@@ -418,7 +483,6 @@ fn append_folds(
                 fa_model::EncodeError::LengthOverflow,
             ));
         }
-        changed.periods.insert(period.to_string());
         for leg in &entry.proposal.legs {
             keys.insert(CellKey {
                 account: leg.account_ref,
@@ -428,6 +492,64 @@ fn append_folds(
         }
     }
     Ok(changed)
+}
+
+/// Remove a previously counted hold, including its one-per-cell entry count.
+/// Zero-count rows disappear exactly as in a literal fold that never added the
+/// resolved hold. All arithmetic is checked; malformed negative amounts or a
+/// state inconsistency fall back instead of changing the verifier's verdict.
+fn release_hold(
+    fold: &mut CheckedPeriod,
+    original: &Entry,
+    period: &str,
+    changed: &mut ChangedCells,
+    work: &mut ReplayWork,
+) -> Result<(), RegisterError> {
+    let mut touched = BTreeSet::new();
+    work.released_legs = work
+        .released_legs
+        .saturating_add(original.proposal.legs.len());
+    for leg in &original.proposal.legs {
+        if leg.amount.mantissa < 0 {
+            return Err(RegisterError::Overflow);
+        }
+        let key = CellKey {
+            account: leg.account_ref,
+            unit_id: leg.amount.unit.0,
+            period: period.to_string(),
+        };
+        let cell = fold.pending.get_mut(&key).ok_or(RegisterError::Overflow)?;
+        let slot = match leg.side {
+            fa_money::Side::Debit => &mut cell.debits,
+            fa_money::Side::Credit => &mut cell.credits,
+        };
+        *slot = slot
+            .checked_sub(leg.amount.mantissa)
+            .filter(|amount| *amount >= 0)
+            .ok_or(RegisterError::Overflow)?;
+        touched.insert(key);
+    }
+    for key in touched {
+        let cell = fold.pending.get_mut(&key).ok_or(RegisterError::Overflow)?;
+        cell.entry_count = cell
+            .entry_count
+            .checked_sub(1)
+            .ok_or(RegisterError::Overflow)?;
+        if cell.entry_count == 0 {
+            if cell.debits != 0 || cell.credits != 0 {
+                return Err(RegisterError::Overflow);
+            }
+            fold.pending.remove(&key);
+        }
+        changed.pending.insert(key);
+    }
+    fold.holds = fold.holds.checked_sub(1).ok_or(RegisterError::Overflow)?;
+    fold.legs = fold
+        .legs
+        .checked_sub(original.proposal.legs.len() as u64)
+        .ok_or(RegisterError::Overflow)?;
+    changed.periods.insert(period.to_string());
+    Ok(())
 }
 
 /// A successful previous pair proved every unchanged value equal. Compare
@@ -441,8 +563,8 @@ fn different_period(
 ) -> Option<String> {
     let mut different = BTreeSet::new();
     for period in a.periods.union(&b.periods) {
-        if source.get(period).map(|fold| fold.entries)
-            != scratch.get(period).map(|fold| fold.entries)
+        if source.periods.get(period).map(|fold| fold.entries)
+            != scratch.periods.get(period).map(|fold| fold.entries)
         {
             different.insert(period.clone());
         }
@@ -459,7 +581,7 @@ fn different_period(
 }
 
 fn checked_cell<'a>(folds: &'a CheckedFolds, key: &CellKey, pending: bool) -> Option<&'a Cell> {
-    folds.get(&key.period).and_then(|fold| {
+    folds.periods.get(&key.period).and_then(|fold| {
         if pending {
             fold.pending.get(key)
         } else {
@@ -494,10 +616,10 @@ where
 }
 
 /// The same verdict as [`verify_replay`], with transparent work counters.
-/// Additive native histories decode and fold each new entry once per side
-/// instead of revisiting every old entry at every pair. Non-additive changes
-/// retain the literal fallback. Source-map validation and scratch-book
-/// construction are unchanged and are outside these counters.
+/// Native histories decode and add each new posting once per side; resolutions
+/// additionally visit only their original pending vector. Migration and changed
+/// historical entries retain the literal fallback. Source-map validation and
+/// scratch-book construction are unchanged and are outside these counters.
 pub fn verify_replay_counted<V, W>(
     source: &Database<V>,
     scratch: &Database<W>,
@@ -600,8 +722,8 @@ where
     let mut period_of = PeriodOf::new(book);
     let mut source_selection = EntrySelection::default();
     let mut scratch_selection = EntrySelection::default();
-    let mut checked_source = CheckedFolds::new();
-    let mut checked_scratch = CheckedFolds::new();
+    let mut checked_source = CheckedFolds::default();
+    let mut checked_scratch = CheckedFolds::default();
     for pair in &map.pairs {
         source_selection.read(source, book, pair.source_seq, &mut work.source)?;
         scratch_selection.read(scratch, book, pair.scratch_seq, &mut work.scratch)?;
@@ -635,18 +757,25 @@ where
             ))));
         }
         entries_checked += src_entries.len();
-        if appended.is_some() && additive(src_changed) && additive(scr_changed) {
+        if let Some((source_from, scratch_from)) = appended
+            && checked_source.resolved.is_some()
+            && checked_scratch.resolved.is_some()
+            && incremental(src_changed)
+            && incremental(scr_changed)
+        {
             let attempt = (|| -> Result<Option<String>, RegisterError> {
                 let a = append_folds(
                     &mut checked_source,
-                    src_changed,
+                    &source_selection,
+                    source_from,
                     &mut period_of,
                     pair.source_seq,
                     work,
                 )?;
                 let b = append_folds(
                     &mut checked_scratch,
-                    scr_changed,
+                    &scratch_selection,
+                    scratch_from,
                     &mut period_of,
                     pair.scratch_seq,
                     work,
@@ -656,7 +785,7 @@ where
                 // period metadata at its exact source and scratch prefixes.
                 resolve_known_at(source, Some(pair.source_seq))?;
                 resolve_known_at(scratch, Some(pair.scratch_seq))?;
-                for period in checked_source.keys() {
+                for period in checked_source.periods.keys() {
                     period_at(source, book, period, pair.source_seq)?;
                     period_at(scratch, book, period, pair.scratch_seq)?;
                 }
@@ -675,7 +804,7 @@ where
                         pair.source_seq.0, pair.scratch_seq.0,
                     ))));
                 }
-                folds_checked += checked_source.len();
+                folds_checked += checked_source.periods.len();
                 continue;
             }
             // A partial attempted addition is not a verdict. Replace both
@@ -696,8 +825,8 @@ where
         let mut source_folds = folds_at(source, book, &periods, pair.source_seq, Some(src_entries));
         let mut scratch_folds =
             folds_at(scratch, book, &periods, pair.scratch_seq, Some(scr_entries));
-        checked_source.clear();
-        checked_scratch.clear();
+        checked_source = CheckedFolds::default();
+        checked_scratch = CheckedFolds::default();
         for period in periods {
             let (a, a_legs) = take_fold(&mut source_folds, period)?;
             let (b, b_legs) = take_fold(&mut scratch_folds, period)?;
@@ -707,10 +836,20 @@ where
                     pair.source_seq.0, pair.scratch_seq.0
                 ))));
             }
-            checked_source.insert(period.to_string(), CheckedPeriod::from_fold(a, a_legs));
-            checked_scratch.insert(period.to_string(), CheckedPeriod::from_fold(b, b_legs));
+            checked_source
+                .periods
+                .insert(period.to_string(), CheckedPeriod::from_fold(a, a_legs));
+            checked_scratch
+                .periods
+                .insert(period.to_string(), CheckedPeriod::from_fold(b, b_legs));
             folds_checked += 1;
         }
+        checked_source.resolved = crate::resolutions(src_entries)
+            .ok()
+            .map(|resolved| resolved.into_keys().collect());
+        checked_scratch.resolved = crate::resolutions(scr_entries)
+            .ok()
+            .map(|resolved| resolved.into_keys().collect());
     }
     Ok(Ok(ReplayVerification {
         seq_map_digest: digest,

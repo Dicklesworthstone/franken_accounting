@@ -4717,6 +4717,26 @@ impl Book {
         )))
     }
 
+    /// Export a native statement comparison for independent offline replay.
+    /// Both historical statements, exact deltas and zero-balance chart mapping
+    /// changes are bound by the original outer certificate. A complete signed
+    /// prefix and the shared four-registry closure supply both source frontiers.
+    /// Requires current whole-book read/produce authority, appends nothing, and
+    /// returns `None` when the requested checkpoint is unavailable. Functional
+    /// or cross-registry comparisons remain supported only by in-book replay.
+    pub fn produce_statement_diff_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::StatementDiffCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_statement_diff_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce a portable effective-date aging schedule for `fa-verify report`.
     /// Replays both the source OpenItems certificate and the historical cutoff
     /// under current whole-book read/produce authority. The complete signed

@@ -597,6 +597,49 @@ pub(crate) fn report_visibility_at(
     Ok((visible, activated))
 }
 
+/// Select the body inputs needed at an earlier comparison frontier from an
+/// already verified later report closure. This is selection, not validation:
+/// the caller must pass the result through `report_visibility_at`, which still
+/// rejects missing, duplicated, reordered or substituted required bodies.
+/// A run opened earlier but with no staged chunk yet needs no body on that
+/// side; filtering only by the Open record's date would be incorrect.
+pub(crate) fn report_bodies_at<'a>(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    bodies: &[(u64, &'a [u8])],
+    known_at: u64,
+) -> Result<Vec<(u64, &'a [u8])>, VerifyError> {
+    let mut needed = BTreeSet::new();
+    let mut opens = BTreeMap::new();
+    for (index, (envelope, (len, payload))) in envelopes.iter().zip(records).enumerate() {
+        if envelope.commit_seq > known_at
+            || envelope.kind != crate::envelope::KIND_ENTRY
+            || !matches!(envelope.class, CLASS_MIGRATION | CLASS_MIGRATION_CONTROL)
+        {
+            continue;
+        }
+        let index = index as u64;
+        match metadata(envelope, &payload[..*len], index)? {
+            Metadata::Chunk(run) => {
+                needed.insert(run);
+            }
+            Metadata::Control { run, kind: 0, .. } if opens.insert(run, index).is_some() => {
+                return Err(scope_error(index));
+            }
+            _ => {}
+        }
+    }
+    let indexes = needed
+        .into_iter()
+        .map(|run| opens.get(&run).copied().ok_or_else(|| scope_error(0)))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(bodies
+        .iter()
+        .filter(|(index, _)| indexes.contains(index))
+        .copied()
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     mod complete_tests;
@@ -727,6 +770,62 @@ mod tests {
             records.push(record(Kind::Control(RUN, kind, digest), 3, 100));
         }
         records
+    }
+
+    #[test]
+    fn historical_comparisons_select_only_required_migration_bodies_without_weakening_validation() {
+        let body = body(0, false);
+        let history = history(&body, 100, Some(1));
+        let envelopes: Vec<_> = history
+            .iter()
+            .map(|record| record.envelope.clone())
+            .collect();
+        let records: Vec<_> = history
+            .iter()
+            .map(|record| (record.len, record.payload.as_slice()))
+            .collect();
+        let bodies = [(0, body.as_slice())];
+        // First authenticate the complete later closure, as the report path
+        // does before selecting inputs for the earlier source.
+        assert_eq!(
+            report_visibility_at(&envelopes, &records, &bodies, 3)
+                .unwrap()
+                .0,
+            BTreeSet::from([1])
+        );
+        for (known_at, body_count, expected) in [
+            (0, 0, vec![]),
+            (1, 0, vec![]),
+            (2, 1, vec![]),
+            (3, 1, vec![1]),
+        ] {
+            let selected = report_bodies_at(&envelopes, &records, &bodies, known_at).unwrap();
+            assert_eq!(selected.len(), body_count);
+            let (visible, activated) =
+                report_visibility_at(&envelopes, &records, &selected, known_at).unwrap();
+            assert_eq!(visible, expected.into_iter().collect());
+            assert_eq!(
+                activated,
+                if known_at == 3 {
+                    BTreeMap::from([(1, 3)])
+                } else {
+                    BTreeMap::new()
+                }
+            );
+        }
+        assert!(
+            report_visibility_at(&envelopes, &records, &bodies, 1).is_err(),
+            "a standalone old-frontier report still rejects surplus body inputs"
+        );
+        let missing = report_bodies_at(&envelopes, &records, &[], 2).unwrap();
+        assert!(report_visibility_at(&envelopes, &records, &missing, 2).is_err());
+        let duplicated = [bodies[0], bodies[0]];
+        let selected = report_bodies_at(&envelopes, &records, &duplicated, 2).unwrap();
+        assert!(report_visibility_at(&envelopes, &records, &selected, 2).is_err());
+        let mut changed = body;
+        changed[0] ^= 1;
+        let selected = [(0, changed.as_slice())];
+        assert!(report_visibility_at(&envelopes, &records, &selected, 2).is_err());
     }
 
     fn proof(

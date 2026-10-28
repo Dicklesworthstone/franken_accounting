@@ -17,6 +17,8 @@ mod open_items_bundle;
 mod report_bundle;
 #[path = "statements/roll_forward_bundle.rs"]
 mod roll_forward_bundle;
+#[path = "statements/statement_diff_bundle.rs"]
+mod statement_diff_bundle;
 
 use std::path::Path;
 
