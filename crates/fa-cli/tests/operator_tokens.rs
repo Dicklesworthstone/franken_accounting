@@ -369,7 +369,11 @@ fn schema_only_human_tokens_record_account_controls_without_inheriting_other_rig
 
     // Correct posture supplies neither a missing operation nor issuance.
     f.refused(&witness, &open, "FA-REF-011");
-    f.refused(&never, &open, "FA-REF-156");
+    let before = f.book.head().unwrap();
+    let (exit, refused) = f.run(&never, &open, Some(account));
+    assert_eq!(exit, 7, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-156");
+    assert_eq!(f.book.head().unwrap(), before);
     assert!(f.book.accounts().unwrap().is_empty());
 
     let before = f.book.head().unwrap();
