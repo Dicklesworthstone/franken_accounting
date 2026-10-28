@@ -1015,13 +1015,6 @@ fn functional_activity_requires_its_explicit_scope_and_refuses_unvalued_foreign_
             "--activity",
             "--period",
             "FY2026-P03",
-            "--certify",
-        ],
-        vec![
-            "--functional",
-            "--activity",
-            "--period",
-            "FY2026-P03",
             "--as-of",
             "2026-03-05",
         ],
@@ -1065,6 +1058,24 @@ fn functional_activity_requires_its_explicit_scope_and_refuses_unvalued_foreign_
         assert_eq!(status, 2, "{}", output.render());
         assert_eq!(head(&f.book), before);
     }
+    // One period's functional activity is certifiable (its registered usage,
+    // fa-3ock): the report and its retained certificate, one publication.
+    let (status, certified) = run_many(
+        &f.book,
+        &[
+            "tb",
+            "--functional",
+            "--activity",
+            "--period",
+            "FY2026-P03",
+            "--certify",
+        ],
+        None,
+    );
+    assert_eq!(status, 0, "{certified:?}");
+    assert_eq!(certified.len(), 2, "{certified:?}");
+    assert_eq!(text(&certified[1], "event"), "report_certificate");
+    assert_eq!(head(&f.book), before + 1);
     let unvalued = f.file("unvalued.json", r#"{"effective_date":"2026-03-05","idempotency_key":"unvalued","legs":[{"side":"debit","account":"1000","amount":"100.00 EUR"},{"side":"credit","account":"4000","amount":"100.00 EUR"}]}"#);
     f.post(&unvalued);
     let after = head(&f.book);
@@ -2056,9 +2067,12 @@ fn functional_statement_diff_replays_saved_sources_and_exact_base_currency_chang
     );
     assert_eq!(status, 7, "{}", denied.render());
     assert!(text(data(&denied), "message").contains("produce"));
+    // fa-7dw: the reader's diff records its access receipt; the refused
+    // certification records and writes nothing.
+    assert_eq!(access_events_since(&f.book, before_replay), 1);
     assert_eq!(
         head(&f.book),
-        before_replay,
+        before_replay + 1,
         "a reader cannot certify or write through a malformed source"
     );
 

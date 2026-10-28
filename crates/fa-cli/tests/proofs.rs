@@ -901,7 +901,20 @@ fn a_bound_agent_needs_explicit_read_and_produce_and_cannot_select_a_host_file()
     assert_eq!(code, 2, "{}", refusal.render());
     assert_eq!(text(&refusal, "class"), "usage");
     assert!(!destination.exists());
-    assert_eq!(f.head(), before);
+    // fa-7dw: each bound proof read records its access receipt before it
+    // observes; the host path is refused before the book is opened, so the
+    // receipts are the only publication.
+    let book = f.open();
+    let events = book.access_log(fgdb_types::CommitSeq(before)).unwrap();
+    let commands: Vec<&str> = events
+        .iter()
+        .map(|event| {
+            assert_eq!(event.record.principal_name, "proof-agent");
+            event.record.command.as_str()
+        })
+        .collect();
+    assert_eq!(commands, ["proof checkpoint", "proof prefix"]);
+    assert_eq!(book.head().unwrap().0, before + 2);
 }
 
 #[test]
