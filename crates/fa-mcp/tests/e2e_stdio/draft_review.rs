@@ -213,6 +213,7 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
         fixture.assert_unposted(entry);
     }
 
+    let reader_start = head(&fixture.book_arg);
     let mut reader = Mcp::start_with(
         &fixture.book,
         &[
@@ -279,15 +280,18 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
         tool["inputSchema"]["properties"]["certify"]["type"],
         json!("boolean")
     );
-    for (index, name) in names.iter().enumerate() {
+    for name in names.iter() {
         let (error, text, result) = call_tool(
             &mut reader,
             "fa_close_dry_run",
             json!({"period": PERIOD, "draft": name}),
         );
         assert!(!error, "{name}: {text}");
+        // fa-7dw: the review records its access receipt before it observes,
+        // so the owner's CLI reviews the same draft at the frontier it left.
         assert_eq!(
-            text, expected[index],
+            text,
+            fixture.dry_run(name),
             "MCP preserves the CLI's complete canonical report"
         );
         let metadata = envelope(&result);
@@ -311,14 +315,18 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
         assert!(text.contains("produce"), "{text}");
     }
     assert_eq!(reader.finish(), 0);
+    // The reads published only their own access receipts, and the refused
+    // certifications nothing: no certificate metadata, no draft change.
     assert_eq!(
-        fixture.trial_balance(),
-        original_trial_balance,
-        "known_at and balances stay unchanged: no certificate metadata was published"
+        access_receipts_since(&fixture.book_arg, reader_start, "draft-review-reader"),
+        ["draft list", "case list", "close dry-run", "close dry-run"]
     );
+    let mut balances = wire(&fixture.trial_balance());
+    let original = wire(&original_trial_balance);
+    balances["known_at"] = original["known_at"].clone();
+    assert_eq!(balances, original, "balances stay unchanged");
     for (index, name) in names.iter().enumerate() {
         assert_eq!(fixture.draft(name), original_drafts[index]);
-        assert_eq!(fixture.dry_run(name), expected[index]);
     }
 
     let mut producer = Mcp::start_with(
@@ -339,7 +347,7 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
     for name in names {
         // The preceding certificate is a real maintenance publication. The
         // next review still retains the exact source commit coordinates.
-        let expected_report = fixture.dry_run(name);
+        let preceding = wire(&fixture.dry_run(name));
         let (error, text, result) = call_tool(
             &mut producer,
             "fa_close_dry_run",
@@ -352,7 +360,29 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
             2,
             "report plus retained certificate"
         );
-        assert_eq!(data[0], wire(&expected_report));
+        // fa-7dw: the certified review records its access receipt before it
+        // observes, so its source is exactly one sequence past the owner's
+        // preceding review. Everything else it derives is the same; the
+        // fields bound to that source move with it.
+        assert_eq!(
+            data[0]["source_known_at"].as_u64(),
+            preceding["source_known_at"].as_u64().map(|at| at + 1)
+        );
+        assert_eq!(
+            data[0]["rehearsal_known_at"].as_u64(),
+            data[0]["source_known_at"].as_u64().map(|at| at + 1)
+        );
+        let mut aligned = data[0].clone();
+        for field in [
+            "source_known_at",
+            "rehearsal_known_at",
+            "source_digest",
+            "seq_map_digest",
+        ] {
+            aligned[field] = preceding[field].clone();
+        }
+        assert_eq!(aligned, preceding);
+        let expected_report = data[0].to_string();
         let receipt = &data[1];
         let digest = receipt["oid"].as_str().unwrap().to_string();
         let bytes = receipt["bytes"].as_str().unwrap().to_string();
@@ -383,7 +413,7 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
                 json!({"certificate": certificate}),
             );
             assert!(!error, "{replayed}");
-            assert_eq!(replayed, expected_report);
+            assert_eq!(wire(&replayed), data[0]);
             let replay_metadata = envelope(&result);
             assert_eq!(replay_metadata["events"], json!(["draft_diff"]));
             assert_eq!(replay_metadata["certificate"], json!(digest));
@@ -407,7 +437,7 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
             json!({"certificate": locator}),
         );
         assert!(!error, "cold retained replay: {replayed}");
-        assert_eq!(replayed, expected_report);
+        assert_eq!(wire(&replayed), wire(&expected_report));
         assert_eq!(envelope(&result)["coordinate"], coordinate);
     }
     assert_eq!(cold_reader.finish(), 0);

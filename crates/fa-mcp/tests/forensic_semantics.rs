@@ -66,6 +66,45 @@ fn frontier(book: &Path) -> i128 {
     }
 }
 
+/// fa-7dw: a bound session's read commits its AccessEvent before it
+/// observes the book. Everything published after `before` must be exactly
+/// such receipts by `principal`, one sequence each, in order; returns their
+/// commands.
+fn access_receipts_since(book: &Path, before: i128, principal: &str) -> Vec<String> {
+    let since = before.to_string();
+    let log = json::parse(&cli_ok_data(book, &["access", "log", "--since", &since])).unwrap();
+    let events = log
+        .get("events")
+        .and_then(Json::as_arr)
+        .expect("access events");
+    let mut commands = Vec::with_capacity(events.len());
+    for (n, event) in (1..).zip(events) {
+        assert_eq!(
+            event.get("principal_name").and_then(Json::as_str),
+            Some(principal),
+            "{}",
+            event.render()
+        );
+        assert_eq!(
+            event.get("recorded_at"),
+            Some(&Json::Int(before + n)),
+            "{}",
+            event.render()
+        );
+        let command = event
+            .get("command")
+            .and_then(Json::as_str)
+            .expect("command");
+        commands.push(command.to_string());
+    }
+    assert_eq!(
+        frontier(book),
+        before + events.len() as i128,
+        "only access receipts moved the frontier after {before}: {commands:?}"
+    );
+    commands
+}
+
 fn make_adapter(book: &Path, grants: &[&str]) -> Adapter {
     Adapter::new(ServerConfig {
         book: Some(book.to_path_buf()),
@@ -287,8 +326,11 @@ fn solvency_inputs_and_refusals_match_cli() {
             }),
         ),
     ] {
-        let cli_data = cli_ok_data(&book, &cli_args);
+        // fa-7dw: the bound run records its access receipt before it
+        // observes, so the owner's CLI runs the same procedure afterwards, at
+        // the frontier the receipt left.
         let mcp_data = mcp_ok(&adapter, "fa_forensics_procedure", &mcp_args);
+        let cli_data = cli_ok_data(&book, &cli_args);
         assert_eq!(mcp_data, cli_data, "mismatch on {cli_args:?}");
     }
 
@@ -311,12 +353,12 @@ fn solvency_inputs_and_refusals_match_cli() {
         .to_string();
     let cert_ref = format!("C:{cert}");
 
-    let cli_list = cli_ok_data(&book, &["finding", "list", "--certificate", &cert_ref]);
     let mcp_list = mcp_ok(
         &adapter,
         "fa_findings_list",
         &json!({"certificate": cert_ref}),
     );
+    let cli_list = cli_ok_data(&book, &["finding", "list", "--certificate", &cert_ref]);
     assert_eq!(mcp_list, cli_list);
 
     let exported = json::parse(&mcp_ok(
@@ -382,7 +424,13 @@ fn solvency_inputs_and_refusals_match_cli() {
         )
         .expect_err("horizon_days=0 must refuse");
     assert_eq!(i128::from(mcp_err.exit), i128::from(cli_exit));
-    assert_eq!(frontier(&book), head_before);
+    // fa-7dw: the session's admitted run records its access receipt before the
+    // parameter is refused; the owner's refused run publishes nothing.
+    assert_eq!(
+        access_receipts_since(&book, head_before, "cpa-local"),
+        ["procedure run"]
+    );
+    let head_before = frontier(&book);
 
     // (b) Unauthorized MCP session (read-only adapter without `produce`) refuses `fa_findings_record`
     // before mutating the book.
@@ -453,6 +501,15 @@ fn solvency_inputs_and_refusals_match_cli() {
     }
 
     let bs_adapter = make_adapter(&bs_book, &["read", "produce", "post"]);
+    let mcp_bs = mcp_ok(
+        &bs_adapter,
+        "fa_forensics_procedure",
+        &json!({
+            "action": "run",
+            "id": "solvency.balance_sheet_test",
+            "effective_through": "2026-04-30"
+        }),
+    );
     let cli_bs = cli_ok_data(
         &bs_book,
         &[
@@ -462,15 +519,6 @@ fn solvency_inputs_and_refusals_match_cli() {
             "--effective-through",
             "2026-04-30",
         ],
-    );
-    let mcp_bs = mcp_ok(
-        &bs_adapter,
-        "fa_forensics_procedure",
-        &json!({
-            "action": "run",
-            "id": "solvency.balance_sheet_test",
-            "effective_through": "2026-04-30"
-        }),
     );
     assert_eq!(mcp_bs, cli_bs);
 
@@ -490,6 +538,15 @@ fn solvency_inputs_and_refusals_match_cli() {
         &["post", "--intent", &val_f, "--evidence", &bs_ev],
     );
 
+    let mcp_bs_apr20 = mcp_ok(
+        &bs_adapter,
+        "fa_forensics_procedure",
+        &json!({
+            "action": "run",
+            "id": "solvency.balance_sheet_test",
+            "effective_through": "2026-04-20"
+        }),
+    );
     let cli_bs_apr20 = cli_ok_data(
         &bs_book,
         &[
@@ -499,15 +556,6 @@ fn solvency_inputs_and_refusals_match_cli() {
             "--effective-through",
             "2026-04-20",
         ],
-    );
-    let mcp_bs_apr20 = mcp_ok(
-        &bs_adapter,
-        "fa_forensics_procedure",
-        &json!({
-            "action": "run",
-            "id": "solvency.balance_sheet_test",
-            "effective_through": "2026-04-20"
-        }),
     );
     assert_eq!(mcp_bs_apr20, cli_bs_apr20);
 
@@ -538,5 +586,11 @@ fn solvency_inputs_and_refusals_match_cli() {
         )
         .expect_err("stale ExactAsOf valuation must refuse at 2026-04-30");
     assert_eq!(i128::from(mcp_stale_err.exit), i128::from(cli_stale_exit));
-    assert_eq!(frontier(&bs_book), bs_head);
+    // The stale valuation is refused after the session's run was admitted
+    // and recorded: its access receipt is the attempt's only publication,
+    // and the owner's refused run publishes nothing.
+    assert_eq!(
+        access_receipts_since(&bs_book, bs_head, "cpa-local"),
+        ["procedure run"]
+    );
 }

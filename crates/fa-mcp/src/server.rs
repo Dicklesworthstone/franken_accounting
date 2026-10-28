@@ -1771,10 +1771,26 @@ mod tests {
                 .contains(&json!("certificate")),
             "retained listing must select one complete certified run: {schema}",
         );
+        // fa-7dw: each of the preview's book reads records its access receipt
+        // before it observes. Those receipts are the only publication: a
+        // retained finding run would move the frontier past them.
         let after = run_cli(&["book", "info"]);
+        let after_at = after["coordinate"]["known_at"]
+            .as_u64()
+            .expect("resolved book frontier");
+        let log = run_cli(&["access", "log", "--since", &before_at.to_string()]);
+        let events = log["data"]["events"].as_array().expect("access events");
+        let commands: Vec<&str> = events
+            .iter()
+            .map(|event| {
+                assert_eq!(event["principal_name"], "mcp-agent", "{event}");
+                event["command"].as_str().expect("command")
+            })
+            .collect();
+        assert_eq!(commands, ["book info", "procedure run"]);
         assert_eq!(
-            Some(before_at),
-            after["coordinate"]["known_at"].as_u64(),
+            after_at,
+            before_at + events.len() as u64,
             "reading a fresh preview must not publish a retained finding run",
         );
     }

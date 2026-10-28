@@ -107,6 +107,40 @@ fn cli_data(args: &[&str]) -> String {
     line.get("data").expect("data").render()
 }
 
+/// The book's recorded frontier, read through the owner's CLI. The owner is
+/// not a bound session, so this read leaves no access receipt (fa-7dw).
+fn head(book: &str) -> u64 {
+    let (code, stdout) = cli(&["book", "info", "--book", book, "--json"]);
+    assert_eq!(code, 0, "{stdout}");
+    let line: JsonValue = fastmcp_rust::serde_json::from_str(stdout.trim()).expect("a robot line");
+    line["coordinate"]["known_at"]
+        .as_u64()
+        .expect("book info known_at")
+}
+
+/// fa-7dw: a bound session's read commits its AccessEvent before it
+/// observes the book. Everything published after `before` must be exactly
+/// such receipts by `principal`, one sequence each, in order, and nothing
+/// else may move the frontier. Returns the receipts' commands.
+fn access_receipts_since(book: &str, before: u64, principal: &str) -> Vec<String> {
+    let since = before.to_string();
+    let log = cli_data(&["access", "log", "--since", &since, "--book", book, "--json"]);
+    let log: JsonValue = fastmcp_rust::serde_json::from_str(&log).unwrap();
+    let events = log["events"].as_array().expect("access events");
+    let mut commands = Vec::with_capacity(events.len());
+    for (n, event) in (1..).zip(events) {
+        assert_eq!(event["principal_name"], json!(principal), "{event}");
+        assert_eq!(event["recorded_at"], json!(before + n), "{event}");
+        commands.push(event["command"].as_str().expect("command").to_string());
+    }
+    assert_eq!(
+        head(book),
+        before + events.len() as u64,
+        "only access receipts moved the frontier after {before}: {commands:?}"
+    );
+    commands
+}
+
 struct Mcp {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -445,17 +479,7 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "--json",
     ]);
 
-    let expected = cli_data(&[
-        "statement",
-        "income-statement",
-        "--for",
-        "FY2026-P03",
-        "--compare",
-        "FY2026-P02",
-        "--book",
-        &b,
-        "--json",
-    ]);
+    let session_start = head(&b);
     let mut mcp = Mcp::start_with(
         &book,
         &[
@@ -493,8 +517,8 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         assert_eq!(envelope["events"], json!([event]));
         assert_eq!(envelope["authority"]["profile"], json!("agent"));
     }
-    // The following HEAD report also detects an accidental publication by a
-    // closing inspection tool: its known_at must still match the host result.
+    // A HEAD report through MCP records its access receipt before it
+    // observes (fa-7dw); the owner's CLI then reads at the frontier it left.
     let (error, output, metadata) = call_tool(
         &mut mcp,
         "fa_read_statement",
@@ -503,7 +527,24 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         }),
     );
     assert!(!error, "{output}");
+    let expected = cli_data(&[
+        "statement",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--compare",
+        "FY2026-P02",
+        "--book",
+        &b,
+        "--json",
+    ]);
     assert_eq!(output, expected);
+    // The closing inspections and the statement published nothing but their
+    // own receipts: an accidental publication would show here.
+    assert_eq!(
+        access_receipts_since(&b, session_start, "mcp-agent"),
+        ["close routes", "verify close", "statement"]
+    );
     let envelope: JsonValue =
         fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
             .unwrap();
@@ -581,6 +622,7 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
     );
     // The default reader cannot acquire produce authority from a certify flag.
     let before_refusals = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let refusals_start = head(&b);
     for (tool, args) in [
         (
             "fa_read_trial_balance",
@@ -621,6 +663,11 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         cli_data(&["book", "info", "--book", &b, "--json"]),
         before_refusals,
         "refused report publication must not advance the frontier"
+    );
+    assert_eq!(
+        head(&b),
+        refusals_start,
+        "a denied certification leaves no access receipt either"
     );
     assert_eq!(mcp.finish(), 0);
 
@@ -1951,11 +1998,12 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(!is_error, "Agent TB certification: {cert_text}");
     assert_eq!(agent_certifier.finish(), 0);
     let cert_events: JsonValue = fastmcp_rust::serde_json::from_str(&cert_text).unwrap();
-    assert_eq!(cert_events[1]["known_at"], planned["snapshot_seq"]);
-    assert_eq!(
-        cert_events[1]["recorded_at"],
-        json!(planned["snapshot_seq"].as_u64().unwrap() + 1)
-    );
+    // fa-7dw: the certifying read records its access receipt before it
+    // observes, so its certificate binds the frontier one past the plan's
+    // snapshot and is recorded right after that receipt.
+    let snapshot = planned["snapshot_seq"].as_u64().unwrap();
+    assert_eq!(cert_events[1]["known_at"], json!(snapshot + 1));
+    assert_eq!(cert_events[1]["recorded_at"], json!(snapshot + 2));
 
     let (is_error, text, result) =
         call_tool(&mut mcp, "fa_post_commit_plan", json!({"plan": encoded}));
@@ -2194,6 +2242,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert!(!is_error, "{text}");
     let hold: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
     let before_void = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let before_void_seq = head(&b);
     let pending = cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -2219,10 +2268,24 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         cli_data(&["book", "info", "--book", &b, "--json"]),
         before_void
     );
+    // fa-7dw: the void rehearsal records its access receipts; the refused
+    // commit publishes nothing, so the hold is still pending at HEAD.
     assert_eq!(
-        cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]),
-        pending
+        access_receipts_since(&b, before_void_seq, "operator"),
+        ["chart list", "resolve"]
     );
+    let mut still_pending: JsonValue = fastmcp_rust::serde_json::from_str(&cli_data(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--book",
+        &b,
+        "--json",
+    ]))
+    .unwrap();
+    let pending: JsonValue = fastmcp_rust::serde_json::from_str(&pending).unwrap();
+    still_pending["known_at"] = pending["known_at"].clone();
+    assert_eq!(still_pending, pending);
     log(
         "portable plans: zero-write rehearsal, fixed-authority commit and retry, tamper and foreign authority refused, dangerous void remains pending",
     );
@@ -2385,7 +2448,12 @@ fn batch_plans_rehearse_for_agents_and_commit_atomically_for_bound_preparers() {
             .is_some_and(|message| message.contains("batch member 1")),
         "{refused}"
     );
-    assert_eq!(head(), before);
+    // fa-7dw: a rehearsal records its access receipt before it observes, so
+    // a refused one leaves exactly that receipt and nothing else.
+    assert_eq!(
+        access_receipts_since(&b, before, "mcp-agent"),
+        ["chart list", "post"]
+    );
 
     // The Agent-bound batch route rehearses the complete request even when
     // dry_run is omitted; it never suggests that the artifact grants authority.
@@ -2423,10 +2491,12 @@ fn batch_plans_rehearse_for_agents_and_commit_atomically_for_bound_preparers() {
     assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-013");
     assert_eq!(agent.finish(), 0);
     assert_eq!(
-        head(),
-        before,
+        access_receipts_since(&b, before, "mcp-agent"),
+        ["chart list", "post", "chart list"],
         "Agent rehearsal and refused commit publish no member, outcome or certificate"
     );
+
+    let before = head();
 
     let launch = ["--profile", "preparer", "--principal", "batch-operator"];
     let mut preparer = Mcp::start_with(&book, &launch);
@@ -2475,7 +2545,13 @@ fn batch_plans_rehearse_for_agents_and_commit_atomically_for_bound_preparers() {
         envelope["next_actions"][0]["command"],
         "fa_post_commit_plan"
     );
-    assert_eq!(head(), before);
+    assert_eq!(
+        access_receipts_since(&b, before, "batch-operator"),
+        ["chart list", "post"],
+        "the refused adoption publishes nothing; the rehearsal only its receipt"
+    );
+    // The receipt precedes the plan's guarded basis, so the plan stands.
+    assert_eq!(planned["snapshot_seq"], json!(head()));
 
     let (error, text, result) = call_tool(
         &mut preparer,
@@ -2512,8 +2588,13 @@ fn batch_plans_rehearse_for_agents_and_commit_atomically_for_bound_preparers() {
         assert_eq!(actual["proposal_digest"], preview["proposal_digest"]);
         assert_eq!(actual["entry_digest"], preview["entry_digest"]);
     }
+    let committed_at = committed["recorded_at"].as_u64().unwrap();
+    assert_eq!(
+        access_receipts_since(&b, committed_at, "batch-operator"),
+        ["entry show", "entry show"],
+        "the successful batch is one publication; the member reads add only their receipts"
+    );
     let after = head();
-    assert_eq!(after, before + 1, "the successful batch is one publication");
     assert_eq!(preparer.finish(), 0);
 
     // A fresh process with the same launch authority can retry the exact
@@ -2865,6 +2946,8 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     };
     let before = cli(&["book", "info", "--book", &b, "--json"]);
     assert_eq!(before.0, 0);
+    let before_data = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let before_seq = head(&b);
     let mut mcp = Mcp::start_with(
         &book,
         &[
@@ -3010,10 +3093,16 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     );
     assert!(error, "inline bytes never authorize a dangerous MCP commit");
     assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-007");
+    // fa-7dw: each read-authorized plan delivery records its access receipt;
+    // the refused commits and the self-approval publish nothing.
     assert_eq!(
-        cli(&["book", "info", "--book", &b, "--json"]),
-        before,
-        "the recorded frontier must not move"
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_data
+    );
+    assert_eq!(
+        access_receipts_since(&b, before_seq, "reader"),
+        ["period close", "period open"],
+        "the recorded frontier moves only by the plan deliveries' receipts"
     );
     assert_eq!(
         std::fs::read_to_string(&victim).unwrap(),
@@ -3547,10 +3636,13 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
     let active_pin = active_data["known_at"].as_u64().unwrap().to_string();
     assert_ne!(active_pin, before_pin);
 
-    let inspect = |mcp: &mut Mcp, arguments: JsonValue, expected: &str| {
+    // fa-7dw: each bound read records its access receipt before it observes,
+    // so the owner's CLI answers the same question after the MCP read, at the
+    // frontier that read left.
+    let inspect = |mcp: &mut Mcp, arguments: JsonValue, cli_args: &[&str]| {
         let (error, output, metadata) = call_tool(mcp, "fa_bank_history", arguments);
         assert!(!error, "{output}");
-        assert_eq!(output, expected);
+        assert_eq!(output, cli_data(cli_args));
         assert!(
             !output.contains(reference),
             "source reference disclosed: {output}"
@@ -3567,10 +3659,10 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         assert_eq!(envelope["authority"]["profile"], json!("agent"));
         assert_eq!(envelope["coordinate"]["known_at"], data["known_at"]);
     };
-    let inspect_reconciliation = |mcp: &mut Mcp, arguments: JsonValue, expected: &str| {
+    let inspect_reconciliation = |mcp: &mut Mcp, arguments: JsonValue, cli_args: &[&str]| {
         let (error, output, metadata) = call_tool(mcp, "fa_bank_reconciliation", arguments);
         assert!(!error, "{output}");
-        assert_eq!(output, expected, "CLI/MCP metadata parity");
+        assert_eq!(output, cli_data(cli_args), "CLI/MCP metadata parity");
         assert!(
             !output.contains(reference),
             "source reference disclosed: {output}"
@@ -3595,27 +3687,28 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         "--grant",
         "reconcile",
     ];
+    let mut before_history_args = history_args.to_vec();
+    before_history_args.extend(["--as-known-at", before_pin.as_str()]);
+    assert_eq!(cli_data(&before_history_args), before);
+    assert_eq!(cli_data(&before_reconciliation_args), before_reconciliation);
+    let session_start = head(&b);
     let mut mcp = Mcp::start_with(&book, &launch);
     mcp.discover();
     inspect(
         &mut mcp,
         json!({"account": "1000", "import": manifest}),
-        &active,
+        &history_args,
     );
     inspect(
         &mut mcp,
         json!({"account": "1000", "import": manifest, "as_known_at": before_pin}),
-        &before,
+        &before_history_args,
     );
-    inspect_reconciliation(
-        &mut mcp,
-        json!({"import": manifest}),
-        &active_reconciliation,
-    );
+    inspect_reconciliation(&mut mcp, json!({"import": manifest}), &reconciliation_args);
     inspect_reconciliation(
         &mut mcp,
         json!({"import": manifest, "as_known_at": before_pin}),
-        &before_reconciliation,
+        &before_reconciliation_args,
     );
 
     // Existing source-bearing tools remain present and keep their original
@@ -3677,10 +3770,24 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
         );
     }
     assert_eq!(mcp.finish(), 0);
+    let mut active_history_args = history_args.to_vec();
+    active_history_args.extend(["--as-known-at", active_pin.as_str()]);
     assert_eq!(
-        cli_data(&history_args),
+        cli_data(&active_history_args),
         active,
-        "reads and refusals must not publish"
+        "reads and refusals must not change the match history"
+    );
+    assert_eq!(
+        access_receipts_since(&b, session_start, "mcp-agent"),
+        [
+            "bank history",
+            "bank history",
+            "bank reconciliation",
+            "bank reconciliation",
+            "bank match",
+            "bank status",
+        ],
+        "each admitted read leaves one receipt; confirmation and forbidden arguments none"
     );
 
     // A release preserves the original decision and its prior active prefix.
@@ -3729,23 +3836,28 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
     assert_eq!(state["match_drift"], json!(true));
     assert_eq!(state["cash_drift"], json!(false));
     assert_eq!(state["balance_drift"], json!(false));
+    let after_pin = after_data["known_at"].as_u64().unwrap().to_string();
+    let mut active_reconciliation_args = reconciliation_args.to_vec();
+    active_reconciliation_args.extend(["--as-known-at", active_pin.as_str()]);
+    assert_eq!(cli_data(&active_reconciliation_args), active_reconciliation);
+    let session_start = head(&b);
     let mut mcp = Mcp::start_with(&book, &launch);
     mcp.discover();
     inspect(
         &mut mcp,
         json!({"account": "1000", "import": manifest}),
-        &after,
+        &history_args,
     );
     inspect(
         &mut mcp,
         json!({"account": "1000", "import": manifest, "as_known_at": active_pin}),
-        &active,
+        &active_history_args,
     );
-    inspect_reconciliation(&mut mcp, json!({"import": manifest}), &after_reconciliation);
+    inspect_reconciliation(&mut mcp, json!({"import": manifest}), &reconciliation_args);
     inspect_reconciliation(
         &mut mcp,
         json!({"import": manifest, "as_known_at": active_pin}),
-        &active_reconciliation,
+        &active_reconciliation_args,
     );
     assert_eq!(mcp.finish(), 0);
 
@@ -3776,10 +3888,22 @@ fn bank_history_over_stdio_preserves_releases_and_source_authority() {
     assert_eq!(refused["exit"], json!(7));
     assert!(output.contains("reconcile"), "{output}");
     assert_eq!(reader.finish(), 0);
+    let mut after_history_args = history_args.to_vec();
+    after_history_args.extend(["--as-known-at", after_pin.as_str()]);
     assert_eq!(
-        cli_data(&history_args),
+        cli_data(&after_history_args),
         after,
-        "history reads and denials must not publish"
+        "history reads and denials must not change the history"
+    );
+    assert_eq!(
+        access_receipts_since(&b, session_start, "mcp-agent"),
+        [
+            "bank history",
+            "bank history",
+            "bank reconciliation",
+            "bank reconciliation",
+        ],
+        "the reconciling session's reads leave one receipt each; the reader's denials none"
     );
 }
 
@@ -4156,6 +4280,7 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
     assert_eq!(uploaded["already_recorded"], json!(false));
     assert_ne!(uploaded["oid"], retained["oid"]);
     let before = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let before_seq = head(&b);
     let (error, repeated, _) = call_tool(
         &mut mcp,
         "fa_fx_rate",
@@ -4312,6 +4437,14 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         json!("FA-REF-007")
     );
 
+    // fa-7dw: the bound read commits its access receipt before it observes,
+    // so the owner's CLI asks the same question at the frontier it left.
+    let (error, output, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"functional": true, "activity": true, "period": "FY2026-P03"}),
+    );
+    assert!(!error, "functional activity through MCP: {output}");
     let expected = cli_data(&[
         "tb",
         "--functional",
@@ -4322,12 +4455,6 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         &b,
         "--json",
     ]);
-    let (error, output, _) = call_tool(
-        &mut mcp,
-        "fa_read_trial_balance",
-        json!({"functional": true, "activity": true, "period": "FY2026-P03"}),
-    );
-    assert!(!error, "functional activity through MCP: {output}");
     assert_eq!(output, expected, "MCP and CLI functional data must agree");
     let activity: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
     assert_eq!(activity["scope"], json!("period_activity"));
@@ -4336,6 +4463,12 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
     assert_eq!(activity["totals"]["debits"], json!("110.00 USD"));
     assert_eq!(activity["totals"]["credits"], json!("110.00 USD"));
     assert_eq!(activity["balanced"], json!(true));
+    let (error, stock, _) = call_tool(
+        &mut mcp,
+        "fa_read_trial_balance",
+        json!({"functional": true, "as_of": "2026-04-30"}),
+    );
+    assert!(!error, "cumulative functional stock through MCP: {stock}");
     let expected_stock = cli_data(&[
         "tb",
         "--functional",
@@ -4345,12 +4478,6 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         &b,
         "--json",
     ]);
-    let (error, stock, _) = call_tool(
-        &mut mcp,
-        "fa_read_trial_balance",
-        json!({"functional": true, "as_of": "2026-04-30"}),
-    );
-    assert!(!error, "cumulative functional stock through MCP: {stock}");
     assert_eq!(stock, expected_stock, "MCP and CLI stock data must agree");
     let stock: JsonValue = fastmcp_rust::serde_json::from_str(&stock).unwrap();
     assert_eq!(stock["scope"], json!("stock"));
@@ -4372,6 +4499,11 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         cli_data(&["book", "info", "--book", &b, "--json"]),
         before,
         "exact retry, route reads, revaluation review and functional reads must not publish"
+    );
+    assert_eq!(
+        access_receipts_since(&b, before_seq, "fx-agent-uploader"),
+        ["fx routes", "fx revalue", "tb", "tb", "tb"],
+        "the reads and the review leave one receipt each; the retry and refusals none"
     );
 }
 
@@ -5079,6 +5211,19 @@ fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
         ]);
     }
     let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+
+    let session_start = head(&b);
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.audit"]);
+    mcp.discover();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_audit_sample",
+        json!({"method": "uniform", "account": "1200", "seed": 7, "size": 2}),
+    );
+    assert!(!error, "a read-only Agent session draws a sample: {text}");
+    let drawn = parse(&text);
+    // fa-7dw: the draw recorded its access receipt before it observed, so
+    // the owner's CLI draws the same sample at the frontier the draw left.
     let expected = parse(&cli_data(&[
         "sample",
         "uniform",
@@ -5092,16 +5237,6 @@ fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
         &b,
         "--json",
     ]));
-
-    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.audit"]);
-    mcp.discover();
-    let (error, text, _) = call_tool(
-        &mut mcp,
-        "fa_audit_sample",
-        json!({"method": "uniform", "account": "1200", "seed": 7, "size": 2}),
-    );
-    assert!(!error, "a read-only Agent session draws a sample: {text}");
-    let drawn = parse(&text);
     for key in [
         "known_at",
         "population_count",
@@ -5147,6 +5282,10 @@ fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
         "{text}"
     );
     assert_eq!(mcp.finish(), 0);
+    assert_eq!(
+        access_receipts_since(&b, session_start, "mcp-agent"),
+        ["sample uniform", "sample mus", "sample evaluate"]
+    );
 }
 
 /// fa-5c1: the query cluster runs the CLI's `fa query`. The same statement
@@ -5203,9 +5342,9 @@ fn the_query_cluster_runs_the_clis_profile_statement() {
     let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
     let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, l.side AS side, COUNT(*) AS legs ORDER BY account FOR PERIOD 'FY2026-P03'";
     let summed = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side";
-    let expected = parse(&cli_data(&["query", statement, "--book", &b, "--json"]));
     let expected_sum = parse(&cli_data(&["query", summed, "--book", &b, "--json"]));
 
+    let session_start = head(&b);
     let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.query"]);
     mcp.discover();
     let (error, text, _) = call_tool(&mut mcp, "fa_query_gql", json!({"statement": statement}));
@@ -5214,6 +5353,9 @@ fn the_query_cluster_runs_the_clis_profile_statement() {
         "a read-only Agent session queries the graph: {text}"
     );
     let rows = parse(&text);
+    // fa-7dw: the query recorded its access receipt before it observed, so
+    // the owner's CLI asks the same statement at the frontier it left.
+    let expected = parse(&cli_data(&["query", statement, "--book", &b, "--json"]));
     for key in ["known_at", "native", "columns", "rows", "result_digest"] {
         assert_eq!(rows[key], expected[key], "{key}: {text}");
     }
@@ -5241,6 +5383,10 @@ fn the_query_cluster_runs_the_clis_profile_statement() {
     assert_eq!(refused["refusal_id"], json!("FA-REF-189"), "{text}");
     assert_eq!(refused["exit"], json!(3), "{text}");
     assert_eq!(mcp.finish(), 0);
+    assert_eq!(
+        access_receipts_since(&b, session_start, "mcp-agent"),
+        ["query", "query"]
+    );
 }
 
 /// fa-75j4: once a Revision case is Posted (on the host: its posting needs
@@ -5464,6 +5610,23 @@ fn error_shape_matches_appendix_d() {
     let file = dir.join("unbalanced.json");
     std::fs::write(&file, unbalanced.to_string()).unwrap();
     let file = file.display().to_string();
+
+    let before = head(&b);
+    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    mcp.discover();
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({"intent": unbalanced, "evidence": [oid]}),
+    );
+    assert!(is_error, "an unbalanced entry is refused: {text}");
+    let e = structured_error(&text);
+    // fa-7dw: the refusal instance id binds the coordinate it was issued at,
+    // so the owner's CLI is refused at the frontier the session left.
+    assert_eq!(
+        access_receipts_since(&b, before, "operator"),
+        ["chart list"]
+    );
     let (code, stdout) = cli(&[
         "post",
         "--intent",
@@ -5479,16 +5642,6 @@ fn error_shape_matches_appendix_d() {
         fastmcp_rust::serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
     let cli_refusal = cli_line["data"]["refusal"].clone();
     assert_eq!(cli_refusal["code"], json!("FA-REF-001"), "{stdout}");
-
-    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
-    mcp.discover();
-    let (is_error, text, _) = call_tool(
-        &mut mcp,
-        "fa_post_post",
-        json!({"intent": unbalanced, "evidence": [oid]}),
-    );
-    assert!(is_error, "an unbalanced entry is refused: {text}");
-    let e = structured_error(&text);
     log(format!("appendix D refusal: {e}"));
     let data = &e["data"];
     assert_eq!(
