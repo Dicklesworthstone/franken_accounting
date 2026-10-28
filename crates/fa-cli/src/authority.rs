@@ -205,10 +205,10 @@ impl LaunchAuthority {
     }
 
     /// Bind an ordinary CLI or daemon request to its holder's exact token.
-    /// Human operators with explicit approval, period-control, witness or hold
-    /// authority may confirm their commands. Every one of those operations
-    /// is outside both MCP launch ceilings, so a token relayed by MCP can
-    /// never acquire confirmation authority at the daemon.
+    /// A Human operator whose exact operations exceed both MCP launch
+    /// ceilings may confirm commands. A token relayed by MCP can therefore
+    /// never acquire confirmation authority at the daemon. The capability
+    /// still decides which registered operations the holder may perform.
     ///
     /// Tokens within the MCP ceiling retain the existing restricted posture,
     /// even when their base profile and operator kind are Human: the daemon
@@ -223,9 +223,14 @@ impl LaunchAuthority {
         let capability = token.capability();
         let operator = capability.profile() == Profile::Human
             && capability.operator_kind() == fa_policy::OperatorKind::Human
-            && [Op::Approve, Op::Close, Op::Reopen, Op::Witness, Op::Hold]
-                .iter()
-                .any(|op| capability.holds(*op));
+            && [LaunchProfile::Agent, LaunchProfile::Preparer]
+                .into_iter()
+                .all(|profile| {
+                    capability
+                        .ops()
+                        .iter()
+                        .any(|op| !profile.ceiling().contains(op))
+                });
         if !operator {
             return Self::from_token(book, keys, token);
         }
@@ -835,7 +840,22 @@ mod tests {
     #[test]
     fn human_operator_tokens_preserve_caveats_and_cannot_bind_mcp() {
         let secret = [0x31; 32];
-        for op in [Op::Approve, Op::Close, Op::Reopen, Op::Witness, Op::Hold] {
+        for op in [
+            Op::PostClosed,
+            Op::Approve,
+            Op::Close,
+            Op::Reopen,
+            Op::Restate,
+            Op::Migrate,
+            Op::SchemaChange,
+            Op::RuleChange,
+            Op::IssueCapability,
+            Op::Witness,
+            Op::Hold,
+            Op::Erase,
+            Op::Privileged,
+            Op::Receivership,
+        ] {
             // The daemon sees only token bytes, so these sets must remain
             // disjoint even if an MCP launch ceiling changes in the future.
             for profile in [LaunchProfile::Agent, LaunchProfile::Preparer] {
@@ -907,22 +927,51 @@ mod tests {
             assert_eq!(ordinary.capability(), strict.capability());
             assert_eq!(ordinary.envelope_json(), strict.envelope_json());
         }
-        // Witness is legal in the base Agent capability vocabulary, but
-        // never grants an AI operator the Human confirmation posture.
-        for profile in [Profile::Agent, Profile::Human, Profile::System] {
-            let capability =
-                Capability::new(principal_vid("holder"), profile, &[Op::Witness], VId(1))
+        // Even the full Human Preparer ceiling can be relayed by MCP and
+        // must never acquire operator confirmation at the daemon.
+        let preparer = token(
+            Capability::new(
+                principal_vid("holder"),
+                Profile::Human,
+                &[
+                    Op::Read,
+                    Op::Post,
+                    Op::PostSoftclosed,
+                    Op::Verify,
+                    Op::Reconcile,
+                    Op::Produce,
+                    Op::PartialView,
+                    Op::Maintain,
+                ],
+                VId(1),
+            )
+            .unwrap(),
+        );
+        let strict = LaunchAuthority::from_token(PathBuf::from("/book"), None, &preparer).unwrap();
+        let ordinary =
+            LaunchAuthority::from_operator_token(PathBuf::from("/book"), None, &preparer).unwrap();
+        assert!(!ordinary.can_confirm());
+        assert_eq!(ordinary.capability(), strict.capability());
+        assert_eq!(ordinary.envelope_json(), strict.envelope_json());
+
+        // These operations are legal in the base Agent vocabulary but
+        // exceed MCP's ceilings. None makes an AI operator Human.
+        for op in [Op::Witness, Op::PostClosed, Op::Migrate, Op::Hold] {
+            for profile in [Profile::Agent, Profile::Human, Profile::System] {
+                let capability = Capability::new(principal_vid("holder"), profile, &[op], VId(1))
                     .unwrap()
                     .with_operator_kind(fa_policy::OperatorKind::Agent)
                     .unwrap();
-            assert!(
-                LaunchAuthority::from_operator_token(
-                    PathBuf::from("/book"),
-                    None,
-                    &token(capability),
-                )
-                .is_err()
-            );
+                assert!(
+                    LaunchAuthority::from_operator_token(
+                        PathBuf::from("/book"),
+                        None,
+                        &token(capability),
+                    )
+                    .is_err(),
+                    "{profile:?}: {op}"
+                );
+            }
         }
     }
 

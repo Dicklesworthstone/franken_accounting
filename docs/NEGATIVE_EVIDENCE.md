@@ -865,3 +865,63 @@ requires the capability refusal, unchanged head and unchanged complete draft.
 The original lawful Human promotion, exact member order, retry, rejection of
 overapplication and historical replay assertions remain. These last fixture
 corrections still require native execution.
+
+## 2026-10-28 UTC — Extraction context contract remains unmet
+
+Original bead `fa-646` explicitly requires extraction under a `Cx` with
+filesystem/process capability, only in the facade/CLI posture. At
+`47fdfb6a`, `fa-docket/src/intake.rs` is unchanged from `6254c9f6`:
+`resolve_binary_in_path` observes PATH and file metadata without a context;
+`probe_tool_version`, `run_focr_extraction` and `run_fw_extraction` invoke
+blocking `Command::output` without a `Cx` or purpose-typed wrapper. The
+historical five Docket and two journal tests did not establish that promise.
+The original bead is reopened with its owner, description and dependencies
+preserved. No replacement task or reduced acceptance substitutes for it.
+
+This is a source-established missing capability/runtime contract, not an
+executed exploit or an OCR/ASR accuracy result. Preserve the implemented
+missing-tool/model UNRUN outcomes, advisory AgentUpload/non-replayable
+grading and DERIVED_FROM lineage. The repair must admit context before
+environment/filesystem/process observations and provide structured,
+bounded, cancellable child execution. Removing extraction or adding an
+unused context parameter would not meet the original contract. That repair
+and its native qualification remain pending.
+
+The frozen `6254c9f6` Tier 0 check also completed with Cargo exit 101:
+`fa-registers/tests/migration.rs:2344` had mutation-match arms returning
+`&mut WriteBatch` versus `()`. Peer commit `e4a756cc` already fixes that
+typing error on current main. The driver exited 1 and voided its overall
+single-tree verdict because live HEAD moved to `47fdfb6a` during execution;
+no Tier 0 PASS note was produced. The frozen compiler diagnostic agrees
+with the frozen source, but does not establish a current-main failure.
+Current native requalification remains UNRUN under the unchanged disk
+reserve check (exit 1); no threshold, gate or test scope was weakened.
+
+## 2026-10-28 UTC — Human token routing omitted registered authority
+
+At `47fdfb6a`, `from_operator_token` recognized only Approve, Close,
+Reopen, Witness and Hold. A valid Human token granting only SchemaChange,
+for example, fell through to the MCP Preparer ceiling and was rejected
+before reaching the existing chart-control handler. The same classification
+omitted PostClosed, Restate, Migrate, RuleChange, IssueCapability, Erase,
+Privileged and Receivership. These are source-established routing omissions;
+no new runtime result is claimed here.
+
+The candidate recognizes a Human-profile, Human-operator token when its
+exact operation set exceeds both existing MCP launch ceilings. It retains
+the token, commitment, caveats and issuance admission. Neither MCP ceiling
+changes; tokens admissible under either ceiling cannot gain operator
+confirmation. The existing exact-token regression now covers all fourteen
+operations outside those ceilings. Negative coverage retains the full
+Preparer ceiling without confirmation and rejects AI operator kinds even
+for operations that the base Agent vocabulary permits.
+
+The real operator workflow regression issues a SchemaChange-only token,
+opens and closes an account, verifies exact retry without a new commit,
+and requires missing authority and missing issuance to leave the head and
+chart unchanged. The existing binary test also issues and loads that token
+through `fa --token`, retaining its original confirmation checks. These
+new checks remain unexecuted. Formatting and the three-file static UBS scan
+exit 0 (zero critical, 284 warnings); native compilation, tests, Clippy and
+full gates remain UNRUN under the unchanged disk reserve. Original
+`fa-mg2j` remains in progress with its full acceptance intact.

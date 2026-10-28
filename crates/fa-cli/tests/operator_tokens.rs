@@ -342,6 +342,70 @@ fn human_tokens_close_and_approve_exact_plans_without_inheriting_rights() {
 }
 
 #[test]
+fn schema_only_human_tokens_record_account_controls_without_inheriting_other_rights() {
+    let mut f = Fixture::new(0xb6);
+    let witness = f.issue(&token("schema-test-witness", &[Op::Witness], 31));
+    f.issuer = Capability::embedded(
+        principal_vid(ISSUER),
+        &["issue_capability", "schema_change"],
+    )
+    .unwrap();
+    let schema_token = token("schema-manager", &[Op::SchemaChange], 32);
+    assert!(LaunchAuthority::from_token(f.dir.join("book"), None, &schema_token).is_err());
+    let schema = f.issue(&schema_token);
+    assert!(schema.can_confirm());
+    assert_eq!(schema.capability(), schema_token.capability());
+    let never = f.authority(&token("unissued-schema", &[Op::SchemaChange], 33));
+    let open = [
+        "chart",
+        "open",
+        "-",
+        "--opened",
+        "2026-03-01",
+        "--key",
+        "human-schema-open",
+    ];
+    let account = r#"{"code":"6100","name":"Office supplies","type":"Expense","unit":"USD"}"#;
+
+    // Correct posture supplies neither a missing operation nor issuance.
+    f.refused(&witness, &open, "FA-REF-011");
+    f.refused(&never, &open, "FA-REF-156");
+    assert!(f.book.accounts().unwrap().is_empty());
+
+    let before = f.book.head().unwrap();
+    let opened = f.ok(&schema, &open, Some(account));
+    assert_eq!(text(&opened, "action"), "open");
+    assert_eq!(text(&opened, "code"), "6100");
+    assert_eq!(field(&opened, "already_recorded"), &Json::Bool(false));
+    assert!(f.book.head().unwrap() > before);
+    let accounts = f.book.accounts().unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].code, "6100");
+
+    let head = f.book.head().unwrap();
+    let retry = f.ok(&schema, &open, Some(account));
+    assert_eq!(field(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(
+        field(&retry, "control_entry"),
+        field(&opened, "control_entry")
+    );
+    assert_eq!(f.book.head().unwrap(), head);
+
+    let closed = f.ok(
+        &schema,
+        &["chart", "close", "6100", "--on", "2026-03-20"],
+        None,
+    );
+    assert_eq!(text(&closed, "action"), "close");
+    assert_eq!(text(&closed, "code"), "6100");
+    assert_ne!(
+        field(&closed, "control_entry"),
+        field(&opened, "control_entry")
+    );
+    f.refused(&schema, &["checkpoint", "create"], "FA-REF-011");
+}
+
+#[test]
 fn operator_preflight_keeps_issuance_expiry_revocation_and_scope_admission() {
     let mut f = Fixture::new(0xb2);
     let valid_token = token("valid-witness", &[Op::Witness], 10);
@@ -625,10 +689,60 @@ fn ordinary_cli_binds_human_operator_tokens_and_keeps_confirmation_explicit() {
             "--grant",
             "close",
         ],
+        vec![
+            "capability",
+            "issue",
+            "--holder",
+            "human-schema",
+            "--profile",
+            "human",
+            "--op",
+            "schema_change",
+            "--out",
+            "schema.token",
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "schema_change",
+        ],
     ] {
         let (exit, event) = invoke(&words);
         assert_eq!(exit, 0, "{words:?}: {}", event.render());
     }
+    std::fs::write(
+        dir.join("account.json"),
+        r#"{"code":"6100","name":"Office supplies","type":"Expense","unit":"USD"}"#,
+    )
+    .unwrap();
+    let (exit, refused) = invoke(&[
+        "--token",
+        "witness.token",
+        "chart",
+        "open",
+        "account.json",
+        "--opened",
+        "2026-03-01",
+    ]);
+    assert_eq!(exit, 7, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-011");
+    let (exit, opened) = invoke(&[
+        "--token",
+        "schema.token",
+        "chart",
+        "open",
+        "account.json",
+        "--opened",
+        "2026-03-01",
+    ]);
+    assert_eq!(exit, 0, "{}", opened.render());
+    assert_eq!(text(&opened, "action"), "open");
+    assert_eq!(text(&opened, "code"), "6100");
+    assert_eq!(
+        field(&opened, "authority")
+            .get("profile")
+            .and_then(Json::as_str),
+        Some("Human")
+    );
     let (exit, checkpoint) = invoke(&["--token", "witness.token", "checkpoint", "create"]);
     assert_eq!(exit, 0, "{}", checkpoint.render());
     assert_eq!(

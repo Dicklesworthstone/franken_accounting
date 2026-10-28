@@ -243,7 +243,7 @@ fn fa_with_token(
                     fa_journal::exit::SAFETY,
                     message,
                     "plan §14.2–§14.4 (exact issued authority and operator kind)",
-                    "use an agent/preparer token, or a Human-operator token explicitly granting approve, close, reopen, witness or hold; the issuer must authorize the requested operations",
+                    "use an agent/preparer token, or a Human-operator token whose explicit operations exceed both MCP launch ceilings; the issuer must authorize the requested operations",
                 ),
                 capture,
             );
