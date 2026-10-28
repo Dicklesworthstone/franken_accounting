@@ -64,6 +64,14 @@ pub(super) fn recognizes(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
+    decode_format(bytes, CERTIFICATE_FORMAT, DIGEST_DOMAIN)
+}
+
+pub(super) fn decode_format<'a>(
+    bytes: &'a [u8],
+    format: &[u8],
+    domain: &[u8],
+) -> Result<Certificate<'a>, ReportError> {
     if bytes.len() > MAX_REPORT_BUNDLE_BYTES {
         return Err(failed(
             "bounded_input",
@@ -71,7 +79,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let mut r = Reader::new(bytes);
-    if r.bytes(64, "reconciliation.format")? != CERTIFICATE_FORMAT {
+    if r.bytes(64, "reconciliation.format")? != format {
         return Err(failed(
             "supported_report",
             "unsupported reconciliation certificate format",
@@ -86,7 +94,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     r.finish("reconciliation certificate")?;
     let body = &bytes[..bytes.len() - 32];
     let body_len = (body.len() as u32).to_le_bytes();
-    if hash_parts(DIGEST_DOMAIN, &[&body_len, body]) != digest {
+    if hash_parts(domain, &[&body_len, body]) != digest {
         return Err(failed(
             "certificate_digest",
             "reconciliation certificate bytes differ from their commitment",
@@ -107,6 +115,14 @@ pub(super) fn bind(
     source: &NativeCertificate<'_>,
     control: &NativeCertificate<'_>,
 ) -> Result<u128, ReportError> {
+    bind_at(aging.effective_through, source, control)
+}
+
+pub(super) fn bind_at(
+    effective_through: i32,
+    source: &NativeCertificate<'_>,
+    control: &NativeCertificate<'_>,
+) -> Result<u128, ReportError> {
     let Selection::OpenItems(Some(account)) = &source.selection else {
         return Err(failed(
             "reconciliation_selection",
@@ -123,7 +139,7 @@ pub(super) fn bind(
         || source.known_at != control.known_at
         || source.journal_root != control.journal_root
         || source.leaves != control.leaves
-        || control.selection != Selection::AsOf(aging.effective_through)
+        || control.selection != Selection::AsOf(effective_through)
     {
         return Err(failed(
             "reconciliation_selection",

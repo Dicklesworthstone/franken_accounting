@@ -23,6 +23,8 @@
 //! same prefix and cutoff; nonzero per-unit differences are verified data.
 //! DueDateAgingCertificate v1 independently decodes journaled maturity terms,
 //! relieves the earliest installments, and retains every unscheduled open item.
+//! Its reconciliation wrapper compares scheduled and unscheduled totals to the
+//! same native stock fold and counts distinct original open items.
 //! RollForwardCertificate v1 wraps a native as-of trial balance and recomputes
 //! opening, every classified posted movement, closing and exact leg citations.
 //! Direct CashFlowCertificate v1 further reproduces the complete general ledger,
@@ -51,6 +53,7 @@ mod aging;
 mod cash_flow;
 mod dimension;
 mod due_date;
+mod due_date_reconciliation;
 mod equity;
 mod explain;
 mod functional;
@@ -75,6 +78,7 @@ pub use dimension::VerifiedDimensionSelection;
 pub use due_date::{
     VerifiedDueDateAgedItem, VerifiedDueDateAging, VerifiedUnscheduled, VerifiedUnscheduledItem,
 };
+pub use due_date_reconciliation::VerifiedDueDateAgingReconciliation;
 pub use equity::{
     EquityActivityKind, EquityMovement, EquityRollForwardUnit, VerifiedEquityRollForward,
 };
@@ -197,6 +201,8 @@ pub struct VerifiedReport {
     pub due_date_aging: Option<VerifiedDueDateAging>,
     /// Both source folds and their selected-account consistency comparison.
     pub aging_reconciliation: Option<VerifiedAgingReconciliation>,
+    /// Due-date installments and unscheduled amounts compared to native stock.
+    pub due_date_aging_reconciliation: Option<VerifiedDueDateAgingReconciliation>,
     /// Complete account/unit lead schedule with every classified posted leg.
     pub roll_forward: Option<VerifiedRollForward>,
     /// Complete direct cash flow, with independently derived policy decisions
@@ -633,6 +639,11 @@ fn verify_report_with_inputs(
     } else {
         None
     };
+    let due_date_reconciliation = if due_date_reconciliation::recognizes(certificate_bytes) {
+        Some(due_date_reconciliation::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     let aging = if let Some(value) = &reconciliation {
         Some(aging::decode(value.aging)?)
     } else if aging::recognizes(certificate_bytes) {
@@ -640,7 +651,9 @@ fn verify_report_with_inputs(
     } else {
         None
     };
-    let due_date = if due_date::recognizes(certificate_bytes) {
+    let due_date = if let Some(value) = &due_date_reconciliation {
+        Some(due_date::decode(value.aging)?)
+    } else if due_date::recognizes(certificate_bytes) {
         Some(due_date::decode(certificate_bytes)?)
     } else {
         None
@@ -678,10 +691,14 @@ fn verify_report_with_inputs(
     }
     let control = reconciliation
         .as_ref()
+        .or(due_date_reconciliation.as_ref())
         .map(|value| certificate(value.control))
         .transpose()?;
     if let (Some(aging), Some(control)) = (&aging, &control) {
         reconciliation::bind(aging, &cert, control)?;
+    }
+    if let (Some(aging), Some(control)) = (&due_date, &control) {
+        due_date_reconciliation::bind(aging, &cert, control)?;
     }
     let certificate_digest = equity
         .as_ref()
@@ -689,6 +706,7 @@ fn verify_report_with_inputs(
         .or_else(|| cash_policy.as_ref().map(|value| value.digest))
         .or_else(|| cash.as_ref().map(|value| value.digest))
         .or_else(|| reconciliation.as_ref().map(|value| value.digest))
+        .or_else(|| due_date_reconciliation.as_ref().map(|value| value.digest))
         .or_else(|| aging.as_ref().map(|value| value.digest))
         .or_else(|| due_date.as_ref().map(|value| value.digest))
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
@@ -1017,6 +1035,7 @@ fn verify_report_with_inputs(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
             equity_roll_forward: None,
@@ -1070,6 +1089,67 @@ fn verify_report_with_inputs(
                 &infos,
                 &legs,
             )?;
+            if let (Some(comparison_certificate), Some(control_certificate)) =
+                (&due_date_reconciliation, &control)
+            {
+                let account = open_items::account(
+                    account_filter.ok_or_else(|| {
+                        failed("reconciliation_selection", "missing selected account")
+                    })?,
+                    &schema,
+                )?;
+                let control = replay_trial_balance(
+                    control_certificate,
+                    &schema,
+                    None,
+                    &dimension_history,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &infos,
+                    &resolved,
+                    &visible_migrations,
+                )?;
+                let (comparison, output) = due_date_reconciliation::replay(
+                    comparison_certificate,
+                    request.digest,
+                    control_certificate.digest,
+                    account,
+                    report,
+                    control.rows,
+                    &units,
+                )?;
+                return Ok(VerifiedReport {
+                    scope: "recomputation",
+                    bundle_digest: digest,
+                    certificate_digest,
+                    output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                    checkpoint: signed,
+                    known_at: cert.known_at,
+                    time_selection: None,
+                    effective_through: Some(comparison.effective_through),
+                    activity: false,
+                    periods: control.periods,
+                    rows: Vec::new(),
+                    statement: None,
+                    dimension: None,
+                    open_items: None,
+                    explanation: None,
+                    aging: None,
+                    due_date_aging: None,
+                    aging_reconciliation: None,
+                    due_date_aging_reconciliation: Some(comparison),
+                    roll_forward: None,
+                    cash_flow: None,
+                    equity_roll_forward: None,
+                    functional_trial_balance: None,
+                    functional_statement: None,
+                    unit_universe_source: "authenticated-registry",
+                    output,
+                    checked_records: records.len(),
+                    receipt,
+                });
+            }
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 bundle_digest: digest,
@@ -1089,6 +1169,7 @@ fn verify_report_with_inputs(
                 aging: None,
                 due_date_aging: Some(report),
                 aging_reconciliation: None,
+                due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
                 equity_roll_forward: None,
@@ -1170,6 +1251,7 @@ fn verify_report_with_inputs(
                     aging: None,
                     due_date_aging: None,
                     aging_reconciliation: Some(comparison),
+                    due_date_aging_reconciliation: None,
                     roll_forward: None,
                     cash_flow: None,
                     equity_roll_forward: None,
@@ -1200,6 +1282,7 @@ fn verify_report_with_inputs(
                 aging: Some(aging),
                 due_date_aging: None,
                 aging_reconciliation: None,
+                due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
                 equity_roll_forward: None,
@@ -1230,6 +1313,7 @@ fn verify_report_with_inputs(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
             equity_roll_forward: None,
@@ -1281,6 +1365,7 @@ fn verify_report_with_inputs(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
             equity_roll_forward: None,
@@ -1338,6 +1423,7 @@ fn verify_report_with_inputs(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
             equity_roll_forward: None,
@@ -1413,6 +1499,7 @@ fn verify_report_with_inputs(
                 aging: None,
                 due_date_aging: None,
                 aging_reconciliation: None,
+                due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
                 equity_roll_forward: Some(equity_roll_forward),
@@ -1458,6 +1545,7 @@ fn verify_report_with_inputs(
                 aging: None,
                 due_date_aging: None,
                 aging_reconciliation: None,
+                due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: Some(cash_flow),
                 equity_roll_forward: None,
@@ -1488,6 +1576,7 @@ fn verify_report_with_inputs(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            due_date_aging_reconciliation: None,
             roll_forward: Some(roll_forward),
             cash_flow: None,
             equity_roll_forward: None,
@@ -1518,6 +1607,7 @@ fn verify_report_with_inputs(
         aging: None,
         due_date_aging: None,
         aging_reconciliation: None,
+        due_date_aging_reconciliation: None,
         roll_forward: None,
         cash_flow: None,
         equity_roll_forward: None,

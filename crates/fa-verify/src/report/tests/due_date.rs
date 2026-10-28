@@ -8,6 +8,9 @@ use crate::report::{
 
 const BOUNDS: &[u32] = &[0, 30, 60, 90];
 
+#[path = "due_date_reconciliation.rs"]
+mod reconciliation_tests;
+
 fn terms(ordinal: u16, status: u8, reason: u16, installments: &[(i32, i128)]) -> Vec<u8> {
     let mut w = Writer::default();
     w.u16(1).count(1).u16(ordinal).u8(status);

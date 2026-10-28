@@ -1407,6 +1407,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "balance_explanation"
                                 } else if report.aging_reconciliation.is_some() {
                                     "aging_reconciliation"
+                                } else if report.due_date_aging_reconciliation.is_some() {
+                                    "due_date_aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
                                 } else if report.due_date_aging.is_some() {
@@ -1443,6 +1445,10 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 n(if let Some(explanation) = &report.explanation {
                                     explanation.contributions.len()
                                 } else if let Some(comparison) = &report.aging_reconciliation {
+                                    comparison.rows.len()
+                                } else if let Some(comparison) =
+                                    &report.due_date_aging_reconciliation
+                                {
                                     comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
@@ -1550,6 +1556,10 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     if let Some(comparison) = &report.aging_reconciliation {
                         checks.extend(reconciliation_checks(comparison));
                         checks.extend(aging_checks(&comparison.aging));
+                    }
+                    if let Some(comparison) = &report.due_date_aging_reconciliation {
+                        checks.extend(due_date_reconciliation_checks(comparison));
+                        checks.extend(due_date_aging_checks(&comparison.aging));
                     }
                     if let Some(schedule) = &report.roll_forward {
                         checks.extend(roll_forward_checks(schedule));
@@ -1960,6 +1970,75 @@ fn reconciliation_checks(report: &crate::report::VerifiedAgingReconciliation) ->
     for row in &report.rows {
         checks.push(Check::pass(
             "aging_reconciliation_row",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", report.account.account))),
+                ("unit", n(u64::from(row.unit_id))),
+                ("posted_debits", s(row.posted_debits.to_string())),
+                ("posted_credits", s(row.posted_credits.to_string())),
+                ("pending_debits", s(row.pending_debits.to_string())),
+                ("pending_credits", s(row.pending_credits.to_string())),
+                ("open_debits", s(row.open_debits.to_string())),
+                ("open_credits", s(row.open_credits.to_string())),
+                ("open_item_count", n(row.open_item_count)),
+                ("posted_net", s(row.posted_net.to_string())),
+                ("open_net", s(row.open_net.to_string())),
+                ("difference", s(row.difference.to_string())),
+                ("reconciled", Json::Bool(row.difference == 0)),
+            ],
+        ));
+    }
+    checks
+}
+
+fn due_date_reconciliation_checks(
+    report: &crate::report::VerifiedDueDateAgingReconciliation,
+) -> Vec<Check> {
+    let mut checks = vec![
+        Check::pass(
+            "due_date_aging_reconciliation",
+            "recomputation",
+            vec![
+                ("book", h(&report.book_id)),
+                ("known_at", n(report.known_at)),
+                ("effective_through", day(Some(report.effective_through))),
+                ("account", s(format!("{:032x}", report.account.account))),
+                ("reconciled", Json::Bool(report.is_reconciled())),
+                ("units", n(report.rows.len() as u64)),
+                (
+                    "aging_certificate_digest",
+                    h(&report.aging_certificate_digest),
+                ),
+                (
+                    "control_certificate_digest",
+                    h(&report.control_certificate_digest),
+                ),
+                (
+                    "scope",
+                    s("selected-account consistency at one recorded prefix and effective cutoff"),
+                ),
+                (
+                    "comparison",
+                    s(
+                        "posted debit net minus scheduled and unscheduled open debit net, separately per native unit",
+                    ),
+                ),
+                (
+                    "open_item_count",
+                    s("distinct original entry and leg identities; not installment parts"),
+                ),
+                (
+                    "pending",
+                    s("reported separately; excluded from the comparison"),
+                ),
+                ("external_subledger", s("not judged")),
+            ],
+        ),
+        account_check("due_date_aging_reconciliation_account", &report.account),
+    ];
+    for row in &report.rows {
+        checks.push(Check::pass(
+            "due_date_aging_reconciliation_row",
             "recomputation",
             vec![
                 ("account", s(format!("{:032x}", report.account.account))),
