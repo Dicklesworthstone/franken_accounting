@@ -16113,6 +16113,35 @@ fn parse_gl_window(
     known_at: Option<CommitSeq>,
     default_label: &str,
 ) -> Result<GlWindow, Fail> {
+    let units = parse_gl_units(args, book, capability, known_at)?;
+    let from = DateDay::parse(args.require("--from", "YYYY-MM-DD")?).map_err(|e| {
+        usage(
+            format!("{e}; --from requires a civil date"),
+            "--from YYYY-MM-DD",
+        )
+    })?;
+    let to = DateDay::parse(args.require("--to", "YYYY-MM-DD")?).map_err(|e| {
+        usage(
+            format!("{e}; --to requires a civil date"),
+            "--to YYYY-MM-DD",
+        )
+    })?;
+    let label = args.flag("--label").unwrap_or(default_label).to_string();
+    out.effective(format!("between:{from}..{to}"));
+    Ok(GlWindow {
+        units,
+        from,
+        to,
+        label,
+    })
+}
+
+fn parse_gl_units(
+    args: &Args,
+    book: &Book,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Result<Vec<u32>, Fail> {
     let unit_codes: Vec<&str> = args
         .flag_all("--unit")
         .into_iter()
@@ -16145,26 +16174,7 @@ fn parse_gl_window(
             })
             .collect::<Result<_, Fail>>()?
     };
-    let from = DateDay::parse(args.require("--from", "YYYY-MM-DD")?).map_err(|e| {
-        usage(
-            format!("{e}; --from requires a civil date"),
-            "--from YYYY-MM-DD",
-        )
-    })?;
-    let to = DateDay::parse(args.require("--to", "YYYY-MM-DD")?).map_err(|e| {
-        usage(
-            format!("{e}; --to requires a civil date"),
-            "--to YYYY-MM-DD",
-        )
-    })?;
-    let label = args.flag("--label").unwrap_or(default_label).to_string();
-    out.effective(format!("between:{from}..{to}"));
-    Ok(GlWindow {
-        units,
-        from,
-        to,
-        label,
-    })
+    Ok(units)
 }
 
 pub(crate) struct GeneralLedgerPresentation {
@@ -19779,7 +19789,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 [--certify | --certificate-out <new-file>] --book <dir>";
+const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward (--for FY2026-P01 | --from 2026-01-01 --to 2026-12-31) [--as-originally-reported | --as-currently-stated] [--issuance 3100 --distribution 3200] [--certify | --certificate-out <new-file>] --book <dir>";
 
 /// `fa statement equity-roll-forward` (plan §12.1, bead fa-nzix): the
 /// statement of changes in equity over an inclusive effective window at one
@@ -19794,7 +19804,6 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     }
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     if let Some(flag) = [
-        "--for",
         "--compare",
         "--definition",
         "--before",
@@ -19820,21 +19829,40 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     ]
     .into_iter()
     .find(|flag| args.flag(flag).is_some())
-    .or_else(|| {
-        ["--as-originally-reported", "--dry-run"]
-            .into_iter()
-            .find(|switch| args.switch(switch))
-    }) {
+    .or_else(|| args.switch("--dry-run").then_some("--dry-run"))
+    {
         return Err(usage(
             format!(
-                "{flag} does not apply to statement equity-roll-forward: it selects inclusive --from/--to dates over every equity, revenue and expense leaf"
+                "{flag} does not apply to statement equity-roll-forward: select one --for period or inclusive --from/--to dates over every equity, revenue and expense leaf"
             ),
             EQUITY_ROLL_FORWARD_EXAMPLE,
         ));
     }
-    // The supported head view must not silently alias a historical selector.
-    // Reuse the same coordinate-exclusivity rule as the period statements.
-    let _ = crate::issuance::reported_view(args, EQUITY_ROLL_FORWARD_EXAMPLE)?;
+    let periods = args.flag_all("--for");
+    if periods.len() > 1
+        || periods
+            .first()
+            .is_some_and(|period| period.trim().is_empty())
+    {
+        return Err(usage(
+            "equity-roll-forward --for selects exactly one nonempty period",
+            EQUITY_ROLL_FORWARD_EXAMPLE,
+        ));
+    }
+    let period = periods.first().copied();
+    if period.is_some() && (args.flag("--from").is_some() || args.flag("--to").is_some()) {
+        return Err(usage(
+            "--for fixes the period's dates; it cannot be combined with --from or --to",
+            EQUITY_ROLL_FORWARD_EXAMPLE,
+        ));
+    }
+    let view = crate::issuance::reported_view(args, EQUITY_ROLL_FORWARD_EXAMPLE)?;
+    if view.is_some() && period.is_none() {
+        return Err(usage(
+            "--as-originally-reported needs --for to name the period whose first issuance or Lock fixes known-at",
+            EQUITY_ROLL_FORWARD_EXAMPLE,
+        ));
+    }
     let who = ctx.principal(args);
     let capability = ctx.capability(
         args,
@@ -19856,18 +19884,64 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
             book.prepare_report_history(who, &capability, known_at)??;
             Ok(())
         })?;
-    let (known_at, _) = known_at_flag(args, &book, out)?;
+    let (mut known_at, _) = known_at_flag(args, &book, out)?;
+    if let Some(view) = &view {
+        // Resolve the period's issuance/Lock only after current whole-book
+        // authority, then judge the selected historical prefix again below.
+        admit_whole_book_read(
+            &book,
+            &capability,
+            &[],
+            "resolving an equity restatement view",
+        )?;
+        known_at = Some(crate::issuance::reported_known_at(
+            &book,
+            &capability,
+            view,
+            period
+                .ok_or_else(|| Fail::Internal("equity restatement view lost its period".into()))?,
+        )?);
+    }
+    book.prepare_report_history(who, &capability, known_at)??;
     if let Some(seq) = known_at {
         out.known_at(seq);
     }
-    let window = parse_gl_window(
-        args,
-        &book,
-        &capability,
-        out,
-        known_at,
-        "equity-roll-forward",
-    )?;
+    let window = if let Some(period) = period {
+        let scope = book.read_scope(who, &capability)??;
+        scope.admit_whole_book(known_at)??;
+        let row = scope.period_at(period, known_at)??.ok_or_else(|| {
+            usage(
+                format!("no period `{period}` at the selected known-at"),
+                "select a period recorded at that prefix",
+            )
+        })?;
+        let from = row.start;
+        let to = DateDay(
+            row.end
+                .0
+                .checked_sub(1)
+                .ok_or_else(|| Fail::Internal("equity report period end underflow".into()))?,
+        );
+        out.effective(format!("between:{from}..{to}"));
+        GlWindow {
+            units: parse_gl_units(args, &book, &capability, known_at)?,
+            from,
+            to,
+            label: args
+                .flag("--label")
+                .unwrap_or("equity-roll-forward")
+                .to_string(),
+        }
+    } else {
+        parse_gl_window(
+            args,
+            &book,
+            &capability,
+            out,
+            known_at,
+            "equity-roll-forward",
+        )?
+    };
     let named = |flag: &str| -> Vec<VId> {
         args.flag_all(flag)
             .into_iter()
@@ -19886,7 +19960,6 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         issuance_accounts: named("--issuance"),
         distribution_accounts: named("--distribution"),
     };
-    book.prepare_report_history(who, &capability, request.known_at)??;
     if certify {
         let certified = book.certify_equity_roll_forward(who, &capability, &request)??;
         let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;

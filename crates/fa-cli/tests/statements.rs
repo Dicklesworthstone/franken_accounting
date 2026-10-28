@@ -156,7 +156,7 @@ impl Fixture {
 fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
     let dir = temporary();
     let book = dir.join("book");
-    let invoke = |args: &[&str]| {
+    let invoke_result = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_fa"))
             .arg("--book")
             .arg(&book)
@@ -171,15 +171,20 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
         eprintln!(
             "PPA argv=fa --book {book:?} {args:?} --json exit={exit}\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
-        assert_eq!(exit, 0, "cross-year PPA step: {args:?}");
         let registry = fa_cli::verbs::registry().unwrap();
-        stdout
+        let events = stdout
             .lines()
             .map(|line| {
                 registry.check_line(line).unwrap();
                 json::parse(line).unwrap()
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (exit, events)
+    };
+    let invoke = |args: &[&str]| {
+        let (exit, events) = invoke_result(args);
+        assert_eq!(exit, 0, "cross-year PPA step: {args:?}");
+        events
     };
     invoke(&["book", "create", "--name", "Cross-year PPA"]);
     let chart = dir.join("chart.json");
@@ -231,6 +236,17 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
         "--yes",
     ]);
 
+    // A Close admits audit adjustments; it is never an issuance anchor.
+    let (exit, not_reported) = invoke_result(&[
+        "statement",
+        "equity-roll-forward",
+        "--for",
+        "FY2025-P12",
+        "--as-originally-reported",
+    ]);
+    assert_eq!(exit, 3, "{not_reported:?}");
+    assert_eq!(text(data(&not_reported[0]), "refusal_id"), "FA-REF-161");
+
     let equity_args = [
         "statement",
         "equity-roll-forward",
@@ -252,6 +268,48 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
     assert_eq!(text(original_unit, "opening_total_equity"), "100.00 USD");
     assert_eq!(text(original_unit, "prior_period_adjustments"), "0.00 USD");
     let original_prefix = original.get("known_at").unwrap().render();
+
+    // Record the real January statement that left the entity before the
+    // correction. Its certified prefix, not its later publication, pins the
+    // original equity view. The period remains open for the lawful PPA.
+    let issued = invoke(&[
+        "statement",
+        "balance-sheet",
+        "--for",
+        "FY2026-P01",
+        "--certify",
+    ]);
+    let issued_prefix = data(&issued[0]).get("known_at").unwrap().clone();
+    let issued_certificate = issued
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    let issue = invoke(&[
+        "statement",
+        "issue",
+        "--certificate",
+        text(data(issued_certificate), "oid"),
+        "--issued-to",
+        "board",
+        "--dry-run",
+    ]);
+    let issue_plan = dir.join("issue.plan");
+    std::fs::write(&issue_plan, text(data(&issue[0]), "bytes")).unwrap();
+    let issue_approval = invoke(&[
+        "approve",
+        "--proposal",
+        text(data(&issue[0]), "proposal_digest"),
+        "--as",
+        "controller",
+    ]);
+    invoke(&[
+        "statement",
+        "issue",
+        "--plan",
+        issue_plan.to_str().unwrap(),
+        "--approval",
+        text(data(&issue_approval[0]), "approval_vid"),
+    ]);
 
     invoke(&[
         "case",
@@ -364,6 +422,71 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
         &[Json::Str("150.00 USD".into())]
     );
 
+    let period_args = [
+        "statement",
+        "equity-roll-forward",
+        "--for",
+        "FY2026-P01",
+        "--unit",
+        "USD",
+        "--label",
+        "FY2026 correction",
+    ];
+    let originally_path = dir.join("originally-reported.cert");
+    let mut originally_args = period_args.to_vec();
+    originally_args.extend([
+        "--as-originally-reported",
+        "--certificate-out",
+        originally_path.to_str().unwrap(),
+    ]);
+    let originally = invoke(&originally_args);
+    let original_january = data(&originally[0]);
+    assert_eq!(original_january.get("known_at"), Some(&issued_prefix));
+    assert_eq!(text(original_january, "effective_from"), "2026-01-01");
+    assert_eq!(text(original_january, "effective_through"), "2026-01-31");
+    assert!(array(original_january, "movements").is_empty());
+    let original_january_unit = &array(original_january, "units")[0];
+    for (field, amount) in [
+        ("opening_total_equity", "100.00 USD"),
+        ("prior_period_adjustments", "0.00 USD"),
+        ("opening_equity_as_adjusted", "100.00 USD"),
+        ("closing_total_equity", "100.00 USD"),
+        ("net_income", "0.00 USD"),
+        ("tie_out_residual", "0.00 USD"),
+    ] {
+        assert_eq!(
+            text(original_january_unit, field),
+            amount,
+            "{original_january:?}"
+        );
+    }
+    let issued_prefix_text = issued_prefix.render();
+    let mut at_issue_args = period_args.to_vec();
+    at_issue_args.extend(["--known-at", &issued_prefix_text]);
+    assert_eq!(data(&invoke(&at_issue_args)[0]), original_january);
+
+    let mut current_period_args = period_args.to_vec();
+    current_period_args.push("--as-currently-stated");
+    let current_period = invoke(&current_period_args);
+    let current_january = data(&current_period[0]);
+    assert_eq!(text(current_january, "effective_through"), "2026-01-31");
+    assert_eq!(array(current_january, "units"), array(current, "units"));
+    assert_eq!(array(current_january, "movements"), movements);
+    let expected = format!(
+        r#"{{"kind":"equity-roll-forward","units":["USD"],"label":"FY2026 correction","from":"2026-01-01","through":"2026-01-31","known_at":{issued_prefix_text},"issuance_accounts":[],"distribution_accounts":[]}}"#
+    );
+    let replayed_original = invoke(&[
+        "replay",
+        originally_path.to_str().unwrap(),
+        "--expect",
+        &expected,
+    ]);
+    let replayed_original = replayed_original
+        .iter()
+        .find(|event| text(event, "event") == "equity_roll_forward")
+        .unwrap();
+    assert_eq!(data(replayed_original), original_january);
+
     for (path, report, prefix) in [
         (&before_path, &original, original_prefix),
         (
@@ -440,6 +563,36 @@ fn equity_current_view_rejects_historical_selectors_before_opening_a_book() {
                 "a conflicting selector must not open a book"
             );
         }
+    }
+}
+
+#[test]
+fn equity_period_views_require_an_unambiguous_selector_before_opening_a_book() {
+    let dir = temporary();
+    let book = dir.join("absent-period-book");
+    for selectors in [
+        vec!["--for", ""],
+        vec!["--for", "FY2026-P01", "--for", "FY2026-P02"],
+        vec!["--for", "FY2026-P01", "--from", "2026-01-01"],
+        vec!["--for", "FY2026-P01", "--to", "2026-01-31"],
+        vec![
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-12-31",
+            "--as-originally-reported",
+        ],
+    ] {
+        let mut args = vec!["statement", "equity-roll-forward"];
+        args.extend(selectors);
+        let (exit, events, stderr) = run(&book, &args);
+        eprintln!(
+            "equity period argv=fa --book {book:?} {args:?} --json exit={exit}\nevents={events:?}\nstderr:\n{stderr}"
+        );
+        assert_eq!(exit, 2, "{args:?}\n{events:?}\n{stderr}");
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(text(&events[0], "event"), "error");
+        assert!(!book.exists(), "ambiguous selectors must not open a book");
     }
 }
 
