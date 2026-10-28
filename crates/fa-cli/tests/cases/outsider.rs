@@ -2,8 +2,9 @@
 //! §3.3 steps 8 and 9, §12.1, §12.7; bead fa-yugf.19, A8a; A12 extends it).
 //!
 //! A `checkpoint` step creates the book's signed checkpoint (`fa checkpoint
-//! create --grant witness`). After the history, a book that has one also
-//! proves four things, each a check of its own:
+//! create --grant witness`). After the history, every book proves its
+//! integrity (`verify_book`, below), and a book with a checkpoint also
+//! proves the others, each a check of its own:
 //! - `bundle`: the balance sheet of its first period, certified, then a
 //!   checkpoint over the certificate's known-at (a report bundle's
 //!   checkpoint must authenticate the prefix through it, FA-REF-126), then
@@ -19,7 +20,13 @@
 //!   green (exit 8 fails the case, whatever its rows say, §12.7). A cache
 //!   never advanced in a period with postings reads as corrupt today
 //!   (fa-0hs4.5), so the check is that the maintained cache equals the
-//!   refold, as crates/fa-cli/tests/cli.rs's verify-book test does.
+//!   refold, as crates/fa-cli/tests/cli.rs's verify-book test does;
+//! - `witness` and `append_only` (A12): a `checkpoint_witness` step's
+//!   cosignature before the case, and the restated book proved to extend
+//!   it ([`BookRun::checkpoint_witness`]).
+//!
+//! Each T read's outsider route (A12) is checked apart, per row
+//! ([`BookRun::outsider_reads`]).
 //!
 //! A failed check fails the case even when every row reads PASS (§12.1: "a
 //! case whose bundle fails verification fails"). The run prints one
@@ -681,13 +688,11 @@ impl BookRun<'_> {
             .steps
             .iter()
             .any(|x| x.step_kind() == Some(StepKind::Checkpoint));
-        if !checkpointed {
-            return;
-        }
-        let bundle = self.bundle_and_replay();
-        if let Err(why) = bundle {
+        if checkpointed && let Err(why) = self.bundle_and_replay() {
             self.outsider_check("bundle", Err(why));
         }
+        // Book integrity runs on every book variant (§12.7, A12 step 5);
+        // the bundle, replay and witness checks need the book's checkpoint.
         let verdict = self.verify_book();
         self.outsider_check("verify_book", verdict);
         if self.witness.is_some() {
@@ -704,7 +709,8 @@ impl BookRun<'_> {
     /// is created and exported once, then every certificate the read
     /// retained is bundled (`fa bundle produce --certificate`), verified
     /// with the literal `fa-verify report` argv, and replayed (`fa
-    /// replay`), whose output must hash to the digest fa-verify recomputed. The recomputations, summed, must equal B. A read
+    /// replay`), whose output must hash to the digest fa-verify recomputed.
+    /// The recomputations, summed, must equal B. A read
     /// with no value or no certificate, or a verb outside the table, has no
     /// check: its T stays UNRUN.
     pub(crate) fn outsider_reads(&mut self) {

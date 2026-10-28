@@ -2399,6 +2399,31 @@ fn assert_balance_at_the_fold_records_register_equals() {
     );
 }
 
+/// A12 (§12.7, step 5): book integrity runs on every book variant, not only
+/// on books with a checkpoint step. The reads fixture has none: its book's
+/// registers are advanced and `fa verify book` reports it green, and only
+/// that check runs.
+#[test]
+fn verify_book_runs_on_every_book_variant() {
+    let o = reads();
+    let text = o.text();
+    let outsider: Vec<&String> = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("OUTSIDER native "))
+        .collect();
+    assert!(!outsider.is_empty(), "{text}");
+    for line in outsider {
+        assert_eq!(line, "OUTSIDER native verify_book=green", "{text}");
+    }
+    assert!(
+        o.steps
+            .iter()
+            .any(|s| words(&s.argv_redacted) == "verify book" && s.exit == 0),
+        "{text}"
+    );
+}
+
 /// A11b (§3.7 item 2): a statement line T read at the head is also traced
 /// publication by publication over the history (`fa statement trace
 /// --certify`), and the trace agrees with the line's explained balances, so
