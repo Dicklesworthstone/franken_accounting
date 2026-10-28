@@ -61,6 +61,10 @@ pub const MAX_CLOCK_SKEW_NS: u64 = 31_622_400_000_000_000;
 /// Concurrent `fad` client connections served at once (fa-een).
 pub const MAX_DAEMON_CONNECTIONS: usize = 64;
 
+/// Journaled issuances in a capability's authority chain, excluding its
+/// embedded/launch root. Every ancestor is checked; truncation never admits.
+pub const MAX_ISSUANCE_LINEAGE: usize = 16;
+
 /// Maximum retained predecessor links verified for one bank statement chain.
 /// An oversized chain refuses; a truncated chain never establishes continuity.
 pub const MAX_BANK_PREDECESSOR_DEPTH: usize = 4096;
@@ -121,6 +125,7 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_tick_utc_ns", MAX_TICK_UTC_NS),
     ("max_clock_skew_ns", MAX_CLOCK_SKEW_NS),
     ("max_daemon_connections", MAX_DAEMON_CONNECTIONS as u64),
+    ("max_issuance_lineage", MAX_ISSUANCE_LINEAGE as u64),
     (
         "max_bank_predecessor_depth",
         MAX_BANK_PREDECESSOR_DEPTH as u64,

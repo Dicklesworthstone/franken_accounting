@@ -49,6 +49,9 @@ const AGENT: VId = VId(31);
 #[path = "policy/capability_retries.rs"]
 mod capability_retries;
 
+#[path = "policy/issuance_ancestry.rs"]
+mod issuance_ancestry;
+
 struct Harness {
     runtime: Runtime,
     root: Cx,

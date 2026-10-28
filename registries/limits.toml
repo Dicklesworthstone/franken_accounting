@@ -132,6 +132,13 @@ value = 31622400000000000
 name = "max_daemon_connections"
 value = 64
 
+# Journaled capability issuances from a holder to its embedded/launch root.
+# This bounds admission's point reads, not how far revocation propagates:
+# an incomplete chain is refused, and issuance cannot extend one past the cap.
+[[limit]]
+name = "max_issuance_lineage"
+value = 16
+
 # Retained predecessor statements walked by one continuity verification.
 [[limit]]
 name = "max_bank_predecessor_depth"
