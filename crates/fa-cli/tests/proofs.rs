@@ -275,6 +275,276 @@ impl Fixture {
 /// prefix proof is judged against the checkpoint that signature covers. A
 /// flipped byte or another key is refused.
 #[test]
+fn equity_roll_forward_prior_period_line_verifies_offline() {
+    let fixture = Fixture::new();
+    let invoke = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&fixture.book)
+            .args(args)
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run the retained PPA proof workflow");
+        let exit = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!(
+            "PPA proof argv=fa --book {:?} {args:?} --json exit={exit}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            fixture.book,
+        );
+        assert_eq!(exit, 0, "PPA proof step: {args:?}");
+        let registry = fa_cli::verbs::registry().unwrap();
+        stdout
+            .lines()
+            .map(|line| {
+                registry.check_line(line).unwrap();
+                json::parse(line).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let chart = write(
+        &fixture.dir,
+        "ppa-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    invoke(&["chart", "import", &chart]);
+    invoke(&["chart", "role", "3000", "retained_earnings"]);
+    for year in ["2025", "2026"] {
+        invoke(&["period", "create", "--fiscal-year", year]);
+    }
+    for period in ["FY2025-P12", "FY2026-P01"] {
+        invoke(&["period", "open", period]);
+    }
+    let source = write(
+        &fixture.dir,
+        "ppa-source.txt",
+        "Fixture bank advice: a December 2025 receipt was omitted.",
+    );
+    let document = invoke(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = text(&document[0], "oid");
+    let opening = write(
+        &fixture.dir,
+        "ppa-opening.json",
+        r#"{"idempotency_key":"2025-capital","effective_date":"2025-12-01","legs":[{"side":"debit","account":"1000","amount":"100.00 USD"},{"side":"credit","account":"3000","amount":"100.00 USD"}]}"#,
+    );
+    invoke(&["post", "--intent", &opening, "--evidence", evidence]);
+    invoke(&["period", "soft-close", "FY2025-P12"]);
+    invoke(&["period", "close", "FY2025-P12", "--yes"]);
+    invoke(&[
+        "case",
+        "open",
+        "--kind",
+        "PriorPeriodAdjustment",
+        "--periods",
+        "FY2025-P12",
+        "--determined-on",
+        "2026-01-02",
+        "--authority",
+        evidence,
+    ]);
+    invoke(&["scenario", "fork", "adjusted", "--as", "analyst"]);
+    let intent = write(
+        &fixture.dir,
+        "ppa-adjustment.json",
+        &format!(
+            r#"{{"idempotency_key":"cross-year-ppa","effective_date":"2026-01-02","relates_to":"FY2025-P12","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"50.00 USD"}},{{"side":"credit","account":"3000","amount":"50.00 USD"}}]}}"#
+        ),
+    );
+    invoke(&[
+        "scenario", "run", "adjusted", "--intent", &intent, "--as", "analyst",
+    ]);
+    let diff = fixture.dir.join("ppa.diff");
+    invoke(&[
+        "scenario",
+        "diff",
+        "adjusted",
+        "--period",
+        "FY2025-P12",
+        "--period",
+        "FY2026-P01",
+        "--certificate-out",
+        diff.to_str().unwrap(),
+    ]);
+    invoke(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        diff.to_str().unwrap(),
+    ]);
+    let plan = invoke(&["case", "approve", "1", "--dry-run"]);
+    let digest = text(&plan[0], "digest");
+    let mut approvals = Vec::new();
+    for principal in ["controller", "auditor"] {
+        let approved = invoke(&["approve", "--proposal", digest, "--as", principal]);
+        approvals.push(text(&approved[0], "approval_vid").to_string());
+    }
+    invoke(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &approvals[0],
+        "--approval",
+        &approvals[1],
+    ]);
+    let posted = invoke(&["case", "post", "1", "--yes"]);
+    let posted_entries = get(get(&posted[0], "case"), "posted").as_arr().unwrap();
+    assert_eq!(posted_entries.len(), 1);
+    let adjustment_digest: [u8; 32] = unhex(text(&posted_entries[0], "entry_digest"))
+        .try_into()
+        .unwrap();
+
+    let certificate_path = fixture.dir.join("ppa-equity.cert");
+    let certified = invoke(&[
+        "statement",
+        "equity-roll-forward",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-12-31",
+        "--unit",
+        "USD",
+        "--label",
+        "FY2026 correction",
+        "--certificate-out",
+        certificate_path.to_str().unwrap(),
+    ]);
+    let metadata = certified
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    let encoded = bytes(metadata);
+    assert_eq!(std::fs::read(&certificate_path).unwrap(), encoded);
+    let artifact = fa::ReportArtifact::decode(&encoded).unwrap();
+    let state = fixture.checkpoint();
+    let produced = invoke(&[
+        "bundle",
+        "produce",
+        "--certificate",
+        certificate_path.to_str().unwrap(),
+        "--state",
+        text(&state, "oid"),
+    ]);
+    let bundle = bytes(&produced[0]);
+    let receipt = unhex(text(&produced[0], "receipt"));
+    let key = fixture.open().checkpoint_public_key();
+    let verified = fa_verify::report::verify_report_expected(
+        &bundle,
+        &[key],
+        None,
+        Some(&receipt),
+        Some(artifact.digest()),
+    )
+    .expect("the independent verifier recomputes the cross-year PPA");
+    assert_eq!(verified.output, artifact.output());
+    let equity = verified.equity_roll_forward.unwrap();
+    assert_eq!(equity.units.len(), 1);
+    let unit = &equity.units[0];
+    assert_eq!(unit.opening_total_equity, 10_000);
+    assert_eq!(unit.prior_period_adjustments, 5_000);
+    assert_eq!(unit.opening_equity_as_adjusted, 15_000);
+    assert_eq!(unit.closing_total_equity, 15_000);
+    assert_eq!(unit.net_income, 0);
+    assert_eq!(equity.movements.len(), 1);
+    assert_eq!(equity.movements[0].case_ordinal, Some(1));
+    assert_eq!(
+        equity.movements[0].relates_to.as_ref().unwrap().1,
+        "FY2025-P12"
+    );
+
+    // The same independently selected certificate authenticates inputs even
+    // without a receipt. The negative below therefore tests omitted payloads,
+    // not an intentionally mismatched detached receipt.
+    fa_verify::report::verify_report_expected(&bundle, &[key], None, None, Some(artifact.digest()))
+        .expect("positive control under the negative's exact recipient authority");
+    let mut reader = fa_model::Reader::new(&bundle);
+    reader.bytes(64, "report format").unwrap();
+    assert_eq!(reader.u16("major").unwrap(), 2);
+    assert_eq!(reader.u16("minor").unwrap(), 0);
+    for field in ["certificate", "signed checkpoint", "prefix proof"] {
+        reader.bytes(64 * 1024 * 1024, field).unwrap();
+    }
+    let count_at = reader.offset();
+    let count = reader.u32("record count").unwrap();
+    let mut omitted = None;
+    for _ in 0..count {
+        let start = reader.offset();
+        reader.u32("proposal length").unwrap();
+        let payload = reader.bytes(64 * 1024 * 1024, "record").unwrap();
+        if let Ok(entry) = fa_model::Entry::decode(payload)
+            && entry.entry_digest == adjustment_digest
+        {
+            assert_eq!(
+                entry.proposal.class,
+                fa_model::EntryClass::PRIOR_PERIOD_ADJUSTMENT
+            );
+            assert_eq!(entry.proposal.idempotency_key, b"cross-year-ppa");
+            assert!(omitted.replace((start, reader.offset())).is_none());
+        }
+    }
+    let (start, end) = omitted.expect("locate the actual PPA entry, not a reference to it");
+    let mut missing = bundle[..start].to_vec();
+    missing.extend_from_slice(&bundle[end..]);
+    missing[count_at..count_at + 4].copy_from_slice(&(count - 1).to_le_bytes());
+    let refusal = fa_verify::report::verify_report_expected(
+        &missing,
+        &[key],
+        None,
+        None,
+        Some(artifact.digest()),
+    )
+    .unwrap_err();
+    assert_eq!(refusal.predicate, "record_completeness");
+
+    let expected = fa_verify::blake3::hex(artifact.digest());
+    let public_key = fa_verify::blake3::hex(&key);
+    for (input, bytes, expected_exit) in [("ppa.fab", &bundle, 0), ("omitted-ppa.fab", &missing, 8)]
+    {
+        let args = [
+            "report",
+            input,
+            "--key",
+            &public_key,
+            "--expect",
+            &expected,
+            "--json",
+        ]
+        .map(str::to_string);
+        let read = |name: &str| {
+            assert_eq!(name, input, "verification has no path to the live book");
+            Ok(bytes.clone())
+        };
+        let result = fa_verify::cli::run(&args, &read);
+        eprintln!(
+            "PPA offline argv={args:?} exit={}\nstdout:\n{}\nstderr:\n{}",
+            result.exit, result.stdout, result.stderr
+        );
+        assert_eq!(
+            result.exit, expected_exit,
+            "{}{}",
+            result.stdout, result.stderr
+        );
+        if expected_exit == 8 {
+            assert!(
+                result.stdout.contains("record_completeness"),
+                "{}",
+                result.stdout
+            );
+        }
+    }
+}
+
+#[test]
 fn a_signed_checkpoint_export_verifies_against_the_named_public_key() {
     let f = Fixture::new();
     let evidence = f.chart_and_evidence();

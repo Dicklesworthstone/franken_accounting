@@ -153,6 +153,224 @@ impl Fixture {
 }
 
 #[test]
+fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
+    let dir = temporary();
+    let book = dir.join("book");
+    let invoke = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&book)
+            .args(args)
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run the cross-year PPA workflow");
+        let exit = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!(
+            "PPA argv=fa --book {book:?} {args:?} --json exit={exit}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert_eq!(exit, 0, "cross-year PPA step: {args:?}");
+        let registry = fa_cli::verbs::registry().unwrap();
+        stdout
+            .lines()
+            .map(|line| {
+                registry.check_line(line).unwrap();
+                json::parse(line).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    invoke(&["book", "create", "--name", "Cross-year PPA"]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    invoke(&["chart", "import", chart.to_str().unwrap()]);
+    invoke(&["chart", "role", "3000", "retained_earnings"]);
+    for year in ["2025", "2026"] {
+        invoke(&["period", "create", "--fiscal-year", year]);
+    }
+    for period in ["FY2025-P12", "FY2026-P01"] {
+        invoke(&["period", "open", period]);
+    }
+    let source = dir.join("source.txt");
+    std::fs::write(
+        &source,
+        b"Fixture bank advice: an omitted December 2025 receipt.",
+    )
+    .unwrap();
+    let document = invoke(&[
+        "document",
+        "add",
+        source.to_str().unwrap(),
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = text(data(&document[0]), "oid");
+    let opening = dir.join("opening.json");
+    std::fs::write(&opening, r#"{"idempotency_key":"2025-capital","effective_date":"2025-12-01","legs":[{"side":"debit","account":"1000","amount":"100.00 USD"},{"side":"credit","account":"3000","amount":"100.00 USD"}]}"#).unwrap();
+    invoke(&[
+        "post",
+        "--intent",
+        opening.to_str().unwrap(),
+        "--evidence",
+        evidence,
+    ]);
+    invoke(&["period", "soft-close", "FY2025-P12"]);
+    invoke(&["period", "close", "FY2025-P12", "--yes"]);
+
+    let equity_args = [
+        "statement",
+        "equity-roll-forward",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-12-31",
+        "--unit",
+        "USD",
+        "--label",
+        "FY2026 correction",
+    ];
+    let before_path = dir.join("before.cert");
+    let mut before_args = equity_args.to_vec();
+    before_args.extend(["--certificate-out", before_path.to_str().unwrap()]);
+    let before = invoke(&before_args);
+    let original = data(&before[0]).clone();
+    let original_unit = &array(&original, "units")[0];
+    assert_eq!(text(original_unit, "opening_total_equity"), "100.00 USD");
+    assert_eq!(text(original_unit, "prior_period_adjustments"), "0.00 USD");
+    let original_prefix = original.get("known_at").unwrap().render();
+
+    invoke(&[
+        "case",
+        "open",
+        "--kind",
+        "PriorPeriodAdjustment",
+        "--periods",
+        "FY2025-P12",
+        "--determined-on",
+        "2026-01-02",
+        "--authority",
+        evidence,
+    ]);
+    invoke(&["scenario", "fork", "adjusted", "--as", "analyst"]);
+    let intent = dir.join("adjustment.json");
+    std::fs::write(&intent, format!(r#"{{"idempotency_key":"cross-year-ppa","effective_date":"2026-01-02","relates_to":"FY2025-P12","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"50.00 USD"}},{{"side":"credit","account":"3000","amount":"50.00 USD"}}]}}"#)).unwrap();
+    invoke(&[
+        "scenario",
+        "run",
+        "adjusted",
+        "--intent",
+        intent.to_str().unwrap(),
+        "--as",
+        "analyst",
+    ]);
+    let diff = dir.join("adjusted.diff");
+    invoke(&[
+        "scenario",
+        "diff",
+        "adjusted",
+        "--period",
+        "FY2025-P12",
+        "--period",
+        "FY2026-P01",
+        "--certificate-out",
+        diff.to_str().unwrap(),
+    ]);
+    invoke(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        diff.to_str().unwrap(),
+    ]);
+    let plan = invoke(&["case", "approve", "1", "--dry-run"]);
+    let digest = text(data(&plan[0]), "digest");
+    let mut approvals = Vec::new();
+    for principal in ["controller", "auditor"] {
+        let approved = invoke(&["approve", "--proposal", digest, "--as", principal]);
+        approvals.push(text(data(&approved[0]), "approval_vid").to_string());
+    }
+    invoke(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &approvals[0],
+        "--approval",
+        &approvals[1],
+    ]);
+    let posted = invoke(&["case", "post", "1", "--yes"]);
+    assert_eq!(
+        data(&posted[0]).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    let retry = invoke(&["case", "post", "1", "--yes"]);
+    assert_eq!(
+        data(&retry[0]).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+
+    let after_path = dir.join("after.cert");
+    let mut after_args = equity_args.to_vec();
+    after_args.extend(["--certificate-out", after_path.to_str().unwrap()]);
+    let after = invoke(&after_args);
+    let current = data(&after[0]);
+    let unit = &array(current, "units")[0];
+    for (field, amount) in [
+        ("opening_total_equity", "100.00 USD"),
+        ("prior_period_adjustments", "50.00 USD"),
+        ("opening_equity_as_adjusted", "150.00 USD"),
+        ("closing_total_equity", "150.00 USD"),
+        ("net_income", "0.00 USD"),
+        ("other_equity_movements", "0.00 USD"),
+        ("tie_out_residual", "0.00 USD"),
+    ] {
+        assert_eq!(text(unit, field), amount, "{current:?}");
+    }
+    let movements = array(current, "movements");
+    assert_eq!(movements.len(), 1);
+    assert_eq!(text(&movements[0], "kind"), "prior_period_adjustment");
+    assert_eq!(text(&movements[0], "relates_to"), "FY2025-P12");
+    assert_eq!(text(&movements[0], "effective_date"), "2026-01-02");
+    assert_eq!(text(&movements[0], "account"), "3000");
+    assert_eq!(movements[0].get("case"), Some(&Json::Int(1)));
+    let balance = invoke(&["statement", "balance-sheet", "--for", "FY2026-P12"]);
+    assert_eq!(
+        line(data(&balance[0]), "total_equity", "USD"),
+        &[Json::Str("150.00 USD".into())]
+    );
+
+    for (path, report, prefix) in [
+        (&before_path, &original, original_prefix),
+        (
+            &after_path,
+            current,
+            current.get("known_at").unwrap().render(),
+        ),
+    ] {
+        let expected = format!(
+            r#"{{"kind":"equity-roll-forward","units":["USD"],"label":"FY2026 correction","from":"2026-01-01","through":"2026-12-31","known_at":{prefix},"issuance_accounts":[],"distribution_accounts":[]}}"#
+        );
+        let replayed = invoke(&["replay", path.to_str().unwrap(), "--expect", &expected]);
+        let replayed = replayed
+            .iter()
+            .find(|event| text(event, "event") == "equity_roll_forward")
+            .unwrap();
+        assert_eq!(
+            data(replayed),
+            report,
+            "historical and adjusted certificates retain their own prefix"
+        );
+    }
+}
+
+#[test]
 fn statements_carry_opening_history_and_separate_exact_comparative_units() {
     let fixture = Fixture::new();
     let bs = ok(
