@@ -80,12 +80,14 @@ fn _selftest() {
     ] {
         assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
     }
-    // The outsider stage: the checkpoint, the balance sheet's report bundle
-    // verified in process, its replay byte-identical, and the book's
-    // integrity green.
+    // The outsider stage: the as-filed checkpoint and the examiner witness's
+    // cosignature of it, the closing checkpoint, the balance sheet's report
+    // bundle verified in process, its replay byte-identical, the book's
+    // integrity green, and the restated book proved to extend the as-filed
+    // one (A12).
     assert!(
         o.lines.iter().any(|l| l
-            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=green"),
+            == "OUTSIDER native checkpoint=created witness=cosigned checkpoint=created bundle=verified replay=identical verify_book=green append_only=ok:inclusion=1:rollback=FA-REF-124:foreign=FA-REF-100"),
         "{text}"
     );
     assert!(!text.contains("REPRODUCE"), "{text}");
@@ -109,7 +111,7 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 contrib=holds outsider=report:verified"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 contrib=holds outsider=report:verified append_only=ok"
         ),
         "{text}"
     );
@@ -139,6 +141,130 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
     // The claimed T keeps its claim (its rows; the wall budget depends on
     // the worker's load and has its own test).
     assert!(o.rows_ok, "{text}");
+}
+
+/// A12 (§12.7): the append-only witness on the self-test bridge, in every
+/// run of its book that reaches the outsider stage (the base run and its
+/// invariance runs). The examiner
+/// witness cosigned the as-filed checkpoint before the case (step 11);
+/// after it, the witness cosigns the restated book with `--previous`, which
+/// the book proves extends the as-filed statement, and `fa-verify
+/// checkpoint` accepts it at quorum 1. The consistency proof from the
+/// as-filed state and the inclusion proof of A-1 (the entry the delta
+/// restates) verify offline: an examiner who witnessed the as-filed root can
+/// check that the restated book extends it and still includes the as-filed
+/// entry. The bridge T carries `append_only=ok`.
+#[test]
+fn append_only_witness_holds_on_the_selftest_bridge() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    let by_run = |keep: &dyn Fn(&fa_oracles::cases::log::StepRecord) -> bool| {
+        let mut runs: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for s in o.steps.iter().filter(|s| keep(s)) {
+            let what = if s.verb == "fa-verify" {
+                format!(
+                    "fa-verify {}",
+                    s.argv_redacted.first().map_or("-", String::as_str)
+                )
+            } else {
+                words(&s.argv_redacted)
+            };
+            runs.entry(s.book_id.clone().unwrap_or_default())
+                .or_default()
+                .push(format!(
+                    "{what} exit={} {}",
+                    s.exit,
+                    s.refusal_id.as_deref().unwrap_or("-")
+                ));
+        }
+        runs
+    };
+    let cosigned = by_run(&|s| s.step == 11);
+    assert!(!cosigned.is_empty(), "{text}");
+    for (book, run) in &cosigned {
+        assert_eq!(
+            run,
+            &[
+                "checkpoint witness-key exit=0 -",
+                "checkpoint witness exit=0 -"
+            ],
+            "{book}\n{text}"
+        );
+    }
+    // Every run that reaches the outsider stage extends the statement its
+    // own step 11 cosigned (twin and cell runs replay without that stage).
+    let extended = by_run(&|s| s.reference == "append-only");
+    assert!(!extended.is_empty(), "{text}");
+    assert!(
+        extended.keys().all(|book| cosigned.contains_key(book)),
+        "{text}"
+    );
+    for (book, run) in &extended {
+        assert_eq!(
+            run,
+            &[
+                "checkpoint create exit=0 -",
+                "checkpoint witness exit=0 -",
+                "fa-verify checkpoint exit=0 -",
+                "proof signed-checkpoint exit=0 -",
+                "proof signed-checkpoint exit=0 -",
+                "proof consistency exit=0 -",
+                "fa-verify consistency exit=0 -",
+                "proof inclusion exit=0 -",
+                "fa-verify inclusion exit=0 -",
+                "checkpoint witness exit=8 FA-REF-124",
+                "checkpoint witness exit=2 FA-REF-100",
+            ],
+            "{book}\n{text}"
+        );
+    }
+    assert!(
+        o.row("_selftest-T-01")
+            .is_some_and(|r| r.ends_with(" outsider=report:verified append_only=ok")),
+        "{text}"
+    );
+}
+
+/// The witness's cosignature attempts of every run that `keep` selects:
+/// each (exit, refusal).
+fn twin_outcomes(o: &RunOutcome, keep: impl Fn(&[String]) -> bool) -> Vec<(i128, Option<String>)> {
+    o.steps
+        .iter()
+        .filter(|s| s.reference == "append-only" && keep(&s.argv_redacted))
+        .map(|s| (s.exit, s.refusal_id.clone()))
+        .collect()
+}
+
+/// A12 (§12.7, harness-only twin): a rollback. The restated book's
+/// statement as `--previous` for the as-filed state is a history the
+/// as-filed state does not extend, so the cosignature is refused FA-REF-124
+/// (exit 8) and nothing is signed.
+#[test]
+fn witness_rollback_to_the_as_filed_state_is_refused_fa_ref_124() {
+    let o = outcome(SELFTEST);
+    let rollbacks = twin_outcomes(o, |argv| argv.iter().any(|a| a == "$WORK/rollback.witness"));
+    assert!(!rollbacks.is_empty(), "{}", o.text());
+    for twin in rollbacks {
+        assert_eq!(twin, (8, Some("FA-REF-124".to_string())), "{}", o.text());
+    }
+}
+
+/// A12 (§12.7, harness-only twin): the witness's statement cosigned on
+/// another book. The plan expected FA-REF-124 here; the book refuses it
+/// earlier, as no history this witness signed on it (FA-REF-100, exit 2,
+/// `--previous is a checkpoint of another book`), and signs nothing.
+#[test]
+fn witness_previous_from_another_book_is_refused_as_not_its_history() {
+    let o = outcome(SELFTEST);
+    let foreign = twin_outcomes(o, |argv| {
+        argv.windows(2)
+            .any(|w| w[0] == "--previous" && w[1] == "$WORK/other-book.witness")
+    });
+    assert!(!foreign.is_empty(), "{}", o.text());
+    for twin in foreign {
+        assert_eq!(twin, (2, Some("FA-REF-100".to_string())), "{}", o.text());
+    }
 }
 
 /// A8a (§3.7 item 3): an N twin that keeps the target's 1,234.56 legs is
@@ -254,7 +380,7 @@ fn stock_t_is_explained_in_every_period_up_to_its_own() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds outsider=report:verified"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds outsider=report:verified append_only=ok"
         ),
         "{text}"
     );
@@ -312,7 +438,7 @@ fn _selftest_neg_report_recomputation_differing_from_b_fails() {
     let row = o.row("_selftest-T-01").unwrap_or_default();
     assert!(
         row.starts_with(
-            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 outsider=report:failed reason="
+            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 outsider=report:failed append_only=ok reason="
         ) && row.contains("outsider report: expected the recomputed 900.01 observed 900.00"),
         "{}",
         o.text()
@@ -381,8 +507,8 @@ fn bundle_byte_flip_fails_the_case_whatever_its_expectations_say() {
         .expect("the outsider line");
     assert!(
         line.starts_with(
-            "OUTSIDER native checkpoint=created bundle=fail(the report bundle did not verify"
-        ) && line.ends_with(" replay=identical verify_book=green"),
+            "OUTSIDER native checkpoint=created witness=cosigned checkpoint=created bundle=fail(the report bundle did not verify"
+        ) && line.ends_with(" replay=identical verify_book=green append_only=ok:inclusion=1:rollback=FA-REF-124:foreign=FA-REF-100"),
         "{text}"
     );
     assert!(!o.rows_ok && !o.ok, "{text}");
@@ -405,7 +531,7 @@ fn verify_book_exit_8_fails_the_case() {
     }
     assert!(
         o.lines.iter().any(|l| l
-            == "OUTSIDER native checkpoint=created bundle=verified replay=identical verify_book=fail(expected fa verify book exit=0 green observed exit=8 green=true)"),
+            == "OUTSIDER native checkpoint=created witness=cosigned checkpoint=created bundle=verified replay=identical verify_book=fail(expected fa verify book exit=0 green observed exit=8 green=true) append_only=ok:inclusion=1:rollback=FA-REF-124:foreign=FA-REF-100"),
         "{text}"
     );
     assert!(!o.rows_ok && !o.ok, "{text}");
@@ -454,7 +580,8 @@ fn _selftest_logs_every_step_and_every_row() {
 /// checks against `verbs.toml` before any book exists, and every
 /// run-variant token in a logged argv is a bound placeholder. The
 /// `fa-verify` steps run in process (A12): each is a literal `fa-verify
-/// report` argv over the runner's work files, never the book directory.
+/// report|checkpoint|consistency|inclusion` argv over the runner's work
+/// files, never the book directory.
 #[test]
 fn every_logged_verb_is_in_the_harness_verb_table() {
     let o = outcome(SELFTEST);
@@ -468,7 +595,12 @@ fn every_logged_verb_is_in_the_harness_verb_table() {
         .collect();
     assert!(!verified.is_empty(), "{}", o.text());
     for argv in verified {
-        assert_eq!(argv.first().map(String::as_str), Some("report"), "{argv:?}");
+        assert!(
+            argv.first().is_some_and(|c| {
+                ["report", "checkpoint", "consistency", "inclusion"].contains(&c.as_str())
+            }),
+            "{argv:?}"
+        );
         assert!(argv.iter().all(|a| !a.contains(book)), "{argv:?}");
     }
     for s in o.steps.iter().filter(|s| s.verb != "fa-verify") {

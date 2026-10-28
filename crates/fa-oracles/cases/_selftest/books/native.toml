@@ -1,10 +1,11 @@
 # Harness self-test native book: two quarters, one opened. N-1 (legs 1,234.56) and a round-amount
 # Original entry S-1 post; an Original entry dated in the never-opened quarter is refused by the
 # period law; jet.round_amounts finds S-1 and not N-1. P-1's evidence cells are swept by dry run.
-# Then the bridge: A-1 (1,000.00 on 1100) posts, the quarter is closed and locked, and case
-# selftest-restatement restates A by -100.00 (B = 900.00), disclosed and closed; then the book's
-# signed checkpoint, which the outsider stage bundles, replays and verifies against. Synthetic;
-# amounts are fixture values.
+# Then the bridge: A-1 (1,000.00 on 1100) posts, the quarter is closed and locked, the as-filed
+# checkpoint is cosigned by the examiner witness, and case selftest-restatement restates A by
+# -100.00 (B = 900.00), disclosed and closed; then the book's signed checkpoint, which the outsider
+# stage bundles, replays and verifies against, and the witness's cosignature of the restated book,
+# which must extend the as-filed one. Synthetic; amounts are fixture values.
 
 [book]
 variant = "native"
@@ -380,58 +381,71 @@ approvers = ["case-second-reader"]
 
 [[step]]
 seq = 10
+kind = "checkpoint"
+ref = "as-filed"
+principal = "examiner-witness"
+
+# A12 (plan §12.7): the examiner witness cosigns the as-filed checkpoint before the case; after the
+# case the runner cosigns the restated book with --previous, which must prove it extends this one.
+[[step]]
+seq = 11
+kind = "checkpoint_witness"
+ref = "as-filed"
+
+[[step]]
+seq = 12
 kind = "case_open"
 ref = "selftest-restatement"
 principal = "case-poster-1"
 
 [[step]]
-seq = 11
+seq = 13
 kind = "scenario_fork"
 ref = "selftest-restate"
 principal = "case-poster-1"
 
 [[step]]
-seq = 12
+seq = 14
 kind = "scenario_run"
 ref = "selftest-restate"
 principal = "case-poster-1"
 
 [[step]]
-seq = 13
+seq = 15
 kind = "scenario_diff"
 ref = "selftest-restate"
 principal = "case-poster-1"
 
 [[step]]
-seq = 14
+seq = 16
 kind = "case_rehearse"
 ref = "selftest-restatement"
 principal = "case-poster-1"
 
 [[step]]
-seq = 15
+seq = 17
 kind = "case_approve"
 ref = "selftest-restatement"
 
 [[step]]
-seq = 16
+seq = 18
 kind = "case_post"
 ref = "selftest-restatement"
 
 [[step]]
-seq = 17
+seq = 19
 kind = "case_disclose"
 ref = "selftest-restatement"
 principal = "case-poster-1"
 
 [[step]]
-seq = 18
+seq = 20
 kind = "case_close"
 ref = "selftest-restatement"
 principal = "case-poster-1"
 
 [[step]]
-seq = 19
+seq = 21
 kind = "checkpoint"
 ref = "selftest-checkpoint"
 principal = "examiner-witness"

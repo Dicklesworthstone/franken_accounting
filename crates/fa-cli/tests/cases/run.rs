@@ -330,6 +330,11 @@ pub struct BookRun<'c> {
     /// Each T read's outsider check by `<expectation>/<target>`: its route
     /// and whether it verified (A12).
     pub read_checks: BTreeMap<String, (OutsiderKind, Result<(), String>)>,
+    /// Each `checkpoint` step's label -> the state oid it created (A12).
+    pub checkpoints: BTreeMap<String, String>,
+    /// The examiner witness's cosignature of a checkpoint before the case,
+    /// when a `checkpoint_witness` step made one (A12, §12.7).
+    pub witness: Option<super::outsider::Witness>,
 }
 
 impl<'c> BookRun<'c> {
@@ -379,6 +384,8 @@ impl<'c> BookRun<'c> {
             attestations: BTreeMap::new(),
             outsider: None,
             read_checks: BTreeMap::new(),
+            checkpoints: BTreeMap::new(),
+            witness: None,
         }
     }
 
@@ -939,6 +946,7 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::CaseDisclose) => self.case_disclose(step),
                 Some(StepKind::CaseClose) => self.case_close(step),
                 Some(StepKind::Checkpoint) => self.checkpoint(step),
+                Some(StepKind::CheckpointWitness) => self.checkpoint_witness(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());

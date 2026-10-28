@@ -49,6 +49,24 @@ thread_local! {
     pub static FORCE_VERIFY_BOOK_EXIT: Cell<Option<i32>> = const { Cell::new(None) };
 }
 
+/// The examiner witness's key and its cosignature of a checkpoint before the
+/// case (A12, §12.7).
+#[derive(Clone, Debug)]
+pub struct Witness {
+    /// The witness key file.
+    pub key: String,
+    pub public_key: String,
+    /// The cosigned checkpoint, the statement a later cosignature extends.
+    pub statement: String,
+    /// The cosigned state's oid.
+    pub state: String,
+    /// The book's checkpoint public key.
+    pub book_key: String,
+}
+
+/// The role that cosigns checkpoints when a step names none.
+const WITNESS: &str = "examiner-witness";
+
 /// What the outsider stage observed: each check and its verdict, in order.
 #[derive(Clone, Debug, Default)]
 pub struct Outsider {
@@ -199,6 +217,9 @@ impl BookRun<'_> {
             "checkpoint",
             as_principal(step, args),
         );
+        if let Some(state) = call.str_field("checkpoint_created", "oid") {
+            self.checkpoints.insert(step.reference.clone(), state);
+        }
         let verdict = match call.str_field("checkpoint_created", "checkpoint_oid") {
             Some(_) => Ok("created".to_string()),
             None => {
@@ -212,6 +233,445 @@ impl BookRun<'_> {
             }
         };
         self.outsider_check("checkpoint", verdict);
+    }
+
+    /// A `checkpoint_witness` step (§12.7): the examiner witness makes a key
+    /// (`fa checkpoint witness-key`) and cosigns the earlier checkpoint its
+    /// `ref` names (`fa checkpoint witness --state`), the statement a later
+    /// cosignature must extend.
+    pub(crate) fn checkpoint_witness(&mut self, step: &StepDef) {
+        let verdict = self.cosign(step);
+        self.outsider_check("witness", verdict.map(|()| "cosigned".to_string()));
+    }
+
+    fn cosign(&mut self, step: &StepDef) -> Result<(), String> {
+        let state = self
+            .checkpoints
+            .get(&step.reference)
+            .cloned()
+            .ok_or_else(|| format!("expected a checkpoint {} observed none", step.reference))?;
+        let principal = step.principal.as_deref().unwrap_or(WITNESS).to_string();
+        let key = self.work.join("witness.key").display().to_string();
+        let made = self.call(
+            step.seq,
+            &step.reference,
+            "checkpoint",
+            vec![
+                s("checkpoint"),
+                s("witness-key"),
+                s("--out"),
+                key.clone(),
+                s("--json"),
+            ],
+        );
+        let Some(public_key) = made.str_field("witness_key_created", "public_key") else {
+            self.lines.push(reproduce(&made));
+            return Err(format!(
+                "expected a witness key (step {}) observed exit={} {}",
+                step.seq,
+                made.exit,
+                made.refusal_id().unwrap_or_default()
+            ));
+        };
+        let statement = self
+            .work
+            .join(format!("{}.witness", step.reference))
+            .display()
+            .to_string();
+        let cosigned = self.call(
+            step.seq,
+            &step.reference,
+            "checkpoint",
+            vec![
+                s("checkpoint"),
+                s("witness"),
+                s("--key"),
+                key.clone(),
+                s("--state"),
+                state.clone(),
+                s("--out"),
+                statement.clone(),
+                s("--grant"),
+                s("witness"),
+                s("--as"),
+                principal,
+                s("--json"),
+            ],
+        );
+        let Some(book_key) = cosigned.str_field("checkpoint_witnessed", "book_public_key") else {
+            self.lines.push(reproduce(&cosigned));
+            return Err(format!(
+                "expected the witness's cosignature (step {}) observed exit={} {}",
+                step.seq,
+                cosigned.exit,
+                cosigned.refusal_id().unwrap_or_default()
+            ));
+        };
+        self.witness = Some(Witness {
+            key,
+            public_key,
+            statement,
+            state,
+            book_key,
+        });
+        Ok(())
+    }
+
+    /// The append-only witness (A12, §12.7), after the history of a book
+    /// whose examiner witness cosigned an earlier checkpoint:
+    /// - the witness cosigns a fresh checkpoint of the restated book with
+    ///   `--previous`, which the book must prove extends the statement it
+    ///   cosigned, and `fa-verify checkpoint --quorum 1` accepts it;
+    /// - `fa proof consistency` from the cosigned state to the fresh one, and
+    ///   `fa proof inclusion` of every entry a delta restates, verify with
+    ///   `fa-verify` against the exported signed checkpoints: the as-filed
+    ///   entries are still in the restated book;
+    /// - the harness-only twins are refused: a rollback (the restated
+    ///   statement as `--previous` for the as-filed state, FA-REF-124, exit
+    ///   8), and a statement this witness cosigned on another book, which the
+    ///   book refuses as no history it signed (FA-REF-100, exit 2; the other
+    ///   book's own calls are setup, not case steps).
+    fn append_only(&mut self) -> Result<String, String> {
+        let witness = self.witness.clone().ok_or("no witness")?;
+        let head = self.head;
+        let reference = "append-only";
+        let fail = |what: &str, call: &Call| {
+            format!(
+                "expected {what} observed exit={} {}",
+                call.exit,
+                call.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string()
+        };
+        let created = self.call(
+            head,
+            reference,
+            "checkpoint",
+            vec![
+                s("checkpoint"),
+                s("create"),
+                s("--grant"),
+                s("witness"),
+                s("--json"),
+            ],
+        );
+        let Some(after) = created.str_field("checkpoint_created", "oid") else {
+            self.lines.push(reproduce(&created));
+            return Err(fail("a checkpoint of the restated book", &created));
+        };
+        let extended_statement = self.work.join("restated.witness").display().to_string();
+        let extended = extended_statement.clone();
+        let cosigned = self.call(
+            head,
+            reference,
+            "checkpoint",
+            vec![
+                s("checkpoint"),
+                s("witness"),
+                s("--key"),
+                witness.key.clone(),
+                s("--previous"),
+                witness.statement.clone(),
+                s("--state"),
+                after.clone(),
+                s("--out"),
+                extended.clone(),
+                s("--grant"),
+                s("witness"),
+                s("--as"),
+                s(WITNESS),
+                s("--json"),
+            ],
+        );
+        if cosigned.exit != 0 {
+            self.lines.push(reproduce(&cosigned));
+            return Err(fail(
+                "the restated book cosigned with --previous",
+                &cosigned,
+            ));
+        }
+        let quorum = self.fa_verify(
+            reference,
+            "FaVerifyCheckpoint",
+            vec![
+                s("checkpoint"),
+                extended,
+                s("--key"),
+                witness.book_key.clone(),
+                s("--witness"),
+                witness.public_key.clone(),
+                s("--quorum"),
+                s(1),
+                s("--json"),
+            ],
+        );
+        if quorum.exit != 0 {
+            return Err(format!(
+                "expected fa-verify checkpoint at quorum 1 exit=0 observed exit={} {}",
+                quorum.exit,
+                failed_check(&quorum.stdout)
+            ));
+        }
+        let mut signed = Vec::new();
+        for (name, state) in [("as-filed", &witness.state), ("restated", &after)] {
+            let file = self
+                .work
+                .join(format!("{name}.checkpoint"))
+                .display()
+                .to_string();
+            let exported = self.call(
+                head,
+                reference,
+                "proof",
+                vec![
+                    s("proof"),
+                    s("signed-checkpoint"),
+                    s("--state"),
+                    state.clone(),
+                    s("--out"),
+                    file.clone(),
+                    s("--json"),
+                ],
+            );
+            if exported.exit != 0 {
+                self.lines.push(reproduce(&exported));
+                return Err(fail(&format!("the {name} signed checkpoint"), &exported));
+            }
+            signed.push(file);
+        }
+        let consistency = self
+            .work
+            .join("append-only.consistency")
+            .display()
+            .to_string();
+        let proved = self.call(
+            head,
+            reference,
+            "proof",
+            vec![
+                s("proof"),
+                s("consistency"),
+                s("--state"),
+                witness.state.clone(),
+                s("--next-state"),
+                after.clone(),
+                s("--out"),
+                consistency.clone(),
+                s("--json"),
+            ],
+        );
+        if proved.exit != 0 {
+            self.lines.push(reproduce(&proved));
+            return Err(fail("a consistency proof", &proved));
+        }
+        let verified = self.fa_verify(
+            reference,
+            "FaVerifyConsistency",
+            vec![
+                s("consistency"),
+                consistency,
+                s("--trusted"),
+                signed[0].clone(),
+                s("--claimed"),
+                signed[1].clone(),
+                s("--key"),
+                witness.book_key.clone(),
+                s("--json"),
+            ],
+        );
+        if verified.exit != 0 {
+            return Err(format!(
+                "expected fa-verify consistency exit=0 observed exit={} {}",
+                verified.exit,
+                failed_check(&verified.stdout)
+            ));
+        }
+        // Every entry a delta restates (the as-filed entries) is still
+        // included in the restated book.
+        let restated: Vec<String> = self
+            .book
+            .intents
+            .iter()
+            .filter(|i| i.is_delta())
+            .filter_map(|i| i.target.as_ref().and_then(|t| self.vids.get(t)).cloned())
+            .collect();
+        if restated.is_empty() {
+            return Err("expected an entry a delta restates observed none".into());
+        }
+        for (n, entry) in restated.iter().enumerate() {
+            let proof = self
+                .work
+                .join(format!("append-only-{n}.inclusion"))
+                .display()
+                .to_string();
+            let included = self.call(
+                head,
+                reference,
+                "proof",
+                vec![
+                    s("proof"),
+                    s("inclusion"),
+                    s("--entry"),
+                    entry.clone(),
+                    s("--state"),
+                    after.clone(),
+                    s("--out"),
+                    proof.clone(),
+                    s("--json"),
+                ],
+            );
+            if included.exit != 0 {
+                self.lines.push(reproduce(&included));
+                return Err(fail(&format!("an inclusion proof of {entry}"), &included));
+            }
+            let verified = self.fa_verify(
+                reference,
+                "FaVerifyInclusion",
+                vec![
+                    s("inclusion"),
+                    proof,
+                    s("--checkpoint"),
+                    signed[1].clone(),
+                    s("--key"),
+                    witness.book_key.clone(),
+                    s("--json"),
+                ],
+            );
+            if verified.exit != 0 {
+                return Err(format!(
+                    "expected fa-verify inclusion of {entry} exit=0 observed exit={} {}",
+                    verified.exit,
+                    failed_check(&verified.stdout)
+                ));
+            }
+        }
+        // The twins. A rollback: the restated statement as `--previous` for
+        // the as-filed state, which does not extend it (FA-REF-124). And the
+        // witness's statement on another book, which this book refuses as
+        // no history it signed (FA-REF-100, exit 2) before any extension
+        // proof.
+        let rollback = self.twin(
+            reference,
+            &witness,
+            &extended_statement,
+            Some(&witness.state),
+            "rollback",
+        );
+        if rollback != (Some("FA-REF-124".to_string()), 8) {
+            return Err(format!(
+                "expected the as-filed state cosigned with the restated --previous refused FA-REF-124 exit=8 observed {} exit={}",
+                rollback.0.as_deref().unwrap_or("admitted"),
+                rollback.1
+            ));
+        }
+        let other = self.other_book_statement(&witness)?;
+        let foreign = self.twin(reference, &witness, &other, None, "foreign");
+        if foreign != (Some("FA-REF-100".to_string()), 2) {
+            return Err(format!(
+                "expected another book's statement as --previous refused FA-REF-100 exit=2 observed {} exit={}",
+                foreign.0.as_deref().unwrap_or("admitted"),
+                foreign.1
+            ));
+        }
+        Ok(format!(
+            "ok:inclusion={}:rollback=FA-REF-124:foreign=FA-REF-100",
+            restated.len()
+        ))
+    }
+
+    /// A twin cosignature that must be refused: `--previous` set to
+    /// `previous`, at `state` when given. Its (refusal, exit); an unexpected
+    /// outcome also prints the argv to reproduce.
+    fn twin(
+        &mut self,
+        reference: &str,
+        witness: &Witness,
+        previous: &str,
+        state: Option<&str>,
+        name: &str,
+    ) -> (Option<String>, i32) {
+        let mut args = vec![
+            s("checkpoint"),
+            s("witness"),
+            s("--key"),
+            witness.key.clone(),
+            s("--previous"),
+            previous.to_string(),
+        ];
+        if let Some(state) = state {
+            args.extend([s("--state"), state.to_string()]);
+        }
+        args.extend([
+            s("--out"),
+            self.work
+                .join(format!("{name}.witness"))
+                .display()
+                .to_string(),
+            s("--grant"),
+            s("witness"),
+            s("--as"),
+            s(WITNESS),
+            s("--json"),
+        ]);
+        let call = self.call(self.head, reference, "checkpoint", args);
+        if call.exit == 0 {
+            self.lines.push(reproduce(&call));
+        }
+        (call.refusal_id(), call.exit)
+    }
+
+    /// The witness's cosignature of a checkpoint of another, fresh book with
+    /// the same calendar (harness setup for the FA-REF-124 twin).
+    fn other_book_statement(&mut self, witness: &Witness) -> Result<String, String> {
+        let dir = self.work.join("other-book");
+        let header = &self.book.book;
+        let run = |args: &[&str]| {
+            super::run::fa(
+                &dir,
+                &args.iter().map(|a| (*a).to_string()).collect::<Vec<_>>(),
+            )
+        };
+        let periods = self.work.join("periods.json").display().to_string();
+        let created = run(&[
+            "book",
+            "create",
+            "--name",
+            "other-book",
+            "--base-unit",
+            &header.base_unit,
+            "--calendar",
+            "custom",
+            "--periods",
+            &periods,
+            "--opening-date",
+            &header.opening_date,
+            "--json",
+        ]);
+        let checkpointed = run(&["checkpoint", "create", "--grant", "witness", "--json"]);
+        let statement = self.work.join("other-book.witness").display().to_string();
+        let cosigned = run(&[
+            "checkpoint",
+            "witness",
+            "--key",
+            &witness.key,
+            "--out",
+            &statement,
+            "--grant",
+            "witness",
+            "--json",
+        ]);
+        for call in [&created, &checkpointed, &cosigned] {
+            if call.exit != 0 {
+                self.lines.push(reproduce(call));
+                return Err(format!(
+                    "expected the other book's witnessed checkpoint observed exit={} {}",
+                    call.exit,
+                    call.refusal_id().unwrap_or_default()
+                ));
+            }
+        }
+        Ok(statement)
     }
 
     /// The outsider stage, after the history of a book with a checkpoint.
@@ -230,6 +690,10 @@ impl BookRun<'_> {
         }
         let verdict = self.verify_book();
         self.outsider_check("verify_book", verdict);
+        if self.witness.is_some() {
+            let verdict = self.append_only();
+            self.outsider_check("append_only", verdict);
+        }
         if let Some(o) = &self.outsider {
             self.lines.push(o.line(&self.book.stem));
         }

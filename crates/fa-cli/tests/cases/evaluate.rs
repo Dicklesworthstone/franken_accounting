@@ -1124,8 +1124,28 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
             ),
         )
     });
+    // A12 (§12.7): on a book whose examiner witness cosigned the as-filed
+    // checkpoint, a T holds only if the restated book extends it.
+    let append_only = run.witness.as_ref().and_then(|_| {
+        run.outsider
+            .as_ref()?
+            .checks
+            .iter()
+            .find(|(check, _)| check == "append_only")
+            .map(|(_, verdict)| verdict.clone())
+    });
+    if let Some(Err(why)) = &append_only {
+        fails.push(format!("append_only: {why}"));
+    }
+    let append_token = append_only.map(|verdict| {
+        (
+            "append_only".to_string(),
+            if verdict.is_ok() { "ok" } else { "fail" }.to_string(),
+        )
+    });
     if !fails.is_empty() {
         row.projection.extend(outsider_token);
+        row.projection.extend(append_token);
         row.verdict = RowVerdict::Fail;
         row.reason = Some(fails.join("; "));
         return (row, witnesses, None);
@@ -1180,6 +1200,7 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         }
     }
     row.projection.extend(outsider_token);
+    row.projection.extend(append_token);
     (row, witnesses, reproduce)
 }
 
