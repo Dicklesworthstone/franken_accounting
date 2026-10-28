@@ -5458,7 +5458,11 @@ fn certified_trial_balance_replays_after_later_and_backdated_postings() {
         CertificateStatus::SupersededBy {
             later_entries,
             checked_at,
-        } => Ok((later_entries, checked_at)),
+            cases,
+        } => {
+            assert!(cases.is_empty());
+            Ok((later_entries, checked_at))
+        }
         state => Err(format!(
             "backdated in-scope posting did not supersede report: {state:?}"
         )),
@@ -7402,6 +7406,7 @@ fn retained_roll_forward_status_tracks_migration_activation_without_writing() {
                     CertificateStatus::SupersededBy {
                         checked_at: head,
                         later_entries: causes,
+                        cases: Vec::new(),
                     }
                 } else {
                     CertificateStatus::Current { checked_at: head }
@@ -7488,6 +7493,7 @@ fn retained_aging_status_tracks_migration_activation_without_rewriting_history()
                     CertificateStatus::SupersededBy {
                         checked_at: head,
                         later_entries: causes,
+                        cases: Vec::new(),
                     }
                 } else {
                     CertificateStatus::Current { checked_at: head }

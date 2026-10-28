@@ -466,6 +466,7 @@ fn retained_comparatives_replay_after_later_and_backdated_postings() {
             CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries: vec![correction.entry_ref().vid],
+                cases: Vec::new(),
             }
         );
         let loaded = fixture
@@ -717,6 +718,7 @@ fn reservations_do_not_change_statements_and_resolution_posts_use_their_own_peri
             CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries: vec![posted.entry_ref().vid],
+                cases: Vec::new(),
             }
         );
         let current = fixture
@@ -846,6 +848,7 @@ fn historical_zero_leaf_mappings_survive_a_later_covered_chart_extension() {
         CertificateStatus::SupersededBy {
             checked_at: added.recorded_at,
             later_entries: vec![added.control_entry],
+            cases: Vec::new(),
         }
     );
     assert_eq!(

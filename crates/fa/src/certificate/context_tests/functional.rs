@@ -343,6 +343,7 @@ fn functional_certificate_keeps_old_output_and_detects_backdated_contributions()
         CertificateStatus::SupersededBy {
             checked_at: posted.recorded_at(),
             later_entries: vec![posted.entry_ref().vid],
+            cases: Vec::new(),
         }
     );
 }

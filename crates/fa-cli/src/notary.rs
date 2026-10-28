@@ -1334,13 +1334,23 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 /// An entry-relevance status as the `certificate_status` event reports it.
-fn entry_status(status: CertificateStatus) -> (&'static str, fgdb_types::CommitSeq, Vec<VId>) {
+fn entry_status(
+    status: CertificateStatus,
+) -> (
+    &'static str,
+    fgdb_types::CommitSeq,
+    Vec<VId>,
+    Vec<fa::CertificateSupersedingCase>,
+) {
     match status {
-        CertificateStatus::Current { checked_at } => ("Current", checked_at, Vec::new()),
+        CertificateStatus::Current { checked_at } => {
+            ("Current", checked_at, Vec::new(), Vec::new())
+        }
         CertificateStatus::SupersededBy {
             checked_at,
             later_entries,
-        } => ("SupersededBy", checked_at, later_entries),
+            cases,
+        } => ("SupersededBy", checked_at, later_entries, cases),
     }
 }
 
@@ -1388,10 +1398,10 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             let certificate = fa::SummaryCertificate::decode(&bytes)?;
             match book.summary_certificate_status(principal, &capability, &certificate)?? {
                 fa::SummaryCertificateStatus::Current { checked_at } => {
-                    ("Current", checked_at, Vec::new())
+                    ("Current", checked_at, Vec::new(), Vec::new())
                 }
                 fa::SummaryCertificateStatus::Changed { checked_at, .. } => {
-                    ("Changed", checked_at, Vec::new())
+                    ("Changed", checked_at, Vec::new(), Vec::new())
                 }
             }
         }
@@ -1405,10 +1415,10 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             let certificate = fa::QueryCertificate::decode(&bytes)?;
             match book.query_certificate_status(principal, &capability, &certificate)?? {
                 fa::QueryCertificateStatus::Current { checked_at } => {
-                    ("Current", checked_at, Vec::new())
+                    ("Current", checked_at, Vec::new(), Vec::new())
                 }
                 fa::QueryCertificateStatus::Changed { checked_at, .. } => {
-                    ("Changed", checked_at, Vec::new())
+                    ("Changed", checked_at, Vec::new(), Vec::new())
                 }
             }
         }
@@ -1450,7 +1460,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         }
     };
     let certificate = artifact.source_certificate();
-    let (name, checked_at, later_entries) = status;
+    let (name, checked_at, later_entries, cases) = status;
     ctx.out.known_at(checked_at);
     match &certificate.selection {
         ReportSelection::TrialBalance(selection)
@@ -1481,6 +1491,20 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         }
     }
     let digest = hex(artifact.digest());
+    let case_summary = cases
+        .iter()
+        .map(|case| {
+            let disclosure = case.disclosure_digest.map_or_else(
+                || "disclosure not recorded at this prefix".to_owned(),
+                |digest| format!("disclosure {}", hex(&digest)),
+            );
+            format!(
+                "\n  Case {} ({}): {disclosure}",
+                case.ordinal,
+                case.kind.name()
+            )
+        })
+        .collect::<String>();
     ctx.out.event_with_certificate(
         "certificate_status",
         vec![
@@ -1489,10 +1513,16 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ("known_at", Json::Int(i128::from(certificate.known_at.0))),
             ("checked_at", Json::Int(i128::from(checked_at.0))),
             ("later_entries", Json::Arr(later_entries.iter().map(|vid| s(format!("{:032x}", vid.0))).collect())),
+            ("cases", Json::Arr(cases.iter().map(|case| obj(vec![
+                ("ordinal", Json::Int(i128::from(case.ordinal))),
+                ("kind", s(case.kind.name())),
+                ("disclosure_document", case.disclosure_document.map_or(Json::Null, |oid| s(hex(&oid.0)))),
+                ("disclosure_digest", case.disclosure_digest.map_or(Json::Null, |digest| s(hex(&digest)))),
+            ])).collect())),
             ("replay_scope", s(REPLAY_SCOPE)),
             ("authority", s(AUTHORITY)),
         ],
-        &format!("Certificate {digest}: {name} (known at {}, checked at {}, {} later entries in its selector)", certificate.known_at.0, checked_at.0, later_entries.len()),
+        &format!("Certificate {digest}: {name} (known at {}, checked at {}, {} later entries in its selector){case_summary}", certificate.known_at.0, checked_at.0, later_entries.len()),
         Some(&digest),
     );
     Ok(())

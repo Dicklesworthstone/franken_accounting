@@ -475,6 +475,7 @@ fn retained_functional_company_report_does_not_reselect_new_rates_or_layouts() {
         crate::CertificateStatus::SupersededBy {
             checked_at: harness.head(),
             later_entries: vec![posted.entry_ref().vid],
+            cases: Vec::new(),
         }
     );
 }

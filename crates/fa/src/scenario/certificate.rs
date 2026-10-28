@@ -558,6 +558,9 @@ impl Book {
             CertificateStatus::SupersededBy {
                 checked_at,
                 later_entries,
+                // These are new hypothetical Plan records on a fixed fork,
+                // not committed corrections by a restatement case.
+                cases: Vec::new(),
             }
         }))
     }
