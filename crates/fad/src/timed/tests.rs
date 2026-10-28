@@ -60,6 +60,9 @@ where
 struct Fixture {
     book: AsyncBook<MemVfs>,
     request: PostRequest,
+    // Shares the book's in-memory filesystem, so a test can reopen the
+    // store underneath the facade.
+    vfs: MemVfs,
 }
 
 async fn fixture(root: &Cx, seed: u8) -> Fixture {
@@ -78,7 +81,7 @@ async fn fixture(root: &Cx, seed: u8) -> Fixture {
     };
     let mut book = AsyncBook::create_with_vfs(
         &cx,
-        vfs,
+        vfs.clone(),
         Path::new("timed-book"),
         BookKeys::for_development(seed),
         spec,
@@ -189,6 +192,7 @@ async fn fixture(root: &Cx, seed: u8) -> Fixture {
             plan_certificate: None,
             capability: Capability::embedded(principal, &["post"]).unwrap(),
         },
+        vfs,
     }
 }
 
@@ -605,6 +609,125 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(true)));
         assert_eq!(fields.get("sweep_index_error"), Some(&Json::Null));
         assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
+/// fa-0hs4.11 negative control: a sweep-index page damaged underneath the
+/// facade (one payload bit flipped, not resealed) never reaches discovery.
+/// The next corroborated cycle's advance finds the page corrupt and rebuilds
+/// the index from the journal; the cycle still expires the due holds, and
+/// status reports the index current with no error.
+#[test]
+fn corrupt_sweep_index_is_rebuilt_and_reported() {
+    lab(83, |root| async move {
+        let mut fixture = fixture(&root, 83).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let midnight = u64::try_from(april.0).unwrap() * 86_400_000_000_000;
+        work.run_observation(
+            &root,
+            &mut fixture.book,
+            Ok(observation(&root, midnight - 1_000)),
+        )
+        .await
+        .unwrap();
+        for key in [b"corrupt-a", b"corrupt-b"] {
+            hold(&mut fixture, &cx, key, 500).await;
+        }
+        advance(&root, 10).await;
+        let built = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, midnight - 990)),
+            )
+            .await
+            .unwrap();
+        assert!(built.corroborated && built.sweep_index_current, "{built:?}");
+        assert_eq!(built.expired, 0, "neither hold is due yet: {built:?}");
+        let index = fixture.book.verify_sweep_index(&cx).unwrap();
+        assert!(index.index_present && index.is_green(), "{index:?}");
+        assert_eq!(index.holds_checked, 2, "{index:?}");
+
+        // Flip one payload bit of the hold page through the real substrate,
+        // without resealing it, while the facade is closed.
+        let Fixture { book, vfs, .. } = fixture;
+        drop(book);
+        let commit = cx.commit();
+        let directory = fa_journal::blob::DurableDirectory::open_existing(
+            &commit,
+            vfs.clone(),
+            Path::new("./timed-book"),
+        )
+        .await
+        .unwrap();
+        let mut db = fgdb::Database::open_with_vfs(
+            &commit,
+            vfs.clone(),
+            directory.path().join("store"),
+            fgdb::DatabaseKeys::new(
+                [83; 32],
+                fgdb_types::ids::DatabaseSecurityNamespaceId([84; 32]),
+                [85; 32],
+            ),
+        )
+        .await
+        .unwrap();
+        let page = fa_journal::rows::sweep_index_page_vid(fa_journal::sweep::SWEEP_EXPIRY, 0);
+        let row = db.vertex(page).unwrap().expect("hold page 0");
+        let payload_key = fa_model::symbols::property::FA_PAYLOAD;
+        let mut payload = fa_journal::rows::bytes(&row, payload_key, "hold page 0").unwrap();
+        let last = payload.len() - 1;
+        payload[last] ^= 0x01;
+        let mut tamper = fgdb::WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+        tamper.set_vertex_property(
+            page,
+            payload_key,
+            Some(fa_journal::rows::scalar_bytes("tampered page", payload).unwrap()),
+        );
+        db.write(&commit, tamper).await.unwrap();
+        drop(db);
+        let mut book = AsyncBook::open_with_vfs(
+            &cx,
+            vfs,
+            Path::new("timed-book"),
+            BookKeys::for_development(83),
+            Entropy::deterministic(83),
+        )
+        .await
+        .unwrap();
+        let corrupt = book.verify_sweep_index(&cx).unwrap();
+        assert!(
+            corrupt.drift.iter().any(|d| d.contains("hold page 0")),
+            "{corrupt:?}"
+        );
+
+        advance(&root, 990).await;
+        let due = work
+            .run_observation(&root, &mut book, Ok(observation(&root, midnight)))
+            .await
+            .unwrap();
+        assert!(due.corroborated && due.sweep_index_current, "{due:?}");
+        assert_eq!(due.expired, 1, "{due:?}");
+        let fields = fa_cli::json::obj(status_fields(Some(&work)));
+        assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(true)));
+        assert_eq!(fields.get("sweep_index_error"), Some(&Json::Null));
+        let rebuilt = book.verify_sweep_index(&cx).unwrap();
+        assert!(rebuilt.index_present && rebuilt.is_green(), "{rebuilt:?}");
+        assert_eq!(rebuilt.holds_checked, 1, "{rebuilt:?}");
+
+        advance(&root, 10).await;
+        let next = work
+            .run_observation(&root, &mut book, Ok(observation(&root, midnight + 10)))
+            .await
+            .unwrap();
+        assert_eq!(next.expired, 1, "{next:?}");
+        assert!(book.due_holds(&cx).unwrap().is_empty());
+        assert!(book.verify_sweep_index(&cx).unwrap().is_green());
     })
     .unwrap()
     .expect("lab completed");
