@@ -259,14 +259,17 @@ fn retained_bytes_match<V: Vfs + Clone>(
 
 /// Labels whose commits are pure derived/certified metadata and never change
 /// any accounting, period, policy, capability, approval, evidence, or chart
-/// witness a `PostPlan` binds (fa-1nx).
-const METADATA_LABELS: [fgdb_delta_types::LabelId; 6] = [
+/// witness a `PostPlan` binds (fa-1nx). An AccessEvent is a read's receipt
+/// (fa-7dw): another session reading the book between a plan and its commit
+/// changes nothing the plan reviewed.
+const METADATA_LABELS: [fgdb_delta_types::LabelId; 7] = [
     label::REGISTER,
     label::ACCUMULATOR_STATE,
     label::TRANSPARENCY_CHECKPOINT,
     label::REGISTER_STATE,
     label::REGISTER_CHECKPOINT,
     label::CERTIFICATE,
+    label::ACCESS_EVENT,
 ];
 
 fn is_metadata_vertex_at<V: Vfs + Clone>(

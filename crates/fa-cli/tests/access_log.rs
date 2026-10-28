@@ -532,6 +532,99 @@ fn a_bound_plan_audits_before_its_basis_and_commit_does_not_invalidate_the_plan(
     assert_eq!(f.head(), before + 2);
 }
 
+/// fa-1nx under fa-7dw: another session's read between a plan and its
+/// commit publishes only its access receipt, which changes nothing the plan
+/// reviewed, so the plan still commits. An accounting post in between still
+/// invalidates the plan (the negative control).
+#[test]
+fn another_sessions_access_receipt_does_not_invalidate_a_plan() {
+    let f = Fixture::new();
+    let book = f.dir.join("book");
+    let planner = LaunchAuthority::new(
+        book.clone(),
+        None,
+        "preparer-planner",
+        LaunchProfile::Preparer,
+        &["read", "post"],
+    )
+    .unwrap();
+    let reader =
+        LaunchAuthority::new(book, None, "agent-reader", LaunchProfile::Agent, &["read"]).unwrap();
+    let intent = |key: &str| {
+        format!(
+            r#"{{"idempotency_key":"{key}","effective_date":"2026-03-10","legs":[{{"side":"debit","account":"1000","amount":"3.00 USD"}},{{"side":"credit","account":"4000","amount":"3.00 USD"}}]}}"#
+        )
+    };
+    let plan = |key: &str| {
+        let (exit, planned) = f.bound(
+            &planner,
+            &[
+                "post",
+                "--intent",
+                "-",
+                "--evidence",
+                &f.evidence,
+                "--dry-run",
+            ],
+            Some(intent(key).as_str()),
+        );
+        assert_eq!(exit, 0, "{planned:?}");
+        assert_eq!(text(&planned, "event"), "plan");
+        text(data(&planned), "bytes").to_string()
+    };
+
+    let planned = plan("receipt-tolerant");
+    let snapshot = f.head();
+    let (exit, read) = f.bound(&reader, &["tb", "--period", "FY2026-P03"], None);
+    assert_eq!(exit, 0, "{read:?}");
+    let log = f.log(&["--since", &snapshot.to_string()]);
+    assert_eq!(number(&log, "count"), 1);
+    let access = &log.get("events").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(text(access, "principal_name"), "agent-reader");
+    assert_eq!(text(access, "command"), "tb");
+    assert_eq!(
+        f.head(),
+        snapshot + 1,
+        "the read published only its receipt"
+    );
+    let (exit, committed) = f.bound(&planner, &["commit", "--plan", "-"], Some(planned.as_str()));
+    assert_eq!(
+        exit, 0,
+        "another session's access receipt must not invalidate the plan: {committed:?}"
+    );
+    assert_eq!(text(&committed, "event"), "plan_committed");
+    assert_eq!(
+        data(&committed).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+
+    let invalidated = plan("receipt-control");
+    std::fs::write(
+        f.dir.join("between.json"),
+        r#"{"idempotency_key":"between-sale","effective_date":"2026-03-11","legs":[{"side":"debit","account":"1000","amount":"7.00 USD"},{"side":"credit","account":"4000","amount":"7.00 USD"}]}"#,
+    )
+    .unwrap();
+    f.ok(&[
+        "post",
+        "--intent",
+        "between.json",
+        "--evidence",
+        &f.evidence,
+    ]);
+    let before = f.head();
+    let (exit, refused) = f.bound(
+        &planner,
+        &["commit", "--plan", "-"],
+        Some(invalidated.as_str()),
+    );
+    assert_eq!(
+        exit, 6,
+        "an accounting post still invalidates the plan: {refused:?}"
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-034");
+    assert_eq!(f.head(), before);
+}
+
 #[test]
 fn a_historical_export_keeps_its_prefix_after_recording_current_access() {
     let f = Fixture::new();
