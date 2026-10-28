@@ -18922,6 +18922,8 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 out.event_with_certificate(
                     "aging_reconciled",
                     vec![
+                        // The effective-date contract: no due-date basis.
+                        ("basis", Json::Null),
                         ("account", s(&rec.account().code)),
                         ("account_vid", s(format!("{:032x}", rec.account().vid.0))),
                         ("name", s(&rec.account().name)),
