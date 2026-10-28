@@ -2259,10 +2259,31 @@ fn replay_verification_decodes_only_each_pairs_new_rows() {
             Ok(verified.clone()),
             literal_replay_pairs(&k, &scratch, &selected)
         );
-        let entries = fa_registers::entries_at(&k.db, &k.book, prefix)
-            .unwrap()
-            .len();
+        let selected_entries = fa_registers::entries_at(&k.db, &k.book, prefix).unwrap();
+        let entries = selected_entries.len();
+        let legs: usize = selected_entries
+            .iter()
+            .map(|(_, entry, _)| entry.proposal.legs.len())
+            .sum();
         eprintln!("replay prefix={prefix:?} entries={entries} work={work:?}");
+        assert_eq!(
+            work.identities_compared,
+            2 * entries,
+            "compare each new identity once per book"
+        );
+        assert_eq!(
+            work.appended_legs,
+            2 * legs,
+            "fold each new leg once per book"
+        );
+        assert_eq!(
+            work.full_fold_pairs, 1,
+            "only the initial empty prefix takes the literal path"
+        );
+        assert_eq!(
+            work.cells_compared, legs,
+            "compare only the two changed cells per posting"
+        );
         for side in [&work.source, &work.scratch] {
             assert_eq!(
                 side.full_reads, 1,
@@ -2287,6 +2308,170 @@ fn replay_verification_decodes_only_each_pairs_new_rows() {
             "every historical pair is still checked despite decoding only its suffix"
         );
     }
+}
+
+#[test]
+fn replay_verification_carries_pending_cells_and_refolds_releases() {
+    use fa_model::{ControlPayload, Disposition, Pending};
+
+    let (mut k, _) = setup();
+    let mut checkpoints = Vec::new();
+    for index in 0..2 {
+        let intent = trunk_intent(
+            &format!("replay-hold-{index}"),
+            vec![
+                leg(fa_reference::Side::Debit, "6000", 500),
+                leg(fa_reference::Side::Credit, "1000", 500),
+            ],
+        );
+        let mut hold = chunk_payload(&k, VId(0), &intent, Shape::NoRun, None);
+        hold.class = EntryClass::PENDING;
+        hold.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let held = kernel_post(&mut k, hold.clone(), &["post"], false).unwrap();
+        checkpoints.push((k.db.frontier().unwrap(), 500));
+        post_replay_native(&mut k, 100 + index);
+        let mut resolution = hold;
+        resolution.class = EntryClass::RESOLUTION;
+        resolution.idempotency_key = format!("replay-release-{index}").into_bytes();
+        let disposition = if index == 0 {
+            for leg in &mut resolution.legs {
+                leg.amount.mantissa = 250;
+            }
+            resolution.unit_totals = EntryPayload::fold_unit_totals(&resolution.legs).unwrap();
+            Disposition::Posts {
+                source_ordinals: vec![0, 1],
+            }
+        } else {
+            resolution.legs.clear();
+            resolution.unit_totals.clear();
+            resolution.control = Some(ControlPayload::ReservationRelease);
+            Disposition::Voids
+        };
+        resolution.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(held.entry_ref()),
+            disposition: Some(disposition),
+        });
+        kernel_post(&mut k, resolution, &["post"], false).unwrap();
+        checkpoints.push((k.db.frontier().unwrap(), 0));
+        post_replay_native(&mut k, 200 + index);
+    }
+    let head = k.db.frontier().unwrap();
+    let mut scratch = empty_scratch(&k);
+    let map = replay(&mut k, &mut scratch, head).unwrap();
+    let (verdict, work) =
+        fa_registers::replay::verify_replay_counted(&k.db, &scratch, &k.book, &map).unwrap();
+    assert_eq!(
+        Ok(verdict.unwrap()),
+        literal_replay_pairs(&k, &scratch, &map)
+    );
+    assert_eq!(
+        work.full_fold_pairs, 3,
+        "genesis plus both non-additive releases"
+    );
+    assert!(
+        work.appended_legs >= 12,
+        "new holds and later postings resume additive folding"
+    );
+    for (at, expected_pending) in checkpoints {
+        let fold = fold_period_at(&k.db, &k.book, P01, Some(at)).unwrap();
+        assert_eq!(
+            fold.pending.iter().map(|cell| cell.debits).sum::<i128>(),
+            expected_pending
+        );
+    }
+}
+
+#[test]
+fn replay_verification_preserves_the_literal_capacity_error() {
+    use fa_model::symbols::{label, relation};
+
+    let (mut k, _) = setup();
+    post_replay_native(&mut k, 0);
+    let intent = trunk_intent(
+        "replay-capacity-tamper",
+        vec![
+            leg(fa_reference::Side::Debit, "6000", i128::MAX),
+            leg(fa_reference::Side::Credit, "1000", i128::MAX),
+        ],
+    );
+    let entry = chunk_payload(&k, VId(0), &intent, Shape::NoRun, None)
+        .seal(Vec::new(), None)
+        .unwrap();
+    let mut raw = WriteBatch::new(relation::IN_BOOK);
+    raw.create_vertex(
+        VId(0x7fff_0101),
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    // Bypass posting admission deliberately: a verifier must diagnose a
+    // retained gross-column overflow, even when both books carry it.
+    write_raw(&mut k, raw);
+    let head = k.db.frontier().unwrap();
+    let mut scratch = empty_scratch(&k);
+    let map = replay(&mut k, &mut scratch, head).unwrap();
+    let expected = literal_replay_pairs(&k, &scratch, &map);
+    assert!(expected.as_ref().unwrap_err().contains("cell capacity"));
+    assert_eq!(
+        replay_result(fa_registers::replay::verify_replay(
+            &k.db, &scratch, &k.book, &map
+        )),
+        expected
+    );
+}
+
+#[test]
+fn replay_verification_rechecks_periods_even_without_new_entries() {
+    use fa_model::symbols::{label, property, relation};
+
+    let (mut k, _) = setup();
+    post_replay_native(&mut k, 0);
+    let head = k.db.frontier().unwrap();
+    let mut scratch = empty_scratch(&k);
+    let mut map = replay(&mut k, &mut scratch, head).unwrap();
+    let mut metadata = WriteBatch::new(relation::IN_BOOK);
+    metadata.set_vertex_property(
+        fa_journal::rows::book_root(),
+        property::NAME,
+        Some(fa_journal::rows::scalar_text("book.name", "period mutation").unwrap()),
+    );
+    write_raw(&mut k, metadata.clone());
+    metadata.set_vertex_label(
+        fa_journal::rows::period_vid(&k.book.calendar.id, P01),
+        label::PERIOD,
+        false,
+    );
+    let ctx = k.ctx();
+    k.runtime
+        .block_on(scratch.write(&ctx.commit(), metadata))
+        .unwrap();
+    let source_seq = k.db.frontier().unwrap();
+    map.source_prefix = source_seq;
+    map.pairs.push(fa_journal::scratch::SeqPair {
+        source_seq,
+        source_marker: k
+            .db
+            .delta_since(CommitSeq(source_seq.0 - 1))
+            .unwrap()
+            .next()
+            .unwrap()
+            .commit_marker_identity()
+            .marker_oid
+            .0,
+        scratch_seq: scratch.frontier().unwrap(),
+    });
+    let expected = literal_replay_pairs(&k, &scratch, &map);
+    assert!(expected.as_ref().unwrap_err().contains("unknown period"));
+    assert_eq!(
+        replay_result(fa_registers::replay::verify_replay(
+            &k.db, &scratch, &k.book, &map
+        )),
+        expected
+    );
 }
 
 #[test]

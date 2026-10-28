@@ -22,8 +22,11 @@
 //! delta stream, rereading every changed vertex at the next mapped sequence
 //! (fa-vr7q). Migration visibility changes, unmodeled rows, a missing delta or
 //! a different retained marker fall back to the literal selector. The folds
-//! themselves are still recomputed at every pair; this removes repeated entry
-//! decoding, not the remaining quadratic fold work.
+//! carry the already checked cells over additive posting suffixes. Each new
+//! entry identity and each changed cell is compared on both sides. A release,
+//! migration activation, changed historical entry or failed fast-path check
+//! uses the complete literal folds at that pair. No persisted register is an
+//! input, and an error is always decided by the literal path.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,14 +34,14 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
 use fa_journal::scratch::{Maintenance, SeqMap, replayable, source_genesis};
 use fa_model::symbols::label;
-use fa_model::{Entry, EntryOrigin};
+use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin};
 use fgdb::Database;
 use fgdb_delta_types::{DeltaRow, ElementId};
 use fgdb_types::{CommitSeq, MarkerRef, VId};
 
 use crate::{
-    EntryReadCount, PeriodOf, RegisterError, entries_at_counted, entry_from_row, folds_at,
-    take_fold,
+    Cell, CellKey, EntryReadCount, Fold, PeriodOf, RegisterError, add_entry, entries_at_counted,
+    entry_from_row, folds_at, period_at, resolve_known_at, take_fold,
 };
 
 /// Refusal codes this module issues.
@@ -62,7 +65,7 @@ pub struct ReplayVerification {
 /// Actual work performed by one side's entry selector, including failed
 /// carry attempts before a literal fallback. These are not total verifier
 /// work counts: source-map validation, migration run lookups, marker reads,
-/// and the unchanged per-pair folds are outside their scope.
+/// and folding are outside their scope.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReplayReadWork {
     /// Complete `vertices_at` selections.
@@ -82,6 +85,20 @@ pub struct ReplayReadWork {
 pub struct ReplayWork {
     pub source: ReplayReadWork,
     pub scratch: ReplayReadWork,
+    /// Entry identities actually compared, counting both books. An unchanged,
+    /// previously equal prefix needs no second identity comparison.
+    pub identities_compared: usize,
+    /// Entries submitted to the additive fold, counting both books and any
+    /// failed attempt before a literal fallback. Includes empty controls.
+    pub appended_entries: usize,
+    /// Legs submitted to checked addition on the additive path, on both books.
+    /// A failed addition can stop before all the submitted legs are visited.
+    pub appended_legs: usize,
+    /// Pairs evaluated by the original full-prefix fold path. Its internal
+    /// error fallbacks and hashing work are not measured by the other fields.
+    pub full_fold_pairs: usize,
+    /// Cell comparisons on the additive path, including pending cells.
+    pub cells_compared: usize,
 }
 
 /// Only a retained marker at the exact prefix can justify carrying a read.
@@ -110,6 +127,9 @@ struct EntrySelection {
     /// extends this vector without cloning old payloads or re-sorting them.
     entries: Vec<(VId, Entry, CommitSeq)>,
     by_vid: BTreeMap<VId, usize>,
+    /// The previous selection is an unchanged prefix of this selection.
+    /// `None` after a literal read or any change to an existing entry.
+    append_from: Option<usize>,
 }
 
 impl EntrySelection {
@@ -134,6 +154,7 @@ impl EntrySelection {
         self.index();
         self.through = Some(at);
         self.marker = retained_marker(db, at);
+        self.append_from = None;
         Ok(&self.entries)
     }
 
@@ -270,9 +291,12 @@ impl EntrySelection {
                 Err(_) => return false,
             }
         }
+        let previous_len = self.entries.len();
+        let mut appended = true;
         let mut sorted = true;
         for (vid, entry, seq) in changed {
             if let Some(index) = self.by_vid.get(&vid).copied() {
+                appended = false;
                 sorted &= self.entries[index].2 == seq;
                 self.entries[index] = (vid, entry, seq);
             } else {
@@ -290,8 +314,158 @@ impl EntrySelection {
         }
         self.through = Some(at);
         self.marker = marker;
+        self.append_from = (appended && sorted).then_some(previous_len);
         true
     }
+}
+
+/// Only the values the replay contract compares. These are private,
+/// short-lived folds of authenticated payloads, never cached book registers
+/// or report certificates. Sequence-dependent fold digests intentionally are
+/// not compared: source and scratch have different commit sequences.
+#[derive(Default)]
+struct CheckedPeriod {
+    cells: BTreeMap<CellKey, Cell>,
+    pending: BTreeMap<CellKey, Cell>,
+    entries: u64,
+    legs: u64,
+    holds: usize,
+}
+
+impl CheckedPeriod {
+    fn from_fold(fold: Fold, legs: u64) -> Self {
+        Self {
+            cells: fold
+                .cells
+                .into_iter()
+                .map(|cell| (cell.key.clone(), cell))
+                .collect(),
+            pending: fold
+                .pending
+                .into_iter()
+                .map(|cell| (cell.key.clone(), cell))
+                .collect(),
+            entries: fold.entries,
+            legs,
+            holds: fold.pending_holds.len(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ChangedCells {
+    periods: BTreeSet<String>,
+    posted: BTreeSet<CellKey>,
+    pending: BTreeSet<CellKey>,
+}
+
+type CheckedFolds = BTreeMap<String, CheckedPeriod>;
+
+/// Ordinary postings, reversals and newly reserved holds only add to these
+/// columns. Releases and migration visibility require the complete selector
+/// and resolution laws; they never enter this shortcut, even if empty-legged.
+fn additive(entries: &[(VId, Entry, CommitSeq)]) -> bool {
+    entries.iter().all(|(_, entry, _)| {
+        entry.proposal.class != EntryClass::RESOLUTION
+            && !matches!(entry.proposal.origin, EntryOrigin::Migration { .. })
+            && !matches!(
+                entry.proposal.control,
+                Some(ControlPayload::MigrationControl {
+                    kind: fa_journal::migration::kind::FINALIZE,
+                    ..
+                })
+            )
+    })
+}
+
+fn append_folds(
+    folds: &mut CheckedFolds,
+    entries: &[(VId, Entry, CommitSeq)],
+    period_of: &mut PeriodOf<'_>,
+    at: CommitSeq,
+    work: &mut ReplayWork,
+) -> Result<ChangedCells, RegisterError> {
+    let mut changed = ChangedCells::default();
+    for (vid, entry, recorded_at) in entries {
+        work.appended_entries = work.appended_entries.saturating_add(1);
+        if entry.proposal.legs.is_empty() {
+            continue;
+        }
+        let period = period_of.period(entry)?;
+        let fold = folds.entry(period.to_string()).or_default();
+        let pending = entry.proposal.class == EntryClass::PENDING;
+        let (cells, keys) = if pending {
+            fold.holds = fold.holds.checked_add(1).ok_or(RegisterError::Overflow)?;
+            (&mut fold.pending, &mut changed.pending)
+        } else {
+            fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
+            (&mut fold.cells, &mut changed.posted)
+        };
+        work.appended_legs = work.appended_legs.saturating_add(entry.proposal.legs.len());
+        add_entry(cells, entry, period, (*vid, *recorded_at), at)?;
+        fold.legs = fold
+            .legs
+            .checked_add(entry.proposal.legs.len() as u64)
+            .ok_or(RegisterError::Overflow)?;
+        // The literal fold also encodes its cell/hold counts as u32 and
+        // contribution ordinals as u16. Preserve those representability
+        // checks without re-encoding unchanged cells at every pair.
+        if u32::try_from(cells.len()).is_err()
+            || u32::try_from(fold.holds).is_err()
+            || u16::try_from(entry.proposal.legs.len() - 1).is_err()
+        {
+            return Err(RegisterError::Encoding(
+                fa_model::EncodeError::LengthOverflow,
+            ));
+        }
+        changed.periods.insert(period.to_string());
+        for leg in &entry.proposal.legs {
+            keys.insert(CellKey {
+                account: leg.account_ref,
+                unit_id: leg.amount.unit.0,
+                period: period.to_string(),
+            });
+        }
+    }
+    Ok(changed)
+}
+
+/// A successful previous pair proved every unchanged value equal. Compare
+/// the union of changed keys, retaining the first period's diagnostic order.
+fn different_period(
+    source: &CheckedFolds,
+    scratch: &CheckedFolds,
+    a: ChangedCells,
+    b: ChangedCells,
+    work: &mut ReplayWork,
+) -> Option<String> {
+    let mut different = BTreeSet::new();
+    for period in a.periods.union(&b.periods) {
+        if source.get(period).map(|fold| fold.entries)
+            != scratch.get(period).map(|fold| fold.entries)
+        {
+            different.insert(period.clone());
+        }
+    }
+    for (pending, left, right) in [(false, a.posted, b.posted), (true, a.pending, b.pending)] {
+        for key in left.union(&right) {
+            work.cells_compared = work.cells_compared.saturating_add(1);
+            if checked_cell(source, key, pending) != checked_cell(scratch, key, pending) {
+                different.insert(key.period.clone());
+            }
+        }
+    }
+    different.into_iter().next()
+}
+
+fn checked_cell<'a>(folds: &'a CheckedFolds, key: &CellKey, pending: bool) -> Option<&'a Cell> {
+    folds.get(&key.period).and_then(|fold| {
+        if pending {
+            fold.pending.get(key)
+        } else {
+            fold.cells.get(key)
+        }
+    })
 }
 
 fn invalid(why: String) -> Refusal {
@@ -319,10 +493,11 @@ where
     verify_replay_counted(source, scratch, book, map).map(|(verdict, _)| verdict)
 }
 
-/// The same verdict as [`verify_replay`], with a transparent witness of the
-/// entry-selection work. Normal native histories decode each newly touched
-/// entry once per side instead of decoding every old entry at every pair.
-/// Folds, source-map validation and scratch-book construction are unchanged.
+/// The same verdict as [`verify_replay`], with transparent work counters.
+/// Additive native histories decode and fold each new entry once per side
+/// instead of revisiting every old entry at every pair. Non-additive changes
+/// retain the literal fallback. Source-map validation and scratch-book
+/// construction are unchanged and are outside these counters.
 pub fn verify_replay_counted<V, W>(
     source: &Database<V>,
     scratch: &Database<W>,
@@ -425,27 +600,89 @@ where
     let mut period_of = PeriodOf::new(book);
     let mut source_selection = EntrySelection::default();
     let mut scratch_selection = EntrySelection::default();
+    let mut checked_source = CheckedFolds::new();
+    let mut checked_scratch = CheckedFolds::new();
     for pair in &map.pairs {
-        let src_entries = source_selection.read(source, book, pair.source_seq, &mut work.source)?;
-        let scr_entries =
-            scratch_selection.read(scratch, book, pair.scratch_seq, &mut work.scratch)?;
+        source_selection.read(source, book, pair.source_seq, &mut work.source)?;
+        scratch_selection.read(scratch, book, pair.scratch_seq, &mut work.scratch)?;
+        let src_entries = &source_selection.entries;
+        let scr_entries = &scratch_selection.entries;
+        let appended = source_selection
+            .append_from
+            .zip(scratch_selection.append_from);
+        let (src_changed, scr_changed) = match appended {
+            Some((a, b)) => (&src_entries[a..], &scr_entries[b..]),
+            None => (src_entries.as_slice(), scr_entries.as_slice()),
+        };
         let digests = |entries: &[(VId, fa_model::Entry, CommitSeq)]| {
             entries
                 .iter()
                 .map(|(v, e, _)| (*v, e.entry_digest))
                 .collect::<BTreeMap<_, _>>()
         };
-        let (src, scr) = (digests(src_entries), digests(scr_entries));
+        work.identities_compared = work
+            .identities_compared
+            .saturating_add(src_changed.len())
+            .saturating_add(scr_changed.len());
+        let (src, scr) = (digests(src_changed), digests(scr_changed));
         if src != scr {
             return Ok(Err(invalid(format!(
                 "at source {} / scratch {} the books select different entries ({} vs {})",
                 pair.source_seq.0,
                 pair.scratch_seq.0,
-                src.len(),
-                scr.len()
+                src_entries.len(),
+                scr_entries.len()
             ))));
         }
-        entries_checked += src.len();
+        entries_checked += src_entries.len();
+        if appended.is_some() && additive(src_changed) && additive(scr_changed) {
+            let attempt = (|| -> Result<Option<String>, RegisterError> {
+                let a = append_folds(
+                    &mut checked_source,
+                    src_changed,
+                    &mut period_of,
+                    pair.source_seq,
+                    work,
+                )?;
+                let b = append_folds(
+                    &mut checked_scratch,
+                    scr_changed,
+                    &mut period_of,
+                    pair.scratch_seq,
+                    work,
+                )?;
+                // Period definitions are snapshot inputs too. Even a pair
+                // with no new posting must still observe damaged/deleted
+                // period metadata at its exact source and scratch prefixes.
+                resolve_known_at(source, Some(pair.source_seq))?;
+                resolve_known_at(scratch, Some(pair.scratch_seq))?;
+                for period in checked_source.keys() {
+                    period_at(source, book, period, pair.source_seq)?;
+                    period_at(scratch, book, period, pair.scratch_seq)?;
+                }
+                Ok(different_period(
+                    &checked_source,
+                    &checked_scratch,
+                    a,
+                    b,
+                    work,
+                ))
+            })();
+            if let Ok(different) = attempt {
+                if let Some(period) = different {
+                    return Ok(Err(invalid(format!(
+                        "at source {} / scratch {} period `{period}` folds differently",
+                        pair.source_seq.0, pair.scratch_seq.0,
+                    ))));
+                }
+                folds_checked += checked_source.len();
+                continue;
+            }
+            // A partial attempted addition is not a verdict. Replace both
+            // states with the literal folds below, which also preserve the
+            // original first-error order and capacity diagnosis.
+        }
+        work.full_fold_pairs = work.full_fold_pairs.saturating_add(1);
         let mut periods = BTreeSet::new();
         for (_, e, _) in src_entries {
             if !e.proposal.legs.is_empty() {
@@ -459,15 +696,19 @@ where
         let mut source_folds = folds_at(source, book, &periods, pair.source_seq, Some(src_entries));
         let mut scratch_folds =
             folds_at(scratch, book, &periods, pair.scratch_seq, Some(scr_entries));
+        checked_source.clear();
+        checked_scratch.clear();
         for period in periods {
-            let (a, _) = take_fold(&mut source_folds, period)?;
-            let (b, _) = take_fold(&mut scratch_folds, period)?;
+            let (a, a_legs) = take_fold(&mut source_folds, period)?;
+            let (b, b_legs) = take_fold(&mut scratch_folds, period)?;
             if a.cells != b.cells || a.pending != b.pending || a.entries != b.entries {
                 return Ok(Err(invalid(format!(
                     "at source {} / scratch {} period `{period}` folds differently",
                     pair.source_seq.0, pair.scratch_seq.0
                 ))));
             }
+            checked_source.insert(period.to_string(), CheckedPeriod::from_fold(a, a_legs));
+            checked_scratch.insert(period.to_string(), CheckedPeriod::from_fold(b, b_legs));
             folds_checked += 1;
         }
     }
