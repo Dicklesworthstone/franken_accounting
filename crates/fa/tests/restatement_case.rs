@@ -599,7 +599,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap();
     book.record_account_role(
-        &fa::AccountRoleSpec {
+        &fa::account_role::AccountRoleSpec {
             account: account_vid(book_id, "3000"),
             role: "retained_earnings".into(),
             assigned: true,
