@@ -113,6 +113,305 @@ fn closer() -> Capability {
     Capability::embedded(PRINCIPAL, &["close", "post"]).unwrap()
 }
 
+fn reviewing_closer() -> Capability {
+    Capability::embedded(PRINCIPAL, &["read", "close", "post"]).unwrap()
+}
+
+fn opening_plan(
+    h: &mut Harness,
+    capability: &Capability,
+    key: &[u8],
+) -> Result<TransitionPlan, Refusal> {
+    let ctx = h.ctx();
+    let description = h.statement("review exact scheduled opening effects", 141);
+    h.runtime
+        .block_on(fa_journal::period::plan_open_transition(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &h.april,
+            capability.holder(),
+            1,
+            key,
+            description,
+            capability,
+        ))
+        .expect("opening rehearsal kernel")
+}
+
+fn commit_opening_plan(
+    h: &mut Harness,
+    plan: &TransitionPlan,
+    capability: &Capability,
+) -> Result<Transitioned, Refusal> {
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(transition_planned(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            plan,
+            PeriodTransition::Open,
+            capability,
+            &[],
+        ))
+        .expect("opening plan publication kernel")
+}
+
+#[test]
+fn opening_plan_rehearses_exact_reversals_without_writes_and_retries_its_original_effects() {
+    let mut h = fixture();
+    let target = accrue(&mut h, 100, b"reviewed-opening-accrual");
+    tick(&mut h, april(), 142);
+    let capability = reviewing_closer();
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let plan = opening_plan(&mut h, &capability, b"reviewed-opening").unwrap();
+    let effects = plan.opening_effects.as_ref().expect("full opening preview");
+    assert_eq!(
+        effects.capability_commitment,
+        capability.commitment().unwrap()
+    );
+    assert!(effects.tick.is_some());
+    assert_eq!(effects.minted.len(), 1);
+    assert_eq!(effects.minted[0].0, target);
+    assert_eq!(effects.minted[0].1.vid, reversal_vid(target.vid));
+    assert!(effects.blocked.is_empty());
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(
+        h.db.vertices().unwrap(),
+        vertices,
+        "a dry run published state"
+    );
+    assert_eq!(h.period_state(&h.april), PeriodState::Future);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    let wire = plan.encode().unwrap();
+    assert_eq!(TransitionPlan::decode(&wire).unwrap(), plan);
+    assert_eq!(
+        opening_plan(&mut h, &capability, b"reviewed-opening")
+            .unwrap()
+            .encode()
+            .unwrap(),
+        wire,
+        "the same prefix and reviewed request produce the same artifact"
+    );
+
+    // An independent approval adds history without changing the scheduled
+    // accounting effects. A blanket head-equality check would reject this.
+    h.approve_transition(plan.proposal_digest(&h.book).unwrap().unwrap());
+    let done = commit_opening_plan(&mut h, &plan, &capability).unwrap();
+    assert!(!done.already_recorded);
+    assert_eq!(done.minted, effects.minted);
+    assert_eq!(done.blocked, effects.blocked);
+    assert_eq!(h.period_state(&h.april), PeriodState::Open);
+    let (reversal, recorded_at) = read_entry(&h.db, done.minted[0].1.vid).unwrap().unwrap();
+    assert_eq!(reversal.entry_digest, effects.minted[0].1.entry_digest);
+    assert_eq!(recorded_at, done.recorded_at);
+    assert_eq!(reversal.proposal.class, EntryClass::REVERSAL);
+    assert_eq!(reversal.proposal.supersession[0].target, target);
+    assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
+    assert_leg_projections(&h);
+
+    tick(&mut h, DateDay(april().0 + 1), 143);
+    let head = h.db.frontier().unwrap();
+    let retry = commit_opening_plan(&mut h, &plan, &capability).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.control_entry, done.control_entry);
+    assert_eq!(retry.recorded_at, done.recorded_at);
+    assert_eq!(retry.minted, effects.minted);
+    assert_eq!(retry.blocked, effects.blocked);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn opening_plan_refuses_newly_due_or_newly_recorded_reversals_before_opening() {
+    for tick_after_plan in [false, true] {
+        let mut h = fixture();
+        let capability = reviewing_closer();
+        let existing = if tick_after_plan {
+            Some(accrue(&mut h, 100, b"waiting-for-reviewed-tick"))
+        } else {
+            tick(&mut h, april(), 144);
+            None
+        };
+        let plan = opening_plan(&mut h, &capability, b"empty-reviewed-opening").unwrap();
+        let effects = plan.opening_effects.as_ref().unwrap();
+        assert!(effects.minted.is_empty());
+        assert!(effects.blocked.is_empty());
+        assert_eq!(effects.tick.is_none(), tick_after_plan);
+        let target = if let Some(target) = existing {
+            tick(&mut h, april(), 145);
+            target
+        } else {
+            accrue(&mut h, 100, b"scheduled-after-opening-review")
+        };
+        let head = h.db.frontier().unwrap();
+        let refusal = commit_opening_plan(&mut h, &plan, &capability).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::PLAN_INVALIDATED, exit::CONFLICT)
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.period_state(&h.april), PeriodState::Future);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        let fresh = opening_plan(&mut h, &capability, b"empty-reviewed-opening").unwrap();
+        assert_eq!(fresh.opening_effects.as_ref().unwrap().minted[0].0, target);
+        let done = commit_opening_plan(&mut h, &fresh, &capability).unwrap();
+        assert_eq!(done.minted, fresh.opening_effects.unwrap().minted);
+    }
+}
+
+#[test]
+fn opening_plan_refuses_changed_availability_and_retains_the_reviewed_block_on_retry() {
+    let mut h = harness_configured(
+        Vec::new(),
+        Some(TimeZonePolicy::Utc),
+        Some(BalanceLimit {
+            lower: None,
+            upper: Some(0),
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let target = accrue(&mut h, 100, b"limited-reviewed-accrual");
+    tick(&mut h, april(), 146);
+    let capability = reviewing_closer();
+    let plan = opening_plan(&mut h, &capability, b"review-limited-opening").unwrap();
+    assert_eq!(plan.opening_effects.as_ref().unwrap().minted[0].0, target);
+    // Cash was -100, so the reviewed reversal could restore it to zero.
+    // An independent receipt consumes that space without cancelling the
+    // accrual schedule: the same reversal is now blocked by the upper limit.
+    zero_rent(&mut h, target);
+    let head = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let refusal = commit_opening_plan(&mut h, &plan, &capability).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::PLAN_INVALIDATED, exit::CONFLICT)
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+    assert_eq!(h.period_state(&h.april), PeriodState::Future);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+
+    let blocked = opening_plan(&mut h, &capability, b"review-limited-opening").unwrap();
+    let effects = blocked.opening_effects.as_ref().unwrap();
+    assert!(effects.minted.is_empty());
+    assert_eq!(effects.blocked.len(), 1);
+    assert_eq!(effects.blocked[0].0, target);
+    assert!(effects.blocked[0].1.contains(code::AVAILABILITY_UPPER));
+    let done = commit_opening_plan(&mut h, &blocked, &capability).unwrap();
+    assert_eq!(done.blocked, effects.blocked);
+    assert!(done.minted.is_empty());
+    // Restore availability after the opening. Replaying this acknowledged
+    // outcome must retain the reviewed block, not silently mint the reversal.
+    let spend = h.proposal(
+        h.rent_legs(100),
+        b"spend-after-blocked-open",
+        EntryClass::ORIGINAL,
+    );
+    h.post(h.request(spend, &["post"])).unwrap();
+    tick(&mut h, DateDay(april().0 + 1), 147);
+    let head = h.db.frontier().unwrap();
+    let retry = commit_opening_plan(&mut h, &blocked, &capability).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.recorded_at, done.recorded_at);
+    assert_eq!(retry.minted, done.minted);
+    assert_eq!(retry.blocked, effects.blocked);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
+}
+
+#[test]
+fn opening_plan_authenticates_effects_and_cannot_be_replaced_by_a_proposal_only_plan() {
+    let mut h = fixture();
+    let target = accrue(&mut h, 100, b"opening-authentication-accrual");
+    tick(&mut h, april(), 148);
+    let capability = reviewing_closer();
+    let plan = opening_plan(&mut h, &capability, b"authenticate-opening-manifest").unwrap();
+    let head = h.db.frontier().unwrap();
+    for mutation in 0..7 {
+        let mut changed = plan.clone();
+        if mutation == 0 {
+            changed.opening_effects = None;
+        } else {
+            let effects = changed.opening_effects.as_mut().unwrap();
+            match mutation {
+                1 => effects.capability_commitment[0] ^= 1,
+                2 => effects.tick = None,
+                3 => effects.minted[0].0.entry_digest[0] ^= 1,
+                4 => effects.minted[0].1.entry_digest[0] ^= 1,
+                5 => effects.minted.clear(),
+                6 => effects
+                    .blocked
+                    .push((target, "claimed reviewed block".into())),
+                _ => unreachable!(),
+            }
+        }
+        let changed = TransitionPlan::decode(&changed.encode().unwrap()).unwrap();
+        let refusal = commit_opening_plan(&mut h, &changed, &capability).unwrap_err();
+        assert_eq!(
+            refusal.code,
+            code::PLAN_INVALIDATED,
+            "mutation {mutation}: {refusal}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.period_state(&h.april), PeriodState::Future);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    }
+    let proposal_only = plan_transition(
+        &h.db,
+        &h.book,
+        &h.april,
+        PeriodTransition::Open,
+        PRINCIPAL,
+        1,
+        b"proposal-only-opening",
+        h.statement("unreviewed automatic effects", 149),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(proposal_only.opening_effects.is_none());
+    let refusal = commit_opening_plan(&mut h, &proposal_only, &capability).unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.period_state(&h.april), PeriodState::Future);
+    let altered_authority = capability.clone().with_ceiling(h.usd, 100).unwrap();
+    let refusal = commit_opening_plan(&mut h, &plan, &altered_authority).unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    commit_opening_plan(&mut h, &plan, &capability).unwrap();
+}
+
+#[test]
+fn opening_rehearsal_requires_current_whole_book_read_and_execution_authority() {
+    let mut h = fixture();
+    let target = accrue(&mut h, 100, b"opening-authority-accrual");
+    tick(&mut h, april(), 150);
+    let head = h.db.frontier().unwrap();
+    for capability in [
+        Capability::embedded(PRINCIPAL, &["close", "post"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["read", "close"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+        reviewing_closer().for_accounts(&["6000"]).unwrap(),
+    ] {
+        let refusal = opening_plan(&mut h, &capability, b"opening-authority").unwrap_err();
+        assert_eq!(refusal.exit, exit::SAFETY, "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.period_state(&h.april), PeriodState::Future);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    }
+    let capability = reviewing_closer();
+    let plan = opening_plan(&mut h, &capability, b"opening-authority").unwrap();
+    h.revoke(&capability, 151);
+    let head = h.db.frontier().unwrap();
+    assert!(opening_plan(&mut h, &capability, b"opening-authority-after-revocation").is_err());
+    assert!(commit_opening_plan(&mut h, &plan, &capability).is_err());
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.period_state(&h.april), PeriodState::Future);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+}
+
 #[test]
 fn register_capacity_governs_scheduled_sweep_and_atomic_period_open() {
     for via_open in [false, true] {

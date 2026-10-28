@@ -50,7 +50,7 @@ pub struct Transitioned {
     /// not mint, with why (live applications, the availability law).
     pub blocked: Vec<(EntryRef, String)>,
     /// True when this is an identical retry's recorded outcome (FA-INV-09):
-    /// nothing new was written; `minted` and `blocked` are then empty.
+    /// nothing new was written; scheduled outcomes describe the original Open.
     pub already_recorded: bool,
 }
 
@@ -69,6 +69,8 @@ struct StagedTransition {
     approvals: Vec<ApprovalRef>,
     minted: Vec<(EntryRef, EntryRef)>,
     blocked: Vec<(EntryRef, String)>,
+    opening_tick: Option<VId>,
+    template_tracker: crate::batch::TemplateByteTracker,
 }
 
 /// An authorized period transition staged against its original witnesses.
@@ -147,6 +149,8 @@ impl PreparedTransition {
             approvals,
             minted,
             blocked,
+            opening_tick: _,
+            template_tracker: _,
         } = match self.state {
             PreparedTransitionState::AlreadyRecorded { recorded, .. } => {
                 return Ok(Ok(recorded));
@@ -205,6 +209,7 @@ impl PreparedTransition {
                         &proposal,
                         &proposal_digest,
                         &approvals,
+                        None,
                     ),
                     None => {
                         let key = fa_model::intent_outcome_vid(
@@ -500,6 +505,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
         &candidate,
         &candidate_digest,
         approvals,
+        None,
     )
 }
 
@@ -513,6 +519,7 @@ fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
     approvals: &[ApprovalRef],
+    reviewed_opening: Option<&OpeningEffects>,
 ) -> Outcome<Transitioned> {
     let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => fa_model::Entry::decode(b.as_slice())?,
@@ -608,7 +615,9 @@ fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
-    let (minted, blocked) = if t == PeriodTransition::Open {
+    let (minted, blocked) = if let Some(effects) = reviewed_opening {
+        (effects.minted.clone(), effects.blocked.clone())
+    } else if t == PeriodTransition::Open {
         crate::schedule::recorded_open_mints(db, book, period_code, row.vid, row.created_at)?
     } else {
         (Vec::new(), Vec::new())
@@ -728,11 +737,69 @@ fn illegal_transition(period_code: &str, from: PeriodState, t: PeriodTransition)
     .at("state", from.name())
 }
 
+/// The actual scheduled outcomes staged by an authorized Open rehearsal.
+/// Minted entry digests bind the exact reversal envelopes, including their
+/// sealed descriptions, source targets and date-basis tick. Blocked targets
+/// retain the exact reasons returned by that same production transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpeningEffects {
+    pub capability_commitment: [u8; 32],
+    pub tick: Option<VId>,
+    pub minted: Vec<(EntryRef, EntryRef)>,
+    pub blocked: Vec<(EntryRef, String)>,
+}
+
+impl OpeningEffects {
+    fn encode(&self, w: &mut Writer) {
+        w.fixed(&self.capability_commitment)
+            .opt(self.tick.as_ref(), |w, tick| {
+                w.u128(tick.0);
+            })
+            .list(&self.minted, |w, (target, reversal)| {
+                target.encode(w);
+                reversal.encode(w);
+            })
+            .list(&self.blocked, |w, (target, reason)| {
+                target.encode(w);
+                w.str(reason);
+            });
+    }
+
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let capability_commitment = r.fixed("opening.capability")?;
+        let tick = r.opt("opening.tick", |r| Ok(VId(r.u128("opening.tick.vid")?)))?;
+        let minted = r.list(limits::MAX_BATCH_ENTRIES, "opening.minted", |r| {
+            Ok((EntryRef::decode(r)?, EntryRef::decode(r)?))
+        })?;
+        let blocked = r.list(limits::MAX_BATCH_ENTRIES, "opening.blocked", |r| {
+            Ok((
+                EntryRef::decode(r)?,
+                r.str(limits::MAX_ENTRY_BYTES, "opening.reason")?
+                    .to_string(),
+            ))
+        })?;
+        if minted
+            .len()
+            .checked_add(blocked.len())
+            .is_none_or(|n| n > limits::MAX_BATCH_ENTRIES)
+        {
+            return Err(r.invalid("opening.outcomes"));
+        }
+        Ok(Self {
+            capability_commitment,
+            tick,
+            minted,
+            blocked,
+        })
+    }
+}
+
 /// A book-authenticated transition proposal, with the description sealed
 /// once. Approvers bind [`TransitionPlan::proposal_digest`]. Publication
 /// through [`transition_planned`] checks the original period, policy and
-/// proposal, even when this transition needs no approvals. The artifact is
-/// not a grant of authority or a certificate of scheduled reversal effects.
+/// proposal, even when this transition needs no approvals. An Open commits
+/// only after [`plan_open_transition`] has also rehearsed its exact scheduled
+/// outcomes. Neither form grants authority or independent confirmation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionPlan {
     pub book_id: Id128,
@@ -745,6 +812,7 @@ pub struct TransitionPlan {
     pub reason_code: u16,
     pub idempotency_key: Vec<u8>,
     pub description: Erasable<String>,
+    pub opening_effects: Option<OpeningEffects>,
     prepared_proposal_digest: [u8; 32],
     authentication: [u8; 32],
 }
@@ -752,9 +820,11 @@ pub struct TransitionPlan {
 /// The plan file's leading domain tag; the format is versioned after it.
 pub const PLAN_DOMAIN: &[u8; 14] = b"fa:period-plan";
 /// Version 2 removed the caller-supplied date. Version 3 authenticates the
-/// book, reviewed proposal, period basis and policy epoch. Older unsigned
-/// plans cannot establish preparation by this book and must be replanned.
-const PLAN_VERSION: u16 = 3;
+/// book, reviewed proposal, period basis and policy epoch. Version 4 binds
+/// an Open's actual staged outcomes and retains them with its publication.
+/// Older ephemeral plans must be replanned; durable journal formats do not change.
+const PLAN_VERSION: u16 = 4;
+const MAX_PERIOD_PLAN_BYTES: usize = limits::MAX_BATCH_TEMPLATE_BYTES;
 
 fn invalidated_plan(message: impl Into<String>) -> Refusal {
     Refusal::new(
@@ -829,7 +899,10 @@ impl TransitionPlan {
             .u16(self.reason_code)
             .bytes(&self.idempotency_key);
         self.description.encode(w);
-        w.fixed(&self.prepared_proposal_digest);
+        w.fixed(&self.prepared_proposal_digest)
+            .opt(self.opening_effects.as_ref(), |w, effects| {
+                effects.encode(w)
+            });
     }
 
     fn authentication(&self, book: &BookContext) -> Result<[u8; 32], EncodeError> {
@@ -839,9 +912,9 @@ impl TransitionPlan {
         Ok(fgdb_crypto::keyed_hash(&key, &w.finish()?).0)
     }
 
-    /// Version 3: domain, version, book, basis, policy epoch, period,
+    /// Version 4: domain, version, book, basis, policy epoch, period,
     /// from/to, principal, reason, key, sealed description, proposal digest,
-    /// then a book-key MAC over all preceding bytes.
+    /// optional opening outcomes, then a book-key MAC over all preceding bytes.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
         self.write_body(&mut w);
@@ -854,6 +927,9 @@ impl TransitionPlan {
     /// contents and checks the requested transition against the state machine.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
+        if bytes.len() > MAX_PERIOD_PLAN_BYTES {
+            return Err(r.invalid("plan.bytes"));
+        }
         let domain: [u8; 14] = r.fixed("plan.domain")?;
         if domain != *PLAN_DOMAIN {
             return Err(r.invalid("plan.domain"));
@@ -887,9 +963,13 @@ impl TransitionPlan {
                 .to_vec(),
             description: Erasable::decode(&mut r, limits::MAX_DESCRIPTION_BYTES)?,
             prepared_proposal_digest: r.fixed("plan.proposal_digest")?,
+            opening_effects: r.opt("plan.opening_effects", OpeningEffects::decode)?,
             authentication: r.fixed("plan.authentication")?,
         };
         r.finish()?;
+        if plan.opening_effects.is_some() && !plan.is_for(PeriodTransition::Open) {
+            return Err(Reader::new(bytes).invalid("plan.opening_effects"));
+        }
         Ok(plan)
     }
 
@@ -903,7 +983,9 @@ impl TransitionPlan {
 /// Plan a transition without committing (R4): the period is read at the
 /// head and the same unknown-period and state-machine refusals as
 /// [`transition_period`] apply. Authority is not judged here; the commit
-/// judges it, before any read.
+/// judges it, before any read. An Open prepared by this read-only function
+/// is proposal-only: use [`plan_open_transition`] to obtain the mandatory
+/// rehearsal of its monetary effects before publication.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -941,6 +1023,7 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
         reason_code,
         idempotency_key: idempotency_key.to_vec(),
         description,
+        opening_effects: None,
         prepared_proposal_digest: [0; 32],
         authentication: [0; 32],
     };
@@ -949,6 +1032,129 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     plan.authentication = plan.authentication(book)?;
+    Ok(Ok(plan))
+}
+
+/// Rehearse an Open and every scheduled reversal it would publish in the
+/// same production transaction, then abort. Current whole-book Read, Close
+/// and Post authority precede history hydration and every protected read.
+/// The result binds the actual admitted monetary envelopes, the corroborated
+/// tick, and the actual blocked outcomes; it never forecasts them from a
+/// separate candidate scan. The plan itself is retained atomically only when
+/// it is later committed through [`transition_planned`].
+#[allow(clippy::too_many_arguments)]
+pub async fn plan_open_transition<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    period_code: &str,
+    principal_ref: VId,
+    reason_code: u16,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+) -> Outcome<TransitionPlan> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if let Err(denial) = fa_policy::admit_read(capability, principal_ref, book.book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::require(
+                capability,
+                fa_policy::Op::Post,
+                "rehearsing an Open's scheduled effects",
+            )
+        })
+    {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    if let Err(refusal) = admit_transition(
+        db,
+        book,
+        period_code,
+        PeriodTransition::Open,
+        principal_ref,
+        capability,
+    )? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
+    let mut plan = match plan_transition(
+        db,
+        book,
+        period_code,
+        PeriodTransition::Open,
+        principal_ref,
+        reason_code,
+        idempotency_key,
+        description.clone(),
+    )? {
+        Ok(plan) => plan,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let prepared = match prepare_transition_in(
+        db,
+        ctx,
+        book,
+        period_code,
+        PeriodTransition::Open,
+        principal_ref,
+        reason_code,
+        idempotency_key,
+        description,
+        capability,
+        &[],
+        None,
+    )? {
+        Ok(prepared) => prepared,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let PreparedTransitionState::Staged(mut staged) = prepared.state else {
+        return Ok(Err(invalidated_plan(
+            "this period Open is already recorded; no new scheduled effects were rehearsed",
+        )));
+    };
+    plan.snapshot_seq = staged.txn.basis();
+    plan.opening_effects = Some(OpeningEffects {
+        capability_commitment: capability.commitment().map_err(|e| {
+            KernelError::Corrupt(format!("opening-plan capability commitment: {e}"))
+        })?,
+        tick: staged.opening_tick,
+        minted: staged.minted.clone(),
+        blocked: staged.blocked.clone(),
+    });
+    plan.authentication = plan.authentication(book)?;
+    let bytes = plan.encode()?;
+    if bytes.len() > MAX_PERIOD_PLAN_BYTES {
+        staged.txn.abort();
+        return Ok(Err(invalidated_plan(
+            "the complete opening plan exceeds the portable plan byte bound",
+        )));
+    }
+    // The preview also stages the same retention footprint its commit will
+    // carry. No certificate, fragment, reversal, or control is published.
+    let retention = opening_plan_retention(
+        ctx,
+        book,
+        &plan,
+        staged.control_entry,
+        &mut staged.template_tracker,
+    )?;
+    let total_bytes = staged.template_tracker.total_bytes();
+    if total_bytes > limits::MAX_BATCH_TEMPLATE_BYTES {
+        staged.txn.abort();
+        return Ok(Err(crate::batch::batch_byte_budget_refusal(
+            total_bytes,
+            None,
+            staged.minted.len().saturating_add(1),
+        )));
+    }
+    staged.txn.write_ordered(db, vec![retention])?;
+    staged.txn.abort();
     Ok(Ok(plan))
 }
 
@@ -998,6 +1204,153 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+fn opening_plan_locator(book: &BookContext, bytes: &[u8]) -> (VId, [u8; 32]) {
+    let digest = fa_model::domain_digest(b"fa:period-plan:v4", &[bytes]);
+    let identity = fa_model::domain_digest(b"fa:vid:period-plan:v1", &[&book.book_id.0, &digest]);
+    let mut low = [0; 16];
+    low.copy_from_slice(&identity[..16]);
+    (VId(u128::from_le_bytes(low)), digest)
+}
+
+/// Preserve the reviewed negative outcomes too: they are not monetary
+/// entries and cannot be reconstructed by inspecting only minted reversals.
+/// Roots and bounded fragments use the existing immutable object machinery.
+fn opening_plan_retention(
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &TransitionPlan,
+    control_entry: VId,
+    tracker: &mut crate::batch::TemplateByteTracker,
+) -> Result<WriteBatch, KernelError> {
+    use crate::object::{self, ObjectKind};
+    use crate::rows::scalar_bytes;
+    let bytes = plan.encode()?;
+    let (cvid, digest) = opening_plan_locator(book, &bytes);
+    let mut batch = WriteBatch::new(relation::CITES);
+    object::stage(
+        &ctx.query(),
+        &mut batch,
+        book.book_id,
+        cvid,
+        label::CERTIFICATE,
+        ObjectKind::PeriodPlan,
+        &bytes,
+    )?;
+    let props = vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes(
+                "opening plan",
+                object::payload(ObjectKind::PeriodPlan, &bytes)?,
+            )?,
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("opening plan digest", digest.to_vec())?,
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("opening plan book", book.book_id.0.to_vec())?,
+        ),
+    ];
+    tracker.record_object_stage(relation::CITES, &bytes);
+    tracker.create_vertex(relation::CITES, cvid, 1, &props);
+    tracker.add_edge(relation::CITES, &[]);
+    batch.create_vertex(cvid, vec![label::CERTIFICATE], props);
+    batch.add_edge(
+        edge_id(relation::CITES, control_entry, cvid),
+        control_entry,
+        cvid,
+        vec![],
+    );
+    Ok(batch)
+}
+
+fn recorded_opening_plan<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &TransitionPlan,
+    control_entry: VId,
+    recorded_at: CommitSeq,
+) -> Result<bool, KernelError> {
+    use crate::object::{self, ObjectKind};
+    use crate::rows::prop;
+    let Some(effects) = &plan.opening_effects else {
+        return Ok(false);
+    };
+    let Some(before) = recorded_at.0.checked_sub(1).map(CommitSeq) else {
+        return Ok(false);
+    };
+    let bytes = plan.encode()?;
+    let (cvid, digest) = opening_plan_locator(book, &bytes);
+    let Some(row) = db.vertex(cvid)? else {
+        return Ok(false);
+    };
+    if row.labels.as_slice() != [label::CERTIFICATE]
+        || row.retired_at.is_some()
+        || row.created_at != recorded_at
+        || row.props.len() != 3
+        || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0)
+        || !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == digest)
+        || db.vertex_at(cvid, before)?.is_some()
+        || db.vertex_at(cvid, recorded_at)?.as_ref() != Some(&row)
+        || object::read(
+            db,
+            &ctx.query(),
+            book.book_id,
+            &row,
+            label::CERTIFICATE,
+            ObjectKind::PeriodPlan,
+            db.frontier()?,
+            MAX_PERIOD_PLAN_BYTES,
+        )? != bytes
+    {
+        return Ok(false);
+    }
+    let eid = edge_id(relation::CITES, control_entry, cvid);
+    let Some(edge) = db.edge(eid)? else {
+        return Ok(false);
+    };
+    if edge.entry.src != control_entry
+        || edge.entry.dst != cvid
+        || edge.entry.relation != relation::CITES
+        || edge.entry.created_at != recorded_at
+        || edge.entry.retired_at.is_some()
+        || !edge.props.is_empty()
+        || db.edge_at(eid, recorded_at)?.as_ref() != Some(&edge)
+    {
+        return Ok(false);
+    }
+    for (target, reversal) in &effects.minted {
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        let Some(row) = db.vertex(reversal.vid)? else {
+            return Ok(false);
+        };
+        let Some((entry, seq)) = crate::post::read_entry(db, reversal.vid)? else {
+            return Ok(false);
+        };
+        if seq != recorded_at
+            || row.retired_at.is_some()
+            || db.vertex_at(reversal.vid, before)?.is_some()
+            || db.vertex_at(reversal.vid, recorded_at)?.as_ref() != Some(&row)
+            || entry.entry_ref(reversal.vid) != *reversal
+            || entry.proposal.class != EntryClass::REVERSAL
+            || !matches!(entry.proposal.origin,
+                EntryOrigin::Schedule { trigger: fa_model::ScheduleTrigger::OpenPeriod { transition_ref }, .. }
+                if transition_ref == control_entry)
+            || entry.proposal.supersession.len() != 1
+            || entry.proposal.supersession[0].target != *target
+            || entry.proposal.supersession[0].kind != fa_model::SupersessionKind::Reverses
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Commit only the transition this book prepared. Authentication proves
 /// preparation, not permission: current scope, principal, revocation,
 /// expiry and segregation of duties are still checked by the normal kernel.
@@ -1033,6 +1386,34 @@ pub async fn transition_planned<V: asupersync::fs::Vfs + Clone>(
             "the requested transition is not the transition this plan reviewed",
         )));
     }
+    if t == PeriodTransition::Open {
+        let Some(effects) = &plan.opening_effects else {
+            return Ok(Err(invalidated_plan(
+                "this Open plan reviews only the transition proposal; rehearse its scheduled effects with the authorized opening planner before committing",
+            )));
+        };
+        if let Err(denial) = fa_policy::admit_read(capability, plan.principal_ref, book.book_id)
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Post,
+                    "committing a reviewed Open's scheduled effects",
+                )
+            })
+        {
+            return Ok(Err(policy::refusal(&denial)));
+        }
+        if capability
+            .commitment()
+            .map_err(|e| KernelError::Corrupt(format!("opening-plan capability commitment: {e}")))?
+            != effects.capability_commitment
+        {
+            return Ok(Err(invalidated_plan(
+                "the opening plan was rehearsed under a different capability",
+            )));
+        }
+    }
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
@@ -1050,7 +1431,33 @@ pub async fn transition_planned<V: asupersync::fs::Vfs + Clone>(
         approvals,
         Some(plan),
     )? {
-        Ok(prepared) => prepared.commit(db, ctx).await,
+        Ok(prepared) => {
+            let mut result = prepared.commit(db, ctx).await?;
+            if let Ok(recorded) = &mut result
+                && recorded.already_recorded
+                && let Some(effects) = &plan.opening_effects
+            {
+                if !recorded_opening_plan(
+                    db,
+                    ctx,
+                    book,
+                    plan,
+                    recorded.control_entry,
+                    recorded.recorded_at,
+                )? {
+                    return Ok(Err(invalidated_plan(
+                        "the recorded Open has no unchanged retained evidence for this exact opening plan",
+                    )));
+                }
+                // The concurrent-winner path uses the ordinary transition
+                // retry helper. Its reconstructed candidates are not the
+                // retained receipt of which blocked candidates this plan
+                // actually examined before its bounded stop.
+                recorded.minted.clone_from(&effects.minted);
+                recorded.blocked.clone_from(&effects.blocked);
+            }
+            Ok(result)
+        }
         Err(refusal) => Ok(Err(refusal)),
     }
 }
@@ -1312,6 +1719,8 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
                 || recorded_at != existing.created_at
                 || policy::security_policy_epoch_at(db, before)? != plan.security_policy_epoch
                 || !plan_basis_unchanged(db, ctx, book, plan, before)?
+                || (plan.opening_effects.is_some()
+                    && !recorded_opening_plan(db, ctx, book, plan, evid, recorded_at)?)
             {
                 return Ok(Err(invalidated_plan(
                     "the recorded identity is not the unchanged reviewed period transition",
@@ -1326,6 +1735,7 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
                 &stored.proposal,
                 &plan.prepared_proposal_digest,
                 approvals,
+                plan.opening_effects.as_ref(),
             )? {
                 Ok(recorded) => Ok(Ok(PreparedTransition {
                     state: PreparedTransitionState::AlreadyRecorded { basis, recorded },
@@ -1468,7 +1878,9 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
     // Plan §7.6 rule (b): opening a period mints, in this commit, the
     // scheduled reversals dated in it whose date the latest committed tick
     // has reached — so a scheduled reversal never meets a Future period.
-    let (minted, blocked, mut batches) = if t == PeriodTransition::Open {
+    let (opening_tick, minted, blocked, mut batches, mut template_tracker) = if t
+        == PeriodTransition::Open
+    {
         // The trigger is this transition's own control entry; the minted
         // reversals are the book's (its System principal). The executor is
         // this transition, admitted under `close` at the head of this
@@ -1477,9 +1889,17 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
         match crate::schedule::mint_on_open(&mut txn, db, ctx, book, capability, period_code, evid)?
         {
             Ok(mints) => {
+                let tracker = mints.template_tracker()?;
+                let opening_tick = mints.opening_tick;
                 let minted = mints.minted.clone();
                 let blocked = mints.blocked.clone();
-                (minted, blocked, mints.into_batches()?)
+                (
+                    opening_tick,
+                    minted,
+                    blocked,
+                    mints.into_batches()?,
+                    tracker,
+                )
             }
             Err(r) => {
                 txn.abort();
@@ -1487,10 +1907,63 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
             }
         }
     } else {
-        (Vec::new(), Vec::new(), Vec::new())
+        (
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::batch::TemplateByteTracker::default(),
+        )
     };
+    template_tracker.create_vertex(relation::IN_PERIOD, evid, 1, &entry_mirrors(&entry)?);
+    template_tracker.set_vertex_property(
+        relation::IN_PERIOD,
+        pvid,
+        property::STATE,
+        Some(CanonicalScalar::Int(i64::from(from.tag()))),
+        Some(CanonicalScalar::Int(i64::from(to.tag()))),
+    );
+    template_tracker.add_edge(relation::IN_PERIOD, &[]);
+    if let Some(plan) = expected_plan
+        && let Some(effects) = &plan.opening_effects
+    {
+        if opening_tick != effects.tick || minted != effects.minted || blocked != effects.blocked {
+            txn.abort();
+            return Ok(Err(invalidated_plan(
+                "the opening's actual scheduled reversals, blocked outcomes or corroborated tick changed since review; no transition or reversal was published",
+            )));
+        }
+        batches.push(opening_plan_retention(
+            ctx,
+            book,
+            plan,
+            evid,
+            &mut template_tracker,
+        )?);
+    }
     batches.insert(0, batch);
     txn.write_ordered(db, batches)?;
+    // Count the canonical control claim from the very overlay that staged
+    // it, including any future additive claim fields rather than duplicating
+    // the durable codec here.
+    let claim = txn.vertex(db, outcome)?.ok_or_else(|| {
+        KernelError::Corrupt("a staged period control has no outcome claim".into())
+    })?;
+    template_tracker.create_vertex(
+        relation::IN_PERIOD,
+        outcome,
+        claim.labels.len(),
+        &claim.props,
+    );
+    let total_bytes = template_tracker.total_bytes();
+    if total_bytes > limits::MAX_BATCH_TEMPLATE_BYTES {
+        txn.abort();
+        return Ok(Err(crate::batch::batch_byte_budget_refusal(
+            total_bytes,
+            None,
+            minted.len().saturating_add(1),
+        )));
+    }
     Ok(Ok(PreparedTransition {
         state: PreparedTransitionState::Staged(Box::new(StagedTransition {
             txn,
@@ -1506,6 +1979,8 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
             approvals: approvals.to_vec(),
             minted,
             blocked,
+            opening_tick,
+            template_tracker,
         })),
     }))
 }

@@ -1485,8 +1485,13 @@ fields = ["as_of:date", "known_at:seq", "found:bool", "effective_from:date?", "c
 
 [[shape]]
 name = "scheduled_reversal"
-doc = "A scheduled reversal an open would mint: its ReversalSchedule, the Adjusting entry it reverses, and the reverse_on date."
-fields = ["schedule:hex", "target:hex", "reverse_on:date"]
+doc = "An exact scheduled reversal prepared by the opening transaction after current authority, availability and budget checks. Target and reversal digests bind their complete canonical entries; reverse_on is the target's registered reversal date."
+fields = ["schedule:hex", "target:hex", "reverse_on:date", "target_digest:hex", "reversal:hex", "reversal_digest:hex"]
+
+[[shape]]
+name = "blocked_opening_reversal"
+doc = "A scheduled reversal the reviewed opening transaction examined but could not publish. The target digest and precise refusal reason are authenticated with the plan, and a changed blocked outcome invalidates publication."
+fields = ["target:hex", "target_digest:hex", "reason:string"]
 
 [[shape]]
 name = "fx_revaluation_route"
@@ -1713,14 +1718,14 @@ fields = ["period:string", "from:string", "to:string", "control_entry:hex", "rec
 [[event]]
 name = "period_planned"
 book = true
-doc = "A transition was planned and its sealed proposal written to a file; nothing was committed. Approvals bind proposal_digest."
-fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "plan:string"]
+doc = "An authenticated transition plan was written to a new file; nothing was committed. Approvals bind proposal_digest. An opening additionally rehearses and binds the exact scheduled and blocked reversal outcomes under current authority, with scope period-opening-effects. Other transitions have scope period-transition-proposal."
+fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "plan:string", "scope:string", "scheduled_reversals:[scheduled_reversal]", "blocked_reversals:[blocked_opening_reversal]", "reversal_tick:hex?"]
 
 [[event]]
 name = "period_plan"
 book = true
-doc = "A period transition proposal prepared inline without writing files or journal data. bytes is the complete existing canonical TransitionPlan in hex; approvals bind proposal_digest and the sealed description is preserved. Scope is period-transition-proposal: this prepares the state-machine transition, while commit independently checks current authority, approvals and period state. It is not the authenticated PostEntry effects certificate. MCP dangerous commits remain unavailable; an operator must separately review and authorize the transition. For an open, scheduled_reversals lists what the commit mints (plan §7.6): every live schedule whose date the latest tick has reached and whose reversal falls in this period, dated by reversal_tick; both are empty and null when the latest tick is not corroborated, since an open then mints nothing. The commit rechecks applications and availability."
-fields = ["period:string", "from:string", "to:string", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string", "scheduled_reversals:[scheduled_reversal]", "reversal_tick:hex?"]
+doc = "A book-authenticated period plan prepared inline without publishing files or journal data. bytes contains the complete canonical TransitionPlan; approvals bind the transition proposal_digest and its sealed description. An authorized opening rehearsal has scope period-opening-effects: scheduled_reversals and blocked_reversals are exact outcomes of the real staged opening transaction, after authority, availability and execution-budget checks. The plan also binds its execution capability and corroborated reversal_tick, null when no effective tick exists. Changed outcomes or tick require a new plan before any publication; an exact retry uses the retained original manifest. Other transitions and read-only opening proposals have scope period-transition-proposal with empty reversal lists. A read-only opening proposal has no certified monetary effects and cannot commit; an authorized operator must rehearse them first. Current authority and SoD remain independently required. MCP dangerous commits still require a separate confirmation exchange."
+fields = ["period:string", "from:string", "to:string", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string", "scheduled_reversals:[scheduled_reversal]", "reversal_tick:hex?", "blocked_reversals:[blocked_opening_reversal]"]
 
 [[event]]
 name = "approved"

@@ -1339,11 +1339,16 @@ fn period_plan_authenticates_every_field_and_rejects_unsigned_versions() {
     assert_eq!(plan.snapshot_seq, head);
     assert_eq!(plan.security_policy_epoch, 0);
     let bytes = plan.encode().unwrap();
-    assert_eq!(&bytes[14..16], &3_u16.to_le_bytes());
+    assert_eq!(&bytes[14..16], &4_u16.to_le_bytes());
     assert_eq!(TransitionPlan::decode(&bytes).unwrap(), plan);
-    let mut unsigned = bytes.clone();
-    unsigned[14..16].copy_from_slice(&2_u16.to_le_bytes());
-    assert!(TransitionPlan::decode(&unsigned).is_err());
+    for version in [1_u16, 2, 3] {
+        let mut previous = bytes.clone();
+        previous[14..16].copy_from_slice(&version.to_le_bytes());
+        assert!(
+            TransitionPlan::decode(&previous).is_err(),
+            "version {version} must be replanned"
+        );
+    }
 
     let mut changed = Vec::new();
     let mut candidate = plan.clone();

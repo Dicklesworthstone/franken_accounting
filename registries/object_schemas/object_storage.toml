@@ -14,6 +14,7 @@ intent_outcome_kind = 4
 registry_epoch_kind = 5
 register_checkpoint_kind = 6
 statement_definition_kind = 7
+period_plan_kind = 8
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -53,3 +54,6 @@ statement_definition_kind = 7
 # StatementDefinition kind 7 stores a canonical custom definition under its
 # own authoritative label. Root/fragments publish with the approving PolicyControl
 # activation and retain their original birth; scratch replay preserves them.
+# PeriodPlan kind 8 retains the authenticated opening manifest atomically
+# with its PeriodControl. The exact record proves the original minted and
+# blocked outcomes on retry without reconstructing them from today's state.

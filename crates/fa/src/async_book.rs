@@ -901,6 +901,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(plan.proposal_digest(&self.context)?)
     }
 
+    /// Rehearse an opening with the exact scheduled-reversal effects the
+    /// current authority can publish. The prepared transaction is aborted.
+    pub async fn plan_open_transition(
+        &mut self,
+        cx: &PurposeContexts,
+        period_code: &str,
+        principal: VId,
+        reason_code: u16,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::TransitionPlan> {
+        let description = self.seal_text(cx, &format!("period {period_code}: Open"))?;
+        Ok(fa_journal::period::plan_open_transition(
+            &mut self.db,
+            cx,
+            &self.context,
+            period_code,
+            principal,
+            reason_code,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
     pub async fn transition_planned(
         &mut self,
         cx: &PurposeContexts,

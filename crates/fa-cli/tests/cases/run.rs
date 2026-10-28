@@ -290,6 +290,9 @@ pub struct BookRun<'c> {
     pub self_run: Option<Result<Vec<Json>, String>>,
     /// The highest sequence observed so far.
     pub head: i128,
+    /// The sequence the documented history starts from: the head after
+    /// setup (a statement line's trace spans the history, A11b).
+    pub history_from: i128,
     /// The step kinds the runner met but does not run yet.
     pub unrun_steps: Vec<String>,
     /// Each run-variant value, its placeholder, and the `<event>.<field>
@@ -352,6 +355,7 @@ impl<'c> BookRun<'c> {
             rule_digests: BTreeMap::new(),
             self_run: None,
             head: 0,
+            history_from: 0,
             unrun_steps: Vec::new(),
             placeholders: Vec::new(),
             steps: Vec::new(),
@@ -852,6 +856,7 @@ impl<'c> BookRun<'c> {
     /// The documented history in `[[step]]` order (plan §3.3 steps 3 and 6).
     pub(crate) fn replay(&mut self) {
         let book = self.book;
+        self.history_from = self.head;
         for step in &book.steps {
             if self.failure.is_some() {
                 return;

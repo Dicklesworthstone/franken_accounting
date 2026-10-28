@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::{CaseDef, StepKind};
-use fa_oracles::cases::contrib::{ContribVerdict, named_inputs, witness};
+use fa_oracles::cases::contrib::{ContribVerdict, cross_check, named_inputs, witness};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
@@ -1115,11 +1115,22 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
     }
     // A11b: the contributing-entry witness decides whether the row is a T
     // at all. Holding, it waits on the outsider check (A12); failing, the
-    // row is a read-back of its published value: an R, which it equals.
+    // row is a read-back of its published value: an R, which it equals. A
+    // statement line's trace that disagrees with its explained balances
+    // re-types it too, the difference a witness and the trace reproducible.
+    let mut reproduce = None;
     match contrib_verdict(run, e, t) {
         Ok((verdict, named)) => {
             row.projection.push(("contrib".into(), verdict.token()));
             witnesses.push(("named_inputs".into(), named));
+            if let ContribVerdict::Disagree { detail } = &verdict {
+                witnesses.push(("disagreement".into(), detail.clone()));
+                reproduce = run
+                    .reads
+                    .get(&super::reads::key(e, t))
+                    .and_then(|r| r.trace.as_ref()?.as_ref().ok())
+                    .map(|trace| trace.reproduce.clone());
+            }
             if verdict == ContribVerdict::Holds {
                 row.verdict = RowVerdict::Unrun;
                 row.reason = Some("outsider".into());
@@ -1135,11 +1146,12 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
             row.reason = Some("contributing_entry,outsider".into());
         }
     }
-    (row, witnesses, None)
+    (row, witnesses, reproduce)
 }
 
 /// A T read's contributing-entry witness (A11b) and its named inputs, or
-/// why it cannot run yet.
+/// why it cannot run yet. A statement line's trace is cross-checked first:
+/// the witness runs on contributions both certified reads agree on.
 fn contrib_verdict(
     run: &BookRun<'_>,
     e: &Expectation,
@@ -1167,7 +1179,14 @@ fn contrib_verdict(
         .and_then(|f| run.value_of(f))
         .map(|(v, _)| v);
     let named = named_inputs(run.book, read);
-    let verdict = witness(run.case, run.book, read, contributions, certified, b);
+    let verdict = match observed.trace.as_ref() {
+        None => witness(run.case, run.book, read, contributions, certified, b),
+        Some(Err(why)) => return Err(why.clone()),
+        Some(Ok(trace)) => match cross_check(&trace.publications, contributions) {
+            ContribVerdict::Holds => witness(run.case, run.book, read, contributions, certified, b),
+            disagreement => disagreement,
+        },
+    };
     Ok((verdict, named.into_iter().collect::<Vec<_>>().join(",")))
 }
 
