@@ -587,11 +587,13 @@ fn superseding_keys(
     let fa::CertificateStatus::SupersededBy {
         checked_at,
         later_entries,
+        cases,
     } = artifact_status(h, artifact, expected)
     else {
         panic!("later selected journal entries must supersede the historical report");
     };
     assert_eq!(checked_at, h.head());
+    assert!(cases.is_empty());
     let mut keys: Vec<_> = later_entries
         .into_iter()
         .map(|id| {

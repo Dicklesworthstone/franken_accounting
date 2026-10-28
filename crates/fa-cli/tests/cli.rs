@@ -5575,6 +5575,24 @@ fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() ->
         "--yes",
         "--json",
     ]);
+    let original_certificate = dir.join("original-income.cert").display().to_string();
+    ok(&[
+        "statement",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--certificate-out",
+        &original_certificate,
+        "--json",
+    ]);
+    let original_status = || {
+        doc(&ok(&[
+            "certificate",
+            "status",
+            &original_certificate,
+            "--json",
+        ]))
+    };
     let opened = ok(&[
         "case",
         "open",
@@ -5591,6 +5609,12 @@ fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() ->
     let opened_case = doc(&opened).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&opened_case, "kind"), "PolicyChangeRetrospective");
     assert_eq!(text(&opened_case, "state"), "Determined");
+    let status = original_status();
+    assert_eq!(text(&status, "status"), "Current", "{status:?}");
+    assert!(
+        arr(&status, "cases").is_empty(),
+        "an opened case has not corrected the statement: {status:?}"
+    );
 
     ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
     let recast = write(
@@ -5659,6 +5683,19 @@ fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() ->
     assert_eq!(text(&case, "state"), "Posted", "{out}");
     assert_eq!(text(&case, "kind"), "PolicyChangeRetrospective", "{out}");
     let entry = text(&arr(&case, "posted")[0], "entry").to_string();
+    let status = original_status();
+    assert_eq!(text(&status, "status"), "SupersededBy", "{status:?}");
+    assert!(
+        arr(&status, "later_entries")
+            .iter()
+            .any(|item| item.as_str() == Some(entry.as_str()))
+    );
+    let superseding = arr(&status, "cases");
+    assert_eq!(superseding.len(), 1, "{status:?}");
+    assert_eq!(int(&superseding[0], "ordinal"), Some(1));
+    assert_eq!(text(&superseding[0], "kind"), "PolicyChangeRetrospective");
+    assert_eq!(superseding[0].get("disclosure_document"), Some(&Json::Null));
+    assert_eq!(superseding[0].get("disclosure_digest"), Some(&Json::Null));
     let explained = ok(&["explain", "entry", &entry, "--json"]);
     assert!(explained.contains("Restatement"), "{explained}");
     let lineage = ok(&["explain", "lineage", &target, "--json"]);
@@ -5732,6 +5769,22 @@ fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() ->
         Some("Disclosed"),
         "{disclosed:?}"
     );
+    let status = original_status();
+    let superseding = arr(&status, "cases");
+    assert_eq!(superseding.len(), 1, "{status:?}");
+    assert_eq!(text(&superseding[0], "disclosure_document"), note_oid);
+    let disclose_entry = doc(&ok(&[
+        "entry",
+        "show",
+        text(&disclosed, "control_entry"),
+        "--json",
+    ]));
+    assert_eq!(text(&superseding[0], "disclosure_digest").len(), 64);
+    assert_eq!(
+        text(&superseding[0], "disclosure_digest"),
+        text(&disclose_entry, "entry_digest")
+    );
+    ok(&["replay", &original_certificate, "--json"]);
     let closed = doc(&ok(&["case", "close", "1", "--json"]));
     assert_eq!(
         closed.get("case").map(|c| text(c, "state")),

@@ -139,8 +139,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             // Equal aggregate columns do not erase changed contributors. A
             // release and an equal replacement hold still supersede the saved
             // assertion, even though the outstanding pending amount is equal.
+            let later_entries: Vec<_> = later_entries.into_iter().collect();
+            let cases = crate::certificate::case_status::superseding_cases(
+                book.book_id,
+                journal.leaves.iter().map(|leaf| {
+                    (leaf.vid, leaf.envelope.commit_seq, &entries[&leaf.vid])
+                }),
+                &later_entries,
+            )?;
             Ok(Ok(CertificateStatus::SupersededBy {
-                checked_at: head, later_entries: later_entries.into_iter().collect(),
+                checked_at: head, later_entries, cases,
             }))
         })
     }

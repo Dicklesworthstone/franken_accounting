@@ -35,6 +35,7 @@ use crate::{BookError, Outcome};
 
 mod functional;
 pub(crate) use functional::verify_sources as verify_functional_sources;
+pub(crate) mod case_status;
 pub(crate) mod registry_epoch;
 
 pub mod code {
@@ -695,6 +696,18 @@ pub struct CertifiedReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateSupersedingCase {
+    /// The immutable case ordinal in this book.
+    pub ordinal: u32,
+    pub kind: fa_journal::CaseKind,
+    /// The attested Disclosure document's content address, once disclosed.
+    pub disclosure_document: Option<fa_model::Oid>,
+    /// Public entry digest of the journaled Disclose transition. This binds
+    /// the disclosure event, not merely the document it cites.
+    pub disclosure_digest: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertificateStatus {
     Current {
         checked_at: CommitSeq,
@@ -702,6 +715,9 @@ pub enum CertificateStatus {
     SupersededBy {
         checked_at: CommitSeq,
         later_entries: Vec<VId>,
+        /// Cases whose posted members (or exact reversals of those members)
+        /// occur among these relevant entries, ordered by case ordinal.
+        cases: Vec<CertificateSupersedingCase>,
     },
 }
 
@@ -2195,9 +2211,18 @@ pub(crate) fn status<V: Vfs + Clone>(
         }
         return Ok(Ok(CertificateStatus::Current { checked_at: head }));
     }
+    let cases = case_status::superseding_cases(
+        book.book_id,
+        journal
+            .leaves
+            .iter()
+            .map(|leaf| (leaf.vid, leaf.envelope.commit_seq, &entries[&leaf.vid])),
+        &later_entries,
+    )?;
     Ok(Ok(CertificateStatus::SupersededBy {
         checked_at: head,
         later_entries,
+        cases,
     }))
 }
 

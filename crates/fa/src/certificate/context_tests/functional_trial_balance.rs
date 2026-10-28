@@ -235,7 +235,8 @@ fn retained_functional_trial_balance_replays_after_later_rates_and_backdated_ent
         h.book.certificate_status(&cx, &stored).unwrap().unwrap(),
         CertificateStatus::SupersededBy {
             checked_at: posted.recorded_at(),
-            later_entries: vec![posted.entry_ref().vid]
+            later_entries: vec![posted.entry_ref().vid],
+            cases: Vec::new(),
         }
     );
 }
@@ -599,7 +600,8 @@ fn functional_trial_balance_retains_pending_cells_and_detects_cross_period_relea
                 .unwrap(),
             CertificateStatus::SupersededBy {
                 checked_at: posted.recorded_at(),
-                later_entries: vec![posted.entry_ref().vid]
+                later_entries: vec![posted.entry_ref().vid],
+                cases: Vec::new(),
             }
         );
         let current = certify(&mut h, output(&certified.report).selection.clone());

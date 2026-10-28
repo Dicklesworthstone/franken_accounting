@@ -164,6 +164,7 @@ fn aging_families_track_their_own_accounts_and_inclusive_cutoff() {
             CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries: vec![later],
+                cases: Vec::new(),
             }
         );
         let replayed = h
@@ -252,11 +253,13 @@ fn portfolio_status_tracks_new_zero_leaves_in_coverage_but_single_account_status
         let CertificateStatus::SupersededBy {
             checked_at,
             later_entries,
+            cases,
         } = result
         else {
             panic!("a new zero leaf changes selected coverage or uncovered coverage");
         };
         assert_eq!(checked_at, h.head());
+        assert!(cases.is_empty());
         assert_eq!(later_entries.len(), 1);
         let (entry, recorded_at) = h
             .book
@@ -354,7 +357,8 @@ fn aging_ignores_holds_but_reconciliation_tracks_them_and_later_effective_releas
         ),
         CertificateStatus::SupersededBy {
             checked_at: h.head(),
-            later_entries: vec![target.vid]
+            later_entries: vec![target.vid],
+            cases: Vec::new(),
         }
     );
     request.known_at = Some(h.head());
@@ -406,7 +410,8 @@ fn aging_ignores_holds_but_reconciliation_tracks_them_and_later_effective_releas
         ),
         CertificateStatus::SupersededBy {
             checked_at: h.head(),
-            later_entries: vec![release]
+            later_entries: vec![release],
+            cases: Vec::new(),
         }
     );
 }
@@ -509,7 +514,8 @@ fn indirect_status_tracks_non_cash_sources_and_keeps_unselected_units_current() 
         ),
         CertificateStatus::SupersededBy {
             checked_at: h.head(),
-            later_entries: vec![later]
+            later_entries: vec![later],
+            cases: Vec::new(),
         }
     );
     let CashFlowBasisCertificate::Explicit(cash_certificate) =
@@ -605,6 +611,7 @@ fn status_uses_selected_accounts_units_and_cutoff_including_opening_stock() {
         CertificateStatus::SupersededBy {
             checked_at: h.head(),
             later_entries: vec![opening],
+            cases: Vec::new(),
         }
     );
     // USD changes neither the selected JPY schedule nor its zero-valued cell.
@@ -643,6 +650,7 @@ fn offsetting_new_movements_supersede_a_schedule_even_when_closing_cash_is_uncha
         CertificateStatus::SupersededBy {
             checked_at: h.head(),
             later_entries: vec![debit, credit],
+            cases: Vec::new(),
         }
     );
 }
@@ -718,6 +726,7 @@ fn cash_status_requires_independent_policy_and_replays_before_inspecting_later_a
         CertificateStatus::SupersededBy {
             checked_at: h.head(),
             later_entries: vec![later],
+            cases: Vec::new(),
         }
     );
     assert!(

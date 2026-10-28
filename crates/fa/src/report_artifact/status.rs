@@ -15,8 +15,8 @@ use fa_notary::Journal;
 use super::*;
 use crate::aging::portfolio::{AgingAccountScope, AgingPortfolio};
 use crate::{
-    CashFlowBasis, CertificateStatus, GeneralLedger, IndirectCashFlow, ReportOutput,
-    ReportSelection,
+    CashFlowBasis, CertificateStatus, CertificateSupersedingCase, GeneralLedger, IndirectCashFlow,
+    ReportOutput, ReportSelection,
 };
 
 /// Only metadata actually emitted by the selected report can supersede it.
@@ -246,7 +246,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .copied()
             .collect();
         let units: BTreeSet<_> = request.units.iter().copied().collect();
-        let later_entries = match self.later_artifact_entries(
+        let (later_entries, cases) = match self.later_artifact_entries(
             cx,
             certificate.known_at(),
             head,
@@ -270,6 +270,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Ok(CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries,
+                cases,
             }));
         }
         request.known_at = Some(head);
@@ -315,7 +316,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let head = self.head(cx)?;
-        let later_entries = match self.later_artifact_entries(
+        let (later_entries, cases) = match self.later_artifact_entries(
             cx,
             certificate.source().known_at,
             head,
@@ -334,6 +335,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Ok(CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries,
+                cases,
             }));
         }
         let original =
@@ -363,7 +365,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let head = self.head(cx)?;
-        let later_entries = match self.later_artifact_entries(
+        let (later_entries, cases) = match self.later_artifact_entries(
             cx,
             certificate.source().known_at,
             head,
@@ -382,6 +384,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Ok(CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries,
+                cases,
             }));
         }
         let original = match self.replay_due_date_aging(cx, principal, capability, certificate)? {
@@ -411,7 +414,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let head = self.head(cx)?;
-        let later_entries = match self.later_artifact_entries(
+        let (later_entries, cases) = match self.later_artifact_entries(
             cx,
             certificate.control_source().known_at,
             head,
@@ -431,6 +434,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Ok(CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries,
+                cases,
             }));
         }
         let original = match self.replay_effective_date_aging_reconciliation(
@@ -464,7 +468,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let head = self.head(cx)?;
-        let later_entries = match self.later_artifact_entries(
+        let (later_entries, cases) = match self.later_artifact_entries(
             cx,
             certificate.control_source().known_at,
             head,
@@ -487,6 +491,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Ok(CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries,
+                cases,
             }));
         }
         let original =
@@ -545,7 +550,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             comparative: Vec::new(),
         }));
         let income = ReportOutput::Statement(Box::new(original.income().clone()));
-        let later_entries = match self.later_artifact_entries(
+        let (later_entries, cases) = match self.later_artifact_entries(
             cx,
             certificate.known_at(),
             head,
@@ -579,6 +584,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Ok(CertificateStatus::SupersededBy {
                 checked_at: head,
                 later_entries,
+                cases,
             }));
         }
         let mut current_request = request.clone();
@@ -600,7 +606,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         head: CommitSeq,
         metadata_scope: MetadataScope,
         selected: impl Fn(&Entry, &BTreeMap<VId, Entry>) -> Result<bool, BookError>,
-    ) -> Outcome<Vec<VId>> {
+    ) -> Outcome<(Vec<VId>, Vec<CertificateSupersedingCase>)> {
         self.query(cx, |db, book| {
             let query = cx.query();
             let journal = match Journal::read(db, book, Some(head), None)? {
@@ -714,7 +720,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     later_entries.push(leaf.vid);
                 }
             }
-            Ok(Ok(later_entries))
+            let cases = crate::certificate::case_status::superseding_cases(
+                book.book_id,
+                journal
+                    .leaves
+                    .iter()
+                    .map(|leaf| (leaf.vid, leaf.envelope.commit_seq, &entries[&leaf.vid])),
+                &later_entries,
+            )?;
+            Ok(Ok((later_entries, cases)))
         })
     }
 
@@ -803,9 +817,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
             if !later_entries.is_empty() {
+                let cases = crate::certificate::case_status::superseding_cases(
+                    book.book_id,
+                    journal.leaves.iter().map(|leaf| {
+                        (leaf.vid, leaf.envelope.commit_seq, &entries[&leaf.vid])
+                    }),
+                    &later_entries,
+                )?;
                 return Ok(Ok(CertificateStatus::SupersededBy {
                     checked_at: head,
                     later_entries,
+                    cases,
                 }));
             }
             if current_bytes != certificate.output() {

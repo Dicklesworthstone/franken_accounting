@@ -145,7 +145,7 @@ pub use cash_flow_certificate::{
     MAX_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use certificate::{
-    CertificateStatus, CertifiedReport, CertifiedTrialBalance,
+    CertificateStatus, CertificateSupersedingCase, CertifiedReport, CertifiedTrialBalance,
     FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT, FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
     ReportCertificate, ReportOutput, ReportSelection, TrialBalanceSelection,
 };

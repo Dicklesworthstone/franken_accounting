@@ -809,6 +809,25 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     assert_eq!(book.head().unwrap(), head);
     assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Approved);
 
+    let statement_selection = |period: &str| fa::StatementSelection {
+        definition: fa::StatementDefinition::embedded("balance-sheet").unwrap(),
+        periods: vec![period.into()],
+        comparative: Vec::new(),
+    };
+    let statement_before = book
+        .certify_statement(statement_selection("FY2026-P02"), None)
+        .unwrap()
+        .unwrap()
+        .certificate;
+    let unaffected_statement = book
+        .certify_statement(statement_selection("FY2025-P12"), None)
+        .unwrap()
+        .unwrap()
+        .certificate;
+    assert!(matches!(
+        book.certificate_status(&statement_before).unwrap().unwrap(),
+        fa::CertificateStatus::Current { .. }
+    ));
     let before_adjustment = book.head().unwrap();
     let posted = book
         .post_case(poster.clone(), 1, date, b"post")
@@ -835,6 +854,34 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         entry.approvals.is_empty(),
         "the case's approvals are its own"
     );
+    let mut expected_case = fa::CertificateSupersedingCase {
+        ordinal: 1,
+        kind: CaseKind::PriorPeriodAdjustment,
+        disclosure_document: None,
+        disclosure_digest: None,
+    };
+    assert_eq!(
+        book.certificate_status(&statement_before).unwrap().unwrap(),
+        fa::CertificateStatus::SupersededBy {
+            checked_at: book.head().unwrap(),
+            later_entries: vec![case.posted[0].entry],
+            cases: vec![expected_case.clone()],
+        }
+    );
+    assert!(
+        matches!(
+            book.certificate_status(&unaffected_statement)
+                .unwrap()
+                .unwrap(),
+            fa::CertificateStatus::Current { .. }
+        ),
+        "a case's declared source period does not supersede a statement whose values it did not change"
+    );
+    let statement_after = book
+        .certify_statement(statement_selection("FY2026-P02"), None)
+        .unwrap()
+        .unwrap()
+        .certificate;
     // The identical request is the recorded case; another is refused.
     let head = book.head().unwrap();
     let again = book
@@ -979,6 +1026,52 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     assert_eq!(disclosed.case.state, CaseState::Disclosed);
     let disclosure = disclosed.case.disclosure.unwrap();
     assert_eq!(disclosure.document, note.oid());
+    let (disclose_entry, _) = book.read_entry(disclosed.control_entry).unwrap().unwrap();
+    expected_case.disclosure_document = Some(note.oid());
+    expected_case.disclosure_digest = Some(disclose_entry.entry_digest);
+    let statement_bytes = statement_before.canonical_bytes().unwrap();
+    let status_at = book.head().unwrap();
+    assert_eq!(
+        book.report_artifact_status(
+            PRINCIPAL,
+            &read,
+            &statement_bytes,
+            Some(&statement_before.digest),
+            fa::ReportArtifactExpectation::AsSupplied,
+        )
+        .unwrap()
+        .unwrap(),
+        fa::CertificateStatus::SupersededBy {
+            checked_at: status_at,
+            later_entries: vec![posted.case.posted[0].entry],
+            cases: vec![expected_case.clone()],
+        }
+    );
+    let denied = book
+        .report_artifact_status(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            b"malformed certificate must not precede admission",
+            None,
+            fa::ReportArtifactExpectation::AsSupplied,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(denied.code, "FA-REF-011", "{denied:?}");
+    assert_eq!(
+        book.head().unwrap(),
+        status_at,
+        "freshness and attribution never write"
+    );
+    assert_eq!(
+        book.replay_report(&statement_before)
+            .unwrap()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap(),
+        statement_before.output,
+        "current disclosure attribution does not rewrite the historical report"
+    );
     let again = book
         .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
         .unwrap()
@@ -1005,6 +1098,30 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap_err();
     assert_eq!(reclosed.code, code::CASE_STATE, "{reclosed:?}");
+    book.open_case(
+        restate.clone(),
+        CaseKind::Revision,
+        vec!["FY2026-P02".into()],
+        None,
+        None,
+        date,
+        b"unrelated-overlapping-case",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(
+            book.certificate_status(&statement_after).unwrap().unwrap(),
+            fa::CertificateStatus::Current { .. }
+        ),
+        "disclosure and opening another overlapping case are not monetary corrections"
+    );
+    let fa::CertificateStatus::SupersededBy { cases, .. } =
+        book.certificate_status(&statement_before).unwrap().unwrap()
+    else {
+        panic!("the original case member remains a superseding contributor");
+    };
+    assert_eq!(cases, vec![expected_case.clone()]);
 
     // Exact reversals retain the economic class and original case/period,
     // including when the original PPA lies before the report's date window.
@@ -1043,6 +1160,20 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
             .unwrap()
             .unwrap();
         target = reversed.entry_ref();
+        let fa::CertificateStatus::SupersededBy {
+            cases,
+            later_entries,
+            ..
+        } = book.certificate_status(&statement_after).unwrap().unwrap()
+        else {
+            panic!("a reversal of a case correction changes the saved statement");
+        };
+        assert!(later_entries.contains(&target.vid));
+        assert_eq!(
+            cases,
+            vec![expected_case.clone()],
+            "exact reversals retain original case attribution"
+        );
         let mut current = request.clone();
         current.known_at = Some(book.head().unwrap());
         let report = book

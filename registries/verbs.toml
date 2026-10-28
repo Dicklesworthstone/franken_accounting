@@ -2200,8 +2200,13 @@ fields = ["family:string", "file:string?", "bytes:int", "lines:int", "text:strin
 [[event]]
 name = "certificate_status"
 book = true
-doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. For a scenario diff those are the Plan records its scenario gained after the certified prefix, and known_at is the fork. A summary trial balance is Current when its root and effective selector reproduces the certified report exactly at checked_at (amounts, posted and pending columns, group membership, empty roots and uncovered leaves), otherwise Changed with empty later_entries: that law compares the report, not entries. A query is Current when its statement returns the certified columns and rows at checked_at, otherwise Changed with empty later_entries: a query reads more than entries. Its original known_at remains replayable in every case. checked_at is the frontier at which status was evaluated."
-fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_entries:[hex]", "replay_scope:string", "authority:string"]
+doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. cases identifies correcting cases only through authenticated contributing members or their exact reversal lineage, including the recorded disclosure at checked_at. Overlapping periods alone never attribute a case. For a scenario diff later_entries are subsequent Plan records and cases is empty; known_at is the fork. A summary trial balance or query is Changed when its own complete result no longer reproduces at checked_at, with empty later_entries and cases. The original known_at remains replayable. checked_at is the same journal frontier used for entry relevance and disclosure attribution."
+fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_entries:[hex]", "replay_scope:string", "authority:string", "cases:[certificate_superseding_case]"]
+
+[[shape]]
+name = "certificate_superseding_case"
+doc = "A correcting case with an authenticated posting contributing to this certificate's changed result. disclosure_document is the retained Disclosure document OID; disclosure_digest is the public digest of the immutable Disclose control entry, not the document OID or a statement-diff certificate. Both are null before disclosure. Attribution is historical provenance, not an independent judgment on the correction."
+fields = ["ordinal:int", "kind:string", "disclosure_document:hex?", "disclosure_digest:hex?"]
 
 [[event]]
 name = "open_items"
