@@ -261,7 +261,7 @@ mod tests {
         derive(&encode(
             &vec![b'n'; MAX_NAME],
             &ops,
-            &vec![b'c'; MAX_COMMAND],
+            &[b'c'; MAX_COMMAND],
             41,
         ))
         .unwrap();
