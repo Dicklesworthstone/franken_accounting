@@ -2441,7 +2441,7 @@ fn replay_verification_rechecks_periods_even_without_new_entries() {
     );
     write_raw(&mut k, metadata.clone());
     metadata.set_vertex_label(
-        fa_journal::rows::period_vid(&k.book.calendar.id, P01),
+        fa_model::period_vid(&k.book.calendar.id, P01),
         label::PERIOD,
         false,
     );
