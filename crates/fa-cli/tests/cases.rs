@@ -2397,6 +2397,79 @@ fn rel_row_agrees_across_book_ids_when_its_rule_holds() {
 /// The reads fixture (`crates/fa-oracles/tests/fixtures/reads/`, A7b): a
 /// per_account T with its assert_balance step, a quarter issued twice, and
 /// read-backs through each selector.
+const CONSOLIDATION: [(&str, &str); 6] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/roles.toml"),
+    ),
+    (
+        "sources.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/sources.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/consolidation_min/expectations.toml"),
+    ),
+];
+
+/// A7b and A12 (§12.1, the replay route): a two-entity micro-book, the
+/// parent owning all of its subsidiary, read through `fa consolidate
+/// --period 2026Q1 --certify`. The consolidated balance sheet's assets line
+/// is 5,000.00 (the investment eliminated against the subsidiary's capital),
+/// and the consolidation certificate replays byte for byte (`fa replay`), its
+/// output hashing to the digest it recorded: `outsider=replay:verified`, a
+/// replay in the book (fa-verify has no consolidation recomputation). A
+/// consolidated line has no contributing-entry witness yet, so the T waits
+/// on it.
+#[test]
+fn consolidation_certificate_replays_byte_identically() {
+    let o = match run_files("consolidation_min", &CONSOLIDATION, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => *o,
+    };
+    let text = o.text();
+    assert_eq!(
+        o.row("consolidation_min-T-01"),
+        Some(
+            "UNRUN consolidation_min-T-01 T native -/default kind=footing read=consolidate,assets,2026Q1 value=5000.00 contrib=unrun(needs:A11b consolidate lines) outsider=replay:verified reason=contributing_entry"
+        ),
+        "{text}"
+    );
+    let route: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| s.reference == "consolidation_min-T-01/-")
+        .map(|s| format!("{} exit={}", words(&s.argv_redacted), s.exit))
+        .collect();
+    assert_eq!(route.len(), 2, "{text}");
+    assert!(
+        route[0].starts_with("consolidate --period exit=0"),
+        "{text}"
+    );
+    assert!(
+        route[1].starts_with("replay C:") && route[1].ends_with(" exit=0"),
+        "{text}"
+    );
+    assert!(
+        o.lines
+            .iter()
+            .any(|l| l == "OUTSIDER native verify_book=green"),
+        "{text}"
+    );
+}
+
 const READS: [(&str, &str); 6] = [
     (
         "case.toml",

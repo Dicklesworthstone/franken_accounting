@@ -736,15 +736,20 @@ impl BookRun<'_> {
             let Some((kind, what)) = outsider_kind(field(e, t, "read_verb").unwrap_or("-")) else {
                 continue;
             };
-            let certificates = match self.reads.get(&reference) {
+            let (certificates, digest) = match self.reads.get(&reference) {
                 Some(read) if read.value.is_ok() && !read.certificates.is_empty() => {
-                    read.certificates.clone()
+                    (read.certificates.clone(), read.output_digest.clone())
                 }
                 _ => continue,
             };
-            let checkpoint = anchor.get_or_insert_with(|| self.anchor()).clone();
-            let verdict = checkpoint
-                .and_then(|c| self.report_route(&reference, e, t, what, &certificates, &c));
+            let verdict = match what {
+                Some(what) => {
+                    let checkpoint = anchor.get_or_insert_with(|| self.anchor()).clone();
+                    checkpoint
+                        .and_then(|c| self.report_route(&reference, e, t, what, &certificates, &c))
+                }
+                None => self.replay_route(&reference, &certificates, digest.as_deref()),
+            };
             self.read_checks.insert(reference, (kind, verdict));
         }
     }
@@ -831,6 +836,58 @@ impl BookRun<'_> {
             };
             self.run_replays.insert(procedure, verdict);
         }
+    }
+
+    /// One T read's replay route ([`Self::outsider_reads`]): each of its
+    /// certificates replayed with `fa replay C:<oid> --output`, whose bytes
+    /// must hash, under the report-output domain, to the output digest the
+    /// read's certificate recorded when it was retained.
+    fn replay_route(
+        &mut self,
+        reference: &str,
+        certificates: &[String],
+        digest: Option<&str>,
+    ) -> Result<(), String> {
+        let digest =
+            digest.ok_or("expected the certificate's recorded output digest observed none")?;
+        for oid in certificates {
+            let out = self.work.join(format!("read-{}.replay", self.steps.len()));
+            let replayed = self.call(
+                self.head,
+                reference,
+                "replay",
+                vec![
+                    s("replay"),
+                    format!("C:{oid}"),
+                    s("--output"),
+                    out.display().to_string(),
+                    s("--json"),
+                ],
+            );
+            let output = match std::fs::read(&out) {
+                Ok(output) if replayed.exit == 0 => output,
+                _ => {
+                    self.lines.push(reproduce(&replayed));
+                    return Err(format!(
+                        "expected a replayed output of C:{oid} observed exit={} {}",
+                        replayed.exit,
+                        replayed.refusal_id().unwrap_or_default()
+                    )
+                    .trim_end()
+                    .to_string());
+                }
+            };
+            let again = fa_verify::blake3::hex(&fa_verify::blake3::hash_parts(
+                b"fa:report-output:v1",
+                &[&output],
+            ));
+            if again != digest {
+                return Err(format!(
+                    "expected the replay of C:{oid} to hash to the recorded {digest} observed {again}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// A checkpoint over the head for the T reads' bundles, exported with

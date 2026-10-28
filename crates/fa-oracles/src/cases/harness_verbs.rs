@@ -76,6 +76,8 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     // A D read's outsider replay: its run's canonical workpaper re-executed.
     ("finding", Some("export")),
     ("finding", Some("replay")),
+    // The consolidate read (A7b) and its replay route.
+    ("consolidate", None),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

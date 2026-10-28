@@ -70,6 +70,9 @@ pub struct Read {
     /// The recorded sequence a `balance` read resolved (its selector's, or
     /// the head), for the second read path (A12).
     pub known_at: Option<i128>,
+    /// The output digest its report certificate recorded (statement, tb and
+    /// consolidate reads), for a replay outsider route (A12).
+    pub output_digest: Option<String>,
 }
 
 /// One account's explanations over a read's fold (`BookRun::explain`).
@@ -343,6 +346,7 @@ impl BookRun<'_> {
             exercised: None,
             trace: None,
             known_at: None,
+            output_digest: None,
         };
         if !READ_VERBS.contains(&verb) {
             return fail(token, format!("needs:A7b ({verb} reads)"));
@@ -374,6 +378,7 @@ impl BookRun<'_> {
                 .map(str::to_string)
                 .into(),
             "tb" => ["tb", "--period"].map(str::to_string).into(),
+            "consolidate" => ["consolidate", "--period"].map(str::to_string).into(),
             _ => ["statement", verb, "--for"].map(str::to_string).into(),
         };
         args.push(code);
@@ -382,8 +387,8 @@ impl BookRun<'_> {
         let reference = key(e, t);
         let called = args.first().cloned().unwrap_or_default();
         // The command, as a refusal names it: `explain balance`, `statement
-        // <verb>` or `tb`.
-        let command = if verb == "tb" {
+        // <verb>`, `tb` or `consolidate`.
+        let command = if matches!(verb, "tb" | "consolidate") {
             called.clone()
         } else {
             args.get(..2).unwrap_or_default().join(" ")
@@ -418,6 +423,24 @@ impl BookRun<'_> {
                     .filter(|r| r.get("code").and_then(Json::as_str) == Some(target))
                     .filter_map(|r| r.get("net").and_then(Json::as_str))
                     .find(|n| in_unit(n))
+                    .map(str::to_string),
+            ),
+            // The consolidated balance sheet's line, its current column.
+            "consolidate" => (
+                call.str_field("report_certificate", "oid"),
+                call.event("consolidation_run")
+                    .and_then(|o| o.field("balance_sheet"))
+                    .and_then(|b| b.get("lines"))
+                    .and_then(Json::as_array)
+                    .unwrap_or_default()
+                    .iter()
+                    .find(|l| {
+                        l.get("code").and_then(Json::as_str) == Some(target)
+                            && l.get("unit").and_then(Json::as_str) == Some(unit.as_str())
+                    })
+                    .and_then(|l| l.get("amounts").and_then(Json::as_array))
+                    .and_then(<[Json]>::first)
+                    .and_then(Json::as_str)
                     .map(str::to_string),
             ),
             // A statement line's amounts are in column order; the first is
@@ -474,6 +497,7 @@ impl BookRun<'_> {
             exercised: None,
             trace,
             known_at: None,
+            output_digest: call.str_field("report_certificate", "output_digest"),
         }
     }
 
@@ -722,6 +746,7 @@ impl BookRun<'_> {
                 exercised: None,
                 trace: None,
                 known_at: explained.known_at,
+                output_digest: None,
             },
             Err(why) => Read {
                 token,
@@ -732,6 +757,7 @@ impl BookRun<'_> {
                 exercised: None,
                 trace: None,
                 known_at: None,
+                output_digest: None,
             },
         }
     }

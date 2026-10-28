@@ -14,14 +14,26 @@
 //!   certificates are its `fa explain balance` reports, one per period of
 //!   its fold: a report bundle carries a balance explanation, and fa-verify
 //!   recomputes its period cells.
+//! - `replay`: certificates `fa bundle produce` does not take, replayed byte
+//!   for byte with `fa replay C:<oid>`, whose output must hash to the digest
+//!   the certificate recorded: the consolidation report (`fa consolidate
+//!   --certify`). fa-verify has no consolidation recomputation, so this is a
+//!   replay in the book, never an offline outsider verification.
 
 /// The read verbs the runner reads (A7b).
-pub const READ_VERBS: [&str; 4] = ["balance", "balance-sheet", "income-statement", "tb"];
+pub const READ_VERBS: [&str; 5] = [
+    "balance",
+    "balance-sheet",
+    "income-statement",
+    "tb",
+    "consolidate",
+];
 
 /// An outsider route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutsiderKind {
     Report,
+    Replay,
 }
 
 impl OutsiderKind {
@@ -30,6 +42,7 @@ impl OutsiderKind {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Report => "report",
+            Self::Replay => "replay",
         }
     }
 }
@@ -45,15 +58,17 @@ pub enum Recomputed {
     StatementLine,
 }
 
-/// The read verb's route and what its report recomputes.
+/// The read verb's route and, on the report route, what its report
+/// recomputes.
 #[must_use]
-pub fn outsider_kind(verb: &str) -> Option<(OutsiderKind, Recomputed)> {
+pub fn outsider_kind(verb: &str) -> Option<(OutsiderKind, Option<Recomputed>)> {
     match verb {
-        "balance" => Some((OutsiderKind::Report, Recomputed::Explanation)),
-        "tb" => Some((OutsiderKind::Report, Recomputed::TrialBalanceRow)),
+        "balance" => Some((OutsiderKind::Report, Some(Recomputed::Explanation))),
+        "tb" => Some((OutsiderKind::Report, Some(Recomputed::TrialBalanceRow))),
         "balance-sheet" | "income-statement" => {
-            Some((OutsiderKind::Report, Recomputed::StatementLine))
+            Some((OutsiderKind::Report, Some(Recomputed::StatementLine)))
         }
+        "consolidate" => Some((OutsiderKind::Replay, None)),
         _ => None,
     }
 }
@@ -72,10 +87,11 @@ mod tests {
         assert_eq!(
             READ_VERBS.map(|v| outsider_kind(v).map(|(k, r)| (k.name(), r))),
             [
-                Some(("report", Recomputed::Explanation)),
-                Some(("report", Recomputed::StatementLine)),
-                Some(("report", Recomputed::StatementLine)),
-                Some(("report", Recomputed::TrialBalanceRow)),
+                Some(("report", Some(Recomputed::Explanation))),
+                Some(("report", Some(Recomputed::StatementLine))),
+                Some(("report", Some(Recomputed::StatementLine))),
+                Some(("report", Some(Recomputed::TrialBalanceRow))),
+                Some(("replay", None)),
             ]
         );
         assert_eq!(outsider_kind("gl-detail"), None);

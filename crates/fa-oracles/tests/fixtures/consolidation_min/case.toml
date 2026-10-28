@@ -1,0 +1,13 @@
+# Consolidation fixture (fa-yugf.16 A7b, fa-yugf.28 A12): a two-entity micro-book, the parent owning
+# all of its subsidiary, read through `fa consolidate --certify`, whose certificate replays byte for
+# byte (the replay outsider route), for fa-cli's tests/cases.rs. Never copied to cases/; claims
+# nothing.
+id = "consolidation_min"
+title = "Consolidation fixture: two entities, one OWNS edge, a consolidated balance sheet read"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's consolidate read (fa consolidate --period --certify) and its replay outsider route"
+claims = []
+capabilities = ["verb:post", "verb:consolidate", "verb:replay"]
+pinned_commit = "9ca8edb74"
+variants = ["native"]

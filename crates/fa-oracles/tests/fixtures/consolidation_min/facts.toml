@@ -1,0 +1,65 @@
+# Consolidation fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "C-1"
+provenance = "synthetic"
+reason = "the parent's 5,000.00 contributed capital, received in cash"
+discipline = "never cited by a case; the parent's own stock"
+
+[[fact]]
+id = "C-2"
+provenance = "synthetic"
+reason = "the parent's 1,000.00 investment in its wholly owned subsidiary, paid in cash"
+discipline = "never cited by a case; eliminated against the subsidiary's capital"
+
+[[fact]]
+id = "C-3"
+provenance = "synthetic"
+reason = "the subsidiary's 1,000.00 contributed capital, received in cash from the parent"
+discipline = "never cited by a case; eliminated against the parent's investment"
+
+[[fact]]
+id = "G-1"
+provenance = "synthetic"
+reason = "a published consolidated total of assets of 5,000.00 that the group's entries must reach"
+discipline = "never cited by a case; the T row's published value"
+
+[[value]]
+fact = "C-1"
+ordinal = 1
+literal = "5,000"
+rule = "scale"
+param = 0
+value = "500000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "C-2"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "C-3"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "G-1"
+ordinal = 1
+literal = "5,000"
+rule = "scale"
+param = 0
+value = "500000"
+unit = "USD"
+precision = 0
