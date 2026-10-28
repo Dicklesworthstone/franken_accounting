@@ -75,7 +75,7 @@ fn _selftest() {
         "PASS _selftest-P-03 P native P-1/period_state_at_commit=Open state=Open refusal=admitted exit=0 ref=agree",
         "PASS _selftest-P-03 P native P-1/period_state_at_commit=Closed state=Closed refusal=FA-REF-010 exit=7 record_consistent=false commit_agrees=ok ref=agree",
         "UNRUN _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:reported reason=filler_invariance",
-        "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00",
+        "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00 gql=ok",
         "PASS _selftest-CASE-selftest-restatement R native -/default kind=case_show read=case show,selftest-restatement state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-PH-DET disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3",
     ] {
         assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
@@ -102,7 +102,7 @@ fn _selftest() {
 /// contributing-entry witness (A11b), and passes its outsider check: its
 /// explain-balance certificate is bundled against a checkpoint, verified by
 /// the literal `fa-verify report` argv, whose recomputed cells equal B, and
-/// replayed byte for byte. The T is claimed,
+/// replayed byte for byte (after its GQL second read). The T is claimed,
 /// and the case passes.
 #[test]
 fn selftest_bridge_t_passes_with_the_outsider_check() {
@@ -111,7 +111,7 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 contrib=holds outsider=report:verified append_only=ok"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 gql=ok contrib=holds outsider=report:verified append_only=ok"
         ),
         "{text}"
     );
@@ -132,6 +132,7 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
     assert_eq!(
         route,
         [
+            "query --book exit=0 Query",
             "bundle --book exit=0 Bundle",
             "fa-verify report exit=0 FaVerifyReport",
             "replay --book exit=0 -",
@@ -234,6 +235,53 @@ fn twin_outcomes(o: &RunOutcome, keep: impl Fn(&[String]) -> bool) -> Vec<(i128,
         .filter(|s| s.reference == "append-only" && keep(&s.argv_redacted))
         .map(|s| (s.exit, s.refusal_id.clone()))
         .collect()
+}
+
+/// A12 (§12.7): the second read path. Each balance read is also read with
+/// `fa query --certify` at the sequence its fold path resolved, and nets to
+/// the fold value (`gql=ok`): the bridge T as currently stated at the head,
+/// and the R as originally reported at the sequence its view resolved (the
+/// quarter's lock, before the case), in every run of the book. The view
+/// itself is not certified beside a native read; this slice certifies the
+/// resolved sequence only (the uncertified view read is later work).
+#[test]
+fn gql_view_read_is_certified_at_its_resolved_sequence() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    let mut runs: std::collections::BTreeMap<String, (Option<i128>, Option<i128>)> =
+        std::collections::BTreeMap::new();
+    for s in o.steps.iter().filter(|s| s.verb == "query") {
+        assert_eq!(s.exit, 0, "{text}");
+        assert!(s.argv_redacted.iter().any(|a| a == "--certify"), "{text}");
+        assert_eq!(s.certificate_kind.as_deref(), Some("Query"), "{text}");
+        let statement = s.argv_redacted.get(3).cloned().unwrap_or_default();
+        let seq: i128 = statement
+            .rsplit("AS KNOWN AT ")
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("a known-at in {statement}\n{text}"));
+        let run = runs
+            .entry(s.book_id.clone().unwrap_or_default())
+            .or_default();
+        match s.reference.as_str() {
+            "_selftest-T-01/-" => run.0 = Some(seq),
+            "_selftest-R-01/-" => run.1 = Some(seq),
+            other => panic!("an unexpected query for {other}\n{text}"),
+        }
+    }
+    assert!(!runs.is_empty(), "{text}");
+    for (book, (current, original)) in &runs {
+        assert!(
+            matches!((current, original), (Some(c), Some(r)) if r < c),
+            "{book}: {current:?} {original:?}\n{text}"
+        );
+    }
+    for id in ["_selftest-T-01", "_selftest-R-01"] {
+        assert!(
+            o.row(id).is_some_and(|r| r.contains(" gql=ok")),
+            "{id}\n{text}"
+        );
+    }
 }
 
 /// A12 (§12.7, harness-only twin): a rollback. The restated book's
@@ -380,7 +428,7 @@ fn stock_t_is_explained_in_every_period_up_to_its_own() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds outsider=report:verified append_only=ok"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 gql=ok contrib=holds outsider=report:verified append_only=ok"
         ),
         "{text}"
     );
@@ -438,7 +486,7 @@ fn _selftest_neg_report_recomputation_differing_from_b_fails() {
     let row = o.row("_selftest-T-01").unwrap_or_default();
     assert!(
         row.starts_with(
-            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 outsider=report:failed append_only=ok reason="
+            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 gql=ok outsider=report:failed append_only=ok reason="
         ) && row.contains("outsider report: expected the recomputed 900.01 observed 900.00"),
         "{}",
         o.text()
@@ -468,12 +516,17 @@ fn as_originally_reported_on_a_zero_delta_line_is_flagged_selector_not_exercised
     };
     assert_eq!(
         o.row("_selftest-R-01"),
-        Some(format!("{R_01} selector=not_exercised").as_str()),
+        Some(format!("{R_01} selector=not_exercised gql=ok").as_str()),
         "{}",
         o.text()
     );
     let base = outcome(SELFTEST);
-    assert_eq!(base.row("_selftest-R-01"), Some(R_01), "{}", base.text());
+    assert_eq!(
+        base.row("_selftest-R-01"),
+        Some(format!("{R_01} gql=ok").as_str()),
+        "{}",
+        base.text()
+    );
 }
 
 /// The self-test's claimed rows, which the outsider negatives keep PASS.
@@ -2351,21 +2404,21 @@ fn per_account_t_and_its_read_back_are_read_certified() {
     assert_eq!(
         o.row("reads-T-01"),
         Some(
-            "PASS reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified"
+            "PASS reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-01"),
         Some(
-            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00"
+            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00 gql=ok"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-04"),
         Some(
-            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00 gql=ok"
         ),
         "{text}"
     );
@@ -2518,14 +2571,14 @@ fn second_issuance_of_a_period_binds_its_own_placeholder() {
     assert_eq!(
         o.row("reads-R-02"),
         Some(
-            "PASS reads-R-02 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00"
+            "PASS reads-R-02 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00 gql=ok"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-03"),
         Some(
-            "PASS reads-R-03 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1_2 value=1250.00"
+            "PASS reads-R-03 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1_2 value=1250.00 gql=ok"
         ),
         "{text}"
     );
@@ -2642,7 +2695,7 @@ fn t_whose_read_differs_from_its_published_value_fails() {
     let text = o.text();
     let row = o.row("reads-T-01").expect("the T row");
     assert!(
-        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=refused twin=refused:FA-REF-140:exit=3 ")
+        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 gql=ok assert=refused twin=refused:FA-REF-140:exit=3 ")
             && row.contains("reason=expected value=999.00 observed value=1250.00; expected assert-balance 999.00 USD recorded observed exit=3 FA-REF-140"),
         "{text}"
     );
@@ -2709,7 +2762,7 @@ fn as_originally_reported_without_issuance_or_lock_is_refused_fa_ref_161() {
     assert_eq!(
         o.row("reads-R-04"),
         Some(
-            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00 gql=ok"
         ),
         "{text}"
     );
@@ -2828,15 +2881,15 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
     for (id, row) in [
         (
             "lifecycle-R-01",
-            "PASS lifecycle-R-01 R native -/default kind=read_back read=balance,6100,2026Q1,as-originally-reported value=1000.00",
+            "PASS lifecycle-R-01 R native -/default kind=read_back read=balance,6100,2026Q1,as-originally-reported value=1000.00 gql=ok",
         ),
         (
             "lifecycle-R-02",
-            "PASS lifecycle-R-02 R native -/default kind=read_back read=balance,6100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00",
+            "PASS lifecycle-R-02 R native -/default kind=read_back read=balance,6100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00 gql=ok",
         ),
         (
             "lifecycle-R-03",
-            "PASS lifecycle-R-03 R native -/default kind=read_back read=balance,6100,2026Q1,as-currently-stated value=1200.00",
+            "PASS lifecycle-R-03 R native -/default kind=read_back read=balance,6100,2026Q1,as-currently-stated value=1200.00 gql=ok",
         ),
     ] {
         assert_eq!(o.row(id), Some(row), "{text}");
@@ -2899,8 +2952,9 @@ fn assertion_drift_reports_the_magnitude_of_the_summed_deltas() {
     assert!(drift(&down, "10000"), "{text}");
     for (id, value) in [("lifecycle-R-01", "1000.00"), ("lifecycle-R-03", "900.00")] {
         assert!(
-            down.row(id)
-                .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(&format!(" value={value}"))),
+            down.row(id).is_some_and(
+                |r| r.starts_with("PASS ") && r.ends_with(&format!(" value={value} gql=ok"))
+            ),
             "{id}: {text}"
         );
     }
@@ -3020,7 +3074,7 @@ fn restatement_intent_outside_its_case_is_refused_fa_ref_178() {
     );
     assert!(
         o.row("lifecycle-R-03")
-            .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(" value=1200.00")),
+            .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(" value=1200.00 gql=ok")),
         "{text}"
     );
 }

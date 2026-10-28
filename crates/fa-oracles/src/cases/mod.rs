@@ -61,6 +61,7 @@ pub mod expect;
 pub mod fact;
 mod fields;
 pub mod filler;
+pub mod gql;
 pub mod harness_verbs;
 pub mod header;
 pub mod intent_json;

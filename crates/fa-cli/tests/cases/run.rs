@@ -335,6 +335,9 @@ pub struct BookRun<'c> {
     /// The examiner witness's cosignature of a checkpoint before the case,
     /// when a `checkpoint_witness` step made one (A12, §12.7).
     pub witness: Option<super::outsider::Witness>,
+    /// Each `balance` read's second read path by `<expectation>/<target>`:
+    /// whether `fa query` netted to the fold path's value (A12, §12.7).
+    pub gql: BTreeMap<String, Result<(), String>>,
 }
 
 impl<'c> BookRun<'c> {
@@ -386,6 +389,7 @@ impl<'c> BookRun<'c> {
             read_checks: BTreeMap::new(),
             checkpoints: BTreeMap::new(),
             witness: None,
+            gql: BTreeMap::new(),
         }
     }
 
@@ -1816,6 +1820,7 @@ impl<'c> BookRun<'c> {
         // The history's end is also where every T and R row reads, and
         // each case is shown for its generated row (A7b).
         self.reads();
+        self.gql_reads();
         self.case_reads();
         self.outsider_reads();
         // A book with a checkpoint then proves its bundle, replay and

@@ -1023,6 +1023,16 @@ fn read_against(
         row.projection
             .push(("selector".into(), "not_exercised".into()));
     }
+    // A12 (§12.7): the second read path, an R-class cross-check of two FA
+    // read paths. A query that does not net to the fold path's value fails
+    // the row.
+    if let Some(gql) = run.gql.get(&key) {
+        row.projection
+            .push(("gql".into(), if gql.is_ok() { "ok" } else { "fail" }.into()));
+        if let Err(why) = gql {
+            return Err((RowVerdict::Fail, format!("gql: {why}")));
+        }
+    }
     // Exact equality at the published value's declared precision (§5.3);
     // a value stated to a coarser precision needs its rounding rule first.
     if run

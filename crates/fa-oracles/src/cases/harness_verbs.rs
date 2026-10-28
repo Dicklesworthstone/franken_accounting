@@ -71,6 +71,8 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("proof", Some("inclusion")),
     // and reads each restated period's as-filed certificate's status.
     ("certificate", Some("status")),
+    // The second read path: each balance read again through the GQL profile.
+    ("query", None),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not
