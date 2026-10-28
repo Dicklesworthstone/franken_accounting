@@ -2964,6 +2964,35 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
     assert_eq!(envelope["events"], json!(["period_plan"]));
     assert_eq!(envelope["certificate"], JsonValue::Null);
     assert_eq!(envelope["authority"]["principal"], "reader");
+    // A reader can still inspect a Future period's state-machine proposal.
+    // Its empty effects are not a rehearsed promise that opening posts no
+    // reversals, and those bytes cannot grant execution authority.
+    let (error, text, result) = call_tool(
+        &mut mcp,
+        "fa_time_period_transition",
+        json!({"transition": "open", "code": "FY2026-P04", "dry_run": true}),
+    );
+    assert!(!error, "read-only opening proposal: {text}");
+    let open_plan: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    assert_eq!(open_plan["scope"], "period-transition-proposal");
+    assert_eq!(open_plan["from"], "Future");
+    assert_eq!(open_plan["to"], "Open");
+    assert_eq!(open_plan["scheduled_reversals"], json!([]));
+    assert_eq!(open_plan["blocked_reversals"], json!([]));
+    assert_eq!(open_plan["reversal_tick"], JsonValue::Null);
+    let opening_envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(opening_envelope["authority"]["ops"], json!(["read"]));
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_time_period_transition",
+        json!({"transition": "open", "code": "FY2026-P04", "plan": open_plan["bytes"]}),
+    );
+    assert!(
+        error,
+        "an opening proposal cannot confer execution authority: {text}"
+    );
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-011");
     let (error, text, _) = call_tool(
         &mut mcp,
         "fa_time_approve",

@@ -2,13 +2,15 @@
 schema_version = 1
 owner = "fa-journal::period::TransitionPlan"
 format = "fa:period-plan"
-major = 3
+major = 4
 minor = 0
-versions = ["1:caller-dated-proposal", "2:period-dated-proposal", "3:authenticated-period-proposal"]
-accepted_versions = [3]
+versions = ["1:caller-dated-proposal", "2:period-dated-proposal", "3:authenticated-period-proposal", "4:authenticated-opening-effects"]
+accepted_versions = [4]
 authentication_key_domain = "fa:period-plan-authentication-key:v1"
-scope = "period-transition-proposal"
+scope = "period-transition-proposal-or-opening-effects"
 externally_verifiable = false
+retained_digest_domain = "fa:period-plan:v4"
+retained_identity_domain = "fa:vid:period-plan:v1"
 
 # Integers use FA's little-endian encoding. str/bytes carry a u32 byte
 # length; fixed fields have no prefix. This domain has no terminal NUL.
@@ -17,7 +19,13 @@ externally_verifiable = false
 # || book_id[16] || snapshot_seq:u64 || security_policy_epoch:u64
 # || str(period_code) || from:u8 || to:u8 || principal:u128
 # || reason:u16 || bytes(idempotency_key) || Erasable<String>(description)
-# || prepared_proposal_digest[32].
+# || prepared_proposal_digest[32] || option(OpeningEffects).
+# OpeningEffects = capability_commitment[32] || option(tick_vid:u128)
+# || list(target:EntryRef, reversal:EntryRef)
+# || list(target:EntryRef, blocked_reason:str).
+# An EntryRef is vid:u128 || entry_digest[32]. Both lists retain execution
+# order, and their combined length is bounded by MAX_BATCH_ENTRIES.
+# The complete artifact is bounded by MAX_BATCH_TEMPLATE_BYTES.
 # Canonical plan = body || authentication[32]. There is no minor-version
 # field on this wire. State tags and field bounds are fa-model/fa-time's.
 # Authentication = fgdb_crypto::keyed_hash(
@@ -25,8 +33,8 @@ externally_verifiable = false
 # prepared_proposal_digest is the ordinary PeriodControl proposal_digest,
 # including the period-derived effective date and the exact sealed text.
 
-# Readers reject unsigned versions 1 and 2; their holders must replan and
-# review the version-3 artifact. Changing any field, swapping book keys,
+# Readers reject versions 1 through 3; their holders must replan and
+# review the version-4 artifact. Changing any field, swapping book keys,
 # supplying another book or selecting another transition cannot preserve
 # an admitted plan. The public approval digest remains the proposal digest.
 # Authentication establishes preparation, never authority. Current caller,
@@ -50,6 +58,19 @@ externally_verifiable = false
 # returns the original entry/sequence without another publication. The
 # existing period retry law still requires the recorded destination state.
 
-# This authenticates a transition proposal only. It does not bind scheduled
-# reversal effects, retain a PostEntry effects certificate, supply independent
-# dangerous-action confirmation, or enable dangerous period commits via MCP.
+# An Open must carry OpeningEffects produced by the actual staged transition
+# transaction under current whole-book Read, Close and Post authority. The
+# preview aborts its transaction. Publication checks the exact capability
+# commitment, corroborated tick, minted target/reversal entry digests and
+# blocked target/reason pairs before publishing any control or monetary entry.
+# A newly due schedule, changed availability, cancellation, or changed budget
+# outcome requires replanning. Unexamined backlog is not claimed as reviewed.
+# The complete plan is retained atomically as ObjectKind::PeriodPlan (8),
+# with a CITES edge from the opening control. Object fragments and all
+# publication rows count toward the same native transaction byte bound.
+# Exact retry requires this retained artifact and its original minted entries;
+# blocked reasons come from the original reviewed manifest, never today's state.
+# Generic proposal-only Open plans cannot commit. Other transitions retain
+# proposal-only planning and their ordinary independently checked SoD rules.
+# This does not supply independent dangerous-action confirmation, a PostEntry
+# effects certificate, or dangerous period commits through MCP.

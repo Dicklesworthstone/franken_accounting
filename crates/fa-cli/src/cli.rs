@@ -5071,35 +5071,67 @@ fn account_fields(
 // period
 // ---------------------------------------------------------------------------
 
-/// What an `Open` of `code` mints inside its commit (plan §7.6, fa-7uhr):
-/// every live schedule whose date the latest tick has reached and whose
-/// reversal falls in this period, dated by that tick, but only when the
-/// latest tick is corroborated (otherwise the open mints nothing and the
-/// schedules wait for the reversal sweep). The commit rechecks the target's
-/// applications and the availability law, which can still block one.
-fn opening_mints(book: &Book, code: &str) -> Result<(Vec<Json>, Option<VId>), Fail> {
-    let corroborated = book.corroborated_tick_at(book.head()?)?;
-    let Some(tick) = book
-        .latest_tick()?
-        .filter(|latest| corroborated.is_some_and(|c| c.entry == latest.entry))
-    else {
-        return Ok((Vec::new(), None));
+struct OpeningPreview {
+    scheduled: Vec<Json>,
+    blocked: Vec<Json>,
+    tick: Option<VId>,
+}
+
+/// Render the actual prepared opening effects. The kernel has already run
+/// the same admission, availability and execution-budget checks as commit;
+/// this list is never inferred from merely due schedule candidates.
+fn opening_preview(book: &Book, plan: &fa_journal::TransitionPlan) -> Result<OpeningPreview, Fail> {
+    let Some(effects) = &plan.opening_effects else {
+        return Ok(OpeningPreview {
+            scheduled: Vec::new(),
+            blocked: Vec::new(),
+            tick: None,
+        });
     };
-    let rows = book
-        .due_reversals()?
-        .into_iter()
-        .filter(|due| {
-            matches!(&due.status, fa_journal::ReversalStatus::Waiting { period } if period == code)
-        })
-        .map(|due| {
+    let mut scheduled = Vec::with_capacity(effects.minted.len());
+    for (target, reversal) in &effects.minted {
+        let Some((entry, _)) = book.read_entry(target.vid)? else {
+            return Err(Fail::Internal("prepared reversal target is missing".into()));
+        };
+        if entry.entry_digest != target.entry_digest {
+            return Err(Fail::Internal(
+                "prepared reversal target digest changed".into(),
+            ));
+        }
+        let (reverse_on, _) = fa_journal::schedule::auto_reverse(&entry.proposal)
+            .map_err(Fail::Internal)?
+            .ok_or_else(|| Fail::Internal("prepared reversal target has no schedule".into()))?;
+        scheduled.push(obj(vec![
+            (
+                "schedule",
+                s(format!(
+                    "{:032x}",
+                    fa_journal::rows::schedule_vid(target.vid).0
+                )),
+            ),
+            ("target", s(format!("{:032x}", target.vid.0))),
+            ("target_digest", s(hex(&target.entry_digest))),
+            ("reverse_on", s(reverse_on.render())),
+            ("reversal", s(format!("{:032x}", reversal.vid.0))),
+            ("reversal_digest", s(hex(&reversal.entry_digest))),
+        ]));
+    }
+    let blocked = effects
+        .blocked
+        .iter()
+        .map(|(target, reason)| {
             obj(vec![
-                ("schedule", s(format!("{:032x}", due.schedule.vid.0))),
-                ("target", s(format!("{:032x}", due.schedule.target.vid.0))),
-                ("reverse_on", s(due.schedule.reverse_on.render())),
+                ("target", s(format!("{:032x}", target.vid.0))),
+                ("target_digest", s(hex(&target.entry_digest))),
+                ("reason", s(reason)),
             ])
         })
         .collect();
-    Ok((rows, Some(tick.entry)))
+    Ok(OpeningPreview {
+        scheduled,
+        blocked,
+        tick: effects.tick,
+    })
 }
 
 fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -5263,7 +5295,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // period transition. The embedded owner authorizes both effects;
             // a launch-bound capability remains unchanged in `capability`.
             let implied_ops = if matches!(transition, PeriodTransition::Open) {
-                vec![op.name(), "post"]
+                vec![op.name(), "post", "read"]
             } else {
                 vec![op.name()]
             };
@@ -5309,27 +5341,50 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // resolve against the caller's working directory, as every file
             // argument does (a daemon writes and reads the client's).
             if args.switch("--dry-run") {
-                let plan = book.plan_transition(code, transition, who, given_reason()?, &key)??;
+                // Read-only sessions may inspect the state-machine proposal.
+                // Select that limited scope before execution; never turn an
+                // actual rehearsal refusal into a successful fallback.
+                let plan = if matches!(transition, PeriodTransition::Open)
+                    && capability.holds(op)
+                    && capability.holds(fa_policy::Op::Post)
+                {
+                    book.plan_open_transition(code, who, given_reason()?, &key, &capability)??
+                } else {
+                    book.plan_transition(code, transition, who, given_reason()?, &key)??
+                };
                 let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
                 let encoded = hex(&bytes);
-                let (scheduled, reversal_tick) = if matches!(transition, PeriodTransition::Open) {
-                    opening_mints(&book, code)?
+                let OpeningPreview {
+                    scheduled,
+                    blocked,
+                    tick: reversal_tick,
+                } = opening_preview(&book, &plan)?;
+                let scope = if plan.opening_effects.is_some() {
+                    "period-opening-effects"
                 } else {
-                    (Vec::new(), None)
+                    "period-transition-proposal"
                 };
-                let mints = if scheduled.is_empty() {
+                let proposal_only_open =
+                    matches!(transition, PeriodTransition::Open) && plan.opening_effects.is_none();
+                let mints = if proposal_only_open {
+                    " Scheduled reversals have not been rehearsed; an authorized operator must prepare a full opening plan before publication.".to_owned()
+                } else if plan.opening_effects.is_none() {
                     String::new()
                 } else {
                     format!(
-                        " The open has {} scheduled reversal candidate(s) dated by tick {}; publication requires current account, permission, availability, and budget checks.",
+                        " The authenticated opening prepares {} scheduled reversal(s) and {} blocked outcome(s); any change to these outcomes requires a new plan.",
                         scheduled.len(),
-                        reversal_tick.map_or(String::new(), |t| format!("{:032x}", t.0))
+                        blocked.len(),
                     )
                 };
-                let actions = operator_plan_actions("-");
+                let actions = if proposal_only_open {
+                    Vec::new()
+                } else {
+                    operator_plan_actions("-")
+                };
                 let guidance = actions
                     .first()
                     .map_or_else(String::new, |(command, why)| format!("\n{why}: {command}"));
@@ -5342,8 +5397,9 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("principal", s(format!("{:032x}", plan.principal_ref.0))),
                         ("proposal_digest", s(hex(&digest))),
                         ("bytes", s(&encoded)),
-                        ("scope", s("period-transition-proposal")),
+                        ("scope", s(scope)),
                         ("scheduled_reversals", Json::Arr(scheduled)),
+                        ("blocked_reversals", Json::Arr(blocked)),
                         (
                             "reversal_tick",
                             reversal_tick.map_or(Json::Null, |t| s(format!("{:032x}", t.0))),
@@ -5369,11 +5425,20 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "use --dry-run to receive the complete plan bytes as hex on stdout",
                     ));
                 }
-                let plan = book.plan_transition(code, transition, who, given_reason()?, &key)??;
+                let plan = if matches!(transition, PeriodTransition::Open) {
+                    book.plan_open_transition(code, who, given_reason()?, &key, &capability)??
+                } else {
+                    book.plan_transition(code, transition, who, given_reason()?, &key)??
+                };
                 let digest = book.plan_digest(&plan)??;
                 let bytes = plan
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
+                let OpeningPreview {
+                    scheduled,
+                    blocked,
+                    tick: reversal_tick,
+                } = opening_preview(&book, &plan)?;
                 write_post_plan(&ctx.files, path, &bytes)?;
                 let actions = operator_plan_actions(path);
                 let guidance = actions
@@ -5387,6 +5452,10 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("to", s(plan.to.name())),
                         ("proposal_digest", s(hex(&digest))),
                         ("plan", s(path)),
+                        ("scope", s(if plan.opening_effects.is_some() { "period-opening-effects" } else { "period-transition-proposal" })),
+                        ("scheduled_reversals", Json::Arr(scheduled)),
+                        ("blocked_reversals", Json::Arr(blocked)),
+                        ("reversal_tick", reversal_tick.map_or(Json::Null, |tick| s(format!("{:032x}", tick.0)))),
                     ],
                     &format!(
                         "{}: planned {} → {}; approvals bind proposal {}; commit with --plan {path}{guidance}",

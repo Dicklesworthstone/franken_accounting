@@ -645,6 +645,9 @@ pub(crate) struct Mints {
     cells: BTreeMap<VId, CellRun>,
     accounts: BTreeMap<VId, AccountRow>,
     tracker: crate::batch::TemplateByteTracker,
+    /// Corroborated tick used by an Open preparation, including an empty
+    /// candidate population. Other minting paths do not use this field.
+    pub(crate) opening_tick: Option<VId>,
     /// `(target, reversal)` in mint order.
     pub(crate) minted: Vec<(EntryRef, EntryRef)>,
     /// `(target, why)`.
@@ -658,9 +661,23 @@ impl Mints {
             cells: BTreeMap::new(),
             accounts: BTreeMap::new(),
             tracker: crate::batch::TemplateByteTracker::default(),
+            opening_tick: None,
             minted: Vec::new(),
             blocked: Vec::new(),
         }
+    }
+
+    /// Exact footprint of the staged reversal entries and their final limit
+    /// cells. An opening planner adds its control and retained certificate
+    /// to this same tracker before admitting the complete transaction.
+    pub(crate) fn template_tracker(
+        &self,
+    ) -> Result<crate::batch::TemplateByteTracker, KernelError> {
+        let mut tracker = self.tracker.clone();
+        for (cell, run) in &self.cells {
+            tracker.record_limit_cell_move(relation::HAS_LEG, *cell, &run.before, &run.after)?;
+        }
+        Ok(tracker)
     }
 
     /// The batches to write (limit cells staged as compare-and-sets).
@@ -1121,6 +1138,7 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
     if !tick_corroborated(&tick_row)? {
         return Ok(Ok(mints));
     }
+    mints.opening_tick = Some(tick.entry);
     let today = policy.civil_date(tick.observed_utc_ns);
     let mut due: Vec<Schedule> = Vec::new();
     // The candidate population is itself a dependency, including when it
