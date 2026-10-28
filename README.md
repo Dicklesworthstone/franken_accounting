@@ -823,8 +823,9 @@ default Agent profile still refuses trunk posting and planning. A void can
 be previewed, but its MCP commit remains refused with `FA-REF-007` until the
 separate confirmation exchange exists. A plan cannot replace that exchange.
 Plan output identifies the actual `embedded-owner` or `mcp-launch-config`
-authority. CLI/MCP dry runs currently refuse `--balancing` and do not collect
-new approvals.
+authority. A CLI dry run accepts `--balancing`: the plan binds both the
+requested and the admitted amount (`requested` and `moved`). Dry runs do not
+collect new approvals.
 
 Planning runs the same balance, period, evidence, capability, approval,
 settlement, reservation and balance-limit checks as posting, then aborts the
@@ -1366,8 +1367,9 @@ only registry data and calendar primitives. Every `LegalEntity` in a `Book`
 must share `functional_unit == book.base_unit` (plan §0.4 decision 1, `fa-viui`);
 genesis (`create_book` / `fa book create --entity`) and schema evolution
 (`create_legal_entity`) refuse a mismatched entity functional currency with
-`FA-REF-003` (exit 3) naming the Concordat fix (maintain a separate `Book`
-in that entity's functional currency and consolidate via Concordat).
+`FA-REF-003` (exit 3), whose fix keeps that entity in its own book
+(`fa book create --base-unit <its unit>`); consolidation across books is not
+available yet (fa-76hy).
 
 **FrankenSymPy assessment (2026-10-10, corrected after the owner's clarification).**
 The owner's own Rust projects — Franken-named or not — are eligible dependencies,
