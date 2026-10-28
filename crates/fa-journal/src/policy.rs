@@ -1015,29 +1015,29 @@ pub fn authority_lineage<V: asupersync::fs::Vfs + Clone>(
 }
 
 fn admitted_issuance_ancestry(
-    book: &BookContext,
+    book: Id128,
     capability: &Capability,
     at: CommitSeq,
     mut read: impl FnMut(VId) -> Result<Option<fgdb::VertexRow>, KernelError>,
 ) -> Outcome<IssuanceAncestry> {
     let commitment = capability.commitment().map_err(capability_error)?;
     let required = capability.possession().is_some() || !capability.daily_totals().is_empty();
-    let ancestry = match issuance_ancestry(book.book_id, &commitment, required, &mut read)? {
+    let ancestry = match issuance_ancestry(book, &commitment, required, &mut read)? {
         Ok(ancestry) => ancestry,
         Err(refusal) => return Ok(Err(refusal)),
     };
     for ancestor in &ancestry.commitments {
-        if let Err(refusal) = not_revoked(read(revocation_vid(book.book_id, ancestor))?) {
+        if let Err(refusal) = not_revoked(read(revocation_vid(book, ancestor))?) {
             return Ok(Err(refusal));
         }
     }
     if !capability.daily_totals().is_empty() {
         let root = capability.daily_root().unwrap_or(commitment);
-        let row = read(issuance_vid(book.book_id, &root))?;
+        let row = read(issuance_vid(book, &root))?;
         if let Err(refusal) = daily_root_current(row.as_ref(), book, capability, &root, at)? {
             return Ok(Err(refusal));
         }
-        if let Err(refusal) = not_revoked(read(revocation_vid(book.book_id, &root))?) {
+        if let Err(refusal) = not_revoked(read(revocation_vid(book, &root))?) {
             return Ok(Err(refusal));
         }
     }
@@ -1054,13 +1054,12 @@ pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     capability: &Capability,
 ) -> Outcome<()> {
-    Ok(admitted_issuance_ancestry(
-        book,
-        capability,
-        txn.basis(),
-        |vid| Ok(txn.vertex(db, vid)?),
-    )?
-    .map(|_| ()))
+    Ok(
+        admitted_issuance_ancestry(book.book_id, capability, txn.basis(), |vid| {
+            Ok(txn.vertex(db, vid)?)
+        })?
+        .map(|_| ()),
+    )
 }
 
 /// The capability is not revoked at the admission point (the head this
@@ -1075,8 +1074,10 @@ pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     Ok(
-        admitted_issuance_ancestry(book, capability, db.frontier()?, |vid| Ok(db.vertex(vid)?))?
-            .map(|_| ()),
+        admitted_issuance_ancestry(book.book_id, capability, db.frontier()?, |vid| {
+            Ok(db.vertex(vid)?)
+        })?
+        .map(|_| ()),
     )
 }
 
@@ -1085,7 +1086,7 @@ pub fn capability_admitted<V: asupersync::fs::Vfs + Clone>(
 /// caller as well as the presented issuance's own revocation.
 fn daily_root_current(
     row: Option<&fgdb::VertexRow>,
-    book: &BookContext,
+    book: Id128,
     capability: &Capability,
     root: &[u8; 32],
     at: CommitSeq,
@@ -1095,7 +1096,7 @@ fn daily_root_current(
             "the daily spending root issuance is missing",
         )));
     };
-    let (original, _) = crate::usage::issued_capability(row, book.book_id, root)?;
+    let (original, _) = crate::usage::issued_capability(row, book, root)?;
     if original.daily_root().is_some()
         || original.daily_totals().is_empty()
         || capability.daily_totals().iter().any(|(unit, max)| {
@@ -1149,11 +1150,19 @@ pub fn current_at<'c, V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     capability: &'c Capability,
 ) -> Outcome<Current<'c>> {
+    current_for_book(db, book.book_id, capability)
+}
+
+fn current_for_book<'c, V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    capability: &'c Capability,
+) -> Outcome<Current<'c>> {
     let at = db.frontier()?;
     if let Err(d) = fa_policy::current(capability, at) {
         return Ok(Err(refusal(&d)));
     }
-    if let Err(r) = capability_admitted(db, book, capability)? {
+    if let Err(r) = admitted_issuance_ancestry(book, capability, at, |vid| Ok(db.vertex(vid)?))? {
         return Ok(Err(r));
     }
     Ok(Ok(Current { capability, at }))
@@ -1381,13 +1390,40 @@ fn shared_date(book: &BookContext, day: DateDay) -> bool {
 
 /// Reads admitted under one capability (plan §14.2): the kernel core every
 /// read surface shares (the facade's `ReadScope`, the async book, fa-query
-/// and fa-mcp). [`admit_reads`] admits it once against current policy;
-/// each read is then judged by the scope caveats before its query is
-/// constructed, refused and never filtered. After admission every judgment
-/// is pure: a period's dates come from the calendar.
+/// and fa-mcp). [`admit_reads`] binds it to the database's journaled book
+/// identity. Scope judgments are pure: a period's dates come from the
+/// calendar. [`Self::read_entry`] additionally re-admits current authority
+/// before reading its target, so retaining or cloning this value cannot
+/// preserve a capability after expiry or revocation.
 #[derive(Clone, Debug)]
 pub struct ReadAuthority {
+    book: Id128,
     capability: Capability,
+}
+
+/// Read admission uses the immutable genesis payload to check the actual
+/// database's book identity, not just a caller-supplied context. This is a
+/// logical book binding; database copies retaining the same identity are
+/// still the same book. Current authority is checked before this metadata
+/// read and before any entry payload is observed.
+fn current_read<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(r) = current_for_book(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    let spec = crate::genesis::read_book_spec(db)?.ok_or_else(|| {
+        KernelError::Corrupt("read authority requires a journaled book genesis".into())
+    })?;
+    if spec.book_id != book {
+        return Ok(Err(refusal(&Denial::OutOfScope {
+            caveat: "books",
+            value: "a database other than the admitted book".into(),
+        })));
+    }
+    Ok(Ok(()))
 }
 
 /// Admit `principal`'s reads of this book under `capability`: the pure
@@ -1411,10 +1447,11 @@ pub fn admit_reads<V: asupersync::fs::Vfs + Clone>(
             value: "a read in this build (whole-entry visibility is not implemented, so a scoped read is refused, never filtered)".into(),
         })));
     }
-    if let Err(r) = current_at(db, book, capability)? {
+    if let Err(r) = current_read(db, book.book_id, capability)? {
         return Ok(Err(r));
     }
     Ok(Ok(ReadAuthority {
+        book: book.book_id,
         capability: capability.clone(),
     }))
 }
@@ -1432,6 +1469,9 @@ impl ReadAuthority {
     /// it. The read itself goes through the snapshot at `seq`
     /// ([`crate::post::read_entry_at`]), so an entry recorded later is
     /// never loaded or decoded: to this token it is no entry at all.
+    /// Expiry, issuance ancestry and revocation are rechecked at the current
+    /// head before loading that historical payload, on the same book this
+    /// authority was admitted for.
     pub fn read_entry<V: asupersync::fs::Vfs + Clone>(
         &self,
         db: &Database<V>,
@@ -1439,6 +1479,9 @@ impl ReadAuthority {
         seq: CommitSeq,
     ) -> Outcome<Option<(Entry, CommitSeq)>> {
         if let Err(r) = self.reach(seq, None, None) {
+            return Ok(Err(r));
+        }
+        if let Err(r) = current_read(db, self.book, &self.capability)? {
             return Ok(Err(r));
         }
         Ok(Ok(crate::post::read_entry_at(db, vid, seq)?))
@@ -2118,12 +2161,13 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
     }
     let vid = issuance_vid(book.book_id, &commitment);
     let entry = proposal.seal(Vec::new(), None)?;
-    let ancestry = match admitted_issuance_ancestry(book, &req.capability, db.frontier()?, |vid| {
-        Ok(db.vertex(vid)?)
-    })? {
-        Ok(ancestry) => ancestry,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
+    let ancestry =
+        match admitted_issuance_ancestry(book.book_id, &req.capability, db.frontier()?, |vid| {
+            Ok(db.vertex(vid)?)
+        })? {
+            Ok(ancestry) => ancestry,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
     if let Err(refusal) = admits_child_issuance(&ancestry) {
         return Ok(Err(refusal));
     }
@@ -2132,15 +2176,16 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
     }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
-    let ancestry = match admitted_issuance_ancestry(book, &req.capability, txn.basis(), |vid| {
-        Ok(txn.vertex(db, vid)?)
-    })? {
-        Ok(ancestry) => ancestry,
-        Err(refusal) => {
-            txn.abort();
-            return Ok(Err(refusal));
-        }
-    };
+    let ancestry =
+        match admitted_issuance_ancestry(book.book_id, &req.capability, txn.basis(), |vid| {
+            Ok(txn.vertex(db, vid)?)
+        })? {
+            Ok(ancestry) => ancestry,
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        };
     if let Err(refusal) = admits_child_issuance(&ancestry) {
         txn.abort();
         return Ok(Err(refusal));
