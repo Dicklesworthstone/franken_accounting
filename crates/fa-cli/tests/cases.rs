@@ -2199,6 +2199,88 @@ fn assert_balance_at_the_fold_records_register_equals() {
     );
 }
 
+/// A11b (§3.7 item 2): a statement line T read at the head is also traced
+/// publication by publication over the history (`fa statement trace
+/// --certify`), and the trace agrees with the line's explained balances, so
+/// the witness holds on contributions both certified reads attribute.
+#[test]
+fn statement_line_t_is_traced_and_agrees_with_its_explained_balances() {
+    let o = reads();
+    let text = o.text();
+    let traced: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| words(&s.argv_redacted) == "statement trace")
+        .map(|s| {
+            assert!(s.argv_redacted.iter().any(|a| a == "--certify"), "{text}");
+            (s.reference.as_str(), s.exit, s.certificate_kind.as_deref())
+        })
+        .collect();
+    assert_eq!(
+        traced,
+        [
+            ("reads-T-02/-", 0, Some("StatementTrace")),
+            ("reads-T-03/-", 0, Some("StatementTrace"))
+        ],
+        "{text}"
+    );
+    for id in ["reads-T-02", "reads-T-03"] {
+        assert!(
+            o.row(id)
+                .is_some_and(|r| r.ends_with(" contrib=holds reason=outsider")),
+            "{id}\n{text}"
+        );
+    }
+}
+
+/// A11b (§3.7 item 2): a trace that disagrees with a line's explained
+/// balances re-types the T as R, `contrib=disagree(trace,explained)`, with
+/// the first difference a verdict witness and the trace's argv printed to
+/// reproduce. The binary's two reads agree, so the runner drops the last
+/// publication that moves each line.
+#[test]
+fn statement_line_trace_disagreeing_with_its_explained_balances_retypes_r() {
+    reads::DROP_LAST_PUBLICATION.with(|f| f.set(true));
+    let o = reads_run(&[]);
+    reads::DROP_LAST_PUBLICATION.with(|f| f.set(false));
+    let text = o.text();
+    for (id, read) in [
+        ("reads-T-02", "balance-sheet,assets"),
+        ("reads-T-03", "income-statement,revenue"),
+    ] {
+        assert_eq!(
+            o.row(id),
+            Some(
+                format!(
+                    "PASS {id} R native -/default kind=footing read={read},2026Q1 value=1250.00 contrib=disagree(trace,explained)"
+                )
+                .as_str()
+            ),
+            "{text}"
+        );
+        let record = o
+            .verdicts
+            .iter()
+            .find(|v| v.expectation == id)
+            .expect("the verdict record");
+        let detail = record
+            .witnesses
+            .iter()
+            .find(|(k, _)| k == "disagreement")
+            .map_or("", |(_, v)| v.as_str());
+        assert!(
+            detail.starts_with("explained entry ") && detail.ends_with(" is in no publication"),
+            "{detail}\n{text}"
+        );
+    }
+    let reproduced = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("REPRODUCE fa ") && l.contains(" statement trace "))
+        .count();
+    assert_eq!(reproduced, 2, "{text}");
+}
+
 /// A7b (§3.3 step 4): each `issue` step certifies the balance sheet, plans
 /// its issuance, has another hand approve it and commits it. The quarter's
 /// first issuance binds `$C_ISSUE_2026Q1` and its second

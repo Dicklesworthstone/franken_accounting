@@ -25,6 +25,7 @@
 //! twins, B plus and B minus one minor unit, which the kernel must each
 //! refuse `FA-REF-140` (§5.3, §3.7 item 4).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
@@ -34,6 +35,13 @@ use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::json::Json;
 
 use super::run::{BookRun, Call, reproduce};
+
+thread_local! {
+    /// Test-only: drop the last publication that moves a statement line in
+    /// its trace (the trace/explained-balance disagreement negative; the
+    /// binary's two reads agree, so only the runner can make them differ).
+    pub static DROP_LAST_PUBLICATION: Cell<bool> = const { Cell::new(false) };
+}
 
 /// One T or R row's read.
 pub struct Read {
@@ -405,6 +413,11 @@ impl BookRun<'_> {
                 entries,
                 change,
             });
+        }
+        if DROP_LAST_PUBLICATION.with(Cell::get)
+            && let Some(last) = publications.iter().rposition(|p| p.change != 0)
+        {
+            publications.remove(last);
         }
         Ok(LineTrace {
             publications,
