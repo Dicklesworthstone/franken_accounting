@@ -28,6 +28,7 @@ pub enum ObjectKind {
     RegistryEpoch = 5,
     RegisterCheckpoint = 6,
     StatementDefinition = 7,
+    PeriodPlan = 8,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -242,6 +243,7 @@ mod tests {
             ObjectKind::RegistryEpoch,
             ObjectKind::RegisterCheckpoint,
             ObjectKind::StatementDefinition,
+            ObjectKind::PeriodPlan,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -318,7 +320,8 @@ mod tests {
                 | ObjectKind::IntentOutcome
                 | ObjectKind::RegistryEpoch
                 | ObjectKind::RegisterCheckpoint
-                | ObjectKind::StatementDefinition => ObjectKind::PostPlan,
+                | ObjectKind::StatementDefinition
+                | ObjectKind::PeriodPlan => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -502,6 +505,7 @@ mod tests {
                 "statement_definition_kind",
                 ObjectKind::StatementDefinition as i128,
             ),
+            ("period_plan_kind", ObjectKind::PeriodPlan as i128),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);
         }

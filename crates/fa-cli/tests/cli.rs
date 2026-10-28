@@ -8779,20 +8779,48 @@ fn period_open_dry_run_lists_the_scheduled_reversals_the_open_mints() -> std::io
     // Planted: April has been reached, but the latest tick is not
     // corroborated, so an open mints nothing and the dry run says so.
     tick(APRIL_NS, false);
+    let before_preview = open().head().unwrap();
     let planned = dry_run("FY2026-P04");
+    assert_eq!(open().head().unwrap(), before_preview);
+    assert_eq!(text(&planned, "scope"), "period-opening-effects");
     assert!(
         arr(&planned, "scheduled_reversals").is_empty(),
         "{planned:?}"
     );
     assert_eq!(planned.get("reversal_tick"), Some(&Json::Null));
+    assert!(arr(&planned, "blocked_reversals").is_empty());
+    let empty_plan = write(&dir, "uncorroborated.plan", text(&planned, "bytes"));
 
     // Corroborated: the dry run lists the schedule, dated by that tick.
     let dated = tick(APRIL_NS + 1, true);
+    let after_tick = open().head().unwrap();
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "period",
+            "open",
+            "FY2026-P04",
+            "--plan",
+            &empty_plan,
+            "--json",
+        ],
+    );
+    assert_eq!(
+        code, 6,
+        "a newly executable reversal invalidates the reviewed empty plan: {out}\n{err}"
+    );
+    assert!(out.contains("FA-REF-034"), "{out}\n{err}");
+    assert_eq!(open().head().unwrap(), after_tick);
     let planned = dry_run("FY2026-P04");
+    assert_eq!(open().head().unwrap(), after_tick);
     let scheduled = arr(&planned, "scheduled_reversals");
     assert_eq!(scheduled.len(), 1, "{planned:?}");
     assert_eq!(text(&scheduled[0], "target"), target);
     assert_eq!(text(&scheduled[0], "reverse_on"), "2026-04-01");
+    assert_eq!(text(&scheduled[0], "target_digest").len(), 64);
+    assert_eq!(text(&scheduled[0], "reversal_digest").len(), 64);
+    assert!(arr(&planned, "blocked_reversals").is_empty());
+    let reviewed = write(&dir, "reviewed-opening.plan", text(&planned, "bytes"));
     assert_eq!(
         text(&planned, "reversal_tick"),
         format!("{:032x}", dated.tick.entry.0)
@@ -8811,13 +8839,47 @@ fn period_open_dry_run_lists_the_scheduled_reversals_the_open_mints() -> std::io
     let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
     let reversal = fa_journal::rows::reversal_vid(target_vid);
     assert!(open().read_entry(reversal).unwrap().is_none());
-    ok(&["period", "open", "FY2026-P04", "--json"]);
+    assert_eq!(
+        text(&scheduled[0], "reversal"),
+        format!("{:032x}", reversal.0)
+    );
+    let opened = doc(&ok(&[
+        "period",
+        "open",
+        "FY2026-P04",
+        "--plan",
+        &reviewed,
+        "--json",
+    ]));
     let (minted, _) = open()
         .read_entry(reversal)
         .unwrap()
         .expect("minted at the open");
     assert_eq!(minted.proposal.effective_date.render(), "2026-04-01");
+    assert_eq!(
+        minted
+            .entry_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+        text(&scheduled[0], "reversal_digest"),
+    );
     assert!(open().due_reversals().unwrap().is_empty());
+    // A new clock observation after publication cannot rewrite the exact
+    // retained opening outcome or cause the same reversal to post twice.
+    tick(APRIL_NS + 2, true);
+    let retry_head = open().head().unwrap();
+    let retried = doc(&ok(&[
+        "period",
+        "open",
+        "FY2026-P04",
+        "--plan",
+        &reviewed,
+        "--json",
+    ]));
+    assert_eq!(text(&retried, "vid"), text(&opened, "control_entry"));
+    assert_eq!(int(&retried, "recorded_at"), int(&opened, "recorded_at"));
+    assert_eq!(open().head().unwrap(), retry_head);
     Ok(())
 }
 

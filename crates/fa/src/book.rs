@@ -1423,6 +1423,9 @@ impl Book {
     /// sealed proposal, period basis and policy epoch. Approvers bind its
     /// `proposal_digest`; [`Book::transition_planned`] commits that same
     /// transition under independently checked current authority.
+    /// An Open from this read-only method is proposal-only. Use
+    /// [`Book::plan_open_transition`] to rehearse the scheduled monetary
+    /// effects required before an opening can be published.
     #[allow(clippy::too_many_arguments)]
     pub fn plan_transition(
         &self,
@@ -1441,6 +1444,24 @@ impl Book {
     /// or foreign plan and a book that no longer reproduces its proposal.
     pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Outcome<[u8; 32]> {
         with_store!(&self.store, core => core.plan_digest(plan))
+    }
+
+    /// Rehearse a period opening and authenticate its exact scheduled
+    /// reversals and blocked outcomes. No transaction is published. The
+    /// current capability must authorize the opening and its monetary effects;
+    /// a later change to those effects invalidates the plan before publication.
+    pub fn plan_open_transition(
+        &mut self,
+        period_code: &str,
+        principal: VId,
+        reason_code: u16,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::TransitionPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_open_transition(
+            &purposes, period_code, principal, reason_code, idempotency_key, capability,
+        )))
     }
 
     /// Commit the authenticated planned transition under `capability`,
