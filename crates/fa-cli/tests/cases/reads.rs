@@ -32,6 +32,7 @@ use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::StepDef;
 use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation, Publication};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
+use fa_oracles::cases::outsider_kind::READ_VERBS;
 use fa_oracles::json::Json;
 
 use super::run::{BookRun, Call, reproduce};
@@ -195,10 +196,7 @@ impl BookRun<'_> {
             exercised: None,
             trace: None,
         };
-        if !matches!(
-            verb,
-            "balance" | "balance-sheet" | "income-statement" | "tb"
-        ) {
+        if !READ_VERBS.contains(&verb) {
             return fail(token, format!("needs:A7b ({verb} reads)"));
         }
         let Some(code) = self.period_code(coordinate) else {
