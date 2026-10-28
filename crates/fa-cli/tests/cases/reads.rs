@@ -51,6 +51,9 @@ pub struct Read {
     pub value: Result<i128, String>,
     /// The certificate the read retained, if any.
     pub certificate: Option<String>,
+    /// Every certificate the read retained, in fold order: a `balance` read
+    /// retains one per period it explained (A12 bundles each).
+    pub certificates: Vec<String>,
     /// A `balance` read's posted legs, every period it explained (A11b).
     pub contributions: Option<Vec<Contribution>>,
     /// An as-originally-reported read: whether its value differs from the
@@ -187,6 +190,7 @@ impl BookRun<'_> {
             token,
             value: Err(why),
             certificate: None,
+            certificates: Vec::new(),
             contributions: None,
             exercised: None,
             trace: None,
@@ -318,6 +322,7 @@ impl BookRun<'_> {
         Read {
             token,
             value,
+            certificates: certificate.clone().into_iter().collect(),
             certificate,
             contributions,
             exercised: None,
@@ -426,7 +431,7 @@ impl BookRun<'_> {
     }
 
     /// `fa explain balance <account> --certify` in each of `periods`, folded
-    /// by [`contrib::union`]: the sum of the cells' nets in `unit`, the last
+    /// by [`contrib::union`]: the sum of the cells' nets in `unit`, each
     /// period's certificate, and each posted leg (debits positive) mapped to
     /// the intent that posted it. A leg of a class in `excluded` (a
     /// definition's Closing entries) is set aside, outside both the sum and
@@ -441,7 +446,7 @@ impl BookRun<'_> {
         unit: &str,
         flags: &[String],
         excluded: &[String],
-    ) -> Result<(i128, Option<String>, Vec<Contribution>), String> {
+    ) -> Result<(i128, Vec<String>, Vec<Contribution>), String> {
         let scale = scale_of(unit).ok_or_else(|| format!("unit `{unit}` is not registered"))?;
         let posted_by: BTreeMap<String, String> = self
             .vids
@@ -456,7 +461,7 @@ impl BookRun<'_> {
                 None => Ok(None),
             }
         };
-        let (mut certificate, mut explained) = (None, Vec::new());
+        let (mut certificates, mut explained) = (Vec::new(), Vec::new());
         for label in periods {
             let code =
                 self.periods.get(label).cloned().ok_or_else(|| {
@@ -483,7 +488,7 @@ impl BookRun<'_> {
                 .trim_end()
                 .to_string());
             }
-            certificate = call.str_field("balance_explained", "certificate");
+            certificates.extend(call.str_field("balance_explained", "certificate"));
             let mut legs = Vec::new();
             for c in call.array_field("balance_explained", "contributions") {
                 if c.get("column").and_then(Json::as_str) != Some("posted") {
@@ -534,12 +539,12 @@ impl BookRun<'_> {
                 leg.intent.as_deref().unwrap_or("-")
             ));
         }
-        Ok((folded.total, certificate, folded.contributions))
+        Ok((folded.total, certificates, folded.contributions))
     }
 
     /// A `balance` read: `fa explain balance --certify` in each period of
-    /// the read's fold (module doc). The certificate kept is the last
-    /// period's, the read's own.
+    /// the read's fold (module doc). Its certificate is the last period's,
+    /// the read's own; every period's is kept for its outsider check.
     fn read_balance(
         &mut self,
         e: &Expectation,
@@ -555,10 +560,11 @@ impl BookRun<'_> {
             .ok_or_else(|| format!("expected a period for `{coordinate}` observed none"))
             .and_then(|periods| self.explain(&key(e, t), account, &periods, unit, flags, &[]));
         match explained {
-            Ok((total, certificate, legs)) => Read {
+            Ok((total, certificates, legs)) => Read {
                 token,
                 value: Ok(total),
-                certificate,
+                certificate: certificates.last().cloned(),
+                certificates,
                 contributions: Some(legs),
                 exercised: None,
                 trace: None,
@@ -567,6 +573,7 @@ impl BookRun<'_> {
                 token,
                 value: Err(why),
                 certificate: None,
+                certificates: Vec::new(),
                 contributions: None,
                 exercised: None,
                 trace: None,

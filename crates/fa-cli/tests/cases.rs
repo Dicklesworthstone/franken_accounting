@@ -95,21 +95,49 @@ fn _selftest() {
     );
 }
 
-/// A8a (Appendix Z.7): the self-test's bridge T reads its certified B
-/// (900.00, A plus the case's delta), holds its contributing-entry witness
-/// (A11b), and still prints UNRUN, never PASS, until its outsider check
-/// (A12) lands.
+/// A12 (§12.1, Appendix Z.7): the first green T. The self-test's bridge T
+/// reads its certified B (900.00, A plus the case's delta), holds its
+/// contributing-entry witness (A11b), and passes its outsider check: its
+/// explain-balance certificate is bundled against a checkpoint, verified by
+/// the literal `fa-verify bundle` and `fa-verify report` argv, whose
+/// recomputed cells equal B, and replayed byte for byte. The T is claimed,
+/// and the case passes.
 #[test]
-fn selftest_t_row_reads_unrun_while_a11b_or_a12_is_absent() {
+fn selftest_bridge_t_passes_with_the_outsider_check() {
     let o = outcome(SELFTEST);
+    let text = o.text();
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "UNRUN _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 contrib=holds reason=outsider"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 contrib=holds outsider=report:verified"
         ),
-        "{}",
-        o.text()
+        "{text}"
     );
+    let route: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| s.reference == "_selftest-T-01/-" && s.verb != "explain")
+        .map(|s| {
+            format!(
+                "{} {} exit={} {}",
+                s.verb,
+                s.argv_redacted.first().map_or("-", String::as_str),
+                s.exit,
+                s.certificate_kind.as_deref().unwrap_or("-")
+            )
+        })
+        .collect();
+    assert_eq!(
+        route,
+        [
+            "bundle --book exit=0 Bundle",
+            "fa-verify bundle exit=0 FaVerifyBundle",
+            "fa-verify report exit=0 FaVerifyReport",
+            "replay --book exit=0 -",
+        ],
+        "{text}"
+    );
+    assert!(o.ok, "{text}");
 }
 
 /// A8a (§3.7 item 3): an N twin that keeps the target's 1,234.56 legs is
@@ -160,10 +188,11 @@ fn selftest_bridge_contributions_are_exactly_a_and_delta() {
 
 /// A11b: a T whose published value is a posted amount (A, read back as
 /// originally reported) is a read-back, never a T: the witness finds the
-/// contribution carrying B and the row prints as R.
+/// contribution carrying B and the row prints as R. The T is claimed (A12),
+/// so the re-typed row fails the case.
 #[test]
 fn _selftest_neg_read_back_t_never_passes_as_t() {
-    let o = match run_planted(
+    let o = run_planted(
         SELFTEST,
         &[PlantedEdit {
             file: "expectations.toml",
@@ -171,10 +200,8 @@ fn _selftest_neg_read_back_t_never_passes_as_t() {
             new: "read_selector = \"originally_reported\"\npublished = \"A-1\"",
         }],
         HARNESS_VERBS,
-    ) {
-        Ok(o) => o,
-        Err(o) => *o,
-    };
+    )
+    .expect_err("a claimed T re-typed R fails the case");
     let row = o.row("_selftest-T-01").unwrap_or_default();
     assert!(
         !row.starts_with("PASS _selftest-T-01 T ")
@@ -226,7 +253,7 @@ fn stock_t_is_explained_in_every_period_up_to_its_own() {
     assert_eq!(
         o.row("_selftest-T-01"),
         Some(
-            "UNRUN _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds reason=outsider"
+            "PASS _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q2,as-currently-stated value=900.00 contrib=holds outsider=report:verified"
         ),
         "{text}"
     );
@@ -234,10 +261,11 @@ fn stock_t_is_explained_in_every_period_up_to_its_own() {
 
 /// A11b: an extra posting on 1100 in the T's quarter (P-1 moved onto it,
 /// and B raised by its 75.00 so the read still equals B) is a contribution
-/// the predicate does not name: the row is re-typed R.
+/// the predicate does not name: the row is re-typed R, which fails the case
+/// that claims the T (A12).
 #[test]
 fn _selftest_neg_unnamed_contribution_never_passes_as_t() {
-    let o = match run_planted(
+    let o = run_planted(
         SELFTEST,
         &[
             PlantedEdit {
@@ -252,15 +280,39 @@ fn _selftest_neg_unnamed_contribution_never_passes_as_t() {
             },
         ],
         HARNESS_VERBS,
-    ) {
-        Ok(o) => o,
-        Err(o) => *o,
-    };
+    )
+    .expect_err("a claimed T re-typed R fails the case");
     let row = o.row("_selftest-T-01").unwrap_or_default();
     assert!(
         row.starts_with("PASS _selftest-T-01 R ")
             && row.contains(" value=975.00 ")
             && row.contains(" contrib=retyped(extra contribution P-1)"),
+        "{}",
+        o.text()
+    );
+}
+
+/// A12 (§12.1): a published B one minor unit above the book's 900.00 fails
+/// the T twice over: its certified read differs, and so does fa-verify's
+/// offline recomputation of the bundled certificate, which the row prints
+/// as `outsider=report:failed`.
+#[test]
+fn _selftest_neg_report_recomputation_differing_from_b_fails() {
+    let o = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "facts.toml",
+            old: "fact = \"B-1\"\nordinal = 1\nliteral = \"900\"\nrule = \"scale\"\nparam = 0\nvalue = \"90000\"",
+            new: "fact = \"B-1\"\nordinal = 1\nliteral = \"900.01\"\nrule = \"scale\"\nparam = 0\nvalue = \"90001\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a T whose recomputation differs from B fails the case");
+    let row = o.row("_selftest-T-01").unwrap_or_default();
+    assert!(
+        row.starts_with(
+            "FAIL _selftest-T-01 T native -/default kind=bridge read=balance,1100,2026Q1,as-currently-stated value=900.00 outsider=report:failed reason="
+        ) && row.contains("outsider report: expected the recomputed 900.01 observed 900.00"),
         "{}",
         o.text()
     );
@@ -298,9 +350,10 @@ fn as_originally_reported_on_a_zero_delta_line_is_flagged_selector_not_exercised
 }
 
 /// The self-test's claimed rows, which the outsider negatives keep PASS.
-const SELFTEST_CLAIMS: [&str; 4] = [
+const SELFTEST_CLAIMS: [&str; 5] = [
     "_selftest-P-02",
     "_selftest-P-03",
+    "_selftest-T-01",
     "_selftest-R-01",
     "_selftest-CASE-selftest-restatement",
 ];
@@ -2141,9 +2194,9 @@ fn reads() -> &'static RunOutcome {
 /// A7b (§5.3, §3.3 step 7): the per_account T reads its cell certified,
 /// equal to its published 1,250.00; its assert_balance step recorded B and
 /// both twins (B plus and minus one minor unit) were refused FA-REF-140; the
-/// T then waits on its contributing-entry witness (A11b) and outsider check
-/// (A12), never PASS. As originally reported reads the quarter's first
-/// issuance (1,000.00, before R-2), and as currently stated the head.
+/// T passes with its contributing-entry witness (A11b) and outsider check
+/// (A12). As originally reported reads the quarter's first issuance
+/// (1,000.00, before R-2), and as currently stated the head.
 #[test]
 fn per_account_t_and_its_read_back_are_read_certified() {
     let o = reads();
@@ -2151,7 +2204,7 @@ fn per_account_t_and_its_read_back_are_read_certified() {
     assert_eq!(
         o.row("reads-T-01"),
         Some(
-            "UNRUN reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds reason=outsider"
+            "PASS reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified"
         ),
         "{text}"
     );
@@ -2227,7 +2280,7 @@ fn statement_line_t_is_traced_and_agrees_with_its_explained_balances() {
     for id in ["reads-T-02", "reads-T-03"] {
         assert!(
             o.row(id)
-                .is_some_and(|r| r.ends_with(" contrib=holds reason=outsider")),
+                .is_some_and(|r| r.ends_with(" contrib=holds outsider=report:verified")),
             "{id}\n{text}"
         );
     }
@@ -2252,7 +2305,7 @@ fn statement_line_trace_disagreeing_with_its_explained_balances_retypes_r() {
             o.row(id),
             Some(
                 format!(
-                    "PASS {id} R native -/default kind=footing read={read},2026Q1 value=1250.00 contrib=disagree(trace,explained)"
+                    "PASS {id} R native -/default kind=footing read={read},2026Q1 value=1250.00 contrib=disagree(trace,explained) outsider=report:verified"
                 )
                 .as_str()
             ),
@@ -2379,8 +2432,8 @@ fn statement_line_t_holds_on_the_accounts_its_definition_maps() {
     let o = reads();
     let text = o.text();
     for row in [
-        "UNRUN reads-T-02 T native -/default kind=footing read=balance-sheet,assets,2026Q1 value=1250.00 contrib=holds reason=outsider",
-        "UNRUN reads-T-03 T native -/default kind=footing read=income-statement,revenue,2026Q1 value=1250.00 contrib=holds reason=outsider",
+        "PASS reads-T-02 T native -/default kind=footing read=balance-sheet,assets,2026Q1 value=1250.00 contrib=holds outsider=report:verified",
+        "PASS reads-T-03 T native -/default kind=footing read=income-statement,revenue,2026Q1 value=1250.00 contrib=holds outsider=report:verified",
     ] {
         assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
     }

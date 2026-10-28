@@ -26,11 +26,18 @@
 //! `OUTSIDER <variant> <check>=<verdict>...` line.
 
 use std::cell::Cell;
+use std::time::Instant;
 
+use fa_oracles::cases::amount::format_amount;
 use fa_oracles::cases::book::{StepDef, StepKind};
-use fa_oracles::json::Json;
+use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
+use fa_oracles::cases::log::StepRecord;
+use fa_oracles::cases::outsider_kind::{Recomputed, outsider_kind};
+use fa_oracles::cases::verify_report::recomputed;
+use fa_oracles::json::{self, Json};
 
 use super::lifecycle::as_principal;
+use super::reads::{field, key, scale_of};
 use super::run::{BookRun, Call, reproduce, s};
 
 thread_local! {
@@ -134,6 +141,37 @@ fn failed_targets(call: &Call) -> Vec<String> {
 }
 
 /// `bytes` decoded from hex, if they are hex.
+/// A registered unit's id.
+fn unit_id_of(unit: &str) -> Option<u32> {
+    fa_registry::units_embedded()
+        .ok()?
+        .into_iter()
+        .find(|r| r.code == unit)
+        .map(|r| r.id)
+}
+
+/// The first check fa-verify did not pass, `<check>: <reason>`.
+fn failed_check(stdout: &str) -> String {
+    json::parse(stdout.trim())
+        .ok()
+        .and_then(|report| {
+            report
+                .get("checks")
+                .and_then(Json::as_array)
+                .unwrap_or_default()
+                .iter()
+                .find(|c| c.get("result").and_then(Json::as_str) != Some("pass"))
+                .map(|c| {
+                    format!(
+                        "{}: {}",
+                        c.get("check").and_then(Json::as_str).unwrap_or("-"),
+                        c.get("reason").and_then(Json::as_str).unwrap_or("-")
+                    )
+                })
+        })
+        .unwrap_or_else(|| "no failing check reported".to_string())
+}
+
 fn unhex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
@@ -195,6 +233,285 @@ impl BookRun<'_> {
         if let Some(o) = &self.outsider {
             self.lines.push(o.line(&self.book.stem));
         }
+    }
+
+    /// Each T read's outsider check (A12, §12.1), by its read verb's route
+    /// ([`outsider_kind`]). On the report route a checkpoint over the head
+    /// is created and exported once, then every certificate the read
+    /// retained is bundled (`fa bundle produce --certificate`), verified
+    /// with the literal `fa-verify bundle` and `fa-verify report` argv, and
+    /// replayed (`fa replay`), whose output must hash to the digest
+    /// fa-verify recomputed. The recomputations, summed, must equal B. A read
+    /// with no value or no certificate, or a verb outside the table, has no
+    /// check: its T stays UNRUN.
+    pub(crate) fn outsider_reads(&mut self) {
+        let case = self.case;
+        let Some(set) = case.expectations.as_ref() else {
+            return;
+        };
+        let variant = self.book.stem.as_str();
+        let mut wanted: Vec<(&Expectation, Option<&Target>)> = Vec::new();
+        for e in set.expectations.iter().filter(|e| {
+            e.kind == ExpectationType::T && e.fields.str("book_variant") == Some(variant)
+        }) {
+            let targets: Vec<&Target> = set.targets_of(&e.id).collect();
+            if targets.is_empty() {
+                wanted.push((e, None));
+            } else {
+                wanted.extend(targets.into_iter().map(|t| (e, Some(t))));
+            }
+        }
+        let mut anchor: Option<Result<String, String>> = None;
+        for (e, t) in wanted {
+            let reference = key(e, t);
+            let Some((kind, what)) = outsider_kind(field(e, t, "read_verb").unwrap_or("-")) else {
+                continue;
+            };
+            let certificates = match self.reads.get(&reference) {
+                Some(read) if read.value.is_ok() && !read.certificates.is_empty() => {
+                    read.certificates.clone()
+                }
+                _ => continue,
+            };
+            let checkpoint = anchor.get_or_insert_with(|| self.anchor()).clone();
+            let verdict = checkpoint
+                .and_then(|c| self.report_route(&reference, e, t, what, &certificates, &c));
+            self.read_checks.insert(reference, (kind, verdict));
+        }
+    }
+
+    /// A checkpoint over the head for the T reads' bundles, exported with
+    /// `fa proof signed-checkpoint` for fa-verify's report to check them
+    /// against: the exported file's path.
+    fn anchor(&mut self) -> Result<String, String> {
+        let head = self.head;
+        let created = self.call(
+            head,
+            "outsider-reads",
+            "checkpoint",
+            vec![
+                s("checkpoint"),
+                s("create"),
+                s("--grant"),
+                s("witness"),
+                s("--json"),
+            ],
+        );
+        if created
+            .str_field("checkpoint_created", "checkpoint_oid")
+            .is_none()
+        {
+            self.lines.push(reproduce(&created));
+            return Err(format!(
+                "expected a checkpoint over the reads observed exit={} {}",
+                created.exit,
+                created.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string());
+        }
+        let file = self.work.join("outsider-reads.checkpoint");
+        let exported = self.call(
+            head,
+            "outsider-reads",
+            "proof",
+            vec![
+                s("proof"),
+                s("signed-checkpoint"),
+                s("--out"),
+                file.display().to_string(),
+                s("--json"),
+            ],
+        );
+        if exported.exit != 0 {
+            self.lines.push(reproduce(&exported));
+            return Err(format!(
+                "expected the signed checkpoint exported observed exit={} {}",
+                exported.exit,
+                exported.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string());
+        }
+        Ok(file.display().to_string())
+    }
+
+    /// One T read's report route ([`Self::outsider_reads`]).
+    fn report_route(
+        &mut self,
+        reference: &str,
+        e: &Expectation,
+        t: Option<&Target>,
+        what: Recomputed,
+        certificates: &[String],
+        checkpoint: &str,
+    ) -> Result<(), String> {
+        let (b, unit) = field(e, t, "published")
+            .and_then(|f| self.value_of(f))
+            .ok_or("expected a published value observed none")?;
+        let unit_id =
+            unit_id_of(&unit).ok_or_else(|| format!("unit `{unit}` is not registered"))?;
+        let target = field(e, t, "read_target").unwrap_or("-");
+        let head = self.head;
+        let mut sum = 0_i128;
+        for oid in certificates {
+            let stem = self.work.join(format!("read-{}", self.steps.len()));
+            let (fab, receipt, replayed) = (
+                stem.with_extension("fab").display().to_string(),
+                stem.with_extension("receipt").display().to_string(),
+                stem.with_extension("replay"),
+            );
+            let produced = self.call(
+                head,
+                reference,
+                "bundle",
+                vec![
+                    s("bundle"),
+                    s("produce"),
+                    s("--certificate"),
+                    format!("C:{oid}"),
+                    s("--out"),
+                    fab.clone(),
+                    s("--receipt-out"),
+                    receipt.clone(),
+                    s("--json"),
+                ],
+            );
+            self.certificate_kind("Bundle");
+            let Some(public_key) = produced.str_field("bundle_produced", "checkpoint_public_key")
+            else {
+                self.lines.push(reproduce(&produced));
+                return Err(format!(
+                    "expected a bundle of C:{oid} with its checkpoint key observed exit={} {}",
+                    produced.exit,
+                    produced.refusal_id().unwrap_or_default()
+                )
+                .trim_end()
+                .to_string());
+            };
+            let bundle = self.fa_verify(
+                reference,
+                "FaVerifyBundle",
+                vec![
+                    s("bundle"),
+                    fab.clone(),
+                    s("--key"),
+                    public_key.clone(),
+                    s("--receipt"),
+                    receipt.clone(),
+                    s("--json"),
+                ],
+            );
+            if bundle.exit != 0 {
+                return Err(format!(
+                    "expected fa-verify bundle of C:{oid} exit=0 observed exit={} {}",
+                    bundle.exit,
+                    failed_check(&bundle.stdout)
+                ));
+            }
+            let report = self.fa_verify(
+                reference,
+                "FaVerifyReport",
+                vec![
+                    s("report"),
+                    fab,
+                    s("--key"),
+                    public_key,
+                    s("--checkpoint"),
+                    checkpoint.to_string(),
+                    s("--receipt"),
+                    receipt,
+                    s("--json"),
+                ],
+            );
+            if report.exit != 0 {
+                return Err(format!(
+                    "expected fa-verify report of C:{oid} exit=0 observed exit={} {}",
+                    report.exit,
+                    failed_check(&report.stdout)
+                ));
+            }
+            let recomputation = recomputed(&report.stdout, what, target, unit_id)?;
+            let replay = self.call(
+                head,
+                reference,
+                "replay",
+                vec![
+                    s("replay"),
+                    format!("C:{oid}"),
+                    s("--output"),
+                    replayed.display().to_string(),
+                    s("--json"),
+                ],
+            );
+            let output = match std::fs::read(&replayed) {
+                Ok(output) if replay.exit == 0 => output,
+                _ => {
+                    self.lines.push(reproduce(&replay));
+                    return Err(format!(
+                        "expected a replayed output of C:{oid} observed exit={} {}",
+                        replay.exit,
+                        replay.refusal_id().unwrap_or_default()
+                    )
+                    .trim_end()
+                    .to_string());
+                }
+            };
+            let again = fa_verify::blake3::hex(&fa_verify::blake3::hash_parts(
+                b"fa:report-output:v1",
+                &[&output],
+            ));
+            if again != recomputation.output_digest {
+                return Err(format!(
+                    "expected the replay of C:{oid} to hash to the recomputed {} observed {again}",
+                    recomputation.output_digest
+                ));
+            }
+            sum = sum
+                .checked_add(recomputation.value)
+                .ok_or("the recomputations overflow")?;
+        }
+        if sum == b {
+            Ok(())
+        } else {
+            let scale = scale_of(&unit).unwrap_or(0);
+            Err(format!(
+                "expected the recomputed {} observed {}",
+                format_amount(b, scale),
+                format_amount(sum, scale)
+            ))
+        }
+    }
+
+    /// A literal `fa-verify` argv, run in process (`fa_verify::cli::run`)
+    /// over the runner's files and logged as a step, like an `fa` call.
+    fn fa_verify(
+        &mut self,
+        reference: &str,
+        kind: &str,
+        args: Vec<String>,
+    ) -> fa_verify::cli::Output {
+        let started = Instant::now();
+        let out = fa_verify::cli::run(&args, &|path: &str| std::fs::read(path));
+        let (argv_redacted, binds) = self.redact(&args);
+        self.steps.push(StepRecord {
+            case: self.case.header.id.clone(),
+            book_variant: self.book.stem.clone(),
+            branch_class: None,
+            filler_variant: None,
+            book_id: self.book_id.clone(),
+            step: self.head,
+            reference: reference.to_string(),
+            verb: "fa-verify".to_string(),
+            argv_redacted,
+            exit: i128::from(out.exit),
+            refusal_id: None,
+            finding_procedure: None,
+            certificate_kind: Some(kind.to_string()),
+            elapsed_ms: i128::try_from(started.elapsed().as_millis()).unwrap_or(i128::MAX),
+            binds,
+        });
+        out
     }
 
     /// The certified balance sheet of the book's first period, bundled and

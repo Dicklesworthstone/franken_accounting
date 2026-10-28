@@ -1009,8 +1009,8 @@ fn read_against(
 /// `per_account` T is kernel-attested, so its `assert_balance` step must
 /// have recorded B as a RegisterEquals attestation that holds, and its twins
 /// (B plus and minus one minor unit) been refused `FA-REF-140`. A T that
-/// holds still waits on its contributing-entry
-/// witness (A11b) and its outsider check (A12): never PASS before both.
+/// holds passes only with its contributing-entry witness (A11b) and the
+/// outsider check of its read kind (A12): never PASS before both.
 fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLine) -> Eval {
     let kind = e.fields.str("kind").unwrap_or("-");
     row.projection.push(("kind".into(), kind.to_string()));
@@ -1103,7 +1103,29 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
     }
     let mut witnesses = vec![("kind".to_string(), kind.to_string())];
     witnesses.extend(read_certificate(run, e, t));
+    // A12: the outsider check of the read's kind (§12.1), printed last as
+    // `outsider=<kind>:verified|failed`. A failed check fails the row
+    // whatever else holds; a read with no check leaves a holding T UNRUN.
+    let outsider = run.read_checks.get(&super::reads::key(e, t));
+    if let Some((kind, Err(why))) = outsider {
+        fails.push(format!("outsider {}: {why}", kind.name()));
+    }
+    let outsider_token = outsider.map(|(kind, verdict)| {
+        (
+            "outsider".to_string(),
+            format!(
+                "{}:{}",
+                kind.name(),
+                if verdict.is_ok() {
+                    "verified"
+                } else {
+                    "failed"
+                }
+            ),
+        )
+    });
     if !fails.is_empty() {
+        row.projection.extend(outsider_token);
         row.verdict = RowVerdict::Fail;
         row.reason = Some(fails.join("; "));
         return (row, witnesses, None);
@@ -1114,10 +1136,12 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         return (row, witnesses, None);
     }
     // A11b: the contributing-entry witness decides whether the row is a T
-    // at all. Holding, it waits on the outsider check (A12); failing, the
-    // row is a read-back of its published value: an R, which it equals. A
-    // statement line's trace that disagrees with its explained balances
-    // re-types it too, the difference a witness and the trace reproducible.
+    // at all. Holding, it passes once its outsider check verified (A12);
+    // failing, the row is a read-back of its published value: an R, which
+    // it equals. A statement line's trace that disagrees with its explained
+    // balances re-types it too, the difference a witness and the trace
+    // reproducible.
+    let verified = outsider.is_some_and(|(_, verdict)| verdict.is_ok());
     let mut reproduce = None;
     match contrib_verdict(run, e, t) {
         Ok((verdict, named)) => {
@@ -1131,21 +1155,31 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
                     .and_then(|r| r.trace.as_ref()?.as_ref().ok())
                     .map(|trace| trace.reproduce.clone());
             }
-            if verdict == ContribVerdict::Holds {
-                row.verdict = RowVerdict::Unrun;
-                row.reason = Some("outsider".into());
-            } else {
+            if verdict != ContribVerdict::Holds {
                 row.kind = "R".into();
                 row.verdict = RowVerdict::Pass;
+            } else if verified {
+                row.verdict = RowVerdict::Pass;
+            } else {
+                row.verdict = RowVerdict::Unrun;
+                row.reason = Some("outsider".into());
             }
         }
         Err(why) => {
             row.projection
                 .push(("contrib".into(), format!("unrun({why})")));
             row.verdict = RowVerdict::Unrun;
-            row.reason = Some("contributing_entry,outsider".into());
+            row.reason = Some(
+                if verified {
+                    "contributing_entry"
+                } else {
+                    "contributing_entry,outsider"
+                }
+                .into(),
+            );
         }
     }
+    row.projection.extend(outsider_token);
     (row, witnesses, reproduce)
 }
 

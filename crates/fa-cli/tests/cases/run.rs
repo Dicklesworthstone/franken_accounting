@@ -24,6 +24,7 @@ use fa_oracles::cases::filler::{self, FillerVariant, Posting};
 use fa_oracles::cases::harness_verbs::{HARNESS_VERBS, missing};
 use fa_oracles::cases::log::{StepRecord, VerdictRecord};
 use fa_oracles::cases::observe::Observation;
+use fa_oracles::cases::outsider_kind::OutsiderKind;
 use fa_oracles::cases::selfrow;
 use fa_oracles::cases::twin::{TwinKind, TwinSpec, twin_of};
 use fa_oracles::cases::verdict::{RowLine, RowVerdict};
@@ -326,6 +327,9 @@ pub struct BookRun<'c> {
     pub attestations: BTreeMap<String, String>,
     /// The outsider stage's checks, for a book with a checkpoint (A8a).
     pub outsider: Option<super::outsider::Outsider>,
+    /// Each T read's outsider check by `<expectation>/<target>`: its route
+    /// and whether it verified (A12).
+    pub read_checks: BTreeMap<String, (OutsiderKind, Result<(), String>)>,
 }
 
 impl<'c> BookRun<'c> {
@@ -374,6 +378,7 @@ impl<'c> BookRun<'c> {
             planned_entries: BTreeMap::new(),
             attestations: BTreeMap::new(),
             outsider: None,
+            read_checks: BTreeMap::new(),
         }
     }
 
@@ -402,7 +407,7 @@ impl<'c> BookRun<'c> {
 
     /// `argv` with every run-variant token replaced by its placeholder, and
     /// the binds of the placeholders it carries.
-    fn redact(&self, argv: &[String]) -> (Vec<String>, Vec<(String, String)>) {
+    pub(crate) fn redact(&self, argv: &[String]) -> (Vec<String>, Vec<(String, String)>) {
         let book = self.dir.display().to_string();
         let work = self.work.display().to_string();
         let mut binds: Vec<(String, String)> = Vec::new();
@@ -1804,6 +1809,7 @@ impl<'c> BookRun<'c> {
         // each case is shown for its generated row (A7b).
         self.reads();
         self.case_reads();
+        self.outsider_reads();
         // A book with a checkpoint then proves its bundle, replay and
         // integrity to an outsider (A8a).
         self.outsider();
@@ -2038,16 +2044,26 @@ pub fn run_case_with(
     let (budget_lines, within_budget) = budget.finish(files.id);
     out.lines.extend(budget_lines);
     // The case passes when no row FAILs, it kept its budget, and every
-    // claimed expectation's verdict, the worst of its rows, is PASS.
+    // claimed expectation's verdict, the worst of its rows, is PASS. A
+    // claimed row whose type is not its expectation's effective type (a T
+    // the contributing-entry witness re-typed R) is not the row claimed
+    // (A7a).
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
+    let typed = |id: &str, target: Option<&str>| {
+        let e = case.expectations.as_ref()?.get(id)?;
+        Some(case.effective_type(id, target).unwrap_or(e.kind).as_str())
+    };
     out.rows_ok = !sweep_failed
         && !outsider_failed
         && verdicts.values().all(|v| *v != RowVerdict::Fail)
-        && case
-            .header
-            .claims
-            .iter()
-            .all(|c| verdicts.get(c) == Some(&RowVerdict::Pass));
+        && case.header.claims.iter().all(|c| {
+            verdicts.get(c) == Some(&RowVerdict::Pass)
+                && out
+                    .verdicts
+                    .iter()
+                    .filter(|v| &v.expectation == c)
+                    .all(|v| typed(c, v.target.as_deref()).is_none_or(|kind| v.kind == kind))
+        });
     out.ok = out.rows_ok && within_budget;
     finish(out)
 }
