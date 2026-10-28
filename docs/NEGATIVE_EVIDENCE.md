@@ -1042,3 +1042,53 @@ One-run remote-only permission is pending; no reserve setting, gate,
 timeout, worker configuration or source policy has been weakened. The
 unsupported original-issuance equity selector and full native qualification
 remain open on the original task.
+
+### 2026-10-28 — source-verified PPA target run: 55 passed, 3 failed
+
+After the owner's reply to the pending one-run remote-only request, the
+failed Mac reserve check remained recorded as exit 1; no reserve setting
+or gate was changed. The exact approved command ran through RCH's
+source-content mode on `vmi1152480`, build `30084504618008603`, wrapper
+`rchw-3b201bdb-4644-40c5-bc51-50f245f90aea`. This transfer reached real
+Cargo in place of the previously failing clean-baseline path. The actual
+source tag was `53c6e9539a723f2d2da12466cf2fabb852d1f348-dirty`, including
+concurrent case, cash-flow and read-authority work. The emitted receipt
+root is `4400648619303d4f51bacd28d28e414dd105e423a193eb1f77367d803e4c03d1`.
+Before correcting any fixture, all 1,471 receipt files matched local
+SHA-256 hashes, byte lengths and executable bits (34,217,343 bytes).
+RCH returned completed/remote/101 with terminal acknowledgement true.
+
+The complete `fa-cli` proofs target ran 41 tests: 40 passed, 1 failed.
+The complete statements target ran 17: 15 passed, 2 failed. Both report
+zero ignored and zero filtered tests. The current/historical selector
+conflict regression passed all six combinations. The two PPA tests
+compiled but stopped at the close prerequisite: `period close` requires
+an explicit registered `--reason`; `--yes` supplies no reason. My initial
+status diagnosis called the flag unsupported; the retained refusal is
+specifically the missing reason. The fixtures now add `--reason Scheduled`
+while retaining `--yes`, the closed-period prerequisite and every expected
+successful PPA assertion. No production period rule changed. Financial
+assertions after that close were not reached in this run.
+
+The other failure was
+`retained_statement_certificates_bridge_and_trace_without_reselecting_head`:
+its audit assertion expected `statement diff`, while the registry declares
+`statement` with an empty subcommands list. The existing audit constructor
+therefore records command `statement` and binds the exact operation and
+arguments in `request_digest`. The test now requires that canonical family
+and the exact digest of `statement diff`, both retained certificate IDs and
+`--json` in canonical flag order; principal, access count, observed/recorded
+frontiers and no-write refusals remain checked. The source-predicate
+win/lose split is explicit: a correct family and full request digest is
+newly admitted; a wrong/missing digest is refused; an unregistered
+`statement diff` command string that the old assertion alone admitted is
+now refused. This comparison is source analysis, not a rerun or a claim
+that the corrected test passes. No registry, audit producer or gate was
+changed to match the observation.
+
+The fixture corrections pass formatting and a two-file static-only UBS
+scan (exit 0, zero critical, 1,010 warnings, 139 informational findings).
+Their native rerun remains pending. The original one-run exception has
+been used; an explicit extension for continued remote-only qualification
+has been requested. The 55 passing tests are scoped evidence, not a
+workspace PASS, Tier 0, Tier 1, original PPA closure or release result.

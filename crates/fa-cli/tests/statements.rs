@@ -222,7 +222,14 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
         evidence,
     ]);
     invoke(&["period", "soft-close", "FY2025-P12"]);
-    invoke(&["period", "close", "FY2025-P12", "--yes"]);
+    invoke(&[
+        "period",
+        "close",
+        "FY2025-P12",
+        "--reason",
+        "Scheduled",
+        "--yes",
+    ]);
 
     let equity_args = [
         "statement",
@@ -1265,7 +1272,25 @@ fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
         .get("events")
         .and_then(Json::as_arr)
         .unwrap()[0];
-    assert_eq!(text(access, "command"), "statement diff");
+    // The registry has no statement subcommands: the command is its family,
+    // while the digest binds the exact diff and both retained certificates.
+    assert_eq!(text(access, "command"), "statement");
+    let canonical_request = [
+        "statement",
+        "diff",
+        "--after-certificate",
+        &a,
+        "--before-certificate",
+        &b,
+        "--json",
+    ]
+    .map(str::to_string);
+    let expected_digest = fa::access_log::request_digest(&canonical_request);
+    let expected_hex = expected_digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(text(access, "request_digest"), expected_hex);
     assert_eq!(text(access, "principal_name"), "report-reader");
     assert_eq!(access.get("observed_at"), Some(&Json::Int(at_seq)));
     assert_eq!(access.get("recorded_at"), Some(&Json::Int(at_seq + 1)));

@@ -335,7 +335,14 @@ fn equity_roll_forward_prior_period_line_verifies_offline() {
     );
     invoke(&["post", "--intent", &opening, "--evidence", evidence]);
     invoke(&["period", "soft-close", "FY2025-P12"]);
-    invoke(&["period", "close", "FY2025-P12", "--yes"]);
+    invoke(&[
+        "period",
+        "close",
+        "FY2025-P12",
+        "--reason",
+        "Scheduled",
+        "--yes",
+    ]);
     invoke(&[
         "case",
         "open",
