@@ -1415,6 +1415,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "due_date_aging"
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
+                                } else if report.statement_diff.is_some() {
+                                    "statement_diff"
                                 } else if report.functional_trial_balance.is_some() {
                                     if report.activity {
                                         "functional_activity"
@@ -1460,6 +1462,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     aging.items.len() + aging.unscheduled.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
+                                } else if let Some(comparison) = &report.statement_diff {
+                                    comparison.lines.len()
                                 } else if let Some(functional) = &report.functional_trial_balance {
                                     functional.cells.len() + functional.pending.len()
                                 } else if let Some(equity) = &report.equity_roll_forward {
@@ -1541,6 +1545,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
+                    if let Some(comparison) = &report.statement_diff {
+                        checks.extend(statement_diff_checks(
+                            comparison,
+                            report.unit_universe_source,
+                        ));
                     }
                     if let Some(functional) = &report.functional_statement {
                         checks.extend(functional_statement_checks(functional));
@@ -3239,6 +3249,74 @@ fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
                 ],
             ));
         }
+    }
+    checks
+}
+
+fn statement_diff_checks(
+    comparison: &crate::report::VerifiedStatementDiff,
+    unit_universe_source: &str,
+) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "statement_diff_parameters",
+        "recomputation",
+        vec![
+            ("before_known_at", n(comparison.before_known_at)),
+            ("after_known_at", n(comparison.after_known_at)),
+            ("before_digest", h(&comparison.before_digest)),
+            ("after_digest", h(&comparison.after_digest)),
+            (
+                "mapping_changes",
+                n(comparison.mapping_changes.len() as u64),
+            ),
+            ("case_approval", s("not_judged")),
+            ("statement_issuance", s("not_judged")),
+            ("economic_truth", s("not_judged")),
+        ],
+    )];
+    for (side, statement) in [("before", &comparison.before), ("after", &comparison.after)] {
+        for mut check in statement_checks(statement, unit_universe_source) {
+            check.detail.insert(0, ("side", s(side)));
+            checks.push(check);
+        }
+    }
+    for line in &comparison.lines {
+        let amounts = |values: &[i128]| {
+            Json::List(values.iter().map(|amount| s(amount.to_string())).collect())
+        };
+        checks.push(Check::pass(
+            "statement_diff_line",
+            "recomputation",
+            vec![
+                ("code", s(&line.code)),
+                ("label", s(&line.label)),
+                ("unit", n(u64::from(line.unit))),
+                ("before", amounts(&line.before)),
+                ("after", amounts(&line.after)),
+                ("delta", amounts(&line.delta)),
+            ],
+        ));
+    }
+    for change in &comparison.mapping_changes {
+        let mapping = |value: &crate::report::StatementMapping| {
+            Json::Obj(vec![
+                ("account", s(format!("{:032x}", value.account))),
+                ("code", s(&value.code)),
+                ("name", s(&value.name)),
+                ("account_type", n(u64::from(value.account_type))),
+                ("is_leaf", Json::Bool(value.is_leaf)),
+                ("line_code", s(&value.line_code)),
+            ])
+        };
+        checks.push(Check::pass(
+            "statement_diff_mapping",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", change.account))),
+                ("before", change.before.as_ref().map_or(Json::Null, mapping)),
+                ("after", change.after.as_ref().map_or(Json::Null, mapping)),
+            ],
+        ));
     }
     checks
 }

@@ -123,6 +123,7 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
 #[derive(Clone, Copy)]
 enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
+    StatementDiff(&'a crate::StatementDiffCertificate),
     Aging(&'a crate::AgingCertificate),
     DueDateAging(&'a crate::DueDateAgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
@@ -152,6 +153,7 @@ impl<'a> ReportBundleCertificate<'a> {
     fn source(self) -> &'a crate::ReportCertificate {
         match self {
             Self::Native(certificate) => certificate,
+            Self::StatementDiff(certificate) => certificate.sources().1,
             Self::Aging(certificate) => certificate.source(),
             Self::DueDateAging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
@@ -3954,6 +3956,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export both historical native statements and their complete bridge over
+    /// one signed journal prefix. The original four-registry closure must be
+    /// identical on both sides. Replay checks the two recorded frontiers before
+    /// the outer certificate is packaged; no issuance or case approval follows
+    /// from the comparison alone.
+    pub async fn produce_statement_diff_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::StatementDiffCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::StatementDiff(certificate),
+        )
+        .await
+    }
+
     /// Export contractual-maturity aging over the complete signed prefix.
     /// The outer certificate binds the basis, cutoff, installment relief and
     /// unscheduled items; extension 33 is retained inside its original entries.
@@ -4229,13 +4254,38 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify fa tb --functional or fa statement --functional at a fixed recorded sequence before exporting",
             )));
         }
+        let history_start = if let ReportBundleCertificate::StatementDiff(comparison) = report {
+            let (before, after) = comparison.sources();
+            if comparison.uses_functional_valuations()
+                || before.registry_digest != after.registry_digest
+            {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable statement comparisons require two native statements with the same original registry closure",
+                    "plan §8.3 / §12.5 / §13.3 (both sides must be independently recomputed from their authenticated inputs)",
+                    "export a native statement diff certified against one historical registry epoch; replay functional or cross-epoch comparisons in the retained book",
+                )));
+            }
+            before.known_at
+        } else {
+            certificate.known_at
+        };
         if let Err(refusal) = self
-            .prepare_report_history(cx, principal, capability, Some(certificate.known_at))
+            .prepare_report_history(cx, principal, capability, Some(history_start))
             .await?
         {
             return Ok(Err(refusal));
         }
         let replayed = match report {
+            ReportBundleCertificate::StatementDiff(comparison) => {
+                if let Err(refusal) =
+                    self.replay_statement_diff(cx, principal, capability, comparison)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
             ReportBundleCertificate::Native(certificate) => {
                 match self.replay_report(cx, certificate)? {
                     Ok(report) => Some(report),
@@ -4400,7 +4450,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let requires_registry_closure = matches!(
             report,
-            ReportBundleCertificate::RollForward(_)
+            ReportBundleCertificate::StatementDiff(_)
+                | ReportBundleCertificate::RollForward(_)
                 | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
@@ -4605,6 +4656,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let bytes = match report {
+            ReportBundleCertificate::StatementDiff(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
             ReportBundleCertificate::Native(certificate) => certificate
                 .canonical_bytes()
                 .map_err(|error| KernelError::Model(error.into()))?,

@@ -40,7 +40,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, native statement-diff, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -116,6 +116,9 @@ pub fn assemble(
 /// Aging-to-control reconciliations retain both original sources and their
 /// shared four-document closure. No v1 fallback serves either v3 selector or
 /// composed schedule.
+/// Native statement comparisons retain both original v4 sources and the exact
+/// outer bridge under their shared four-document closure. Each source is
+/// reconstructed at its own recorded frontier from the complete prefix.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -149,6 +152,7 @@ pub fn assemble_with_registries(
         || policy_cash_flow_certificate(certificate)
         || split_cash_flow_certificate(certificate)
         || indirect_cash_flow_certificate(certificate)
+        || statement_diff_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -479,6 +483,26 @@ fn indirect_cash_flow_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
+/// A comparison is its complete outer certificate and TWO native statement
+/// sources. Never route a functional comparison or a different nested report
+/// through the native four-registry profile. Full semantic verification is
+/// performed by facade replay and again by the independent report interpreter.
+fn statement_diff_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "statement diff format")? != b"fa:statement-diff-certificate:v1" {
+            return Ok(false);
+        }
+        reader.u128("statement diff producer")?;
+        reader.fixed::<32>("statement diff capability")?;
+        let before = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "statement diff before")?;
+        let after = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "statement diff after")?;
+        Ok(certificate_format(before, b"fa:report-certificate:v4")
+            && certificate_format(after, b"fa:report-certificate:v4"))
+    };
+    header().unwrap_or(false)
+}
+
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -554,11 +578,12 @@ fn assemble_inner(
                 || cash_flow_certificate(certificate)
                 || policy_cash_flow_certificate(certificate)
                 || split_cash_flow_certificate(certificate)
-                || indirect_cash_flow_certificate(certificate))
+                || indirect_cash_flow_certificate(certificate)
+                || statement_diff_certificate(certificate))
         || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -728,6 +753,42 @@ mod format_tests {
             &control
         )));
         assert!(!reconciliation_certificate(&outer[..outer.len() - 1]));
+    }
+
+    #[test]
+    fn statement_diff_routing_requires_two_exact_native_statement_sources() {
+        let native = native_header(4, "fa:statement:v1", 0);
+        let wrap = |format: &[u8], before: &[u8], after: &[u8]| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(format)
+                .u128(7)
+                .fixed(&[8; 32])
+                .bytes(before)
+                .bytes(after);
+            writer.finish().unwrap()
+        };
+        let format = b"fa:statement-diff-certificate:v1";
+        let valid = wrap(format, &native, &native);
+        assert!(statement_diff_certificate(&valid));
+        for wrong in [
+            native_header(1, "fa:trial-balance:v1", 0),
+            native_header(5, "fa:functional-statement:v1", 0),
+            native_header(40, "fa:statement:v1", 0),
+            Vec::new(),
+        ] {
+            assert!(!statement_diff_certificate(&wrap(format, &wrong, &native)));
+            assert!(!statement_diff_certificate(&wrap(format, &native, &wrong)));
+        }
+        assert!(!statement_diff_certificate(&wrap(
+            b"fa:functional-statement-diff-certificate:v1",
+            &native,
+            &native,
+        )));
+        for end in 0..valid.len() {
+            assert!(!statement_diff_certificate(&valid[..end]));
+        }
+        assert!(!certificate_format(&valid, b"fa:report-certificate:v4"));
     }
 
     #[test]
