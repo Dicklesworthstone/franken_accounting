@@ -29,6 +29,10 @@ use fa_model::{
 };
 use fgdb_types::{CommitSeq, VId};
 
+mod replacement_review;
+
+pub use replacement_review::{MAX_REPLACEMENT_REVIEW_BYTES, ReplacementReview};
+
 const INTENT_MAGIC: &[u8; 10] = b"FA-INTENT\0";
 const PLAN_MAGIC: &[u8; 13] = b"FA-POST-PLAN\0";
 const CERTIFICATE_MAGIC: &[u8; 13] = b"FA-POST-CERT\0";

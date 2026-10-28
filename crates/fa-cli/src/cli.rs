@@ -33,11 +33,12 @@ use fa::{
     BalanceAllocationRequest, BalanceAllocationReview, CashFlowActivity, CashFlowAssignment,
     CashFlowDefinition, CashFlowSection, IndirectCashFlowAdjustment, IndirectCashFlowDefinition,
     IndirectCashFlowRequest, MAX_ALLOCATION_REVIEW_BYTES, MAX_BALANCE_ALLOCATION_REVIEW_BYTES,
-    MAX_PLAN_BYTES, MAX_SETTLEMENT_GROUP_REVIEW_BYTES, MAX_SETTLEMENT_REVIEW_BYTES, PostIntent,
-    PostPlan, ReplacementPlan, ReportOutput, ReportSelection, RollForwardRequest,
-    SettlementGroupRequest, SettlementGroupReview, SettlementLegSelection, SettlementPostRequest,
-    SettlementReview, Statement, StatementDefinition, StatementDiffRequest, StatementEntryEvent,
-    StatementSelection, StatementTraceRequest, SummaryRequest, SummaryScope, TrialBalanceSelection,
+    MAX_PLAN_BYTES, MAX_REPLACEMENT_REVIEW_BYTES, MAX_SETTLEMENT_GROUP_REVIEW_BYTES,
+    MAX_SETTLEMENT_REVIEW_BYTES, PostIntent, PostPlan, ReplacementPlan, ReplacementReview,
+    ReportOutput, ReportSelection, RollForwardRequest, SettlementGroupRequest,
+    SettlementGroupReview, SettlementLegSelection, SettlementPostRequest, SettlementReview,
+    Statement, StatementDefinition, StatementDiffRequest, StatementEntryEvent, StatementSelection,
+    StatementTraceRequest, SummaryRequest, SummaryScope, TrialBalanceSelection,
 };
 use fa_journal::BookContext;
 use fa_journal::{
@@ -62,6 +63,7 @@ use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 mod batch_plan;
+mod correction_review;
 mod outcome_recovery;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -2353,6 +2355,16 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             || args.flag("--review-out").is_some())
 }
 
+/// A dedicated correction draft appends only its retained intent-log control.
+/// Both monetary members remain unpublished until independent promotion. The
+/// handler validates all mode conflicts before observing inputs or appending.
+fn correction_draft_only(verb: &str, args: &Args) -> bool {
+    args.flag("--draft").is_some()
+        && (verb == "replace"
+            || (verb == "reverse"
+                && (args.flag("--replace-with").is_some() || args.flag("--review").is_some())))
+}
+
 /// `fa recover <target> --dry-run` derives and releases its prepared changes
 /// without publishing; only publication needs confirmation.
 fn recovery_preview_only(verb: &str, args: &Args) -> bool {
@@ -2462,6 +2474,7 @@ pub fn bound_command_admissible(
         .and_then(|_| args.positional.get(1).map(String::as_str));
     if !period_plan_only(verb, args)
         && !post_plan_only(verb, args)
+        && !correction_draft_only(verb, args)
         && !(authority.can_confirm() && confirmed(args))
     {
         for d in reg.dangerous_for(verb, sub) {
@@ -2560,9 +2573,13 @@ pub fn bound_command_admissible(
     ) && (args.switch("--dry-run")
         || args.flag("--draft").is_some()
         || args.flag("--scenario").is_some());
+    let agent_correction_review = (verb == "replace"
+        || (verb == "reverse" && args.flag("--replace-with").is_some()))
+        && (args.switch("--review-only") || args.flag("--review-out").is_some());
     if authority.profile() == crate::authority::LaunchProfile::Agent
         && is_monetary_trunk_post
         && !agent_rehearsal
+        && !agent_correction_review
     {
         return Err(format!(
             "`{}` writes or plans monetary entries on trunk, which the Agent profile cannot perform (FA-REF-013)",
@@ -2982,6 +2999,7 @@ fn gate_from_argv(
     // Planning commits nothing: the commit from the plan is what confirms.
     if period_plan_only(&verb.name, args)
         || post_plan_only(&verb.name, args)
+        || correction_draft_only(&verb.name, args)
         || recovery_preview_only(&verb.name, args)
     {
         return Ok(());
@@ -7232,6 +7250,25 @@ fn reclass_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 pub(crate) fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.flag("--review").is_some() {
+        return correction_review::restore(ctx, args);
+    }
+    if args.flag("--replace-with").is_none()
+        && (args.switch("--review-only")
+            || [
+                "--review-out",
+                "--digest",
+                "--approval",
+                "--reversal-approval",
+            ]
+            .iter()
+            .any(|flag| !args.flag_all(flag).is_empty()))
+    {
+        return Err(usage(
+            "correction reviews retain both the reversal and the corrected replacement",
+            "fa reverse <vid> --reason <name> --replace-with <corrected.json|-> --review-only; restore a complete pair with fa replace --review <file|hex|-> --digest <review_digest>",
+        ));
+    }
     if args.positional.len() != 2 {
         return Err(usage(
             "reverse needs exactly one entry vid",
@@ -7296,20 +7333,7 @@ fn correction(
     path: &str,
 ) -> Result<(), Fail> {
     const FIX: &str = "fa reverse <vid> --reason <name> --replace-with <corrected entry intent>; the intent carries the corrected legs (and optionally effective_date, description, evidence)";
-    check_post_planning_options(args)?;
-    if args.flag_all("--draft").len() > 1 {
-        return Err(usage(
-            "a correction pair names one draft",
-            "supply --draft <name> once",
-        ));
-    }
-    let draft = args.flag("--draft");
-    if draft.is_some() && (args.switch("--dry-run") || args.flag("--plan-out").is_some()) {
-        return Err(usage(
-            "--draft records a reviewed correction pair and cannot be combined with --dry-run or --plan-out",
-            "use --draft <name> to retain the pair for independent promotion, or --dry-run to rehearse without recording it",
-        ));
-    }
+    correction_review::options(args, false)?;
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
     let Json::Obj(supplied) = &doc else {
@@ -7369,7 +7393,7 @@ fn correction(
         who,
         capability.clone(),
     )?;
-    let (target_hex, reason) = reversal_detail
+    let (_, reason) = reversal_detail
         .ok_or_else(|| Fail::Internal("a typed reversal was built without its reason".into()))?;
     let BuiltPost {
         request: mut replacement_req,
@@ -7391,77 +7415,14 @@ fn correction(
             kind: fa_model::SupersessionKind::Replaces,
             reason_code: reason.code,
         });
-    if let Some(name) = draft {
-        let capability = reversal_req.capability.clone();
-        let reversal = PostIntent::new(reversal_req.proposal, reversal_req.approvals)
-            .map_err(|e| usage(format!("correction reversal: {e}"), FIX))?;
-        let replacement = PostIntent::new(replacement_req.proposal, replacement_req.approvals)
-            .map_err(|e| usage(format!("correction replacement: {e}"), FIX))?;
-        let planned = book.plan_correction_into_draft(
-            capability,
-            name,
-            reversal.clone(),
-            replacement.clone(),
-        )??;
-        return batch_plan::emit_draft_members(
-            out,
-            &book,
-            name,
-            &[reversal, replacement],
-            &planned,
-            "atomic correction",
-        );
-    }
-    if args.switch("--dry-run") || out.is_bound_agent() {
-        let capability = reversal_req.capability.clone();
-        let reversal = PostIntent::new(reversal_req.proposal, reversal_req.approvals)
-            .map_err(|e| usage(format!("correction reversal: {e}"), FIX))?;
-        let replacement = PostIntent::new(replacement_req.proposal, replacement_req.approvals)
-            .map_err(|e| usage(format!("correction replacement: {e}"), FIX))?;
-        let plan = book.plan_replacement(reversal, replacement, &capability)??;
-        return emit_replacement_plan(out, &book, &ctx.files, args, &plan);
-    }
-    let (reversal_posted, replacement_posted) =
-        book.post_replacement_pair(reversal_req, replacement_req)??;
-    out.at_book(&book)?;
-    let entry = |posted: &Posted| match posted {
-        Posted::Committed {
-            entry_ref, period, ..
-        } => (*entry_ref, s(period.as_str())),
-        Posted::AlreadyRecorded { entry_ref, .. } => (*entry_ref, Json::Null),
-    };
-    let (reversal_ref, reversal_period) = entry(&reversal_posted);
-    let (replacement_ref, replacement_period) = entry(&replacement_posted);
-    let already = matches!(replacement_posted, Posted::AlreadyRecorded { .. });
-    let recorded_at = replacement_posted.recorded_at();
-    out.event(
-        "corrected",
-        vec![
-            ("target", s(&target_hex)),
-            ("reason_code", Json::Int(i128::from(reason.code))),
-            ("reason", s(&reason.name)),
-            ("reversal", s(format!("{:032x}", reversal_ref.vid.0))),
-            ("reversal_digest", s(hex(&reversal_ref.entry_digest))),
-            ("replacement", s(format!("{:032x}", replacement_ref.vid.0))),
-            ("replacement_digest", s(hex(&replacement_ref.entry_digest))),
-            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
-            ("already_recorded", Json::Bool(already)),
-            ("reversal_period", reversal_period),
-            ("replacement_period", replacement_period),
-        ],
-        &if already {
-            format!(
-                "correction of {target_hex} already recorded at {} (reversal {:032x}, replacement {:032x}); nothing new was written",
-                recorded_at.0, reversal_ref.vid.0, replacement_ref.vid.0
-            )
-        } else {
-            format!(
-                "corrected {target_hex}: reversal {:032x} and replacement {:032x}, recorded together at {} · reason {}",
-                reversal_ref.vid.0, replacement_ref.vid.0, recorded_at.0, reason.name
-            )
-        },
-    );
-    Ok(())
+    correction_review::finish(
+        out,
+        &mut book,
+        &ctx.files,
+        args,
+        reversal_req,
+        replacement_req,
+    )
 }
 
 /// Reason names and numeric codes have one registry-backed meaning. The
@@ -10559,7 +10520,12 @@ const MAX_REVIEW_BYTES: usize = {
     } else {
         MAX_SETTLEMENT_GROUP_REVIEW_BYTES
     };
-    if a > b { a } else { b }
+    let existing = if a > b { a } else { b };
+    if existing > MAX_REPLACEMENT_REVIEW_BYTES {
+        existing
+    } else {
+        MAX_REPLACEMENT_REVIEW_BYTES
+    }
 };
 
 fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
@@ -10664,6 +10630,7 @@ pub(crate) fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Resul
         ));
     }
     if bytes.starts_with(b"FA-INTENT\0")
+        || bytes.starts_with(ReplacementReview::MAGIC)
         || bytes.starts_with(fa::RecurringPlan::MAGIC)
         || bytes.starts_with(b"FA-ALLOC-REVIEW\0")
         || bytes.starts_with(b"FA-BAL-REVIEW\0")

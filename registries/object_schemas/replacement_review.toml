@@ -1,0 +1,28 @@
+# Retained unapproved correction pairs (plan §4.6, §8.2, Appendix C; fa-i7e/fa-s7x).
+# A review is request data. It is neither a successful native rehearsal nor an
+# approval, signature, certificate, or authority to publish either member.
+schema_version = 1
+format = "FA-REPLACE-REVIEW"
+major = 1
+minor = 0
+max_review_bytes = 16777310
+review_domain = "fa:replacement-review:v1"
+
+# Canonical bytes: fixed("FA-REPLACE-REVIEW\0") || u16 major || u16 minor
+# || bytes(reversal PostIntent) || bytes(replacement PostIntent).
+# bytes is u32 little-endian length followed by the exact bounded body.
+# Each member obeys the unchanged PostIntent v1 grammar and has no approvals.
+# Both name the same book, branch, preparer and optional session. They contain
+# exactly one common EntryRef and reason, with Reverses/Replaces respectively.
+# The members retain their own dates, periods, keys, sealed fields, evidence,
+# amounts and other proposal fields. Unknown versions and trailing bytes refuse.
+
+# review_digest = domain_digest(review_domain, [complete canonical bytes]).
+# Restore requires this independently retained digest. --reversal-approval
+# binds only reversal.proposal_digest and --approval binds only
+# replacement.proposal_digest. Neither binds the review container itself.
+# Approval publications may advance the book before restore. The ordinary
+# native pair planner, draft planner or posting kernel then checks current
+# authority, target validity, period law, every approval, SoD and both effects.
+# A draft retains both exact approved Entries in one Plan and promotes them
+# atomically; a portable ReplacementPlan requires its own unchanged snapshot.

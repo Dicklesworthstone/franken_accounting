@@ -623,10 +623,8 @@ pub(crate) fn report_bodies_at<'a>(
             Metadata::Chunk(run) => {
                 needed.insert(run);
             }
-            Metadata::Control { run, kind: 0, .. } => {
-                if opens.insert(run, index).is_some() {
-                    return Err(scope_error(index));
-                }
+            Metadata::Control { run, kind: 0, .. } if opens.insert(run, index).is_some() => {
+                return Err(scope_error(index));
             }
             _ => {}
         }
