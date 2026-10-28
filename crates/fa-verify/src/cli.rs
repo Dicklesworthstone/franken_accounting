@@ -1429,6 +1429,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     } else {
                                         "cash_flow"
                                     }
+                                } else if report.split_cash_flow.is_some() {
+                                    "split_cash_flow"
                                 } else if report.roll_forward.is_some() {
                                     "roll_forward"
                                 } else if report.open_items.is_some() {
@@ -1461,6 +1463,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 } else if let Some(equity) = &report.equity_roll_forward {
                                     equity.units.len()
                                 } else if let Some(cash) = &report.cash_flow {
+                                    cash.units.len()
+                                } else if let Some(cash) = &report.split_cash_flow {
                                     cash.units.len()
                                 } else if let Some(schedule) = &report.roll_forward {
                                     schedule.rows.len()
@@ -1572,6 +1576,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(cash) = &report.cash_flow {
                         checks.extend(cash_flow_checks(cash));
+                    }
+                    if let Some(cash) = &report.split_cash_flow {
+                        checks.extend(split_cash_flow_checks(cash));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -2697,6 +2704,163 @@ fn cash_section(section: crate::report::CashFlowSection) -> Json {
     ])
 }
 
+fn split_cash_flow_checks(report: &crate::report::VerifiedSplitCashFlow) -> Vec<Check> {
+    let ledger = &report.ledger;
+    let mut checks = vec![Check::pass(
+        "split_cash_flow_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&ledger.book_id)),
+            ("known_at", n(ledger.known_at)),
+            ("label", s(&ledger.label)),
+            ("definition", s(&report.definition.name)),
+            ("effective_from", day(Some(ledger.effective_from))),
+            ("effective_through", day(Some(ledger.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "units",
+                Json::List(ledger.units.iter().map(|&u| n(u64::from(u))).collect()),
+            ),
+            (
+                "cash_accounts",
+                Json::List(
+                    report
+                        .definition
+                        .cash_accounts
+                        .iter()
+                        .map(|id| s(format!("{id:032x}")))
+                        .collect(),
+                ),
+            ),
+            (
+                "amount_basis",
+                s("positive portions in the original cash leg's native unit and direction"),
+            ),
+            (
+                "gross_basis",
+                s("net only within original entry, native unit and activity section"),
+            ),
+            (
+                "running_balance_basis",
+                s("effective-day order, then recorded sequence and original leg citation"),
+            ),
+            ("economic_classification", s("not_judged")),
+            ("cash_equivalence", s("not_judged")),
+            ("definition_approval", s("not_judged")),
+        ],
+    )];
+    for account in &ledger.accounts {
+        checks.push(Check::pass(
+            "split_cash_flow_account",
+            "authenticated_metadata",
+            vec![
+                ("account", s(format!("{:032x}", account.id))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+            ],
+        ));
+    }
+    for (index, bucket) in ledger.buckets.iter().enumerate() {
+        checks.push(Check::pass(
+            "split_cash_flow_bucket",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("class", n(u64::from(bucket.class))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+                ("rule_execution", s("not_judged")),
+            ],
+        ));
+    }
+    for (index, cell) in ledger.cells.iter().enumerate() {
+        checks.push(Check::pass(
+            "split_cash_flow_cell",
+            "recomputation",
+            vec![
+                ("cell", n(index as u64)),
+                ("account", s(format!("{:032x}", cell.account_id))),
+                ("unit", n(u64::from(cell.unit_id))),
+                ("opening", amount(cell.opening)),
+                ("debits", amount(cell.debits)),
+                ("credits", amount(cell.credits)),
+                ("net_change", amount(cell.net_change)),
+                ("closing", amount(cell.closing)),
+                ("line_start", n(u64::from(cell.line_start))),
+                ("line_end", n(u64::from(cell.line_end))),
+            ],
+        ));
+    }
+    let splits: std::collections::BTreeMap<_, _> = report
+        .definition
+        .splits
+        .iter()
+        .map(|split| ((split.entry_digest, split.leg_index), split))
+        .collect();
+    for line in &ledger.lines {
+        let split = splits.get(&(line.entry_digest, line.leg_index));
+        checks.push(Check::pass(
+            "split_cash_flow_movement",
+            "recomputation",
+            vec![
+                ("cell", n(u64::from(line.cell_index))),
+                ("entry_digest", h(&line.entry_digest)),
+                ("leg_index", n(u64::from(line.leg_index))),
+                ("recorded_seq", n(line.recorded_seq)),
+                ("effective_day", day(Some(line.effective_day))),
+                ("bucket", n(u64::from(line.bucket_index))),
+                ("debits", amount(line.debits)),
+                ("credits", amount(line.credits)),
+                ("running_balance", amount(line.running_balance)),
+                ("reason", split.map_or(Json::Null, |split| s(&split.reason))),
+                (
+                    "portions",
+                    Json::List(
+                        split
+                            .into_iter()
+                            .flat_map(|split| &split.portions)
+                            .map(|portion| {
+                                Json::Obj(vec![
+                                    ("activity", s(cash_activity(portion.activity))),
+                                    ("amount", amount(portion.amount)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ],
+        ));
+    }
+    for unit in &report.units {
+        checks.push(Check::pass(
+            "split_cash_flow_unit",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(unit.unit_id))),
+                ("opening", amount(unit.opening)),
+                ("operating", cash_section(unit.operating)),
+                ("investing", cash_section(unit.investing)),
+                ("financing", cash_section(unit.financing)),
+                ("exchange_effects", cash_section(unit.exchange_effects)),
+                ("net_change", amount(unit.net_change)),
+                ("closing", amount(unit.closing)),
+            ],
+        ));
+    }
+    checks
+}
+
 fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
     let ledger = &report.ledger;
     let mut checks = vec![Check::pass(
@@ -3588,6 +3752,42 @@ mod tests {
             cash_basis(CashFlowDecisionBasis::InternalTransfer),
             "internal_transfer"
         );
+        let split = VerifiedSplitCashFlow {
+            source_certificate_digest: report.source_certificate_digest,
+            ledger: report.ledger,
+            definition: CashFlowSplitDefinition {
+                name: "Original principal and interest".into(),
+                cash_accounts: vec![1],
+                splits: vec![CashFlowLegSplit {
+                    entry_digest: [5; 32],
+                    leg_index: 2,
+                    reason: "Documented principal and interest".into(),
+                    portions: vec![
+                        CashFlowPortion {
+                            activity: CashFlowActivity::Operating,
+                            amount: 7,
+                        },
+                        CashFlowPortion {
+                            activity: CashFlowActivity::Financing,
+                            amount: i128::MAX - 7,
+                        },
+                    ],
+                }],
+            },
+            units: report.units,
+        };
+        let checks = split_cash_flow_checks(&split);
+        assert_eq!(checks.len(), 8);
+        assert_eq!(checks[5].name, "split_cash_flow_movement");
+        let mut movement = String::new();
+        Json::Obj(checks[5].detail.clone()).write(&mut movement);
+        assert!(movement.contains("Documented principal and interest"));
+        assert!(movement.contains("\"activity\":\"operating\",\"amount\":\"7\""));
+        assert!(movement.contains(&format!(
+            "\"activity\":\"financing\",\"amount\":\"{}\"",
+            i128::MAX - 7
+        )));
+        assert!(movement.contains("\"leg_index\":2"));
     }
 
     #[test]

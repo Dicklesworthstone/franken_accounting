@@ -147,6 +147,7 @@ pub fn assemble_with_registries(
         || equity_certificate(certificate)
         || cash_flow_certificate(certificate)
         || policy_cash_flow_certificate(certificate)
+        || split_cash_flow_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -410,7 +411,7 @@ fn equity_certificate(certificate: &[u8]) -> bool {
 
 /// Recognize the direct cash wrapper over its native lead schedule. Production
 /// replays the full outer report; recipients independently verify every cash
-/// movement and its classification. Split and indirect wrappers are unsupported.
+/// movement and its classification. Other wrappers have their own exact route.
 fn cash_flow_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -433,6 +434,20 @@ fn policy_cash_flow_certificate(certificate: &[u8]) -> bool {
         Ok(cash_flow_certificate(reader.bytes(
             MAX_REPORT_BUNDLE_BYTES,
             "cash-flow policy source",
+        )?))
+    };
+    header().unwrap_or(false)
+}
+
+fn split_cash_flow_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "cash-flow split format")? != b"fa:cash-flow-split-certificate:v1" {
+            return Ok(false);
+        }
+        Ok(roll_forward_certificate(reader.bytes(
+            MAX_REPORT_BUNDLE_BYTES,
+            "cash-flow split source",
         )?))
     };
     header().unwrap_or(false)
@@ -511,11 +526,12 @@ fn assemble_inner(
                 || roll_forward_certificate(certificate)
                 || equity_certificate(certificate)
                 || cash_flow_certificate(certificate)
-                || policy_cash_flow_certificate(certificate))
+                || policy_cash_flow_certificate(certificate)
+                || split_cash_flow_certificate(certificate))
         || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy or split cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -726,12 +742,19 @@ mod format_tests {
         };
         let cash = b"fa:cash-flow-certificate:v1".as_slice();
         let policy = b"fa:cash-flow-policy-certificate:v1".as_slice();
+        let split = b"fa:cash-flow-split-certificate:v1".as_slice();
         let native = source(1, [0; 16], 1);
         let roll_forward_bytes = roll_forward(&native);
         let direct = wrap(cash, &roll_forward_bytes);
         let classified = wrap(policy, &direct);
+        let split_cash = wrap(split, &roll_forward_bytes);
         assert!(cash_flow_certificate(&direct));
         assert!(policy_cash_flow_certificate(&classified));
+        assert!(split_cash_flow_certificate(&split_cash));
+        assert!(!split_cash_flow_certificate(&direct));
+        assert!(!split_cash_flow_certificate(&classified));
+        assert!(!split_cash_flow_certificate(&wrap(split, &native)));
+        assert!(!split_cash_flow_certificate(&wrap(split, &direct)));
         assert!(!cash_flow_certificate(&classified));
         assert!(!policy_cash_flow_certificate(&direct));
         assert!(!cash_flow_certificate(&wrap(cash, &native)));
@@ -748,6 +771,10 @@ mod format_tests {
             let direct = wrap(cash, &roll_forward(&wrong));
             assert!(!cash_flow_certificate(&direct));
             assert!(!policy_cash_flow_certificate(&wrap(policy, &direct)));
+            assert!(!split_cash_flow_certificate(&wrap(
+                split,
+                &roll_forward(&wrong),
+            )));
         }
         for format in [
             b"fa:cash-flow-certificate:v2".as_slice(),
@@ -760,11 +787,18 @@ mod format_tests {
             b"fa:cash-flow-policy-certificate:v2",
             &direct,
         )));
+        assert!(!split_cash_flow_certificate(&wrap(
+            b"fa:cash-flow-split-certificate:v2",
+            &roll_forward_bytes,
+        )));
         let mut truncated = Writer::new();
         truncated.bytes(cash).u32(u32::MAX);
         assert!(!cash_flow_certificate(&truncated.finish().unwrap()));
         for end in 0..classified.len() {
             assert!(!policy_cash_flow_certificate(&classified[..end]));
+        }
+        for end in 0..split_cash.len() {
+            assert!(!split_cash_flow_certificate(&split_cash[..end]));
         }
     }
 

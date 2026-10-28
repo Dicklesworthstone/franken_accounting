@@ -275,6 +275,22 @@ fn reconciliation_bundle_expectation_kind(
     reconciliation_request(&doc, book)
 }
 
+/// Use the recipient's independently retained scope and original-leg decisions.
+/// The certificate being exported never supplies its own expected inputs.
+pub(crate) fn split_cash_flow_bundle_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<(RollForwardRequest, CashFlowSplitDefinition), Fail> {
+    match parse(args, book, principal, capability)? {
+        Expected::SplitCashFlow(request, definition) => Ok((request, definition)),
+        _ => Err(invalid(
+            "split cash-flow export requires --expect JSON with kind split-cash-flow, a fixed known_at and the complete expected policy",
+        )),
+    }
+}
+
 fn reconciliation_request(doc: &Json, book: &Book) -> Result<AgingReconciliationRequest, Fail> {
     exact_fields(doc, &["kind", "account", "through", "known_at", "buckets"])?;
     Ok(AgingReconciliationRequest {

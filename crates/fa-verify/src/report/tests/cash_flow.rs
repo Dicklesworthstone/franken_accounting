@@ -3,6 +3,9 @@
 //! supplies the expected bytes, including hostile artifacts with resealed hashes.
 use super::*;
 
+#[path = "cash_flow_split.rs"]
+mod cash_flow_split;
+
 type Assignment = ([u8; 32], u32, u8);
 type Decision = ([u8; 32], u32, u8, u8);
 type Unit = (u32, i128, [[i128; 3]; 4], i128, i128);
