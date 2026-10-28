@@ -884,6 +884,22 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
             "expected ref=agree observed ref=disagree (reference {reference}; kernel {kernel})"
         ));
     }
+    // A12 (§12.1): the run's outsider replay, its canonical workpaper
+    // exported and re-executed to the same certified run.
+    if let Some(replayed) = run.run_replays.get(&p.procedure) {
+        row.projection.push((
+            "outsider".into(),
+            if replayed.is_ok() {
+                "replay:verified"
+            } else {
+                "replay:failed"
+            }
+            .into(),
+        ));
+        if let Err(why) = replayed {
+            fails.push(format!("outsider replay: {why}"));
+        }
+    }
     if fails.is_empty() {
         row.verdict = RowVerdict::Unrun;
         row.reason = Some(FILLER.into());

@@ -749,6 +749,90 @@ impl BookRun<'_> {
         }
     }
 
+    /// Each recorded finding run's outsider replay (A12, §12.1, D reads),
+    /// recipient-bound: `fa finding export --certificate C:<run>
+    /// --export-format canonical --include-reviews --known-at <head>` writes
+    /// its workpaper with a review appendix fixed at the head, and `fa
+    /// finding replay <workpaper> --certificate C:<run> --known-at <head>`
+    /// must re-execute it against retained native evidence to the same
+    /// certified run and review cutoff. (A plain canonical workpaper replayed
+    /// with `--known-at` is refused FA-REF-150: that flag names a review
+    /// cutoff, not the run's sequence.)
+    pub(crate) fn finding_replays(&mut self) {
+        let runs: Vec<(String, String)> = self
+            .runs
+            .iter()
+            .map(|(procedure, r)| (procedure.clone(), r.certificate.clone()))
+            .collect();
+        let cutoff = self.head;
+        for (procedure, certificate) in runs {
+            let workpaper = self
+                .work
+                .join(format!("{procedure}.workpaper"))
+                .display()
+                .to_string();
+            let exported = self.call(
+                self.head,
+                &procedure,
+                "finding",
+                vec![
+                    s("finding"),
+                    s("export"),
+                    s("--certificate"),
+                    format!("C:{certificate}"),
+                    s("--export-format"),
+                    s("canonical"),
+                    s("--include-reviews"),
+                    s("--known-at"),
+                    s(cutoff),
+                    s("--out"),
+                    workpaper.clone(),
+                    s("--json"),
+                ],
+            );
+            let verdict = if exported.exit == 0 {
+                let replayed = self.call(
+                    self.head,
+                    &procedure,
+                    "finding",
+                    vec![
+                        s("finding"),
+                        s("replay"),
+                        workpaper,
+                        s("--certificate"),
+                        format!("C:{certificate}"),
+                        s("--known-at"),
+                        s(cutoff),
+                        s("--json"),
+                    ],
+                );
+                self.certificate_kind("FindingRun");
+                if replayed.exit == 0 {
+                    Ok(())
+                } else {
+                    self.lines.push(reproduce(&replayed));
+                    Err(format!(
+                        "expected the workpaper replayed exit=0 observed exit={} {}",
+                        replayed.exit,
+                        replayed.refusal_id().unwrap_or_default()
+                    )
+                    .trim_end()
+                    .to_string())
+                }
+            } else {
+                self.lines.push(reproduce(&exported));
+                Err(format!(
+                    "expected a canonical workpaper exported observed exit={} {}",
+                    exported.exit,
+                    exported.refusal_id().unwrap_or_default()
+                )
+                .trim_end()
+                .to_string())
+            };
+            self.run_replays.insert(procedure, verdict);
+        }
+    }
+
     /// A checkpoint over the head for the T reads' bundles, exported with
     /// `fa proof signed-checkpoint` for fa-verify's report to check them
     /// against: the exported file's path.

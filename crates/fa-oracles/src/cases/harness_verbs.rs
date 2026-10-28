@@ -73,6 +73,9 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("certificate", Some("status")),
     // The second read path: each balance read again through the GQL profile.
     ("query", None),
+    // A D read's outsider replay: its run's canonical workpaper re-executed.
+    ("finding", Some("export")),
+    ("finding", Some("replay")),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

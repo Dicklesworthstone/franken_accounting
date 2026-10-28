@@ -221,6 +221,8 @@ pub struct FindingRun {
     /// The `finding_record` step that recorded it.
     pub step: i128,
     pub version: Option<i128>,
+    /// The run's certificate digest, for its outsider replay (A12).
+    pub certificate: String,
     /// Each recorded finding's `finding` object (severity, statistic,
     /// cites, narrative).
     pub findings: Vec<Json>,
@@ -338,6 +340,9 @@ pub struct BookRun<'c> {
     /// Each `balance` read's second read path by `<expectation>/<target>`:
     /// whether `fa query` netted to the fold path's value (A12, §12.7).
     pub gql: BTreeMap<String, Result<(), String>>,
+    /// Each recorded finding run's outsider replay by procedure: its
+    /// canonical workpaper exported and replayed (A12, §12.1).
+    pub run_replays: BTreeMap<String, Result<(), String>>,
 }
 
 impl<'c> BookRun<'c> {
@@ -390,6 +395,7 @@ impl<'c> BookRun<'c> {
             checkpoints: BTreeMap::new(),
             witness: None,
             gql: BTreeMap::new(),
+            run_replays: BTreeMap::new(),
         }
     }
 
@@ -1784,6 +1790,7 @@ impl<'c> BookRun<'c> {
             FindingRun {
                 step: seq,
                 version,
+                certificate: cert,
                 findings,
                 finding_vids,
             },
@@ -1823,6 +1830,7 @@ impl<'c> BookRun<'c> {
         self.gql_reads();
         self.case_reads();
         self.outsider_reads();
+        self.finding_replays();
         // A book with a checkpoint then proves its bundle, replay and
         // integrity to an outsider (A8a).
         self.outsider();

@@ -37,7 +37,7 @@ use run::{PlantedEdit, RunOutcome, fa, outcome, run_case, run_files, run_planted
 
 const SELFTEST: &str = "_selftest";
 
-const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree reason=filler_invariance";
+const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree outsider=replay:verified reason=filler_invariance";
 
 fn selftest_files() -> fa_oracles::cases::CaseFiles<'static> {
     fa_oracles::cases::embedded::SELFTEST.case_files()
@@ -235,6 +235,52 @@ fn twin_outcomes(o: &RunOutcome, keep: impl Fn(&[String]) -> bool) -> Vec<(i128,
         .filter(|s| s.reference == "append-only" && keep(&s.argv_redacted))
         .map(|s| (s.exit, s.refusal_id.clone()))
         .collect()
+}
+
+/// A12 (§12.1, D reads): each recorded finding run's canonical workpaper,
+/// with its review appendix fixed at the head, is exported (`fa finding
+/// export --export-format canonical --include-reviews --known-at <head>`)
+/// and replayed recipient-bound (`fa finding replay --certificate C:<run>
+/// --known-at <head>`) to the same certified run, in every run of the book;
+/// the D row prints `outsider=replay:verified`.
+#[test]
+fn finding_export_replays_for_d_reads() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    let steps: Vec<String> = o
+        .steps
+        .iter()
+        .filter(|s| {
+            matches!(
+                words(&s.argv_redacted).as_str(),
+                "finding export" | "finding replay"
+            )
+        })
+        .map(|s| {
+            format!(
+                "{} {} exit={}",
+                words(&s.argv_redacted),
+                s.reference,
+                s.exit
+            )
+        })
+        .collect();
+    assert!(!steps.is_empty(), "{text}");
+    assert!(
+        steps.chunks(2).all(|pair| matches!(
+            pair,
+            [export, replay] if export.starts_with("finding export ")
+                && replay.starts_with("finding replay ")
+                && export.ends_with(" exit=0")
+                && replay.ends_with(" exit=0")
+        )),
+        "{steps:?}\n{text}"
+    );
+    assert!(
+        o.row("_selftest-D-01")
+            .is_some_and(|r| r.contains(" ref=agree outsider=replay:verified ")),
+        "{text}"
+    );
 }
 
 /// A12 (§12.7): the second read path. Each balance read is also read with
@@ -888,7 +934,7 @@ fn _selftest_neg_cite_of_the_wrong_fact() {
     assert_eq!(
         o.row("_selftest-D-01"),
         Some(
-            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
+            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree outsider=replay:verified reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
         ),
         "{}",
         o.text()
