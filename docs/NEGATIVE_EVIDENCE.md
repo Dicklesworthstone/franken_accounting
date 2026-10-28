@@ -925,3 +925,48 @@ new checks remain unexecuted. Formatting and the three-file static UBS scan
 exit 0 (zero critical, 284 warnings); native compilation, tests, Clippy and
 full gates remain UNRUN under the unchanged disk reserve. Original
 `fa-mg2j` remains in progress with its full acceptance intact.
+
+## 2026-10-28 UTC — PPA scenario authority and native qualification
+
+The original CLI event test exposed a prior-period-adjustment scenario
+refusal at `e88200e4`: the caller supplied Read and Post, but the scratch
+request retained only posting operations. The kernel correctly refused
+its retained-earnings role lookup. The scenario repair retains Read for
+that registered adjustment only after admitting the original planner's
+Read and whole-book reach. Missing Read and restricted reach return the
+original policy refusal before scratch role observation. No authority is
+invented, and the period, role, approval and posting laws stay in force.
+
+On immutable `41645e7e`, native execution passes all 230 tests in the
+complete CLI library, access-log, CLI, operator-token and write-authority
+targets. The original event test now passes its PPA/equity/proof workflow.
+The complete journal genesis target passes 275 tests; the statement and
+standalone-verifier libraries pass 56 and 379. Each target's inventory
+matches its outcomes, with zero failures, ignored or filtered cases.
+These results also execute the schema-only Human-token workflow. Its new
+unissued-token negative initially supplied no stdin and got usage exit 2;
+supplying the valid account document retains expected safety exit 7,
+FA-REF-156 and unchanged head/chart, and all five token tests then pass.
+
+The dedicated facade case has no runtime verdict. Its vmi attempt lost SSH
+with exit 255 after compilation progressed; the exact wrapper is
+`rchw-8995d92d-f5fc-49e7-8f79-cd104321da16`. Supported recovery and cancel
+have not acknowledged retirement. The complete workspace inventory at
+`41645e7e` compiles and lists 4,667 tests, including the corrected case, but
+artifact retrieval fails and terminal acknowledgement remains false for
+`rchw-d3214c27-5d7c-4300-9266-01762f0a4f28`. The following full runtime
+request refuses with exit 103 before Cargo because that pair has an
+unfinished owner. The newly added facade no-Read/scoped controls therefore
+remain unexecuted. No lock/cache clearing, shared-daemon restart, local
+fallback or replay bypass supplies a result.
+
+Our exact-tree Tier 0 attempt at `6be52597` returns driver exit 2: format
+passes, while the remote compile is UNRUN after queue timeout. No PASS
+note is produced. A separately published `45b40a1e` Tier 0 note has
+matching format/check log hashes on its named host; it is historical
+compile evidence, not a runtime result or qualification of newer main.
+The 940 scoped passing tests do not establish the full workspace or
+Tier 1. The separately named CLI PPA acceptance tests are still absent;
+monolithic coverage does not silently replace that inventory contract.
+Original `fa-0hs4.8`, `fa-mg2j` and `fa-ze0y` remain in progress with their
+full acceptance and prior comments preserved.
