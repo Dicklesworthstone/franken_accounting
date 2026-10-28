@@ -702,6 +702,31 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
             code: "FY2025-P12".into(),
         })
         .unwrap();
+    // The scratch role lookup may retain the planner's Read, never invent
+    // it or erase scope caveats while building its embedded capability.
+    for refused in [
+        Capability::embedded(planner_vid, &["post"]).unwrap(),
+        planner.clone().for_accounts(&["1000", "3000"]).unwrap(),
+    ] {
+        let head = book.head().unwrap();
+        let denial = book
+            .run_in_scenario(
+                refused,
+                "adjusted",
+                PostIntent::new(planned.clone(), Vec::new()).unwrap(),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(denial.code, "FA-REF-011");
+        assert_eq!(book.head().unwrap(), head);
+        assert!(
+            book.scenario("adjusted")
+                .unwrap()
+                .unwrap()
+                .intents
+                .is_empty()
+        );
+    }
     book.run_in_scenario(
         planner,
         "adjusted",

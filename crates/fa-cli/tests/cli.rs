@@ -11629,16 +11629,13 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             r#"{{"effective_date":"2026-04-02","idempotency_key":"adjusted-rent","relates_to":"FY2026-P03","evidence":["{ev}"],"legs":[{{"side":"debit","account":"3000","amount":"2.00 USD"}},{{"side":"credit","account":"1000","amount":"2.00 USD"}}]}}"#
         ),
     );
-    assert_eq!(
-        run(
-            true,
-            &[
-                "scenario", "run", "adjusted", "--intent", &adjusted, "--as", "analyst"
-            ]
-        )
-        .0,
-        0
+    let (code, out) = run(
+        true,
+        &[
+            "scenario", "run", "adjusted", "--intent", &adjusted, "--as", "analyst",
+        ],
     );
+    assert_eq!(code, 0, "{out}");
     let adjusting = dir.join("adjusting.cert").display().to_string();
     assert_eq!(
         run(

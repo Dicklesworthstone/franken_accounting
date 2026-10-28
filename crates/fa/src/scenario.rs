@@ -183,12 +183,20 @@ impl Book {
         replay: ScenarioReplay,
         candidate: Option<PostRequest>,
     ) -> Outcome<ScenarioBook> {
-        let mut requests = view
-            .intents
-            .iter()
-            .take(through)
-            .map(|planned| scratch_request(planned.intent.clone(), &planned.capability))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut requests = Vec::with_capacity(through.min(view.intents.len()));
+        for (i, planned) in view.intents.iter().take(through).enumerate() {
+            match scratch_request(planned.intent.clone(), &planned.capability)? {
+                Ok(request) => requests.push(request),
+                Err(refusal) => {
+                    return Ok(Err(in_scenario(
+                        &view.body.name,
+                        view.body.fork_at,
+                        i + 1,
+                        refusal,
+                    )));
+                }
+            }
+        }
         requests.extend(candidate);
         let coordinates = match replay {
             ScenarioReplay::Protected => Coordinates::Protected,
@@ -248,7 +256,12 @@ impl Book {
         }
         let ordinal = view.intents.len() + 1;
         let through = view.intents.len();
-        let candidate = scratch_request(intent.clone(), &capability)?;
+        let candidate = match scratch_request(intent.clone(), &capability)? {
+            Ok(candidate) => candidate,
+            Err(refusal) => {
+                return Ok(Err(in_scenario(name, view.body.fork_at, ordinal, refusal)));
+            }
+        };
         let scenario = match self.materialize_with(
             view,
             through,
@@ -366,8 +379,10 @@ impl Book {
 /// An intent as the scratch book posts it: under an embedded capability of
 /// its planner holding only the posting operations that planner actually
 /// carried: `post`, `post_softclosed`, `post_closed`, `reconcile` and, for a
-/// Revision case's Revision entries, `restate`. Period exceptions and
-/// protected cash therefore retain their native admission without granting
+/// Revision case's Revision entries, `restate`. A prior-period adjustment
+/// also retains `read` only after admitting the planner's whole-book reach,
+/// because its retained-earnings role check reads that history. Period exceptions
+/// and protected cash therefore retain their native admission without granting
 /// close or any unrelated authority. The
 /// planner's own authority (ops, ceilings, scope caveats, currency and
 /// revocation) was admitted on trunk when the
@@ -380,13 +395,24 @@ impl Book {
 fn scratch_request(
     intent: fa_journal::PostIntent,
     planner: &fa_journal::Capability,
-) -> Result<PostRequest, BookError> {
+) -> Outcome<PostRequest> {
     let principal = intent.proposal().principal_ref;
+    let observes_roles = intent
+        .proposal()
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION);
+    if observes_roles
+        && let Err(denial) = fa_policy::admit_read(planner, principal, intent.proposal().book_id)
+            .and_then(|()| fa_policy::reach(planner, &fa_policy::Reach::whole_book(true), None))
+    {
+        return Ok(Err(fa_journal::policy::refusal(&denial)));
+    }
     // These are the only additional operations used by the batchable
     // posting classes and a Revision case's Revision entries (`restate`).
     // A Closing or Restatement intent cannot enter a scenario, so their
     // other operations are never copied.
-    let ops: Vec<&str> = [
+    let mut ops: Vec<&str> = [
         fa_policy::Op::Post,
         fa_policy::Op::PostSoftclosed,
         fa_policy::Op::PostClosed,
@@ -397,15 +423,18 @@ fn scratch_request(
     .filter(|op| planner.ops().contains(op))
     .map(fa_policy::Op::name)
     .collect();
+    if observes_roles {
+        ops.push(fa_policy::Op::Read.name());
+    }
     let capability = fa_journal::Capability::embedded(principal, &ops)
         .map_err(|e| BookError::Kernel(fa_journal::KernelError::Corrupt(e.to_string())))?;
     let approvals = intent.approvals().to_vec();
-    Ok(PostRequest {
+    Ok(Ok(PostRequest {
         proposal: intent.proposal().clone(),
         approvals,
         capability,
         plan_certificate: None,
-    })
+    }))
 }
 
 /// Every (account, unit) whose debits or credits differ, by account code
