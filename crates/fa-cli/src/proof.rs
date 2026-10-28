@@ -904,10 +904,11 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 fa::ReportArtifactFamily::AgingReconciliation
                     | fa::ReportArtifactFamily::DueDateAgingReconciliation
                     | fa::ReportArtifactFamily::SplitCashFlow
+                    | fa::ReportArtifactFamily::IndirectCashFlow
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging reconciliation or split cash-flow certificate",
+                "--expect on bundle produce applies only to an aging reconciliation, split cash-flow or indirect cash-flow certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -998,6 +999,22 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &definition,
                 )??
             }
+            fa::ReportArtifactFamily::IndirectCashFlow => {
+                let expected = crate::notary::indirect_cash_flow_bundle_expectation(
+                    args,
+                    &book,
+                    principal,
+                    &capability,
+                )?;
+                let certificate = fa::IndirectCashFlowCertificate::decode(&bytes)?;
+                book.produce_indirect_cash_flow_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                    &expected,
+                )??
+            }
             _ => {
                 return Err(fa_journal::Refusal::new(
                     fa::notary_code::SCOPE_UNSUPPORTED,
@@ -1007,7 +1024,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native or functional trial-balance or statement report, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy or split cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native or functional trial-balance or statement report, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }

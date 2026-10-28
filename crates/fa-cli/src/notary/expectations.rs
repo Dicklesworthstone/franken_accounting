@@ -291,6 +291,20 @@ pub(crate) fn split_cash_flow_bundle_expectation(
     }
 }
 
+pub(crate) fn indirect_cash_flow_bundle_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<IndirectCashFlowRequest, Fail> {
+    match parse(args, book, principal, capability)? {
+        Expected::Indirect(request) => Ok(request),
+        _ => Err(invalid(
+            "indirect cash-flow export requires --expect JSON with kind indirect-cash-flow, fixed known_at, complete cash policy, income_periods and adjustments",
+        )),
+    }
+}
+
 fn reconciliation_request(doc: &Json, book: &Book) -> Result<AgingReconciliationRequest, Fail> {
     exact_fields(doc, &["kind", "account", "through", "known_at", "buckets"])?;
     Ok(AgingReconciliationRequest {

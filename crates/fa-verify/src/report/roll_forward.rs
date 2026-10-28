@@ -224,6 +224,47 @@ pub(super) fn replay(
     visible_migrations: &BTreeSet<u64>,
     source_rows: &[ReportRow],
 ) -> Result<(VerifiedRollForward, Vec<u8>), ReportError> {
+    let (report, output) = recompute(
+        certificate,
+        book_id,
+        known_at,
+        source_certificate_digest,
+        registered_units,
+        schema,
+        envelopes,
+        infos,
+        legs,
+        visible_migrations,
+        source_rows,
+        certificate.output.len().min(MAX_REPORT_BUNDLE_BYTES),
+    )?;
+    if output != certificate.output {
+        return Err(failed(
+            "report_recomputation",
+            "roll-forward scope, historical metadata, opening, classified movements, closing or exact citations differ from independent replay",
+        ));
+    }
+    Ok((report, output))
+}
+
+/// Pure fold over an already authenticated native source. Indirect reports use
+/// it to reconstruct their complete historical non-cash account population;
+/// that scope comes from the authenticated chart, not delivered output bytes.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn recompute(
+    certificate: &Certificate<'_>,
+    book_id: [u8; 16],
+    known_at: u64,
+    source_certificate_digest: [u8; 32],
+    registered_units: &[u32],
+    schema: &Schema,
+    envelopes: &[LeafEnvelope],
+    infos: &BTreeMap<usize, EntryInfo<'_>>,
+    legs: &[Vec<Leg>],
+    visible_migrations: &BTreeSet<u64>,
+    source_rows: &[ReportRow],
+    maximum_output: usize,
+) -> Result<(VerifiedRollForward, Vec<u8>), ReportError> {
     if certificate
         .units
         .iter()
@@ -235,7 +276,7 @@ pub(super) fn replay(
         ));
     }
     let mut size = 92 + certificate.label.len();
-    let limit = certificate.output.len().min(MAX_REPORT_BUNDLE_BYTES);
+    let limit = maximum_output.min(MAX_REPORT_BUNDLE_BYTES);
     let mut accounts = Vec::with_capacity(certificate.accounts.len());
     for &id in &certificate.accounts {
         let account = schema.accounts.get(&id).ok_or_else(|| {
@@ -437,12 +478,6 @@ pub(super) fn replay(
         movements,
     };
     let output = encode(&report, size);
-    if output != certificate.output {
-        return Err(failed(
-            "report_recomputation",
-            "roll-forward scope, historical metadata, opening, classified movements, closing or exact citations differ from independent replay",
-        ));
-    }
     Ok((report, output))
 }
 

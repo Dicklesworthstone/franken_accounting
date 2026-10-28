@@ -1423,6 +1423,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     }
                                 } else if report.equity_roll_forward.is_some() {
                                     "equity_roll_forward"
+                                } else if report.indirect_cash_flow.is_some() {
+                                    "indirect_cash_flow"
                                 } else if let Some(cash) = &report.cash_flow {
                                     if cash.policy.is_some() {
                                         "policy_cash_flow"
@@ -1462,6 +1464,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     functional.cells.len() + functional.pending.len()
                                 } else if let Some(equity) = &report.equity_roll_forward {
                                     equity.units.len()
+                                } else if let Some(indirect) = &report.indirect_cash_flow {
+                                    indirect.units.len()
                                 } else if let Some(cash) = &report.cash_flow {
                                     cash.units.len()
                                 } else if let Some(cash) = &report.split_cash_flow {
@@ -1579,6 +1583,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(cash) = &report.split_cash_flow {
                         checks.extend(split_cash_flow_checks(cash));
+                    }
+                    if let Some(indirect) = &report.indirect_cash_flow {
+                        checks.extend(indirect_cash_flow_checks(indirect));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -2702,6 +2709,177 @@ fn cash_section(section: crate::report::CashFlowSection) -> Json {
         ("outflows", amount(section.outflows)),
         ("net", amount(section.net)),
     ])
+}
+
+fn indirect_cash_flow_checks(report: &crate::report::VerifiedIndirectCashFlow) -> Vec<Check> {
+    use crate::report::{AdjustmentCategory, AdjustmentSign, VerifiedCashFlowBasis};
+    let (kind, mut source) = match &report.cash {
+        VerifiedCashFlowBasis::Explicit(cash) => ("explicit", cash_flow_checks(cash)),
+        VerifiedCashFlowBasis::Policy(cash) => ("policy", cash_flow_checks(cash)),
+        VerifiedCashFlowBasis::Split(cash) => ("split", split_cash_flow_checks(cash)),
+    };
+    let mut checks = vec![Check::pass(
+        "indirect_cash_flow_parameters",
+        "authenticated_parameters",
+        vec![
+            ("definition", s(&report.definition.name)),
+            ("cash_basis", s(kind)),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "source_scope",
+                s("whole-book native earnings and non-cash monetary leaf detail"),
+            ),
+            ("adjustment_selection", s("not_judged")),
+            ("definition_approval", s("not_judged")),
+        ],
+    )];
+    checks.append(&mut source);
+    checks.extend(statement_checks(&report.income, "authenticated-registry"));
+    for adjustment in &report.definition.adjustments {
+        checks.push(Check::pass(
+            "indirect_cash_flow_adjustment",
+            "authenticated_parameters",
+            vec![
+                ("entry_digest", h(&adjustment.entry_digest)),
+                ("leg_index", n(u64::from(adjustment.leg_index))),
+                (
+                    "category",
+                    s(match adjustment.category {
+                        AdjustmentCategory::NonCash => "non_cash",
+                        AdjustmentCategory::WorkingCapital => "working_capital",
+                        AdjustmentCategory::NonOperating => "non_operating",
+                    }),
+                ),
+                (
+                    "sign",
+                    s(match adjustment.sign {
+                        AdjustmentSign::DebitMinusCredit => "debit_minus_credit",
+                        AdjustmentSign::CreditMinusDebit => "credit_minus_debit",
+                    }),
+                ),
+                ("reason", s(&adjustment.reason)),
+            ],
+        ));
+    }
+    if let Some(detail) = &report.non_cash_source {
+        checks.push(Check::pass(
+            "indirect_non_cash_source",
+            "recomputation",
+            vec![
+                ("book", h(&detail.book_id)),
+                ("known_at", n(detail.known_at)),
+                ("label", s(&detail.label)),
+                ("effective_from", day(Some(detail.effective_from))),
+                ("effective_through", day(Some(detail.effective_through))),
+                (
+                    "units",
+                    Json::List(detail.units.iter().map(|&u| n(u64::from(u))).collect()),
+                ),
+            ],
+        ));
+        for account in &detail.accounts {
+            checks.push(Check::pass(
+                "indirect_non_cash_account",
+                "authenticated_metadata",
+                vec![
+                    ("account", s(format!("{:032x}", account.id))),
+                    ("code", s(&account.code)),
+                    ("name", s(&account.name)),
+                    ("account_type", n(u64::from(account.account_type))),
+                    ("is_leaf", Json::Bool(account.is_leaf)),
+                ],
+            ));
+        }
+        for (index, bucket) in detail.buckets.iter().enumerate() {
+            checks.push(Check::pass(
+                "indirect_non_cash_bucket",
+                "recomputation",
+                vec![
+                    ("bucket", n(index as u64)),
+                    ("class", n(u64::from(bucket.class))),
+                    ("reason_code", s(&bucket.reason_code)),
+                    (
+                        "rule_digest",
+                        bucket.rule_digest.as_ref().map_or(Json::Null, |d| h(d)),
+                    ),
+                ],
+            ));
+        }
+        for (index, cell) in detail.cells.iter().enumerate() {
+            checks.push(Check::pass(
+                "indirect_non_cash_cell",
+                "recomputation",
+                vec![
+                    ("cell", n(index as u64)),
+                    ("account", s(format!("{:032x}", cell.account_id))),
+                    ("unit", n(u64::from(cell.unit_id))),
+                    ("opening", amount(cell.opening)),
+                    ("debits", amount(cell.debits)),
+                    ("credits", amount(cell.credits)),
+                    ("net_change", amount(cell.net_change)),
+                    ("closing", amount(cell.closing)),
+                    ("line_start", n(u64::from(cell.line_start))),
+                    ("line_end", n(u64::from(cell.line_end))),
+                ],
+            ));
+        }
+        for line in &detail.lines {
+            checks.push(Check::pass(
+                "indirect_non_cash_movement",
+                "recomputation",
+                vec![
+                    ("cell", n(u64::from(line.cell_index))),
+                    ("entry_digest", h(&line.entry_digest)),
+                    ("leg_index", n(u64::from(line.leg_index))),
+                    ("recorded_seq", n(line.recorded_seq)),
+                    ("effective_day", day(Some(line.effective_day))),
+                    ("bucket", n(u64::from(line.bucket_index))),
+                    ("debits", amount(line.debits)),
+                    ("credits", amount(line.credits)),
+                    ("running_balance", amount(line.running_balance)),
+                ],
+            ));
+        }
+    }
+    for c in &report.contributions {
+        checks.push(Check::pass(
+            "indirect_cash_flow_contribution",
+            "recomputation",
+            vec![
+                ("entry_digest", h(&c.entry_digest)),
+                ("leg_index", n(u64::from(c.leg_index))),
+                ("account", s(format!("{:032x}", c.account_id))),
+                ("unit", n(u64::from(c.unit_id))),
+                ("amount", amount(c.amount)),
+            ],
+        ));
+    }
+    for unit in &report.units {
+        checks.push(Check::pass(
+            "indirect_cash_flow_unit",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(unit.unit_id))),
+                ("net_income", amount(unit.net_income)),
+                ("non_cash", amount(unit.non_cash)),
+                ("working_capital", amount(unit.working_capital)),
+                ("non_operating", amount(unit.non_operating)),
+                ("operating", amount(unit.operating)),
+                ("direct_operating", amount(unit.direct_operating)),
+                ("operating_residual", amount(unit.operating_residual)),
+                ("opening", amount(unit.opening)),
+                ("investing", amount(unit.investing)),
+                ("financing", amount(unit.financing)),
+                ("exchange_effects", amount(unit.exchange_effects)),
+                ("net_change", amount(unit.net_change)),
+                ("closing", amount(unit.closing)),
+            ],
+        ));
+    }
+    checks
 }
 
 fn split_cash_flow_checks(report: &crate::report::VerifiedSplitCashFlow) -> Vec<Check> {

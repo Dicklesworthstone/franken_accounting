@@ -1,5 +1,8 @@
 //! Literal native journal scenarios for the earnings-to-cash bridge.
 
+#[path = "indirect_cash_flow/bundles.rs"]
+mod bundles;
+
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa::general_ledger::{CashFlowActivity, CashFlowAssignment, CashFlowDefinition};

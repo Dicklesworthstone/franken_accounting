@@ -799,6 +799,61 @@ impl Schema {
             }
         }
     }
+    /// Exactly all historical periods intersecting a complete interval. Even
+    /// an overlapping special period is required; no endpoint or gap is hidden
+    /// by comparing only minimum and maximum dates.
+    pub(super) fn whole_periods_between(
+        &self,
+        from: i32,
+        through: i32,
+    ) -> Result<Vec<String>, ReportError> {
+        let end = through.checked_add(1).ok_or_else(|| {
+            failed(
+                "indirect_period_coverage",
+                "cash interval has no exclusive end",
+            )
+        })?;
+        let mut selected = Vec::new();
+        let mut spans = Vec::new();
+        for (name, period) in &self.periods {
+            if period.start >= period.end {
+                return Err(failed(
+                    "indirect_period_coverage",
+                    "historical period has invalid bounds",
+                ));
+            }
+            if period.start >= end || period.end <= from {
+                continue;
+            }
+            if period.start < from || period.end > end {
+                return Err(failed(
+                    "indirect_period_coverage",
+                    "cash interval slices a historical income period",
+                ));
+            }
+            selected.push(name.clone());
+            spans.push((period.start, period.end));
+        }
+        spans.sort_unstable();
+        let mut covered = from;
+        for (start, stop) in spans {
+            if start > covered {
+                return Err(failed(
+                    "indirect_period_coverage",
+                    "historical periods leave a gap in the cash interval",
+                ));
+            }
+            covered = covered.max(stop);
+        }
+        if selected.is_empty() || covered != end {
+            return Err(failed(
+                "indirect_period_coverage",
+                "historical periods do not cover the complete cash interval",
+            ));
+        }
+        Ok(selected)
+    }
+
     pub fn bounds(&self, codes: &[String]) -> Result<(i32, i32), ReportError> {
         if codes.is_empty() {
             return Err(failed(
@@ -871,3 +926,39 @@ impl Schema {
     }
 }
 const MAX_ROWS: usize = 1 << 20;
+
+#[cfg(test)]
+mod indirect_period_tests {
+    use super::*;
+
+    fn schema(spans: &[(&str, i32, i32, u8)]) -> Schema {
+        Schema {
+            periods: spans
+                .iter()
+                .map(|&(name, start, end, kind)| (name.to_owned(), Period { start, end, kind }))
+                .collect(),
+            ..Schema::default()
+        }
+    }
+
+    #[test]
+    fn complete_period_coverage_includes_specials_and_refuses_hidden_gaps_or_slices() {
+        let complete = schema(&[("P1", 0, 31, 0), ("ADJ", 30, 31, 2), ("P2", 31, 59, 0)]);
+        assert_eq!(
+            complete.whole_periods_between(0, 30).unwrap(),
+            ["ADJ", "P1"]
+        );
+        assert_eq!(
+            complete.whole_periods_between(0, 58).unwrap(),
+            ["ADJ", "P1", "P2"]
+        );
+        assert!(complete.whole_periods_between(1, 30).is_err());
+        assert!(complete.whole_periods_between(0, 29).is_err());
+        assert!(complete.whole_periods_between(0, i32::MAX).is_err());
+        assert!(complete.whole_periods_between(31, 30).is_err());
+        let gap = schema(&[("P1", 0, 10, 0), ("P2", 11, 31, 0)]);
+        assert!(gap.whole_periods_between(0, 30).is_err());
+        let reversed = schema(&[("P1", 31, 0, 0)]);
+        assert!(reversed.whole_periods_between(0, 30).is_err());
+    }
+}

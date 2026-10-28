@@ -134,6 +134,10 @@ enum ReportBundleCertificate<'a> {
         expected: &'a crate::RollForwardRequest,
         expected_definition: &'a crate::cash_flow_split::CashFlowSplitDefinition,
     },
+    IndirectCashFlow {
+        certificate: &'a crate::IndirectCashFlowCertificate,
+        expected: &'a crate::IndirectCashFlowRequest,
+    },
     AgingReconciliation {
         certificate: &'a crate::AgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
@@ -161,6 +165,9 @@ impl<'a> ReportBundleCertificate<'a> {
                 .source_certificate(),
             Self::SplitCashFlow { certificate, .. } => {
                 certificate.source_certificate().source_certificate()
+            }
+            Self::IndirectCashFlow { certificate, .. } => {
+                certificate.source_certificate().native_source_certificate()
             }
             Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
             Self::DueDateAgingReconciliation { certificate, .. } => {
@@ -4058,6 +4065,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export an indirect earnings-to-cash workpaper over its original signed
+    /// whole-book prefix. Native replay validates the independently selected
+    /// cash basis, income periods, adjustment citations and exact output before
+    /// any bundle is assembled. Classification judgments remain report inputs.
+    pub async fn produce_indirect_cash_flow_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::IndirectCashFlowCertificate,
+        expected: &crate::IndirectCashFlowRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::IndirectCashFlow {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     /// Export the original aging/control reconciliation and both native
     /// sources over one signed complete prefix. The recipient must independently
     /// select the account, cutoff, fixed sequence and age bands in `expected`.
@@ -4262,6 +4295,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::IndirectCashFlow {
+                certificate,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_indirect_cash_flow(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    expected,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
             ReportBundleCertificate::AgingReconciliation {
                 certificate: reconciliation,
                 expected,
@@ -4331,6 +4379,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
                 | ReportBundleCertificate::SplitCashFlow { .. }
+                | ReportBundleCertificate::IndirectCashFlow { .. }
                 | ReportBundleCertificate::AgingReconciliation { .. }
                 | ReportBundleCertificate::DueDateAgingReconciliation { .. }
         ) || matches!(
@@ -4566,6 +4615,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
             ReportBundleCertificate::SplitCashFlow { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::IndirectCashFlow { certificate, .. } => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

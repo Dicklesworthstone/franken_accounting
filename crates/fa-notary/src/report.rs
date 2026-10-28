@@ -148,6 +148,7 @@ pub fn assemble_with_registries(
         || cash_flow_certificate(certificate)
         || policy_cash_flow_certificate(certificate)
         || split_cash_flow_certificate(certificate)
+        || indirect_cash_flow_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -453,6 +454,31 @@ fn split_cash_flow_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
+/// Each indirect format has one exact cash-basis framing. The full facade and
+/// independent verifier replay income and adjustments; routing never treats a
+/// nested family's amount-equivalent output as interchangeable provenance.
+fn indirect_cash_flow_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        let kind = match reader.bytes(64, "indirect cash-flow format")? {
+            b"fa:indirect-cash-flow-certificate:v1" => 0,
+            b"fa:indirect-cash-flow-certificate:v2" => match reader.u8("indirect cash basis")? {
+                kind @ (1 | 2) => kind,
+                _ => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "indirect cash source")?;
+        Ok(match kind {
+            0 => cash_flow_certificate(source),
+            1 => policy_cash_flow_certificate(source),
+            2 => split_cash_flow_certificate(source),
+            _ => false,
+        })
+    };
+    header().unwrap_or(false)
+}
+
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -527,11 +553,12 @@ fn assemble_inner(
                 || equity_certificate(certificate)
                 || cash_flow_certificate(certificate)
                 || policy_cash_flow_certificate(certificate)
-                || split_cash_flow_certificate(certificate))
+                || split_cash_flow_certificate(certificate)
+                || indirect_cash_flow_certificate(certificate))
         || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy or split cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -748,6 +775,49 @@ mod format_tests {
         let direct = wrap(cash, &roll_forward_bytes);
         let classified = wrap(policy, &direct);
         let split_cash = wrap(split, &roll_forward_bytes);
+        let indirect = |kind: Option<u8>, source: &[u8]| {
+            let mut writer = Writer::new();
+            if let Some(kind) = kind {
+                writer
+                    .bytes(b"fa:indirect-cash-flow-certificate:v2")
+                    .u8(kind);
+            } else {
+                writer.bytes(b"fa:indirect-cash-flow-certificate:v1");
+            }
+            writer.bytes(source);
+            writer.finish().unwrap()
+        };
+        assert!(indirect_cash_flow_certificate(&indirect(None, &direct)));
+        assert!(indirect_cash_flow_certificate(&indirect(
+            Some(1),
+            &classified
+        )));
+        assert!(indirect_cash_flow_certificate(&indirect(
+            Some(2),
+            &split_cash
+        )));
+        for wrong in [
+            indirect(None, &classified),
+            indirect(None, &split_cash),
+            indirect(Some(0), &direct),
+            indirect(Some(1), &direct),
+            indirect(Some(1), &split_cash),
+            indirect(Some(2), &classified),
+            indirect(Some(3), &split_cash),
+            indirect(None, &native),
+            wrap(b"fa:indirect-cash-flow-certificate:v3", &direct),
+        ] {
+            assert!(!indirect_cash_flow_certificate(&wrong));
+        }
+        for valid in [
+            indirect(None, &direct),
+            indirect(Some(1), &classified),
+            indirect(Some(2), &split_cash),
+        ] {
+            for end in 0..valid.len() {
+                assert!(!indirect_cash_flow_certificate(&valid[..end]));
+            }
+        }
         assert!(cash_flow_certificate(&direct));
         assert!(policy_cash_flow_certificate(&classified));
         assert!(split_cash_flow_certificate(&split_cash));

@@ -2,6 +2,9 @@
 //! Expectations are assembled from the user's original inputs, never from a
 //! delivered certificate or its generated replay command.
 
+#[path = "indirect_cash_flow_basis/bundles.rs"]
+mod bundles;
+
 use super::*;
 
 const LABEL: &str = "March indirect cash";

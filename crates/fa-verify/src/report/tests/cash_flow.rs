@@ -6,6 +6,9 @@ use super::*;
 #[path = "cash_flow_split.rs"]
 mod cash_flow_split;
 
+#[path = "indirect_cash_flow.rs"]
+mod indirect_cash_flow;
+
 type Assignment = ([u8; 32], u32, u8);
 type Decision = ([u8; 32], u32, u8, u8);
 type Unit = (u32, i128, [[i128; 3]; 4], i128, i128);
