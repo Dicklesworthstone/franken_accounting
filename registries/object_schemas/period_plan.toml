@@ -1,0 +1,55 @@
+# Reviewed period-transition proposals (plan §7.3, §10.4, Appendix D; fa-we7).
+schema_version = 1
+owner = "fa-journal::period::TransitionPlan"
+format = "fa:period-plan"
+major = 3
+minor = 0
+versions = ["1:caller-dated-proposal", "2:period-dated-proposal", "3:authenticated-period-proposal"]
+accepted_versions = [3]
+authentication_key_domain = "fa:period-plan-authentication-key:v1"
+scope = "period-transition-proposal"
+externally_verifiable = false
+
+# Integers use FA's little-endian encoding. str/bytes carry a u32 byte
+# length; fixed fields have no prefix. This domain has no terminal NUL.
+# Plan body, in exact order:
+# fixed("fa:period-plan") || u16 version
+# || book_id[16] || snapshot_seq:u64 || security_policy_epoch:u64
+# || str(period_code) || from:u8 || to:u8 || principal:u128
+# || reason:u16 || bytes(idempotency_key) || Erasable<String>(description)
+# || prepared_proposal_digest[32].
+# Canonical plan = body || authentication[32]. There is no minor-version
+# field on this wire. State tags and field bounds are fa-model/fa-time's.
+# Authentication = fgdb_crypto::keyed_hash(
+#     derive_key(authentication_key_domain, book.seal_key), body).
+# prepared_proposal_digest is the ordinary PeriodControl proposal_digest,
+# including the period-derived effective date and the exact sealed text.
+
+# Readers reject unsigned versions 1 and 2; their holders must replan and
+# review the version-3 artifact. Changing any field, swapping book keys,
+# supplying another book or selecting another transition cannot preserve
+# an admitted plan. The public approval digest remains the proposal digest.
+# Authentication establishes preparation, never authority. Current caller,
+# holder capability, scope, expiry, revocation and ordinary SoD approval
+# rules apply before historical observation or publication, including retry.
+
+# First publication authenticates the artifact, compares its complete
+# proposal with the book's current calendar, and checks its period state
+# and security policy epoch. The complete retained suffix from snapshot_seq
+# through the admission basis must contain no change to this period or the
+# book's calendar/policy definition. Moving and restoring a period does not
+# revive a plan. Other periods, independent approvals and access receipts
+# may advance the head; publication retains normal transaction witnesses.
+# Invalid authentication, foreign scope, a different requested transition
+# or a changed preparation basis is FA-REF-034; ordinary authority, SoD and
+# idempotency refusals remain in force.
+
+# Exact retry checks the original control and common-key outcome evidence,
+# exact sealed proposal, ordered approval list, original policy epoch and
+# unchanged preparation suffix up to the control's creating prefix. It
+# returns the original entry/sequence without another publication. The
+# existing period retry law still requires the recorded destination state.
+
+# This authenticates a transition proposal only. It does not bind scheduled
+# reversal effects, retain a PostEntry effects certificate, supply independent
+# dangerous-action confirmation, or enable dangerous period commits via MCP.

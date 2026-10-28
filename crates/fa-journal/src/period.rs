@@ -728,13 +728,16 @@ fn illegal_transition(period_code: &str, from: PeriodState, t: PeriodTransition)
     .at("state", from.name())
 }
 
-/// A planned transition (R4): the inputs [`transition_period`] rebuilds its
-/// proposal from, with the description sealed once. Approvers bind
-/// [`TransitionPlan::proposal_digest`]; the committing process passes the
-/// same inputs back, so the digest matches, or the approval binding refuses
-/// (FA-REF-016) when the period has moved since the plan was made.
+/// A book-authenticated transition proposal, with the description sealed
+/// once. Approvers bind [`TransitionPlan::proposal_digest`]. Publication
+/// through [`transition_planned`] checks the original period, policy and
+/// proposal, even when this transition needs no approvals. The artifact is
+/// not a grant of authority or a certificate of scheduled reversal effects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionPlan {
+    pub book_id: Id128,
+    pub snapshot_seq: CommitSeq,
+    pub security_policy_epoch: u64,
     pub period_code: String,
     pub from: PeriodState,
     pub to: PeriodState,
@@ -742,19 +745,35 @@ pub struct TransitionPlan {
     pub reason_code: u16,
     pub idempotency_key: Vec<u8>,
     pub description: Erasable<String>,
+    prepared_proposal_digest: [u8; 32],
+    authentication: [u8; 32],
 }
 
 /// The plan file's leading domain tag; the format is versioned after it.
 pub const PLAN_DOMAIN: &[u8; 14] = b"fa:period-plan";
-/// Version 2 dropped version 1's caller-supplied date: the period fixes the
-/// control's date (fa-87r), so a version 1 plan is refused.
-const PLAN_VERSION: u16 = 2;
+/// Version 2 removed the caller-supplied date. Version 3 authenticates the
+/// book, reviewed proposal, period basis and policy epoch. Older unsigned
+/// plans cannot establish preparation by this book and must be replanned.
+const PLAN_VERSION: u16 = 3;
+
+fn invalidated_plan(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::PLAN_INVALIDATED,
+        exit::CONFLICT,
+        message,
+        "plan §10.4; fa-we7 (authenticated period-transition proposal)",
+        "run the intended period transition with --dry-run again, review its unchanged plan and collect any required approvals before committing",
+    )
+}
 
 impl TransitionPlan {
     /// The proposal this plan commits, dated by its period
     /// ([`transition_date`]); refused when the book's calendar has no such
     /// period.
     pub fn proposal(&self, book: &BookContext) -> Result<EntryPayload, Refusal> {
+        if self.book_id != book.book_id {
+            return Err(invalidated_plan("the period plan belongs to another book"));
+        }
         let period = policy::calendar_period(book, &self.period_code)
             .ok_or_else(|| unknown_period(book, &self.period_code))?;
         Ok(transition_proposal(
@@ -769,32 +788,70 @@ impl TransitionPlan {
         ))
     }
 
-    /// The digest an approval of this plan binds.
+    /// The digest an approval of this authenticated plan binds. Changed
+    /// bytes, a foreign book or a changed calendar cannot obtain a new
+    /// approvable digest from an old artifact.
     pub fn proposal_digest(&self, book: &BookContext) -> Outcome<[u8; 32]> {
-        match self.proposal(book) {
-            Ok(proposal) => Ok(Ok(proposal.proposal_digest()?)),
-            Err(refusal) => Ok(Err(refusal)),
+        if self.book_id != book.book_id
+            || self
+                .authentication(book)?
+                .iter()
+                .zip(self.authentication)
+                .fold(0_u8, |difference, (a, b)| difference | (a ^ b))
+                != 0
+        {
+            return Ok(Err(invalidated_plan(
+                "the period plan was not issued by this book or its authenticated fields changed",
+            )));
         }
+        let proposal = match self.proposal(book) {
+            Ok(proposal) => proposal,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if proposal.proposal_digest()? != self.prepared_proposal_digest {
+            return Ok(Err(invalidated_plan(
+                "the book no longer reproduces the reviewed period-transition proposal",
+            )));
+        }
+        Ok(Ok(self.prepared_proposal_digest))
     }
 
-    /// `"fa:period-plan" ‖ u16 version ‖ str period ‖ u8 from ‖ u8 to ‖
-    /// u128 principal ‖ u16 reason ‖ bytes key ‖ erasable description`.
-    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
-        let mut w = Writer::new();
+    fn write_body(&self, w: &mut Writer) {
         w.fixed(PLAN_DOMAIN)
             .u16(PLAN_VERSION)
+            .fixed(&self.book_id.0)
+            .u64(self.snapshot_seq.0)
+            .u64(self.security_policy_epoch)
             .str(&self.period_code)
             .u8(self.from.tag())
             .u8(self.to.tag())
             .u128(self.principal_ref.0)
             .u16(self.reason_code)
             .bytes(&self.idempotency_key);
-        self.description.encode(&mut w);
+        self.description.encode(w);
+        w.fixed(&self.prepared_proposal_digest);
+    }
+
+    fn authentication(&self, book: &BookContext) -> Result<[u8; 32], EncodeError> {
+        let key = fgdb_crypto::derive_key("fa:period-plan-authentication-key:v1", &book.seal_key.0);
+        let mut w = Writer::new();
+        self.write_body(&mut w);
+        Ok(fgdb_crypto::keyed_hash(&key, &w.finish()?).0)
+    }
+
+    /// Version 3: domain, version, book, basis, policy epoch, period,
+    /// from/to, principal, reason, key, sealed description, proposal digest,
+    /// then a book-key MAC over all preceding bytes.
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        self.write_body(&mut w);
+        w.fixed(&self.authentication);
         w.finish()
     }
 
     /// Decode a plan; refuses another format, an unknown version or state
-    /// tag, a transition the state machine does not have, and trailing bytes.
+    /// tag, and trailing bytes. Publication additionally authenticates the
+    /// contents and checks the requested transition against the state machine.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
         let domain: [u8; 14] = r.fixed("plan.domain")?;
@@ -804,6 +861,9 @@ impl TransitionPlan {
         if r.u16("plan.version")? != PLAN_VERSION {
             return Err(r.invalid("plan.version"));
         }
+        let book_id = Id128(r.fixed("plan.book")?);
+        let snapshot_seq = CommitSeq(r.u64("plan.snapshot_seq")?);
+        let security_policy_epoch = r.u64("plan.security_policy_epoch")?;
         let period_code = r
             .str(limits::MAX_PERIOD_REF_BYTES, "plan.period")?
             .to_string();
@@ -814,6 +874,9 @@ impl TransitionPlan {
         let from = state("plan.from")?;
         let to = state("plan.to")?;
         let plan = Self {
+            book_id,
+            snapshot_seq,
+            security_policy_epoch,
             period_code,
             from,
             to,
@@ -823,6 +886,8 @@ impl TransitionPlan {
                 .bytes(limits::MAX_IDEMPOTENCY_KEY_BYTES, "plan.key")?
                 .to_vec(),
             description: Erasable::decode(&mut r, limits::MAX_DESCRIPTION_BYTES)?,
+            prepared_proposal_digest: r.fixed("plan.proposal_digest")?,
+            authentication: r.fixed("plan.authentication")?,
         };
         r.finish()?;
         Ok(plan)
@@ -865,7 +930,10 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
     if let Some(r) = reason_refusal(t, reason_code)? {
         return Ok(Err(r));
     }
-    Ok(Ok(TransitionPlan {
+    let mut plan = TransitionPlan {
+        book_id: book.book_id,
+        snapshot_seq: db.frontier()?,
+        security_policy_epoch: policy::security_policy_epoch(db)?,
         period_code: period_code.to_string(),
         from,
         to,
@@ -873,7 +941,15 @@ pub fn plan_transition<V: asupersync::fs::Vfs + Clone>(
         reason_code,
         idempotency_key: idempotency_key.to_vec(),
         description,
-    }))
+        prepared_proposal_digest: [0; 32],
+        authentication: [0; 32],
+    };
+    plan.prepared_proposal_digest = match plan.proposal(book) {
+        Ok(proposal) => proposal.proposal_digest()?,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    plan.authentication = plan.authentication(book)?;
+    Ok(Ok(plan))
 }
 
 /// Move one period along the state machine, journaled, under `capability`
@@ -920,6 +996,140 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         Ok(prepared) => prepared.commit(db, ctx).await,
         Err(refusal) => Ok(Err(refusal)),
     }
+}
+
+/// Commit only the transition this book prepared. Authentication proves
+/// preparation, not permission: current scope, principal, revocation,
+/// expiry and segregation of duties are still checked by the normal kernel.
+/// An approval may be published after preparation without invalidating it.
+pub async fn transition_planned<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &TransitionPlan,
+    t: PeriodTransition,
+    capability: &Capability,
+    approvals: &[ApprovalRef],
+) -> Outcome<Transitioned> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if let Err(refusal) = admit_transition(
+        db,
+        book,
+        &plan.period_code,
+        t,
+        plan.principal_ref,
+        capability,
+    )? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = plan.proposal_digest(book)? {
+        return Ok(Err(refusal));
+    }
+    if !plan.is_for(t) {
+        return Ok(Err(invalidated_plan(
+            "the requested transition is not the transition this plan reviewed",
+        )));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
+    match prepare_transition_in(
+        db,
+        ctx,
+        book,
+        &plan.period_code,
+        t,
+        plan.principal_ref,
+        plan.reason_code,
+        &plan.idempotency_key,
+        plan.description.clone(),
+        capability,
+        approvals,
+        Some(plan),
+    )? {
+        Ok(prepared) => prepared.commit(db, ctx).await,
+        Err(refusal) => Ok(Err(refusal)),
+    }
+}
+
+/// Check the complete suffix, not just the final state: moving a period
+/// and restoring it cannot revive a reviewed plan. Other periods, approvals
+/// and access receipts do not change this proposal's period/policy basis.
+fn plan_basis_unchanged<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &TransitionPlan,
+    through: CommitSeq,
+) -> Result<bool, KernelError> {
+    use fgdb_delta_types::{DeltaRow, ElementId};
+    if through < plan.snapshot_seq {
+        return Ok(false);
+    }
+    let pvid = period_vid(&book.calendar.id, &plan.period_code);
+    let mut covered = plan.snapshot_seq;
+    for batch in db.delta_since(plan.snapshot_seq)? {
+        let seq = batch.commit_seq();
+        if seq > through {
+            break;
+        }
+        if covered.0.checked_add(1) != Some(seq.0) {
+            return Ok(false);
+        }
+        for coordinate in batch.coordinate_entries() {
+            for row in &coordinate.rows {
+                ctx.query()
+                    .checkpoint()
+                    .map_err(WriteTxnError::Interrupted)?;
+                let changed = match row {
+                    DeltaRow::CreateVertex { vid, .. }
+                    | DeltaRow::DeleteVertex { vid, .. }
+                    | DeltaRow::LabelMembership { vid, .. } => {
+                        *vid == pvid || *vid == crate::rows::book_root()
+                    }
+                    DeltaRow::Property {
+                        elem: ElementId::Vertex(vid),
+                        property: key,
+                        ..
+                    } => {
+                        *vid == pvid
+                            || (*vid == crate::rows::book_root()
+                                && matches!(
+                                    *key,
+                                    property::SECURITY_POLICY_EPOCH | property::FA_PAYLOAD
+                                ))
+                    }
+                    DeltaRow::ValidTime {
+                        elem: ElementId::Vertex(vid),
+                        ..
+                    } => *vid == pvid || *vid == crate::rows::book_root(),
+                    DeltaRow::CreateEdge { .. }
+                    | DeltaRow::DeleteEdge { .. }
+                    | DeltaRow::Property {
+                        elem: ElementId::Edge(_),
+                        ..
+                    }
+                    | DeltaRow::ValidTime {
+                        elem: ElementId::Edge(_),
+                        ..
+                    } => false,
+                    DeltaRow::Counter { .. }
+                    | DeltaRow::Escrow { .. }
+                    | DeltaRow::Sketch { .. }
+                    | DeltaRow::Schema { .. }
+                    | DeltaRow::Constraint { .. } => true,
+                };
+                if changed {
+                    return Ok(false);
+                }
+            }
+        }
+        covered = seq;
+    }
+    Ok(covered == through)
 }
 
 /// Capability and coordinate admission shared by preparation and the async
@@ -987,6 +1197,37 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<PreparedTransition> {
+    prepare_transition_in(
+        db,
+        ctx,
+        book,
+        period_code,
+        t,
+        principal_ref,
+        reason_code,
+        idempotency_key,
+        description,
+        capability,
+        approvals,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    period_code: &str,
+    t: PeriodTransition,
+    principal_ref: VId,
+    reason_code: u16,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+    approvals: &[ApprovalRef],
+    expected_plan: Option<&TransitionPlan>,
+) -> Outcome<PreparedTransition> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let calendar_period =
         match admit_transition(db, book, period_code, t, principal_ref, capability)? {
@@ -1051,6 +1292,58 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
             book.calendar.id
         )));
     };
+    if let Some(plan) = expected_plan {
+        if let Some(existing) = txn.vertex(db, evid)? {
+            let basis = txn.basis();
+            txn.abort();
+            let Some(before) = existing.created_at.0.checked_sub(1).map(CommitSeq) else {
+                return Ok(Err(invalidated_plan(
+                    "the planned outcome has no creating prefix",
+                )));
+            };
+            let Some((stored, recorded_at)) = crate::post::read_entry(db, evid)? else {
+                return Ok(Err(invalidated_plan("the planned outcome is unavailable")));
+            };
+            if stored.proposal_digest != plan.prepared_proposal_digest
+                || stored.proposal
+                    != plan.proposal(book).map_err(|r| {
+                        KernelError::Corrupt(format!("authenticated period plan: {}", r.message))
+                    })?
+                || recorded_at != existing.created_at
+                || policy::security_policy_epoch_at(db, before)? != plan.security_policy_epoch
+                || !plan_basis_unchanged(db, ctx, book, plan, before)?
+            {
+                return Ok(Err(invalidated_plan(
+                    "the recorded identity is not the unchanged reviewed period transition",
+                )));
+            }
+            return match recorded_proposal_or_conflict(
+                db,
+                book,
+                &existing,
+                period_code,
+                t,
+                &stored.proposal,
+                &plan.prepared_proposal_digest,
+                approvals,
+            )? {
+                Ok(recorded) => Ok(Ok(PreparedTransition {
+                    state: PreparedTransitionState::AlreadyRecorded { basis, recorded },
+                })),
+                Err(refusal) => Ok(Err(refusal)),
+            };
+        }
+        if from != plan.from
+            || transition(from, t) != Ok(plan.to)
+            || epoch != plan.security_policy_epoch
+            || !plan_basis_unchanged(db, ctx, book, plan, txn.basis())?
+        {
+            txn.abort();
+            return Ok(Err(invalidated_plan(
+                "the reviewed period or security policy changed after this plan was prepared",
+            )));
+        }
+    }
     let Ok(to) = transition(from, t) else {
         // When `t` is not admissible from the period's current state `from`,
         // check whether `evid` already recorded this `(period_code, t)`

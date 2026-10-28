@@ -1419,10 +1419,10 @@ impl Book {
         )))
     }
 
-    /// Plan a transition without committing (R4): the description is sealed
-    /// once, so approvers bind the plan's `proposal_digest` and
-    /// [`Book::transition_planned`] commits exactly that proposal. The
-    /// period is read at the head; authority is judged at the commit.
+    /// Plan a transition without committing: the book authenticates the
+    /// sealed proposal, period basis and policy epoch. Approvers bind its
+    /// `proposal_digest`; [`Book::transition_planned`] commits that same
+    /// transition under independently checked current authority.
     #[allow(clippy::too_many_arguments)]
     pub fn plan_transition(
         &self,
@@ -1437,16 +1437,17 @@ impl Book {
         ))
     }
 
-    /// The digest an approval of `plan` binds; refused when the book's
-    /// calendar has no period `plan` names.
+    /// The digest an approval of `plan` binds; refuses an unsigned, changed
+    /// or foreign plan and a book that no longer reproduces its proposal.
     pub fn plan_digest(&self, plan: &fa_journal::TransitionPlan) -> Outcome<[u8; 32]> {
         with_store!(&self.store, core => core.plan_digest(plan))
     }
 
-    /// Commit a planned transition under `capability`, citing `approvals`
-    /// of the plan's proposal digest. The kernel rebuilds the proposal from
-    /// the plan's inputs and the period's current state, so a period that
-    /// moved since the plan no longer matches its approvals (FA-REF-016).
+    /// Commit the authenticated planned transition under `capability`,
+    /// citing `approvals` of its proposal digest. A changed transition,
+    /// period or policy refuses with PlanInvalidated even when no approval
+    /// is required. Exact recorded retries retain their original outcome;
+    /// current authority is required on every call.
     pub fn transition_planned(
         &mut self,
         plan: &fa_journal::TransitionPlan,

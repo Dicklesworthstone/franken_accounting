@@ -190,6 +190,42 @@ impl Harness {
             .expect("kernel")
     }
 
+    fn period_plan(&self, transition: PeriodTransition, key: &[u8]) -> TransitionPlan {
+        plan_transition(
+            &self.db,
+            &self.book,
+            &self.march,
+            transition,
+            PREPARER,
+            1,
+            key,
+            self.period_description(),
+        )
+        .expect("kernel")
+        .expect("period proposal")
+    }
+
+    fn commit_period_plan(
+        &mut self,
+        plan: &TransitionPlan,
+        transition: PeriodTransition,
+        capability: &Capability,
+        approvals: &[ApprovalRef],
+    ) -> Result<Transitioned, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(transition_planned(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                plan,
+                transition,
+                capability,
+                approvals,
+            ))
+            .expect("kernel")
+    }
+
     fn revoke(
         &mut self,
         issuer: &Capability,
@@ -1294,6 +1330,236 @@ fn an_identical_activation_retry_is_its_recorded_outcome() {
 // PeriodControl under Steward (period.rs: admission before any read, the
 // revocation and epoch witnesses, SoD keyed on (PeriodControl, from, t))
 // ---------------------------------------------------------------------------
+
+#[test]
+fn period_plan_authenticates_every_field_and_rejects_unsigned_versions() {
+    let mut h = harness();
+    let plan = h.period_plan(PeriodTransition::Close, b"authenticated-close");
+    let head = h.db.frontier().unwrap();
+    assert_eq!(plan.snapshot_seq, head);
+    assert_eq!(plan.security_policy_epoch, 0);
+    let bytes = plan.encode().unwrap();
+    assert_eq!(&bytes[14..16], &3_u16.to_le_bytes());
+    assert_eq!(TransitionPlan::decode(&bytes).unwrap(), plan);
+    let mut unsigned = bytes.clone();
+    unsigned[14..16].copy_from_slice(&2_u16.to_le_bytes());
+    assert!(TransitionPlan::decode(&unsigned).is_err());
+
+    let mut changed = Vec::new();
+    let mut candidate = plan.clone();
+    candidate.book_id = Id128([8; 16]);
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.snapshot_seq.0 += 1;
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.security_policy_epoch += 1;
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.period_code = "FY2026-P04".into();
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.from = PeriodState::SoftClosed;
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.to = PeriodState::SoftClosed;
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.principal_ref = ALICE;
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.reason_code = 2;
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.idempotency_key.push(b'x');
+    changed.push(candidate);
+    let mut candidate = plan.clone();
+    candidate.description = Erasable::seal(
+        &"changed reviewed description".to_string(),
+        None,
+        &h.book.seal_key,
+        [0x31; 32],
+        [0x32; 24],
+    );
+    changed.push(candidate);
+    // The trailing two fixed fields are the prepared proposal digest and
+    // the MAC. Neither may be replaced even if the wire remains decodable.
+    for position in [bytes.len() - 64, bytes.len() - 1] {
+        let mut forged = bytes.clone();
+        forged[position] ^= 1;
+        changed.push(TransitionPlan::decode(&forged).unwrap());
+    }
+    for (index, candidate) in changed.iter().enumerate() {
+        let refusal = candidate.proposal_digest(&h.book).unwrap().unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-034", 6),
+            "field {index}"
+        );
+        let capability = human(candidate.principal_ref, &["close", "reopen"]);
+        let refusal = h
+            .commit_period_plan(candidate, PeriodTransition::Close, &capability, &[])
+            .unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-034", "field {index}: {refusal}");
+        assert_eq!(h.db.frontier().unwrap(), head, "field {index}");
+        assert_eq!(h.march_state(), PeriodState::Open);
+    }
+    // Matching identity and calendar alone are insufficient: another
+    // store's sealing key cannot authenticate the issuer's plan.
+    let mut foreign = h.book.clone();
+    foreign.seal_key = SealKey([0x44; 32]);
+    assert_eq!(
+        plan.proposal_digest(&foreign).unwrap().unwrap_err().code,
+        "FA-REF-034"
+    );
+}
+
+#[test]
+fn period_plan_refuses_changed_transition_and_moved_or_restored_period() {
+    let mut h = harness();
+    let plan = h.period_plan(PeriodTransition::Close, b"reviewed-close");
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .commit_period_plan(&plan, PeriodTransition::SoftClose, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", 6));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.march_state(), PeriodState::Open);
+
+    h.transition(PeriodTransition::SoftClose, b"intervening-soft-close");
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .commit_period_plan(&plan, PeriodTransition::Close, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", 6));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    // Return lawfully to the same state with independent approval. The
+    // original plan stays stale: equality of the final state is not enough.
+    let reopen = h.period_proposal(PeriodState::SoftClosed, PeriodState::Open, b"restore-open");
+    let approved = h
+        .approve(ALICE, reopen.proposal_digest().unwrap())
+        .unwrap()
+        .approval();
+    h.transition_with(
+        PeriodTransition::Reopen {
+            to: PeriodState::Open,
+        },
+        b"restore-open",
+        &period_cap(),
+        &[approved],
+    )
+    .unwrap();
+    let before = h.db.frontier().unwrap();
+    assert_eq!(h.march_state(), PeriodState::Open);
+    let refusal = h
+        .commit_period_plan(&plan, PeriodTransition::Close, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", 6));
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn period_plan_rechecks_policy_and_current_authority_before_publication_or_retry() {
+    let mut h = harness();
+    let plan = h.period_plan(PeriodTransition::Close, b"current-authority-close");
+    let before = h.db.frontier().unwrap();
+    for (capability, code) in [
+        (human(PREPARER, &["read"]), "FA-REF-011"),
+        (human(ALICE, &["close"]), "FA-REF-011"),
+        (period_cap().expiring_at(before), "FA-REF-014"),
+    ] {
+        let refusal = h
+            .commit_period_plan(&plan, PeriodTransition::Close, &capability, &[])
+            .unwrap_err();
+        assert_eq!(refusal.code, code, "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+    h.activate_with_dual_control(b"intervening-period-plan-policy");
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .commit_period_plan(&plan, PeriodTransition::Close, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", 6));
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let fresh = h.period_plan(PeriodTransition::Close, b"fresh-current-close");
+    let done = h
+        .commit_period_plan(&fresh, PeriodTransition::Close, &period_cap(), &[])
+        .unwrap();
+    assert!(!done.already_recorded);
+    let before = h.db.frontier().unwrap();
+    let denied = h
+        .commit_period_plan(
+            &fresh,
+            PeriodTransition::Close,
+            &human(ALICE, &["close"]),
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(denied.code, "FA-REF-011");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let retried = h
+        .commit_period_plan(&fresh, PeriodTransition::Close, &period_cap(), &[])
+        .unwrap();
+    assert!(retried.already_recorded);
+    assert_eq!(retried.control_entry, done.control_entry);
+    assert_eq!(retried.recorded_at, done.recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    h.revoke(
+        &human(ALICE, &["issue_capability"]),
+        &period_cap(),
+        b"revoke-period-plan-holder",
+    )
+    .unwrap();
+    let before = h.db.frontier().unwrap();
+    let revoked = h
+        .commit_period_plan(&fresh, PeriodTransition::Close, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!(revoked.code, "FA-REF-023");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn period_plan_preserves_independent_approval_and_exact_retry() {
+    let mut h = harness();
+    h.close_march();
+    let plan = h.period_plan(PeriodTransition::Lock, b"reviewed-dual-control-lock");
+    let digest = plan.proposal_digest(&h.book).unwrap().unwrap();
+    let before = h.db.frontier().unwrap();
+    let missing = h
+        .commit_period_plan(&plan, PeriodTransition::Lock, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!(missing.code, "FA-REF-012");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let own = h.approve(PREPARER, digest).unwrap().approval();
+    let before = h.db.frontier().unwrap();
+    let denied = h
+        .commit_period_plan(&plan, PeriodTransition::Lock, &period_cap(), &[own])
+        .unwrap_err();
+    assert_eq!(denied.code, "FA-REF-008");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let approved = h.approve(ALICE, digest).unwrap().approval();
+    let done = h
+        .commit_period_plan(&plan, PeriodTransition::Lock, &period_cap(), &[approved])
+        .unwrap();
+    let (entry, created_at) = read_entry(&h.db, done.control_entry).unwrap().unwrap();
+    assert_eq!(entry.proposal_digest, digest);
+    assert_eq!(entry.proposal, plan.proposal(&h.book).unwrap());
+    assert_eq!(entry.approvals, vec![approved]);
+    let before = h.db.frontier().unwrap();
+    let retry = h
+        .commit_period_plan(&plan, PeriodTransition::Lock, &period_cap(), &[approved])
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.control_entry, done.control_entry);
+    assert_eq!(retry.recorded_at, created_at);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let changed = h
+        .commit_period_plan(&plan, PeriodTransition::Lock, &period_cap(), &[])
+        .unwrap_err();
+    assert_eq!(changed.code, "FA-REF-032");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
 
 #[test]
 fn period_control_is_admitted_under_close_and_a_lock_needs_a_distinct_human_approver() {

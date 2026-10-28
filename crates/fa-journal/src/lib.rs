@@ -173,7 +173,7 @@ pub use period::{
     OriginallyReported, PeriodCheck, PeriodTransitionRecord, PeriodVerification,
     PreparedTransition, ReportedBasis, TransitionPlan, Transitioned, originally_reported,
     period_transitions, plan_transition, prepare_transition, transition_name, transition_period,
-    transition_proposal, verify_periods,
+    transition_planned, transition_proposal, verify_periods,
 };
 pub use period_history::{PeriodHistoryVerification, verify_periods_with_history};
 pub use plan::{
