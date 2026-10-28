@@ -315,10 +315,21 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
         data(&retry[0]).get("already_recorded"),
         Some(&Json::Bool(true))
     );
+    let posted_members = array(data(&posted[0]).get("case").unwrap(), "posted");
+    assert_eq!(posted_members.len(), 1);
+    assert_eq!(
+        posted_members,
+        array(data(&retry[0]).get("case").unwrap(), "posted"),
+        "an exact retry returns the same plans, entries and entry digests"
+    );
 
     let after_path = dir.join("after.cert");
     let mut after_args = equity_args.to_vec();
-    after_args.extend(["--certificate-out", after_path.to_str().unwrap()]);
+    after_args.extend([
+        "--as-currently-stated",
+        "--certificate-out",
+        after_path.to_str().unwrap(),
+    ]);
     let after = invoke(&after_args);
     let current = data(&after[0]);
     let unit = &array(current, "units")[0];
@@ -367,6 +378,61 @@ fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
             report,
             "historical and adjusted certificates retain their own prefix"
         );
+    }
+}
+
+#[test]
+fn equity_current_view_rejects_historical_selectors_before_opening_a_book() {
+    let dir = temporary();
+    let book = dir.join("absent-book");
+    for flag in ["--known-at", "--as-known-at"] {
+        for value in ["HEAD", "0", "not-an-instant"] {
+            let args = [
+                "statement",
+                "equity-roll-forward",
+                "--from",
+                "2026-01-01",
+                "--to",
+                "2026-12-31",
+                "--unit",
+                "USD",
+                "--as-currently-stated",
+                flag,
+                value,
+            ];
+            let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+                .arg("--book")
+                .arg(&book)
+                .args(args)
+                .arg("--json")
+                .env_remove("FA_BOOK")
+                .output()
+                .expect("run the conflicting equity selectors");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "equity view argv=fa --book {book:?} {args:?} --json exit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                output.status.code()
+            );
+            assert_eq!(output.status.code(), Some(2), "{args:?}");
+            let registry = fa_cli::verbs::registry().unwrap();
+            let events: Vec<Json> = stdout
+                .lines()
+                .map(|line| {
+                    registry.check_line(line).unwrap();
+                    json::parse(line).unwrap()
+                })
+                .collect();
+            assert_eq!(events.len(), 1, "{events:?}");
+            assert_eq!(text(&events[0], "event"), "error");
+            assert!(stdout.contains("--as-currently-stated"), "{stdout}");
+            assert!(stdout.contains("cannot be combined"), "{stdout}");
+            assert!(stdout.contains(flag), "{stdout}");
+            assert!(
+                !book.exists(),
+                "a conflicting selector must not open a book"
+            );
+        }
     }
 }
 

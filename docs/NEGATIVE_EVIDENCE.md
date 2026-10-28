@@ -970,3 +970,75 @@ Tier 1. The separately named CLI PPA acceptance tests are still absent;
 monolithic coverage does not silently replace that inventory contract.
 Original `fa-0hs4.8`, `fa-mg2j` and `fa-ze0y` remain in progress with their
 full acceptance and prior comments preserved.
+
+At 04:27 UTC the two originally named acceptance tests now exist:
+`equity_roll_forward_shows_prior_period_adjustments_and_ties` and
+`equity_roll_forward_prior_period_line_verifies_offline`. They exercise an
+FY2026 adjustment relating to closed FY2025, independent approvals, exact
+retry, the equity/balance-sheet tie, historical certificate replay, and
+offline recomputation. The omission control pins the same independently
+selected certificate and checkpoint key as its positive control, omits the
+actual posted PPA payload, and expects `record_completeness`; it does not
+substitute a mismatched receipt for the accounting-input check. This is
+authored coverage, not an executed result. The first native attempt at
+`c748c2bd` plus exactly those two test files refused before Cargo with
+namespace teardown status 73 (client exit 103). Supported recovery of our
+`rchw-77aee738-c2e2-4697-a0f1-075957a07489` returned terminal acknowledgement
+true and original exit 1. No shared namespace, cache, lock or daemon was
+cleared.
+
+Source review then corrected the new fixture's assumption that a posted
+case member retains the scenario's input idempotency key: the kernel derives
+that member key from the case and plan. The test still locates the exact
+posted entry digest and asserts its PPA class, effective date and two exact
+amounts; retry additionally compares the complete returned member list.
+No production law or original test was relaxed. Current formatting exits 0
+and the two-file static-only UBS scan exits 0 with zero critical findings
+(993 warnings, 138 informational findings). These checks do not type-check
+or execute the new tests. Their native result, the complete facade case,
+current strict Clippy, exact-tree Tier 0 and full Tier 1 remain unproved.
+
+At 04:33 UTC a fresh journal read supersedes the earlier VMI ownership
+observation: supported recovery of `rchw-8995d92d` now confirms completed,
+exit 101 and terminal acknowledgement true, with its source pair retired.
+The lost-stream log still has no test outcomes and the named remote
+completion file is absent, so the particular compiler/runtime failure is
+unadjudicated. The old TS1 inventory wrapper is absent from the current
+journal and supported recovery refuses because its lease file is absent;
+this does not establish its retirement or a passing runtime.
+
+After that VMI pair's confirmed retirement and a fresh passing disk
+preflight, a new two-target inventory attempt used `8ed9dbb3` plus only
+the current `statements.rs` and `proofs.rs` files. It exits 1 before Cargo:
+clean-baseline transfer times out at 69 seconds, followed by a 30-second
+ownership-recovery timeout. Wrapper
+`rchw-662d6f81-e58a-4a73-b2b5-541946680fa9` / build
+`30083054965883416` is then recovered by the supported command: recovery
+exits 0, original exit 1, terminal acknowledgement true. This is a
+source-transfer failure, not a native test result. No timeout, capacity,
+source policy or gate was changed to obtain admission, and it was not
+replayed.
+
+### 2026-10-28 20:45 UTC — conflicting equity restatement selectors
+
+Source review found that `statement_equity_roll_forward` refused the
+unsupported original-issuance selector but did not validate
+`--as-currently-stated`. With that switch beside `--known-at` or
+`--as-known-at`, `known_at_flag` could select a historical prefix while
+silently ignoring the request for the current view. The existing
+`issuance::reported_view` parser already enforces exclusivity for the
+ordinary period statements. The equity path now invokes that same parser
+before capability creation or book observation. The valid current-view
+path is exercised by the original cross-year PPA acceptance; an additional
+real-binary test requires usage exit 2 for six conflicting combinations
+against an absent book. The retry assertion now also requires one actual
+posted member, so two missing member lists cannot compare equal.
+
+This is a source-level defect and candidate repair, not a reproduced
+native failure or executed fix. A fresh preflight exits 1 with
+142,055,874,560 free bytes, below the Mac's configured reserve. The proposed
+worker-verified source-content transfer was therefore not submitted.
+One-run remote-only permission is pending; no reserve setting, gate,
+timeout, worker configuration or source policy has been weakened. The
+unsupported original-issuance equity selector and full native qualification
+remain open on the original task.

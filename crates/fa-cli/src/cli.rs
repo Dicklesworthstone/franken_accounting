@@ -19804,6 +19804,9 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
             EQUITY_ROLL_FORWARD_EXAMPLE,
         ));
     }
+    // The supported head view must not silently alias a historical selector.
+    // Reuse the same coordinate-exclusivity rule as the period statements.
+    let _ = crate::issuance::reported_view(args, EQUITY_ROLL_FORWARD_EXAMPLE)?;
     let who = ctx.principal(args);
     let capability = ctx.capability(
         args,

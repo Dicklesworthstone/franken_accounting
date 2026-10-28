@@ -269,11 +269,8 @@ impl Fixture {
     }
 }
 
-/// The signed anchor end to end through the CLI: `fa proof signed-checkpoint`
-/// exports the journaled TransparencyCheckpoint, the independent verifier
-/// checks its signature against the public key every export names, and a
-/// prefix proof is judged against the checkpoint that signature covers. A
-/// flipped byte or another key is refused.
+/// Recompute a cross-year PPA from a retained report bundle without opening
+/// the book, then refuse the same signed bundle when its PPA payload is absent.
 #[test]
 fn equity_roll_forward_prior_period_line_verifies_offline() {
     let fixture = Fixture::new();
@@ -488,7 +485,18 @@ fn equity_roll_forward_prior_period_line_verifies_offline() {
                 entry.proposal.class,
                 fa_model::EntryClass::PRIOR_PERIOD_ADJUSTMENT
             );
-            assert_eq!(entry.proposal.idempotency_key, b"cross-year-ppa");
+            assert_eq!(
+                entry.proposal.effective_date,
+                fa_time::DateDay::parse("2026-01-02").unwrap()
+            );
+            assert_eq!(entry.proposal.legs.len(), 2);
+            assert!(
+                entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .all(|leg| leg.amount.mantissa == 5_000)
+            );
             assert!(omitted.replace((start, reader.offset())).is_none());
         }
     }
@@ -544,6 +552,11 @@ fn equity_roll_forward_prior_period_line_verifies_offline() {
     }
 }
 
+/// The signed anchor end to end through the CLI: `fa proof signed-checkpoint`
+/// exports the journaled TransparencyCheckpoint, the independent verifier
+/// checks its signature against the public key every export names, and a
+/// prefix proof is judged against the checkpoint that signature covers. A
+/// flipped byte or another key is refused.
 #[test]
 fn a_signed_checkpoint_export_verifies_against_the_named_public_key() {
     let f = Fixture::new();
