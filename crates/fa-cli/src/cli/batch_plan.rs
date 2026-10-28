@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use fa::{BatchPlan, PostIntent};
-use fa_model::{ControlPayload, Disposition, Entry, EntryClass, EntryPayload};
+use fa_model::{ControlPayload, Disposition, Entry, EntryClass, EntryPayload, SupersessionKind};
 use fa_policy::Capability;
 use fgdb_types::VId;
 
@@ -35,6 +35,12 @@ pub(super) fn proposal_vid(proposal: &EntryPayload) -> Result<VId, Fail> {
             .supersession
             .first()
             .map(|link| fa_journal::rows::reversal_vid(link.target.vid)),
+        EntryClass::REPLACEMENT => match proposal.supersession.as_slice() {
+            [link] if link.kind == SupersessionKind::Replaces => {
+                Some(fa_journal::rows::replacement_vid(link.target.vid))
+            }
+            _ => None,
+        },
         EntryClass::RESOLUTION => proposal
             .pending
             .as_ref()
@@ -164,6 +170,19 @@ pub(super) fn emit_draft(
     batch: &fa::PostBatch,
     planned: &fa_journal::DraftPlanned,
 ) -> Result<(), Fail> {
+    emit_draft_members(out, book, name, batch.members(), planned, "atomic batch")
+}
+
+/// The kernel has already admitted the complete operation. Ordinary batches
+/// and native correction pairs share the existing per-entry robot contract.
+pub(super) fn emit_draft_members(
+    out: &Out,
+    book: &Book,
+    name: &str,
+    members: &[PostIntent],
+    planned: &fa_journal::DraftPlanned,
+    operation: &str,
+) -> Result<(), Fail> {
     out.at_book(book)?;
     let preview = planned.plan.as_ref();
     let start = preview
@@ -171,7 +190,7 @@ pub(super) fn emit_draft(
             preview
                 .members()
                 .len()
-                .checked_sub(batch.members().len())
+                .checked_sub(members.len())
                 .ok_or_else(|| {
                     Fail::Internal("a draft batch preview omits appended members".into())
                 })
@@ -187,7 +206,7 @@ pub(super) fn emit_draft(
                 })
         })
         .transpose()?;
-    for (index, intent) in batch.members().iter().enumerate() {
+    for (index, intent) in members.iter().enumerate() {
         let entry = proposal_vid(intent.proposal())?;
         let member = preview
             .zip(start)
@@ -205,7 +224,7 @@ pub(super) fn emit_draft(
             "draft_planned",
             fields,
             &format!(
-                "draft {name}: atomic batch member {index}, entry {:032x} on promotion{}",
+                "draft {name}: {operation} member {index}, entry {:032x} on promotion{}",
                 entry.0,
                 if planned.recorded.already_recorded {
                     "; already planned"

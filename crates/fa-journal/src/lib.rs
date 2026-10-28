@@ -107,8 +107,8 @@ pub use draft::{
     DraftBody, DraftClosure, DraftPlanned, DraftPreview, DraftPreviewMember, DraftPromoted,
     DraftRecorded, DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftRequest,
     DraftSourceRecord, DraftState, DraftView, PlannedIntent, discard_draft, draft_entries,
-    list_drafts, open_draft, plan_batch_into_draft, plan_into_draft, preview_draft, promote_draft,
-    read_draft, rehearse_draft_into,
+    list_drafts, open_draft, plan_batch_into_draft, plan_correction_into_draft, plan_into_draft,
+    preview_draft, promote_draft, read_draft, rehearse_draft_into,
 };
 pub use engagement::{
     AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, Carried,

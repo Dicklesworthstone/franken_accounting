@@ -108,7 +108,10 @@ pub const DRAFT_BODY_EXTENSION: u16 = 8;
 /// Version 4 retains an atomic batch as `u16 4 | bytes batch_key | list(bytes
 /// v3_member)`: one ordered group of reviewed intents under one capability.
 /// Every member is appended by the same control publication; promotion still
-/// replays the complete draft in order. Versions 1--3 keep their original encoding.
+/// replays the complete draft in order. Version 5 retains a dedicated atomic
+/// correction as `u16 5 | bytes v3_reversal | bytes v3_replacement`: the same
+/// target and planner, exact reviewed entries, and native paired publication.
+/// Versions 1--4 keep their original encoding.
 pub const DRAFT_INTENT_EXTENSION: u16 = 9;
 /// Extension tag 10, `fa:scenario-body:v1` (plan §15.2, Appendix B
 /// `ForkScenario`, bead fa-k07b): a scenario's immutable body on its

@@ -318,6 +318,32 @@ impl PreparedPost {
             .map(|member| (&member.entry, member.period.as_str()))
     }
 
+    /// The complete native pair remains one prepared operation when a draft
+    /// attaches its outcome and lifecycle record. Neither member is exposed
+    /// as an independently publishable batch member.
+    pub(crate) fn paired_refs(&self) -> Option<[EntryRef; 2]> {
+        self.paired_reversal
+            .as_ref()
+            .map(|member| [member.entry_ref, self.entry_ref])
+    }
+
+    pub(crate) fn transaction(&self) -> &WriteTxn {
+        &self.txn
+    }
+
+    pub(crate) fn pair_transaction_parts(
+        &mut self,
+    ) -> Result<(&mut WriteTxn, &mut crate::batch::TemplateByteTracker), KernelError> {
+        if self.paired_reversal.is_none() {
+            return Err(KernelError::Corrupt(
+                "a correction draft requires one complete prepared replacement pair".into(),
+            ));
+        }
+        // The attached draft state CAS is not an append-only journal write.
+        self.append_only = false;
+        Ok((&mut self.txn, &mut self.template_tracker))
+    }
+
     pub(crate) fn period(&self) -> &str {
         &self.period
     }
@@ -1949,12 +1975,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
         }
-        if (carried.is_some() && carrying_batch.is_none())
-            || replacement_basis.is_some()
+        // Even the first promoted or rehearsed member, before a transaction
+        // is carried, requires the complete batch's independent-source proof.
+        // Both draft factories retain reviewed digests and the aggregate guard;
+        // scratch rehearsal also verifies and preserves every source sequence.
+        if ((carried.is_some()
             || matches!(
                 admission,
                 Admission::Promote(_) | Admission::ScratchDraft(_)
-            )
+            ))
+            && carrying_batch.is_none())
+            || replacement_basis.is_some()
         {
             return Ok(Err(crate::carrying::unsupported_batch()));
         }
@@ -5269,6 +5300,19 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     } else {
         Admission::Commit
     };
+    prepare_replacement_pair_admitted(db, ctx, book, reversal_req, replacement_req, admission)
+}
+
+/// The draft module's unforgeable admission tokens authorize rehearsal or
+/// independent promotion without weakening the native atomic pair law.
+pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    reversal_req: PostRequest,
+    replacement_req: PostRequest,
+    admission: Admission,
+) -> Outcome<(Option<Posted>, PostPreparation)> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let reversal = &reversal_req.proposal;
     let replacement = &replacement_req.proposal;

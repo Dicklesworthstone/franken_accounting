@@ -76,7 +76,11 @@ fn independent_carrying_batch(
     }
     if !matches!(
         admission,
-        Admission::Commit | Admission::Plan | Admission::VerifiedBatch(_)
+        Admission::Commit
+            | Admission::Plan
+            | Admission::VerifiedBatch(_)
+            | Admission::Promote(_)
+            | Admission::ScratchDraft(_)
     ) || batch.members().iter().any(|member| {
         !crate::carrying::is_source_bound(member.proposal())
             || !matches!(
@@ -613,7 +617,7 @@ fn stage_outcome(
     )
 }
 
-fn stage_outcome_tracked(
+pub(crate) fn stage_outcome_tracked(
     cx: &QueryCx,
     stage: &mut WriteBatch,
     tracker: &mut TemplateByteTracker,

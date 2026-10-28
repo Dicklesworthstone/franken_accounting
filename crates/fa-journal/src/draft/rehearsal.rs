@@ -565,6 +565,7 @@ fn capture<V: Vfs + Clone>(
         intents,
         closed: None,
     };
+    correction::validate_view(&view)?;
     Ok(Ok((source, view)))
 }
 
@@ -642,33 +643,33 @@ pub async fn rehearse_draft_into<V: Vfs + Clone>(
         .collect();
     let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
     let admission = Admission::ScratchDraft(Rehearsing(()));
-    let staged = match stage_batch(&mut target, cx, book, &capabilities, &batch, admission)? {
-        Ok(BatchStage::Staged(staged)) => staged,
-        Ok(BatchStage::Recorded(_)) => {
-            return Err(corrupt(
-                "an open draft already has its hypothetical batch outcome",
-            ));
-        }
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    if let Err(refusal) = check_resolved_members(&request.name, &view.intents, &staged.entries) {
-        staged.txn.abort();
-        return Ok(Err(refusal));
-    }
-    if let Err(refusal) = witness_open(&staged.txn, &target, book, &request.name)? {
-        staged.txn.abort();
-        return Ok(Err(refusal));
-    }
-    let posted = match commit_batch(
+    let staged = match correction::stage(
         &mut target,
         cx,
         book,
         &capabilities,
         &batch,
         admission,
-        staged,
-    )
-    .await?
+        correction::is_correction(&view),
+    )? {
+        Ok(staged) => staged,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Err(refusal) = check_resolved_members(&request.name, &view.intents, &staged.entries) {
+        staged.abort();
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = witness_open(staged.txn(), &target, book, &request.name)? {
+        staged.abort();
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = witness_membership(staged.txn(), &target, book, &view)? {
+        staged.abort();
+        return Ok(Err(refusal));
+    }
+    let posted = match staged
+        .commit(&mut target, cx, book, &capabilities, &batch, admission)
+        .await?
     {
         Ok(posted) => posted,
         Err(refusal) => return Ok(Err(refusal)),

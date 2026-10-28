@@ -6,6 +6,9 @@ use fa_journal::carrying::{
 use fa_money::RoundingLaw;
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 
+#[path = "carrying/drafts.rs"]
+mod drafts;
+
 struct Fixture {
     h: Harness,
     target: EntryRef,

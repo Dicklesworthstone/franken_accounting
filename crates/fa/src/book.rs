@@ -1585,6 +1585,21 @@ impl Book {
         )))
     }
 
+    /// Rehearse and retain an atomic correction pair in an empty draft.
+    /// An independent promoter publishes both reviewed entries together.
+    pub fn plan_correction_into_draft(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        reversal: fa_journal::PostIntent,
+        replacement: fa_journal::PostIntent,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_correction_into_draft(
+            &purposes, capability, name, reversal, replacement,
+        )))
+    }
+
     /// Rehearse this owner's retained draft members without publishing them.
     /// Returns their resolved entries, or `None` for an empty open draft.
     pub fn preview_draft(
