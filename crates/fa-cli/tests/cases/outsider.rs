@@ -239,9 +239,8 @@ impl BookRun<'_> {
     /// ([`outsider_kind`]). On the report route a checkpoint over the head
     /// is created and exported once, then every certificate the read
     /// retained is bundled (`fa bundle produce --certificate`), verified
-    /// with the literal `fa-verify bundle` and `fa-verify report` argv, and
-    /// replayed (`fa replay`), whose output must hash to the digest
-    /// fa-verify recomputed. The recomputations, summed, must equal B. A read
+    /// with the literal `fa-verify report` argv, and replayed (`fa
+    /// replay`), whose output must hash to the digest fa-verify recomputed. The recomputations, summed, must equal B. A read
     /// with no value or no certificate, or a verb outside the table, has no
     /// check: its T stays UNRUN.
     pub(crate) fn outsider_reads(&mut self) {
@@ -389,26 +388,11 @@ impl BookRun<'_> {
                 .trim_end()
                 .to_string());
             };
-            let bundle = self.fa_verify(
-                reference,
-                "FaVerifyBundle",
-                vec![
-                    s("bundle"),
-                    fab.clone(),
-                    s("--key"),
-                    public_key.clone(),
-                    s("--receipt"),
-                    receipt.clone(),
-                    s("--json"),
-                ],
-            );
-            if bundle.exit != 0 {
-                return Err(format!(
-                    "expected fa-verify bundle of C:{oid} exit=0 observed exit={} {}",
-                    bundle.exit,
-                    failed_check(&bundle.stdout)
-                ));
-            }
+            // A report bundle is `fa:report-bundle:v1`, which `fa-verify
+            // report` authenticates (checkpoint, receipt, records) before it
+            // recomputes; `fa-verify bundle` reads `fa:bundle:v1` evidence
+            // bundles only and refuses this one (exit 8), so §12.1's `fa-verify
+            // bundle` step does not apply to a certificate's bundle.
             let report = self.fa_verify(
                 reference,
                 "FaVerifyReport",

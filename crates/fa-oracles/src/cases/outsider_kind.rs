@@ -6,11 +6,14 @@
 //! leaves its T UNRUN `reason=outsider`, never PASS.
 //!
 //! - `report`: the read's certificates are bundled (`fa bundle produce
-//!   --certificate`), verified offline (`fa-verify bundle` and `fa-verify
-//!   report`, whose recomputation must equal B), and replayed byte for byte
-//!   (`fa replay`). A `balance` read's certificates are its `fa explain
-//!   balance` reports, one per period of its fold: a report bundle carries a
-//!   balance explanation, and fa-verify recomputes its period cells.
+//!   --certificate`), verified offline by `fa-verify report`, whose
+//!   recomputation must equal B, and replayed byte for byte (`fa replay`).
+//!   A report bundle (`fa:report-bundle:v1`) is not an evidence bundle:
+//!   `fa-verify bundle` refuses it, so §12.1's `fa-verify bundle` step
+//!   applies to account bundles, not to a certificate's. A `balance` read's
+//!   certificates are its `fa explain balance` reports, one per period of
+//!   its fold: a report bundle carries a balance explanation, and fa-verify
+//!   recomputes its period cells.
 
 /// The read verbs the runner reads (A7b).
 pub const READ_VERBS: [&str; 4] = ["balance", "balance-sheet", "income-statement", "tb"];

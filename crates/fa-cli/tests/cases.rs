@@ -99,8 +99,8 @@ fn _selftest() {
 /// reads its certified B (900.00, A plus the case's delta), holds its
 /// contributing-entry witness (A11b), and passes its outsider check: its
 /// explain-balance certificate is bundled against a checkpoint, verified by
-/// the literal `fa-verify bundle` and `fa-verify report` argv, whose
-/// recomputed cells equal B, and replayed byte for byte. The T is claimed,
+/// the literal `fa-verify report` argv, whose recomputed cells equal B, and
+/// replayed byte for byte. The T is claimed,
 /// and the case passes.
 #[test]
 fn selftest_bridge_t_passes_with_the_outsider_check() {
@@ -131,7 +131,6 @@ fn selftest_bridge_t_passes_with_the_outsider_check() {
         route,
         [
             "bundle --book exit=0 Bundle",
-            "fa-verify bundle exit=0 FaVerifyBundle",
             "fa-verify report exit=0 FaVerifyReport",
             "replay --book exit=0 -",
         ],
@@ -451,12 +450,26 @@ fn _selftest_logs_every_step_and_every_row() {
 
 /// Every `fa` call the runner makes is a (verb, subcommand) of the table it
 /// checks against `verbs.toml` before any book exists, and every
-/// run-variant token in a logged argv is a bound placeholder.
+/// run-variant token in a logged argv is a bound placeholder. The
+/// `fa-verify` steps run in process (A12): each is a literal `fa-verify
+/// report` argv over the runner's work files, never the book directory.
 #[test]
 fn every_logged_verb_is_in_the_harness_verb_table() {
     let o = outcome(SELFTEST);
     assert!(!o.steps.is_empty());
-    for s in &o.steps {
+    let book = o.books["native"].to_str().unwrap_or("-");
+    let verified: Vec<&Vec<String>> = o
+        .steps
+        .iter()
+        .filter(|s| s.verb == "fa-verify")
+        .map(|s| &s.argv_redacted)
+        .collect();
+    assert!(!verified.is_empty(), "{}", o.text());
+    for argv in verified {
+        assert_eq!(argv.first().map(String::as_str), Some("report"), "{argv:?}");
+        assert!(argv.iter().all(|a| !a.contains(book)), "{argv:?}");
+    }
+    for s in o.steps.iter().filter(|s| s.verb != "fa-verify") {
         let argv = &s.argv_redacted;
         assert_eq!(
             argv.get(..2),

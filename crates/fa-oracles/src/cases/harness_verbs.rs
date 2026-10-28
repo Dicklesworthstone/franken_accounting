@@ -61,6 +61,8 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("replay", None),
     ("registers", Some("advance")),
     ("verify", Some("book")),
+    // A12: the T reads' outsider route exports the checkpoint it checks.
+    ("proof", Some("signed-checkpoint")),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not
