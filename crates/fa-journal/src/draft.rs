@@ -18,8 +18,11 @@
 //!   A v4 Plan record atomically appends a complete ordered PostBatch, retaining
 //!   each member's v3 reviewed entry. The batch key uses a distinct record
 //!   namespace; membership and order are part of its retry comparison.
+//!   A v5 Plan record retains one complete Reversal/Replacement correction
+//!   in a dedicated draft. Its members share one record and are never
+//!   independently publishable or mixed with ordinary draft members.
 //! - **Promote** (`Open → Promoted`) replays the planned intents to trunk in
-//!   one `PostBatch`, in planning order, in the same transaction as the
+//!   one `PostBatch`, or through the native correction-pair protocol, in the same transaction as the
 //!   record (FA-INV-09). The promoter holds `approve` (the `draft-promote`
 //!   row; no Agent- or System-profile capability can) and is never the
 //!   draft's owner. Each intent posts under its planner's own capability,
@@ -56,9 +59,11 @@ use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
 mod batch;
+mod correction;
 mod rehearsal;
 use batch::decode_plan_record;
 pub use batch::plan_batch_into_draft;
+pub use correction::plan_correction_into_draft;
 pub(crate) use rehearsal::Rehearsing;
 pub use rehearsal::{
     DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftSourceRecord,
@@ -475,6 +480,7 @@ enum Kind {
     Open,
     Plan,
     PlanBatch,
+    PlanCorrection,
     Promote,
     Discard,
 }
@@ -483,7 +489,7 @@ impl Kind {
     fn transition(self) -> &'static str {
         match self {
             Self::Open => "Open",
-            Self::Plan | Self::PlanBatch => "Plan",
+            Self::Plan | Self::PlanBatch | Self::PlanCorrection => "Plan",
             Self::Promote => "Promote",
             Self::Discard => "Discard",
         }
@@ -496,13 +502,16 @@ impl Kind {
             Self::Promote => 2,
             Self::Discard => 3,
             Self::PlanBatch => 4,
+            Self::PlanCorrection => 5,
         }
     }
 
     fn states(self) -> (u8, DraftState) {
         match self {
             Self::Open => (0, DraftState::Open),
-            Self::Plan | Self::PlanBatch => (DraftState::Open.tag(), DraftState::Open),
+            Self::Plan | Self::PlanBatch | Self::PlanCorrection => {
+                (DraftState::Open.tag(), DraftState::Open)
+            }
             Self::Promote => (DraftState::Open.tag(), DraftState::Promoted),
             Self::Discard => (DraftState::Open.tag(), DraftState::Discarded),
         }
@@ -605,10 +614,10 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
     ) {
         return Ok(Err(denial(&d)));
     }
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Err(denial(&d)));
-    }
-    Ok(Ok(()))
+    // Every lifecycle path, including a retained retry that returns before
+    // opening a transaction, needs current issuance and revocation admission
+    // before it observes the draft. Writers still witness authority in txn.
+    crate::policy::current_at(db, book, capability).map(|result| result.map(|_| ()))
 }
 
 fn usage(message: impl Into<String>, fix: &str) -> Refusal {
@@ -758,6 +767,37 @@ fn witness_open<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(not_open(&body, state)));
     }
     Ok(Ok(body))
+}
+
+/// Open state alone does not change when another Plan is appended. Bind the
+/// complete reviewed intent set to the native adjacency witness as well, so
+/// concurrent planning cannot mix operations or add an unreviewed member to
+/// a promotion. The Open record and every atomic Plan record are its members.
+fn witness_membership<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    view: &DraftView,
+) -> Outcome<()> {
+    let open = entry_vid(
+        book.book_id,
+        &view.body.owner.0.to_le_bytes(),
+        &record_key(Kind::Open, view.vid, &[]),
+    );
+    let expected: std::collections::BTreeSet<_> = std::iter::once(open)
+        .chain(view.intents.iter().map(|member| member.record))
+        .collect();
+    let actual: std::collections::BTreeSet<_> = txn
+        .in_neighbours(db, view.vid, relation::IN_CASE)?
+        .into_iter()
+        .collect();
+    if actual != expected {
+        return Ok(Err(fcw(
+            "the draft's planned membership changed",
+            "draft operation",
+        )));
+    }
+    Ok(Ok(()))
 }
 
 fn fcw(detail: &str, what: &str) -> Refusal {
@@ -966,6 +1006,12 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     view: &DraftView,
     candidates: &[(PostIntent, &Capability)],
 ) -> Outcome<DraftPreview> {
+    if correction::is_correction(view) {
+        if !candidates.is_empty() {
+            return Ok(Err(correction::dedicated()));
+        }
+        return correction::preview(db, ctx, book, view).await;
+    }
     let mut members: Vec<_> = view.intents.iter().map(|i| i.intent.clone()).collect();
     let mut capabilities: Vec<_> = view.intents.iter().map(|i| i.capability.clone()).collect();
     for (intent, capability) in candidates {
@@ -1064,9 +1110,6 @@ fn owned_draft<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(denial(&d)));
     }
     if let Err(refusal) = admit(db, book, capability, Kind::Plan)? {
-        return Ok(Err(refusal));
-    }
-    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
         return Ok(Err(refusal));
     }
     let vid = draft_vid(book.book_id, name);
@@ -1331,6 +1374,10 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    if let Err(refusal) = witness_membership(&txn, db, book, &view)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
@@ -1495,28 +1542,35 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         }
     };
     let admission = Admission::Promote(Promoting(()));
-    let mut staged = match stage_batch(db, ctx, book, &capabilities, &batch, admission)? {
+    let mut staged = match correction::stage(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        admission,
+        correction::is_correction(&view),
+    )? {
         Err(refusal) => return Ok(Err(refusal)),
-        Ok(BatchStage::Recorded(_)) => {
-            return Err(KernelError::Corrupt(format!(
-                "draft `{name}` is open but its promotion batch is already recorded"
-            )));
-        }
-        Ok(BatchStage::Staged(staged)) => staged,
+        Ok(staged) => staged,
     };
     if let Err(refusal) = check_resolved_members(name, &view.intents, &staged.entries) {
-        staged.txn.abort();
+        staged.abort();
         return Ok(Err(refusal));
     }
     // The promoter's authority is witnessed in the promotion's own
     // transaction, as is the draft's Open state.
-    if let Err(r) = capability_witness(&staged.txn, db, book, &req.capability)? {
-        staged.txn.abort();
+    if let Err(r) = capability_witness(staged.txn(), db, book, &req.capability)? {
+        staged.abort();
         return Ok(Err(r));
     }
-    if let Err(r) = witness_open(&staged.txn, db, book, name)? {
-        staged.txn.abort();
+    if let Err(r) = witness_open(staged.txn(), db, book, name)? {
+        staged.abort();
         return Ok(Err(r));
+    }
+    if let Err(refusal) = witness_membership(staged.txn(), db, book, &view)? {
+        staged.abort();
+        return Ok(Err(refusal));
     }
     let proposal = record_proposal(
         book,
@@ -1529,8 +1583,8 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         Vec::new(),
     )?;
     let evid = record_vid(book, &proposal);
-    if staged.txn.vertex(db, evid)?.is_some() {
-        staged.txn.abort();
+    if staged.txn().vertex(db, evid)?.is_some() {
+        staged.abort();
         return Err(KernelError::Corrupt(format!(
             "draft `{name}` is open but its Promote record already exists"
         )));
@@ -1538,10 +1592,10 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let draft = view.vid;
     let mirrors = entry_mirrors(&entry)?;
-    staged
-        .template_tracker
-        .create_vertex(relation::IN_CASE, evid, 1, &mirrors);
-    staged.template_tracker.set_vertex_property(
+    let promoted_entries = staged.entries.clone();
+    let (txn, tracker) = staged.parts()?;
+    tracker.create_vertex(relation::IN_CASE, evid, 1, &mirrors);
+    tracker.set_vertex_property(
         relation::IN_CASE,
         draft,
         property::STATE,
@@ -1557,19 +1611,21 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         DraftState::Promoted.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
-    staged.template_tracker.add_edge(relation::IN_CASE, &[]);
+    tracker.add_edge(relation::IN_CASE, &[]);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, draft), evid, draft, vec![]);
-    for promoted in &staged.entries {
+    for promoted in &promoted_entries {
         let v = promoted.vid;
-        staged.template_tracker.add_edge(relation::IN_CASE, &[]);
+        tracker.add_edge(relation::IN_CASE, &[]);
         in_case.add_edge(edge_id(relation::IN_CASE, v, draft), v, draft, vec![]);
     }
-    staged.txn.write(db, in_case)?;
+    txn.write(db, in_case)?;
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
-        staged.txn.abort();
+        staged.abort();
         return Ok(Err(denial(&d)));
     }
-    let posted = match commit_batch(db, ctx, book, &capabilities, &batch, admission, staged).await?
+    let posted = match staged
+        .commit(db, ctx, book, &capabilities, &batch, admission)
+        .await?
     {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(posted) => posted,
@@ -1742,19 +1798,152 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let opened_at = opened_at.ok_or_else(|| {
         KernelError::Corrupt(format!("draft {:032x} has no Open record", draft.0))
     })?;
-    Ok(DraftView {
+    let view = DraftView {
         vid: draft,
         body,
         state,
         opened_at,
         intents,
         closed,
-    })
+    };
+    correction::validate_view(&view)?;
+    Ok(view)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_membership_witness_rejects_both_preexisting_and_concurrent_appends() {
+        use asupersync::runtime::RuntimeBuilder;
+        use fa_model::{SealKey, SymbolTable};
+        use fa_money::UnitRegistry;
+        use fa_time::FiscalCalendar;
+        use fgdb::DatabaseKeys;
+        use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let mut db = runtime
+            .block_on(Database::open_memory(
+                &ctx.commit(),
+                DatabaseKeys::new([211; 32], DatabaseSecurityNamespaceId([212; 32]), [213; 32]),
+            ))
+            .unwrap();
+        let units = UnitRegistry::with_defaults();
+        let book = BookContext {
+            book_id: Id128([214; 16]),
+            calendar: FiscalCalendar::monthly("draft-membership", 1, 1).unwrap(),
+            units: units.clone(),
+            seal_key: SealKey([215; 32]),
+            symbols: SymbolTable::compiled(),
+        };
+        let spec = crate::BookSpec {
+            book_id: book.book_id,
+            name: "Concurrent draft membership".into(),
+            base_unit: units.lookup("USD").unwrap(),
+            calendar: book.calendar.clone(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        };
+        runtime
+            .block_on(crate::create_book(
+                &mut db,
+                &ctx,
+                &spec,
+                &units,
+                &book.symbols,
+            ))
+            .unwrap();
+        let capability = Capability::embedded(VId(7), &["read", "post"]).unwrap();
+        let request = DraftRequest {
+            capability: capability.clone(),
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            description: Erasable::seal(
+                &"draft membership".to_string(),
+                None,
+                &book.seal_key,
+                [1; 32],
+                [2; 24],
+            ),
+        };
+        runtime
+            .block_on(open_draft(&mut db, &ctx, &book, "race", request.clone()))
+            .unwrap()
+            .unwrap();
+        let original = read_draft(&db, &ctx.query(), &book, "race")
+            .unwrap()
+            .unwrap();
+        let planned = |key: &[u8]| {
+            let mut proposal = codec_intent().proposal().clone();
+            proposal.book_id = book.book_id;
+            proposal.idempotency_key = key.to_vec();
+            let intent = PostIntent::new(proposal, Vec::new()).unwrap();
+            // This is the authentic historical V1 Plan representation; only
+            // its membership, never the hypothetical accounting, is published.
+            let proposal = record_proposal(
+                &book,
+                &original.body,
+                Kind::Plan,
+                capability.holder(),
+                key,
+                &request,
+                Vec::new(),
+                vec![(
+                    fa_model::entry::DRAFT_INTENT_EXTENSION,
+                    intent_bytes(&intent, &capability, None, None).unwrap(),
+                )],
+            )
+            .unwrap();
+            let vid = record_vid(&book, &proposal);
+            let entry = proposal.seal(Vec::new(), None).unwrap();
+            let mut writes = WriteBatch::new(relation::IN_CASE);
+            writes.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry).unwrap());
+            writes.add_edge(
+                edge_id(relation::IN_CASE, vid, original.vid),
+                vid,
+                original.vid,
+                vec![],
+            );
+            (vid, writes)
+        };
+        let (_, first) = planned(b"first");
+        runtime.block_on(db.write(&ctx.commit(), first)).unwrap();
+        let txn = db.begin(&ctx.txn()).unwrap();
+        // The append happened before this transaction's basis: witnessing the
+        // new adjacency without comparing its contents would miss this case.
+        let refused = witness_membership(&txn, &db, &book, &original)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, code::CONFLICT);
+        txn.abort();
+
+        let reviewed = read_draft(&db, &ctx.query(), &book, "race")
+            .unwrap()
+            .unwrap();
+        let mut pending = db.begin(&ctx.txn()).unwrap();
+        witness_membership(&pending, &db, &book, &reviewed)
+            .unwrap()
+            .unwrap();
+        let (candidate, writes) = planned(b"candidate");
+        pending.write(&mut db, writes).unwrap();
+        let (_, concurrent) = planned(b"concurrent");
+        runtime
+            .block_on(db.write(&ctx.commit(), concurrent))
+            .unwrap();
+        let head = db.frontier().unwrap();
+        assert!(matches!(
+            runtime.block_on(pending.commit(&mut db, &ctx.commit())),
+            Err(WriteTxnError::Write(
+                fgdb::WriteError::FirstCommitterWins { .. }
+            ))
+        ));
+        assert_eq!(db.frontier().unwrap(), head);
+        assert!(db.vertex(candidate).unwrap().is_none());
+    }
 
     pub(super) fn codec_intent() -> PostIntent {
         use fa_model::{LegPayload, Oid, SealKey};

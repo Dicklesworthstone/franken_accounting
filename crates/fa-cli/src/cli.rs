@@ -7297,10 +7297,17 @@ fn correction(
 ) -> Result<(), Fail> {
     const FIX: &str = "fa reverse <vid> --reason <name> --replace-with <corrected entry intent>; the intent carries the corrected legs (and optionally effective_date, description, evidence)";
     check_post_planning_options(args)?;
-    if !args.flag_all("--draft").is_empty() {
+    if args.flag_all("--draft").len() > 1 {
         return Err(usage(
-            "a correction pair cannot be planned into a draft yet; nothing was posted",
-            "plan the reversal into the draft with fa reverse <vid> --reason <name> --draft <name>, or post the pair to trunk",
+            "a correction pair names one draft",
+            "supply --draft <name> once",
+        ));
+    }
+    let draft = args.flag("--draft");
+    if draft.is_some() && (args.switch("--dry-run") || args.flag("--plan-out").is_some()) {
+        return Err(usage(
+            "--draft records a reviewed correction pair and cannot be combined with --dry-run or --plan-out",
+            "use --draft <name> to retain the pair for independent promotion, or --dry-run to rehearse without recording it",
         ));
     }
     let text = ctx.files.read_text(path)?;
@@ -7384,6 +7391,27 @@ fn correction(
             kind: fa_model::SupersessionKind::Replaces,
             reason_code: reason.code,
         });
+    if let Some(name) = draft {
+        let capability = reversal_req.capability.clone();
+        let reversal = PostIntent::new(reversal_req.proposal, reversal_req.approvals)
+            .map_err(|e| usage(format!("correction reversal: {e}"), FIX))?;
+        let replacement = PostIntent::new(replacement_req.proposal, replacement_req.approvals)
+            .map_err(|e| usage(format!("correction replacement: {e}"), FIX))?;
+        let planned = book.plan_correction_into_draft(
+            capability,
+            name,
+            reversal.clone(),
+            replacement.clone(),
+        )??;
+        return batch_plan::emit_draft_members(
+            out,
+            &book,
+            name,
+            &[reversal, replacement],
+            &planned,
+            "atomic correction",
+        );
+    }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let capability = reversal_req.capability.clone();
         let reversal = PostIntent::new(reversal_req.proposal, reversal_req.approvals)
@@ -10091,7 +10119,7 @@ fn emit_replacement_plan(
         command
     };
     let actions = if rehearsal {
-        let warning = "This Agent-profile correction plan is a rehearsal and cannot commit to trunk (FA-REF-013). A Human must independently prepare, review and commit the complete pair; correction drafts are not available yet.";
+        let warning = "This Agent-profile correction plan is a rehearsal and cannot commit to trunk (FA-REF-013). To retain both reviewed entries, repeat the correction with --draft <empty draft> for independent promotion.";
         out.warn(warning);
         human.push_str(&format!("\n{warning}"));
         Vec::new()

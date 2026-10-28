@@ -773,7 +773,10 @@ fn retained_draft_targets_preserve_dependent_retries_after_discard_or_amount_dri
             if discard {
                 code::DRAFT_NOT_OPEN
             } else {
-                code::PLAN_INVALIDATED
+                // Amount drift changes the staged Pending's digest. Its
+                // dependent Resolution rejects the retained EntryRef before
+                // the complete batch reaches resolved-member comparison.
+                code::RESOLUTION_TARGET
             },
             "{refused}"
         );

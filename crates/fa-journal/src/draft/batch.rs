@@ -23,8 +23,16 @@ fn batch_bytes(key: &[u8], members: &[Vec<u8>]) -> Result<Vec<u8>, KernelError> 
 /// batch key and an ordered list of complete V3 intents, including the exact
 /// reviewed entries. The outer record is the publication/identity boundary.
 pub(super) fn decode_plan_record(bytes: &[u8]) -> Result<DecodedPlanRecord, KernelError> {
+    if bytes.get(..2) == Some(correction::CORRECTION_VERSION.to_le_bytes().as_slice()) {
+        return correction::decode_record(bytes);
+    }
     if bytes.get(..2) != Some(BATCH_VERSION.to_le_bytes().as_slice()) {
         let member = decode_intent(bytes)?;
+        if member.0.proposal().class == EntryClass::REPLACEMENT {
+            return Err(KernelError::Corrupt(
+                "a draft Replacement requires its complete correction record".into(),
+            ));
+        }
         if intent_bytes(&member.0, &member.1, member.2, member.3.as_ref())? != bytes {
             return Err(KernelError::Corrupt("noncanonical draft intent".into()));
         }
@@ -64,7 +72,8 @@ pub(super) fn decode_plan_record(bytes: &[u8]) -> Result<DecodedPlanRecord, Kern
     let mut members = Vec::with_capacity(encoded.len());
     for bytes in &encoded {
         let member = decode_intent(bytes)?;
-        if member.3.is_none()
+        if member.0.proposal().class == EntryClass::REPLACEMENT
+            || member.3.is_none()
             || intent_bytes(&member.0, &member.1, member.2, member.3.as_ref())? != *bytes
         {
             return Err(KernelError::Corrupt(
@@ -97,7 +106,7 @@ pub(super) fn decode_plan_record(bytes: &[u8]) -> Result<DecodedPlanRecord, Kern
     })
 }
 
-fn same_member(
+pub(super) fn same_member(
     book: &BookContext,
     retained: &PlannedIntent,
     requested: &PostIntent,
@@ -120,7 +129,7 @@ fn same_member(
     )
 }
 
-fn storage_admission<T>(result: Outcome<T>, control: VId) -> Outcome<T> {
+pub(super) fn storage_admission<T>(result: Outcome<T>, control: VId) -> Outcome<T> {
     match result {
         Err(KernelError::Txn(WriteTxnError::Write(fgdb::WriteError::VertexStorageAdmission {
             vid,
@@ -275,6 +284,10 @@ pub async fn plan_batch_into_draft<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
     if let Err(refusal) = witness_open(&txn, db, book, name)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = witness_membership(&txn, db, book, &view)? {
         txn.abort();
         return Ok(Err(refusal));
     }

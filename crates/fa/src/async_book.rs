@@ -1123,6 +1123,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Retain a reviewed Reversal and Replacement as one indivisible draft
+    /// operation. The draft must be empty; both members are revalidated and
+    /// published together by an independent promoter.
+    pub async fn plan_correction_into_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        reversal: fa_journal::PostIntent,
+        replacement: fa_journal::PostIntent,
+    ) -> Outcome<fa_journal::DraftPlanned> {
+        let date = reversal.proposal().effective_date;
+        let description = format!("plan correction pair into draft {name}");
+        let req = self.draft_request(cx, capability, date, &description)?;
+        Ok(fa_journal::plan_correction_into_draft(
+            &mut self.db,
+            cx,
+            &self.context,
+            name,
+            reversal,
+            replacement,
+            req,
+        )
+        .await?)
+    }
+
     /// Rehearse this owner's retained draft members without publishing them.
     /// Returns their resolved entries, or `None` for an empty open draft.
     pub async fn preview_draft(

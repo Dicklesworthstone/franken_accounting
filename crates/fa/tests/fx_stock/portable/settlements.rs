@@ -5,6 +5,9 @@ use super::*;
 use fa::FxSettlementRequest;
 use fa_model::{Supersession, SupersessionKind};
 
+#[path = "settlements/drafts.rs"]
+mod drafts;
+
 fn settlement_fixture() -> Fixture {
     let mut fixture = Fixture::new();
     let accounts = [
