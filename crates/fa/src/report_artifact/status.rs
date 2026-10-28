@@ -273,12 +273,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }));
         }
         request.known_at = Some(head);
-        let mut current = match self.equity_roll_forward(cx, principal, capability, &request)? {
+        let scope = match self.equity_source_request(cx, principal, capability, &request)? {
+            Ok(scope) => scope,
+            Err(refusal) => return Ok(Err(invalid(refusal.message))),
+        };
+        let source = match self.roll_forward(cx, principal, capability, &scope)? {
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(invalid(refusal.message))),
+        };
+        let citations = if certificate.is_legacy() {
+            Default::default()
+        } else {
+            self.equity_adjustment_citations(cx, &source)?
+        };
+        let mut current = match crate::roll_forward::equity_from_lead_schedule(
+            source,
+            &request,
+            &citations,
+            certificate.is_legacy(),
+        ) {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(invalid(refusal.message))),
         };
         current.statement.known_at = certificate.known_at().0;
-        let bytes = match current.canonical_bytes() {
+        let bytes = match current.canonical_bytes_for(certificate.is_legacy()) {
             Ok(bytes) => bytes,
             Err(refusal) => return Ok(Err(refusal)),
         };

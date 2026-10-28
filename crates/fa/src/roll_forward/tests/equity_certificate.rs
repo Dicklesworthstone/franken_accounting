@@ -42,7 +42,7 @@ fn frame(
         })
         .bytes(output);
     let mut bytes = w.finish().unwrap();
-    let digest = domain_digest(b"fa:equity-roll-forward-certificate-digest:v1", &[&bytes]);
+    let digest = domain_digest(b"fa:equity-roll-forward-certificate-digest:v2", &[&bytes]);
     bytes.extend_from_slice(&digest);
     bytes
 }
@@ -178,6 +178,112 @@ fn equity_certificate_retains_and_replays_the_full_statement_without_posting() {
         *report,
         "historical output stays unchanged"
     );
+}
+
+#[test]
+fn legacy_equity_certificate_keeps_its_bytes_replay_and_current_status() {
+    let mut h = Harness::new();
+    h.post(1, b"legacy-equity-opening", h.usd, 100);
+    h.post(10, b"legacy-equity-issuance", h.usd, 50);
+    h.post(20, b"legacy-equity-distribution", h.usd, -20);
+    let certified = certify(&h);
+    let request = certified.certificate.request().clone();
+    let output = certified.report.canonical_bytes_for(true).unwrap();
+    let mut w = Writer::new();
+    w.bytes(b"fa:equity-roll-forward-certificate:v1")
+        .bytes(
+            &certified
+                .certificate
+                .source_certificate()
+                .canonical_bytes()
+                .unwrap(),
+        )
+        .list(&request.issuance_accounts, |w, id| {
+            w.u128(id.0);
+        })
+        .list(&request.distribution_accounts, |w, id| {
+            w.u128(id.0);
+        })
+        .bytes(&output);
+    let mut bytes = w.finish().unwrap();
+    let digest = domain_digest(b"fa:equity-roll-forward-certificate-digest:v1", &[&bytes]);
+    bytes.extend_from_slice(&digest);
+
+    let legacy = EquityRollForwardCertificate::decode(&bytes).unwrap();
+    assert!(legacy.is_legacy());
+    assert_eq!(legacy.canonical_bytes().unwrap(), bytes);
+    assert_eq!(legacy.output(), output);
+    assert_ne!(bytes, certified.certificate.canonical_bytes().unwrap());
+    let artifact = ReportArtifact::decode(&bytes).unwrap();
+    assert_eq!(artifact.family(), ReportArtifactFamily::EquityRollForward);
+    assert_eq!(artifact.canonical_bytes().unwrap(), bytes);
+    assert_eq!(artifact.output(), output);
+    assert_eq!(artifact.digest(), &digest);
+    let cx = h.cx();
+    let authority = cap(&["read"]);
+    let expectation = ReportArtifactExpectation::EquityRollForward(&request);
+    for after_later_post in [false, true] {
+        if after_later_post {
+            h.post(21, b"legacy-equity-outside-window", h.usd, 9);
+        }
+        let before = h.head();
+        let replayed = h
+            .book
+            .replay_equity_roll_forward(&cx, PRINCIPAL, &authority, &legacy, &request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed, certified.report);
+        assert_eq!(replayed.canonical_bytes_for(true).unwrap(), output);
+        assert_eq!(
+            h.book
+                .replay_report_artifact_for(
+                    &cx,
+                    PRINCIPAL,
+                    &authority,
+                    &bytes,
+                    Some(&digest),
+                    expectation,
+                )
+                .unwrap()
+                .unwrap()
+                .output,
+            output
+        );
+        assert_eq!(
+            h.book
+                .report_artifact_status(
+                    &cx,
+                    PRINCIPAL,
+                    &authority,
+                    &bytes,
+                    Some(&digest),
+                    expectation,
+                )
+                .unwrap()
+                .unwrap(),
+            CertificateStatus::Current { checked_at: before },
+            "legacy format must remain current after an out-of-window posting"
+        );
+        assert_eq!(h.head(), before, "legacy replay and status are read-only");
+        assert_eq!(legacy.canonical_bytes().unwrap(), bytes);
+    }
+
+    // Rehashing a v2 envelope and report header cannot turn a nested v1
+    // statement into a v2 statement, even though their totals agree.
+    let mut mixed_version_output = output;
+    let report_format = b"fa:equity-roll-forward-report:v1";
+    assert_eq!(
+        &mixed_version_output[4..4 + report_format.len()],
+        report_format
+    );
+    mixed_version_output[4 + report_format.len() - 1] = b'2';
+    let refusal = EquityRollForwardCertificate::decode(&frame(
+        certified.certificate.source_certificate(),
+        &request,
+        &mixed_version_output,
+    ))
+    .unwrap_err();
+    assert!(refusal.message.contains("statement version"));
 }
 
 #[test]

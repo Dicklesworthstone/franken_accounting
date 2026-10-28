@@ -232,7 +232,9 @@ impl ReportArtifact {
             Artifact::DueDateAging(Box::new(DueDateAgingCertificate::decode(bytes)?))
         } else if format == crate::ROLL_FORWARD_CERTIFICATE_FORMAT {
             Artifact::RollForward(Box::new(RollForwardCertificate::decode(bytes)?))
-        } else if format == crate::EQUITY_CERTIFICATE_FORMAT {
+        } else if format == crate::EQUITY_CERTIFICATE_FORMAT
+            || format == crate::equity_certificate::LEGACY_EQUITY_CERTIFICATE_FORMAT
+        {
             Artifact::EquityRollForward(Box::new(crate::EquityRollForwardCertificate::decode(
                 bytes,
             )?))

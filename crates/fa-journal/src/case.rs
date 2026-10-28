@@ -66,8 +66,8 @@
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Oid,
-    Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid, period_vid,
+    AccountType, ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable,
+    Id128, Oid, Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid, period_vid,
     report_certificate_vid, restatement_case_vid, scenario_vid,
 };
 use fa_policy::{Capability, Intent};
@@ -81,7 +81,7 @@ use crate::evidence::{document_vid, drift, hex, verify_row};
 use crate::genesis::BookContext;
 use crate::policy::{capability_witness, refusal as denial, steward};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{bytes, edge_id, prop, scalar_bytes};
+use crate::rows::{AccountRow, PeriodRow, bytes, edge_id, prop, scalar_bytes};
 
 /// Canonical bytes of a case body (extension 19): `u16 version ‖
 /// book_id[16] ‖ u32 ordinal ‖ u8 kind ‖ list(str period) ‖ opt oid
@@ -1182,6 +1182,33 @@ fn rehearsal_refused(message: impl Into<String>) -> Refusal {
     )
 }
 
+/// A PPA corrects an earlier error by moving the current period's equity.
+/// Reviewing only the historical period would show no posting effect, so
+/// the retained diff must cover both sides of that accounting claim.
+fn prior_period_rehearsal_scope(
+    body: &CaseBody,
+    rehearsal: &Rehearsal,
+    relates_to: &str,
+    posting_period: &str,
+) -> Result<(), Refusal> {
+    if !body.periods.iter().any(|period| period == relates_to) {
+        return Err(prior_period_adjustment_refusal(format!(
+            "relates_to `{relates_to}` is outside case {}'s affected periods ({})",
+            body.ordinal,
+            body.periods.join(", ")
+        )));
+    }
+    for period in [relates_to, posting_period] {
+        if !rehearsal.periods.iter().any(|included| included == period) {
+            return Err(rehearsal_refused(format!(
+                "the prior-period-adjustment diff omits `{period}`; case {} must review both relates_to `{relates_to}` and its posting effect in `{posting_period}`",
+                body.ordinal
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Rehearse case `ordinal` (Determined → Rehearsed): one commit journaling
 /// the Rehearse record and the compare-and-set of the case's `state`. The
 /// caller has replayed the diff certificate and retained it in this book;
@@ -1304,16 +1331,53 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
     }
     // The Plan records are immutable; the open scenario's planning order
     // must begin with exactly the ones the diff certificate covers.
-    let planned: Vec<VId> = crate::scenario::read_scenario(db, book, &rehearsal.scenario)?
-        .map(|view| view.intents.iter().map(|p| p.record).collect())
+    let planned = crate::scenario::read_scenario(db, book, &rehearsal.scenario)?
+        .map(|view| view.intents)
         .unwrap_or_default();
-    if !planned.starts_with(&rehearsal.intents) {
+    let order: Vec<VId> = planned.iter().map(|intent| intent.record).collect();
+    if !order.starts_with(&rehearsal.intents) {
         txn.abort();
         return Ok(Err(rehearsal_refused(format!(
             "the diff certificate covers {} intent(s) that are not the first ones scenario `{}` planned",
             rehearsal.intents.len(),
             rehearsal.scenario
         ))));
+    }
+    if body.kind == CaseKind::PriorPeriodAdjustment {
+        for planned in planned.iter().take(rehearsal.intents.len()) {
+            let input = planned.intent.proposal();
+            let adjustment = input
+                .prior_period_adjustment()
+                .map_err(|error| KernelError::Corrupt(format!("PPA rehearsal source: {error}")))?;
+            let Some(adjustment) = adjustment else {
+                txn.abort();
+                return Ok(Err(prior_period_adjustment_refusal(
+                    "the prior-period adjustment's reviewed template omits relates_to",
+                )));
+            };
+            let Some(period) = crate::policy::resolved_period(
+                book,
+                input.effective_date,
+                input
+                    .effective_period
+                    .as_ref()
+                    .map(|period| period.code.as_str()),
+            ) else {
+                txn.abort();
+                return Ok(Err(rehearsal_refused(
+                    "the prior-period adjustment's reviewed template has no single posting period",
+                )));
+            };
+            if let Err(refusal) = prior_period_rehearsal_scope(
+                &body,
+                &rehearsal,
+                &adjustment.relates_to.code,
+                &period,
+            ) {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        }
     }
     if proposal.validate().is_err() {
         txn.abort();
@@ -1717,6 +1781,14 @@ pub fn derive_member(
             kind.name()
         ))));
     };
+    let adjustment = planned
+        .prior_period_adjustment()
+        .map_err(|error| KernelError::Corrupt(format!("prior-period adjustment: {error}")))?;
+    if (kind == CaseKind::PriorPeriodAdjustment) != adjustment.is_some() {
+        return Ok(Err(prior_period_adjustment_refusal(
+            "a PriorPeriodAdjustment case's reviewed entry must name relates_to; another case kind cannot carry that marker",
+        )));
+    }
     // A Revision case's Plan record is a Revision that revises one target,
     // and a Restatement or PolicyChangeRetrospective case's a Restatement
     // that restates one; a PriorPeriodAdjustment case plans plain postings
@@ -1783,6 +1855,166 @@ fn membership(message: impl Into<String>) -> Refusal {
         "plan §8.3, §8.4 (a case-bound entry is admissible only inside an Approved RestatementCase)",
         "post a case's entries with `fa case post <case>` after two Human approvals of its manifest",
     )
+}
+
+fn prior_period_adjustment_refusal(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::PRIOR_PERIOD_ADJUSTMENT,
+        exit::REFUSAL,
+        message.into(),
+        "plan §7.5, §8.1, §8.3 (a prior-period adjustment corrects an earlier period through retained earnings, never current-period income)",
+        "rehearse the correction with --relates-to <earlier-period> on the case's scenario; route its equity legs to an Equity leaf assigned retained_earnings with `fa chart role <account> retained_earnings`, then obtain fresh case approvals",
+    )
+}
+
+/// New prior-period adjustments are source-bound to a recorded historical
+/// period and the current journaled retained-earnings role assignments.
+/// Exact recorded retries return before this check; historic entries are
+/// never given an inferred period or silently reinterpreted.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_prior_period_adjustment<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    capability: &Capability,
+    admission: crate::post::Admission,
+    posting_period: &fa_time::PeriodDef,
+    accounts: &[AccountRow],
+) -> Outcome<()> {
+    let adjustment = match proposal.prior_period_adjustment() {
+        Ok(value) => value,
+        Err(error) => return Ok(Err(prior_period_adjustment_refusal(error.to_string()))),
+    };
+    if proposal.class != EntryClass::PRIOR_PERIOD_ADJUSTMENT && adjustment.is_none() {
+        return Ok(Ok(()));
+    }
+    let Some(adjustment) = adjustment else {
+        return Ok(Err(prior_period_adjustment_refusal(
+            "the prior-period adjustment names no historical relates_to period",
+        )));
+    };
+    let rehearsal = matches!(admission, crate::post::Admission::ScratchScenario(_));
+    let case_post = matches!(admission, crate::post::Admission::Case(_))
+        && proposal.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT;
+    if !rehearsal && !case_post {
+        return Ok(Err(prior_period_adjustment_refusal(
+            "a relates_to adjustment posts only inside its approved case; Original/Adjusting templates may only rehearse on that case's scenario",
+        )));
+    }
+    if proposal
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ERROR_EXTENSION)
+    {
+        return Ok(Err(prior_period_adjustment_refusal(
+            "a case adjustment cannot also claim an immaterial prior_period_error through current income",
+        )));
+    }
+    // Role history is currently a whole-journal fold. Refuse scoped or
+    // non-reading authority before constructing that observation, rather
+    // than filtering roles after reading the book.
+    if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+    {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    let relates_to = &adjustment.relates_to;
+    if relates_to.calendar != book.calendar.id {
+        return Ok(Err(prior_period_adjustment_refusal(format!(
+            "relates_to names calendar `{}`, not this book's `{}`",
+            relates_to.calendar, book.calendar.id
+        ))));
+    }
+    let Some(definition) = crate::policy::calendar_period(book, &relates_to.code) else {
+        return Ok(Err(prior_period_adjustment_refusal(format!(
+            "relates_to names `{}`, which is not a period of this book's calendar",
+            relates_to.code
+        ))));
+    };
+    let Some(row) = txn.vertex(db, period_vid(&relates_to.calendar, &relates_to.code))? else {
+        return Ok(Err(prior_period_adjustment_refusal(format!(
+            "the relates_to period `{}` has not been created; create its fiscal year before rehearsing the correction",
+            relates_to.code
+        ))));
+    };
+    let historical = PeriodRow::decode(&row)?;
+    let expected_kind = if definition.kind == fa_time::PeriodKind::Normal
+        && crate::genesis::opening_date_in(txn, db)?
+            .is_some_and(|opening| definition.end <= opening)
+    {
+        fa_time::PeriodKind::Historical
+    } else {
+        definition.kind
+    };
+    if !row.labels.contains(&label::PERIOD)
+        || historical.calendar_id != relates_to.calendar
+        || historical.code != definition.code
+        || historical.fiscal_year != definition.fiscal_year
+        || historical.ordinal != definition.ordinal
+        || historical.kind != expected_kind
+        || historical.start != definition.start
+        || historical.end != definition.end
+    {
+        return Err(KernelError::Corrupt(
+            "prior-period adjustment's period differs from the book calendar".into(),
+        ));
+    }
+    if historical.end > posting_period.start {
+        return Ok(Err(prior_period_adjustment_refusal(format!(
+            "relates_to period `{}` is not earlier than posting period `{}`",
+            relates_to.code, posting_period.code
+        ))));
+    }
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    let roles = crate::account_role::account_roles_at(db, book, txn.basis())?;
+    let mut retained_earnings_leg = false;
+    for (index, (leg, account)) in proposal.legs.iter().zip(accounts).enumerate() {
+        let kind = AccountType(account.account_type);
+        if matches!(kind, AccountType::REVENUE | AccountType::EXPENSE) {
+            return Ok(Err(prior_period_adjustment_refusal(format!(
+                "leg {index} uses current-income account `{}` ({}); prior-period adjustments book through retained_earnings",
+                account.code,
+                kind.name().unwrap_or("?")
+            ))
+            .at("leg", index)
+            .at("account", account.code.clone())
+            .at("role", "retained_earnings")));
+        }
+        if kind == AccountType::EQUITY {
+            if !roles.holds(leg.account_ref, "retained_earnings") {
+                let mut eligible = Vec::new();
+                for account in roles.accounts_with("retained_earnings") {
+                    if let Some(row) = txn.vertex(db, account)? {
+                        eligible.push(AccountRow::decode(&row)?.code);
+                    }
+                }
+                eligible.sort();
+                let eligible = if eligible.is_empty() {
+                    "none assigned".into()
+                } else {
+                    eligible.join(", ")
+                };
+                return Ok(Err(prior_period_adjustment_refusal(format!(
+                    "equity leg {index} uses `{}`, which does not hold retained_earnings; accounts assigned that role: {eligible}",
+                    account.code
+                ))
+                .at("leg", index)
+                .at("account", account.code.clone())
+                .at("role", "retained_earnings")));
+            }
+            retained_earnings_leg |= leg.amount.mantissa > 0;
+        }
+    }
+    if !retained_earnings_leg {
+        return Ok(Err(prior_period_adjustment_refusal(
+            "the prior-period adjustment carries no positive leg on an Equity leaf holding retained_earnings",
+        )));
+    }
+    Ok(Ok(()))
 }
 
 /// The case a posting entry claims (extension 23), checked against its
@@ -1874,6 +2106,21 @@ pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
             member.ordinal
         )));
     };
+    if view.body.kind == CaseKind::PriorPeriodAdjustment {
+        let adjustment = proposal
+            .prior_period_adjustment()
+            .map_err(|error| KernelError::Corrupt(format!("prior-period adjustment: {error}")))?;
+        let Some(adjustment) = adjustment else {
+            return Ok(Err(prior_period_adjustment_refusal(
+                "the case member omits its relates_to period",
+            )));
+        };
+        if let Err(refusal) =
+            prior_period_rehearsal_scope(&view.body, rehearsal, &adjustment.relates_to.code, period)
+        {
+            return Ok(Err(refusal));
+        }
+    }
     let Some(entry) = approval
         .manifest
         .entries
@@ -2725,6 +2972,41 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn prior_period_adjustment_rehearsal_cannot_hide_the_current_posting_effect() {
+        let body = CaseBody {
+            kind: CaseKind::PriorPeriodAdjustment,
+            periods: vec!["FY2025-P12".into()],
+            ..body()
+        };
+        let mut rehearsal = Rehearsal {
+            scenario: "correction".into(),
+            certificate: [9; 32],
+            fork_at: CommitSeq(41),
+            periods: vec!["FY2025-P12".into()],
+            intents: vec![VId(5)],
+        };
+        // The original error is covered, but this historical-only report
+        // would show no change from a correction posted in current March.
+        let refusal = prior_period_rehearsal_scope(&body, &rehearsal, "FY2025-P12", "FY2026-P03")
+            .unwrap_err();
+        assert_eq!(refusal.code, code::CASE_REHEARSAL);
+        assert!(refusal.message.contains("posting effect in `FY2026-P03`"));
+        rehearsal.periods = vec!["FY2026-P03".into()];
+        assert!(
+            prior_period_rehearsal_scope(&body, &rehearsal, "FY2025-P12", "FY2026-P03")
+                .unwrap_err()
+                .message
+                .contains("omits `FY2025-P12`")
+        );
+        rehearsal.periods = vec!["FY2025-P12".into(), "FY2026-P03".into()];
+        prior_period_rehearsal_scope(&body, &rehearsal, "FY2025-P12", "FY2026-P03")
+            .expect("the approved diff shows the error period and the actual correction");
+        let refusal = prior_period_rehearsal_scope(&body, &rehearsal, "FY2025-P11", "FY2026-P03")
+            .unwrap_err();
+        assert_eq!(refusal.code, code::PRIOR_PERIOD_ADJUSTMENT);
     }
 
     #[test]

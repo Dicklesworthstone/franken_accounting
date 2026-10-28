@@ -18,14 +18,18 @@ use crate::{
     EquityRollForwardRequest, Outcome, RollForwardCertificate,
 };
 
-pub const EQUITY_CERTIFICATE_FORMAT: &[u8] = b"fa:equity-roll-forward-certificate:v1";
-pub const EQUITY_REPORT_FORMAT: &str = "fa:equity-roll-forward-report:v1";
+pub const EQUITY_CERTIFICATE_FORMAT: &[u8] = b"fa:equity-roll-forward-certificate:v2";
+pub const EQUITY_REPORT_FORMAT: &str = "fa:equity-roll-forward-report:v2";
+pub(crate) const LEGACY_EQUITY_CERTIFICATE_FORMAT: &[u8] = b"fa:equity-roll-forward-certificate:v1";
+const LEGACY_EQUITY_REPORT_FORMAT: &str = "fa:equity-roll-forward-report:v1";
 pub const MAX_EQUITY_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
-const DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v1";
+const DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v2";
+const LEGACY_DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v1";
 const MAX_SCOPE: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EquityRollForwardCertificate {
+    legacy: bool,
     source: RollForwardCertificate,
     request: EquityRollForwardRequest,
     output: Vec<u8>,
@@ -89,12 +93,26 @@ impl EquityRollForwardReport {
     /// Exact statement, chart presentation and every classified journal leg.
     /// The nested source proves the net-income legs as well as these equity legs.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
-        let statement = self
-            .statement
-            .canonical_bytes()
-            .map_err(|e| invalid(e.to_string()))?;
+        self.canonical_bytes_for(false)
+    }
+
+    pub(crate) fn canonical_bytes_for(&self, legacy: bool) -> Result<Vec<u8>, Refusal> {
+        let statement = if legacy {
+            self.statement
+                .canonical_bytes_v1()
+                .map_err(|e| invalid(e.to_string()))?
+        } else {
+            self.statement
+                .canonical_bytes()
+                .map_err(|e| invalid(e.to_string()))?
+        };
         let mut w = Writer::new();
-        w.bytes(EQUITY_REPORT_FORMAT.as_bytes()).bytes(&statement);
+        w.bytes(if legacy {
+            LEGACY_EQUITY_REPORT_FORMAT.as_bytes()
+        } else {
+            EQUITY_REPORT_FORMAT.as_bytes()
+        })
+        .bytes(&statement);
         w.list(&self.accounts, |w, account| {
             w.u128(account.id)
                 .str(&account.code)
@@ -113,11 +131,20 @@ impl EquityRollForwardReport {
                     EquityActivityKind::Distribution => 2,
                     EquityActivityKind::ClosingTransfer => 3,
                     EquityActivityKind::OtherEquity => 4,
+                    EquityActivityKind::PriorPeriodAdjustment => 5,
                 })
                 .u128(movement.account_id)
                 .u32(movement.unit_id)
                 .i128(movement.debits)
                 .i128(movement.credits);
+            if !legacy {
+                w.opt(movement.case_ordinal.as_ref(), |w, ordinal| {
+                    w.u32(*ordinal);
+                })
+                .opt(movement.relates_to.as_ref(), |w, period| {
+                    w.str(&period.calendar).str(&period.code);
+                });
+            }
         });
         let bytes = w.finish().map_err(|e| invalid(e.to_string()))?;
         if bytes.len() > MAX_EQUITY_CERTIFICATE_BYTES {
@@ -128,6 +155,26 @@ impl EquityRollForwardReport {
 }
 
 impl EquityRollForwardCertificate {
+    pub(crate) fn is_legacy(&self) -> bool {
+        self.legacy
+    }
+
+    fn format(&self) -> &'static [u8] {
+        if self.legacy {
+            LEGACY_EQUITY_CERTIFICATE_FORMAT
+        } else {
+            EQUITY_CERTIFICATE_FORMAT
+        }
+    }
+
+    fn digest_domain(&self) -> &'static [u8] {
+        if self.legacy {
+            LEGACY_DIGEST_DOMAIN
+        } else {
+            DIGEST_DOMAIN
+        }
+    }
+
     #[must_use]
     pub fn source_certificate(&self) -> &RollForwardCertificate {
         &self.source
@@ -164,16 +211,29 @@ impl EquityRollForwardCertificate {
         if output
             .bytes(64, "equity output format")
             .map_err(|e| invalid(e.to_string()))?
-            != EQUITY_REPORT_FORMAT.as_bytes()
+            != if self.legacy {
+                LEGACY_EQUITY_REPORT_FORMAT.as_bytes()
+            } else {
+                EQUITY_REPORT_FORMAT.as_bytes()
+            }
         {
             return Err(invalid("unsupported equity output format"));
         }
-        let statement = EquityRollForward::decode(
-            output
-                .bytes(MAX_EQUITY_CERTIFICATE_BYTES, "equity statement")
-                .map_err(|e| invalid(e.to_string()))?,
-        )
-        .map_err(|e| invalid(e.to_string()))?;
+        let statement_bytes = output
+            .bytes(MAX_EQUITY_CERTIFICATE_BYTES, "equity statement")
+            .map_err(|e| invalid(e.to_string()))?;
+        let statement_format: &[u8] = if self.legacy {
+            b"fa:equity-roll-forward:v1"
+        } else {
+            b"fa:equity-roll-forward:v2"
+        };
+        if !statement_bytes.starts_with(statement_format) {
+            return Err(invalid(
+                "equity statement version differs from its certificate",
+            ));
+        }
+        let statement =
+            EquityRollForward::decode(statement_bytes).map_err(|e| invalid(e.to_string()))?;
         if statement.book_id != self.source.source_certificate().book_id
             || statement.branch_id != self.source.source_certificate().branch_id
             || statement.known_at != self.known_at().0
@@ -202,7 +262,7 @@ impl EquityRollForwardCertificate {
             .filter(|n| *n <= MAX_EQUITY_CERTIFICATE_BYTES)
             .ok_or_else(|| invalid("equity certificate exceeds the 64 MiB limit"))?;
         let mut w = Writer::with_capacity(size);
-        w.bytes(EQUITY_CERTIFICATE_FORMAT)
+        w.bytes(self.format())
             .bytes(&source)
             .list(&self.request.issuance_accounts, |w, id| {
                 w.u128(id.0);
@@ -220,12 +280,14 @@ impl EquityRollForwardCertificate {
         report: &EquityRollForwardReport,
     ) -> Result<Self, Refusal> {
         let mut certificate = Self {
+            legacy: false,
             source,
             request,
             output: report.canonical_bytes()?,
             digest: [0; 32],
         };
-        certificate.digest = domain_digest(DIGEST_DOMAIN, &[&certificate.body_bytes()?]);
+        certificate.digest =
+            domain_digest(certificate.digest_domain(), &[&certificate.body_bytes()?]);
         Ok(certificate)
     }
 
@@ -235,12 +297,14 @@ impl EquityRollForwardCertificate {
             return Err(invalid("equity certificate exceeds the 64 MiB limit"));
         }
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "equity certificate format")
+        let legacy = match r
+            .bytes(64, "equity certificate format")
             .map_err(|e| invalid(e.to_string()))?
-            != EQUITY_CERTIFICATE_FORMAT
         {
-            return Err(invalid("unsupported equity certificate format"));
-        }
+            EQUITY_CERTIFICATE_FORMAT => false,
+            LEGACY_EQUITY_CERTIFICATE_FORMAT => true,
+            _ => return Err(invalid("unsupported equity certificate format")),
+        };
         let source = RollForwardCertificate::decode(
             r.bytes(MAX_EQUITY_CERTIFICATE_BYTES, "equity source")
                 .map_err(|e| invalid(e.to_string()))?,
@@ -281,6 +345,7 @@ impl EquityRollForwardCertificate {
             distribution_accounts,
         };
         let certificate = Self {
+            legacy,
             source,
             request,
             output,
@@ -294,7 +359,7 @@ impl EquityRollForwardCertificate {
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut bytes = self.body_bytes()?;
-        if domain_digest(DIGEST_DOMAIN, &[&bytes]) != self.digest {
+        if domain_digest(self.digest_domain(), &[&bytes]) != self.digest {
             return Err(invalid(
                 "equity certificate digest differs from its contents",
             ));
@@ -336,11 +401,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(source) => source,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let report =
-            match crate::roll_forward::equity_from_lead_schedule(certified.report, &request) {
-                Ok(report) => report,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let citations = self.equity_adjustment_citations(cx, &certified.report)?;
+        let report = match crate::roll_forward::equity_from_lead_schedule(
+            certified.report,
+            &request,
+            &citations,
+            false,
+        ) {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let certificate =
             match EquityRollForwardCertificate::seal(certified.certificate, request, &report) {
                 Ok(certificate) => certificate,
@@ -394,11 +464,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(source) => source,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let report = match crate::roll_forward::equity_from_lead_schedule(source, &expected) {
+        let citations = if certificate.legacy {
+            Default::default()
+        } else {
+            self.equity_adjustment_citations(cx, &source)?
+        };
+        let report = match crate::roll_forward::equity_from_lead_schedule(
+            source,
+            &expected,
+            &citations,
+            certificate.legacy,
+        ) {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let output = match report.canonical_bytes() {
+        let output = match report.canonical_bytes_for(certificate.legacy) {
             Ok(output) => output,
             Err(refusal) => return Ok(Err(refusal)),
         };

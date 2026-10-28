@@ -374,7 +374,150 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(source) => source,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        Ok(equity_from_lead_schedule(source, request))
+        let citations = self.equity_adjustment_citations(cx, &source)?;
+        Ok(equity_from_lead_schedule(
+            source, request, &citations, false,
+        ))
+    }
+
+    /// Enrich selected adjustment legs with the case and corrected period from
+    /// their immutable payloads. Exact reversals inherit the original PPA's
+    /// classification and citations through authenticated reversal ancestry.
+    /// Callers have already admitted the whole-book read and fixed the source
+    /// prefix. No current case state or role can relabel historical movement.
+    pub(crate) fn equity_adjustment_citations(
+        &self,
+        cx: &PurposeContexts,
+        source: &RollForward,
+    ) -> Result<EquityAdjustmentCitations, BookError> {
+        let selected: BTreeSet<_> = source
+            .movements
+            .iter()
+            .filter(|movement| {
+                matches!(
+                    movement.bucket.class,
+                    EntryClass::PRIOR_PERIOD_ADJUSTMENT | EntryClass::REVERSAL
+                )
+            })
+            .map(|movement| movement.entry_digest)
+            .collect();
+        if selected.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            let mut entries = BTreeMap::new();
+            let mut selected_entries = BTreeMap::new();
+            for (index, row) in self
+                .db
+                .vertices_at(CommitSeq(source.known_at))
+                .map_err(KernelError::from)?
+                .into_iter()
+                .enumerate()
+            {
+                if index % 256 == 0 {
+                    query.checkpoint().map_err(BookError::Context)?;
+                }
+                if !row.labels.contains(&label::ENTRY) {
+                    continue;
+                }
+                let entry = Entry::decode(&bytes(
+                    &row,
+                    property::FA_PAYLOAD,
+                    "equity adjustment entry payload",
+                )?)
+                .map_err(KernelError::from)?;
+                if entry.proposal.book_id != source.book_id
+                    || entry.proposal.branch_id != source.branch_id
+                    || row.created_at.0 == 0
+                    || row.created_at.0 > source.known_at
+                {
+                    return Err(corrupt(
+                        "equity adjustment has a different source coordinate",
+                    ));
+                }
+                if selected.contains(&entry.entry_digest)
+                    && selected_entries
+                        .insert(entry.entry_digest, row.vid)
+                        .is_some()
+                {
+                    return Err(corrupt("equity adjustment source repeats an entry digest"));
+                }
+                entries.insert(row.vid, (entry, row.created_at));
+            }
+            if selected_entries.len() != selected.len() {
+                return Err(corrupt(
+                    "equity adjustment source is missing a selected entry",
+                ));
+            }
+            let mut citations = BTreeMap::new();
+            let mut origins = BTreeMap::new();
+            for (digest, selected_vid) in selected_entries {
+                let mut at = selected_vid;
+                let mut path = BTreeSet::new();
+                let origin = loop {
+                    query.checkpoint().map_err(BookError::Context)?;
+                    if let Some(origin) = origins.get(&at) {
+                        break *origin;
+                    }
+                    if !path.insert(at) {
+                        return Err(corrupt("equity reversal ancestry contains a cycle"));
+                    }
+                    let (entry, recorded_at) = entries
+                        .get(&at)
+                        .ok_or_else(|| corrupt("equity reversal ancestry is missing an entry"))?;
+                    if entry.proposal.class != EntryClass::REVERSAL {
+                        break at;
+                    }
+                    let target = match entry.proposal.supersession.as_slice() {
+                        [edge] if edge.kind == fa_model::SupersessionKind::Reverses => edge.target,
+                        _ => {
+                            return Err(corrupt(
+                                "equity reversal must name exactly one Reverses target",
+                            ));
+                        }
+                    };
+                    let (parent, parent_at) = entries.get(&target.vid).ok_or_else(|| {
+                        corrupt("equity reversal target is absent from its visible prefix")
+                    })?;
+                    if parent.entry_digest != target.entry_digest || parent_at > recorded_at {
+                        return Err(corrupt(
+                            "equity reversal target digest differs or target is known later",
+                        ));
+                    }
+                    at = target.vid;
+                };
+                for visited in path {
+                    origins.insert(visited, origin);
+                }
+                let (entry, _) = &entries[&origin];
+                if entry.proposal.class != EntryClass::PRIOR_PERIOD_ADJUSTMENT {
+                    continue;
+                }
+                let member = entry
+                    .proposal
+                    .extensions
+                    .iter()
+                    .find(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION)
+                    .map(|(_, bytes)| fa_journal::case::CaseMember::decode(bytes))
+                    .transpose()?;
+                if member.is_some_and(|member| member.ordinal == 0) {
+                    return Err(corrupt("equity adjustment names case ordinal zero"));
+                }
+                let adjustment = entry.proposal.prior_period_adjustment().map_err(|error| {
+                    corrupt(format!("equity adjustment source period: {error}"))
+                })?;
+                citations.insert(
+                    digest,
+                    (
+                        member.map(|member| member.ordinal),
+                        adjustment.map(|adjustment| adjustment.relates_to),
+                    ),
+                );
+            }
+            Ok(citations)
+        })
     }
 
     /// Resolve the complete equity/income chart at the request's one prefix.
@@ -509,12 +652,17 @@ pub struct EquityRollForwardReport {
     pub movements: Vec<EquityMovement>,
 }
 
+pub(crate) type EquityAdjustmentCitations =
+    BTreeMap<[u8; 32], (Option<u32>, Option<fa_model::PeriodRef>)>;
+
 /// Classify the lead schedule's legs and fold the statement. Stocks are
 /// the schedule's own opening and closing (debit minus credit, as one
 /// positive side); nothing is read again.
 pub(crate) fn equity_from_lead_schedule(
     source: RollForward,
     request: &EquityRollForwardRequest,
+    citations: &EquityAdjustmentCitations,
+    legacy: bool,
 ) -> Result<EquityRollForwardReport, Refusal> {
     let types: BTreeMap<u128, u8> = source
         .accounts
@@ -532,10 +680,15 @@ pub(crate) fn equity_from_lead_schedule(
                 "a lead-schedule movement names an account outside its selection",
             ));
         };
+        let prior_period_adjustment = !legacy
+            && (m.bucket.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT
+                || citations.contains_key(&m.entry_digest));
         let kind = if m.bucket.class == EntryClass::CLOSING {
             EquityActivityKind::ClosingTransfer
         } else if account_type == AccountType::EQUITY.0 {
-            if issuance.contains(&m.account_id) {
+            if prior_period_adjustment {
+                EquityActivityKind::PriorPeriodAdjustment
+            } else if issuance.contains(&m.account_id) {
                 EquityActivityKind::Issuance
             } else if distribution.contains(&m.account_id) {
                 EquityActivityKind::Distribution
@@ -543,6 +696,11 @@ pub(crate) fn equity_from_lead_schedule(
                 EquityActivityKind::OtherEquity
             }
         } else {
+            if prior_period_adjustment {
+                return Err(invalid_equity(
+                    "a prior-period adjustment must not enter current-period income or expense",
+                ));
+            }
             let slot = net_income.get_mut(&m.unit_id).ok_or_else(|| {
                 invalid_equity("a lead-schedule movement names a unit outside its selection")
             })?;
@@ -563,6 +721,10 @@ pub(crate) fn equity_from_lead_schedule(
             unit_id: m.unit_id,
             debits: m.debits,
             credits: m.credits,
+            case_ordinal: citations.get(&m.entry_digest).and_then(|(case, _)| *case),
+            relates_to: citations
+                .get(&m.entry_digest)
+                .and_then(|(_, period)| period.clone()),
         });
     }
     let stock = |account_id: u128, unit_id: u32, net: i128| -> Result<AccountBalance, Refusal> {
@@ -602,8 +764,12 @@ pub(crate) fn equity_from_lead_schedule(
         net_income_by_unit: net_income,
         equity_movements: movements.clone(),
     };
-    let statement = fa_statements::cash_flow::evaluate_equity_roll_forward(&input)
-        .map_err(|error| invalid_equity(error.to_string()))?;
+    let statement = if legacy {
+        fa_statements::cash_flow::evaluate_equity_roll_forward_v1(&input)
+    } else {
+        fa_statements::cash_flow::evaluate_equity_roll_forward(&input)
+    }
+    .map_err(|error| invalid_equity(error.to_string()))?;
     Ok(EquityRollForwardReport {
         statement,
         accounts: source.accounts,

@@ -30,6 +30,10 @@ pub(super) struct EntryInfo<'a> {
     /// Immutable extension 33 bytes. Due-date reports independently decode
     /// and validate these against the authenticated monetary legs.
     pub obligation_maturity: Option<&'a [u8]>,
+    /// Immutable case-membership (23) and prior-period-adjustment (36)
+    /// extensions, independently decoded by the equity report verifier.
+    pub case_member: Option<&'a [u8]>,
+    pub prior_period_adjustment: Option<&'a [u8]>,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
@@ -277,6 +281,8 @@ pub(super) fn entry_info<'a>(
     let mut recurring = None;
     let mut has_fx_revaluation_basis = false;
     let mut obligation_maturity = None;
+    let mut case_member = None;
+    let mut prior_period_adjustment = None;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
         let mut previous = None;
@@ -293,6 +299,12 @@ pub(super) fn entry_info<'a>(
             has_fx_revaluation_basis |= tag == 16;
             if tag == 33 {
                 obligation_maturity = Some(bytes);
+            }
+            if tag == 23 {
+                case_member = Some(bytes);
+            }
+            if tag == 36 {
+                prior_period_adjustment = Some(bytes);
             }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
@@ -379,6 +391,8 @@ pub(super) fn entry_info<'a>(
         rule_version_oid,
         has_fx_revaluation_basis,
         obligation_maturity,
+        case_member,
+        prior_period_adjustment,
         evidence,
         identity,
         legacy_identity,

@@ -6641,7 +6641,15 @@ pub(crate) fn plan_document_into_scenario(
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
+    // A PPA rehearsal reads retained-earnings role history. These implied
+    // ops apply only to the embedded owner; a bound capability is unchanged.
+    let implied: &[&str] = if doc.get("relates_to").is_some() || args.flag("--relates-to").is_some()
+    {
+        &["read", "post"]
+    } else {
+        crate::fx::posting_ops(doc)
+    };
+    let capability = ctx.capability(args, implied)?;
     let out = &ctx.out;
     // Current authority to run intents in a scenario is admitted before the
     // book, its frontier or the scenario is disclosed.
@@ -7512,11 +7520,12 @@ fn post_batch_document(
         "--reverse-on",
         "--prior-period-error",
         "--evidence",
+        "--relates-to",
     ] {
         if !args.flag_all(flag).is_empty() {
             return Err(usage(
                 format!("a batch intent takes no {flag}; nothing was posted"),
-                "put timeout_ns, reverse_on, prior_period_error and evidence in each member intent",
+                "put timeout_ns, reverse_on, prior_period_error and evidence in each member intent; rehearse prior-period adjustments on their case scenario",
             ));
         }
     }
@@ -7711,6 +7720,7 @@ struct PostTiming {
     timeout_ns: Option<u64>,
     reverse_on: Option<DateDay>,
     prior_period_error: Option<String>,
+    relates_to: Option<String>,
 }
 
 /// Timing is request data. The posting kernel resolves its committed tick
@@ -7743,6 +7753,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "timeout_ns",
         "reverse_on",
         "prior_period_error",
+        "relates_to",
         "fx",
         "external_subledger",
         "obligation_maturity",
@@ -7840,10 +7851,40 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         }
         None => args.flag("--prior-period-error").map(str::to_string),
     };
+    if args.flag_all("--relates-to").len() > 1
+        || (doc.get("relates_to").is_some() && args.flag("--relates-to").is_some())
+    {
+        return Err(usage(
+            "relates_to must be supplied once, in the intent or --relates-to",
+            "use relates_to: \"FY2025-P12\" on the scenario intent for a PriorPeriodAdjustment case",
+        ));
+    }
+    let relates_to = match doc.get("relates_to") {
+        Some(Json::Str(code)) if !code.trim().is_empty() => Some(code.clone()),
+        Some(_) => {
+            return Err(usage(
+                "relates_to must name the corrected earlier period",
+                "relates_to: \"FY2025-P12\", or --relates-to FY2025-P12",
+            ));
+        }
+        None => args.flag("--relates-to").map(str::to_string),
+    };
+    if relates_to.is_some()
+        && !matches!(
+            class,
+            EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::PRIOR_PERIOD_ADJUSTMENT
+        )
+    {
+        return Err(usage(
+            "relates_to belongs to a prior-period adjustment or its Original/Adjusting scenario template",
+            "rehearse an adjustment through retained_earnings with fa post --scenario <name> --relates-to <prior-period> --intent <file>",
+        ));
+    }
     Ok(PostTiming {
         timeout_ns,
         reverse_on,
         prior_period_error,
+        relates_to,
     })
 }
 
@@ -7937,6 +7978,7 @@ fn build_post_request_with_prior(
         timeout_ns,
         reverse_on,
         prior_period_error,
+        relates_to,
     } = post_timing(args, doc, class)?;
     let typed_reversal = forced == Some(EntryClass::REVERSAL);
     if doc.get("reclassifies").is_some() && class != EntryClass::RECLASSIFICATION {
@@ -8659,6 +8701,15 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?,
         None => proposal,
     };
+    let mut proposal = proposal;
+    if let Some(code) = relates_to {
+        proposal
+            .with_prior_period_adjustment(&PeriodRef {
+                calendar: ctx.calendar.id.clone(),
+                code,
+            })
+            .map_err(|error| Fail::Internal(error.to_string()))?;
+    }
     let proposal = apply_valuation_adjustments(doc, &ctx, proposal)?;
     let proposal = crate::obligation::declare_terms(book, doc, proposal)?;
     Ok(BuiltPost {
@@ -9024,6 +9075,7 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--timeout-ns",
         "--reverse-on",
         "--prior-period-error",
+        "--relates-to",
         "--draft",
         "--scenario",
         "--review-out",
@@ -19656,9 +19708,11 @@ pub(crate) fn render_equity_roll_forward(
     for u in &statement.units {
         let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(u.unit_id), m), units);
         human.push_str(&format!(
-            "\n  {}: opening {} + net income {} + issuances {} + distributions {} + other {} = closing {}",
+            "\n  {}: opening as reported {} + prior-period adjustments {} = opening as adjusted {}; + net income {} + issuances {} + distributions {} + other {} = closing {}",
             registered_unit_code(fa_money::UnitId(u.unit_id), units)?,
             fmt(u.opening_total_equity)?,
+            fmt(u.prior_period_adjustments)?,
+            fmt(u.opening_equity_as_adjusted)?,
             fmt(u.net_income)?,
             fmt(u.issuances)?,
             fmt(u.distributions)?,
@@ -19679,6 +19733,14 @@ pub(crate) fn render_equity_roll_forward(
                 s(fmt(u.opening_unclosed_earnings)?),
             ),
             ("opening_total_equity", s(fmt(u.opening_total_equity)?)),
+            (
+                "prior_period_adjustments",
+                s(fmt(u.prior_period_adjustments)?),
+            ),
+            (
+                "opening_equity_as_adjusted",
+                s(fmt(u.opening_equity_as_adjusted)?),
+            ),
             ("net_income", s(fmt(u.net_income)?)),
             ("issuances", s(fmt(u.issuances)?)),
             ("distributions", s(fmt(u.distributions)?)),
@@ -19719,7 +19781,19 @@ pub(crate) fn render_equity_roll_forward(
                         fa::EquityActivityKind::Distribution => "distribution",
                         fa::EquityActivityKind::ClosingTransfer => "closing_transfer",
                         fa::EquityActivityKind::OtherEquity => "other_equity",
+                        fa::EquityActivityKind::PriorPeriodAdjustment => "prior_period_adjustment",
                     }),
+                ),
+                (
+                    "case",
+                    m.case_ordinal
+                        .map_or(Json::Null, |ordinal| Json::Int(i128::from(ordinal))),
+                ),
+                (
+                    "relates_to",
+                    m.relates_to
+                        .as_ref()
+                        .map_or(Json::Null, |period| s(&period.code)),
                 ),
                 ("account", s(code(m.account_id)?)),
                 ("side", s(side)),

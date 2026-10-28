@@ -598,6 +598,18 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     book.create_periods(2026, PRINCIPAL, &schema)
         .unwrap()
         .unwrap();
+    book.record_account_role(
+        &fa::AccountRoleSpec {
+            account: account_vid(book_id, "3000"),
+            role: "retained_earnings".into(),
+            assigned: true,
+        },
+        PRINCIPAL,
+        b"retained-earnings-role",
+        &schema,
+    )
+    .unwrap()
+    .unwrap();
     book.transition_period(
         "FY2026-P02",
         PeriodTransition::Open,
@@ -657,7 +669,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
             Amount::new(usd, 50_000),
         ),
     ];
-    let planned = EntryPayload {
+    let mut planned = EntryPayload {
         schema_minor: 0,
         book_id,
         branch_id: Id128::TRUNK,
@@ -684,6 +696,12 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         extensions: Vec::new(),
         tags: Vec::new(),
     };
+    planned
+        .with_prior_period_adjustment(&fa_model::PeriodRef {
+            calendar: book.context().calendar.id.clone(),
+            code: "FY2025-P12".into(),
+        })
+        .unwrap();
     book.run_in_scenario(
         planner,
         "adjusted",
@@ -791,6 +809,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     assert_eq!(book.head().unwrap(), head);
     assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Approved);
 
+    let before_adjustment = book.head().unwrap();
     let posted = book
         .post_case(poster.clone(), 1, date, b"post")
         .unwrap()
@@ -830,6 +849,84 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap_err();
     assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");
+
+    // The real case posting is a correction of opening equity, never current
+    // income or an inferred owner contribution, and it carries its provenance
+    // through retention, historical replay and the independent verifier.
+    let read = Capability::embedded(PRINCIPAL, &["read", "produce", "witness"]).unwrap();
+    let request = fa::EquityRollForwardRequest {
+        units: vec![usd.0],
+        label: "FY2026 equity after prior-period correction".into(),
+        effective_from: day(2026, 1, 1),
+        effective_through: day(2026, 12, 31),
+        known_at: Some(book.head().unwrap()),
+        // The class wins even when a recipient designates this equity account
+        // as an issuance account. That choice cannot hide the adjustment.
+        issuance_accounts: vec![account_vid(book_id, "3000")],
+        distribution_accounts: Vec::new(),
+    };
+    let certified = book
+        .certify_equity_roll_forward(PRINCIPAL, &read, &request)
+        .unwrap()
+        .unwrap();
+    let unit = &certified.report.statement.units[0];
+    assert_eq!(unit.opening_total_equity, 0);
+    assert_eq!(unit.prior_period_adjustments, 50_000);
+    assert_eq!(unit.opening_equity_as_adjusted, 50_000);
+    assert_eq!(unit.net_income, 0);
+    assert_eq!(unit.issuances, 0);
+    assert_eq!(unit.other_equity_movements, 0);
+    assert_eq!(unit.closing_total_equity, 50_000);
+    assert_eq!(unit.equity_tie_out_residual, 0);
+    assert_eq!(certified.report.movements.len(), 1);
+    let movement = &certified.report.movements[0];
+    assert_eq!(movement.entry_digest, entry.entry_digest);
+    assert_eq!(movement.case_ordinal, Some(1));
+    assert_eq!(movement.relates_to.as_ref().unwrap().code, "FY2025-P12");
+    let mut historical = request.clone();
+    historical.known_at = Some(before_adjustment);
+    let before = book
+        .equity_roll_forward(PRINCIPAL, &read, &historical)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.statement.units[0].prior_period_adjustments, 0);
+    assert!(before.movements.is_empty());
+    assert_eq!(
+        book.replay_equity_roll_forward(PRINCIPAL, &read, &certified.certificate, &request)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    let state = book
+        .checkpoint(PRINCIPAL, &read)
+        .unwrap()
+        .unwrap()
+        .checkpoint
+        .checkpoint
+        .body
+        .state_oid;
+    let bundle = book
+        .produce_equity_roll_forward_bundle(PRINCIPAL, &read, Some(state), &certified.certificate)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &bundle.bundle.bytes,
+        &[book.checkpoint_public_key()],
+        None,
+        Some(&bundle.receipt),
+        Some(certified.certificate.digest()),
+    )
+    .expect("the standalone verifier recomputes the actual posted PPA");
+    assert_eq!(verified.output, certified.certificate.output());
+    let equity = verified.equity_roll_forward.unwrap();
+    assert_eq!(equity.units[0].prior_period_adjustments, 50_000);
+    assert_eq!(equity.units[0].opening_equity_as_adjusted, 50_000);
+    assert_eq!(equity.movements[0].case_ordinal, Some(1));
+    assert_eq!(
+        equity.movements[0].relates_to.as_ref().unwrap().1,
+        "FY2025-P12"
+    );
 
     // fa-75j4 slice 5: disclosed in a Disclosure document a principal other
     // than its uploader reviewed, then closed, each once.
@@ -908,6 +1005,126 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap_err();
     assert_eq!(reclosed.code, code::CASE_STATE, "{reclosed:?}");
+
+    // Exact reversals retain the economic class and original case/period,
+    // including when the original PPA lies before the report's date window.
+    // Reverse once to cancel the correction, then reverse again to revive it.
+    let mut target = entry.entry_ref(posted.case.posted[0].entry);
+    for (offset, expected_total, expected_movement) in [(0, 0, -50_000), (1, 50_000, 50_000)] {
+        let effective = day(2026, 2, 13 + offset);
+        let (original, _) = book.read_entry(target.vid).unwrap().unwrap();
+        let mut reversal = original.proposal.clone();
+        reversal.class = EntryClass::REVERSAL;
+        reversal.principal_ref = PRINCIPAL;
+        reversal.effective_date = effective;
+        reversal.effective_period = None;
+        reversal.idempotency_key = format!("reverse-ppa-{offset}").into_bytes();
+        reversal.extensions.clear();
+        reversal.supersession = vec![fa_model::Supersession {
+            target,
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 2, // WrongAccount, a registered correction reason.
+        }];
+        for leg in &mut reversal.legs {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+            leg.settles.clear();
+        }
+        reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+        let reversed = book
+            .post(PostRequest {
+                proposal: reversal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            })
+            .unwrap()
+            .unwrap();
+        target = reversed.entry_ref();
+        let mut current = request.clone();
+        current.known_at = Some(book.head().unwrap());
+        let report = book
+            .equity_roll_forward(PRINCIPAL, &read, &current)
+            .unwrap()
+            .unwrap();
+        let unit = &report.statement.units[0];
+        assert_eq!(unit.prior_period_adjustments, expected_total);
+        assert_eq!(unit.opening_equity_as_adjusted, expected_total);
+        assert_eq!(unit.closing_total_equity, expected_total);
+        assert_eq!(
+            unit.issuances, 0,
+            "owner labels cannot reclassify a reversal"
+        );
+        assert_eq!(unit.other_equity_movements, 0);
+        assert_eq!(unit.equity_tie_out_residual, 0);
+        assert!(report.movements.iter().all(|movement| {
+            movement.kind == fa_statements::cash_flow::EquityActivityKind::PriorPeriodAdjustment
+                && movement.case_ordinal == Some(1)
+                && movement.relates_to.as_ref().unwrap().code == "FY2025-P12"
+        }));
+
+        current.effective_from = effective;
+        current.effective_through = effective;
+        let narrow = book
+            .certify_equity_roll_forward(PRINCIPAL, &read, &current)
+            .unwrap()
+            .unwrap();
+        assert_eq!(narrow.report.movements.len(), 1);
+        let movement = &narrow.report.movements[0];
+        assert_eq!(movement.class, EntryClass::REVERSAL);
+        assert_eq!(movement.entry_digest, target.entry_digest);
+        assert_eq!(movement.case_ordinal, Some(1));
+        assert_eq!(movement.relates_to.as_ref().unwrap().code, "FY2025-P12");
+        assert_eq!(
+            narrow.report.statement.units[0].prior_period_adjustments,
+            expected_movement
+        );
+        assert_eq!(
+            book.replay_equity_roll_forward(PRINCIPAL, &read, &narrow.certificate, &current)
+                .unwrap()
+                .unwrap(),
+            narrow.report
+        );
+        let state = book
+            .checkpoint(PRINCIPAL, &read)
+            .unwrap()
+            .unwrap()
+            .checkpoint
+            .checkpoint
+            .body
+            .state_oid;
+        let bundle = book
+            .produce_equity_roll_forward_bundle(PRINCIPAL, &read, Some(state), &narrow.certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let verified = fa_verify::report::verify_report_expected(
+            &bundle.bundle.bytes,
+            &[book.checkpoint_public_key()],
+            None,
+            Some(&bundle.receipt),
+            Some(narrow.certificate.digest()),
+        )
+        .expect("offline verification follows authenticated PPA reversal ancestry");
+        assert_eq!(verified.output, narrow.certificate.output());
+        let equity = verified.equity_roll_forward.unwrap();
+        assert_eq!(equity.units[0].prior_period_adjustments, expected_movement);
+        assert_eq!(equity.units[0].other_equity_movements, 0);
+        assert_eq!(equity.movements[0].case_ordinal, Some(1));
+        assert_eq!(
+            equity.movements[0].relates_to.as_ref().unwrap().1,
+            "FY2025-P12"
+        );
+    }
+    assert_eq!(
+        book.replay_equity_roll_forward(PRINCIPAL, &read, &certified.certificate, &request)
+            .unwrap()
+            .unwrap(),
+        certified.report,
+        "later reversals never reinterpret the original retained certificate"
+    );
 }
 
 /// fa-75j4 slice 4b: a Revision case revises a Closed period's posting.

@@ -1357,7 +1357,12 @@ mod tests {
     fn every_intent_has_dependency_class() {
         let classes = EntryClasses::embedded().unwrap();
         let registry = IntentDependencies::embedded().unwrap();
-        for name in ["Closing", "Revaluation", "Elimination"] {
+        for name in [
+            "Closing",
+            "Revaluation",
+            "Elimination",
+            "PriorPeriodAdjustment",
+        ] {
             let tag = classes.by_name(name).unwrap().tag;
             assert_eq!(
                 registry.get("PostEntry", Some(tag)).unwrap(),
@@ -1376,7 +1381,6 @@ mod tests {
             "Migration",
             "Revision",
             "Restatement",
-            "PriorPeriodAdjustment",
         ] {
             let tag = classes.by_name(name).unwrap().tag;
             assert_eq!(

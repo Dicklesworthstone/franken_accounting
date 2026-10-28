@@ -1257,6 +1257,14 @@ exit = "refusal"
 cite = "plan §5.6, §5.8; limits.toml max_batch_template_bytes = 14439152 (fgdb-chronicle V1 capsule ceiling 56403 * 256 - 16 at rev b323bd1; bead fa-gbkc)"
 fix = "split the batch into smaller batches with `fa batch <batch.json>` so each batch's canonical LogicalDeltaTemplate stays at or below 14439152 bytes"
 
+[[refusal]]
+code = "FA-REF-202"
+name = "PRIOR_PERIOD_ADJUSTMENT"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §7.5, §8.1, §8.3 (a case-bound PriorPeriodAdjustment names the earlier error period and corrects opening retained earnings, never current-period income)"
+fix = "rehearse with --relates-to <earlier-period> on the case scenario, route every equity leg to an Equity leaf holding the retained_earnings role, omit income and expense leaves, and obtain fresh approvals of the corrected case manifest"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

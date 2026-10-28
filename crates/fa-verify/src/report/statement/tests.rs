@@ -28,6 +28,8 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         rule_version_oid: None,
         has_fx_revaluation_basis: false,
         obligation_maturity: None,
+        case_member: None,
+        prior_period_adjustment: None,
         evidence: Vec::new(),
     }
 }

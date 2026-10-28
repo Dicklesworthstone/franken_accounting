@@ -2361,6 +2361,7 @@ fn equity_checks(report: &crate::report::VerifiedEquityRollForward) -> Vec<Check
         vec![
             ("book", h(&report.book_id)),
             ("known_at", n(report.known_at)),
+            ("format_version", n(u64::from(report.format_version))),
             ("label", s(&report.label)),
             ("effective_from", day(Some(report.effective_from))),
             ("effective_through", day(Some(report.effective_through))),
@@ -2377,7 +2378,7 @@ fn equity_checks(report: &crate::report::VerifiedEquityRollForward) -> Vec<Check
             (
                 "classification_basis",
                 s(
-                    "authenticated owner roles and recorded Closing class; economic treatment and approval not judged",
+                    "authenticated owner roles and recorded entry classes; v2 separates prior-period adjustments and cites their recorded case and period; economic treatment and approval not judged",
                 ),
             ),
         ],
@@ -2410,6 +2411,14 @@ fn equity_checks(report: &crate::report::VerifiedEquityRollForward) -> Vec<Check
                     amount(unit.opening_unclosed_earnings),
                 ),
                 ("opening_total_equity", amount(unit.opening_total_equity)),
+                (
+                    "prior_period_adjustments",
+                    amount(unit.prior_period_adjustments),
+                ),
+                (
+                    "opening_equity_as_adjusted",
+                    amount(unit.opening_equity_as_adjusted),
+                ),
                 ("net_income", amount(unit.net_income)),
                 ("issuances", amount(unit.issuances)),
                 ("distributions", amount(unit.distributions)),
@@ -2446,6 +2455,21 @@ fn equity_checks(report: &crate::report::VerifiedEquityRollForward) -> Vec<Check
                 ("effective_day", day(Some(movement.effective_day))),
                 ("class", n(u64::from(movement.class))),
                 ("kind", s(movement.kind.name())),
+                (
+                    "case_ordinal",
+                    movement
+                        .case_ordinal
+                        .map_or(Json::Null, |case| n(u64::from(case))),
+                ),
+                (
+                    "relates_to",
+                    movement
+                        .relates_to
+                        .as_ref()
+                        .map_or(Json::Null, |(calendar, period)| {
+                            Json::Obj(vec![("calendar", s(calendar)), ("code", s(period))])
+                        }),
+                ),
                 ("account", s(format!("{:032x}", movement.account_id))),
                 ("unit", n(u64::from(movement.unit_id))),
                 ("debits", amount(movement.debits)),

@@ -10445,12 +10445,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let chart = write(
         &dir,
         "chart.json",
-        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
     );
     assert_eq!(run(true, &["chart", "import", &chart]).0, 0);
     assert_eq!(run(true, &["chart", "list"]).0, 0);
     // fa-kxc4: an account role, then every registered role and its holders.
     assert_eq!(run(true, &["chart", "role", "1000", "suspense"]).0, 0);
+    assert_eq!(
+        run(true, &["chart", "role", "3000", "retained_earnings"]).0,
+        0
+    );
     assert_eq!(run(true, &["chart", "roles"]).0, 0);
     // fa-ficc: a dimension value, then the values.
     assert_eq!(
@@ -11537,8 +11541,11 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["case", "show", "1"]).0, 0);
     assert_eq!(run(true, &["case", "list"]).0, 0);
     // A PriorPeriodAdjustment case posts its approved entry (fa-75j4 slice
-    // 4a): planned by the analyst on a scenario, approved by two Humans who
-    // planned nothing, posted in one batch with its Post record, once.
+    // 4a): correct March through retained earnings in the current April
+    // period. The analyst explicitly marks the affected prior period on
+    // the scenario template; two Humans who planned nothing approve it,
+    // and one batch publishes the adjustment and its Post record, once.
+    assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     let (code, out) = run(
         true,
         &[
@@ -11562,7 +11569,13 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["scenario", "fork", "adjusted", "--as", "analyst"]).0,
         0
     );
-    let adjusted = write(&dir, "adjusted.json", &draft_intent("adjusted-rent"));
+    let adjusted = write(
+        &dir,
+        "adjusted.json",
+        &format!(
+            r#"{{"effective_date":"2026-04-02","idempotency_key":"adjusted-rent","relates_to":"FY2026-P03","evidence":["{ev}"],"legs":[{{"side":"debit","account":"3000","amount":"2.00 USD"}},{{"side":"credit","account":"1000","amount":"2.00 USD"}}]}}"#
+        ),
+    );
     assert_eq!(
         run(
             true,
@@ -11583,6 +11596,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
                 "adjusted",
                 "--period",
                 "FY2026-P03",
+                "--period",
+                "FY2026-P04",
                 "--certificate-out",
                 &adjusting
             ]
@@ -11640,6 +11655,81 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let (code, out) = run(true, &["case", "post", "2"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    // Current-period equity separates the correction from current income
+    // and retains the exact case/period citation in certified replay.
+    let equity_args = [
+        "statement",
+        "equity-roll-forward",
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-30",
+        "--unit",
+        "USD",
+        "--label",
+        "ppa-current-period",
+    ];
+    let (code, out) = run(true, &equity_args);
+    assert_eq!(code, 0, "{out}");
+    let equity = doc(&out);
+    let unit = &arr(&equity, "units")[0];
+    assert_eq!(text(unit, "prior_period_adjustments"), "-2.00 USD", "{out}");
+    assert_eq!(text(unit, "net_income"), "0.00 USD", "{out}");
+    assert_eq!(text(unit, "other_equity_movements"), "0.00 USD", "{out}");
+    assert_eq!(text(unit, "tie_out_residual"), "0.00 USD", "{out}");
+    assert_eq!(
+        text(unit, "closing_total_equity"),
+        text(unit, "opening_equity_as_adjusted"),
+        "{out}"
+    );
+    let movements = arr(&equity, "movements");
+    assert_eq!(movements.len(), 1, "{out}");
+    assert_eq!(
+        text(&movements[0], "kind"),
+        "prior_period_adjustment",
+        "{out}"
+    );
+    assert_eq!(int(&movements[0], "case"), Some(2), "{out}");
+    assert_eq!(text(&movements[0], "relates_to"), "FY2026-P03", "{out}");
+    assert_eq!(text(&movements[0], "effective_date"), "2026-04-02", "{out}");
+    assert_eq!(text(&movements[0], "account"), "3000", "{out}");
+    assert_eq!(text(&movements[0], "amount"), "2.00 USD", "{out}");
+    let known_at = int(&equity, "known_at").expect("the independently observed prefix");
+    let expectation = format!(
+        r#"{{"kind":"equity-roll-forward","units":["USD"],"label":"ppa-current-period","from":"2026-04-01","through":"2026-04-30","known_at":{known_at},"issuance_accounts":[],"distribution_accounts":[]}}"#
+    );
+    let equity_certificate = dir.join("ppa-equity.cert").display().to_string();
+    let known_at = known_at.to_string();
+    let mut certify = equity_args.to_vec();
+    certify.extend([
+        "--as-known-at",
+        &known_at,
+        "--certificate-out",
+        &equity_certificate,
+    ]);
+    let (code, out) = run(true, &certify);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        text(&doc(&out), "output_format"),
+        "fa:equity-roll-forward-report:v2",
+        "{out}"
+    );
+    let equity_output_digest = text(&doc(&out), "output_digest").to_string();
+    let (code, out) = run(
+        true,
+        &["replay", &equity_certificate, "--expect", &expectation],
+    );
+    assert_eq!(code, 0, "{out}");
+    let replayed_equity = out
+        .lines()
+        .find(|line| field(line, "event") == Some("equity_roll_forward"))
+        .expect("replay renders the certified equity statement before its receipt");
+    assert_eq!(
+        doc(replayed_equity),
+        equity,
+        "the retained certificate replays every amount and citation"
+    );
+    assert_eq!(text(&doc(&out), "output_digest"), equity_output_digest);
     // Disclosed in a Disclosure document once another principal reviewed
     // it (fa-75j4 slice 5), then closed.
     let note = write(
@@ -11755,7 +11845,6 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     // A planned, approved lock (R4): `period_planned`, then `approved`.
-    assert_eq!(run(true, &["period", "open", "FY2026-P04"]).0, 0);
     assert_eq!(
         run(
             true,
@@ -25028,7 +25117,7 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     );
     let (_, info, _) = run(&["book", "info"]);
     let pin_seq = field(&info, "known_at").unwrap_or("1").to_string();
-    let auditor_token = "auditor-pinned.token";
+    let auditor_path = "auditor-pinned.token";
     let (code, out, _) = run(&[
         "capability",
         "issue",
@@ -25047,7 +25136,7 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
         "--known-at-most",
         &pin_seq,
         "--out",
-        auditor_token,
+        auditor_path,
         "--grant",
         "issue_capability",
         "--grant",
@@ -25071,7 +25160,7 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
     assert_eq!(code, 0, "{out}");
     let (code, out, _) = run(&[
         "--token",
-        auditor_token,
+        auditor_path,
         "tb",
         "--period",
         "FY2026-P03",
@@ -25079,7 +25168,7 @@ fn a_token_session_binds_the_cli_to_its_issued_capability() -> std::io::Result<(
         &pin_seq,
     ]);
     assert_eq!(code, 0, "pinned Auditor reads at pin_seq: {out}");
-    let (code, out, _) = run(&["--token", auditor_token, "tb", "--period", "FY2026-P03"]);
+    let (code, out, _) = run(&["--token", auditor_path, "tb", "--period", "FY2026-P03"]);
     assert_eq!(code, 7, "pinned Auditor refused at later head: {out}");
     assert!(out.contains("FA-REF-011"), "{out}");
     assert!(out.contains("the token is pinned at <="), "{out}");

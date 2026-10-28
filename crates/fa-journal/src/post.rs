@@ -294,7 +294,11 @@ pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, 
         .map_err(|e| KernelError::Corrupt(e.to_string()))?;
     Ok(dependency == fa_registry::DependencyClass::Aggregate
         || crate::revaluation::is_source_bound(proposal)
-        || crate::carrying::is_source_bound(proposal))
+        || crate::carrying::is_source_bound(proposal)
+        || proposal
+            .extensions
+            .iter()
+            .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION))
 }
 
 impl PreparedPost {
@@ -358,6 +362,7 @@ impl PreparedPost {
         self,
         planning: bool,
         carrying: Option<crate::batch::IndependentCarryingBatch>,
+        admission: Admission,
     ) -> Result<(WriteTxn, BatchMember, crate::batch::TemplateByteTracker), KernelError> {
         let aggregate = match requires_aggregate_basis(&self.request.proposal) {
             Ok(aggregate) => aggregate,
@@ -368,9 +373,16 @@ impl PreparedPost {
         };
         let independent_carrying =
             carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
+        // A case's PPA members have already passed case membership and the
+        // retained-earnings role fold in prepare_post_in. They share one
+        // committed basis; stage_batch retains the aggregate dependency and
+        // checks it again at publication. The unforgeable Case token keeps
+        // this exception out of ordinary batches and scenario templates.
+        let case_adjustment = matches!(admission, Admission::Case(_))
+            && self.request.proposal.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT;
         if self.planning != planning
             || self.paired_reversal.is_some()
-            || (aggregate && !independent_carrying)
+            || (aggregate && !independent_carrying && !case_adjustment)
         {
             self.txn.abort();
             return Err(KernelError::Corrupt(
@@ -3351,6 +3363,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     };
+    if let Err(refusal) = crate::case::validate_prior_period_adjustment(
+        &txn,
+        db,
+        ctx,
+        book,
+        proposal,
+        &req.capability,
+        admission,
+        &period,
+        &accounts,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if accounts
         .iter()
         .any(|a| fa_model::AccountType(a.account_type).is_memo())
