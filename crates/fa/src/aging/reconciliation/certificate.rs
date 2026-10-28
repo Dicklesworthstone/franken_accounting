@@ -95,7 +95,7 @@ fn question(
     })
 }
 
-fn expected_question(
+pub(super) fn expected_question(
     expected: &AgingReconciliationRequest,
     actual: &AgingReconciliationRequest,
 ) -> Result<(), Refusal> {
@@ -117,15 +117,31 @@ fn expected_question(
 // native closures retain all historical account/unit metadata, including the
 // properties not printed in this comparison. No digest replaces source bytes.
 fn comparison_bytes(report: &AgingReconciliation) -> Result<Vec<u8>, Refusal> {
-    let row_bytes = report
-        .rows
+    comparison_bytes_for(
+        OUTPUT,
+        &report.account,
+        report.aging.book_id,
+        report.known_at(),
+        report.effective_through(),
+        &report.rows,
+    )
+}
+
+pub(super) fn comparison_bytes_for(
+    format: &[u8],
+    a: &AccountRow,
+    book_id: Id128,
+    known_at: CommitSeq,
+    effective_through: DateDay,
+    rows: &[AgingReconciliationRow],
+) -> Result<Vec<u8>, Refusal> {
+    let row_bytes = rows
         .len()
         .checked_mul(156)
         .ok_or_else(|| invalid("reconciliation row count overflow"))?;
-    let a = &report.account;
     let size = bounded([
         4,
-        OUTPUT.len(),
+        format.len(),
         16,
         8,
         4,
@@ -143,10 +159,10 @@ fn comparison_bytes(report: &AgingReconciliation) -> Result<Vec<u8>, Refusal> {
         1,
     ])?;
     let mut w = Writer::with_capacity(size);
-    w.bytes(OUTPUT)
-        .fixed(&report.aging.book_id.0)
-        .u64(report.known_at().0)
-        .i32(report.effective_through().0)
+    w.bytes(format)
+        .fixed(&book_id.0)
+        .u64(known_at.0)
+        .i32(effective_through.0)
         .u128(a.vid.0)
         .str(&a.code)
         .str(&a.name)
@@ -154,7 +170,7 @@ fn comparison_bytes(report: &AgingReconciliation) -> Result<Vec<u8>, Refusal> {
         .u8(a.normal_balance)
         .bool(a.is_leaf)
         .u64(a.created_at.0)
-        .list(&report.rows, |w, row| {
+        .list(rows, |w, row| {
             w.u32(row.unit_id)
                 .i128(row.posted_debits)
                 .i128(row.posted_credits)
@@ -167,7 +183,7 @@ fn comparison_bytes(report: &AgingReconciliation) -> Result<Vec<u8>, Refusal> {
                 .i128(row.open_net)
                 .i128(row.difference);
         })
-        .bool(report.is_reconciled());
+        .bool(rows.iter().all(|row| row.difference == 0));
     let bytes = w.finish().map_err(|e| invalid(e.to_string()))?;
     if bytes.len() != size {
         return Err(invalid(

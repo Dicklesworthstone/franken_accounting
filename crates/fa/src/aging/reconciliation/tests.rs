@@ -408,6 +408,83 @@ fn denied_authority_precedes_damaged_historical_chart_observation() {
 }
 
 #[test]
+fn due_date_control_keeps_native_units_separate_and_refuses_a_foreign_source_book() {
+    let mut h = Harness::new();
+    h.post("usd", "2026-03-01", h.usd, ("expense", "ap"), 100, None);
+    h.post("eur", "2026-03-02", h.eur, ("expense", "ap"), 90, None);
+    let mut request = h.request("ap", "2026-03-31");
+    request.known_at = Some(h.head());
+    let certified = h
+        .book
+        .certify_due_date_aging_reconciliation(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &request,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(certified.report.is_reconciled());
+    assert_eq!(certified.report.rows().len(), 2);
+    for (unit, amount) in [(h.usd, 100), (h.eur, 90)] {
+        let row = certified
+            .report
+            .rows()
+            .iter()
+            .find(|row| row.unit_id == unit.0)
+            .unwrap();
+        assert_eq!(
+            (row.posted_net, row.open_net, row.difference),
+            (-amount, -amount, 0)
+        );
+        assert_eq!(row.open_item_count, 1);
+    }
+    let mut foreign = Harness::in_book(Id128([0x80; 16]));
+    foreign.post(
+        "usd",
+        "2026-03-01",
+        foreign.usd,
+        ("expense", "ap"),
+        100,
+        None,
+    );
+    foreign.post(
+        "eur",
+        "2026-03-02",
+        foreign.eur,
+        ("expense", "ap"),
+        90,
+        None,
+    );
+    let foreign_certificate = foreign
+        .book
+        .certify_due_date_aging_reconciliation(
+            &foreign.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &foreign.request("ap", "2026-03-31"),
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    assert_eq!(
+        h.book
+            .certify_due_date_aging_reconciliation_from_sources(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                foreign_certificate.aging_source(),
+                certified.certificate.control_source(),
+                &request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION
+    );
+}
+
+#[test]
 fn a_backdated_application_split_by_the_cutoff_is_not_silently_reconciled() {
     let mut h = Harness::new();
     let invoice = h.post(
@@ -438,9 +515,72 @@ fn a_backdated_application_split_by_the_cutoff_is_not_silently_reconciled() {
     assert!(h.report(&h.request("ar", "2026-03-31")).is_reconciled());
 }
 
+#[test]
+fn due_date_debit_controls_reconcile_entirely_unscheduled_receivables() {
+    let mut h = Harness::new();
+    let invoice = h.post(
+        "receivable",
+        "2026-03-01",
+        h.usd,
+        ("ar", "sales"),
+        100,
+        None,
+    );
+    h.post(
+        "receipt",
+        "2026-03-02",
+        h.usd,
+        ("cash", "ar"),
+        40,
+        Some(invoice),
+    );
+    let certified = h
+        .book
+        .certify_due_date_aging_reconciliation(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &h.request("ar", "2026-03-31"),
+        )
+        .unwrap()
+        .unwrap();
+    let report = &certified.report;
+    assert!(report.is_reconciled());
+    assert!(report.aging().items.is_empty());
+    assert!(report.aging().cells.is_empty());
+    assert!(report.aging().totals.is_empty());
+    assert_eq!(report.aging().unscheduled.len(), 1);
+    assert_eq!(
+        report.aging().unscheduled[0].reason,
+        crate::Unscheduled::NoTerms
+    );
+    assert_eq!(report.aging().unscheduled_totals[0].amounts.debits, 60);
+    let row = &report.rows()[0];
+    assert_eq!((row.posted_debits, row.posted_credits), (100, 40));
+    assert_eq!(
+        (row.open_debits, row.open_credits, row.open_item_count),
+        (60, 0, 1)
+    );
+    assert_eq!((row.posted_net, row.open_net, row.difference), (60, 60, 0));
+    let request = certified.certificate.request().unwrap();
+    assert_eq!(
+        h.book
+            .replay_due_date_aging_reconciliation(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                &certified.certificate,
+                &request,
+            )
+            .unwrap()
+            .unwrap(),
+        *report
+    );
+}
+
 // Pure fold-composition fixtures intentionally plant discrepancies. They do
 // not claim that corrupt or unsupported posting classes passed the kernel.
-fn pieces() -> (AccountRow, EffectiveDateAging, TrialBalance) {
+pub(super) fn pieces() -> (AccountRow, EffectiveDateAging, TrialBalance) {
     let account = AccountRow {
         vid: VId(1),
         code: "ar".into(),

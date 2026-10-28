@@ -195,6 +195,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::AgingReconciliation(c) => {
                 return self.aging_reconciliation_artifact_status(cx, principal, capability, c);
             }
+            Artifact::DueDateAgingReconciliation(c) => {
+                return self.due_date_reconciliation_artifact_status(cx, principal, capability, c);
+            }
             Artifact::AgingPortfolio(c) => {
                 return self.aging_portfolio_artifact_status(cx, principal, capability, c);
             }
@@ -454,6 +457,72 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(invalid(refusal.message))),
             };
         Ok(unchanged(head, same_reconciliation(&original, &current)))
+    }
+
+    fn due_date_reconciliation_artifact_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &DueDateAgingReconciliationCertificate,
+    ) -> Outcome<CertificateStatus> {
+        let mut request = match certificate.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let head = self.head(cx)?;
+        let (later_entries, cases) = match self.later_artifact_entries(
+            cx,
+            certificate.control_source().known_at,
+            head,
+            MetadataScope::Account(request.account),
+            |entry, entries| {
+                if entry.proposal.effective_date > request.effective_through {
+                    return Ok(false);
+                }
+                Ok(stock_selected(entry, request.effective_through, |account| {
+                    account == request.account
+                }) || crate::certificate::open_item_selected(
+                    entry,
+                    entries,
+                    Some(request.account),
+                )?)
+            },
+        )? {
+            Ok(entries) => entries,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !later_entries.is_empty() {
+            return Ok(Ok(CertificateStatus::SupersededBy {
+                checked_at: head,
+                later_entries,
+                cases,
+            }));
+        }
+        let original = match self.replay_due_date_aging_reconciliation(
+            cx,
+            principal,
+            capability,
+            certificate,
+            &request,
+        )? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        request.known_at = Some(head);
+        let current = match self.reconcile_due_date_aging(cx, principal, capability, &request)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(invalid(refusal.message))),
+        };
+        let mut current_aging = current.aging().clone();
+        current_aging.known_at = original.known_at();
+        Ok(unchanged(
+            head,
+            original.account() == current.account()
+                && original.control_rows() == current.control_rows()
+                && original.rows() == current.rows()
+                && original.aging() == &current_aging,
+        ))
     }
 
     fn aging_portfolio_artifact_status(

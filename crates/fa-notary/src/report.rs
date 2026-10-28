@@ -441,14 +441,24 @@ fn policy_cash_flow_certificate(certificate: &[u8]) -> bool {
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "reconciliation format")? != b"fa:aging-reconciliation-certificate:v1" {
+        let format = reader.bytes(64, "reconciliation format")?;
+        let due_date = if format == b"fa:due-date-aging-reconciliation-certificate:v1" {
+            true
+        } else if format == b"fa:aging-reconciliation-certificate:v1" {
+            false
+        } else {
             return Ok(false);
-        }
+        };
         reader.u128("reconciliation producer")?;
         reader.fixed::<32>("reconciliation capability")?;
         let aging = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation aging")?;
         let control = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation control")?;
-        if !aging_certificate(aging) || !certificate_format(control, b"fa:report-certificate:v1") {
+        let valid_aging = if due_date {
+            due_date_aging_certificate(aging)
+        } else {
+            aging_certificate(aging)
+        };
+        if !valid_aging || !certificate_format(control, b"fa:report-certificate:v1") {
             return Ok(false);
         }
         let mut control = Reader::new(control);

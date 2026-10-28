@@ -31,6 +31,12 @@ pub use certificate::{
     CertifiedAgingReconciliation, MAX_AGING_RECONCILIATION_BYTES,
 };
 
+mod due_date;
+pub use due_date::{
+    CertifiedDueDateAgingReconciliation, DUE_DATE_AGING_RECONCILIATION_CERTIFICATE_FORMAT,
+    DueDateAgingReconciliation, DueDateAgingReconciliationCertificate,
+};
+
 /// The account is an explicit posting-leaf selection, not an access scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgingReconciliationRequest {
@@ -125,8 +131,9 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     capability: &Capability,
     produce: bool,
 ) -> Outcome<CommitSeq> {
-    let admitted =
-        fa_policy::admit_read(capability, principal, book.context().book_id).and_then(|()| {
+    let admitted = fa_policy::admit_read(capability, principal, book.context().book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
             if produce {
                 fa_policy::require(
                     capability,
@@ -228,6 +235,23 @@ fn assemble(
             "aging and control folds disagree on their selection",
         ));
     }
+    let (control_rows, rows) = compare_totals(&account, &aging.totals, control)?;
+    Ok(AgingReconciliation {
+        account,
+        aging,
+        control_rows,
+        rows,
+    })
+}
+
+/// The comparison is independent of how the complete open amounts are aged.
+/// Both aging bases supply every selected native-unit balance; reservations
+/// stay separate and a discrepancy remains report data.
+fn compare_totals(
+    account: &AccountRow,
+    totals: &[super::AgingTotal],
+    control: TrialBalance,
+) -> Result<(Vec<TbRow>, Vec<AgingReconciliationRow>), BookError> {
     let mut controls = BTreeMap::new();
     for row in control
         .rows
@@ -251,7 +275,7 @@ fn assemble(
         }
     }
     let mut opens = BTreeMap::new();
-    for total in &aging.totals {
+    for total in totals {
         if total.account != account.vid
             || total.amounts.debits < 0
             || total.amounts.credits < 0
@@ -292,12 +316,7 @@ fn assemble(
             difference,
         });
     }
-    Ok(AgingReconciliation {
-        account,
-        aging,
-        control_rows: controls.into_values().collect(),
-        rows,
-    })
+    Ok((controls.into_values().collect(), rows))
 }
 
 fn validate_units(

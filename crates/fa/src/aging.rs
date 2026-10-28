@@ -25,6 +25,8 @@ pub use reconciliation::portfolio;
 pub use reconciliation::{
     AGING_RECONCILIATION_CERTIFICATE_FORMAT, AgingReconciliation, AgingReconciliationCertificate,
     AgingReconciliationRequest, AgingReconciliationRow, CertifiedAgingReconciliation,
+    CertifiedDueDateAgingReconciliation, DUE_DATE_AGING_RECONCILIATION_CERTIFICATE_FORMAT,
+    DueDateAgingReconciliation, DueDateAgingReconciliationCertificate,
     MAX_AGING_RECONCILIATION_BYTES,
 };
 

@@ -17490,8 +17490,14 @@ fn aging_reconciliation_rows(
     rec: &fa::AgingReconciliation,
     units: &fa_money::UnitRegistry,
 ) -> Result<Vec<Json>, Fail> {
-    rec.rows()
-        .iter()
+    aging_comparison_rows(rec.rows(), units)
+}
+
+fn aging_comparison_rows(
+    rows: &[fa::AgingReconciliationRow],
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Json>, Fail> {
+    rows.iter()
         .map(|r| {
             let unit_code = registered_unit_code(fa_money::UnitId(r.unit_id), units)?.to_string();
             let fmt = |m: i128| render_amount(Amount::new(fa_money::UnitId(r.unit_id), m), units);
@@ -17776,6 +17782,110 @@ pub(crate) fn render_due_date_aging(
         &human,
         digest,
     );
+    Ok(())
+}
+
+/// Contractual aging retains its scheduled installments and explicitly
+/// unscheduled amounts alongside the exact control-account comparison.
+#[allow(clippy::too_many_arguments)]
+fn gl_due_date_aging_reconciliation(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    who: VId,
+    capability: &Capability,
+    certify: bool,
+    mut request: AgingReconciliationRequest,
+    saved: Option<(&str, &str)>,
+) -> Result<(), Fail> {
+    let (report, artifact) = if let Some((aging_value, control_value)) = saved {
+        let aging = notary::certificate_input(
+            book,
+            files,
+            "--aging-certificate",
+            aging_value,
+            who,
+            capability,
+            fa::DueDateAgingCertificate::decode,
+        )?;
+        let control = notary::certificate_input(
+            book,
+            files,
+            "--control-certificate",
+            control_value,
+            who,
+            capability,
+            fa::ReportCertificate::decode,
+        )?;
+        let prefix = aging.source().known_at.min(control.known_at);
+        book.prepare_report_history(who, capability, Some(prefix))??;
+        let certified = book.certify_due_date_aging_reconciliation_from_sources(
+            who, capability, &aging, &control, &request,
+        )??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        (certified.report, Some(artifact))
+    } else if certify {
+        let certified = book.certify_due_date_aging_reconciliation(who, capability, &request)??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        (certified.report, Some(artifact))
+    } else {
+        (
+            book.reconcile_due_date_aging(who, capability, &request)??,
+            None,
+        )
+    };
+    request.known_at = Some(report.known_at());
+    let retained = artifact
+        .as_ref()
+        .map(|artifact| {
+            notary::retain_report_artifact_for(
+                book,
+                files,
+                args,
+                artifact,
+                capability,
+                fa::ReportArtifactExpectation::DueDateAgingReconciliation(&request),
+            )
+        })
+        .transpose()?;
+    let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+    out.known_at(report.known_at());
+    out.effective(format!("as-of:{}", report.effective_through()));
+    render_due_date_aging(out, book, report.aging(), digest.as_deref())?;
+    let item_count: u64 = report.rows().iter().map(|row| row.open_item_count).sum();
+    out.event_with_certificate(
+        "aging_reconciled",
+        vec![
+            ("basis", s("due-date")),
+            ("account", s(&report.account().code)),
+            ("account_vid", s(format!("{:032x}", report.account().vid.0))),
+            ("name", s(&report.account().name)),
+            ("known_at", Json::Int(i128::from(report.known_at().0))),
+            ("effective_through", s(report.effective_through().render())),
+            ("reconciled", Json::Bool(report.is_reconciled())),
+            ("rows", Json::Arr(aging_comparison_rows(report.rows(), &book.context().units)?)),
+            ("bands", Json::Arr(aging_bands_json(&report.aging().bands))),
+            ("item_count", Json::Int(i128::from(item_count))),
+        ],
+        &format!(
+            "due-date aging reconciliation for {} ({}) as of {}: reconciled={}; {} scheduled parts, {} unscheduled items",
+            report.account().code, report.account().name, report.effective_through().render(),
+            report.is_reconciled(), report.aging().items.len(), report.aging().unscheduled.len(),
+        ),
+        digest.as_deref(),
+    );
+    if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            artifact,
+            "fa:due-date-aging-control-reconciliation:v1",
+            &bytes,
+            &retained,
+            &notary::due_date_reconciliation_expectation_json(&request),
+        );
+    }
     Ok(())
 }
 
@@ -18497,10 +18607,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ));
                 }
             };
-            if due_date && reconcile {
+            if due_date
+                && reconcile
+                && (account_codes.len() != 1
+                    || account_codes[0].is_empty()
+                    || args.switch("--all-posting"))
+            {
                 return Err(usage(
-                    "due-date aging control reconciliation is not yet supported",
-                    "certify due-date aging without --reconcile; use --basis effective-date --reconcile for the control comparison",
+                    "due-date aging reconciliation requires one explicit posting account",
+                    "fa gl aging --basis due-date --reconcile --account <code> --as-of YYYY-MM-DD [--certify]",
                 ));
             }
             if !reconcile && account_codes.len() > 1 {
@@ -18553,6 +18668,30 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             };
             book.prepare_report_history(who, &capability, known_at)??;
+            if due_date && reconcile {
+                let request = AgingReconciliationRequest {
+                    account: account.ok_or_else(|| {
+                        usage(
+                            "due-date reconciliation requires --account",
+                            "--account <code>",
+                        )
+                    })?,
+                    effective_through: day,
+                    known_at,
+                    buckets,
+                };
+                return gl_due_date_aging_reconciliation(
+                    out,
+                    &ctx.files,
+                    args,
+                    &mut book,
+                    who,
+                    &capability,
+                    certify,
+                    request,
+                    saved_pair,
+                );
+            }
             // Saved certificates are read after admission, and their own
             // prefix is prepared before the library replays them.
             let saved = match saved_pair {

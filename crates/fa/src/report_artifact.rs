@@ -27,9 +27,9 @@ use crate::cash_flow_split::{CashFlowSplitCertificate, CashFlowSplitDefinition};
 use crate::{
     AgingCertificate, AgingReconciliationCertificate, AgingReconciliationRequest, AsyncBook,
     BookError, CashFlowCertificate, CashFlowDefinition, DueDateAgingCertificate,
-    IndirectCashFlowCertificate, IndirectCashFlowRequest, Outcome, ReportCertificate,
-    RollForwardCertificate, RollForwardRequest, StatementDiffCertificate,
-    StatementTraceCertificate, SummaryCertificate,
+    DueDateAgingReconciliationCertificate, IndirectCashFlowCertificate, IndirectCashFlowRequest,
+    Outcome, ReportCertificate, RollForwardCertificate, RollForwardRequest,
+    StatementDiffCertificate, StatementTraceCertificate, SummaryCertificate,
 };
 
 /// Total encoded input bound, including the complete nested native closure.
@@ -49,6 +49,7 @@ pub enum ReportArtifactFamily {
     CashFlow,
     IndirectCashFlow,
     AgingReconciliation,
+    DueDateAgingReconciliation,
     Procedure,
     StatementDiff,
     StatementTrace,
@@ -82,6 +83,7 @@ impl ReportArtifactFamily {
             Self::CashFlow => "cash-flow",
             Self::IndirectCashFlow => "indirect-cash-flow",
             Self::AgingReconciliation => "aging-reconciliation",
+            Self::DueDateAgingReconciliation => "due-date-aging-reconciliation",
             Self::StatementDiff => "statement-diff",
             Self::StatementTrace => "statement-trace",
             Self::AgingPortfolio => "aging-portfolio",
@@ -114,6 +116,7 @@ pub enum ReportArtifactExpectation<'a> {
     ExternalFeed(&'a crate::ExternalFeedRequest),
     NativeSubledger(&'a crate::NativeSubledgerRequest),
     AgingReconciliation(&'a AgingReconciliationRequest),
+    DueDateAgingReconciliation(&'a AgingReconciliationRequest),
     AgingPortfolio(&'a AgingPortfolioRequest),
     SplitCashFlow {
         request: &'a RollForwardRequest,
@@ -139,6 +142,7 @@ enum Artifact {
     CashFlow(Box<CashFlowCertificate>),
     IndirectCashFlow(Box<IndirectCashFlowCertificate>),
     AgingReconciliation(Box<AgingReconciliationCertificate>),
+    DueDateAgingReconciliation(Box<DueDateAgingReconciliationCertificate>),
     StatementDiff(Box<StatementDiffCertificate>),
     StatementTrace(Box<StatementTraceCertificate>),
     AgingPortfolio(Box<AgingPortfolioCertificate>),
@@ -250,6 +254,10 @@ impl ReportArtifact {
             Artifact::IndirectCashFlow(Box::new(IndirectCashFlowCertificate::decode(bytes)?))
         } else if format == crate::aging::AGING_RECONCILIATION_CERTIFICATE_FORMAT {
             Artifact::AgingReconciliation(Box::new(AgingReconciliationCertificate::decode(bytes)?))
+        } else if format == crate::DUE_DATE_AGING_RECONCILIATION_CERTIFICATE_FORMAT {
+            Artifact::DueDateAgingReconciliation(Box::new(
+                DueDateAgingReconciliationCertificate::decode(bytes)?,
+            ))
         } else if format == crate::statement_diff::CERTIFICATE_FORMAT
             || format == crate::statement_diff::FUNCTIONAL_CERTIFICATE_FORMAT
         {
@@ -296,6 +304,9 @@ impl ReportArtifact {
             Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
             Artifact::IndirectCashFlow(_) => ReportArtifactFamily::IndirectCashFlow,
             Artifact::AgingReconciliation(_) => ReportArtifactFamily::AgingReconciliation,
+            Artifact::DueDateAgingReconciliation(_) => {
+                ReportArtifactFamily::DueDateAgingReconciliation
+            }
             Artifact::StatementDiff(_) => ReportArtifactFamily::StatementDiff,
             Artifact::StatementTrace(_) => ReportArtifactFamily::StatementTrace,
             Artifact::AgingPortfolio(_) => ReportArtifactFamily::AgingPortfolio,
@@ -327,6 +338,7 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
             Artifact::IndirectCashFlow(c) => c.source_certificate().native_source_certificate(),
             Artifact::AgingReconciliation(c) => c.aging_source().source(),
+            Artifact::DueDateAgingReconciliation(c) => c.aging_source().source(),
             Artifact::StatementDiff(c) => c.sources().1,
             // The bounded family decoder requires a nonempty contiguous chain.
             Artifact::StatementTrace(c) => &c.sources()[c.sources().len() - 1],
@@ -407,6 +419,7 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.digest(),
             Artifact::IndirectCashFlow(c) => c.digest(),
             Artifact::AgingReconciliation(c) => c.digest(),
+            Artifact::DueDateAgingReconciliation(c) => c.digest(),
             Artifact::StatementDiff(c) => c.digest(),
             Artifact::StatementTrace(c) => c.digest(),
             Artifact::AgingPortfolio(c) => c.digest(),
@@ -434,6 +447,7 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.output(),
             Artifact::IndirectCashFlow(c) => c.output(),
             Artifact::AgingReconciliation(c) => c.output(),
+            Artifact::DueDateAgingReconciliation(c) => c.output(),
             Artifact::StatementDiff(c) => c.output(),
             Artifact::StatementTrace(c) => c.output(),
             Artifact::AgingPortfolio(c) => c.output(),
@@ -469,6 +483,7 @@ impl ReportArtifact {
             Artifact::CashFlow(c) => c.canonical_bytes(),
             Artifact::IndirectCashFlow(c) => c.canonical_bytes(),
             Artifact::AgingReconciliation(c) => c.canonical_bytes(),
+            Artifact::DueDateAgingReconciliation(c) => c.canonical_bytes(),
             Artifact::StatementDiff(c) => c.canonical_bytes(),
             Artifact::StatementTrace(c) => c.canonical_bytes(),
             Artifact::AgingPortfolio(c) => c.canonical_bytes(),
@@ -507,6 +522,7 @@ from_certificate!(
     CashFlowCertificate,
     IndirectCashFlowCertificate,
     AgingReconciliationCertificate,
+    DueDateAgingReconciliationCertificate,
     StatementDiffCertificate,
     StatementTraceCertificate,
     AgingPortfolioCertificate,
@@ -764,6 +780,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 ReportArtifactExpectation::AgingReconciliation(request),
             ) => self
                 .replay_effective_date_aging_reconciliation(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            (
+                Artifact::DueDateAgingReconciliation(c),
+                ReportArtifactExpectation::DueDateAgingReconciliation(request),
+            ) => self
+                .replay_due_date_aging_reconciliation(cx, principal, capability, c, request)?
                 .map(|_| ()),
             (Artifact::AgingPortfolio(c), ReportArtifactExpectation::AgingPortfolio(request)) => {
                 self.replay_aging_portfolio(cx, principal, capability, c, request)?

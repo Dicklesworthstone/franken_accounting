@@ -4846,6 +4846,24 @@ impl Book {
         ))
     }
 
+    /// Export contractual-aging reconciliation under current whole-book read
+    /// and produce authority, bound to an independently fixed request.
+    pub fn produce_due_date_aging_reconciliation_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::DueDateAgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_due_date_aging_reconciliation_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the
@@ -5333,6 +5351,59 @@ impl Book {
         expected: &crate::AgingReconciliationRequest,
     ) -> Outcome<crate::AgingReconciliation> {
         with_store!(&self.store, core => core.replay_effective_date_aging_reconciliation(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Reconcile contractual installments and explicit unscheduled amounts to
+    /// the native stock balance at the identical recorded and civil cutoff.
+    pub fn reconcile_due_date_aging(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::DueDateAgingReconciliation> {
+        with_store!(&self.store, core => core.reconcile_due_date_aging(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify the complete due-date aging and stock comparison at one prefix.
+    pub fn certify_due_date_aging_reconciliation(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::CertifiedDueDateAgingReconciliation> {
+        with_store!(&self.store, core => core.certify_due_date_aging_reconciliation(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Reuse retained due-date aging and stock certificates byte-for-byte.
+    pub fn certify_due_date_aging_reconciliation_from_sources(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        aging: &crate::DueDateAgingCertificate,
+        control: &crate::ReportCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::CertifiedDueDateAgingReconciliation> {
+        with_store!(&self.store, core => core.certify_due_date_aging_reconciliation_from_sources(
+            &self.purposes(), principal, capability, aging, control, expected
+        ))
+    }
+
+    /// Replay due-date reconciliation under current authority and an
+    /// independently fixed recipient request.
+    pub fn replay_due_date_aging_reconciliation(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::DueDateAgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<crate::DueDateAgingReconciliation> {
+        with_store!(&self.store, core => core.replay_due_date_aging_reconciliation(
             &self.purposes(), principal, capability, certificate, expected
         ))
     }

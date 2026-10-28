@@ -377,6 +377,213 @@ fn due_date_aging_bundle_verifies_offline() {
         .is_err(),
         "the source digest must not substitute for the due-date question"
     );
+
+    // Reconciliation must carry unscheduled liabilities along with both
+    // remaining installment buckets, then survive persistence and export.
+    let unscheduled = write(
+        &fixture.dir,
+        "unscheduled-invoice.json",
+        r#"{"effective_date":"2026-03-02","idempotency_key":"unscheduled-invoice","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"2000","amount":"10.00 USD"}]}"#,
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &unscheduled, "--evidence", &evidence],
+    );
+    let rec_at = fixture.head();
+    let rec_at_text = rec_at.to_string();
+    let rec_metadata = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--basis",
+            "due-date",
+            "--reconcile",
+            "--account",
+            "2000",
+            "--as-of",
+            "2026-04-01",
+            "--as-known-at",
+            &rec_at_text,
+        ],
+    );
+    assert_eq!(
+        text(&rec_metadata, "output_format"),
+        "fa:due-date-aging-control-reconciliation:v1"
+    );
+    assert!(text(&rec_metadata, "replay_command").contains("due-date-aging-reconciliation"));
+    let reconciliation =
+        fa::DueDateAgingReconciliationCertificate::decode(&unhex(text(&rec_metadata, "bytes")))
+            .unwrap();
+    let rec_locator = format!("C:{}", text(&rec_metadata, "oid"));
+    let rec_expect = format!(
+        r#"{{"kind":"due-date-aging-reconciliation","account":"2000","through":"2026-04-01","known_at":{rec_at},"buckets":[0,30,60,90]}}"#,
+    );
+    let replayed = ok(
+        &fixture.book,
+        &["replay", &rec_locator, "--expect", &rec_expect],
+    );
+    assert_eq!(text(&replayed, "family"), "due-date-aging-reconciliation");
+    let status = ok(
+        &fixture.book,
+        &[
+            "certificate",
+            "status",
+            &rec_locator,
+            "--expect",
+            &rec_expect,
+        ],
+    );
+    assert_eq!(text(&status, "status"), "Current");
+    for wrong in [
+        rec_expect.replace("due-date-aging-reconciliation", "aging-reconciliation"),
+        rec_expect.replace("2000", "1000"),
+        rec_expect.replace("2026-04-01", "2026-04-02"),
+    ] {
+        let (code, error) = run(&fixture.book, &["replay", &rec_locator, "--expect", &wrong]);
+        assert_eq!(code, 8, "{}", error.render());
+    }
+    let aging_path = fixture.dir.join("due-reconciliation-aging.certificate");
+    let control_path = fixture.dir.join("due-reconciliation-control.certificate");
+    std::fs::write(
+        &aging_path,
+        reconciliation.aging_source().canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &control_path,
+        reconciliation.control_source().canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    let reused = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--basis",
+            "due-date",
+            "--reconcile",
+            "--account",
+            "2000",
+            "--as-of",
+            "2026-04-01",
+            "--as-known-at",
+            &rec_at_text,
+            "--aging-certificate",
+            aging_path.to_str().unwrap(),
+            "--control-certificate",
+            control_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(&reused, "bytes"), text(&rec_metadata, "bytes"));
+    let state = fixture.checkpoint();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &rec_locator,
+            "--expect",
+            &rec_expect,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    assert!(text(&produced, "verify").contains(text(&rec_metadata, "oid")));
+    let verified = fa_verify::report::verify_report_expected(
+        &bytes(&produced),
+        &[key],
+        None,
+        Some(&unhex(text(&produced, "receipt"))),
+        Some(reconciliation.digest()),
+    )
+    .unwrap();
+    assert_eq!(verified.output, reconciliation.output());
+    let report = verified.due_date_aging_reconciliation.unwrap();
+    assert!(report.is_reconciled());
+    assert_eq!(report.known_at, rec_at);
+    assert_eq!(report.aging.items.len(), 2);
+    assert_eq!(report.aging.unscheduled.len(), 1);
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(
+        (report.rows[0].posted_net, report.rows[0].open_net),
+        (-8_500, -8_500)
+    );
+    assert_eq!(
+        report.rows[0].open_item_count, 2,
+        "installments are parts of one original item"
+    );
+    let bundle_path = fixture.dir.join("due-reconciliation.fab");
+    std::fs::write(&bundle_path, bytes(&produced)).unwrap();
+    let expected_digest = fa_verify::blake3::hex(reconciliation.digest());
+    let verify_args = [
+        "report",
+        bundle_path.to_str().unwrap(),
+        "--key",
+        text(&signed, "checkpoint_public_key"),
+        "--expect",
+        &expected_digest,
+        "--json",
+    ]
+    .map(str::to_string);
+    let result = fa_verify::cli::run(&verify_args, &|path| std::fs::read(path));
+    assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
+    assert!(result.stdout.contains("due_date_aging_reconciliation_row"));
+    for wrong in [
+        reconciliation.aging_source().digest(),
+        &reconciliation.control_source().digest,
+    ] {
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &bytes(&produced),
+                &[key],
+                None,
+                None,
+                Some(wrong),
+            )
+            .is_err(),
+            "neither nested source pin answers the reconciled due-date question"
+        );
+    }
+    let (code, error) = run(
+        &fixture.book,
+        &["bundle", "produce", "--certificate", &rec_locator],
+    );
+    assert_eq!(code, 2, "{}", error.render());
+    let wrong_export_basis =
+        rec_expect.replace("due-date-aging-reconciliation", "aging-reconciliation");
+    let (code, error) = run(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &rec_locator,
+            "--expect",
+            &wrong_export_basis,
+        ],
+    );
+    assert_eq!(code, 2, "{}", error.render());
+    assert!(
+        error
+            .render()
+            .contains("requires kind due-date-aging-reconciliation")
+    );
+    let (code, error) = run(
+        &fixture.book,
+        &[
+            "gl",
+            "aging",
+            "--basis",
+            "due-date",
+            "--reconcile",
+            "--all-posting",
+            "--as-of",
+            "2026-04-01",
+        ],
+    );
+    assert_eq!(code, 2, "{}", error.render());
 }
 
 #[test]

@@ -23,6 +23,7 @@ pub(super) enum Expected {
     ExternalFeed(fa::ExternalFeedRequest),
     NativeSubledger(fa::NativeSubledgerRequest),
     Reconciliation(AgingReconciliationRequest),
+    DueDateReconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
     PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
     SplitCashFlow(RollForwardRequest, CashFlowSplitDefinition),
@@ -50,6 +51,9 @@ impl Expected {
             }
             Self::Reconciliation(request) => {
                 fa::ReportArtifactExpectation::AgingReconciliation(request)
+            }
+            Self::DueDateReconciliation(request) => {
+                fa::ReportArtifactExpectation::DueDateAgingReconciliation(request)
             }
             Self::Portfolio(request) => fa::ReportArtifactExpectation::AgingPortfolio(request),
             Self::PolicyCashFlow(request, policy) => {
@@ -237,6 +241,21 @@ pub(crate) fn reconciliation_bundle_expectation(
     args: &Args,
     book: &Book,
 ) -> Result<AgingReconciliationRequest, Fail> {
+    reconciliation_bundle_expectation_kind(args, book, "aging-reconciliation")
+}
+
+pub(crate) fn due_date_reconciliation_bundle_expectation(
+    args: &Args,
+    book: &Book,
+) -> Result<AgingReconciliationRequest, Fail> {
+    reconciliation_bundle_expectation_kind(args, book, "due-date-aging-reconciliation")
+}
+
+fn reconciliation_bundle_expectation_kind(
+    args: &Args,
+    book: &Book,
+    kind: &str,
+) -> Result<AgingReconciliationRequest, Fail> {
     if args.flag_all("--expect").len() != 1 {
         return Err(invalid(
             "aging reconciliation export requires exactly one --expect JSON request",
@@ -248,10 +267,10 @@ pub(crate) fn reconciliation_bundle_expectation(
     check_size(text)?;
     let doc = crate::json::parse(text)
         .map_err(|error| invalid(format!("invalid replay expectation JSON: {error}")))?;
-    if string(&doc, "kind")? != "aging-reconciliation" {
-        return Err(invalid(
-            "aging reconciliation export requires kind aging-reconciliation",
-        ));
+    if string(&doc, "kind")? != kind {
+        return Err(invalid(format!(
+            "this reconciliation export requires kind {kind}"
+        )));
     }
     reconciliation_request(&doc, book)
 }
@@ -459,6 +478,9 @@ pub(super) fn parse(
         "aging-reconciliation" => Ok(Expected::Reconciliation(reconciliation_request(
             &doc, book,
         )?)),
+        "due-date-aging-reconciliation" => Ok(Expected::DueDateReconciliation(
+            reconciliation_request(&doc, book)?,
+        )),
         kind @ ("aging" | "due-date-aging") => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
             // An omitted account is the whole-book aging the producer chose by
@@ -839,8 +861,18 @@ fn split_policy_fields(
 }
 
 pub(crate) fn reconciliation_expectation_json(request: &AgingReconciliationRequest) -> Json {
+    reconciliation_expectation_with_kind(request, "aging-reconciliation")
+}
+
+pub(crate) fn due_date_reconciliation_expectation_json(
+    request: &AgingReconciliationRequest,
+) -> Json {
+    reconciliation_expectation_with_kind(request, "due-date-aging-reconciliation")
+}
+
+fn reconciliation_expectation_with_kind(request: &AgingReconciliationRequest, kind: &str) -> Json {
     obj(vec![
-        ("kind", s("aging-reconciliation")),
+        ("kind", s(kind)),
         ("account", s(format!("{:032x}", request.account.0))),
         ("through", s(request.effective_through.render())),
         ("known_at", known_at_json(request.known_at)),
@@ -944,6 +976,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
         }
         fa::ReportArtifactExpectation::AgingReconciliation(request) => {
             reconciliation_expectation_json(request)
+        }
+        fa::ReportArtifactExpectation::DueDateAgingReconciliation(request) => {
+            due_date_reconciliation_expectation_json(request)
         }
         fa::ReportArtifactExpectation::AgingPortfolio(request) => {
             portfolio_expectation_json(request)

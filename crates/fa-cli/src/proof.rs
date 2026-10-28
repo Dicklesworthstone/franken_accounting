@@ -899,7 +899,11 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )?;
         let artifact = fa::ReportArtifact::decode(&bytes)?;
         if args.flag("--expect").is_some()
-            && artifact.family() != fa::ReportArtifactFamily::AgingReconciliation
+            && !matches!(
+                artifact.family(),
+                fa::ReportArtifactFamily::AgingReconciliation
+                    | fa::ReportArtifactFamily::DueDateAgingReconciliation
+            )
         {
             return Err(usage(
                 "--expect on bundle produce applies only to an aging reconciliation certificate",
@@ -936,6 +940,18 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let expected = crate::notary::reconciliation_bundle_expectation(args, &book)?;
                 let certificate = fa::AgingReconciliationCertificate::decode(&bytes)?;
                 book.produce_aging_reconciliation_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                    &expected,
+                )??
+            }
+            fa::ReportArtifactFamily::DueDateAgingReconciliation => {
+                let expected =
+                    crate::notary::due_date_reconciliation_bundle_expectation(args, &book)?;
+                let certificate = fa::DueDateAgingReconciliationCertificate::decode(&bytes)?;
+                book.produce_due_date_aging_reconciliation_bundle(
                     principal,
                     &capability,
                     state,

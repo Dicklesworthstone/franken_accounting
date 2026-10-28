@@ -133,6 +133,10 @@ enum ReportBundleCertificate<'a> {
         certificate: &'a crate::AgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
     },
+    DueDateAgingReconciliation {
+        certificate: &'a crate::DueDateAgingReconciliationCertificate,
+        expected: &'a crate::AgingReconciliationRequest,
+    },
 }
 
 impl<'a> ReportBundleCertificate<'a> {
@@ -151,6 +155,9 @@ impl<'a> ReportBundleCertificate<'a> {
                 .source_certificate()
                 .source_certificate(),
             Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
+            Self::DueDateAgingReconciliation { certificate, .. } => {
+                certificate.aging_source().source()
+            }
         }
     }
 }
@@ -4041,6 +4048,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export due-date/control reconciliation with both original source
+    /// certificates over a complete signed journal and registry closure.
+    pub async fn produce_due_date_aging_reconciliation_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::DueDateAgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::DueDateAgingReconciliation {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     async fn produce_report_bundle_inner(
         &mut self,
         cx: &PurposeContexts,
@@ -4201,6 +4232,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::DueDateAgingReconciliation {
+                certificate: reconciliation,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_due_date_aging_reconciliation(
+                    cx,
+                    principal,
+                    capability,
+                    reconciliation,
+                    expected,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -4231,6 +4277,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
                 | ReportBundleCertificate::AgingReconciliation { .. }
+                | ReportBundleCertificate::DueDateAgingReconciliation { .. }
         ) || matches!(
             &certificate.selection,
             crate::ReportSelection::OpenItems { .. }
@@ -4469,6 +4516,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     Err(refusal) => return Ok(Err(refusal)),
                 }
             }
+            ReportBundleCertificate::DueDateAgingReconciliation { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
         };
         let assembled = if let Some((book_spec, rates)) = &functional_source {
             let Some(registries) = registries.as_deref() else {
@@ -4489,17 +4542,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )
         } else {
             match (report, registries.as_deref()) {
-                (ReportBundleCertificate::AgingReconciliation { .. }, Some(registries)) => {
-                    fa_notary::report::assemble_reconciliation_with_registries(
-                        &journal,
-                        &checkpoint,
-                        &bytes,
-                        closure_frontier,
-                        &bodies,
-                        registries,
-                    )
-                }
-                (ReportBundleCertificate::AgingReconciliation { .. }, None) => {
+                (
+                    ReportBundleCertificate::AgingReconciliation { .. }
+                    | ReportBundleCertificate::DueDateAgingReconciliation { .. },
+                    Some(registries),
+                ) => fa_notary::report::assemble_reconciliation_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                ),
+                (
+                    ReportBundleCertificate::AgingReconciliation { .. }
+                    | ReportBundleCertificate::DueDateAgingReconciliation { .. },
+                    None,
+                ) => {
                     return Ok(Err(fa_journal::Refusal::new(
                         fa_notary::code::SCOPE_UNSUPPORTED,
                         fa_journal::exit::REFUSAL,

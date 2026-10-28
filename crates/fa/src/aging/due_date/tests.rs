@@ -391,6 +391,274 @@ fn certified_due_date_aging_keeps_missing_and_disputed_terms_explicit() {
 }
 
 #[test]
+fn due_date_reconciliation_includes_all_terms_and_counts_original_items_once() {
+    let mut h = Harness::new();
+    let invoice = h.invoice();
+    h.post("partial", "2026-04-15", 700, None, Some(invoice));
+    h.post("no-terms", "2026-03-01", 100, None, None);
+    h.post(
+        "missing",
+        "2026-03-02",
+        200,
+        Some((ObligationStatus::MissingMaturity, vec![])),
+        None,
+    );
+    h.post(
+        "disputed",
+        "2026-03-03",
+        300,
+        Some((
+            ObligationStatus::Disputed { reason_code: 7 },
+            vec![("2026-03-20", 300)],
+        )),
+        None,
+    );
+    let head = h.head();
+    for (cutoff, expected_open, scheduled_parts) in
+        [("2026-04-01", 1_600, 2), ("2026-05-01", 900, 1)]
+    {
+        let request = crate::AgingReconciliationRequest {
+            account: account_vid(BOOK, "ap"),
+            effective_through: day(cutoff),
+            known_at: Some(head),
+            buckets: AgingBuckets::thirty_day(),
+        };
+        let certified = h
+            .book
+            .certify_due_date_aging_reconciliation(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &request,
+            )
+            .unwrap()
+            .unwrap();
+        let report = &certified.report;
+        assert!(report.is_reconciled());
+        assert_eq!(report.aging().items.len(), scheduled_parts);
+        assert_eq!(report.aging().unscheduled.len(), 3);
+        let row = &report.rows()[0];
+        assert_eq!((row.open_credits, row.open_item_count), (expected_open, 4));
+        assert_eq!(
+            (row.open_net, row.posted_net, row.difference),
+            (-expected_open, -expected_open, 0)
+        );
+        assert_eq!(report.control_rows()[0].credits, 1_600);
+        let decoded = crate::DueDateAgingReconciliationCertificate::decode(
+            &certified.certificate.canonical_bytes().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded, certified.certificate);
+        assert_eq!(decoded.request().unwrap(), request);
+        assert_eq!(
+            h.book
+                .reconcile_due_date_aging(&h.cx(), PRINCIPAL, &cap(&["read"]), &request,)
+                .unwrap()
+                .unwrap(),
+            *report
+        );
+        assert_eq!(
+            h.book
+                .replay_due_date_aging_reconciliation(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read"]),
+                    &decoded,
+                    &request,
+                )
+                .unwrap()
+                .unwrap(),
+            *report
+        );
+        assert_eq!(
+            h.book
+                .certify_due_date_aging_reconciliation_from_sources(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    decoded.aging_source(),
+                    decoded.control_source(),
+                    &request,
+                )
+                .unwrap()
+                .unwrap()
+                .certificate,
+            decoded
+        );
+        assert!(
+            crate::AgingReconciliationCertificate::decode(&decoded.canonical_bytes().unwrap(),)
+                .is_err(),
+            "the aging bases have distinct certificate contracts"
+        );
+    }
+    assert_eq!(h.head(), head);
+}
+
+#[test]
+fn due_date_reconciliation_rejects_repaired_comparisons_and_wrong_fixed_questions() {
+    let mut h = Harness::new();
+    h.invoice();
+    h.post("unscheduled", "2026-03-02", 100, None, None);
+    let request = crate::AgingReconciliationRequest {
+        account: account_vid(BOOK, "ap"),
+        effective_through: day("2026-04-01"),
+        known_at: Some(h.head()),
+        buckets: AgingBuckets::thirty_day(),
+    };
+    let certified = h
+        .book
+        .certify_due_date_aging_reconciliation(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &request,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate = &certified.certificate;
+    let mut incomplete = certified.report.aging().clone();
+    incomplete.unscheduled.clear();
+    incomplete.unscheduled_totals.clear();
+    let incomplete_source = reseal(certificate.aging_source(), &incomplete);
+    assert_eq!(
+        h.book
+            .certify_due_date_aging_reconciliation_from_sources(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &incomplete_source,
+                certificate.control_source(),
+                &request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION,
+        "omitting unscheduled liabilities must not produce a reconciled certificate"
+    );
+    let mut bytes = certificate.canonical_bytes().unwrap();
+    let digest_at = bytes.len() - 32;
+    bytes[digest_at - 1] ^= 1; // Flip the comparison conclusion, then repair its digest.
+    let digest = fa_model::domain_digest(
+        b"fa:due-date-aging-reconciliation-digest:v1",
+        &[&bytes[..digest_at]],
+    );
+    bytes[digest_at..].copy_from_slice(&digest);
+    let forged = crate::DueDateAgingReconciliationCertificate::decode(&bytes).unwrap();
+    assert_eq!(
+        h.book
+            .replay_due_date_aging_reconciliation(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                &forged,
+                &request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION
+    );
+    let mut wrong = Vec::new();
+    let mut altered = request.clone();
+    altered.account = account_vid(BOOK, "expense");
+    wrong.push(altered);
+    let mut altered = request.clone();
+    altered.effective_through = day("2026-04-02");
+    wrong.push(altered);
+    let mut altered = request.clone();
+    altered.known_at = None;
+    wrong.push(altered);
+    let mut altered = request.clone();
+    altered.known_at = Some(CommitSeq(h.head().0 - 1));
+    wrong.push(altered);
+    let mut altered = request.clone();
+    altered.buckets = AgingBuckets::new(vec![0, 60]).unwrap();
+    wrong.push(altered);
+    for expected in wrong {
+        let expected_exit = if expected.known_at.is_none() {
+            exit::USAGE
+        } else {
+            exit::VERIFICATION
+        };
+        assert_eq!(
+            h.book
+                .replay_due_date_aging_reconciliation(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read"]),
+                    certificate,
+                    &expected,
+                )
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            expected_exit
+        );
+    }
+    let original_head = h.head();
+    h.post("later", "2026-03-03", 50, None, None);
+    let later = h
+        .book
+        .certify_due_date_aging_reconciliation(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &crate::AgingReconciliationRequest {
+                known_at: None,
+                ..request.clone()
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        h.book
+            .certify_due_date_aging_reconciliation_from_sources(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                certificate.aging_source(),
+                later.certificate.control_source(),
+                &request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION
+    );
+    let h = h.reopen();
+    assert_eq!(
+        h.book
+            .replay_due_date_aging_reconciliation(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                certificate,
+                &request,
+            )
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    let artifact = crate::ReportArtifact::try_from(certificate).unwrap();
+    assert_eq!(artifact.known_at(), original_head);
+    assert!(matches!(
+        h.book
+            .report_artifact_status(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+                crate::ReportArtifactExpectation::DueDateAgingReconciliation(&request),
+            )
+            .unwrap()
+            .unwrap(),
+        crate::CertificateStatus::SupersededBy { .. }
+    ));
+}
+
+#[test]
 fn due_date_certificate_roundtrips_and_replays_saved_prefix_after_later_terms() {
     let mut h = Harness::new();
     h.invoice();
@@ -555,6 +823,23 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
     let invoice = h.invoice();
     let request = h.request("2026-04-01");
     let certificate = h.certify(&request).certificate;
+    let reconciliation_request = crate::AgingReconciliationRequest {
+        account: account_vid(BOOK, "ap"),
+        effective_through: request.effective_through,
+        known_at: Some(certificate.source().known_at),
+        buckets: request.buckets.clone(),
+    };
+    let reconciliation = h
+        .book
+        .certify_due_date_aging_reconciliation(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &reconciliation_request,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
     let cx = h.cx();
     let row = cx
         .query()
@@ -579,6 +864,11 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
     let unrestricted = cap(&["read", "produce"]);
     let restricted = [
         cap(&["post"]),
+        unrestricted
+            .clone()
+            .for_books(&[Id128([0x81; 16])])
+            .unwrap(),
+        unrestricted.clone().expiring_at(head),
         unrestricted.clone().for_accounts(&["ap"]).unwrap(),
         unrestricted.clone().for_periods(&["FY2026-P03"]).unwrap(),
         unrestricted.clone().effective_through(day("2026-04-01")),
@@ -586,6 +876,50 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
         unrestricted.known_at_most(CommitSeq(certificate.source().known_at.0 - 1)),
     ];
     for capability in restricted {
+        // Both bases scan whole-book native control inputs. Even an account
+        // caveat matching the displayed leaf cannot authorize that scan.
+        for result in [
+            h.book
+                .reconcile_effective_date_aging(
+                    &cx,
+                    PRINCIPAL,
+                    &capability,
+                    &reconciliation_request,
+                )
+                .map(|result| result.map(|_| ())),
+            h.book
+                .reconcile_due_date_aging(&cx, PRINCIPAL, &capability, &reconciliation_request)
+                .map(|result| result.map(|_| ())),
+            h.book
+                .certify_due_date_aging_reconciliation(
+                    &cx,
+                    PRINCIPAL,
+                    &capability,
+                    &reconciliation_request,
+                )
+                .map(|result| result.map(|_| ())),
+            h.book
+                .replay_due_date_aging_reconciliation(
+                    &cx,
+                    PRINCIPAL,
+                    &capability,
+                    &reconciliation,
+                    &reconciliation_request,
+                )
+                .map(|result| result.map(|_| ())),
+            h.book
+                .certify_due_date_aging_reconciliation_from_sources(
+                    &cx,
+                    PRINCIPAL,
+                    &capability,
+                    reconciliation.aging_source(),
+                    reconciliation.control_source(),
+                    &reconciliation_request,
+                )
+                .map(|result| result.map(|_| ())),
+        ] {
+            assert_eq!(result.unwrap().unwrap_err().exit, exit::SAFETY);
+        }
         let result = h
             .book
             .certify_due_date_aging(&cx, PRINCIPAL, &capability, &request)
@@ -623,6 +957,33 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
             .certify_due_date_aging(&cx, PRINCIPAL, &cap(&["read"]), &request)
             .unwrap()
             .is_err()
+    );
+    assert_eq!(
+        h.book
+            .certify_due_date_aging_reconciliation(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &reconciliation_request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::SAFETY
+    );
+    assert_eq!(
+        h.book
+            .replay_due_date_aging_reconciliation(
+                &cx,
+                VId(8),
+                &cap(&["read"]),
+                &reconciliation,
+                &reconciliation_request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::SAFETY
     );
     assert!(
         h.book

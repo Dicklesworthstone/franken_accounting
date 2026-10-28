@@ -117,8 +117,10 @@ pub use aging::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,
     AgingBuckets, AgingCell, AgingCertificate, AgingReconciliation, AgingReconciliationCertificate,
     AgingReconciliationRequest, AgingReconciliationRow, AgingRequest, AgingTotal, CertifiedAging,
-    CertifiedAgingReconciliation, CertifiedDueDateAging, DUE_DATE_AGING_CERTIFICATE_FORMAT,
-    DUE_DATE_AGING_OUTPUT_FORMAT, DueDateAgedItem, DueDateAging, DueDateAgingCertificate,
+    CertifiedAgingReconciliation, CertifiedDueDateAging, CertifiedDueDateAgingReconciliation,
+    DUE_DATE_AGING_CERTIFICATE_FORMAT, DUE_DATE_AGING_OUTPUT_FORMAT,
+    DUE_DATE_AGING_RECONCILIATION_CERTIFICATE_FORMAT, DueDateAgedItem, DueDateAging,
+    DueDateAgingCertificate, DueDateAgingReconciliation, DueDateAgingReconciliationCertificate,
     EffectiveDateAging, MAX_AGING_BUCKET_BOUNDS, MAX_AGING_CERTIFICATE_BYTES,
     MAX_AGING_RECONCILIATION_BYTES, OpenItemSnapshot, Unscheduled, UnscheduledItem,
 };
