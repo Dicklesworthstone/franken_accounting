@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::StepDef;
-use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation};
+use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation, Publication};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::json::Json;
 
@@ -50,6 +50,17 @@ pub struct Read {
     /// moved, where the read did not exercise its selector (A11b). `None`
     /// for any other selector, or when either read has no value.
     pub exercised: Option<bool>,
+    /// A statement line T read at the head: the line's `fa statement trace`
+    /// over the history, or why it has none (A11b). `None` for any other
+    /// read.
+    pub trace: Option<Result<LineTrace, String>>,
+}
+
+/// A statement line's trace from the history's start to the read's head.
+pub struct LineTrace {
+    pub publications: Vec<Publication>,
+    /// The trace's `REPRODUCE` line.
+    pub reproduce: String,
 }
 
 /// One `assert_balance` step's calls.
@@ -170,6 +181,7 @@ impl BookRun<'_> {
             certificate: None,
             contributions: None,
             exercised: None,
+            trace: None,
         };
         if !matches!(
             verb,
@@ -292,13 +304,112 @@ impl BookRun<'_> {
         } else {
             None
         };
+        // A statement line T read at the head is also traced (A11b).
+        let trace = (contributions.is_some() && e.kind == ExpectationType::T && selector.is_none())
+            .then(|| self.line_trace(&reference, verb, target, coordinate, &unit));
         Read {
             token,
             value,
             certificate,
             contributions,
             exercised: None,
+            trace,
         }
+    }
+
+    /// `fa statement trace --definition <verb> --for <code> --before
+    /// <history start> --after <head> --certify --json`: each publication
+    /// of the history, the entries it lists, and the change of `line` in
+    /// `unit` there (zero where the line did not move).
+    fn line_trace(
+        &mut self,
+        reference: &str,
+        verb: &str,
+        line: &str,
+        coordinate: &str,
+        unit: &str,
+    ) -> Result<LineTrace, String> {
+        let scale = scale_of(unit).ok_or_else(|| format!("unit `{unit}` is not registered"))?;
+        let code = self
+            .period_code(coordinate)
+            .ok_or_else(|| format!("expected a period for `{coordinate}` observed none"))?;
+        let (before, after) = (self.history_from.to_string(), self.head.to_string());
+        let args = [
+            "statement",
+            "trace",
+            "--definition",
+            verb,
+            "--for",
+            code.as_str(),
+            "--before",
+            before.as_str(),
+            "--after",
+            after.as_str(),
+            "--max-publications",
+            "256",
+            "--certify",
+            "--json",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let call = self.call(self.head, reference, "statement", args);
+        self.certificate_kind("StatementTrace");
+        let reproduce = reproduce(&call);
+        if call.exit != 0 {
+            self.lines.push(reproduce);
+            return Err(format!(
+                "expected exit=0 from statement trace observed exit={} {}",
+                call.exit,
+                call.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string());
+        }
+        let mut publications = Vec::new();
+        for p in call.array_field("statement_trace", "publications") {
+            let entries = p
+                .get("entries")
+                .and_then(Json::as_array)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|e| e.get("vid").and_then(Json::as_str).map(str::to_string))
+                .collect();
+            // A change's amounts are in column order; the first is the
+            // read's period.
+            let change = p
+                .get("changes")
+                .and_then(Json::as_array)
+                .unwrap_or_default()
+                .iter()
+                .find(|c| {
+                    c.get("code").and_then(Json::as_str) == Some(line)
+                        && c.get("unit").and_then(Json::as_str) == Some(unit)
+                })
+                .and_then(|c| c.get("delta").and_then(Json::as_array))
+                .and_then(<[Json]>::first)
+                .and_then(Json::as_str)
+                .map(|d| match d.strip_suffix(unit).map(str::trim_end) {
+                    Some(a) => {
+                        parse_amount(a, scale).map_err(|err| format!("delta `{d}`: {err:?}"))
+                    }
+                    None => Err(format!("expected a delta in {unit} observed `{d}`")),
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let recorded_at = p
+                .get("recorded_at")
+                .and_then(Json::as_int)
+                .ok_or("expected a publication's recorded_at observed none")?;
+            publications.push(Publication {
+                recorded_at,
+                entries,
+                change,
+            });
+        }
+        Ok(LineTrace {
+            publications,
+            reproduce,
+        })
     }
 
     /// `fa explain balance <account> --certify` in each of `periods`, folded
@@ -437,6 +548,7 @@ impl BookRun<'_> {
                 certificate,
                 contributions: Some(legs),
                 exercised: None,
+                trace: None,
             },
             Err(why) => Read {
                 token,
@@ -444,6 +556,7 @@ impl BookRun<'_> {
                 certificate: None,
                 contributions: None,
                 exercised: None,
+                trace: None,
             },
         }
     }

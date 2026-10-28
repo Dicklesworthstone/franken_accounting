@@ -26,6 +26,11 @@
 //! [`union`] folds one account's per-period explanations: every period of
 //! the fold explained and no other, the excluded classes' legs set aside and
 //! reported (`excluded_by_definition`).
+//!
+//! A statement line is also read publication by publication with `fa
+//! statement trace`, and the two certified reads must agree
+//! ([`cross_check`]): a disagreement re-types the T too, as
+//! `disagree(trace,explained)`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,16 +57,25 @@ pub struct Contribution {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContribVerdict {
     Holds,
-    Retype { condition: String },
+    Retype {
+        condition: String,
+    },
+    /// The statement trace and the explained balances disagree; `detail`
+    /// names the first difference.
+    Disagree {
+        detail: String,
+    },
 }
 
 impl ContribVerdict {
-    /// `holds` or `retyped(<condition>)`, the row's `contrib=` token.
+    /// `holds`, `retyped(<condition>)` or `disagree(trace,explained)`, the
+    /// row's `contrib=` token.
     #[must_use]
     pub fn token(&self) -> String {
         match self {
             Self::Holds => "holds".to_string(),
             Self::Retype { condition } => format!("retyped({condition})"),
+            Self::Disagree { .. } => "disagree(trace,explained)".to_string(),
         }
     }
 
@@ -69,6 +83,68 @@ impl ContribVerdict {
         Self::Retype {
             condition: condition.into(),
         }
+    }
+
+    fn disagree(detail: impl Into<String>) -> Self {
+        Self::Disagree {
+            detail: detail.into(),
+        }
+    }
+}
+
+/// One publication of a `fa statement trace` read: the entries it published
+/// or made visible, and the line's change there in minor units, as the line
+/// presents it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Publication {
+    pub recorded_at: i128,
+    /// The entries' vids.
+    pub entries: Vec<String>,
+    pub change: i128,
+}
+
+/// The statement-trace cross-check of a statement line's contributions:
+/// the trace's attribution and the explained balances must agree. An
+/// entry's net on the line is its contributing legs summed (an entry whose
+/// legs cancel on the line does not move it). Each publication's change
+/// must be the sum of the nets of the entries it lists, so a publication
+/// that moves the line by an entry no explanation names disagrees, and
+/// every entry with a net must be listed by a publication.
+#[must_use]
+pub fn cross_check(publications: &[Publication], contributions: &[Contribution]) -> ContribVerdict {
+    let mut nets: BTreeMap<&str, i128> = BTreeMap::new();
+    for c in contributions {
+        let net = nets.entry(c.entry.as_str()).or_insert(0);
+        match net.checked_add(c.signed) {
+            Some(sum) => *net = sum,
+            None => return ContribVerdict::disagree("the explained legs overflow"),
+        }
+    }
+    nets.retain(|_, net| *net != 0);
+    let mut traced = BTreeSet::new();
+    for p in publications {
+        let listed: Vec<&str> = p
+            .entries
+            .iter()
+            .map(String::as_str)
+            .filter(|e| nets.contains_key(e))
+            .collect();
+        let explained = listed
+            .iter()
+            .try_fold(0_i128, |acc, e| acc.checked_add(nets[e]));
+        if explained != Some(p.change) {
+            return ContribVerdict::disagree(format!(
+                "publication at {} changes the line by {} and its explained entries by {}",
+                p.recorded_at,
+                p.change,
+                explained.map_or_else(|| "an overflow".to_string(), |x| x.to_string())
+            ));
+        }
+        traced.extend(listed);
+    }
+    match nets.keys().find(|e| !traced.contains(*e)) {
+        Some(e) => ContribVerdict::disagree(format!("explained entry {e} is in no publication")),
+        None => ContribVerdict::Holds,
     }
 }
 
@@ -740,5 +816,57 @@ mod tests {
                 "retyped(extra contribution x)"
             );
         });
+    }
+
+    /// The bridge's A and delta, each published at its own sequence, and a
+    /// transfer between two accounts of the line that moves it by nothing:
+    /// the trace agrees with the explanations. A trace that moves the line
+    /// at the delta by another amount, never lists the delta, or moves it by
+    /// an entry no explanation names disagrees.
+    #[test]
+    fn trace_and_explained_balance_disagreeing_fails() {
+        let p = |recorded_at: i128, entries: &[&str], change: i128| Publication {
+            recorded_at,
+            entries: entries.iter().map(|e| (*e).to_string()).collect(),
+            change,
+        };
+        let mut legs = bridge();
+        legs.extend([
+            c("m", Some("move-1"), 2_500),
+            c("m", Some("move-1"), -2_500),
+        ]);
+        let agreeing = [
+            p(5, &["a"], 100_000),
+            p(6, &["m"], 0),
+            p(7, &["d"], -10_000),
+        ];
+        assert_eq!(cross_check(&agreeing, &legs), ContribVerdict::Holds);
+        let disagreeing = |publications: &[Publication]| match cross_check(publications, &legs) {
+            ContribVerdict::Disagree { detail } => detail,
+            other => panic!("expected a disagreement observed {other:?}"),
+        };
+        assert_eq!(
+            disagreeing(&[p(5, &["a"], 100_000), p(7, &["d"], -9_999)]),
+            "publication at 7 changes the line by -9999 and its explained entries by -10000"
+        );
+        assert_eq!(
+            disagreeing(&[p(5, &["a"], 100_000)]),
+            "explained entry d is in no publication"
+        );
+        assert_eq!(
+            disagreeing(&[
+                p(5, &["a"], 100_000),
+                p(6, &["x"], 500),
+                p(7, &["d"], -10_000)
+            ]),
+            "publication at 6 changes the line by 500 and its explained entries by 0"
+        );
+        assert_eq!(
+            ContribVerdict::Disagree {
+                detail: String::new()
+            }
+            .token(),
+            "disagree(trace,explained)"
+        );
     }
 }
