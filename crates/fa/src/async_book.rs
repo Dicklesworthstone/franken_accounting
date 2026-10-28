@@ -910,16 +910,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         approvals: &[fa_model::ApprovalRef],
     ) -> Outcome<Transitioned> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_journal::transition_period(
+        Ok(fa_journal::transition_planned(
             &mut self.db,
             cx,
             &self.context,
-            &plan.period_code,
+            plan,
             t,
-            plan.principal_ref,
-            plan.reason_code,
-            &plan.idempotency_key,
-            plan.description.clone(),
             capability,
             approvals,
         )

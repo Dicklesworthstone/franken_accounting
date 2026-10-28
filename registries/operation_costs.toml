@@ -331,7 +331,7 @@ today_barrier_count = 2
 derived_objects = "N case Entry/Leg censuses + N common-key IntentOutcome member claims + 1 batch IntentOutcome root + N IN_BATCH edges + 1 CaseControl Post entry + N+1 IN_CASE edges; the diff Certificate is a prior Rehearse transaction's"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
-complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + 1 state compare-and-set in one transaction"
+complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + 1 state compare-and-set in one transaction. A PriorPeriodAdjustment member additionally witnesses its recorded historical PeriodRef and folds O(snapshot vertices + account-role controls) retained_earnings history; the batch carries the exact-prefix publication guard so intervening role changes require fresh preparation. No extra publication or shared cell."
 notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell; bounded by max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 [[operation_class]]

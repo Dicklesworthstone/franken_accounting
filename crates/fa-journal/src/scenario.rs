@@ -982,7 +982,8 @@ pub type Materialized = (Database<fgdb::MemVfs>, crate::scratch::SeqMap, Vec<VId
 /// A scenario's materialization (plan §15.2): `target`, an empty memory
 /// database, receives the source's accounting objects as known at
 /// `fork_at`, then each of `requests` in order through every posting law.
-/// A case-bound class (PriorPeriodAdjustment, Revision) is rehearsed
+/// A case-bound class, or an Original/Adjusting template carrying a
+/// prior-period-adjustment source claim, is rehearsed
 /// under [`Rehearsing`], which only this function makes: the period law
 /// and the planner's authority hold, the class's case and that case's
 /// approvals are not required, and nothing reaches the source.
@@ -1022,7 +1023,16 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
     };
     let mut entries = Vec::with_capacity(requests.len());
     for (i, req) in requests.into_iter().enumerate() {
-        let admission = if crate::case::case_bound(req.proposal.class) {
+        // A reviewed PPA is rehearsed as a plain posting template. Its
+        // retained historical-period marker is valid only in this scratch
+        // factory until a case derives the committed PPA member.
+        let admission = if crate::case::case_bound(req.proposal.class)
+            || req
+                .proposal
+                .extensions
+                .iter()
+                .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION)
+        {
             crate::post::Admission::ScratchScenario(Rehearsing(()))
         } else {
             crate::post::Admission::Commit

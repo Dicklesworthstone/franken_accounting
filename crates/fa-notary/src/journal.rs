@@ -242,18 +242,17 @@ impl Record {
                 row.vid.0
             )));
         }
-        if let Self::Access(event) = &record {
-            if event.observed_at >= row.created_at
+        if let Self::Access(event) = &record
+            && (event.observed_at >= row.created_at
                 || event.vid().map_err(encode_failed)? != row.vid
                 || bytes(row, property::FA_DIGEST, "access_event.digest")?
                     != event.digest().map_err(encode_failed)?
-                || bytes(row, property::BOOK_ID, "access_event.book")? != event.book_id.0
-            {
-                return Err(corrupt(format!(
-                    "access event {:032x} does not match its identity or recording coordinate",
-                    row.vid.0
-                )));
-            }
+                || bytes(row, property::BOOK_ID, "access_event.book")? != event.book_id.0)
+        {
+            return Err(corrupt(format!(
+                "access event {:032x} does not match its identity or recording coordinate",
+                row.vid.0
+            )));
         }
         Ok(Some(record))
     }
@@ -582,12 +581,12 @@ impl Journal {
                     vid.0, seq.0
                 )));
             }
-            if let Record::Access(event) = &record {
-                if event.vid().map_err(encode_failed)? != vid {
-                    return Err(corrupt(
-                        "an access event does not match its content-derived identity",
-                    ));
-                }
+            if let Record::Access(event) = &record
+                && event.vid().map_err(encode_failed)? != vid
+            {
+                return Err(corrupt(
+                    "an access event does not match its content-derived identity",
+                ));
             }
             ordinal = match leaves.last() {
                 Some(prev) if prev.envelope.commit_seq == seq => ordinal

@@ -89,7 +89,12 @@ fn assert_cell(
         "{period:?} at {:?}",
         at.0
     );
-    assert_eq!(cell.generation, generation, "{period:?} at {:?}", at.0);
+    assert_eq!(
+        u64::try_from(cell.generation).ok(),
+        Some(generation),
+        "{period:?} at {:?}",
+        at.0
+    );
     let model = oracle.availability_known("1500", period, at.1);
     assert_eq!(
         [

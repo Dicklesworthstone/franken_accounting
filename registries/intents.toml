@@ -86,7 +86,7 @@ dependency_class = "point"
 [[intent]]
 name = "PostEntry"
 entry_class = "PriorPeriodAdjustment"
-dependency_class = "point"
+dependency_class = "aggregate"
 
 [[intent]]
 name = "FinalizeMigration"

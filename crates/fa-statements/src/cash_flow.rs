@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::{
-    AccountType, DecodeError, EncodeError, EntryClass, Id128, Oid, Reader, Writer, domain_digest,
+    AccountType, DecodeError, EncodeError, EntryClass, Id128, Oid, PeriodRef, Reader, Writer,
+    domain_digest,
 };
 use fa_money::wide::U256;
 use fa_time::DateDay;
@@ -15,7 +16,8 @@ use fa_time::DateDay;
 use crate::{Account, AccountBalance, StatementError, Sum, input, overflow};
 
 pub const CASH_FLOW_STATEMENT_FORMAT: &[u8] = b"fa:cash-flow-statement:v1";
-pub const EQUITY_ROLL_FORWARD_FORMAT: &[u8] = b"fa:equity-roll-forward:v1";
+pub const EQUITY_ROLL_FORWARD_FORMAT_V1: &[u8] = b"fa:equity-roll-forward:v1";
+pub const EQUITY_ROLL_FORWARD_FORMAT: &[u8] = b"fa:equity-roll-forward:v2";
 
 const MAX_MOVEMENTS: usize = 2_000_000;
 
@@ -646,6 +648,9 @@ pub enum EquityActivityKind {
     ClosingTransfer,
     /// Other direct equity movements (e.g., OCI, reclassifications).
     OtherEquity,
+    /// A prior-period correction reported separately from current income and
+    /// owner movements, even when it uses an account with an owner role.
+    PriorPeriodAdjustment,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -660,12 +665,19 @@ pub struct EquityMovement {
     pub unit_id: u32,
     pub debits: i128,
     pub credits: i128,
+    /// The case recorded on the authenticated entry, when present. Historical
+    /// entries without the marker are not assigned an inferred case.
+    pub case_ordinal: Option<u32>,
+    /// The earlier period named by the authenticated adjustment extension.
+    /// Older entries without that extension remain explicitly unspecified.
+    pub relates_to: Option<PeriodRef>,
 }
 
 /// Reconciled Statement of Changes in Equity for one unit (`fa-i9yn`).
 ///
 /// Credit-normal sign convention (`credits - debits`):
-/// `opening_total_equity + net_income + issuances + distributions + other_equity_movements == closing_total_equity`,
+/// `opening_equity_as_adjusted = opening_total_equity + prior_period_adjustments`,
+/// `opening_equity_as_adjusted + net_income + issuances + distributions + other_equity_movements == closing_total_equity`,
 /// and `closing_transfers_net == 0` (closing transfers move unclosed earnings into retained earnings
 /// without changing total equity).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -674,6 +686,8 @@ pub struct EquityRollForwardUnit {
     pub opening_contributed_equity: i128,
     pub opening_unclosed_earnings: i128,
     pub opening_total_equity: i128,
+    pub prior_period_adjustments: i128,
+    pub opening_equity_as_adjusted: i128,
     pub net_income: i128,
     pub issuances: i128,
     pub distributions: i128,
@@ -722,30 +736,57 @@ pub struct EquityRollForward {
 
 impl EquityRollForward {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        self.encode(true)
+    }
+
+    /// Encode the legacy report only after replay under its original
+    /// classification law. A new adjustment line cannot silently disappear
+    /// into the v1 bytes of a historically issued certificate.
+    pub fn canonical_bytes_v1(&self) -> Result<Vec<u8>, StatementError> {
+        if self.units.iter().any(|unit| {
+            unit.prior_period_adjustments != 0
+                || unit.opening_equity_as_adjusted != unit.opening_total_equity
+        }) {
+            return Err(input(
+                "legacy equity encoding requires replay under the original classification law",
+            ));
+        }
+        self.encode(false).map_err(StatementError::Encode)
+    }
+
+    fn encode(&self, separate_prior_period_adjustments: bool) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
-        w.fixed(EQUITY_ROLL_FORWARD_FORMAT)
-            .fixed(&self.book_id.0)
-            .fixed(&self.branch_id.0)
-            .u64(self.known_at)
-            .str(&self.label)
-            .i32(self.effective_from.0)
-            .i32(self.effective_through.0)
-            .list(&self.units, |w, u| {
-                w.u32(u.unit_id)
-                    .i128(u.opening_contributed_equity)
-                    .i128(u.opening_unclosed_earnings)
-                    .i128(u.opening_total_equity)
-                    .i128(u.net_income)
-                    .i128(u.issuances)
-                    .i128(u.distributions)
-                    .i128(u.other_equity_movements)
-                    .i128(u.closing_transfers_net)
-                    .i128(u.net_equity_change)
-                    .i128(u.closing_contributed_equity)
-                    .i128(u.closing_unclosed_earnings)
-                    .i128(u.closing_total_equity)
-                    .i128(u.equity_tie_out_residual);
-            });
+        w.fixed(if separate_prior_period_adjustments {
+            EQUITY_ROLL_FORWARD_FORMAT
+        } else {
+            EQUITY_ROLL_FORWARD_FORMAT_V1
+        })
+        .fixed(&self.book_id.0)
+        .fixed(&self.branch_id.0)
+        .u64(self.known_at)
+        .str(&self.label)
+        .i32(self.effective_from.0)
+        .i32(self.effective_through.0)
+        .list(&self.units, |w, u| {
+            w.u32(u.unit_id)
+                .i128(u.opening_contributed_equity)
+                .i128(u.opening_unclosed_earnings)
+                .i128(u.opening_total_equity);
+            if separate_prior_period_adjustments {
+                w.i128(u.prior_period_adjustments)
+                    .i128(u.opening_equity_as_adjusted);
+            }
+            w.i128(u.net_income)
+                .i128(u.issuances)
+                .i128(u.distributions)
+                .i128(u.other_equity_movements)
+                .i128(u.closing_transfers_net)
+                .i128(u.net_equity_change)
+                .i128(u.closing_contributed_equity)
+                .i128(u.closing_unclosed_earnings)
+                .i128(u.closing_total_equity)
+                .i128(u.equity_tie_out_residual);
+        });
         w.finish()
     }
 
@@ -759,7 +800,8 @@ impl EquityRollForward {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
         let magic = r.fixed::<{ EQUITY_ROLL_FORWARD_FORMAT.len() }>("equity_rf.magic")?;
-        if magic != EQUITY_ROLL_FORWARD_FORMAT {
+        let separate_prior_period_adjustments = magic == EQUITY_ROLL_FORWARD_FORMAT;
+        if !separate_prior_period_adjustments && magic != EQUITY_ROLL_FORWARD_FORMAT_V1 {
             return Err(r.invalid("equity roll-forward header"));
         }
         let book_id = Id128(r.fixed::<16>("book_id")?);
@@ -769,11 +811,26 @@ impl EquityRollForward {
         let effective_from = DateDay(r.i32("effective_from")?);
         let effective_through = DateDay(r.i32("effective_through")?);
         let units = r.list(4096, "units", |r| {
+            let unit_id = r.u32("unit_id")?;
+            let opening_contributed_equity = r.i128("opening_contributed_equity")?;
+            let opening_unclosed_earnings = r.i128("opening_unclosed_earnings")?;
+            let opening_total_equity = r.i128("opening_total_equity")?;
+            let (prior_period_adjustments, opening_equity_as_adjusted) =
+                if separate_prior_period_adjustments {
+                    (
+                        r.i128("prior_period_adjustments")?,
+                        r.i128("opening_equity_as_adjusted")?,
+                    )
+                } else {
+                    (0, opening_total_equity)
+                };
             Ok(EquityRollForwardUnit {
-                unit_id: r.u32("unit_id")?,
-                opening_contributed_equity: r.i128("opening_contributed_equity")?,
-                opening_unclosed_earnings: r.i128("opening_unclosed_earnings")?,
-                opening_total_equity: r.i128("opening_total_equity")?,
+                unit_id,
+                opening_contributed_equity,
+                opening_unclosed_earnings,
+                opening_total_equity,
+                prior_period_adjustments,
+                opening_equity_as_adjusted,
                 net_income: r.i128("net_income")?,
                 issuances: r.i128("issuances")?,
                 distributions: r.i128("distributions")?,
@@ -803,6 +860,22 @@ impl EquityRollForward {
 /// net income and direct equity movements equals closing equity per unit (`fa-i9yn`).
 pub fn evaluate_equity_roll_forward(
     source: &EquityRollForwardInput,
+) -> Result<EquityRollForward, StatementError> {
+    evaluate_equity(source, true)
+}
+
+/// Replay of already issued v1 equity certificates. Their immutable output
+/// used account-role classification for prior-period adjustments. New reports
+/// use [`evaluate_equity_roll_forward`] and name those adjustments separately.
+pub fn evaluate_equity_roll_forward_v1(
+    source: &EquityRollForwardInput,
+) -> Result<EquityRollForward, StatementError> {
+    evaluate_equity(source, false)
+}
+
+fn evaluate_equity(
+    source: &EquityRollForwardInput,
+    separate_prior_period_adjustments: bool,
 ) -> Result<EquityRollForward, StatementError> {
     if source.label.trim().is_empty() || source.label.len() > 256 {
         return Err(input(
@@ -924,6 +997,23 @@ pub fn evaluate_equity_roll_forward(
         if !seen_legs.insert((mov.entry_digest, mov.leg_index)) {
             return Err(input("duplicate leg in equity_movements"));
         }
+        if separate_prior_period_adjustments
+            && mov.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT
+            && mov.kind != EquityActivityKind::PriorPeriodAdjustment
+        {
+            return Err(input(
+                "a PriorPeriodAdjustment must be reported on its own equity line",
+            ));
+        }
+        if mov.class != EntryClass::PRIOR_PERIOD_ADJUSTMENT
+            && !(mov.class == EntryClass::REVERSAL
+                && mov.kind == EquityActivityKind::PriorPeriodAdjustment)
+            && (mov.case_ordinal.is_some() || mov.relates_to.is_some())
+        {
+            return Err(input(
+                "prior-period case and period citations belong only to PriorPeriodAdjustment movements",
+            ));
+        }
         match (mov.kind, acct.account_type) {
             (EquityActivityKind::ClosingTransfer, 3..=5) => {
                 if mov.class != EntryClass::CLOSING {
@@ -938,6 +1028,12 @@ pub fn evaluate_equity_roll_forward(
                 | EquityActivityKind::OtherEquity,
                 3,
             ) => {}
+            (EquityActivityKind::PriorPeriodAdjustment, 3)
+                if separate_prior_period_adjustments
+                    && matches!(
+                        mov.class,
+                        EntryClass::PRIOR_PERIOD_ADJUSTMENT | EntryClass::REVERSAL
+                    ) => {}
             _ => {
                 return Err(input(
                     "direct equity movement must target an Equity (type 3) account",
@@ -974,6 +1070,10 @@ pub fn evaluate_equity_roll_forward(
         let issuances = get_kind(EquityActivityKind::Issuance)?;
         let distributions = get_kind(EquityActivityKind::Distribution)?;
         let other_equity_movements = get_kind(EquityActivityKind::OtherEquity)?;
+        let prior_period_adjustments = get_kind(EquityActivityKind::PriorPeriodAdjustment)?;
+        let opening_equity_as_adjusted = opening_total_equity
+            .checked_add(prior_period_adjustments)
+            .ok_or_else(failed)?;
         let closing_transfers_net = get_kind(EquityActivityKind::ClosingTransfer)?;
         if closing_transfers_net != 0 {
             return Err(StatementError::Identity {
@@ -990,7 +1090,13 @@ pub fn evaluate_equity_roll_forward(
             .copied()
             .unwrap_or(0);
         let mut net_change_sum = Sum::ZERO;
-        for part in [net_income, issuances, distributions, other_equity_movements] {
+        for part in [
+            prior_period_adjustments,
+            net_income,
+            issuances,
+            distributions,
+            other_equity_movements,
+        ] {
             net_change_sum.add(part, false).ok_or_else(failed)?;
         }
         let net_equity_change = net_change_sum.value().ok_or_else(failed)?;
@@ -1016,6 +1122,8 @@ pub fn evaluate_equity_roll_forward(
             opening_contributed_equity,
             opening_unclosed_earnings,
             opening_total_equity,
+            prior_period_adjustments,
+            opening_equity_as_adjusted,
             net_income,
             issuances,
             distributions,
@@ -1464,6 +1572,8 @@ mod tests {
                     unit_id: 1,
                     debits: 0,
                     credits: 200,
+                    case_ordinal: None,
+                    relates_to: None,
                 },
                 EquityMovement {
                     entry_digest: [8; 32],
@@ -1476,6 +1586,8 @@ mod tests {
                     unit_id: 1,
                     debits: 30,
                     credits: 0,
+                    case_ordinal: None,
+                    relates_to: None,
                 },
                 EquityMovement {
                     entry_digest: [9; 32],
@@ -1488,6 +1600,8 @@ mod tests {
                     unit_id: 1,
                     debits: 70,
                     credits: 0,
+                    case_ordinal: None,
+                    relates_to: None,
                 },
                 EquityMovement {
                     entry_digest: [9; 32],
@@ -1500,6 +1614,8 @@ mod tests {
                     unit_id: 1,
                     debits: 0,
                     credits: 15,
+                    case_ordinal: None,
+                    relates_to: None,
                 },
                 EquityMovement {
                     entry_digest: [9; 32],
@@ -1512,6 +1628,8 @@ mod tests {
                     unit_id: 1,
                     debits: 0,
                     credits: 55,
+                    case_ordinal: None,
+                    relates_to: None,
                 },
             ],
         };
@@ -1529,5 +1647,123 @@ mod tests {
 
         let bytes = eq.canonical_bytes().unwrap();
         assert_eq!(EquityRollForward::decode(&bytes).unwrap(), eq);
+    }
+
+    fn prior_period_equity_input() -> EquityRollForwardInput {
+        EquityRollForwardInput {
+            book_id: Id128([0x41; 16]),
+            branch_id: Id128::TRUNK,
+            known_at: 10,
+            label: "FY2026".into(),
+            effective_from: DateDay(10),
+            effective_through: DateDay(20),
+            accounts: test_accounts(),
+            units: vec![1, 2],
+            opening_balances: vec![AccountBalance {
+                account_id: 7,
+                unit_id: 1,
+                debits: 0,
+                credits: 1_000,
+            }],
+            closing_balances: vec![
+                AccountBalance {
+                    account_id: 7,
+                    unit_id: 1,
+                    debits: 0,
+                    credits: 940,
+                },
+                AccountBalance {
+                    account_id: 8,
+                    unit_id: 1,
+                    debits: 0,
+                    credits: 200,
+                },
+            ],
+            net_income_by_unit: BTreeMap::from([(1, 200)]),
+            equity_movements: vec![EquityMovement {
+                entry_digest: [0x42; 32],
+                leg_index: 0,
+                recorded_seq: 8,
+                effective_day: DateDay(10),
+                class: EntryClass::PRIOR_PERIOD_ADJUSTMENT,
+                kind: EquityActivityKind::PriorPeriodAdjustment,
+                account_id: 7,
+                unit_id: 1,
+                debits: 60,
+                credits: 0,
+                case_ordinal: Some(42),
+                relates_to: Some(PeriodRef {
+                    calendar: "gregorian".into(),
+                    code: "FY2025".into(),
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn equity_roll_forward_separates_prior_period_adjustments_and_adjusted_opening() {
+        let source = prior_period_equity_input();
+        let report = evaluate_equity_roll_forward(&source).unwrap();
+        let unit = &report.units[0];
+        assert_eq!(unit.opening_total_equity, 1_000);
+        assert_eq!(unit.prior_period_adjustments, -60);
+        assert_eq!(unit.opening_equity_as_adjusted, 940);
+        assert_eq!(unit.net_income, 200);
+        assert_eq!(unit.issuances, 0);
+        assert_eq!(unit.distributions, 0);
+        assert_eq!(unit.other_equity_movements, 0);
+        assert_eq!(unit.net_equity_change, 140);
+        assert_eq!(unit.closing_total_equity, 1_140);
+        assert_eq!(unit.equity_tie_out_residual, 0);
+        assert_eq!(report.units[1].prior_period_adjustments, 0);
+        assert_eq!(report.units[1].opening_equity_as_adjusted, 0);
+        let bytes = report.canonical_bytes().unwrap();
+        assert!(bytes.starts_with(EQUITY_ROLL_FORWARD_FORMAT));
+        assert_eq!(EquityRollForward::decode(&bytes).unwrap(), report);
+        assert!(report.canonical_bytes_v1().is_err());
+    }
+
+    #[test]
+    fn prior_period_adjustment_cannot_hide_in_owner_movements_or_current_income() {
+        for kind in [
+            EquityActivityKind::Issuance,
+            EquityActivityKind::Distribution,
+            EquityActivityKind::OtherEquity,
+        ] {
+            let mut source = prior_period_equity_input();
+            source.equity_movements[0].kind = kind;
+            assert!(evaluate_equity_roll_forward(&source).is_err(), "{kind:?}");
+        }
+        let mut source = prior_period_equity_input();
+        source.equity_movements[0].class = EntryClass::ORIGINAL;
+        assert!(evaluate_equity_roll_forward(&source).is_err());
+        let mut source = prior_period_equity_input();
+        source.equity_movements[0].account_id = 8;
+        assert!(evaluate_equity_roll_forward(&source).is_err());
+        let mut source = prior_period_equity_input();
+        source.equity_movements[0].debits = 0;
+        source.equity_movements[0].credits = 1;
+        source.opening_balances[0].credits = i128::MAX;
+        assert!(evaluate_equity_roll_forward(&source).is_err());
+    }
+
+    #[test]
+    fn legacy_equity_certificate_keeps_its_original_classification_and_bytes() {
+        let mut source = prior_period_equity_input();
+        source.equity_movements[0].kind = EquityActivityKind::OtherEquity;
+        source.equity_movements[0].case_ordinal = None;
+        source.equity_movements[0].relates_to = None;
+        let legacy = evaluate_equity_roll_forward_v1(&source).unwrap();
+        assert_eq!(legacy.units[0].prior_period_adjustments, 0);
+        assert_eq!(legacy.units[0].opening_equity_as_adjusted, 1_000);
+        assert_eq!(legacy.units[0].other_equity_movements, -60);
+        assert_eq!(legacy.units[0].closing_total_equity, 1_140);
+        let bytes = legacy.canonical_bytes_v1().unwrap();
+        assert!(bytes.starts_with(EQUITY_ROLL_FORWARD_FORMAT_V1));
+        let decoded = EquityRollForward::decode(&bytes).unwrap();
+        assert_eq!(decoded, legacy);
+        assert_eq!(decoded.canonical_bytes_v1().unwrap(), bytes);
+        assert_ne!(legacy.canonical_bytes().unwrap(), bytes);
+        assert!(evaluate_equity_roll_forward(&source).is_err());
     }
 }

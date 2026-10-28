@@ -45,6 +45,11 @@ pub struct Read {
     pub certificate: Option<String>,
     /// A `balance` read's posted legs, every period it explained (A11b).
     pub contributions: Option<Vec<Contribution>>,
+    /// An as-originally-reported read: whether its value differs from the
+    /// same line as currently stated. `Some(false)` is a line no delta
+    /// moved, where the read did not exercise its selector (A11b). `None`
+    /// for any other selector, or when either read has no value.
+    pub exercised: Option<bool>,
 }
 
 /// One `assert_balance` step's calls.
@@ -134,11 +139,25 @@ impl BookRun<'_> {
         }
     }
 
+    /// A row's read under its own selector. An as-originally-reported read
+    /// also reads the same line as currently stated, to tell whether any
+    /// delta moved it ([`Read::exercised`]).
     fn read(&mut self, e: &Expectation, t: Option<&Target>) -> Read {
+        let selector = field(e, t, "read_selector").filter(|s| !s.is_empty());
+        let mut read = self.read_as(e, t, selector);
+        if selector == Some("originally_reported")
+            && let Ok(original) = read.value
+        {
+            let current = self.read_as(e, t, Some("currently_stated"));
+            read.exercised = current.value.ok().map(|c| c != original);
+        }
+        read
+    }
+
+    fn read_as(&mut self, e: &Expectation, t: Option<&Target>, selector: Option<&str>) -> Read {
         let verb = field(e, t, "read_verb").unwrap_or("-");
         let target = field(e, t, "read_target").unwrap_or("-");
         let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
-        let selector = field(e, t, "read_selector").filter(|s| !s.is_empty());
         let (slot, view) = self.view(selector);
         let mut token = format!("{verb},{target},{coordinate}");
         if let Some(slot) = slot {
@@ -150,6 +169,7 @@ impl BookRun<'_> {
             value: Err(why),
             certificate: None,
             contributions: None,
+            exercised: None,
         };
         if !matches!(
             verb,
@@ -277,6 +297,7 @@ impl BookRun<'_> {
             value,
             certificate,
             contributions,
+            exercised: None,
         }
     }
 
@@ -415,12 +436,14 @@ impl BookRun<'_> {
                 value: Ok(total),
                 certificate,
                 contributions: Some(legs),
+                exercised: None,
             },
             Err(why) => Read {
                 token,
                 value: Err(why),
                 certificate: None,
                 contributions: None,
+                exercised: None,
             },
         }
     }

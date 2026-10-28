@@ -266,6 +266,37 @@ fn _selftest_neg_unnamed_contribution_never_passes_as_t() {
     );
 }
 
+/// A11b: an as-originally-reported read on a line no delta moves does not
+/// exercise its selector. In a planted copy of the self-test the delta's
+/// 1100 leg moves to 1000, so 1100 reads 1,000.00 both as originally
+/// reported and as currently stated. R-01 still passes, flagged
+/// `selector=not_exercised`. In the self-test itself the delta moves 1100
+/// to 900.00, and R-01 carries no flag.
+#[test]
+fn as_originally_reported_on_a_zero_delta_line_is_flagged_selector_not_exercised() {
+    const R_01: &str = "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00";
+    let o = match run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "books/native.toml",
+            old: "intent = \"delta-A-1\"\nordinal = 1\naccount = \"1100\"",
+            new: "intent = \"delta-A-1\"\nordinal = 1\naccount = \"1000\"",
+        }],
+        HARNESS_VERBS,
+    ) {
+        Ok(o) => o,
+        Err(o) => *o,
+    };
+    assert_eq!(
+        o.row("_selftest-R-01"),
+        Some(format!("{R_01} selector=not_exercised").as_str()),
+        "{}",
+        o.text()
+    );
+    let base = outcome(SELFTEST);
+    assert_eq!(base.row("_selftest-R-01"), Some(R_01), "{}", base.text());
+}
+
 /// The self-test's claimed rows, which the outsider negatives keep PASS.
 const SELFTEST_CLAIMS: [&str; 4] = [
     "_selftest-P-02",

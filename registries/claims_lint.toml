@@ -87,7 +87,7 @@ registry = "evidence_artifacts.toml"
 table = "artifact"
 key = "id"
 
-# ---- Plan §18.2 G0 Registry Inventory (37 registries) -----------------------
+# ---- Plan §18.2 G0 Registry Inventory (38 registries) -----------------------
 # Every registry listed in plan §18.2 is either present on disk or explicitly
 # assigned to the open bead that materializes its subsystem.
 

@@ -395,7 +395,10 @@ fn roll_forward_certificate(certificate: &[u8]) -> bool {
 fn equity_certificate(certificate: &[u8]) -> bool {
     let check = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "equity format")? != b"fa:equity-roll-forward-certificate:v1" {
+        let format = reader.bytes(64, "equity format")?;
+        if format != b"fa:equity-roll-forward-certificate:v1"
+            && format != b"fa:equity-roll-forward-certificate:v2"
+        {
             return Ok(false);
         }
         Ok(roll_forward_certificate(

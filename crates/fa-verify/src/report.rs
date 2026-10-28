@@ -1391,6 +1391,8 @@ fn verify_report_with_inputs(
                 roll_forward,
                 certificate.digest,
                 &schema,
+                envelopes,
+                &infos,
             )?;
             return Ok(VerifiedReport {
                 scope: "recomputation",

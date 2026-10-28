@@ -2376,6 +2376,106 @@ fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
         text(&stored, "proposal_digest"),
         text(&planned, "proposal_digest")
     );
+    let committed_head = head(&f.book);
+    let (code, retried) = run(
+        &f.book,
+        &[
+            "period",
+            "lock",
+            "FY2026-P03",
+            "--plan",
+            "-",
+            "--approval",
+            text(&approval, "approval_vid"),
+        ],
+        Some(encoded.as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", retried.render());
+    assert_eq!(text(&retried, "event"), "recorded");
+    assert_eq!(text(&retried, "vid"), text(&committed, "control_entry"));
+    assert_eq!(
+        integer(&retried, "recorded_at"),
+        integer(&committed, "recorded_at")
+    );
+    assert_eq!(head(&f.book), committed_head);
+}
+
+#[test]
+fn period_plan_refuses_tamper_foreign_book_and_stale_state_after_process_reopen() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let planned = ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--dry-run",
+        ],
+    );
+    assert_eq!(head(&f.book), before);
+    let encoded = text(&planned, "bytes");
+    let bytes: Vec<u8> = encoded
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let mut tampered = fa_journal::TransitionPlan::decode(&bytes).unwrap();
+    tampered.idempotency_key.extend_from_slice(b"-substituted");
+    let tampered = tampered.encode().unwrap();
+    let args = ["period", "close", "FY2026-P03", "--plan", "-"];
+    let (code, refused) = run(&f.book, &args, Some(&tampered));
+    assert_eq!(code, 6, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
+    assert_eq!(head(&f.book), before);
+
+    let other = Fixture::new();
+    let other_before = head(&other.book);
+    let (code, refused) = run(&other.book, &args, Some(&bytes));
+    assert_eq!(code, 6, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
+    assert_eq!(head(&other.book), other_before);
+
+    // The reviewed Open -> Closed proposal cannot silently become a
+    // SoftClosed -> Closed proposal, even when neither requires approval.
+    ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
+    let moved = head(&f.book);
+    let (code, refused) = run(&f.book, &args, Some(encoded.as_bytes()));
+    assert_eq!(code, 6, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
+    assert_eq!(head(&f.book), moved);
+
+    let fresh = ok(
+        &f.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--dry-run",
+        ],
+    );
+    let (code, committed) = run(&f.book, &args, Some(text(&fresh, "bytes").as_bytes()));
+    assert_eq!(code, 0, "{}", committed.render());
+    let stored = ok(
+        &f.book,
+        &["entry", "show", text(&committed, "control_entry")],
+    );
+    assert_eq!(
+        text(&stored, "proposal_digest"),
+        text(&fresh, "proposal_digest")
+    );
+    let committed_head = head(&f.book);
+    let (code, retried) = run(&f.book, &args, Some(text(&fresh, "bytes").as_bytes()));
+    assert_eq!(code, 0, "{}", retried.render());
+    assert_eq!(text(&retried, "event"), "recorded");
+    assert_eq!(text(&retried, "vid"), text(&committed, "control_entry"));
+    assert_eq!(head(&f.book), committed_head);
 }
 
 #[test]

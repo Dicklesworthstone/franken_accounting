@@ -292,6 +292,9 @@ pub mod code {
     /// A case's disclosure is not a reviewed Disclosure document of this
     /// book (plan §8.3, §9.3).
     pub const CASE_DISCLOSURE: &str = "FA-REF-179";
+    /// A prior-period adjustment lacks its earlier period or does not
+    /// route its cumulative effect through retained earnings.
+    pub const PRIOR_PERIOD_ADJUSTMENT: &str = "FA-REF-202";
     /// No engagement with this id in the book.
     pub const ENGAGEMENT_UNKNOWN: &str = "FA-REF-180";
     /// A proposed adjustment already booked or passed is decided again.

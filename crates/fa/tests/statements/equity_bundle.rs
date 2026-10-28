@@ -112,7 +112,7 @@ fn reseal(
         .bytes(output);
     let mut bytes = writer.finish().unwrap();
     let digest =
-        fa_model::domain_digest(b"fa:equity-roll-forward-certificate-digest:v1", &[&bytes]);
+        fa_model::domain_digest(b"fa:equity-roll-forward-certificate-digest:v2", &[&bytes]);
     bytes.extend_from_slice(&digest);
     EquityRollForwardCertificate::decode(&bytes).unwrap()
 }

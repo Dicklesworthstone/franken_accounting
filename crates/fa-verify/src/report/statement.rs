@@ -80,7 +80,7 @@ impl Selection {
 }
 
 #[derive(Default)]
-struct Lineage {
+pub(super) struct Lineage {
     origins: BTreeMap<usize, usize>,
     /// Actual uncached ancestry inspections, retained only in tests.
     #[cfg(test)]
@@ -90,7 +90,7 @@ struct Lineage {
 /// Resolve reversal ancestry from content-bound targets at this frontier.
 /// Memoization bounds repeated lineage walks without accepting cycles, missing
 /// targets, or a target that became known after the reversing entry.
-fn origin(
+pub(super) fn origin(
     index: usize,
     envelopes: &[LeafEnvelope],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,

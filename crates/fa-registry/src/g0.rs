@@ -809,11 +809,11 @@ impl ClaimsLintConfig {
                 owner_bead: req_str(R, t, "owner_bead")?.to_string(),
             });
         }
-        if g0_registries.len() != 37 {
+        if g0_registries.len() != 38 {
             return Err(invalid(
                 R,
                 format!(
-                    "expected 37 §18.2 g0_registry entries, found {}",
+                    "expected 38 §18.2 g0_registry entries, found {}",
                     g0_registries.len()
                 ),
             ));
@@ -2841,7 +2841,7 @@ mod tests {
         assert_eq!(rel_bases.rows.len(), 10);
 
         let claims_lint = ClaimsLintConfig::embedded().expect("claims_lint.toml");
-        assert_eq!(claims_lint.g0_registries.len(), 37);
+        assert_eq!(claims_lint.g0_registries.len(), 38);
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);

@@ -970,6 +970,12 @@ fn read_against(
     let scale = super::reads::scale_of(&unit).unwrap_or(0);
     row.projection
         .push(("value".into(), format_amount(observed, scale)));
+    // A11b: an as-originally-reported read of a line no delta moved does
+    // not exercise its selector. The row says so and keeps its verdict.
+    if read.exercised == Some(false) {
+        row.projection
+            .push(("selector".into(), "not_exercised".into()));
+    }
     // Exact equality at the published value's declared precision (§5.3);
     // a value stated to a coarser precision needs its rounding rule first.
     if run

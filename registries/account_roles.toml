@@ -112,3 +112,10 @@ account_types = ["Expense"]
 meaning = "Net income attributable to noncontrolling interests (ASC 810-10-45-20): consolidation charges the minority's share of a partly owned subsidiary's post-acquisition earnings here, so the net income that remains is the parent's."
 consumers = []
 verbs = ["consolidate"]
+
+[[role]]
+name = "retained_earnings"
+account_types = ["Equity"]
+meaning = "Accumulated earnings from prior periods: a PriorPeriodAdjustment case routes its cumulative equity correction here, with the earlier error period named by relates_to."
+consumers = []
+verbs = ["case"]

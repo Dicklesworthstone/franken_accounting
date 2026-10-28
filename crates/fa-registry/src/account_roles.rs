@@ -189,7 +189,7 @@ mod tests {
         );
         assert_eq!(
             roles.listing(),
-            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income"
+            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income, retained_earnings"
         );
         assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
         assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 7));
@@ -204,6 +204,9 @@ mod tests {
             Some(vec!["consolidate".to_string()])
         );
         assert!(roles.get("suspense").is_some_and(|r| r.verbs.is_empty()));
+        let retained = roles.get("retained_earnings").expect("retained earnings");
+        assert!(retained.admits("Equity") && !retained.admits("Revenue"));
+        assert_eq!(retained.verbs, vec!["case"]);
     }
 
     #[test]

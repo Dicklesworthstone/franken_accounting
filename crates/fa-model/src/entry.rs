@@ -42,10 +42,11 @@ use crate::limits::*;
 pub const SCHEMA_MAJOR: u16 = 1;
 /// The highest additive minor this reader understands in full. Minor 0 is
 /// the original layout; minor 1 appends the extension block, and minor 2
-/// admits the named proportional-post basis. A writer may
+/// admits the named proportional-post basis, and minor 3 admits the
+/// prior-period-adjustment source period. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 2;
+pub const SCHEMA_MINOR: u16 = 3;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -241,6 +242,43 @@ pub const VALUATION_ADJUSTMENT_EXTENSION: u16 = 34;
 pub const PROPORTIONAL_POST_EXTENSION: u16 = 35;
 pub const PROPORTIONAL_POST_SCHEMA_MINOR: u16 = 2;
 
+/// Extension 36, `fa:prior-period-adjustment:v1`: the historical period
+/// whose error a case corrects through opening retained earnings. The
+/// marker also rides an Original/Adjusting scenario template, so the
+/// rehearsal and the case's approved derivation bind the same period.
+pub const PRIOR_PERIOD_ADJUSTMENT_EXTENSION: u16 = 36;
+pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
+
+/// The immutable source-period claim of a prior-period adjustment.
+/// Accounting admission checks the period, case and retained-earnings
+/// accounts; this codec checks only its bounded, versioned representation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriorPeriodAdjustment {
+    pub relates_to: PeriodRef,
+}
+
+impl PriorPeriodAdjustment {
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.u16(1);
+        self.relates_to.encode(&mut w);
+        w.finish()
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("prior_period_adjustment.version")? != 1 {
+            return Err(r.invalid("prior_period_adjustment.version"));
+        }
+        let relates_to = PeriodRef::decode(&mut r)?;
+        if relates_to.calendar.is_empty() || relates_to.code.is_empty() {
+            return Err(r.invalid("prior_period_adjustment.relates_to"));
+        }
+        r.finish()?;
+        Ok(Self { relates_to })
+    }
+}
+
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
 pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
@@ -279,6 +317,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     OBLIGATION_MATURITY_EXTENSION,
     VALUATION_ADJUSTMENT_EXTENSION,
     PROPORTIONAL_POST_EXTENSION,
+    PRIOR_PERIOD_ADJUSTMENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1879,6 +1918,31 @@ impl EntryPayload {
                 )
             })?;
         }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == PRIOR_PERIOD_ADJUSTMENT_EXTENSION)
+        {
+            if self.schema_minor < PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR
+                || !matches!(
+                    self.class,
+                    EntryClass::ORIGINAL
+                        | EntryClass::ADJUSTING
+                        | EntryClass::PRIOR_PERIOD_ADJUSTMENT
+                )
+            {
+                return Err(invalid(
+                    "extensions.prior_period_adjustment",
+                    "a prior-period-adjustment basis belongs to a case posting or its Original/Adjusting rehearsal at schema minor 3 or later",
+                ));
+            }
+            PriorPeriodAdjustment::decode(bytes).map_err(|_| {
+                invalid(
+                    "extensions.prior_period_adjustment",
+                    "unknown version or malformed bounded historical PeriodRef",
+                )
+            })?;
+        }
         if let (Some((_, bytes)), EntryOrigin::Rule { event_ref, .. }) = (
             self.extensions
                 .iter()
@@ -2346,6 +2410,39 @@ impl EntryPayload {
             proposal_digest,
             entry_digest,
         })
+    }
+
+    /// Bind a case adjustment or its rehearsal template to its historical
+    /// error period. This changes the proposal digest and its approvals.
+    pub fn with_prior_period_adjustment(
+        &mut self,
+        relates_to: &PeriodRef,
+    ) -> Result<(), EncodeError> {
+        let bytes = PriorPeriodAdjustment {
+            relates_to: relates_to.clone(),
+        }
+        .encode()?;
+        self.schema_minor = self.schema_minor.max(PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR);
+        match self
+            .extensions
+            .binary_search_by_key(&PRIOR_PERIOD_ADJUSTMENT_EXTENSION, |(tag, _)| *tag)
+        {
+            Ok(index) => self.extensions[index].1 = bytes,
+            Err(index) => self
+                .extensions
+                .insert(index, (PRIOR_PERIOD_ADJUSTMENT_EXTENSION, bytes)),
+        }
+        Ok(())
+    }
+
+    /// Read the retained source period without inferring one for legacy
+    /// entries that predate the extension.
+    pub fn prior_period_adjustment(&self) -> Result<Option<PriorPeriodAdjustment>, DecodeError> {
+        self.extensions
+            .iter()
+            .find(|(tag, _)| *tag == PRIOR_PERIOD_ADJUSTMENT_EXTENSION)
+            .map(|(_, bytes)| PriorPeriodAdjustment::decode(bytes))
+            .transpose()
     }
 
     /// Attach or replace the REA `Event` citation (`EVENT_REF_EXTENSION = 6`:
@@ -3369,6 +3466,114 @@ mod tests {
             (LEGAL_HOLD_SCOPE_EXTENSION, vec![1; 17]),
         ];
         assert!(known.validate().is_ok());
+    }
+
+    #[test]
+    fn prior_period_adjustment_retains_its_source_and_binds_the_approved_digest() {
+        let earlier = PeriodRef {
+            calendar: "cal".into(),
+            code: "FY2025-P12".into(),
+        };
+        for class in [
+            EntryClass::ORIGINAL,
+            EntryClass::ADJUSTING,
+            EntryClass::PRIOR_PERIOD_ADJUSTMENT,
+        ] {
+            let mut p = proposal(two_legs());
+            p.schema_minor = 0;
+            p.class = class;
+            p.with_prior_period_adjustment(&earlier).unwrap();
+            assert_eq!(p.schema_minor, PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR);
+            p.validate_for_write().unwrap();
+            let entry = p.clone().seal(vec![], None).unwrap();
+            let bytes = entry.encode().unwrap();
+            let decoded = Entry::decode(&bytes).unwrap();
+            assert_eq!(decoded.encode().unwrap(), bytes);
+            assert_eq!(
+                decoded.proposal.prior_period_adjustment().unwrap(),
+                Some(PriorPeriodAdjustment {
+                    relates_to: earlier.clone(),
+                })
+            );
+            let digest = p.proposal_digest().unwrap();
+            p.with_prior_period_adjustment(&PeriodRef {
+                code: "FY2025-P11".into(),
+                ..earlier.clone()
+            })
+            .unwrap();
+            assert_eq!(
+                p.extensions.len(),
+                1,
+                "replaces, never duplicates the claim"
+            );
+            assert_ne!(p.proposal_digest().unwrap(), digest);
+        }
+    }
+
+    #[test]
+    fn prior_period_adjustment_codec_rejects_malformed_or_misplaced_claims() {
+        let prior = PriorPeriodAdjustment {
+            relates_to: PeriodRef {
+                calendar: "cal".into(),
+                code: "FY2025-P12".into(),
+            },
+        };
+        let canonical = prior.encode().unwrap();
+        for length in 0..canonical.len() {
+            assert!(PriorPeriodAdjustment::decode(&canonical[..length]).is_err());
+        }
+        let mut future_version = canonical.clone();
+        future_version[0] = 2;
+        let mut trailing = canonical;
+        trailing.push(0);
+        for invalid in [future_version, trailing] {
+            assert!(PriorPeriodAdjustment::decode(&invalid).is_err());
+        }
+        for (calendar, code) in [
+            (String::new(), "FY2025-P12".into()),
+            ("cal".into(), String::new()),
+            ("c".repeat(MAX_PERIOD_REF_BYTES + 1), "FY2025-P12".into()),
+            ("cal".into(), "p".repeat(MAX_PERIOD_REF_BYTES + 1)),
+        ] {
+            let bytes = PriorPeriodAdjustment {
+                relates_to: PeriodRef { calendar, code },
+            }
+            .encode()
+            .unwrap();
+            assert!(PriorPeriodAdjustment::decode(&bytes).is_err());
+        }
+        let mut p = proposal(two_legs());
+        p.with_prior_period_adjustment(&prior.relates_to).unwrap();
+        p.schema_minor = PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR - 1;
+        assert!(matches!(
+            p.validate_for_write(),
+            Err(EntryError::Invalid {
+                what: "extensions.prior_period_adjustment",
+                ..
+            })
+        ));
+        p.schema_minor = PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR;
+        p.class = EntryClass::CLOSING;
+        assert!(matches!(
+            p.validate_for_write(),
+            Err(EntryError::Invalid {
+                what: "extensions.prior_period_adjustment",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_prior_period_adjustment_round_trips_without_an_invented_source() {
+        let mut p = proposal(two_legs());
+        p.class = EntryClass::PRIOR_PERIOD_ADJUSTMENT;
+        p.schema_minor = 0;
+        let historical = p.seal(vec![], None).unwrap();
+        let bytes = historical.encode().unwrap();
+        let decoded = Entry::decode(&bytes).unwrap();
+        assert_eq!(decoded.encode().unwrap(), bytes);
+        assert_eq!(decoded.proposal.prior_period_adjustment().unwrap(), None);
+        assert_eq!(decoded.entry_digest, historical.entry_digest);
     }
 
     /// Disposition-sensitive arity (plan §5.4): a Pending carries a bare

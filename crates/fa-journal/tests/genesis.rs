@@ -51,6 +51,8 @@ mod outcome_batch_integrity_tests;
 mod outcome_key_tests;
 #[path = "genesis/policy_outcome_keys.rs"]
 mod policy_outcome_keys;
+#[path = "genesis/prior_period_adjustment.rs"]
+mod prior_period_adjustment_tests;
 #[path = "genesis/proportional.rs"]
 mod proportional_tests;
 #[path = "genesis/recurring.rs"]

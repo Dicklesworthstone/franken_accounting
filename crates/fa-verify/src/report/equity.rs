@@ -3,20 +3,27 @@
 //! zero accounts. Owner roles are authenticated report parameters, not inferred
 //! economic facts. Closing transfers must conserve total equity exactly.
 
-use super::metadata::Schema;
+use super::metadata::{EntryInfo, Schema};
 use super::roll_forward::{RollForwardAccount, VerifiedRollForward};
 use super::statement::Sum;
-use super::{MAX_REPORT_BUNDLE_BYTES, ReportError, failed, hash_parts};
+use super::{MAX_REPORT_BUNDLE_BYTES, ReportError, failed, hash_parts, text};
 use crate::codec::{Reader, Writer};
+use crate::envelope::LeafEnvelope;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) const CERTIFICATE_FORMAT: &[u8] = b"fa:equity-roll-forward-certificate:v1";
-pub(super) const DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v1";
-const REPORT_FORMAT: &[u8] = b"fa:equity-roll-forward-report:v1";
-const STATEMENT_FORMAT: &[u8] = b"fa:equity-roll-forward:v1";
+pub(super) const CERTIFICATE_FORMAT_V1: &[u8] = b"fa:equity-roll-forward-certificate:v1";
+pub(super) const CERTIFICATE_FORMAT: &[u8] = b"fa:equity-roll-forward-certificate:v2";
+pub(super) const DIGEST_DOMAIN_V1: &[u8] = b"fa:equity-roll-forward-certificate-digest:v1";
+pub(super) const DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v2";
+const REPORT_FORMAT_V1: &[u8] = b"fa:equity-roll-forward-report:v1";
+const REPORT_FORMAT: &[u8] = b"fa:equity-roll-forward-report:v2";
+const STATEMENT_FORMAT_V1: &[u8] = b"fa:equity-roll-forward:v1";
+const STATEMENT_FORMAT: &[u8] = b"fa:equity-roll-forward:v2";
 const MAX_SCOPE: usize = 4096;
+type AdjustmentCitations = (Option<u32>, Option<(String, String)>);
 
 pub(super) struct Certificate<'a> {
+    pub version: u16,
     pub source: &'a [u8],
     pub issuance_accounts: Vec<u128>,
     pub distribution_accounts: Vec<u128>,
@@ -30,6 +37,7 @@ pub enum EquityActivityKind {
     Distribution,
     ClosingTransfer,
     OtherEquity,
+    PriorPeriodAdjustment,
 }
 
 impl EquityActivityKind {
@@ -39,6 +47,7 @@ impl EquityActivityKind {
             Self::Distribution => 2,
             Self::ClosingTransfer => 3,
             Self::OtherEquity => 4,
+            Self::PriorPeriodAdjustment => 5,
         }
     }
 
@@ -48,6 +57,7 @@ impl EquityActivityKind {
             Self::Distribution => "distribution",
             Self::ClosingTransfer => "closing_transfer",
             Self::OtherEquity => "other_equity",
+            Self::PriorPeriodAdjustment => "prior_period_adjustment",
         }
     }
 }
@@ -64,6 +74,8 @@ pub struct EquityMovement {
     pub unit_id: u32,
     pub debits: i128,
     pub credits: i128,
+    pub case_ordinal: Option<u32>,
+    pub relates_to: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +84,8 @@ pub struct EquityRollForwardUnit {
     pub opening_contributed_equity: i128,
     pub opening_unclosed_earnings: i128,
     pub opening_total_equity: i128,
+    pub prior_period_adjustments: i128,
+    pub opening_equity_as_adjusted: i128,
     pub net_income: i128,
     pub issuances: i128,
     pub distributions: i128,
@@ -86,6 +100,9 @@ pub struct EquityRollForwardUnit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedEquityRollForward {
+    /// V1 preserves the originally certified classification; V2 reports
+    /// prior-period adjustments separately with their authenticated lineage.
+    pub format_version: u16,
     pub book_id: [u8; 16],
     pub known_at: u64,
     pub label: String,
@@ -101,7 +118,10 @@ pub struct VerifiedEquityRollForward {
 
 pub(super) fn recognizes(bytes: &[u8]) -> bool {
     bytes.starts_with(&(CERTIFICATE_FORMAT.len() as u32).to_le_bytes())
-        && bytes.get(4..4 + CERTIFICATE_FORMAT.len()) == Some(CERTIFICATE_FORMAT)
+        && matches!(
+            bytes.get(4..4 + CERTIFICATE_FORMAT.len()),
+            Some(format) if format == CERTIFICATE_FORMAT || format == CERTIFICATE_FORMAT_V1
+        )
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
@@ -109,12 +129,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         return Err(failed("bounded_input", "equity certificate exceeds 64 MiB"));
     }
     let mut r = Reader::new(bytes);
-    if r.bytes(64, "equity.format")? != CERTIFICATE_FORMAT {
-        return Err(failed(
-            "supported_report",
-            "unsupported equity certificate format",
-        ));
-    }
+    let version = match r.bytes(64, "equity.format")? {
+        CERTIFICATE_FORMAT_V1 => 1,
+        CERTIFICATE_FORMAT => 2,
+        _ => {
+            return Err(failed(
+                "supported_report",
+                "unsupported equity certificate format",
+            ));
+        }
+    };
     let source = r.bytes(MAX_REPORT_BUNDLE_BYTES, "equity.source")?;
     if !super::roll_forward::recognizes(source) {
         return Err(failed(
@@ -151,13 +175,19 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let digest = r.fixed("equity.digest")?;
     r.finish("equity certificate")?;
     let body = &bytes[..bytes.len() - 32];
-    if hash_parts(DIGEST_DOMAIN, &[&(body.len() as u32).to_le_bytes(), body]) != digest {
+    let domain = if version == 1 {
+        DIGEST_DOMAIN_V1
+    } else {
+        DIGEST_DOMAIN
+    };
+    if hash_parts(domain, &[&(body.len() as u32).to_le_bytes(), body]) != digest {
         return Err(failed(
             "certificate_digest",
             "equity certificate differs from its commitment",
         ));
     }
     Ok(Certificate {
+        version,
         source,
         issuance_accounts,
         distribution_accounts,
@@ -193,8 +223,52 @@ struct Totals {
     closing_contributed: Sum,
     closing_earnings: Sum,
     net_income: i128,
-    // Issuance, distribution, closing transfer, other equity, in wire-tag order.
-    activity: [Sum; 4],
+    // Issuance, distribution, closing transfer, other equity, prior-period
+    // adjustments, in wire-tag order.
+    activity: [Sum; 5],
+}
+
+fn prior_period_citations(info: &EntryInfo<'_>) -> Result<AdjustmentCitations, ReportError> {
+    let case_ordinal = if let Some(raw) = info.case_member {
+        let mut r = Reader::new(raw);
+        if r.u16("case_member.version")? != 1 {
+            return Err(failed(
+                "equity_provenance",
+                "unsupported case-member version",
+            ));
+        }
+        let ordinal = r.u32("case_member.ordinal")?;
+        r.u128("case_member.plan")?;
+        r.finish("case member")?;
+        if ordinal == 0 {
+            return Err(failed("equity_provenance", "case ordinal is zero"));
+        }
+        Some(ordinal)
+    } else {
+        None
+    };
+    let relates_to = if let Some(raw) = info.prior_period_adjustment {
+        let mut r = Reader::new(raw);
+        if r.u16("prior_period_adjustment.version")? != 1 {
+            return Err(failed(
+                "equity_provenance",
+                "unsupported prior-period-adjustment version",
+            ));
+        }
+        let calendar = text(&mut r, 32, "prior_period_adjustment.calendar")?;
+        let code = text(&mut r, 32, "prior_period_adjustment.period")?;
+        r.finish("prior-period adjustment")?;
+        if calendar.is_empty() || code.is_empty() {
+            return Err(failed(
+                "equity_provenance",
+                "prior-period adjustment names an empty calendar or period",
+            ));
+        }
+        Some((calendar.to_string(), code.to_string()))
+    } else {
+        None
+    };
+    Ok((case_ordinal, relates_to))
 }
 
 pub(super) fn replay(
@@ -202,6 +276,8 @@ pub(super) fn replay(
     source: VerifiedRollForward,
     source_digest: [u8; 32],
     schema: &Schema,
+    envelopes: &[LeafEnvelope],
+    infos: &BTreeMap<usize, EntryInfo<'_>>,
 ) -> Result<(VerifiedEquityRollForward, Vec<u8>), ReportError> {
     // Bound all reconstructed bytes before allocating their rows or movements.
     // The source is already bounded, but a certificate may claim a tiny output
@@ -215,7 +291,11 @@ pub(super) fn replay(
     )?;
     charge(
         &mut size,
-        source.units.len().checked_mul(212).ok_or_else(overflow)?,
+        source
+            .units
+            .len()
+            .checked_mul(if certificate.version == 1 { 212 } else { 244 })
+            .ok_or_else(overflow)?,
         limit,
     )?;
     for account in &source.accounts {
@@ -281,6 +361,63 @@ pub(super) fn replay(
         open.add(opening, false).ok_or_else(overflow)?;
         close.add(closing, false).ok_or_else(overflow)?;
     }
+    let selected_lineage: BTreeSet<_> = source
+        .movements
+        .iter()
+        .filter(|movement| matches!(movement.bucket.class, 4 | 15))
+        .map(|movement| movement.entry_digest)
+        .collect();
+    let mut metadata = BTreeMap::new();
+    if certificate.version >= 2 && !selected_lineage.is_empty() {
+        let mut by_identity = BTreeMap::new();
+        let mut selected_entries = BTreeMap::new();
+        for (&index, info) in infos {
+            let Some(envelope) = envelopes.get(index) else {
+                continue;
+            };
+            if envelope.commit_seq > source.known_at {
+                continue;
+            }
+            for identity in info.identities() {
+                if by_identity
+                    .insert(identity, index)
+                    .is_some_and(|old| old != index)
+                {
+                    return Err(failed(
+                        "equity_provenance",
+                        "equity ancestry repeats an authenticated entry identity",
+                    ));
+                }
+            }
+            if selected_lineage.contains(&envelope.record_digest)
+                && selected_entries
+                    .insert(envelope.record_digest, index)
+                    .is_some()
+            {
+                return Err(failed(
+                    "equity_provenance",
+                    "prior-period metadata repeats a selected entry digest",
+                ));
+            }
+        }
+        if selected_entries.len() != selected_lineage.len() {
+            return Err(failed(
+                "equity_provenance",
+                "equity movement lacks its authenticated ancestry metadata",
+            ));
+        }
+        // The source bundle carries the complete authenticated prefix, not
+        // only movements inside this report's effective window. An earlier
+        // PPA therefore remains available when only its reversal is selected.
+        let mut lineage = super::statement::Lineage::default();
+        for (digest, index) in selected_entries {
+            let origin =
+                super::statement::origin(index, envelopes, infos, &by_identity, &mut lineage)?;
+            if envelopes[origin].class == 15 {
+                metadata.insert(digest, (&envelopes[index], &infos[&origin]));
+            }
+        }
+    }
     let mut movements = Vec::new();
     for movement in &source.movements {
         let total = totals.get_mut(&movement.unit_id).ok_or_else(|| {
@@ -291,6 +428,16 @@ pub(super) fn replay(
         })?;
         let kind = if movement.bucket.class == 8 {
             EquityActivityKind::ClosingTransfer
+        } else if certificate.version >= 2
+            && (movement.bucket.class == 15 || metadata.contains_key(&movement.entry_digest))
+        {
+            if types.get(&movement.account_id) != Some(&3) {
+                return Err(failed(
+                    "equity_classification",
+                    "prior-period adjustments cannot be reported as current income or expense",
+                ));
+            }
+            EquityActivityKind::PriorPeriodAdjustment
         } else if types.get(&movement.account_id) == Some(&3) {
             if certificate
                 .issuance_accounts
@@ -318,7 +465,35 @@ pub(super) fn replay(
         let sum = &mut total.activity[usize::from(kind.tag() - 1)];
         sum.add(movement.credits, false).ok_or_else(overflow)?;
         sum.add(movement.debits, true).ok_or_else(overflow)?;
-        charge(&mut size, 103, limit)?;
+        let (case_ordinal, relates_to) = if kind == EquityActivityKind::PriorPeriodAdjustment {
+            let (envelope, info) = metadata.get(&movement.entry_digest).ok_or_else(|| {
+                failed(
+                    "equity_provenance",
+                    "prior-period movement lacks its authenticated entry metadata",
+                )
+            })?;
+            if envelope.commit_seq != movement.recorded_seq
+                || envelope.effective_day != Some(movement.effective_day)
+                || envelope.class != movement.bucket.class
+            {
+                return Err(failed(
+                    "equity_provenance",
+                    "prior-period movement differs from its authenticated coordinate",
+                ));
+            }
+            prior_period_citations(info)?
+        } else {
+            (None, None)
+        };
+        let extra = if certificate.version == 1 {
+            0
+        } else {
+            2 + if case_ordinal.is_some() { 4 } else { 0 }
+                + relates_to
+                    .as_ref()
+                    .map_or(0, |(calendar, code)| 8 + calendar.len() + code.len())
+        };
+        charge(&mut size, 103 + extra, limit)?;
         movements.push(EquityMovement {
             entry_digest: movement.entry_digest,
             leg_index: movement.leg_index,
@@ -330,6 +505,8 @@ pub(super) fn replay(
             unit_id: movement.unit_id,
             debits: movement.debits,
             credits: movement.credits,
+            case_ordinal,
+            relates_to,
         });
     }
     let mut units = Vec::with_capacity(totals.len());
@@ -349,16 +526,27 @@ pub(super) fn replay(
             distributions,
             closing_transfers_net,
             other_equity_movements,
+            prior_period_adjustments,
         ] = total
             .activity
             .map(Sum::value)
             .map(|v| v.ok_or_else(overflow));
-        let (issuances, distributions, closing_transfers_net, other_equity_movements) = (
+        let (
+            issuances,
+            distributions,
+            closing_transfers_net,
+            other_equity_movements,
+            prior_period_adjustments,
+        ) = (
             issuances?,
             distributions?,
             closing_transfers_net?,
             other_equity_movements?,
+            prior_period_adjustments?,
         );
+        let opening_equity_as_adjusted = opening_total_equity
+            .checked_add(prior_period_adjustments)
+            .ok_or_else(overflow)?;
         if closing_transfers_net != 0 {
             return Err(failed(
                 "equity_identity",
@@ -367,6 +555,7 @@ pub(super) fn replay(
         }
         let mut change = Sum::default();
         for part in [
+            prior_period_adjustments,
             total.net_income,
             issuances,
             distributions,
@@ -391,6 +580,8 @@ pub(super) fn replay(
             opening_contributed_equity,
             opening_unclosed_earnings,
             opening_total_equity,
+            prior_period_adjustments,
+            opening_equity_as_adjusted,
             net_income: total.net_income,
             issuances,
             distributions,
@@ -404,6 +595,7 @@ pub(super) fn replay(
         });
     }
     let report = VerifiedEquityRollForward {
+        format_version: certificate.version,
         book_id: source.book_id,
         known_at: source.known_at,
         label: source.label,
@@ -429,7 +621,11 @@ pub(super) fn replay(
 fn encode(report: &VerifiedEquityRollForward) -> Vec<u8> {
     let mut statement = Writer::default();
     statement
-        .fixed(STATEMENT_FORMAT)
+        .fixed(if report.format_version == 1 {
+            STATEMENT_FORMAT_V1
+        } else {
+            STATEMENT_FORMAT
+        })
         .fixed(&report.book_id)
         .fixed(&[0; 16])
         .u64(report.known_at)
@@ -443,6 +639,15 @@ fn encode(report: &VerifiedEquityRollForward) -> Vec<u8> {
             unit.opening_contributed_equity,
             unit.opening_unclosed_earnings,
             unit.opening_total_equity,
+        ] {
+            statement.i128(value);
+        }
+        if report.format_version >= 2 {
+            statement
+                .i128(unit.prior_period_adjustments)
+                .i128(unit.opening_equity_as_adjusted);
+        }
+        for value in [
             unit.net_income,
             unit.issuances,
             unit.distributions,
@@ -458,9 +663,13 @@ fn encode(report: &VerifiedEquityRollForward) -> Vec<u8> {
         }
     }
     let mut w = Writer::default();
-    w.bytes(REPORT_FORMAT)
-        .bytes(&statement.buf)
-        .count(report.accounts.len());
+    w.bytes(if report.format_version == 1 {
+        REPORT_FORMAT_V1
+    } else {
+        REPORT_FORMAT
+    })
+    .bytes(&statement.buf)
+    .count(report.accounts.len());
     for account in &report.accounts {
         w.u128(account.id)
             .bytes(account.code.as_bytes())
@@ -480,6 +689,16 @@ fn encode(report: &VerifiedEquityRollForward) -> Vec<u8> {
             .u32(movement.unit_id)
             .i128(movement.debits)
             .i128(movement.credits);
+        if report.format_version >= 2 {
+            w.u8(u8::from(movement.case_ordinal.is_some()));
+            if let Some(case) = movement.case_ordinal {
+                w.u32(case);
+            }
+            w.u8(u8::from(movement.relates_to.is_some()));
+            if let Some((calendar, code)) = &movement.relates_to {
+                w.bytes(calendar.as_bytes()).bytes(code.as_bytes());
+            }
+        }
     }
     w.buf
 }
@@ -594,6 +813,7 @@ mod tests {
             movements: movements.clone(),
         };
         let expected = VerifiedEquityRollForward {
+            format_version: 1,
             book_id: [7; 16],
             known_at: 10,
             label: "Equity".into(),
@@ -609,6 +829,8 @@ mod tests {
                     opening_contributed_equity: 1_000,
                     opening_unclosed_earnings: 0,
                     opening_total_equity: 1_000,
+                    prior_period_adjustments: 0,
+                    opening_equity_as_adjusted: 1_000,
                     net_income: 200,
                     issuances: 50,
                     distributions: -75,
@@ -625,6 +847,8 @@ mod tests {
                     opening_contributed_equity: 0,
                     opening_unclosed_earnings: 0,
                     opening_total_equity: 0,
+                    prior_period_adjustments: 0,
+                    opening_equity_as_adjusted: 0,
                     net_income: 0,
                     issuances: 0,
                     distributions: 0,
@@ -656,6 +880,8 @@ mod tests {
                         unit_id: m.unit_id,
                         debits: m.debits,
                         credits: m.credits,
+                        case_ordinal: None,
+                        relates_to: None,
                     }
                 })
                 .collect(),
@@ -665,12 +891,84 @@ mod tests {
 
     fn certificate(output: &[u8]) -> Certificate<'_> {
         Certificate {
+            version: 1,
             source: &[],
             issuance_accounts: vec![30],
             distribution_accounts: vec![31],
             output,
             digest: [4; 32],
         }
+    }
+
+    fn replay(
+        certificate: &Certificate<'_>,
+        source: VerifiedRollForward,
+        source_digest: [u8; 32],
+        schema: &Schema,
+    ) -> Result<(VerifiedEquityRollForward, Vec<u8>), ReportError> {
+        super::replay(
+            certificate,
+            source,
+            source_digest,
+            schema,
+            &[],
+            &BTreeMap::new(),
+        )
+    }
+
+    #[test]
+    fn equity_certificate_versions_bind_their_own_digest_domains() {
+        let (_, _, mut expected) = fixture();
+        // This exercises the outer decoder, independently of source replay.
+        // The nested source marker is enough for its format discrimination.
+        let mut source = Writer::default();
+        source.bytes(crate::report::roll_forward::CERTIFICATE_FORMAT);
+        let frame = |format: &[u8], domain: &[u8], output: &[u8]| {
+            let mut w = Writer::default();
+            w.bytes(format)
+                .bytes(&source.buf)
+                .count(1)
+                .u128(30)
+                .count(1)
+                .u128(31)
+                .bytes(output);
+            let digest = hash_parts(domain, &[&(w.buf.len() as u32).to_le_bytes(), &w.buf]);
+            w.fixed(&digest);
+            w.buf
+        };
+        for (version, format, domain, wrong_domain) in [
+            (1, CERTIFICATE_FORMAT_V1, DIGEST_DOMAIN_V1, DIGEST_DOMAIN),
+            (2, CERTIFICATE_FORMAT, DIGEST_DOMAIN, DIGEST_DOMAIN_V1),
+        ] {
+            expected.format_version = version;
+            let output = encode(&expected);
+            let bytes = frame(format, domain, &output);
+            assert!(recognizes(&bytes));
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(decoded.version, version);
+            assert_eq!(decoded.source, source.buf);
+            assert_eq!(decoded.issuance_accounts, [30]);
+            assert_eq!(decoded.distribution_accounts, [31]);
+            assert_eq!(decoded.output, output);
+
+            let substituted = frame(format, wrong_domain, &output);
+            assert_eq!(
+                decode(&substituted).err().unwrap().predicate,
+                "certificate_digest"
+            );
+            let mut changed_version = bytes.clone();
+            changed_version[4 + format.len() - 1] = if version == 1 { b'2' } else { b'1' };
+            assert_eq!(
+                decode(&changed_version).err().unwrap().predicate,
+                "certificate_digest"
+            );
+        }
+        let unsupported = frame(b"fa:equity-roll-forward-certificate:v3", DIGEST_DOMAIN, &[]);
+        assert!(!recognizes(&unsupported));
+        assert_eq!(
+            decode(&unsupported).err().unwrap().predicate,
+            "supported_report"
+        );
     }
 
     #[test]
@@ -740,5 +1038,341 @@ mod tests {
                 .predicate,
             "bounded_output"
         );
+    }
+
+    fn with_prior_period_adjustment(
+        mut source: VerifiedRollForward,
+        mut expected: VerifiedEquityRollForward,
+    ) -> (VerifiedRollForward, VerifiedEquityRollForward) {
+        source.movements.push(RollForwardMovement {
+            entry_digest: [9; 32],
+            leg_index: 1,
+            recorded_seq: 9,
+            effective_day: 10,
+            account_id: 30,
+            unit_id: 1,
+            bucket: RollForwardBucket {
+                class: 15,
+                reason_code: String::new(),
+                rule_digest: None,
+            },
+            debits: 80,
+            credits: 0,
+        });
+        let row = source
+            .rows
+            .iter_mut()
+            .find(|row| row.account_id == 30 && row.unit_id == 1)
+            .unwrap();
+        row.closing += 80;
+        row.net_change += 80;
+        expected.format_version = 2;
+        expected.units[0].prior_period_adjustments = -80;
+        expected.units[0].opening_equity_as_adjusted = 920;
+        expected.units[0].net_equity_change = 95;
+        expected.units[0].closing_contributed_equity = 1_095;
+        expected.units[0].closing_total_equity = 1_095;
+        expected.movements.push(EquityMovement {
+            entry_digest: [9; 32],
+            leg_index: 1,
+            recorded_seq: 9,
+            effective_day: 10,
+            class: 15,
+            kind: EquityActivityKind::PriorPeriodAdjustment,
+            account_id: 30,
+            unit_id: 1,
+            debits: 80,
+            credits: 0,
+            case_ordinal: Some(7),
+            relates_to: Some(("gregorian".into(), "FY2025".into())),
+        });
+        (source, expected)
+    }
+
+    fn prior_period_entry_info<'a>(case: &'a [u8], prior: &'a [u8]) -> EntryInfo<'a> {
+        EntryInfo {
+            schema: None,
+            time_tick: None,
+            period: None,
+            resolution: None,
+            supersession: Vec::new(),
+            supersession_reasons: Vec::new(),
+            rule_version_oid: None,
+            has_fx_revaluation_basis: false,
+            obligation_maturity: None,
+            case_member: Some(case),
+            prior_period_adjustment: Some(prior),
+            evidence: Vec::new(),
+            identity: 9,
+            legacy_identity: None,
+        }
+    }
+
+    fn prior_period_envelope() -> LeafEnvelope {
+        LeafEnvelope {
+            kind: crate::envelope::KIND_ENTRY,
+            book_id: [7; 16],
+            branch_id: [0; 16],
+            commit_seq: 9,
+            within_commit_ordinal: 0,
+            record_digest: [9; 32],
+            class: 15,
+            effective_day: Some(10),
+            account_vids: vec![30],
+            unit_ids: vec![1],
+        }
+    }
+
+    #[test]
+    fn prior_period_equity_line_recomputes_independently_with_case_and_period_citations() {
+        let (schema, source, expected) = fixture();
+        let (source, expected) = with_prior_period_adjustment(source, expected);
+        let output = encode(&expected);
+        let mut cert = certificate(&output);
+        cert.version = 2;
+        let mut case = Writer::default();
+        case.u16(1).u32(7).u128(99);
+        let mut prior = Writer::default();
+        prior.u16(1).bytes(b"gregorian").bytes(b"FY2025");
+        let infos = BTreeMap::from([(0, prior_period_entry_info(&case.buf, &prior.buf))]);
+        let (actual, bytes) = super::replay(
+            &cert,
+            source.clone(),
+            [9; 32],
+            &schema,
+            &[prior_period_envelope()],
+            &infos,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(bytes, output);
+        assert_eq!(actual.units[0].opening_total_equity, 1_000);
+        assert_eq!(actual.units[0].prior_period_adjustments, -80);
+        assert_eq!(actual.units[0].opening_equity_as_adjusted, 920);
+        assert_eq!(actual.units[0].net_income, 200);
+        assert_eq!(actual.units[0].issuances, 50);
+        assert_eq!(actual.units[0].closing_total_equity, 1_095);
+        assert_eq!(actual.units[1].prior_period_adjustments, 0);
+
+        for mutation in 0..4 {
+            let mut changed = expected.clone();
+            match mutation {
+                0 => changed.movements.last_mut().unwrap().case_ordinal = Some(8),
+                1 => changed.movements.last_mut().unwrap().relates_to = None,
+                2 => changed.units[0].prior_period_adjustments -= 1,
+                3 => {
+                    changed.movements.last_mut().unwrap().kind = EquityActivityKind::Issuance;
+                    changed.units[0].prior_period_adjustments = 0;
+                    changed.units[0].opening_equity_as_adjusted = 1_000;
+                    changed.units[0].issuances = -30;
+                }
+                _ => unreachable!(),
+            }
+            let wrong = encode(&changed);
+            let mut cert = certificate(&wrong);
+            cert.version = 2;
+            assert!(
+                super::replay(
+                    &cert,
+                    source.clone(),
+                    [9; 32],
+                    &schema,
+                    &[prior_period_envelope()],
+                    &infos,
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+        assert_eq!(
+            super::replay(&cert, source.clone(), [9; 32], &schema, &[], &infos)
+                .unwrap_err()
+                .predicate,
+            "equity_provenance"
+        );
+        let mut missing_terms =
+            BTreeMap::from([(0, prior_period_entry_info(&case.buf, &prior.buf))]);
+        missing_terms.get_mut(&0).unwrap().prior_period_adjustment = None;
+        assert!(
+            super::replay(
+                &cert,
+                source,
+                [9; 32],
+                &schema,
+                &[prior_period_envelope()],
+                &missing_terms,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prior_period_reversals_inherit_authenticated_case_and_period_through_the_chain() {
+        let (schema, source, expected) = fixture();
+        let (mut source, mut expected) = with_prior_period_adjustment(source, expected);
+        let mut case = Writer::default();
+        case.u16(1).u32(7).u128(99);
+        let mut prior = Writer::default();
+        prior.u16(1).bytes(b"gregorian").bytes(b"FY2025");
+        let mut infos = BTreeMap::from([(0, prior_period_entry_info(&case.buf, &prior.buf))]);
+        let mut envelopes = vec![prior_period_envelope()];
+        for ordinal in 1..=2u8 {
+            let delta = if ordinal == 1 { 80 } else { -80 };
+            let identity = 9 + ordinal;
+            let recorded_seq = u64::from(identity);
+            let effective_day = 10 + 2 * i32::from(ordinal);
+            let mut info = prior_period_entry_info(&case.buf, &prior.buf);
+            info.identity = u128::from(identity);
+            info.supersession = vec![(u128::from(identity - 1), [identity - 1; 32], 1)];
+            info.case_member = None;
+            info.prior_period_adjustment = None;
+            infos.insert(usize::from(ordinal), info);
+            let mut envelope = prior_period_envelope();
+            envelope.record_digest = [identity; 32];
+            envelope.class = 4;
+            envelope.commit_seq = recorded_seq;
+            envelope.effective_day = Some(effective_day);
+            envelopes.push(envelope);
+            source.known_at = recorded_seq;
+            expected.known_at = recorded_seq;
+            let movement = RollForwardMovement {
+                entry_digest: [identity; 32],
+                leg_index: 1,
+                recorded_seq,
+                effective_day,
+                account_id: 30,
+                unit_id: 1,
+                bucket: RollForwardBucket {
+                    class: 4,
+                    reason_code: String::new(),
+                    rule_digest: None,
+                },
+                debits: if delta < 0 { -delta } else { 0 },
+                credits: if delta > 0 { delta } else { 0 },
+            };
+            source.movements.push(movement.clone());
+            let row = source
+                .rows
+                .iter_mut()
+                .find(|row| row.account_id == 30 && row.unit_id == 1)
+                .unwrap();
+            row.closing -= delta;
+            row.net_change -= delta;
+            let unit = &mut expected.units[0];
+            unit.prior_period_adjustments += delta;
+            unit.opening_equity_as_adjusted += delta;
+            unit.net_equity_change += delta;
+            unit.closing_contributed_equity += delta;
+            unit.closing_total_equity += delta;
+            expected.movements.push(EquityMovement {
+                entry_digest: movement.entry_digest,
+                leg_index: movement.leg_index,
+                recorded_seq,
+                effective_day,
+                class: 4,
+                kind: EquityActivityKind::PriorPeriodAdjustment,
+                account_id: 30,
+                unit_id: 1,
+                debits: movement.debits,
+                credits: movement.credits,
+                case_ordinal: Some(7),
+                relates_to: Some(("gregorian".into(), "FY2025".into())),
+            });
+            let output = encode(&expected);
+            let mut cert = certificate(&output);
+            cert.version = 2;
+            let (actual, bytes) =
+                super::replay(&cert, source.clone(), [9; 32], &schema, &envelopes, &infos).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(bytes, output);
+            assert_eq!(actual.units[0].issuances, 50);
+            assert_eq!(actual.units[0].other_equity_movements, 0);
+            assert_eq!(
+                actual.units[0].prior_period_adjustments,
+                if ordinal == 1 { 0 } else { -80 }
+            );
+
+            // Even a repaired report with matching closing equity cannot
+            // relabel the reversal as an owner contribution.
+            let mut changed = expected.clone();
+            changed.units[0].prior_period_adjustments -= delta;
+            changed.units[0].opening_equity_as_adjusted -= delta;
+            changed.units[0].issuances += delta;
+            let moved = changed.movements.last_mut().unwrap();
+            moved.kind = EquityActivityKind::Issuance;
+            moved.case_ordinal = None;
+            moved.relates_to = None;
+            let wrong = encode(&changed);
+            let mut wrong_cert = certificate(&wrong);
+            wrong_cert.version = 2;
+            assert!(
+                super::replay(
+                    &wrong_cert,
+                    source.clone(),
+                    [9; 32],
+                    &schema,
+                    &envelopes,
+                    &infos,
+                )
+                .is_err()
+            );
+        }
+        let output = encode(&expected);
+        let mut cert = certificate(&output);
+        cert.version = 2;
+        let valid = infos[&1].supersession[0];
+        for invalid in [
+            (999, valid.1, 1),
+            (valid.0, [99; 32], 1),
+            (valid.0, valid.1, 2),
+        ] {
+            infos.get_mut(&1).unwrap().supersession[0] = invalid;
+            assert_eq!(
+                super::replay(&cert, source.clone(), [9; 32], &schema, &envelopes, &infos,)
+                    .unwrap_err()
+                    .predicate,
+                "entry_lineage"
+            );
+        }
+        infos.get_mut(&1).unwrap().supersession[0] = valid;
+
+        // Historical certificates retain their original owner-role law,
+        // including for these exact same PPA and reversal payloads.
+        expected.format_version = 1;
+        let unit = &mut expected.units[0];
+        unit.issuances += unit.prior_period_adjustments;
+        unit.prior_period_adjustments = 0;
+        unit.opening_equity_as_adjusted = unit.opening_total_equity;
+        for movement in &mut expected.movements {
+            if movement.kind == EquityActivityKind::PriorPeriodAdjustment {
+                movement.kind = EquityActivityKind::Issuance;
+                movement.case_ordinal = None;
+                movement.relates_to = None;
+            }
+        }
+        let legacy = encode(&expected);
+        let (actual, bytes) = replay(&certificate(&legacy), source, [9; 32], &schema).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(bytes, legacy);
+    }
+
+    #[test]
+    fn prior_period_equity_v1_replay_preserves_historical_owner_classification() {
+        let (schema, source, expected) = fixture();
+        let (source, mut legacy) = with_prior_period_adjustment(source, expected);
+        legacy.format_version = 1;
+        legacy.units[0].prior_period_adjustments = 0;
+        legacy.units[0].opening_equity_as_adjusted = 1_000;
+        legacy.units[0].issuances = -30;
+        let movement = legacy.movements.last_mut().unwrap();
+        movement.kind = EquityActivityKind::Issuance;
+        movement.case_ordinal = None;
+        movement.relates_to = None;
+        let output = encode(&legacy);
+        let (actual, bytes) = replay(&certificate(&output), source, [9; 32], &schema).unwrap();
+        assert_eq!(actual, legacy);
+        assert_eq!(bytes, output);
+        assert_eq!(actual.units[0].prior_period_adjustments, 0);
+        assert_eq!(actual.units[0].issuances, -30);
     }
 }

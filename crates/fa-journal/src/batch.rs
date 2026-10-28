@@ -933,8 +933,8 @@ pub(crate) struct StagedBatch {
     security_policy_epoch: u64,
     /// A rehearsal can be retained and inspected, but never published.
     planning: bool,
-    /// Independent FX members all depend on this transaction's complete
-    /// committed basis, even though their sources are pairwise disjoint.
+    /// Source-bound members depend on this transaction's complete committed
+    /// basis, including the role history a prior-period adjustment reads.
     aggregate: bool,
 }
 
@@ -1085,7 +1085,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         }
         security_policy_epoch = Some(epoch);
         resolved.push(prepared.entry().clone());
-        let (staged, member, next_tracker) = prepared.into_member(planning, carrying)?;
+        let (staged, member, next_tracker) = prepared.into_member(planning, carrying, admission)?;
         tracker = next_tracker;
         let current_bytes = tracker.total_bytes();
         if current_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
@@ -1177,6 +1177,12 @@ fn stage_batch_with<V: Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+    let aggregate = resolved
+        .iter()
+        .try_fold(carrying.is_some(), |aggregate, entry| {
+            crate::post::requires_aggregate_basis(&entry.proposal)
+                .map(|required| aggregate || required)
+        })?;
     Ok(Ok(BatchStage::Staged(Box::new(StagedBatch {
         txn,
         outcome: ovid,
@@ -1188,7 +1194,7 @@ fn stage_batch_with<V: Vfs + Clone>(
             KernelError::Corrupt("a validated batch has no security policy epoch".into())
         })?,
         planning,
-        aggregate: carrying.is_some(),
+        aggregate,
     }))))
 }
 
