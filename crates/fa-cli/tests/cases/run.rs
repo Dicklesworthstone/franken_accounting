@@ -2032,13 +2032,24 @@ pub fn run_case_with(
                 }
             }
         }
-        let line = budget.book(
+        let mut line = budget.book(
             files.id,
             &book.stem,
             index + 1,
             out.steps.len() - steps_before,
             book_started.elapsed().as_millis(),
         );
+        // The book's slowest step, so a book over its budget names it.
+        if let Some(slow) = out
+            .steps
+            .get(steps_before..)
+            .and_then(|steps| steps.iter().max_by_key(|s| s.elapsed_ms))
+        {
+            line.push_str(&format!(
+                " slowest={}:{}:{}",
+                slow.verb, slow.elapsed_ms, slow.reference
+            ));
+        }
         out.lines.push(line);
     }
     let (budget_lines, within_budget) = budget.finish(files.id);
