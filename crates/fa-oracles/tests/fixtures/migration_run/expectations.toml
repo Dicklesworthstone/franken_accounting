@@ -1,0 +1,26 @@
+# Migration run fixture expectations: after finalize, jet.self_approved flags MR-1, High, with one of
+# its recorded approvals (the legacy pair) made by its preparer. The finding cites the entry only.
+
+[[expectation]]
+id = "migration_run-D-01"
+type = "D"
+book_variant = "migration"
+statement_template = "D.detection"
+basis = ["MR-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:jet.self_approved@1"]
+procedure = "jet.self_approved"
+version = 1
+
+[[target]]
+expectation = "migration_run-D-01"
+fact = "MR-1"
+basis = ["MR-1"]
+cite = []
+cite_status = "S"
+severity = "High"
+severity_status = "S"
+statistic_name = "own_approvals"
+statistic_value = "1"
+statistic_scale = 0
+statistic_status = "S"

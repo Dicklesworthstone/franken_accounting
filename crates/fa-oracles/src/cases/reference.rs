@@ -661,6 +661,17 @@ impl ReferenceAdapter<'_> {
                     live.iter().position(|x| x.intent.id == target)
                 })
                 .flatten();
+            // A migrated entry's legacy pair is its preparer and its one
+            // approver (A7m); a native intent carries no approval.
+            let (preparer, approvers) = match (
+                e.intent.source_entered_by.as_deref(),
+                e.intent.source_approved_by.as_deref(),
+            ) {
+                (Some(entered), Some(approved)) => {
+                    (entered.to_string(), vec![approved.to_string()])
+                }
+                _ => (e.intent.principal.clone(), Vec::new()),
+            };
             rows.push(lantern::Row {
                 index,
                 date,
@@ -671,8 +682,8 @@ impl ReferenceAdapter<'_> {
                     .add_days(1)
                     .map_err(|err| format!("period {}: {err:?}", period.code))?,
                 legs,
-                preparer: e.intent.principal.clone(),
-                approvers: Vec::new(),
+                preparer,
+                approvers,
                 description_chars: e.intent.memo.as_ref().map(|m| m.chars().count()),
                 external_ids: Vec::new(),
                 recorded_after_close: false,
@@ -728,6 +739,17 @@ impl ReferenceAdapter<'_> {
                     .map(|(i, round)| (live[i].intent.id.clone(), round.to_string()))
                     .collect()
             }
+            // Each flagged entry with its approvals by its preparer (the
+            // kernel's `own_approvals`).
+            "jet.self_approved" => lantern::self_approved(&rows)
+                .into_iter()
+                .filter(|i| live[*i].compared)
+                .map(|i| {
+                    let r = &rows[i];
+                    let own = r.approvers.iter().filter(|a| **a == r.preparer).count();
+                    (live[i].intent.id.clone(), own.to_string())
+                })
+                .collect(),
             _ => {
                 return RefVerdict::NotModelled {
                     reason: "no_lantern_function",

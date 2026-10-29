@@ -23,6 +23,8 @@ mod evaluate;
 mod invariance;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "cases/migration.rs"]
+mod migration;
 #[path = "cases/outsider.rs"]
 mod outsider;
 #[path = "cases/reads.rs"]

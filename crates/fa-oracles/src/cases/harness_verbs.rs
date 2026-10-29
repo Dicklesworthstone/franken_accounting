@@ -31,6 +31,10 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("rule", Some("propose")),
     ("rule", Some("backtest")),
     ("migrate", Some("import")),
+    // A7m: a migration variant's run.
+    ("migrate", Some("open")),
+    ("migrate", Some("stage")),
+    ("migrate", Some("finalize")),
     ("procedure", Some("run")),
     ("finding", Some("record")),
     ("finding", Some("list")),

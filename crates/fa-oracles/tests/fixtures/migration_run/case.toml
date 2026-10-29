@@ -1,0 +1,13 @@
+# Migration run fixture (fa-yugf.18, A7m): one synthetic legacy entry with entered-by = approved-by,
+# migrated through fa migrate open|stage|finalize under a legacy trial balance derived from the
+# book's own legacy history, then read by jet.self_approved, on a micro-book for fa-cli's
+# tests/cases.rs. Never copied to cases/; claims nothing.
+id = "migration_run"
+title = "Migration run fixture: a sole-source FullDetail run and its legacy attribution"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's migrate_open, migrate_stage and migrate_finalize steps, the derived legacy trial balance, and jet.self_approved over a legacy entered-by/approved-by pair"
+claims = []
+capabilities = ["verb:migrate", "verb:approve", "procedure:jet.self_approved@1"]
+pinned_commit = "837248eae"
+variants = ["migration"]

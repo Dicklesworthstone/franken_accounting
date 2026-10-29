@@ -163,7 +163,6 @@ fn owner_of(kind: &str) -> &'static str {
         "issue" => "A7b",
         k if k.starts_with("case_") || k.starts_with("scenario_") => "A7b",
         "filler_batch" => "A6",
-        "migrate_open" | "migrate_stage" | "migrate_finalize" => "A7m",
         "checkpoint" | "checkpoint_witness" => "A8a",
         _ => "A7a",
     }

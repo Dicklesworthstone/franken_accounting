@@ -28,7 +28,7 @@ use fa_oracles::cases::outsider_kind::OutsiderKind;
 use fa_oracles::cases::selfrow;
 use fa_oracles::cases::twin::{TwinKind, TwinSpec, twin_of};
 use fa_oracles::cases::verdict::{RowLine, RowVerdict};
-use fa_oracles::cases::{Case, CaseFiles, intent_json, stub};
+use fa_oracles::cases::{Case, CaseFiles, intent_json, migration_doc, stub};
 use fa_oracles::json::Json;
 
 use super::budget::Budget;
@@ -343,6 +343,8 @@ pub struct BookRun<'c> {
     /// Each recorded finding run's outsider replay by procedure: its
     /// canonical workpaper exported and replayed (A12, §12.1).
     pub run_replays: BTreeMap<String, Result<(), String>>,
+    /// Each `migrate_open` step's seq -> the run vid it opened (A7m).
+    pub migration_runs: BTreeMap<i128, String>,
 }
 
 impl<'c> BookRun<'c> {
@@ -396,6 +398,7 @@ impl<'c> BookRun<'c> {
             witness: None,
             gql: BTreeMap::new(),
             run_replays: BTreeMap::new(),
+            migration_runs: BTreeMap::new(),
         }
     }
 
@@ -727,7 +730,7 @@ impl<'c> BookRun<'c> {
                 .filter(|r| {
                     r.get("start").and_then(Json::as_str) == Some(p.start.as_str())
                         && r.get("end").and_then(Json::as_str) == end_excl.as_deref()
-                        && r.get("kind").and_then(Json::as_str) == Some("Normal")
+                        && r.get("kind").and_then(Json::as_str) == Some(p.kind.as_str())
                 })
                 .filter_map(|r| r.get("code").and_then(Json::as_str).map(str::to_string))
                 .collect();
@@ -735,7 +738,8 @@ impl<'c> BookRun<'c> {
                 self.periods.insert(p.code.clone(), code.clone());
             } else {
                 self.fail(format!(
-                    "expected one Normal period {}..={} for label {} observed {}",
+                    "expected one {} period {}..={} for label {} observed {}",
+                    p.kind,
                     p.start,
                     p.end,
                     p.code,
@@ -829,12 +833,29 @@ impl<'c> BookRun<'c> {
             if self.failure.is_some() {
                 return;
             }
-            let Some(bytes) = self.stub_bytes(&d.stub_of) else {
-                self.fail(format!(
-                    "expected a source, sourced fact or placeholder for {} observed stub_of={}",
-                    d.id, d.stub_of
-                ));
-                return;
+            // A migration variant's legacy trial balance, derived from its
+            // own Migration intents (A7m).
+            let bytes = if d.stub_of == "legacy_tb" {
+                match migration_doc::legacy_tb(self.book).and_then(|tb| migration_doc::render(&tb))
+                {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        self.fail(format!(
+                            "expected the legacy trial balance of {} for {} observed {e}",
+                            self.book.stem, d.id
+                        ));
+                        return;
+                    }
+                }
+            } else {
+                let Some(bytes) = self.stub_bytes(&d.stub_of) else {
+                    self.fail(format!(
+                        "expected a source, sourced fact or placeholder for {} observed stub_of={}",
+                        d.id, d.stub_of
+                    ));
+                    return;
+                };
+                bytes
             };
             let file = self.write(&format!("{}.stub", d.id), &bytes);
             let Some(added) = self.setup(
@@ -957,6 +978,9 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::CaseClose) => self.case_close(step),
                 Some(StepKind::Checkpoint) => self.checkpoint(step),
                 Some(StepKind::CheckpointWitness) => self.checkpoint_witness(step),
+                Some(StepKind::MigrateOpen) => self.migrate_open(step),
+                Some(StepKind::MigrateStage) => self.migrate_stage(step),
+                Some(StepKind::MigrateFinalize) => self.migrate_finalize(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1087,7 +1111,7 @@ impl<'c> BookRun<'c> {
     }
 
     /// The book code of the `[[period]]` containing `day`.
-    fn period_of(&self, day: &str) -> Option<String> {
+    pub(crate) fn period_of(&self, day: &str) -> Option<String> {
         self.book
             .periods
             .iter()
@@ -2012,11 +2036,11 @@ pub fn run_case_with(
         out.lines.append(&mut run.lines);
         out.steps.append(&mut run.steps);
         for t in twins.values_mut() {
-            out.lines.extend(
-                t.lines
-                    .drain(..)
-                    .filter(|l| !l.starts_with("PERIODS ") && !l.starts_with("CASES ")),
-            );
+            out.lines.extend(t.lines.drain(..).filter(|l| {
+                !l.starts_with("PERIODS ")
+                    && !l.starts_with("CASES ")
+                    && !l.starts_with("MIGRATION ")
+            }));
             out.steps.append(&mut t.steps);
         }
         for ev in rows {
@@ -2250,12 +2274,9 @@ pub(crate) fn sweep_groups(
 
 /// A sweep's step records, log lines and cell rows, into the run's output.
 fn push_swept(out: &mut RunOutcome, case: &Case, swept: cells::Swept) {
-    out.lines.extend(
-        swept
-            .lines
-            .into_iter()
-            .filter(|l| !l.starts_with("PERIODS ") && !l.starts_with("CASES ")),
-    );
+    out.lines.extend(swept.lines.into_iter().filter(|l| {
+        !l.starts_with("PERIODS ") && !l.starts_with("CASES ") && !l.starts_with("MIGRATION ")
+    }));
     out.steps.extend(swept.steps);
     for c in swept.cells {
         let ev = evaluate::finish(case, (c.row, Vec::new(), c.reproduce));

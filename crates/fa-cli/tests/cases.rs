@@ -21,6 +21,8 @@ mod evaluate;
 mod invariance;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "cases/migration.rs"]
+mod migration;
 #[path = "cases/outsider.rs"]
 mod outsider;
 #[path = "cases/property.rs"]
@@ -3335,4 +3337,169 @@ fn case_show_without_disclosure_fails() {
         "{text}"
     );
     assert!(!o.rows_ok, "{text}");
+}
+
+/// The migration run fixture (`crates/fa-oracles/tests/fixtures/migration_run/`,
+/// A7m): one legacy entry, entered and approved by the same legacy user,
+/// staged and finalized in a sole-source FullDetail run.
+const MIGRATION_RUN: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/migration_run/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/migration_run/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/migration_run/facts.toml"),
+    ),
+    (
+        "books/migration.toml",
+        include_str!("../../fa-oracles/tests/fixtures/migration_run/books/migration.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/migration_run/expectations.toml"),
+    ),
+];
+
+fn migration_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
+    match run_files("migration_run", &MIGRATION_RUN, edits, HARNESS_VERBS) {
+        Ok(o) => Box::new(o),
+        Err(o) => o,
+    }
+}
+
+/// The migration fixture's unedited run, shared by its tests.
+fn migration() -> &'static RunOutcome {
+    static RUN: std::sync::OnceLock<RunOutcome> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| *migration_run(&[]))
+}
+
+/// The run's `MIGRATION` lines, one per migrate step.
+fn migration_lines(o: &RunOutcome) -> Vec<&str> {
+    o.lines
+        .iter()
+        .filter(|l| l.starts_with("MIGRATION "))
+        .map(String::as_str)
+        .collect()
+}
+
+/// A7m (§6.6): staged chunks are invisible to Lantern until finalize. The
+/// finalize step runs jet.self_approved over the staged run before it plans
+/// the finalize, and the procedure reports no finding.
+#[test]
+fn self_approved_before_finalize_returns_no_finding() {
+    let o = migration();
+    let text = o.text();
+    assert_eq!(
+        migration_lines(o).last().copied(),
+        Some("MIGRATION migration finalize before=jet.self_approved:0 finalize=Finalized"),
+        "{text}"
+    );
+}
+
+/// A7m (§15): after finalize, jet.self_approved flags the F6-shaped legacy
+/// chunk, High, with one of its recorded approvals (the legacy pair,
+/// entered_by = approved_by) made by its preparer. Open, the stage (plan,
+/// two approvals, commit) and finalize run as logged steps; the stage's
+/// one-approval twin is the only refused call. Every component agrees and the
+/// reference's naive self_approved flags MR-1 with the same count, so the row
+/// waits only on filler invariance, as every D row does.
+#[test]
+fn self_approved_after_finalize_cites_the_f6_shaped_chunk() {
+    let o = migration();
+    let text = o.text();
+    assert_eq!(
+        migration_lines(o),
+        [
+            "MIGRATION migration open run=$RUN_1 periods=2001Q3,2001Q4",
+            "MIGRATION migration stage MR-1..MR-1 one_approval=refused:FA-REF-012:exit=7 MR-1=staged",
+            "MIGRATION migration finalize before=jet.self_approved:0 finalize=Finalized",
+        ],
+        "{text}"
+    );
+    assert_eq!(
+        o.row("migration_run-D-01"),
+        Some(
+            "UNRUN migration_run-D-01 D migration MR-1/default procedure=jet.self_approved@1 entry=MR-1 cite=- severity=High statistic_name=own_approvals statistic=1 scale=0 ref=agree outsider=replay:verified reason=filler_invariance"
+        ),
+        "{text}"
+    );
+    assert_eq!(refused_calls(o), ["migrate stage FA-REF-012"], "{text}");
+}
+
+/// A7m (§6.6): a legacy entry the run never stages leaves its fold one minor
+/// unit short of the declared trial balance, and finalize refuses FA-REF-131;
+/// the unfinalized chunk stays invisible, so the D row finds nothing.
+#[test]
+fn trial_balance_one_minor_unit_off_is_refused_fa_ref_131() {
+    let o = migration_run(&[
+        PlantedEdit {
+            file: "facts.toml",
+            old: "precision = 0\n",
+            new: "precision = 0\n\n[[fact]]\nid = \"MR-2\"\nprovenance = \"synthetic\"\nreason = \"a 0.01 legacy entry the run never stages\"\ndiscipline = \"never cited by a case; the twin's unstaged legacy history\"\n\n[[value]]\nfact = \"MR-2\"\nordinal = 1\nliteral = \"0.01\"\nrule = \"scale\"\nparam = 0\nvalue = \"1\"\nunit = \"USD\"\nprecision = 2\n",
+        },
+        PlantedEdit {
+            file: "books/migration.toml",
+            old: "[[step]]\nseq = 1\n",
+            new: "[[intent]]\nid = \"MR-2\"\nfact = \"MR-2\"\nclass = \"Migration\"\nprincipal = \"case-closer-1\"\neffective_date = \"2001-09-30\"\nevidence = \"DOC-LEGACY-TB\"\nidempotency_key = \"migration-run-MR-2\"\nsource_entered_by = \"legacy-director-1\"\nsource_approved_by = \"legacy-director-1\"\n\n[[leg]]\nintent = \"MR-2\"\nordinal = 0\naccount = \"1530\"\nside = \"Dr\"\namount_literal = \"0.01\"\namount_rule = \"value:MR-2#1\"\nunit = \"USD\"\n\n[[leg]]\nintent = \"MR-2\"\nordinal = 1\naccount = \"2110\"\nside = \"Cr\"\namount_literal = \"0.01\"\namount_rule = \"value:MR-2#1\"\nunit = \"USD\"\n\n[[step]]\nseq = 1\n",
+        },
+    ]);
+    let text = o.text();
+    assert_eq!(
+        migration_lines(&o).last().copied(),
+        Some(
+            "MIGRATION migration finalize before=jet.self_approved:0 finalize=refused:FA-REF-131:exit=3"
+        ),
+        "{text}"
+    );
+    assert!(
+        o.row("migration_run-D-01")
+            .is_some_and(|r| r.starts_with("FAIL ")
+                && r.contains("expected a jet.self_approved finding citing MR-1 observed none")),
+        "{text}"
+    );
+}
+
+/// A7m (§6.6): when the legacy approver is not the legacy preparer,
+/// jet.self_approved flags nothing, so the D row fails naming the absent
+/// finding.
+#[test]
+fn approved_by_different_from_entered_by_yields_no_finding() {
+    let o = migration_run(&[PlantedEdit {
+        file: "books/migration.toml",
+        old: "source_approved_by = \"legacy-director-1\"",
+        new: "source_approved_by = \"case-approver-1\"",
+    }]);
+    let text = o.text();
+    assert_eq!(
+        migration_lines(&o).last().copied(),
+        Some("MIGRATION migration finalize before=jet.self_approved:0 finalize=Finalized"),
+        "{text}"
+    );
+    assert!(
+        o.row("migration_run-D-01")
+            .is_some_and(|r| r.starts_with("FAIL ")
+                && r.contains("expected a jet.self_approved finding citing MR-1 observed none")),
+        "{text}"
+    );
+}
+
+/// A7m: a stage committed with one of its two approvals is refused, with the
+/// refusal the book names (sod_policy.toml#migration-locked), and the chunk
+/// is staged only by the two-approval commit after it.
+#[test]
+fn stage_with_one_approval_is_refused() {
+    let o = migration();
+    let text = o.text();
+    let twin = o
+        .steps
+        .iter()
+        .filter(|s| s.verb == "migrate" && s.exit != 0)
+        .map(|s| (s.reference.as_str(), s.exit, s.refusal_id.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(twin, [("MR-1", 7, Some("FA-REF-012"))], "{text}");
 }

@@ -1,0 +1,26 @@
+# Migration run fixture roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "opens, stages and finalizes the fixture's migration run"
+
+[[role]]
+label = "case-approver-1"
+kind = "harness"
+description = "approves the fixture's stage and finalize, and reviews its legacy trial balance"
+
+[[role]]
+label = "case-approver-2"
+kind = "harness"
+description = "approves the fixture's stage and finalize"
+
+[[role]]
+label = "legacy-director-1"
+kind = "harness"
+description = "the legacy system's entered-by and approved-by on the fixture's synthetic entry"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the fixture's jet.self_approved run after finalize"

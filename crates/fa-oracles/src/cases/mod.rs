@@ -67,6 +67,7 @@ pub mod header;
 pub mod intent_json;
 pub mod invariance;
 pub mod log;
+pub mod migration_doc;
 pub mod names;
 pub mod normalize;
 pub mod observe;

@@ -1,0 +1,132 @@
+# Migration run fixture book: FY2001's two quarters precede the opening date, so they are born
+# Historical and Locked. One legacy entry MR-1 (Dr 1530 / Cr 2110 544,000,000.00), entered and
+# approved in the legacy system by legacy-director-1, is staged into a sole-source FullDetail run
+# with two approvals and finalized with two more; jet.self_approved then reads it. The declared
+# legacy trial balance is derived from the book's own Migration intents (legacy_tb_from_chunks), so
+# its tie-out supports no claim. Synthetic; amounts are fixture values.
+
+[book]
+variant = "migration"
+opening_date = "2002-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2001Q3"
+start = "2001-07-01"
+end = "2001-09-30"
+fiscal_year = 2001
+kind = "Historical"
+
+[[period]]
+code = "2001Q4"
+start = "2001-10-01"
+end = "2001-12-31"
+fiscal_year = 2001
+kind = "Historical"
+
+[[period]]
+code = "2002Q1"
+start = "2002-01-01"
+end = "2002-03-31"
+fiscal_year = 2002
+kind = "Normal"
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "post", "migrate"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[account]]
+code = "1530"
+name_fact = "MR-1"
+type = "Asset"
+role = ""
+opened = "2001-07-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2110"
+name_fact = "MR-1"
+type = "Liability"
+role = ""
+opened = "2001-07-01"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-LEGACY-TB"
+stub_of = "legacy_tb"
+grade = "AgentUpload"
+reviewed_by = "case-approver-1"
+
+[[intent]]
+id = "MR-1"
+fact = "MR-1"
+class = "Migration"
+principal = "case-closer-1"
+effective_date = "2001-09-30"
+memo = "a legacy transfer to construction in progress (migration fixture)"
+evidence = "DOC-LEGACY-TB"
+idempotency_key = "migration-run-MR-1"
+source_entered_by = "legacy-director-1"
+source_approved_by = "legacy-director-1"
+
+[[leg]]
+intent = "MR-1"
+ordinal = 0
+account = "1530"
+side = "Dr"
+amount_literal = "544000000.00"
+amount_rule = "value:MR-1#1"
+unit = "USD"
+
+[[leg]]
+intent = "MR-1"
+ordinal = 1
+account = "2110"
+side = "Cr"
+amount_literal = "544000000.00"
+amount_rule = "value:MR-1#1"
+unit = "USD"
+
+[[step]]
+seq = 1
+kind = "migrate_open"
+ref = "DOC-LEGACY-TB"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "migrate_stage"
+ref = "MR-1..MR-1"
+principal = "case-closer-1"
+approvers = ["case-approver-1", "case-approver-2"]
+
+[[step]]
+seq = 3
+kind = "migrate_finalize"
+ref = "1"
+principal = "case-closer-1"
+approvers = ["case-approver-1", "case-approver-2"]
+
+[[step]]
+seq = 4
+kind = "finding_record"
+ref = "jet.self_approved@1"
+principal = "examiner-1"

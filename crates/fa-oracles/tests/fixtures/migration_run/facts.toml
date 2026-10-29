@@ -1,0 +1,17 @@
+# Migration run fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "MR-1"
+provenance = "synthetic"
+reason = "a 544,000,000.00 legacy transfer from a clearing account to construction in progress, entered and approved in the legacy system by the same person"
+discipline = "never cited by a case; the shape of a documented self-approved transfer"
+
+[[value]]
+fact = "MR-1"
+ordinal = 1
+literal = "544,000,000"
+rule = "scale"
+param = 0
+value = "54400000000"
+unit = "USD"
+precision = 0
