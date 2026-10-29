@@ -538,8 +538,10 @@ run_step "fmt" cargo fmt --all --check
 cargo_build "check" check --workspace --all-targets
 cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
-  cargo_build "test-list" test --workspace -- --list
+  # The split test jobs run first: each builds its package's artifacts under
+  # the worker cap, so test-list's one --workspace build mostly reuses them.
   cargo_test_jobs
+  cargo_build "test-list" test --workspace -- --list
   # Gate evidence witness & per-crate ratchet (bead fa-czx): listed tests match
   # executed tests, no source test disappears without `Retired-tests:`, and
   # per-crate negative test / assert counts do not decrease without
