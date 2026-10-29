@@ -439,6 +439,51 @@ falls_back_to_local_lane_on_rch_refusal() {
   return 0
 }
 
+# 7. Note publication under a concurrent publisher: another clone moved the
+#    remote refs/notes/fa-tier0, so a plain push of this run's note is refused
+#    as non-fast-forward. --push-note must still publish this run's PASS note
+#    and keep the other publisher's note.
+publishes_note_after_the_remote_notes_ref_moved() {
+  local rc=0 other="$base/other-publisher" other_sha head_sha published
+  git clone -q "$remote" "$other" 2>/dev/null \
+    || { gate_fail "publishes_note_after_the_remote_notes_ref_moved — cannot clone the remote"; return 1; }
+  # The other publisher proves its own commit (a note on a commit this clone
+  # also annotates is resolved in favor of this run, by design).
+  git -C "$other" -c user.name=Other -c user.email=other@example.invalid \
+    commit -q --allow-empty -m "other clone's own work"
+  git -C "$other" push -q origin HEAD:refs/heads/other-work 2>/dev/null \
+    || { gate_fail "publishes_note_after_the_remote_notes_ref_moved — the other clone could not push its commit"; return 1; }
+  other_sha="$(git -C "$other" rev-parse HEAD)"
+  git -C "$other" fetch -q origin '+refs/notes/fa-tier0:refs/notes/fa-tier0' 2>/dev/null || true
+  git -C "$other" -c user.name=Other -c user.email=other@example.invalid \
+    notes --ref=fa-tier0 add -f -m 'published-by=other-clone' "$other_sha"
+  git -C "$other" push -q origin 'refs/notes/fa-tier0:refs/notes/fa-tier0' \
+    || { gate_fail "publishes_note_after_the_remote_notes_ref_moved — the other clone could not publish"; return 1; }
+  (
+    cd "$dev" || exit 1
+    printf 'concurrent publisher\n' >> README.md
+    git add README.md
+    git commit -q -m "chore: commit proved while another clone publishes notes"
+    bash scripts/tier0.sh --publish-note --push-note --remote origin --log-dir "$base/concurrent-note-logs"
+  ) > "$base/concurrent-note.out" 2>"$base/concurrent-note.err" || rc=$?
+  head_sha="$(git -C "$dev" rev-parse HEAD)"
+  if [ "$rc" -ne 0 ]; then
+    gate_fail "publishes_note_after_the_remote_notes_ref_moved — tier0.sh exited $rc ($(cat "$base/concurrent-note.out" "$base/concurrent-note.err"))"
+    return 1
+  fi
+  published="$(git --git-dir="$remote" notes --ref=fa-tier0 show "$head_sha" 2>/dev/null || true)"
+  if ! grep -Fxq 'verdict=pass' <<< "$published"; then
+    gate_fail "publishes_note_after_the_remote_notes_ref_moved — the remote lacks this run's PASS note for $head_sha ($(cat "$base/concurrent-note.err"))"
+    return 1
+  fi
+  if ! git --git-dir="$remote" notes --ref=fa-tier0 show "$other_sha" 2>/dev/null | grep -Fxq 'published-by=other-clone'; then
+    gate_fail "publishes_note_after_the_remote_notes_ref_moved — publishing dropped the other clone's note on $other_sha"
+    return 1
+  fi
+  gate_pass "publishes_note_after_the_remote_notes_ref_moved (remote notes moved by another clone -> merged, this PASS published, the other note kept)"
+  return 0
+}
+
 # 6. UNRUN handling (WHAT 2): when tier0 reports UNRUN (e.g. rch refused and local fallback disabled),
 #    merge_train.sh refuses to fold ("do not fold yet", EX_UNRUN=7) without ejecting the candidate.
 unrun_refuses_to_fold_without_ejecting() {
@@ -500,7 +545,8 @@ if [ "$#" -gt 0 ]; then
       refuses_lib_type_error|\
       pre_push_requires_tier0_note|\
       falls_back_to_local_lane_on_rch_refusal|\
-      unrun_refuses_to_fold_without_ejecting)
+      unrun_refuses_to_fold_without_ejecting|\
+      publishes_note_after_the_remote_notes_ref_moved)
         "$fn"
         ;;
       *)
@@ -515,6 +561,7 @@ else
   pre_push_requires_tier0_note
   falls_back_to_local_lane_on_rch_refusal
   unrun_refuses_to_fold_without_ejecting
+  publishes_note_after_the_remote_notes_ref_moved
 fi
 
 gate_verdict

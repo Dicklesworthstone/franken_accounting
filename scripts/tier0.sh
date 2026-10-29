@@ -357,7 +357,21 @@ fi
 if [ "$overall_verdict" = "pass" ] && [ "$dirty" -eq 0 ] && [ "$publish_note" -eq 1 ]; then
   git notes --ref=fa-tier0 add -f -F "$log_dir/tier0-summary.txt" "$commit" >/dev/null 2>&1 || true
   if [ "$push_note" -eq 1 ]; then
-    git push --quiet "$remote" "refs/notes/fa-tier0:refs/notes/fa-tier0" >/dev/null 2>&1 || true
+    # Another publisher moves the remote notes ref, and a plain push of ours
+    # is then refused as non-fast-forward. Merge the remote notes (keeping
+    # this run's note only where both name this commit) and retry; a note
+    # that still cannot be published is reported, never silently local.
+    note_pushed=0
+    for _ in 1 2 3; do
+      if git push --quiet "$remote" "refs/notes/fa-tier0:refs/notes/fa-tier0" >/dev/null 2>&1; then
+        note_pushed=1
+        break
+      fi
+      git fetch --quiet "$remote" "+refs/notes/fa-tier0:refs/notes/fa-tier0-remote" >/dev/null 2>&1 || true
+      git notes --ref=fa-tier0 merge -q -s ours refs/notes/fa-tier0-remote >/dev/null 2>&1 || true
+    done
+    [ "$note_pushed" -eq 1 ] \
+      || gate_diag "tier0: the $overall_verdict note for $commit is recorded locally but was not published to $remote"
   fi
 fi
 
