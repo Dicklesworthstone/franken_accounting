@@ -114,6 +114,10 @@ fn rows<'a>(value: &'a Json, field: &str) -> &'a [Json] {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_additional_accounts(Vec::new())
+    }
+
+    fn with_additional_accounts(additional: Vec<Json>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let path = std::env::temp_dir().join(format!(
@@ -133,7 +137,13 @@ impl Fixture {
             evidence: String::new(),
         };
         f.ok(&["book", "create", "--name", "Subledger Co"]);
-        let chart = f.file("chart.json", r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#);
+        let chart = json::parse(r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#).unwrap();
+        let mut accounts = chart.get("accounts").unwrap().as_arr().unwrap().to_vec();
+        accounts.extend(additional);
+        let chart = f.file(
+            "chart.json",
+            &Json::Obj(vec![("accounts".into(), Json::Arr(accounts))]).render(),
+        );
         f.ok(&["chart", "import", &chart]);
         f.ok(&["period", "create", "--fiscal-year", "2026"]);
         f.ok(&["period", "open", "FY2026-P03"]);
