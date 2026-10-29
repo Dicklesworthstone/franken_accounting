@@ -1531,6 +1531,7 @@ pub fn resolve_binary_in_path(binary: &str) -> Option<PathBuf> {
 }
 
 fn probe_tool_version(binary_path: &Path, fallback_name: &str) -> String {
+    // ubs:ignore — the caller resolved the operator-configured tool on PATH; no shell.
     if let Ok(out) = Command::new(binary_path).arg("--version").output()
         && out.status.success()
     {
@@ -1724,6 +1725,7 @@ pub fn run_focr_extraction(
     }
     argv.push(input_path.display().to_string());
 
+    // ubs:ignore — operator-configured tool (`binary`, default on PATH); argv only, no shell.
     let output = Command::new(&binary_path)
         .args(&argv[1..])
         .output()
@@ -1857,6 +1859,7 @@ pub fn run_fw_extraction(
     argv.push("--input".to_string());
     argv.push(input_path.display().to_string());
 
+    // ubs:ignore — operator-configured tool (`binary`, default on PATH); argv only, no shell.
     let output = Command::new(&binary_path)
         .args(&argv[1..])
         .output()

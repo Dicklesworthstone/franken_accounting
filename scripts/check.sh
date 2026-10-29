@@ -610,46 +610,12 @@ if [ "$QUICK" -eq 0 ]; then
   run_gate "installer-integration" "$ROOT/scripts/tests/installer_integration.sh"
 fi
 
-# ubs: the bug scanner as a whole-project STATIC scan. It compiles nothing
-# (`--no-cargo`): the compiler, clippy, test and deny verdicts are the
-# explicit steps above, so this step never launches a bare cargo. Scanning
-# the project root (not a file list) keeps the Cargo context, under which
-# the scanner classifies integration-test `panic!` as a warning while a
-# production `panic!` stays critical (verified 2026-10-10, fa-lbh thread:
-# project scan exit 0 / 0 critical; a fixture with a src panic exits 1 / 1
-# critical). The verdict is the exit code AND the critical count, and a
-# positive file count is required, because ubs exits 0 on "nothing checked".
-UBS_LOG="$LOG_DIR/ubs.log"
-if try_reuse_step "ubs" "$UBS_LOG"; then
-  :
-elif ! command -v ubs >/dev/null 2>&1; then
-  record_step_verdict "ubs" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$UBS_LOG"
-  gate_unrun "ubs — ubs is not installed"
-elif [ -z "$(git ls-files --cached --others --exclude-standard -- '*.rs')" ]; then
-  record_step_verdict "ubs" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$UBS_LOG"
-  gate_unrun "ubs — no tracked Rust files; nothing was checked"
-else
-  UBS_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  UBS_T0="$(date +%s)"
-  UBS_RC=0
-  ubs --only=rust --no-cargo --no-color "$ROOT" >"$UBS_LOG" 2>&1 || UBS_RC=$?
-  UBS_FINISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  UBS_DUR=$(( $(date +%s) - UBS_T0 ))
-  # A verdict needs a positive file count AND a numeric critical summary;
-  # "Files scanned: 0" or a missing summary is "nothing was checked".
-  if ! grep -Eq '^[[:space:]]*Files scanned:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$UBS_LOG" \
-    || ! grep -Eq '^[[:space:]]*Critical issues:[[:space:]]*[0-9]+[[:space:]]*$' "$UBS_LOG"; then
-    record_step_verdict "ubs" "UNRUN" "$UBS_STARTED" "$UBS_FINISHED" "$UBS_DUR" "$UBS_LOG"
-    gate_unrun "ubs — no positive file count or no critical-issue summary in the scanner output (exit $UBS_RC); nothing was checked; log: $UBS_LOG"
-  elif [ "$UBS_RC" -eq 0 ] && ! grep -Eq '^[[:space:]]*Critical issues:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$UBS_LOG"; then
-    record_step_verdict "ubs" "PASS" "$UBS_STARTED" "$UBS_FINISHED" "$UBS_DUR" "$UBS_LOG"
-    gate_pass "ubs (static scan of the project, 0 critical; $(grep -m1 'Files scanned:' "$UBS_LOG" | tr -s ' '))"
-  else
-    record_step_verdict "ubs" "FAIL" "$UBS_STARTED" "$UBS_FINISHED" "$UBS_DUR" "$UBS_LOG"
-    gate_fail "ubs — critical findings or scanner failure (exit $UBS_RC); log: $UBS_LOG"
-    grep -E 'CRITICAL|Critical issues' "$UBS_LOG" >&2 || true
-  fi
-fi
+# ubs: the bug scanner as a STATIC scan (`--no-cargo`; it compiles nothing),
+# one package directory at a time with test code out of scope. Why per
+# directory and what is in scope: scripts/ubs_scan.sh and .ubsignore. Each
+# directory needs a complete scan with 0 critical findings; a partial scan is
+# UNRUN, never a pass.
+run_gate "ubs" "$ROOT/scripts/ubs_scan.sh"
 
 # Lint our scripts with shellcheck (the gate library is adopted verbatim and exempt).
 mapfile -t SHELL_FILES < <(git ls-files --cached --others --exclude-standard -- 'scripts/*.sh' | grep -v 'scripts/lib/gate_verdict.sh')

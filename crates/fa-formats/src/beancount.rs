@@ -728,6 +728,7 @@ pub enum SubprocessOracleStatus {
 /// Probe whether an external plain-text accounting binary is installed.
 /// A `Present` result is not a verification of anything.
 pub fn probe_external_oracle_binary(binary: &str) -> SubprocessOracleStatus {
+    // ubs:ignore — a presence probe of a caller-named oracle binary; argv only, no shell.
     match Command::new(binary).arg("--version").output() {
         Ok(out) if out.status.success() => {
             let ver = String::from_utf8_lossy(&out.stdout).trim().to_owned();

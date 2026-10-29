@@ -350,10 +350,64 @@ check_summary_matches_the_proof_verifier() {
   gate_pass "check_summary_matches_the_proof_verifier (green, failed, unrun, unrun under exit 0, no assertions)"
 }
 
+# The ubs step scans each package directory (scripts/ubs_scan.sh). A fake
+# scanner answers per directory: a complete clean scan is PASS, a critical
+# finding FAIL, a partial or crashed scan UNRUN, and no file in scope anywhere
+# is UNRUN; every scan carries the test-scope flags.
+ubs_scan_classifies_each_package_scan() {
+  local repo="$base/ubs-repo" bin="$base/ubs-bin" case a b want_rc want rc
+  # shellcheck disable=SC2016  # the literal check.sh line, not an expansion.
+  if ! grep -qF 'run_gate "ubs" "$ROOT/scripts/ubs_scan.sh"' "$SOURCE_ROOT/scripts/check.sh"; then
+    gate_fail "ubs_scan_classifies_each_package_scan — check.sh does not run scripts/ubs_scan.sh as its ubs step"
+    return 1
+  fi
+  mkdir -p "$repo/scripts/lib" "$repo/crates/a/src" "$repo/crates/b/src" "$bin"
+  cp "$SOURCE_ROOT/scripts/ubs_scan.sh" "$repo/scripts/"
+  cp "$SOURCE_ROOT/scripts/lib/gate_verdict.sh" "$repo/scripts/lib/"
+  printf 'pub fn a() {}\n' > "$repo/crates/a/src/lib.rs"
+  printf 'pub fn b() {}\n' > "$repo/crates/b/src/lib.rs"
+  : > "$repo/.ubsignore"
+  git -C "$repo" init -q && git -C "$repo" add -A
+  cat > "$bin/ubs" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_UBS_ARGS"
+target="${!#}"
+mode=ok
+case "$target" in crates/a) mode="$FAKE_UBS_A" ;; crates/b) mode="$FAKE_UBS_B" ;; esac
+case " $* " in *" --format=jsonl "*) ;; *) printf '  CRITICAL (1 found)\n    fake finding in %s\n' "$target"; exit 1 ;; esac
+case "$mode" in
+  ok) printf '{"type":"totals","status":"ok","failed_modules":[],"files":3,"critical":0}\n'; exit 0 ;;
+  empty) printf '{"type":"totals","status":"ok","failed_modules":[],"files":0,"critical":0}\n'; exit 0 ;;
+  crit) printf '{"type":"totals","status":"ok","failed_modules":[],"files":3,"critical":2}\n'; exit 1 ;;
+  partial) printf '{"type":"totals","status":"partial","failed_modules":["rust"],"files":3,"critical":0}\n'; exit 2 ;;
+  crash) printf 'Segmentation fault\n'; exit 139 ;;
+esac
+EOF
+  chmod +x "$bin/ubs"
+  for case in "ok ok 0 PASS.ubs.crates/b" "crit ok 1 FAIL.ubs.crates/a" "ok partial 2 UNRUN.ubs.crates/b" \
+    "crash ok 2 UNRUN.ubs.crates/a" "empty empty 2 UNRUN.no.file.was.in.scope"; do
+    read -r a b want_rc want <<<"$case"
+    : > "$base/ubs-args"
+    PATH="$bin:$PATH" FAKE_UBS_A="$a" FAKE_UBS_B="$b" FAKE_UBS_ARGS="$base/ubs-args" \
+      bash "$repo/scripts/ubs_scan.sh" --root "$repo" > "$base/ubs-$a-$b.out" 2>&1
+    rc=$?
+    if [ "$rc" -ne "$want_rc" ] || ! grep -Eq "^${want//./ }" "$base/ubs-$a-$b.out"; then
+      gate_fail "ubs_scan_classifies_each_package_scan — a=$a b=$b: exit $rc (want $want_rc), want a line '${want//./ }': $(tr '\n' '|' < "$base/ubs-$a-$b.out")"
+      return 1
+    fi
+    if grep -F -- '--format=jsonl' "$base/ubs-args" | grep -vqF -- "--no-cargo --no-color --exclude-tests --ignore-file=$repo/.ubsignore"; then
+      gate_fail "ubs_scan_classifies_each_package_scan — a scan ran without the test-scope flags: $(tr '\n' '|' < "$base/ubs-args")"
+      return 1
+    fi
+  done
+  gate_pass "ubs_scan_classifies_each_package_scan (clean, critical, partial, crashed, nothing in scope)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
 split_test_job_list_covers_the_workspace
 check_summary_matches_the_proof_verifier
+ubs_scan_classifies_each_package_scan
 
 gate_verdict

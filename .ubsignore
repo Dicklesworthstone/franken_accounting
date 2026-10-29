@@ -1,0 +1,13 @@
+# Scope of the ubs step (scripts/ubs_scan.sh, fa-0hs4.2).
+#
+# Test code: a test panic! is not a production panic! (the step's fa-lbh
+# contract). Every src/ path these patterns match compiles only under
+# cfg(test), directly or through a #[path] or nested `mod tests` (checked
+# 2026-10-29, b4fff298b); integration tests live under tests/.
+tests/
+tests.rs
+*_tests.rs
+*_tests/
+# Not Rust: a clippy.toml's disallowed-methods list names std::thread::spawn,
+# which the resource-lifecycle heuristic reads as a spawn without a join.
+clippy.toml

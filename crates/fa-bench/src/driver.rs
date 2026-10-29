@@ -256,6 +256,7 @@ fn fa_bench_binary(binary: &Path) -> Result<std::path::PathBuf, String> {
 fn sample(binary: &Path, workload: &str, args: &[String]) -> Result<SampleRun, String> {
     let binary = fa_bench_binary(binary)?;
     let binary = binary.as_path();
+    // ubs:ignore — fa_bench_binary admits only an existing file named fa-bench.
     let output = Command::new(binary)
         .args(["sample", workload])
         .args(args)
