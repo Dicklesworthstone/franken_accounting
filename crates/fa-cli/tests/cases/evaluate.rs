@@ -13,7 +13,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
-use fa_oracles::cases::book::{CaseDef, StepKind};
+use fa_oracles::cases::book::{CaseDef, StepKind, VariantKind};
 use fa_oracles::cases::contrib::{ContribVerdict, cross_check, named_inputs, witness};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
@@ -1049,8 +1049,12 @@ fn read_against(
             return Err((RowVerdict::Fail, format!("gql: {why}")));
         }
     }
-    // Exact equality at the published value's declared precision (§5.3);
-    // a value stated to a coarser precision needs its rounding rule first.
+    // Exact equality at the published value's declared precision (§5.3).
+    // Equal to the minor unit is equal at any coarser precision; an unequal
+    // value stated to a coarser precision needs its rounding rule to decide.
+    if observed == want {
+        return Ok(());
+    }
     if run
         .case
         .values
@@ -1064,18 +1068,14 @@ fn read_against(
             format!("needs:A7b ({fact} is stated to a coarser precision)"),
         ));
     }
-    if observed == want {
-        Ok(())
-    } else {
-        Err((
-            RowVerdict::Fail,
-            mismatch(
-                "value",
-                format_amount(want, scale),
-                format_amount(observed, scale),
-            ),
-        ))
-    }
+    Err((
+        RowVerdict::Fail,
+        mismatch(
+            "value",
+            format_amount(want, scale),
+            format_amount(observed, scale),
+        ),
+    ))
 }
 
 /// A T row (§5.3): its certified read equals its published value; a
@@ -1094,7 +1094,12 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         Err((RowVerdict::Unrun, why)) => waits = Some(why),
         Err((_, why)) => fails.push(why),
     }
-    if kind == "per_account" {
+    // Kernel-attested (§5.3): a per_account T, and a bridge whose A and
+    // deltas sit on the one leaf account it reads, on a statement book.
+    let one_leaf_bridge = kind == "bridge"
+        && run.book.kind == VariantKind::Statement
+        && super::reads::field(e, t, "read_verb") == Some("balance");
+    if kind == "per_account" || one_leaf_bridge {
         let step = t.map_or_else(|| e.id.clone(), |t| format!("{}#{}", e.id, t.fact));
         match run
             .assertions
@@ -1102,7 +1107,7 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
             .or_else(|| run.assertions.get(&e.id))
         {
             None => fails.push(format!(
-                "expected an assert_balance step for {step} (a per_account T is kernel-attested) observed none"
+                "expected an assert_balance step for {step} (a {kind} T is kernel-attested) observed none"
             )),
             Some(a) => {
                 // Recorded: admitted, as a RegisterEquals attestation that

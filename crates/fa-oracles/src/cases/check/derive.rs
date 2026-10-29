@@ -229,7 +229,11 @@ fn leg_amount(cx: &Context<'_>, stem: &str, leg: &LegDef) -> Result<(), String> 
     let amount = minor_units(cx, &leg.amount_literal, &leg.unit)?;
     let rule = leg.amount_rule.as_str();
     if rule != "derived:negate" {
-        let want = named_amount(cx, rule, &leg.unit)?;
+        // A leg carries a magnitude and its side the direction, so a figure the source prints
+        // negative (a parenthesized decrease) binds a leg by its magnitude.
+        let want = named_amount(cx, rule, &leg.unit)?
+            .checked_abs()
+            .ok_or_else(|| format!("`{rule}` has no magnitude in i128"))?;
         return compare_amounts(
             &leg.amount_literal,
             &leg.unit,

@@ -398,6 +398,32 @@ fn _selftest_neg_n_twin_that_keeps_the_legs_fails() {
     );
 }
 
+/// §5.3: a T passes on exact equality at its published value's declared
+/// precision. A planted copy states the self-test's B to the hundred dollars
+/// (precision 2); the certified 900.00 equals it to the cent, so it equals it
+/// at that precision too and the T passes without a rounding rule.
+#[test]
+fn bridge_t_equal_to_a_coarsely_stated_b_passes() {
+    let o = match run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "facts.toml",
+            old: "value = \"90000\"\nunit = \"USD\"\nprecision = 0",
+            new: "value = \"90000\"\nunit = \"USD\"\nprecision = 2",
+        }],
+        HARNESS_VERBS,
+    ) {
+        Ok(o) => o,
+        Err(o) => *o,
+    };
+    let row = o.row("_selftest-T-01").unwrap_or_default();
+    assert!(
+        row.starts_with("PASS _selftest-T-01 T ") && row.contains(" value=900.00 "),
+        "{}",
+        o.text()
+    );
+}
+
 /// A11b (§3.7 item 2): the bridge's contributions on 1100 are exactly A's
 /// and the delta's entries (its named inputs: the basis intents other than
 /// the published B, and their delta) and re-add to the certified 900.00.

@@ -68,6 +68,16 @@ kind = "harness"
 description = "opens, rehearses and posts the restatement case; approves none of it"
 
 [[role]]
+label = "case-reconciler-1"
+kind = "harness"
+description = "asserts a statement book's balances against the filing (fa assert-balance)"
+
+[[role]]
+label = "case-filer-1"
+kind = "harness"
+description = "posts a statement book's figures as the filing reported them"
+
+[[role]]
 label = "examiner-1"
 kind = "harness"
 description = "records the case's findings and checkpoints"

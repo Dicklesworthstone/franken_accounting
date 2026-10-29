@@ -539,6 +539,38 @@ fn leg_amount_differing_from_its_rule_fails_k_derive() {
     fail_line(&run(&case, "K-DERIVE"), &row, "(negated)");
 }
 
+/// A figure printed in parentheses (a restatement's decrease) binds a leg by
+/// its magnitude: the leg's side carries the sign. A leg of another
+/// magnitude still fails, naming the figure's magnitude.
+#[test]
+fn leg_bound_to_a_negative_figure_compares_its_magnitude() {
+    let mut case = pilot_case();
+    let f9 = case
+        .values
+        .iter_mut()
+        .find(|v| v.fact == "F9" && v.ordinal == 1)
+        .expect("F9's amount");
+    f9.value = "-74272500000".into();
+    let r = run(&case, "K-DERIVE");
+    let book = &case.books["native"];
+    for leg in book.legs.iter().filter(|l| l.amount_rule == "value:F9#1") {
+        no_fail_for(&r, &format!("{}#{}", leg.intent, leg.ordinal));
+    }
+    let book = case.books.get_mut("native").expect("native");
+    let leg = book
+        .legs
+        .iter_mut()
+        .find(|l| l.amount_rule == "value:F9#1")
+        .expect("a value:F9#1 leg");
+    leg.amount_literal = "742725000.01".into();
+    let row = format!("{}#{}", leg.intent, leg.ordinal);
+    fail_line(
+        &run(&case, "K-DERIVE"),
+        &row,
+        "is 74272500001 minor units; `value:F9#1` is 74272500000",
+    );
+}
+
 #[test]
 fn event_resource_amount_differing_from_its_rule_fails_k_derive() {
     let event = |literal: &str| super::super::book::EventDef {

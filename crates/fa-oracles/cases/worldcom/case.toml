@@ -1,13 +1,15 @@
 # WorldCom line-cost capitalization (plan §6). W1 lands the sources ledger and receipts; A8 the
 # pilot on the native book (F2, F4, F9, F12). Claimed: the two first refusals and the restatement
 # case; the D and N rows run unclaimed until their filler invariance witness exists (A11a).
+# W6 adds the statement book: the FY2000 total-assets bridge W-T-02, its read-back W-R-01 and the
+# statement restatement case.
 id = "worldcom"
 letter = "W"
 title = "WorldCom line-cost capitalization, 2001 to 1Q02"
 version = 1
 kind = "case"
-scope = "the documented line-cost capitalization entries of 2001 and 1Q02; the pilot posts F2, F4, F9 and F12 on the native book"
-claims = ["W-CASE-R1", "W-P-02", "W-P-03"]
+scope = "the documented line-cost capitalization entries of 2001 and 1Q02; the pilot posts F2, F4, F9 and F12 on the native book, and the statement book posts the restating filing's FY2000 total-assets bridge"
+claims = ["W-CASE-R1", "W-CASE-wc-statement-restatement", "W-P-02", "W-P-03", "W-R-01", "W-T-02"]
 capabilities = ["procedure:expense.capitalization@2", "procedure:jet.round_amounts@1", "refusal:FA-REF-010", "refusal:FA-REF-080", "verb:case", "verb:post", "verb:scenario"]
 pinned_commit = "df8944f30"
-variants = ["native"]
+variants = ["native", "statement"]

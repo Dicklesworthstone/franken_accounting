@@ -1,8 +1,10 @@
 # WorldCom's claims (plan §6.4, §15 A8) over the native book's F2 and F4: two detections, a
 # no-finding with its mutation twin, and two first refusals. Still owed (fa-yugf.20): W-D-01 on F9
 # (its leg_split cells add or remove a debit leg, which the sweep cannot yet encode beside the
-# target), the filler variants the D and N rows' invariance witness needs (A11a), and W-NOTE-01
-# (W2's restatement-table facts).
+# target), and the filler variants the D and N rows' invariance witness needs (A11a).
+#
+# W6 (fa-yugf.41): the FY2000 total-assets bridge W-T-02 and its read-back W-R-01 run on the
+# statement book over W2's restatement-table cells; W-NOTE-01 is a Limits note.
 
 [[expectation]]
 id = "W-D-01"
@@ -65,6 +67,32 @@ refusal = "FA-REF-010"
 law_row = "admissibility.toml#Original/Closed"
 attribute = "period_state_at_commit"
 reference_verdict = "FA-REF-010"
+
+[[expectation]]
+id = "W-T-02"
+type = "T"
+book_variant = "statement"
+statement_template = "T.bridge"
+basis = ["W-ST-ta2000-prev", "W-ST-ta2000-adj1", "W-ST-ta2000-adj2", "W-ST-ta2000-restated"]
+kind = "bridge"
+vintages = ["A:SRC-WC-406", "D:SRC-WC-406", "B:SRC-WC-406"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "2000Q4"
+read_selector = "currently_stated"
+published = "W-ST-ta2000-restated"
+
+[[expectation]]
+id = "W-R-01"
+type = "R"
+book_variant = "statement"
+statement_template = "R.read_back"
+basis = ["W-ST-ta2000-prev"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "2000Q4"
+read_selector = "originally_reported"
+posted = "W-ST-ta2000-prev"
 
 [[target]]
 expectation = "W-D-01"
@@ -207,3 +235,13 @@ target = "F4"
 cell = ["Adjusting", "Locked"]
 expect = "FA-REF-010"
 record_consistent = false
+
+# W-NOTE-01 (plan §6.4): the FY1999 total assets printed twice, by the EX-27 of the FY1999 10-K
+# (91,072 at its 1,000,000 multiplier) and as restated in the FY2002 10-K's selected data
+# (85,280). No published delta joins them and franken_accounting computes nothing between them,
+# so it is a Limits note, never a T.
+[[note]]
+id = "W-NOTE-01"
+case = "worldcom"
+basis = ["W-ST-ta1999-ex27", "W-ST-ta1999-restated"]
+template = "NOTE.observation"
