@@ -7,9 +7,14 @@
 //! amount; its immutable `base_amount` is the recorded relief. Reversals
 //! restore that recorded amount, including a zero rounded relief.
 //!
-//! No new mutable balance or durable format is introduced. Item-specific
-//! valuation-adjustment allocation and multi-target applying legs require
-//! additional laws and are refused, never assigned an inferred basis.
+//! Allocated revaluations retain every item's original-cost and valuation
+//! components. Settlement relieves both under explicit laws; legacy aggregate
+//! adjustments never acquire an inferred allocation.
+
+mod allocated;
+pub(crate) use allocated::covers_valuation_account;
+pub(crate) use allocated::{basis as allocated_basis, check_release as check_allocated_release};
+pub(crate) use allocated::{has_allocated_basis, verify_allocated_fx_structure};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,6 +53,12 @@ pub struct CarryingOpenItem {
     pub applied_base: Amount,
     pub open_native: Amount,
     pub open_base: Amount,
+    pub historical_open_base: Amount,
+    pub valuation_open_base: Amount,
+    pub carrying_source_digest: [u8; 32],
+    pub valuation_route: Option<crate::chart::FxRevaluationRoute>,
+    pub valuation_routes_entry: Option<VId>,
+    pub valuation_routes_digest: Option<[u8; 32]>,
     /// Latest contributing application or undo date; a new application
     /// must not precede it and thereby change historical relief ordering.
     pub latest_effective_date: DateDay,
@@ -109,6 +120,9 @@ impl PreparedFxSettlement {
     pub fn base_relief(&self) -> Amount {
         self.base_relief
     }
+    pub fn historical_base_relief(&self) -> Amount {
+        self.proposal.legs[0].base_amount.expect("prepared relief")
+    }
     pub fn proposal(&self) -> &EntryPayload {
         &self.proposal
     }
@@ -139,10 +153,12 @@ pub(crate) fn unsupported_batch() -> Refusal {
 
 pub(crate) fn is_source_bound(proposal: &EntryPayload) -> bool {
     proposal.class != EntryClass::REVERSAL
-        && proposal
-            .base_totals
-            .as_ref()
-            .is_some_and(|totals| totals.fx_law_oid == FxLawId::SettlementCarryingBasis.oid())
+        && proposal.base_totals.as_ref().is_some_and(|totals| {
+            matches!(
+                FxLawId::from_oid(&totals.fx_law_oid),
+                Some(FxLawId::SettlementCarryingBasis | FxLawId::SettlementAllocatedCarrying)
+            )
+        })
 }
 
 /// Exact law arithmetic, in base minor units. The final remainder is never
@@ -174,7 +190,7 @@ pub fn remaining_carrying_relief(
         .map_err(invalid)
 }
 
-fn live(vid: VId, reversals: &BTreeMap<VId, VId>) -> Result<bool, KernelError> {
+pub(crate) fn live(vid: VId, reversals: &BTreeMap<VId, VId>) -> Result<bool, KernelError> {
     let mut current = vid;
     let mut result = true;
     let mut seen = BTreeSet::new();
@@ -202,11 +218,20 @@ pub fn open_item_carrying_at<V: Vfs + Clone>(
     ordinal: u16,
     at: CommitSeq,
 ) -> Outcome<CarryingOpenItem> {
-    cx.query()
-        .with_restriction(|| open_item_carrying_inner(db, cx, book, target, ordinal, at))
+    cx.query().with_restriction(|| {
+        let result = open_item_carrying_inner(db, cx, book, target, ordinal, at)?;
+        if let Ok(item) = &result
+            && item.valuation_route.is_some()
+            && let Err(refusal) =
+                crate::revaluation::verify_item_history(db, cx, book, item.account, at)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    })
 }
 
-fn open_item_carrying_inner<V: Vfs + Clone>(
+pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
@@ -313,15 +338,35 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
         {
             continue;
         }
-        let source_adjustment = entry
+        let adjustment = entry
             .proposal
             .extensions
             .iter()
             .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
             .map(|(_, raw)| FxRevaluationBasis::decode(raw))
             .transpose()
-            .map_err(|error| KernelError::Corrupt(error.to_string()))?
-            .is_some_and(|basis| basis.source_account == leg.account_ref);
+            .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+        if has_allocated_basis(&entry.proposal) {
+            if let Err(refusal) = allocated::retained_shape(&entry.proposal) {
+                return Ok(Err(refusal));
+            }
+            for routes in chart.fx_revaluation_routes() {
+                if let Some(route) = routes.routes.get(&leg.account_ref)
+                    && let Err(refusal) =
+                        allocated::covers_valuation_account(&entry.proposal, leg.account_ref, route)
+                {
+                    return Ok(Err(refusal));
+                }
+            }
+            continue;
+        }
+        if adjustment.as_ref().is_some_and(|basis| {
+            basis.source_account == leg.account_ref && basis.item_allocation.is_some()
+        }) {
+            continue;
+        }
+        let source_adjustment =
+            adjustment.is_some_and(|basis| basis.source_account == leg.account_ref);
         if source_adjustment
             || entry
                 .proposal
@@ -337,8 +382,18 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
     entries.sort_by_key(|(seq, vid, _)| (*seq, *vid));
     let mut open_native = leg.amount;
     let mut open_base = original_base;
+    let mut historical_open_base = original_base;
+    let mut valuation_open_base = Amount::new(original_base.unit, 0);
+    let mut valuation_route = None;
+    let mut valuation_routes_entry = None;
+    let mut valuation_routes_digest = None;
+    let mut source_hash = fgdb_crypto::Hasher::new();
+    source_hash.update(b"fa:allocated-carrying-source:v1");
+    source_hash.update(&target.vid.0.to_le_bytes());
+    source_hash.update(&target.entry_digest);
+    source_hash.update(&ordinal.to_le_bytes());
     let mut latest_effective_date = original.proposal.effective_date;
-    let mut effects: BTreeMap<VId, (i128, i128)> = BTreeMap::new();
+    let mut effects: BTreeMap<VId, (i128, i128, i128)> = BTreeMap::new();
     let mut previous_effect_seq = None;
     let mut previous_effect_is_undo = false;
     let current = asupersync::Cx::current().ok_or_else(|| {
@@ -350,11 +405,83 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
         query
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;
-        let mut effect = (0i128, 0i128);
+        let mut effect = (0i128, 0i128, 0i128);
+        if seq < recorded {
+            continue;
+        }
+        if let Some((_, raw)) = entry
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
+        {
+            let basis = FxRevaluationBasis::decode(raw)
+                .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+            if basis.source_account == leg.account_ref
+                && crate::revaluation::item_entity(&spec, leg)
+                    .map_err(|error| KernelError::Corrupt(error.message))?
+                    == basis.entity
+                && let Some(allocation) = &basis.item_allocation
+            {
+                let item = allocation
+                    .items
+                    .iter()
+                    .find(|item| item.target.vid == target.vid && item.ordinal == ordinal);
+                if let Some(item) = item {
+                    if item.target != target
+                        || item.open_native != open_native
+                        || item.historical_base != historical_open_base
+                        || item.prior_valuation != valuation_open_base
+                        || basis.closing_date < latest_effective_date
+                    {
+                        return Ok(Err(invalid(
+                            "retained item allocation does not reproduce the item's preceding carrying components",
+                        )));
+                    }
+                    let Some(routes) = crate::chart::fx_revaluation_routes_at(
+                        db,
+                        book,
+                        basis.closing_date,
+                        basis.observed_at,
+                    )?
+                    else {
+                        return Ok(Err(invalid("item allocation has no retained route map")));
+                    };
+                    let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
+                        return Ok(Err(invalid("item allocation has no source route")));
+                    };
+                    if routes.control_entry != basis.routes_entry
+                        || routes.digest != basis.routes_digest
+                    {
+                        return Ok(Err(invalid(
+                            "item allocation route commitment differs from history",
+                        )));
+                    }
+                    valuation_open_base = item
+                        .target_base
+                        .checked_sub(historical_open_base)
+                        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                    open_base = item.target_base;
+                    valuation_route = Some(route);
+                    valuation_routes_entry = Some(basis.routes_entry);
+                    valuation_routes_digest = Some(basis.routes_digest);
+                    latest_effective_date = basis.closing_date;
+                    source_hash.update(&seq.0.to_le_bytes());
+                    source_hash.update(&vid.0.to_le_bytes());
+                    source_hash.update(&entry.entry_digest);
+                } else if open_native.mantissa > 0
+                    && original.proposal.effective_date <= basis.closing_date
+                {
+                    return Ok(Err(invalid(
+                        "the complete item allocation omits an open source item",
+                    )));
+                }
+            }
+        }
         if entry.proposal.class == EntryClass::REVERSAL {
             for link in &entry.proposal.supersession {
                 if link.kind == SupersessionKind::Reverses
-                    && let Some((native, base)) = effects.get(&link.target.vid)
+                    && let Some((native, base, valuation)) = effects.get(&link.target.vid)
                 {
                     effect = (
                         native
@@ -362,11 +489,14 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
                             .ok_or_else(|| KernelError::Corrupt("native undo overflow".into()))?,
                         base.checked_neg()
                             .ok_or_else(|| KernelError::Corrupt("base undo overflow".into()))?,
+                        valuation.checked_neg().ok_or_else(|| {
+                            KernelError::Corrupt("valuation undo overflow".into())
+                        })?,
                     );
                 }
             }
         } else if entry.proposal.class.carries_open_items() {
-            for applying in &entry.proposal.legs {
+            for (applying_ordinal, applying) in entry.proposal.legs.iter().enumerate() {
                 for application in &applying.settles {
                     if application.target.vid != target.vid || application.ordinal != ordinal {
                         continue;
@@ -392,7 +522,7 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
                     let expected = match remaining_carrying_relief(
                         &mut budget,
                         open_native,
-                        open_base,
+                        historical_open_base,
                         application.amount,
                     ) {
                         Ok(value) => value,
@@ -403,6 +533,42 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
                             "retained application base relief does not reproduce RemainingCarryingValue",
                         )));
                     }
+                    let allocated_relief = if has_allocated_basis(&entry.proposal) {
+                        let total = match remaining_carrying_relief(
+                            &mut budget,
+                            open_native,
+                            open_base,
+                            application.amount,
+                        ) {
+                            Ok(value) => value,
+                            Err(refusal) => return Ok(Err(refusal)),
+                        };
+                        let expected_release = match allocated::release_basis(
+                            applying_ordinal,
+                            source_hash.finalize().0,
+                            expected,
+                            total,
+                            valuation_route,
+                            valuation_routes_entry,
+                            valuation_routes_digest,
+                        ) {
+                            Ok(value) => value,
+                            Err(refusal) => return Ok(Err(refusal)),
+                        };
+                        if let Err(refusal) =
+                            allocated::check_release(&entry.proposal, &expected_release)
+                        {
+                            return Ok(Err(refusal));
+                        }
+                        expected_release.valuation_relief.mantissa
+                    } else {
+                        if valuation_route.is_some() {
+                            return Ok(Err(invalid(
+                                "an allocated carrying item requires its explicit valuation-release law",
+                            )));
+                        }
+                        0
+                    };
                     effect.0 = effect
                         .0
                         .checked_add(application.amount.mantissa)
@@ -412,10 +578,14 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
                     effect.1 = effect.1.checked_add(relief.mantissa).ok_or_else(|| {
                         KernelError::Corrupt("base application sum overflow".into())
                     })?;
+                    effect.2 = effect
+                        .2
+                        .checked_add(allocated_relief)
+                        .ok_or_else(|| KernelError::Corrupt("valuation relief overflow".into()))?;
                 }
             }
         }
-        if effect != (0, 0) {
+        if effect != (0, 0, 0) {
             // Exact undo effects commute: a batch may restore several
             // previously recorded applications at one publication. Fresh
             // proportional relief needs an unambiguous execution order.
@@ -432,21 +602,36 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
                 .mantissa
                 .checked_sub(effect.0)
                 .ok_or_else(|| KernelError::Corrupt("native carrying fold overflow".into()))?;
-            open_base.mantissa = open_base
+            historical_open_base.mantissa = historical_open_base
                 .mantissa
                 .checked_sub(effect.1)
                 .ok_or_else(|| KernelError::Corrupt("base carrying fold overflow".into()))?;
             if open_native.mantissa < 0
                 || open_native.mantissa > leg.amount.mantissa
-                || open_base.mantissa < 0
-                || open_base.mantissa > original_base.mantissa
+                || historical_open_base.mantissa < 0
+                || historical_open_base.mantissa > original_base.mantissa
             {
                 return Ok(Err(invalid(
                     "retained applications or undos exceed the original native/base carrying amount",
                 )));
             }
+            valuation_open_base.mantissa = valuation_open_base
+                .mantissa
+                .checked_sub(effect.2)
+                .ok_or_else(|| KernelError::Corrupt("valuation carrying fold overflow".into()))?;
+            open_base = historical_open_base
+                .checked_add(valuation_open_base)
+                .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+            if open_base.mantissa < 0 || (open_native.mantissa == 0 && open_base.mantissa != 0) {
+                return Ok(Err(invalid(
+                    "recorded item effects leave a negative or stranded carrying balance",
+                )));
+            }
             latest_effective_date = latest_effective_date.max(entry.proposal.effective_date);
             effects.insert(vid, effect);
+            source_hash.update(&seq.0.to_le_bytes());
+            source_hash.update(&vid.0.to_le_bytes());
+            source_hash.update(&entry.entry_digest);
         }
     }
     Ok(Ok(CarryingOpenItem {
@@ -464,10 +649,16 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
             .checked_sub(open_native)
             .map_err(|e| KernelError::Corrupt(e.to_string()))?,
         applied_base: original_base
-            .checked_sub(open_base)
+            .checked_sub(historical_open_base)
             .map_err(|e| KernelError::Corrupt(e.to_string()))?,
         open_native,
         open_base,
+        historical_open_base,
+        valuation_open_base,
+        carrying_source_digest: source_hash.finalize().0,
+        valuation_route,
+        valuation_routes_entry,
+        valuation_routes_digest,
         latest_effective_date,
     }))
 }
@@ -565,6 +756,11 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
                         "FX component has no base totals".into(),
                     ));
                 };
+                if total.fx_law_oid != next.fx_law_oid {
+                    return Ok(Err(invalid(
+                        "one FX group cannot mix allocated and legacy carrying laws; use separate source-bound entries",
+                    )));
+                }
                 let Some(debits) = total.debits.checked_add(next.debits) else {
                     return Ok(Err(invalid("FX group functional debits overflow")));
                 };
@@ -573,6 +769,39 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
                 };
                 total.debits = debits;
                 total.credits = credits;
+                if has_allocated_basis(combined) {
+                    let mut combined_basis = match allocated::basis(combined) {
+                        Ok(value) => value,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    };
+                    let Some((_, raw)) = prepared.proposal.extensions.iter().find(|(tag, _)| {
+                        *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION
+                    }) else {
+                        return Ok(Err(invalid(
+                            "allocated FX group member lost its release basis",
+                        )));
+                    };
+                    let mut next_basis = fa_model::FxSettlementValuationBasis::decode(raw)
+                        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                    for release in &mut next_basis.items {
+                        release.applying_ordinal = match usize::from(release.applying_ordinal)
+                            .checked_add(start)
+                            .and_then(|ordinal| u16::try_from(ordinal).ok())
+                        {
+                            Some(ordinal) => ordinal,
+                            None => {
+                                return Ok(Err(invalid(
+                                    "allocated group ordinal exceeds the entry bound",
+                                )));
+                            }
+                        };
+                    }
+                    combined_basis.items.extend(next_basis.items);
+                    combined.extensions = vec![(
+                        fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION,
+                        combined_basis.canonical_bytes()?,
+                    )];
+                }
                 combined.legs.extend(prepared.proposal.legs);
             }
         }
@@ -706,6 +935,15 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         Ok(value) => value,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let historical_relief = match remaining_carrying_relief(
+        budget,
+        carrying.open_native,
+        carrying.historical_open_base,
+        request.amount,
+    ) {
+        Ok(value) => value,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let Some(row) = db.vertex_at(document_vid(&request.rate_document), at)? else {
         return Ok(Err(invalid(
             "Settlement Rate document is absent at the preparation prefix",
@@ -778,7 +1016,7 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         carrying.account,
         carrying.side.flipped(),
         request.amount,
-        relief,
+        historical_relief,
         request.settlement_account,
         request.conversion_account,
         request.realized_fx_account,
@@ -794,6 +1032,23 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         ordinal: request.target_ordinal,
         amount: request.amount,
     }];
+    if carrying.valuation_route.is_some() {
+        let release = match allocated::release_basis(
+            0,
+            carrying.carrying_source_digest,
+            historical_relief,
+            relief,
+            carrying.valuation_route,
+            carrying.valuation_routes_entry,
+            carrying.valuation_routes_digest,
+        ) {
+            Ok(release) => release,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = allocated::append_release(&mut template, release) {
+            return Ok(Err(refusal));
+        }
+    }
     Ok(Ok(PreparedFxSettlement {
         carrying,
         base_relief: relief,
@@ -811,17 +1066,94 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     if !is_source_bound(proposal) {
         return Ok(Ok(()));
     }
+    if has_allocated_basis(proposal) {
+        // Dedicated valuation leaves are never settlement consideration or
+        // technical conversion accounts for another source. Validate the
+        // complete proposed vector against every retained route before any
+        // append, as well as checking those leaves during historical replay.
+        let chart = crate::chart::read_at(db, book, at)?;
+        for epoch in chart.fx_revaluation_routes() {
+            for (source, route) in &epoch.routes {
+                if let Err(refusal) = allocated::covers_valuation_account(proposal, *source, route)
+                {
+                    return Ok(Err(refusal));
+                }
+            }
+        }
+    }
     let ranges = match settlement_ranges(proposal) {
         Ok(ranges) => ranges,
         Err(refusal) => return Ok(Err(refusal)),
     };
     for range in ranges {
-        if let Err(refusal) = validate_component(db, cx, book, proposal, at, &proposal.legs[range])?
-        {
+        if let Err(refusal) = validate_component(
+            db,
+            cx,
+            book,
+            proposal,
+            at,
+            range.start,
+            &proposal.legs[range],
+        )? {
             return Ok(Err(refusal));
         }
     }
     Ok(Ok(()))
+}
+
+/// Exact application undo restores its recorded split, without repricing the
+/// old receipt after a later revaluation. Reversing an original source while
+/// its contra component remains would orphan that component and is refused.
+pub(crate) fn validate_reversal<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    target: EntryRef,
+    original: &EntryPayload,
+    reversal: &EntryPayload,
+    at: CommitSeq,
+) -> Outcome<()> {
+    cx.query().with_restriction(|| {
+        if has_allocated_basis(original) {
+            let releases = match allocated::basis(original) { Ok(value) => value, Err(refusal) => return Ok(Err(refusal)) };
+            for release in releases.items {
+                let Some(leg) = original.legs.get(usize::from(release.applying_ordinal)) else { return Ok(Err(invalid("allocated undo has no original applying leg"))); };
+                let [application] = leg.settles.as_slice() else { return Ok(Err(invalid("allocated undo has no unique recorded application"))); };
+                let item = match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
+                let native = item.open_native.checked_add(application.amount).map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                let historical = item.historical_open_base.checked_add(release.historical_relief).map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                let valuation = item.valuation_open_base.checked_add(release.valuation_relief).map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                let total = historical.checked_add(valuation).map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                if native.mantissa > item.original_native.mantissa || historical.mantissa > item.original_base.mantissa
+                    || total.mantissa < 0 || reversal.effective_date < item.latest_effective_date
+                {
+                    return Ok(Err(invalid("exact allocated-settlement undo would exceed original capacity, produce negative carrying, or precede a later item effect")));
+                }
+            }
+            return Ok(Ok(()));
+        }
+        if original.class == EntryClass::REVERSAL || original.base_totals.as_ref().is_none_or(|total| {
+            !matches!(FxLawId::from_oid(&total.fx_law_oid), Some(FxLawId::SpotClose | FxLawId::PeriodAverage))
+        }) { return Ok(Ok(())); }
+        let mut allocated_ordinals = BTreeSet::new();
+        for row in db.vertices_at(at)? {
+            cx.query().checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
+            if !row.labels.contains(&label::ENTRY) { continue; }
+            let Some((entry, _)) = crate::post::read_entry_at(db, row.vid, at)? else { continue; };
+            let Some((_, raw)) = entry.proposal.extensions.iter().find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION) else { continue; };
+            let basis = FxRevaluationBasis::decode(raw).map_err(|error| KernelError::Corrupt(error.to_string()))?;
+            if let Some(allocation) = basis.item_allocation {
+                for item in allocation.items { if item.target == target { allocated_ordinals.insert(item.ordinal); } }
+            }
+        }
+        for ordinal in allocated_ordinals {
+            let item = match open_item_carrying_at(db, cx, book, target, ordinal, at)? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
+            if item.valuation_open_base.mantissa != 0 || reversal.effective_date < item.latest_effective_date {
+                return Ok(Err(invalid("the original item retains allocated valuation or a later item effect; correct its valuation through a new allocated revaluation before reversing the original")));
+            }
+        }
+        Ok(Ok(()))
+    })
 }
 
 fn validate_component<V: Vfs + Clone>(
@@ -830,6 +1162,7 @@ fn validate_component<V: Vfs + Clone>(
     book: &BookContext,
     proposal: &EntryPayload,
     at: CommitSeq,
+    applying_ordinal: usize,
     legs: &[fa_model::LegPayload],
 ) -> Outcome<()> {
     let applying: Vec<_> = legs.iter().filter(|leg| !leg.settles.is_empty()).collect();
@@ -870,7 +1203,7 @@ fn validate_component<V: Vfs + Clone>(
         let stripped = current.restrict::<asupersync::cx::cap::None>();
         let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
         let expected = match remaining_carrying_relief(
-            &mut budget, carrying.open_native, carrying.open_base, application.amount,
+            &mut budget, carrying.open_native, carrying.historical_open_base, application.amount,
         ) {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),
@@ -881,6 +1214,22 @@ fn validate_component<V: Vfs + Clone>(
                 leg.base_amount, expected.render(&book.units),
             ))));
         }
+        let legs = if carrying.valuation_route.is_some() {
+            let total = match remaining_carrying_relief(&mut budget, carrying.open_native, carrying.open_base, application.amount) {
+                Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+            };
+            let release = match allocated::release_basis(applying_ordinal, carrying.carrying_source_digest, expected, total,
+                carrying.valuation_route, carrying.valuation_routes_entry, carrying.valuation_routes_digest) {
+                Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = allocated::check_release(proposal, &release) { return Ok(Err(refusal)); }
+            let tail = usize::from(release.valuation_relief.mantissa != 0) * 2;
+            let Some(end) = legs.len().checked_sub(tail) else { return Ok(Err(invalid("valuation release tail is missing"))); };
+            &legs[..end]
+        } else {
+            if has_allocated_basis(proposal) { return Ok(Err(invalid("a legacy unallocated item cannot acquire a caller-authored valuation-release basis"))); }
+            legs
+        };
         // This law's complete effect vector is explicit and bounded. Merely
         // finding one plausible pair somewhere in arbitrary extra legs would
         // leave other foreign valuations unchecked.

@@ -271,6 +271,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         "--cash",
         "--amount",
         "--fx-rate",
+        "--fx-law",
         "--conversion",
         "--realized-fx",
         kind.control_flag(),
@@ -317,7 +318,18 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         }
     };
     let fx_route = ["--fx-rate", "--conversion", "--realized-fx"];
-    let uses_fx = fx_route.iter().any(|flag| args.flag(flag).is_some());
+    let uses_fx =
+        fx_route.iter().any(|flag| args.flag(flag).is_some()) || args.flag("--fx-law").is_some();
+    let fx_law = args.flag("--fx-law").unwrap_or("SettlementCarryingBasis");
+    if !matches!(
+        fx_law,
+        "SettlementCarryingBasis" | "SettlementAllocatedCarrying"
+    ) {
+        return Err(usage(
+            "--fx-law must name SettlementCarryingBasis or SettlementAllocatedCarrying",
+            "use SettlementAllocatedCarrying after an explicit --allocate-open-items revaluation",
+        ));
+    }
     if uses_fx {
         for flag in fx_route {
             args.require(
@@ -388,7 +400,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         fields.push((
             "fx",
             obj(vec![
-                ("law", s("SettlementCarryingBasis")),
+                ("law", s(fx_law)),
                 (
                     "rates",
                     Json::Arr(vec![s(args.require("--fx-rate", "D:<oid>")?)]),

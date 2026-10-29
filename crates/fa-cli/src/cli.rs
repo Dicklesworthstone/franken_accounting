@@ -8116,6 +8116,7 @@ fn build_post_request_with_prior(
     let mut reversal_detail = None;
     let mut reversal_base_totals = None;
     let mut reversal_rate_evidence = Vec::new();
+    let mut reversal_valuation_basis = None;
     let mut target_evidence = Vec::new();
     let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
         // A Reclassification names its target and moves part of its legs to
@@ -8351,6 +8352,12 @@ fn build_post_request_with_prior(
         target_date = Some(target.proposal.effective_date);
         target_period = target.proposal.effective_period.clone();
         reversal_base_totals = target.proposal.base_totals.clone();
+        reversal_valuation_basis = target
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION)
+            .cloned();
         if let Some(totals) = &mut reversal_base_totals {
             std::mem::swap(&mut totals.debits, &mut totals.credits);
             reversal_rate_evidence = target
@@ -8692,6 +8699,11 @@ fn build_post_request_with_prior(
             .unwrap_or_default(),
         tags: Vec::new(),
     };
+    if let Some(extension) = reversal_valuation_basis {
+        proposal.schema_minor = fa_model::entry::FX_ITEM_CARRYING_SCHEMA_MINOR;
+        proposal.extensions.push(extension);
+        proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    }
     for evidence in reversal_rate_evidence {
         if !proposal.evidence.contains(&evidence) {
             proposal.evidence.push(evidence);
@@ -15029,7 +15041,7 @@ fn verify_fx_conversion(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read", "verify"])?;
-    let book = ctx.books.open_admitted(args, |book| {
+    let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, principal, book.context().book_id)
             .and_then(|()| {
                 fa_policy::require(
@@ -15045,7 +15057,7 @@ fn verify_fx_conversion(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     })?;
     let out = &ctx.out;
     let (known_at, _) = known_at_flag(args, &book, out)?;
-    let v = book.verify_fx_conversions(known_at)?;
+    let v = book.verify_fx_conversions_with_history(&capability, known_at)??;
     out.known_at(v.known_at);
     let valued: u64 = v.checked.values().sum();
     let fields = vec![

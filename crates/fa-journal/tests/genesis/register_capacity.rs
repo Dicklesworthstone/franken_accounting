@@ -875,6 +875,328 @@ fn carried_capacity_follows_a_released_hold() {
 }
 
 #[test]
+fn carried_resolution_capacity_releases_before_mixed_batch_additions() {
+    for release_first in [false, true] {
+        let mut h = harness();
+        let mut carried = fa_journal::CarriedHistory::default();
+        let req = h.request(
+            h.pending(h.rent_legs(i128::MAX), b"summary-full-hold"),
+            &["post"],
+        );
+        let target = post_carried(&mut h, req, &mut carried).unwrap().entry_ref();
+        h.transition(&h.april.clone(), PeriodTransition::Open, b"summary-april")
+            .unwrap();
+        let date = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let mut release =
+            h.resolution_posts(target, h.rent_legs(1), vec![0, 1], b"summary-partial-post");
+        release.effective_date = date;
+        let mut next = h.pending(h.rent_legs(i128::MAX), b"summary-replacement-hold");
+        next.effective_date = date;
+        let mut ordinary = h.invoice(3, b"summary-unrelated-post");
+        ordinary.effective_date = date;
+        let members = if release_first {
+            vec![release, next, ordinary]
+        } else {
+            vec![next, ordinary, release]
+        };
+        let batch = h.batch(b"summary-swap-full-hold", members);
+        post_batch_carried(&mut h, batch, &mut carried)
+            .expect("full original vector releases before the new MAX hold is added");
+        let history = carried.capacity().unwrap();
+        assert!(history.admitted_from_summary(), "no literal admission scan");
+        assert_eq!(history.resolution_targets_read(), 1);
+
+        // Only one cent posted; all of the former MAX reservation was
+        // released. The new MAX hold is now the sole pending contribution.
+        let head = h.db.frontier().unwrap();
+        let mut over = h.pending(h.rent_legs(1), b"summary-one-too-many");
+        over.effective_date = date;
+        let scanned = h.post(h.request(over.clone(), &["post"])).unwrap_err();
+        let req = h.request(over, &["post"]);
+        let cached = post_carried(&mut h, req, &mut carried).unwrap_err();
+        assert_eq!(cached, scanned, "literal first refusal is preserved");
+        assert_eq!(cached.code, "FA-REF-198");
+        assert!(!carried.capacity().unwrap().admitted_from_summary());
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_leg_projections(&h);
+    }
+}
+
+#[test]
+fn carried_resolution_capacity_handles_holds_born_and_resolved_in_one_batch() {
+    for posts in [false, true] {
+        let mut h = harness();
+        let mut carried = fa_journal::CarriedHistory::default();
+        // An unrelated committed MAX hold uses the same cells. Removing a
+        // newly born hold from that summary would corrupt this reservation.
+        let req = h.request(
+            h.pending(h.rent_legs(i128::MAX), b"summary-existing-max"),
+            &["post"],
+        );
+        post_carried(&mut h, req, &mut carried).unwrap();
+        let held = h.pending(h.rent_legs(i128::MAX), b"summary-transient-max");
+        let target = h.member_ref(&held);
+        let release = if posts {
+            h.resolution_posts(
+                target,
+                h.rent_legs(1),
+                vec![0, 1],
+                b"summary-transient-release",
+            )
+        } else {
+            h.resolution_voids(target, b"summary-transient-release")
+        };
+        let batch = h.batch(b"summary-transient-batch", vec![held, release]);
+        post_batch_carried(&mut h, batch, &mut carried)
+            .expect("transient hold is absent from the final pending columns");
+        let history = carried.capacity().unwrap();
+        assert!(history.admitted_from_summary());
+        assert_eq!(history.resolution_targets_read(), 1);
+        let over = h.pending(h.rent_legs(1), b"summary-original-still-reserved");
+        let head = h.db.frontier().unwrap();
+        let scanned = h.post(h.request(over.clone(), &["post"])).unwrap_err();
+        let req = h.request(over, &["post"]);
+        let cached = post_carried(&mut h, req, &mut carried).unwrap_err();
+        assert_eq!(cached, scanned);
+        assert_eq!(cached.code, "FA-REF-198");
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_leg_projections(&h);
+    }
+}
+
+#[test]
+fn carried_resolution_capacity_keeps_posted_overflow_and_target_refusals() {
+    let mut h = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    for proposal in [
+        h.proposal(
+            h.rent_legs(i128::MAX - 1),
+            b"summary-posted-near-cap",
+            EntryClass::ORIGINAL,
+        ),
+        h.pending(h.rent_legs(10), b"summary-posted-held"),
+    ] {
+        let req = h.request(proposal, &["post"]);
+        post_carried(&mut h, req, &mut carried).unwrap();
+    }
+    let hold_vid = entry_vid(
+        h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        b"summary-posted-held",
+    );
+    let (held, _) = read_entry(&h.db, hold_vid).unwrap().unwrap();
+    let target = EntryRef {
+        vid: hold_vid,
+        entry_digest: held.entry_digest,
+    };
+    let head = h.db.frontier().unwrap();
+    for (target, amount) in [
+        (
+            EntryRef {
+                entry_digest: [0; 32],
+                ..target
+            },
+            1,
+        ),
+        (target, 0),
+        (target, 2),
+    ] {
+        let proposal = h.resolution_posts(
+            target,
+            h.rent_legs(amount),
+            vec![0, 1],
+            b"summary-refused-post",
+        );
+        let scanned = h.post(h.request(proposal.clone(), &["post"])).unwrap_err();
+        let req = h.request(proposal, &["post"]);
+        let cached = post_carried(&mut h, req, &mut carried).unwrap_err();
+        assert_eq!(cached, scanned, "target/shape/capacity precedence");
+        if amount == 2 {
+            assert_eq!(cached.code, "FA-REF-198");
+            assert!(!carried.capacity().unwrap().admitted_from_summary());
+        }
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    let req = h.request(
+        h.resolution_posts(target, h.rent_legs(1), vec![0, 1], b"summary-refused-post"),
+        &["post"],
+    );
+    post_carried(&mut h, req, &mut carried).expect("corrected request uses the unspent identity");
+    assert!(carried.capacity().unwrap().admitted_from_summary());
+    let repeat = h.resolution_voids(target, b"summary-second-release");
+    let scanned = h.post(h.request(repeat.clone(), &["post"])).unwrap_err();
+    let req = h.request(repeat, &["post"]);
+    assert_eq!(
+        post_carried(&mut h, req, &mut carried).unwrap_err(),
+        scanned
+    );
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn carried_resolution_capacity_reads_targets_not_unrelated_history() {
+    let mut h = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    let mut filler_count = 0;
+    let mut work = Vec::new();
+    for size in [2, 4, 8, 16, 32] {
+        while filler_count < size {
+            let proposal = h.invoice(
+                1,
+                format!("resolution-unrelated-{filler_count:02}").as_bytes(),
+            );
+            let req = h.request(proposal, &["post"]);
+            post_carried(&mut h, req, &mut carried).unwrap();
+            filler_count += 1;
+        }
+        let proposal = h.pending(
+            h.rent_legs(100),
+            format!("resolution-counted-hold-{size:02}").as_bytes(),
+        );
+        let req = h.request(proposal, &["post"]);
+        let target = post_carried(&mut h, req, &mut carried).unwrap().entry_ref();
+        let proposal = h.resolution_posts(
+            target,
+            h.rent_legs(1),
+            vec![0, 1],
+            format!("resolution-counted-post-{size:02}").as_bytes(),
+        );
+        let req = h.request(proposal, &["post"]);
+        post_carried(&mut h, req, &mut carried).unwrap();
+        let history = carried.capacity().unwrap();
+        assert!(history.admitted_from_summary(), "size={size}");
+        assert_eq!(history.resolution_targets_read(), 1, "size={size}");
+        work.push(history.carried_rows().expect("only the new hold's suffix"));
+    }
+    assert!(work[0] > 0);
+    assert!(work.iter().all(|rows| *rows == work[0]), "{work:?}");
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn carried_resolution_capacity_preserves_mixed_native_and_functional_columns() {
+    use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, value_proposal};
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+
+    // One vector has both EUR and USD on each account. The first rate exercises
+    // HalfEven rounding with positive initial and resolved valuations; SpotClose
+    // does not admit zero initial base amounts. The second makes the full
+    // functional hold exactly MAX while every native amount remains small.
+    for (rate_num, rate_den) in [(3, 4), ((i128::MAX as u128 - 1) / 2, 1)] {
+        let mut h = harness();
+        let eur = h.book.units.lookup("EUR").unwrap();
+        let specs: Vec<_> = [("1289", 1, 0), ("4089", 4, 1)]
+            .into_iter()
+            .map(|(code, account_type, normal_balance)| AccountSpec {
+                code: code.into(),
+                name: code.into(),
+                account_type,
+                normal_balance,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            })
+            .collect();
+        let ctx = h.ctx();
+        let description = h
+            .proposal(vec![], b"resolution-fx-chart", EntryClass::ORIGINAL)
+            .description;
+        let date = h.day();
+        h.runtime
+            .block_on(install_chart(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &specs,
+                PRINCIPAL,
+                date,
+                b"resolution-fx-chart",
+                description,
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        let rate = FxRateDocument::new(
+            FxRateTerms {
+                base_unit: h.usd,
+                quote_unit: eur,
+                rate_num,
+                rate_den,
+                rounding: fa_money::RoundingLaw::HalfEven,
+            },
+            date,
+            1,
+            FxRatePurpose::SpotClose,
+            "Mixed reservation capacity rate",
+        )
+        .unwrap();
+        h.add_document(
+            &rate
+                .document(h.book.book_id, PRINCIPAL, HUMAN_UPLOAD)
+                .unwrap(),
+        )
+        .unwrap();
+        let debit = account_vid(h.book.book_id, "1289");
+        let credit = account_vid(h.book.book_id, "4089");
+        let usd = h.usd;
+        let legs = |foreign| {
+            vec![
+                LegPayload::simple(Side::Debit, debit, Amount::new(eur, foreign)),
+                LegPayload::simple(Side::Credit, credit, Amount::new(eur, foreign)),
+                LegPayload::simple(Side::Debit, debit, Amount::new(usd, 1)),
+                LegPayload::simple(Side::Credit, credit, Amount::new(usd, 1)),
+            ]
+        };
+        let value = |h: &Harness, proposal| {
+            let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
+            let mut budget =
+                ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
+            value_proposal(
+                &mut budget,
+                proposal,
+                &fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap(),
+                &h.book.units,
+                FxLawId::SpotClose,
+                std::slice::from_ref(&rate),
+            )
+            .unwrap()
+        };
+        let held = value(&h, h.pending(legs(2), b"resolution-fx-hold"));
+        assert_eq!(
+            held.base_totals.as_ref().unwrap().debits,
+            if rate_den == 4 { 3 } else { i128::MAX }
+        );
+        let mut carried = fa_journal::CarriedHistory::default();
+        let req = h.request(held, &["post"]);
+        let target = post_carried(&mut h, req, &mut carried).unwrap().entry_ref();
+        let next = value(&h, h.pending(legs(2), b"resolution-fx-new-hold"));
+        let release = value(
+            &h,
+            h.resolution_posts(target, legs(1), vec![0, 1, 2, 3], b"resolution-fx-partial"),
+        );
+        let batch = h.batch(b"resolution-fx-swap", vec![next, release]);
+        post_batch_carried(&mut h, batch, &mut carried)
+            .expect("native and functional pending columns both release in full");
+        assert!(carried.capacity().unwrap().admitted_from_summary());
+        assert_eq!(carried.capacity().unwrap().resolution_targets_read(), 1);
+        if rate_den == 1 {
+            let more = value(&h, h.pending(legs(1), b"resolution-fx-over"));
+            let head = h.db.frontier().unwrap();
+            let scanned = h.post(h.request(more.clone(), &["post"])).unwrap_err();
+            let req = h.request(more, &["post"]);
+            let cached = post_carried(&mut h, req, &mut carried).unwrap_err();
+            assert_eq!(cached, scanned);
+            assert_eq!(cached.code, "FA-REF-198");
+            assert!(cached.message.contains("functional"), "{cached}");
+            assert!(!carried.capacity().unwrap().admitted_from_summary());
+            assert_eq!(h.db.frontier().unwrap(), head);
+        }
+        assert_leg_projections(&h);
+    }
+}
+
+#[test]
 fn a_carried_capacity_summary_never_crosses_to_another_database() {
     // Two books that diverge at one commit and stand at one frontier: `full`
     // is near the posted-debit cap, `open` holds two cents.

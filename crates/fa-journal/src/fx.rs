@@ -64,10 +64,12 @@ pub enum FxLawId {
     TranslationCurrentRate = 5,
     RemeasurementTemporal = 6,
     YearEndCloseCarrying = 8,
+    PeriodEndItemRevaluation = 9,
+    SettlementAllocatedCarrying = 10,
 }
 
 impl FxLawId {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::SpotClose,
         Self::PeriodEndRevaluation,
         Self::PeriodAverage,
@@ -75,6 +77,8 @@ impl FxLawId {
         Self::TranslationCurrentRate,
         Self::RemeasurementTemporal,
         Self::YearEndCloseCarrying,
+        Self::PeriodEndItemRevaluation,
+        Self::SettlementAllocatedCarrying,
     ];
 
     #[must_use]
@@ -97,6 +101,8 @@ impl FxLawId {
             Self::TranslationCurrentRate => "TranslationCurrentRate",
             Self::RemeasurementTemporal => "RemeasurementTemporal",
             Self::YearEndCloseCarrying => "YearEndCloseCarrying",
+            Self::PeriodEndItemRevaluation => "PeriodEndItemRevaluation",
+            Self::SettlementAllocatedCarrying => "SettlementAllocatedCarrying",
         }
     }
 
@@ -107,10 +113,13 @@ impl FxLawId {
         match self {
             Self::SpotClose => Some(FxRatePurpose::SpotClose),
             Self::PeriodEndRevaluation
+            | Self::PeriodEndItemRevaluation
             | Self::TranslationCurrentRate
             | Self::RemeasurementTemporal => Some(FxRatePurpose::PeriodClose),
             Self::PeriodAverage => Some(FxRatePurpose::PeriodAverage),
-            Self::SettlementCarryingBasis => Some(FxRatePurpose::Settlement),
+            Self::SettlementCarryingBasis | Self::SettlementAllocatedCarrying => {
+                Some(FxRatePurpose::Settlement)
+            }
             Self::YearEndCloseCarrying => None,
         }
     }
@@ -726,6 +735,36 @@ pub(crate) fn admit_structure(
     leg_entities: &[Option<String>],
     units: &UnitRegistry,
 ) -> Result<Option<FxClaim>, Refusal> {
+    let release_extension = proposal
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION);
+    let release_law = proposal
+        .base_totals
+        .as_ref()
+        .is_some_and(|total| total.fx_law_oid == FxLawId::SettlementAllocatedCarrying.oid());
+    if release_extension != release_law {
+        return Err(fx_structure(
+            "SettlementAllocatedCarrying and its immutable valuation-release extension are required together",
+        ));
+    }
+    let item_basis = proposal
+        .extensions
+        .iter()
+        .find(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
+        .map(|(_, raw)| fa_model::FxRevaluationBasis::decode(raw))
+        .transpose()
+        .map_err(fx_structure)?
+        .is_some_and(|basis| basis.item_allocation.is_some());
+    let item_law = proposal
+        .base_totals
+        .as_ref()
+        .is_some_and(|total| total.fx_law_oid == FxLawId::PeriodEndItemRevaluation.oid());
+    if item_basis != item_law {
+        return Err(fx_structure(
+            "PeriodEndItemRevaluation and its immutable item-allocation basis are required together",
+        ));
+    }
     let Some(bt) = &proposal.base_totals else {
         if proposal.class == EntryClass::REVALUATION {
             return Err(not_implemented("Revaluation"));
@@ -759,6 +798,7 @@ pub(crate) fn admit_structure(
         && !matches!(
             law,
             FxLawId::PeriodEndRevaluation
+                | FxLawId::PeriodEndItemRevaluation
                 | FxLawId::TranslationCurrentRate
                 | FxLawId::RemeasurementTemporal
         )
@@ -767,7 +807,11 @@ pub(crate) fn admit_structure(
             "a Revaluation entry must use PeriodEndRevaluation, TranslationCurrentRate, or RemeasurementTemporal",
         ));
     }
-    if law == FxLawId::PeriodEndRevaluation && proposal.class != EntryClass::REVALUATION {
+    if matches!(
+        law,
+        FxLawId::PeriodEndRevaluation | FxLawId::PeriodEndItemRevaluation
+    ) && proposal.class != EntryClass::REVALUATION
+    {
         return Err(fx_structure(
             "FxLawId::PeriodEndRevaluation is only admissible on a Revaluation entry",
         ));
@@ -834,7 +878,9 @@ pub(crate) fn admit_structure(
         };
         let zero_relief = matches!(
             law,
-            FxLawId::SettlementCarryingBasis | FxLawId::YearEndCloseCarrying
+            FxLawId::SettlementCarryingBasis
+                | FxLawId::SettlementAllocatedCarrying
+                | FxLawId::YearEndCloseCarrying
         ) && leg.amount.unit != spec.base_unit
             && base_amt.mantissa == 0;
         if base_amt.unit != spec.base_unit
@@ -1223,7 +1269,7 @@ fn verify_claim(
                 )));
             }
         }
-        FxLawId::PeriodEndRevaluation => {
+        FxLawId::PeriodEndRevaluation | FxLawId::PeriodEndItemRevaluation => {
             let bt = proposal.base_totals.as_ref().expect("checked in admit");
             if bt.residual.is_some() {
                 return Ok(Err(fx_structure(
@@ -1274,6 +1320,18 @@ fn verify_claim(
         }
         FxLawId::SettlementCarryingBasis => {
             if let Err(r) = verify_realized_fx_settlement(
+                &mut budget,
+                valuation,
+                spec,
+                units,
+                leg_entities,
+                &rate_docs,
+            ) {
+                return Ok(Err(r));
+            }
+        }
+        FxLawId::SettlementAllocatedCarrying => {
+            if let Err(r) = crate::carrying::verify_allocated_fx_structure(
                 &mut budget,
                 valuation,
                 spec,
@@ -1386,6 +1444,29 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
                 .map_err(|refusal| refusal.message);
         }
         if verification.is_ok()
+            && let Some((_, raw)) = proposal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
+        {
+            let basis = fa_model::FxRevaluationBasis::decode(raw)
+                .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
+            if basis.item_allocation.is_some() {
+                verification = cx
+                    .query()
+                    .with_restriction(|| {
+                        crate::revaluation::verify_item_history(
+                            db,
+                            cx,
+                            book,
+                            basis.source_account,
+                            at,
+                        )
+                    })?
+                    .map_err(|refusal| refusal.message);
+            }
+        }
+        if verification.is_ok()
             && proposal.class == EntryClass::CLOSING
             && proposal
                 .base_totals
@@ -1474,6 +1555,7 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
             FxLawId::SpotClose
                 | FxLawId::PeriodAverage
                 | FxLawId::SettlementCarryingBasis
+                | FxLawId::SettlementAllocatedCarrying
                 | FxLawId::YearEndCloseCarrying
         )
     {
@@ -1691,7 +1773,7 @@ fn compute_entity_valuations(
     })
 }
 
-fn verify_realized_fx_settlement(
+pub(crate) fn verify_realized_fx_settlement(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     proposal: &EntryPayload,
     spec: &BookSpec,

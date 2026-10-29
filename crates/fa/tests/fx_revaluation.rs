@@ -311,6 +311,7 @@ impl Fixture {
             source_account: self.account(source),
             rate_document,
             entity: None,
+            item_allocation: false,
         }
     }
 

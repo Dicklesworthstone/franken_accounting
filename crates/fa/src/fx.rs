@@ -96,6 +96,36 @@ fn average_date(proposal: &EntryPayload, calendar: &FiscalCalendar) -> Result<Da
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Recompute retained FX laws at one captured prefix, loading the native
+    /// history needed by source-bound carrying and revaluation after reopen.
+    /// Current whole-book Read and Verify authority precede that loading and
+    /// are checked again before disclosing the result. No journal row changes.
+    pub async fn verify_fx_conversions_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_journal::FxConversionVerification> {
+        if let Err(denial) = fa_policy::require(capability, Op::Verify, "verifying FX conversions")
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let selected = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, false)
+            .await?
+        {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self.verify_fx_conversions(cx, Some(selected))?;
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, capability.holder(), false, Some(selected))?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(result))
+    }
+
     /// Read one functional trial balance with its historical display accounts.
     /// Like the existing functional folds, this uses committed base amounts;
     /// it does not require the original Rate bodies to remain disclosed. Use
@@ -527,9 +557,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "the settlement template names a different book",
             )));
         }
-        if let Err(refusal) = self
-            .prepare_report_history(cx, capability.holder(), capability, None)
-            .await?
+        // Allocated carrying reproduces each revaluation at its original
+        // observation and publication prefixes. A current-snapshot report
+        // preparation may leave the native delta history unloaded after open.
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, template.principal_ref, true, None)?
         {
             return Ok(Err(refusal));
         }

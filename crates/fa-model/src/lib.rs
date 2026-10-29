@@ -67,6 +67,9 @@ pub use rea::{
     LegalEntityFullSpec, OwnershipPct, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,
     RelationshipKind, RelationshipSpec,
 };
-pub use revaluation::FxRevaluationBasis;
+pub use revaluation::{
+    FxItemRevaluationBasis, FxRevaluationBasis, FxRevaluationItem, FxSettlementValuationBasis,
+    FxSettlementValuationRelease,
+};
 pub use symbols::SymbolTable;
 pub use unit::UnitDefinition;

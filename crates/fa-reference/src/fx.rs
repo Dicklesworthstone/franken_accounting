@@ -237,6 +237,105 @@ pub fn remaining_carrying_relief(
     round_convert(open_base, 0, 0, numerator, denominator, "HalfEven")
 }
 
+/// One same-sided open item after a recorded aggregate closing revaluation.
+/// The source account retains `historical_base`; the dedicated valuation leaf
+/// holds the signed difference `carrying_base - historical_base`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OracleRevaluedCarrying {
+    pub native: i128,
+    pub historical_base: i128,
+    pub carrying_base: i128,
+}
+
+/// The two exact remaining-value releases of one foreign application. The
+/// signed valuation release reverses the settled item's accumulated unrealized
+/// adjustment; gross realized FX still compares cash with historical relief.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OracleRevaluedRelief {
+    pub native: i128,
+    pub historical_base: i128,
+    pub carrying_base: i128,
+    pub valuation: i128,
+}
+
+/// Allocate the actual aggregate closing target over a complete, same-sided
+/// open-item population. `items` is ordered by the source's immutable
+/// `(entry_identity, leg_ordinal)` tuple; that order breaks
+/// equal-remainder ties. Each pair is `(open_native, remaining_historical_base)`.
+///
+/// The registered LargestRemainder law allocates the already HalfEven-rounded
+/// total by native weights. It never independently rounds each item and loses
+/// the aggregate remainder. Opposing item deltas still require actual recorded
+/// pairs even when their aggregate nets to zero; only unchanged allocations
+/// are a no-op.
+///
+/// This oracle uses its own unbounded limbs and allocation implementation. The
+/// caller establishes source closure, side, units, chronology and the actual
+/// journaled revaluation; this function checks only the exact magnitude law.
+pub fn allocate_revalued_carrying(
+    target_base: i128,
+    items: &[(i128, i128)],
+) -> Result<Vec<OracleRevaluedCarrying>, String> {
+    if target_base < 0 || items.is_empty() || items.len() > 4096 {
+        return Err(
+            "revaluation requires a nonnegative target and a bounded open population".into(),
+        );
+    }
+    let mut native_sum = Int::zero();
+    let mut historical_sum = Int::zero();
+    let mut weights = Vec::with_capacity(items.len());
+    for &(native, historical) in items {
+        if native <= 0 || historical < 0 {
+            return Err(
+                "each revalued item needs positive native and nonnegative historical value".into(),
+            );
+        }
+        native_sum = native_sum.add(&Int::from_i128(native));
+        historical_sum = historical_sum.add(&Int::from_i128(historical));
+        weights.push(u128::try_from(native).map_err(|_| "invalid native allocation weight")?);
+    }
+    if native_sum.to_i128().is_none() || historical_sum.to_i128().is_none() {
+        return Err("the complete same-sided source exceeds its i128 magnitude domain".into());
+    }
+    let allocated =
+        crate::reports::largest_remainder(target_base, &weights).map_err(str::to_owned)?;
+    Ok(items
+        .iter()
+        .zip(allocated)
+        .map(
+            |(&(native, historical_base), carrying_base)| OracleRevaluedCarrying {
+                native,
+                historical_base,
+                carrying_base,
+            },
+        )
+        .collect())
+}
+
+/// Independently release historical cost and total carrying value under
+/// RemainingCarryingValue/HalfEven. Their signed difference is the valuation
+/// adjustment to release, including negative and zero rounded adjustments.
+/// The final application takes both exact remainders. An undo restores these
+/// recorded values rather than calling this function at the undo's date.
+pub fn remaining_revalued_carrying_relief(
+    open: OracleRevaluedCarrying,
+    application: i128,
+) -> Result<OracleRevaluedRelief, String> {
+    let historical_base =
+        remaining_carrying_relief(open.native, open.historical_base, application)?;
+    let carrying_base = remaining_carrying_relief(open.native, open.carrying_base, application)?;
+    let valuation = Int::from_i128(carrying_base)
+        .sub(&Int::from_i128(historical_base))
+        .to_i128()
+        .ok_or("valuation relief exceeds i128")?;
+    Ok(OracleRevaluedRelief {
+        native: application,
+        historical_base,
+        carrying_base,
+        valuation,
+    })
+}
+
 /// Independently value an entry's legs per legal entity and foreign unit,
 /// checking native balance and absorbing any rounding residual within its
 /// entity and within the law's exact bound (`FA-INV-01.base`,
@@ -898,6 +997,226 @@ pub fn remeasure_temporal_oracle(
 #[cfg(test)]
 mod carrying_tests {
     use super::*;
+
+    #[test]
+    fn revalued_allocation_conserves_aggregate_and_breaks_ties_by_item_order() {
+        for (target, inputs, expected) in [
+            (2, vec![(1, 1), (1, 1), (1, 1)], vec![1, 1, 0]),
+            (4, vec![(1, 7), (1, 1), (1, 0)], vec![2, 1, 1]),
+            (5, vec![(1, 4), (2, 1)], vec![2, 3]),
+            (0, vec![(1, 2), (2, 5)], vec![0, 0]),
+            (
+                i128::MAX,
+                vec![(i128::MAX - 1, i128::MAX - 1), (1, 1)],
+                vec![i128::MAX - 1, 1],
+            ),
+        ] {
+            let items = allocate_revalued_carrying(target, &inputs).unwrap();
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.carrying_base)
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+            assert_eq!(
+                items.iter().fold(Int::zero(), |sum, item| {
+                    sum.add(&Int::from_i128(item.carrying_base))
+                }),
+                Int::from_i128(target),
+            );
+            for (item, (native, historical)) in items.iter().zip(inputs) {
+                assert_eq!(item.native, native);
+                assert_eq!(item.historical_base, historical);
+            }
+        }
+        // A zero net revaluation still needs two recorded item adjustments:
+        // the item carrying two units loses one and the other gains one.
+        let allocated = allocate_revalued_carrying(2, &[(1, 2), (1, 0)]).unwrap();
+        assert_eq!(
+            allocated[0].carrying_base - allocated[0].historical_base,
+            -1
+        );
+        assert_eq!(allocated[1].carrying_base - allocated[1].historical_base, 1);
+
+        for (target, items) in [
+            (-1, vec![(1, 1)]),
+            (1, vec![]),
+            (1, vec![(0, 1)]),
+            (1, vec![(-1, 1)]),
+            (1, vec![(1, -1)]),
+            (1, vec![(i128::MAX, 0), (1, 0)]),
+            (1, vec![(1, i128::MAX), (1, 1)]),
+            (1, vec![(1, 0); 4097]),
+        ] {
+            assert!(allocate_revalued_carrying(target, &items).is_err());
+        }
+    }
+
+    #[test]
+    fn revalued_relief_keeps_historical_and_total_rounding_and_final_remainders() {
+        for (initial, expected) in [
+            (
+                OracleRevaluedCarrying {
+                    native: 3,
+                    historical_base: 10,
+                    carrying_base: 13,
+                },
+                vec![(3, 4, 1), (4, 4, 0), (3, 5, 2)],
+            ),
+            (
+                OracleRevaluedCarrying {
+                    native: 3,
+                    historical_base: 10,
+                    carrying_base: 1,
+                },
+                vec![(3, 0, -3), (4, 0, -4), (3, 1, -2)],
+            ),
+            (
+                OracleRevaluedCarrying {
+                    native: 2,
+                    historical_base: 1,
+                    carrying_base: 3,
+                },
+                vec![(0, 2, 2), (1, 1, 0)],
+            ),
+            (
+                OracleRevaluedCarrying {
+                    native: 2,
+                    historical_base: 3,
+                    carrying_base: 1,
+                },
+                vec![(2, 0, -2), (1, 1, 0)],
+            ),
+        ] {
+            let mut open = initial;
+            let mut released_historical = Int::zero();
+            let mut released_total = Int::zero();
+            let mut released_valuation = Int::zero();
+            for (historical, total, valuation) in expected {
+                let relief = remaining_revalued_carrying_relief(open, 1).unwrap();
+                assert_eq!(
+                    relief,
+                    OracleRevaluedRelief {
+                        native: 1,
+                        historical_base: historical,
+                        carrying_base: total,
+                        valuation,
+                    }
+                );
+                open.native = Int::from_i128(open.native)
+                    .sub(&Int::from_i128(relief.native))
+                    .to_i128()
+                    .unwrap();
+                open.historical_base = Int::from_i128(open.historical_base)
+                    .sub(&Int::from_i128(relief.historical_base))
+                    .to_i128()
+                    .unwrap();
+                open.carrying_base = Int::from_i128(open.carrying_base)
+                    .sub(&Int::from_i128(relief.carrying_base))
+                    .to_i128()
+                    .unwrap();
+                released_historical =
+                    released_historical.add(&Int::from_i128(relief.historical_base));
+                released_total = released_total.add(&Int::from_i128(relief.carrying_base));
+                released_valuation = released_valuation.add(&Int::from_i128(relief.valuation));
+            }
+            assert_eq!(
+                open,
+                OracleRevaluedCarrying {
+                    native: 0,
+                    historical_base: 0,
+                    carrying_base: 0
+                }
+            );
+            assert_eq!(released_historical, Int::from_i128(initial.historical_base));
+            assert_eq!(released_total, Int::from_i128(initial.carrying_base));
+            assert_eq!(
+                released_valuation,
+                Int::from_i128(initial.carrying_base).sub(&Int::from_i128(initial.historical_base))
+            );
+        }
+        let maximum = OracleRevaluedCarrying {
+            native: i128::MAX,
+            historical_base: i128::MAX,
+            carrying_base: i128::MAX - 1,
+        };
+        assert_eq!(
+            remaining_revalued_carrying_relief(maximum, i128::MAX).unwrap(),
+            OracleRevaluedRelief {
+                native: i128::MAX,
+                historical_base: i128::MAX,
+                carrying_base: i128::MAX - 1,
+                valuation: -1,
+            }
+        );
+        for application in [0, -1, 4] {
+            assert!(
+                remaining_revalued_carrying_relief(
+                    OracleRevaluedCarrying {
+                        native: 3,
+                        historical_base: 10,
+                        carrying_base: 13,
+                    },
+                    application
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn revalued_undo_restores_recorded_relief_after_a_later_reallocation() {
+        let initial = OracleRevaluedCarrying {
+            native: 3,
+            historical_base: 10,
+            carrying_base: 13,
+        };
+        let recorded = remaining_revalued_carrying_relief(initial, 1).unwrap();
+        assert_eq!(
+            (
+                recorded.historical_base,
+                recorded.carrying_base,
+                recorded.valuation
+            ),
+            (3, 4, 1)
+        );
+        // The two remaining native units are subsequently revalued to six.
+        let revalued = allocate_revalued_carrying(6, &[(2, 7)]).unwrap()[0];
+        let recomputed = remaining_revalued_carrying_relief(revalued, 1).unwrap();
+        assert_ne!(recomputed, recorded);
+        let restored = OracleRevaluedCarrying {
+            native: Int::from_i128(revalued.native)
+                .add(&Int::from_i128(recorded.native))
+                .to_i128()
+                .unwrap(),
+            historical_base: Int::from_i128(revalued.historical_base)
+                .add(&Int::from_i128(recorded.historical_base))
+                .to_i128()
+                .unwrap(),
+            carrying_base: Int::from_i128(revalued.carrying_base)
+                .add(&Int::from_i128(recorded.carrying_base))
+                .to_i128()
+                .unwrap(),
+        };
+        assert_eq!(
+            restored,
+            OracleRevaluedCarrying {
+                native: 3,
+                historical_base: 10,
+                carrying_base: 10,
+            }
+        );
+        assert_eq!(
+            remaining_revalued_carrying_relief(restored, 3).unwrap(),
+            OracleRevaluedRelief {
+                native: 3,
+                historical_base: 10,
+                carrying_base: 10,
+                valuation: 0,
+            }
+        );
+    }
 
     #[test]
     fn relief_has_literal_half_even_final_zero_and_wide_boundaries() {

@@ -7,7 +7,7 @@ schema_version = 1
 name = "Entry"
 owner = "fa-model::entry::Entry"
 major = 1
-minor = 3
+minor = 4
 proposal_digest_domain = "fa:entry-proposal:v1"
 entry_digest_domain = "fa:entry:v1"
 semantic_digest_domain = "fa:entry-semantic:v1"
@@ -15,7 +15,7 @@ externally_verifiable = true
 
 proposal_fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "class:u16", "effective_date:i32", "document_date:option<i32>", "description:erasable<string>", "effective_period:option<period_ref>", "legs:list<leg_payload>", "control:option<control_payload>", "unit_totals:list<unit_total>", "base_totals:option<base_totals>", "idempotency_key:bytes", "origin:entry_origin", "principal_ref:u128", "session_ref:option<u128>", "evidence:list<evidence_ref>", "supersession:list<supersession>", "pending:option<pending>", "external_ids:list<external_id>", "tags:list<tag>", "extensions:list<extension>"]
 envelope_fields = ["proposal_digest:bytes32", "plan_certificate_oid:option<bytes32>", "approvals:list<approval_ref>", "entry_digest:bytes32"]
-extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1"]
+extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1|v2", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1", "37:fa:fx-settlement-valuation:v1"]
 
 [[decision]]
 field = "extensions.36"
@@ -49,5 +49,12 @@ tracking_bead = "fa-4o0"
 field = "extensions.16"
 appendix_a = "Source-bound cumulative PeriodEndRevaluation (plan §5.2, §12.4)"
 code_type = "fa-model::revaluation::FxRevaluationBasis; FX_REVALUATION_EXTENSION=16"
-rationale = "Versioned FA-FX-REVALUE bytes bind period and its last included date, original observation prefix, foreign source account and selected entity, immutable route control and digest, retained closing Rate OID and commitment, and complete cumulative source digest. Fresh native Revaluation admissions reproduce the original and current source and exact derived legs; publication guards the full preparation frontier. Caller-provided exposure or carrying balances are not accepted. Exact immutable legacy retries are recognized before requiring the new basis; historical decoding does not invent a basis for old entries. No generic Canon execution, reverse-revaluation workflow, batch or draft-promotion support is claimed."
+rationale = "Versioned FA-FX-REVALUE bytes bind period and its last included date, original observation prefix, foreign source account and selected entity, immutable route control and digest, retained closing Rate OID and commitment, and complete cumulative source digest. Version 1 remains byte-identical for aggregate revaluation. Version 2 at entry minor 4 adds a complete LargestRemainder v1 item allocation ordered by target VID and ordinal, with exact open native amount, historical base, prior signed valuation and allocated target base per item. Each nonzero item delta has an explicit valuation/unrealized pair, so zero-net reallocations still post. Fresh native admissions reproduce original and current populations and exact derived legs; publication guards the full preparation frontier. Caller-provided exposure or carrying balances are not authority. Legacy aggregate allocations are never inferred. No generic Canon execution, reverse-revaluation workflow, batch or draft-promotion support is claimed."
 tracking_bead = "fa-3ock"
+
+[[decision]]
+field = "extensions.37"
+appendix_a = "Allocated carrying relief and exact restoration (plan §5.2, §5.7)"
+code_type = "fa-model::revaluation::FxSettlementValuationBasis; FX_SETTLEMENT_VALUATION_EXTENSION=37"
+rationale = "Entry minor 4 admits version-1 FA-FX-RELIEF bytes containing ordered unique applying-leg ordinals, source digests, exact historical/total/signed valuation relief, and original route identity, digest and destination accounts. Historical plus valuation relief must equal total relief in one functional unit. The native kernel derives every value from the complete item history and emits the explicit valuation/unrealized reversal pair; exact settlement reversals restore the recorded effects. The existing max_extension_bytes frame bound and entry-derived item count bounds apply before decoding. This is a checked computation basis, not a signature or an independently verified report profile; portable functional export of these laws requires a separate verifier implementation."
+tracking_bead = "fa-pvt7"
