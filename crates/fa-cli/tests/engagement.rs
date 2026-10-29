@@ -1618,3 +1618,78 @@ fn findings_are_filed_in_the_index_once_and_marked_after_completion() {
         ]
     );
 }
+
+/// Two findings filed under one request key are two records, and each
+/// stores the key its identity derives from, so an independent verifier
+/// that recomputes `vid(Entry)` from the stored key (Appendix A) sees two
+/// identities. The WorldCom pilot's examiner filed W-D-01's findings under
+/// one step key, and its report bundle failed `fa-verify` with "duplicate
+/// entry identity in the visible prefix" while the book itself verified.
+#[test]
+fn findings_filed_under_one_key_stay_two_identities_in_a_verified_bundle() {
+    let f = Fixture::new();
+    f.ok(OPEN);
+    f.post("saturday", "2026-03-14", "1000", "4000", "10.00");
+    f.post("sunday", "2026-03-15", "1000", "4000", "20.00");
+    let recorded = f.ok(&["finding", "record", "jet.weekend"]);
+    let ids: Vec<String> = rows(data(&recorded), "finding_ids")
+        .iter()
+        .map(|id| id.as_str().expect("a finding id").to_string())
+        .collect();
+    assert_eq!(ids.len(), 2, "{}", recorded.render());
+    for id in &ids {
+        let filed = f.ok(&[
+            "engagement",
+            "file",
+            "FY26-audit",
+            "--finding",
+            id,
+            "--key",
+            "one-step",
+        ]);
+        assert_eq!(
+            data(&filed).get("already_recorded"),
+            Some(&Json::Bool(false)),
+            "{}",
+            filed.render()
+        );
+    }
+    // Certifying prints the statement and then its certificate: two lines.
+    let certified = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .current_dir(&f.dir)
+        .args(["--book", "book", "statement", "balance-sheet"])
+        .args(["--for", "FY2026-P03", "--certify", "--json"])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .output()
+        .expect("run fa");
+    let stdout = String::from_utf8(certified.stdout).expect("utf-8 stdout");
+    assert!(certified.status.success(), "{stdout}");
+    let oid = stdout
+        .lines()
+        .map(|line| json::parse(line).expect("robot line"))
+        .find(|line| text(line, "event") == "report_certificate")
+        .map(|line| text(data(&line), "oid").to_string())
+        .expect("a report_certificate line");
+    f.ok(&["checkpoint", "create", "--grant", "witness"]);
+    let produced = f.ok(&[
+        "bundle",
+        "produce",
+        "--certificate",
+        &format!("C:{oid}"),
+        "--out",
+        "findings.fab",
+        "--receipt-out",
+        "findings.receipt",
+    ]);
+    let key = text(data(&produced), "checkpoint_public_key");
+    let key: Vec<u8> = (0..key.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&key[i..i + 2], 16).expect("hex"))
+        .collect();
+    let key = <[u8; 32]>::try_from(key).expect("a 32-byte key");
+    let bundle = std::fs::read(f.dir.join("findings.fab")).expect("the bundle");
+    let receipt = std::fs::read(f.dir.join("findings.receipt")).expect("the receipt");
+    let verified = fa_verify::report::verify_report(&bundle, &[key], None, Some(&receipt));
+    assert!(verified.is_ok(), "{:?}", verified.err());
+}

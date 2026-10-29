@@ -2175,9 +2175,22 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let vid = engagement_vid(book.book_id, engagement);
-    let key = record_key(Kind::File, vid, &document.0);
+    // The caller's key binds the record's content (its spec digest), so a
+    // second filing of this document under another key conflicts with it.
+    let spec_digest = domain_digest(
+        WORKPAPER_DOMAIN,
+        &[&vid.0.to_le_bytes(), &document.0, &req.idempotency_key],
+    );
+    // The record's identity derives from the document it files, and its
+    // stored key is that same key: every verifier recomputes `vid(Entry)`
+    // from the stored key (Appendix A), so two documents filed under one
+    // request key stay two identities.
+    let req = EngagementRequest {
+        idempotency_key: document.0.to_vec(),
+        ..req
+    };
+    let key = record_key(Kind::File, vid, &req.idempotency_key);
     let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
-    let spec_digest = domain_digest(WORKPAPER_DOMAIN, &[&vid.0.to_le_bytes(), &document.0]);
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
@@ -2346,12 +2359,23 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let vid = engagement_vid(book.book_id, engagement);
-    let key = record_key(Kind::File, vid, &finding.0.to_le_bytes());
-    let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
+    // As for a workpaper: the caller's key binds the content, and the stored
+    // key is the finding-derived key the record's identity is computed from
+    // (Appendix A).
     let spec_digest = domain_digest(
         WORKPAPER_DOMAIN,
-        &[&vid.0.to_le_bytes(), &finding.0.to_le_bytes()],
+        &[
+            &vid.0.to_le_bytes(),
+            &finding.0.to_le_bytes(),
+            &req.idempotency_key,
+        ],
     );
+    let req = EngagementRequest {
+        idempotency_key: finding.0.to_le_bytes().to_vec(),
+        ..req
+    };
+    let key = record_key(Kind::File, vid, &req.idempotency_key);
+    let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {

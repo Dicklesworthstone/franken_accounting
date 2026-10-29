@@ -297,13 +297,15 @@ pub(super) fn replay(
             continue;
         }
         for identity in info.identities() {
-            if by_identity
-                .insert(identity, *index)
-                .is_some_and(|old| old != *index)
+            if let Some(old) = by_identity.insert(identity, *index)
+                && old != *index
             {
                 return Err(failed(
                     "entry_identity",
-                    "duplicate entry identity in the visible prefix",
+                    format!(
+                        "duplicate entry identity in the visible prefix: records {old} (class {}) and {index} (class {})",
+                        envelopes[old].class, envelope.class
+                    ),
                 ));
             }
         }
