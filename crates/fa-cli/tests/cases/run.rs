@@ -2077,13 +2077,13 @@ pub fn run_case_with(
     out.lines.extend(budget_lines);
     // The case passes when no row FAILs, it kept its budget, and every
     // claimed expectation's verdict, the worst of its rows, is PASS. A
-    // claimed row whose type is not its expectation's effective type (a T
+    // claimed row whose type is not its expectation's declared type (a T
     // the contributing-entry witness re-typed R) is not the row claimed
     // (A7a).
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
-    let typed = |id: &str, target: Option<&str>| {
+    let typed = |id: &str| {
         let e = case.expectations.as_ref()?.get(id)?;
-        Some(case.effective_type(id, target).unwrap_or(e.kind).as_str())
+        Some(e.kind.as_str())
     };
     out.rows_ok = !sweep_failed
         && !outsider_failed
@@ -2094,7 +2094,7 @@ pub fn run_case_with(
                     .verdicts
                     .iter()
                     .filter(|v| &v.expectation == c)
-                    .all(|v| typed(c, v.target.as_deref()).is_none_or(|kind| v.kind == kind))
+                    .all(|v| typed(c).is_none_or(|kind| v.kind == kind))
         });
     out.ok = out.rows_ok && within_budget;
     finish(out)

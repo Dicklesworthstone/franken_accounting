@@ -11298,6 +11298,28 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         &["post", "--intent", &planned_original, "--evidence", &ev],
     );
     assert_eq!(code, 0, "{original}");
+    let (code, before_review) = run(true, &["book", "info"]);
+    assert_eq!(code, 0, "{before_review}");
+    let (code, reviewed) = run(
+        true,
+        &[
+            "replace",
+            field(&original, "vid").unwrap(),
+            "--reason",
+            "WrongAmount",
+            "--intent",
+            &corrected,
+            "--evidence",
+            &ev,
+            "--review-only",
+        ],
+    );
+    assert_eq!(code, 0, "{reviewed}");
+    assert_eq!(field(&reviewed, "event"), Some("replacement_reviewed"));
+    assert_eq!(field(&reviewed, "review_digest").unwrap().len(), 64);
+    let (code, after_review) = run(true, &["book", "info"]);
+    assert_eq!(code, 0, "{after_review}");
+    assert_eq!(after_review, before_review, "reviewing writes nothing");
     let pair_path = dir.join("atomic-correction.plan").display().to_string();
     let (code, planned) = run(
         true,

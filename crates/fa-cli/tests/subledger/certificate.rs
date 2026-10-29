@@ -156,7 +156,12 @@ fn bound_certification_checks_produce_before_observation_or_audit_publication() 
 
 #[test]
 fn native_ar_and_ap_certificates_reopen_replay_and_distinguish_gross_scope_changes() {
-    let f = Fixture::new();
+    // The certificate embeds the trial-balance result, not every description
+    // or journal payload. Distinct non-control cells exercise real fragments.
+    let accounts = (0..256).map(|index| {
+        json::parse(&format!(r#"{{"code":"CHUNK-{index:03}","name":"Fragment fixture asset {index}","type":"Asset","unit":"USD"}}"#)).unwrap()
+    }).collect();
+    let f = Fixture::with_additional_accounts(accounts);
     f.register("AR", "1200", "receivables");
     f.register("AP", "2000", "payables");
     let invoice = data(&f.invoice("C-1", "CERT-1", "100.00 USD"));
@@ -197,16 +202,14 @@ fn native_ar_and_ap_certificates_reopen_replay_and_distinguish_gross_scope_chang
         "--evidence",
         &f.evidence,
     ]);
-    // Retain enough genuine native history to cross the fragment boundary.
-    // These cash/revenue entries leave both subledger control accounts alone.
-    let description = "x".repeat(fa_model::limits::MAX_DESCRIPTION_BYTES);
-    for index in 0..20 {
-        let intent = f.file(
-            &format!("certificate-history-{index}.json"),
-            &format!(r#"{{"effective_date":"2026-03-15","idempotency_key":"certificate-history-{index}","description":"{description}","legs":[{{"side":"debit","account":"1000","amount":"0.01 USD"}},{{"side":"credit","account":"4000","amount":"0.01 USD"}}]}}"#),
-        );
-        f.ok(&["post", "--intent", &intent, "--evidence", &f.evidence]);
-    }
+    let mut legs = (0..256)
+        .map(|index| {
+            format!(r#"{{"side":"debit","account":"CHUNK-{index:03}","amount":"0.01 USD"}}"#)
+        })
+        .collect::<Vec<_>>();
+    legs.push(r#"{"side":"credit","account":"1000","amount":"2.56 USD"}"#.into());
+    let intent = f.file("certificate-cells.json", &format!(r#"{{"effective_date":"2026-03-15","idempotency_key":"certificate-cells","legs":[{}]}}"#, legs.join(",")));
+    f.ok(&["post", "--intent", &intent, "--evidence", &f.evidence]);
     let at = f.head();
     let mut saved = Vec::new();
     for (code, control, debit, credit) in [
@@ -239,10 +242,12 @@ fn native_ar_and_ap_certificates_reopen_replay_and_distinguish_gross_scope_chang
         let bytes = std::fs::read(&path).unwrap();
         assert!(
             bytes.len() > 16 * 1024,
-            "exercise chunked retained native sources"
+            "exercise chunked retained native sources: {} bytes",
+            bytes.len()
         );
         assert!(bytes.len() > fa::MAX_INLINE_CERTIFICATE_BYTES);
         let certificate = fa::NativeSubledgerCertificate::decode(&bytes).unwrap();
+        assert!(certificate.source_certificate().output.len() > 16 * 1024);
         assert_eq!(
             fa::ReportArtifact::decode(&bytes).unwrap().family(),
             fa::ReportArtifactFamily::NativeSubledger
