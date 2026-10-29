@@ -261,37 +261,18 @@ push_fa_verdict_notes() {
   return 0
 }
 
-attach_fa_verdict_note_to_commit() {
-  local clone="$1" from_commit="$2" target_commit="$3"
-  local src_note target_tree rewritten
-  src_note="$(git -C "$clone" notes --ref="$VERDICT_NOTES_REF" show "$from_commit" 2>/dev/null || true)"
-  [ -n "$src_note" ] || return 0
-  if [ "$from_commit" = "$target_commit" ]; then
-    push_fa_verdict_notes "$clone"
-    return 0
+# A rejected candidate keeps its own fa-verdict note: the proof checked the
+# candidate's merge tree, never the rejected tip's tree, so the note is not
+# copied onto the tip. The candidate is published under
+# refs/merge-train/rejected/<candidate> so local_proof_verify.sh can check the
+# RED note against the remote; the merge-train note on the tip names it.
+publish_rejected_candidate() {
+  local clone="$1" cand_sha="$2"
+  [ "$push" -eq 1 ] || return 0
+  if git -C "$clone" notes --ref="$VERDICT_NOTES_REF" show "$cand_sha" >/dev/null 2>&1; then
+    git -C "$clone" push --quiet "$remote_url" "$cand_sha:refs/merge-train/rejected/$cand_sha" 2>/dev/null \
+      || say "rejected candidate ${cand_sha:0:12} was not published; its RED note cannot be verified against the remote"
   fi
-  target_tree="$(git -C "$clone" rev-parse "${target_commit}^{tree}" 2>/dev/null || echo "")"
-  rewritten="$(python3 -B - "$src_note" "$target_commit" "$target_tree" <<'PY'
-import json
-import sys
-
-note, commit, tree = sys.argv[1:4]
-out = []
-for line in note.splitlines():
-    if line.startswith("commit="):
-        out.append(f"commit={commit}")
-    elif line.startswith("tree=") and tree:
-        out.append(f"tree={tree}")
-    elif line.startswith("step_verdict=") and tree:
-        rec = json.loads(line.removeprefix("step_verdict="))
-        rec["tree_hash"] = tree
-        out.append("step_verdict=" + json.dumps(rec, separators=(",", ":")))
-    else:
-        out.append(line)
-print("\n".join(out))
-PY
-)"
-  printf '%s\n' "$rewritten" | gitc -C "$clone" notes --ref="$VERDICT_NOTES_REF" add -f -F - "$target_commit" 2>/dev/null || true
   push_fa_verdict_notes "$clone"
 }
 
@@ -575,7 +556,6 @@ gate_tree_in_cand() {
   local proof_rc=0
   (cd "$cand" && bash scripts/local_proof.sh --output "$proof" --publish-note) > "$log" 2>&1 || proof_rc=$?
   GATE_LAST_FAIL_LINE=""
-  GATE_LAST_PROOF_SHA="$cand_sha"
   emit_verdict_json_transcript "$cand" "$cand_sha" "${log%.log}.json"
 
   if [ ! -f "$proof/manifest.txt" ]; then
@@ -772,8 +752,8 @@ run_batch_train() {
     local bad_sha="${stacked_shas[$lo]}"
     local bad_merge="${stacked_merges[$lo]}"
     say "EJECTED $bad_ref (${bad_sha:0:12}) after bisection: ${bad_fail_line:-gate failed}"
-    attach_fa_verdict_note_to_commit "$cand" "${GATE_LAST_PROOF_SHA:-$bad_merge}" "$bad_sha"
-    publish_note "$cand" "$bad_sha" "$(note_body red "main=$main_sha" "ref=$bad_ref" "fail: ${bad_fail_line:-gate failed}")"
+    publish_rejected_candidate "$cand" "$bad_merge"
+    publish_note "$cand" "$bad_sha" "$(note_body red "main=$main_sha" "ref=$bad_ref" "candidate=$bad_merge" "fail: ${bad_fail_line:-gate failed}")"
 
     # Rebuild batch_refs and batch_shas without bad_ref and loop to gate the healthy remainder
     local -a next_refs=()
@@ -957,7 +937,7 @@ run_train() {
   fi
   say "RED: check.sh exited $check_exit on ${cand_sha:0:12}; $staging_branch bounced"
   printf '%s\n' "$fails" | sed 's/^/    /'
-  attach_fa_verdict_note_to_commit "$cand" "$cand_sha" "$staging_sha"
+  publish_rejected_candidate "$cand" "$cand_sha"
   publish_note "$cand" "$staging_sha" "$(note_body red "${base_kv[@]}" "${fail_kv[@]}")"
   maintain_readme_verified_line "$root/README.md" "$staging_sha" "RED"
   return "$EX_RED"

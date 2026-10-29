@@ -211,12 +211,20 @@ has_note "$red_staging" -qx 'verdict=red' || fail "scenario 3: no red note on th
 has_note "$red_staging" -qx 'warm=true' || fail "scenario 3: red note did not record warm=true on second canonical run"
 has_note "$red_staging" -q '^fail: FAIL fake gate: RED is tracked$' \
   || fail "scenario 3: red note lacks the FAIL transcript line"
-grep -Fxq 'verdict=red' <<< "$(verdict_note_of "$red_staging")" \
-  || fail "scenario 3: refs/notes/fa-verdict lacks verdict=red for rejected staging commit"
-bash "$source_root/scripts/local_proof_verify.sh" --repository "$remote" --note "$red_staging" >/dev/null \
+# The fa-verdict note stays on the merge candidate the proof checked (not the
+# staging tip, whose own tree was never checked); the remote holds it.
+red_cand="$(note_of "$red_staging" | sed -n 's/^candidate=//p')"
+[ -n "$red_cand" ] || fail "scenario 3: the red merge-train note names no candidate"
+[ "$(git --git-dir="$remote" rev-parse --verify -q "refs/merge-train/rejected/$red_cand")" = "$red_cand" ] \
+  || fail "scenario 3: the rejected candidate $red_cand is not published on the remote"
+grep -Fxq 'verdict=red' <<< "$(verdict_note_of "$red_cand")" \
+  || fail "scenario 3: refs/notes/fa-verdict lacks verdict=red for the rejected candidate"
+[ -z "$(verdict_note_of "$red_staging")" ] \
+  || fail "scenario 3: a proof of the merge candidate was attributed to the staging tip"
+bash "$source_root/scripts/local_proof_verify.sh" --repository "$remote" --note "$red_cand" >/dev/null \
   || fail "scenario 3: local_proof_verify.sh failed on remote refs/notes/fa-verdict RED note"
 [ "$(runs)" = 2 ] || fail "scenario 3: expected 2 check runs, saw $(runs)"
-gate_pass "3 red staging -> RED, main unchanged, red note in refs/notes/fa-verdict and merge-train"
+gate_pass "3 red staging -> RED, main unchanged, verified red note on the published candidate, merge-train note on the tip"
 
 # 4. The same pair is not re-proved.
 rc="$(train run --canonical-worktree "$canonical_gate")"
@@ -317,10 +325,16 @@ red_candidate_leaves_main_and_publishes_red_note() {
   fold_rc="$(train fold)"
   [ "$fold_rc" = 1 ] || fail "8b: expected exit 1 on planted-red fold candidate, got $fold_rc ($(cat "$base/last.out"))"
   [ "$(remote_main)" = "$promoted_fold" ] || fail "8b: main moved on planted-red fold candidate"
-  grep -Fxq 'verdict=red' <<< "$(verdict_note_of "$red_cand_sha")" \
+  # As in scenario 3: the RED note stays on the stacked merge the proof checked.
+  local red_merge
+  red_merge="$(note_of "$red_cand_sha" | sed -n 's/^candidate=//p')"
+  [ -n "$red_merge" ] || fail "8b: the ejected ref's merge-train note names no candidate"
+  [ "$(git --git-dir="$remote" rev-parse --verify -q "refs/merge-train/rejected/$red_merge")" = "$red_merge" ] \
+    || fail "8b: the rejected merge $red_merge is not published on the remote"
+  grep -Fxq 'verdict=red' <<< "$(verdict_note_of "$red_merge")" \
     || fail "8b: planted-red candidate lacks verdict=red in remote refs/notes/fa-verdict"
-  bash "$source_root/scripts/local_proof_verify.sh" --repository "$remote" --note "$red_cand_sha" >/dev/null \
-    || fail "8b: local_proof_verify.sh failed on remote RED note for $red_cand_sha"
+  bash "$source_root/scripts/local_proof_verify.sh" --repository "$remote" --note "$red_merge" >/dev/null \
+    || fail "8b: local_proof_verify.sh failed on remote RED note for $red_merge"
 
   gate_pass "red_candidate_leaves_main_and_publishes_red_note (fold E2E green promotes with verified fa-verdict note; planted-red leaves main unchanged and publishes verified RED fa-verdict note)"
 }
