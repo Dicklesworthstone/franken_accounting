@@ -224,12 +224,30 @@ fn retained_explanations_export_by_oid_and_hex_replay_history_and_reasons_over_s
             reversal.supersedes[0].target,
             u128::from_str_radix(posted["vid"].as_str().unwrap(), 16).unwrap(),
         );
-        assert!(
-            explanation
-                .contributions
-                .iter()
-                .all(|row| !row.evidence.is_empty())
+        let original = explanation
+            .contributions
+            .iter()
+            .find(|row| {
+                row.entry == u128::from_str_radix(posted["vid"].as_str().unwrap(), 16).unwrap()
+            })
+            .expect("the authenticated original supplies the reversal's why");
+        assert_eq!(original.evidence.len(), 1);
+        assert_eq!(
+            original.evidence[0].document_oid.as_slice(),
+            unhex(&evidence)
         );
+        assert_eq!(reversal.supersedes.len(), 1);
+        assert_eq!(reversal.supersedes[0].entry_digest, original.entry_digest);
+        assert_eq!(
+            reversal.supersedes[0].kind, 1,
+            "Reverses, not a new assertion"
+        );
+        assert!(
+            reversal.evidence.is_empty(),
+            "the registered target minimum needs no duplicate document"
+        );
+        assert_eq!(reversal.mantissa, original.mantissa);
+        assert_ne!(reversal.debit, original.debit);
         assert!(verified.receipt.is_some());
         assert!(
             fa_verify::report::verify_report_expected(

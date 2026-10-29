@@ -1209,12 +1209,27 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
             let name = tool["name"].as_str().expect("name").to_string();
             assert_eq!(tool["inputSchema"]["type"], json!("object"), "{name}");
             if name == "fa_post_reverse" {
+                assert_eq!(
+                    tool["inputSchema"]["properties"]["reason"]["type"],
+                    json!(["string", "integer"]),
+                    "a new reversal names its registered reason: {tool}"
+                );
                 assert!(
-                    tool["inputSchema"]["required"]
+                    !tool["inputSchema"]["required"]
                         .as_array()
                         .unwrap()
                         .contains(&json!("reason")),
-                    "reversals require the registered reason: {tool}"
+                    "a retained review already binds its reason: {tool}"
+                );
+                for property in ["review", "digest"] {
+                    assert_eq!(
+                        tool["inputSchema"]["properties"][property]["type"],
+                        json!("string")
+                    );
+                }
+                assert!(
+                    tool["description"].as_str().unwrap().contains("review"),
+                    "discovery must explain the alternative: {tool}"
                 );
             }
             for argument in fa_mcp::registry::FORBIDDEN_ARGUMENTS {
@@ -1550,21 +1565,24 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
-    // The final protocol returns a tool error for schema validation, and the
-    // server names the missing argument with the tool's own mapping error.
-    // The advertised schema above requires reason; rejection must not post.
+    // A retained review already fixes its reason, so the shared dispatcher
+    // enforces this requirement for new reversals. Rejection must not post.
     let before_missing = cli_data(&["book", "info", "--book", &b, "--json"]);
     let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
     assert!(
         is_error,
-        "missing reason must be refused before dispatch: {text}"
+        "missing reason must be refused before publication: {text}"
     );
     let e = structured_error(&text);
-    assert_eq!(e["exit"], json!(2), "{e}");
-    assert_eq!(e["detector"], json!("arguments"), "{e}");
+    assert_eq!(e["exit"], json!(3), "{e}");
+    assert!(
+        e.get("detector").is_none(),
+        "the accounting dispatcher refuses: {e}"
+    );
+    assert_eq!(e["refusal_id"], json!("FA-REF-054"), "{e}");
     assert_eq!(
         e["message"],
-        json!("fa_post_reverse: `reason` is required"),
+        json!("a reversal requires a registered reason string"),
         "{e}"
     );
     assert_eq!(
@@ -4970,13 +4988,24 @@ fn the_correct_cluster_replaces_like_the_cli() {
         .iter()
         .find(|tool| tool["name"] == "fa_correct_replace")
         .expect("the correct cluster advertises replace");
+    assert_eq!(
+        replace["inputSchema"]["properties"]["intent"]["type"],
+        json!("object"),
+        "a new pair takes the complete corrected entry: {replace}"
+    );
     assert!(
-        replace["inputSchema"]["required"]
+        !replace["inputSchema"]["required"]
             .as_array()
             .unwrap()
             .contains(&json!("intent")),
-        "the schema must require the complete corrected entry: {replace}"
+        "a retained review supplies the sealed corrected entry: {replace}"
     );
+    for property in ["review", "digest"] {
+        assert_eq!(
+            replace["inputSchema"]["properties"][property]["type"],
+            json!("string")
+        );
+    }
     // Planted: no corrected entry is refused before anything is written.
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -4984,9 +5013,7 @@ fn the_correct_cluster_replaces_like_the_cli() {
         json!({"vid": target, "reason": "WrongAmount", "evidence": oid}),
     );
     assert!(is_error, "a replacement needs its corrected entry: {text}");
-    // Discovery's required field does not replace an actionable diagnostic.
-    // FastMCP currently emits a generic schema error here; keep this contract
-    // red until the actual error names the missing corrected-entry input.
+    // The conditional input requirement must still name the missing entry.
     assert!(text.contains("intent"), "{text}");
     assert_eq!(
         cli_data(&["book", "info", "--book", &b, "--json"]),

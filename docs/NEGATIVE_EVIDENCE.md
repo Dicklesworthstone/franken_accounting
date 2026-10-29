@@ -1123,3 +1123,51 @@ fixtures with their distinct strict refusals; no production validator,
 authority, amount, expected success, original assertion or gate is relaxed.
 This source analysis is not a passing rerun. The full target and current
 successor qualification must actually execute before any closure.
+
+## 2026-10-29 UTC — Stale surface tests after correction reviews and native report work
+
+The complete CLI package reported 708 passes, eight failures and two existing
+ignored Tier-2 tests on the preceding source cut. Concurrent source changes
+invalidated its final source-content barrier; the native exit 101 and subsequent
+supported recovery/acknowledgement are retained as historical observations,
+not qualification of the merged tree. The next candidate uses immutable base
+`7cf701ed2713a88d7982b2bb6f3f6561efafae47` plus explicit RCH overlays. Its
+complete kernel target passed 288/288 and its complete restatement-case target
+passed 8/8, with no ignored/filtered tests and acknowledged remote exit zero.
+Those results do not supply a full workspace verdict.
+
+The eight CLI fixture repairs preserve the actual accounting contracts:
+missing correction drafts require `FA-REF-157`/exit 3; due-date reconciliation
+without an account requires the account-specific usage refusal; a raw reversal
+intent uses `post` with class `Reversal`; open-items includes the fully applied
+receipt alongside the invoice, now checked by exact original/applied/open
+amounts and application identity; closing emits four exact routed legs over
+three accounts, rather than netting the two retained-earnings legs. The
+subledger fixture adds bounded real cash/revenue history so its unchanged
+16-KiB size check actually exercises chunked retention without changing either
+AR/AP control total. The refusal harness now triggers `FA-REF-202` and checks
+that its account choice and independent case approvals remain a preparer's
+judgment, not a mechanically invented fix. No production accounting law, gate,
+golden, ignore, timeout or permission is changed to admit these fixtures.
+
+The complete MCP package on that pinned candidate ran 108 tests: 105 passed,
+three failed, none ignored or filtered; client/remote exit 101, acknowledgement
+and retirement true. Two failures required `reason`/`intent` unconditionally
+in discovery even though the registered retained-review form supplies those
+sealed inputs. The tests now check their declared types and the `review` and
+`digest` alternative, while retaining real missing-input/no-write refusals.
+A fresh reversal without a reason must specifically refuse `FA-REF-054`/exit 3
+in the accounting dispatcher, rather than the former transport-mapping exit 2.
+
+The third MCP failure required every explanation contribution to cite a
+document directly. `evidence_policy.toml` registers a Reversal's minimum as
+`target`, with zero direct documents. The independent verifier's existing
+`provenance_retains_registered_reason_and_evidence_heads_exactly` test already
+admits an empty direct-evidence reversal and rejects changed target provenance.
+The MCP fixture now checks the original's exact document oid, the reversal's
+exact target digest and Reverses kind, equal amount and opposite side, and its
+empty direct-document list. This verifies the authenticated evidence chain;
+it neither duplicates citations in production nor permits an unsupported
+source. All signed-bundle, fixed-prefix, receipt and wrong-certificate checks
+remain. These MCP repairs require an actual complete-package rerun before
+being credited as passing.
