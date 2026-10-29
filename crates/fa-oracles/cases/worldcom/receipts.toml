@@ -832,3 +832,131 @@ aligned = true
 values_in_quote = true
 scope_ok = true
 original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-EX27-1999"
+fact = "W-ST-ex27-1999-mult"
+anchor = "FINANCIAL DATA SCHEDULE DEC. 31, 1999|<MULTIPLIER>|<C>"
+verified_utc = "2026-10-29T02:58:06Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "3dbc2f7e2867bca637174396889984a5c103ee5a8e66df479cc353ece39c5548"
+quote_sha256 = "50891936fc76a98c62e59a25cac7b61eb512c3e7cc7ab95cc7bd75b9f554fc3b"
+values_sha256 = "15c5d4548b7c2a0d3ef72cadc03498dc2dfe2f96330d4a7176013bccea5190ca"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-EX27-1999"
+fact = "W-ST-ex27-1999-ta"
+anchor = "FINANCIAL DATA SCHEDULE DEC. 31, 1999|<TOTAL-ASSETS>|<C>"
+verified_utc = "2026-10-29T02:58:06Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "3dbc2f7e2867bca637174396889984a5c103ee5a8e66df479cc353ece39c5548"
+quote_sha256 = "ad3eff14951ad6ce4d48405e97f5e34526215a29ce1b8f0847c10895f73233cb"
+values_sha256 = "5037d31cb64d5f1f0d0a2970292739f0ac93e1bd020ac3a3b1490b41489049c2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W-ST-ta1999-restated"
+anchor = "As of December 31,@p37|Total assets|1999"
+verified_utc = "2026-10-29T02:58:02Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"
+quote_sha256 = "168fa950944d469959de376b5a2f374bd9c21e0b637fd286fe5ae8486b2ac135"
+values_sha256 = "82f5d156ca0e813dec39436b6f0bacd65e364d664c9cf9fc7a605bebfd8b7b16"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W-ST-ta2000-adj1"
+anchor = "As of December 31, 2000@p49|Total|Embratel/ Avantel"
+verified_utc = "2026-10-29T02:58:02Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"
+quote_sha256 = "b23dff25c2dc69b2bd8f1c4e70bc59a0342733544c459f406ca4d5fab3b4f34e"
+values_sha256 = "0fabf2d6c5ea23edfe4adf566f6eed7c51ee1a9a867482092821f6829214820f"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W-ST-ta2000-adj2"
+anchor = "As of December 31, 2000@p49|Total|Other Restatement Adjustments"
+verified_utc = "2026-10-29T02:58:02Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"
+quote_sha256 = "d8b1c4a12a367138c7e7b1d716f7ca2bc3672e6c6c8c8e89b16f71bc4f982f72"
+values_sha256 = "21af9605a5804a38f8647c7c135897dbf660191e1be35dcf95e5199fe1589299"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-401"
+fact = "W-ST-ta2000-filed"
+anchor = "AT OR FOR THE YEARS ENDED DECEMBER 31,|Total assets|2000"
+verified_utc = "2026-10-29T02:58:01Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "7f562d953d18c441ef4f1b662f45b00cd07a52483e5efdd7c0fac91e976ee91c"
+quote_sha256 = "603a7e71a12341263d992d64c1f9cf8cf4e67ec64059ade5a204a5bc9d6d2691"
+values_sha256 = "83b5f909ae44ee2b0624c950655e75a87c4e7e026b4d0451a1c01867fd399a73"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W-ST-ta2000-prev"
+anchor = "As of December 31, 2000@p49|Total|Previously Reported(1)"
+verified_utc = "2026-10-29T02:58:02Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"
+quote_sha256 = "bf2c2392b30c9bd6f5d9bb4317984017b01a988ad371a6ab1bf66f18d643725a"
+values_sha256 = "19d1cbe0828b0edfdf141ae136ff7dd4aac59d5187ad1701394e5214d73a3a23"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W-ST-ta2000-restated"
+anchor = "As of December 31, 2000@p49|Total|As Restated"
+verified_utc = "2026-10-29T02:58:02Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"
+quote_sha256 = "9cbddc5799cb4594a0f547752da64ee4a42b5ab6ec1c16022ef8360a3dc4449f"
+values_sha256 = "002134fbe7baf8e86eb08e4a6d019589d6deb1669c5d660f72a9504614b726f4"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

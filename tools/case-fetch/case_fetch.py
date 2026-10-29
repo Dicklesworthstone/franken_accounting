@@ -1382,32 +1382,121 @@ def cells(line):
     return out
 
 
+CELL_VALUE = re.compile(r"^\$?\(?\$?[0-9][0-9,]*(?:\.[0-9]+)?\)?%?$|^[—–-]+$")
+FDS_TAG = re.compile(r"^<[A-Z0-9&-]+>$")
+
+
+def row_label(cell):
+    """A row label without the leader dots a text filing pads it with."""
+    return re.sub(r"\.{2,}$", "", cell).strip()
+
+
+def is_values(cs):
+    return bool(cs) and all(CELL_VALUE.match(c) for c in cs)
+
+
+def blank(line):
+    return line.strip(" \t \f") == ""
+
+
+def stacked_cell(loc, t, row, column, limit):
+    """EDGAR's stripped-HTML layout: each column header a run of one-cell lines (a header
+    printed over several lines is one run), each row label a line of its own followed by its
+    values line. The header ends at a multi-cell line, a section label (`Assets:`), a run that
+    holds its own values, or a run followed by a multi-cell values line."""
+    runs, cur = [], []
+    for j in range(t + 1, limit):
+        if blank(loc.lines[j]):
+            if cur:
+                runs.append(cur)
+            cur = []
+        else:
+            cur.append(j)
+    if cur:
+        runs.append(cur)
+    header, k = [], 0
+    while k < len(runs):
+        lines = [loc.lines[j] for j in runs[k]]
+        nxt = cells(loc.lines[runs[k + 1][0]]) if k + 1 < len(runs) else []
+        if (any(len(cells(ln)) != 1 for ln in lines)
+                or normalize(lines[-1]).endswith(":")
+                or (len(lines) > 1 and is_values(cells(lines[-1])))
+                or (len(nxt) > 1 and is_values(nxt))):
+            break
+        header.append(normalize(" ".join(lines)))
+        k += 1
+    if column not in header or k >= len(runs):
+        return None
+    from_right = len(header) - 1 - header.index(column)
+    body = [j for j in range(runs[k][0], limit) if not blank(loc.lines[j])]
+    for a, b in zip(body, body[1:]):
+        if len(cells(loc.lines[a])) == 1 and row_label(normalize(loc.lines[a])) == row:
+            vals = cells(loc.lines[b])
+            if is_values(vals) and from_right < len(vals):
+                return vals[len(vals) - 1 - from_right], b + 1
+            return None
+    return None
+
+
+def tagged_cell(loc, t, row, limit):
+    """A financial data schedule (EX-27): `<TAG>  value` lines, one value each."""
+    for j in range(t + 1, limit):
+        parts = loc.lines[j].split()
+        if len(parts) == 2 and parts[0] == row:
+            return parts[1], j + 1
+    return None
+
+
 def table_cell(loc, anchor):
-    """The cells the `table|row|column` anchor names (one per matching table)."""
+    """The cells the `table|row|column` anchor names (one per matching table). The table part
+    may end in `@p<page>`, the printed page its title is on, when the title repeats (a filing
+    that prints a table twice). Three layouts: a header line and rows with their values on one
+    line (row labels may carry leader dots); EDGAR's stacked layout (`stacked_cell`); and an
+    EX-27 schedule, whose rows are `<TAG>` lines."""
     parts = anchor.split("|")
     if len(parts) != 3:
         return f"anchor `{anchor}` is not `<table>|<row>|<column>`"
     table, row, column = (normalize(p) for p in parts)
+    page = None
+    pinned = re.fullmatch(r"(.*\S)@p([0-9A-Za-z]+)", table)
+    if pinned:
+        table, page = pinned.group(1), pinned.group(2).lower()
     found = []
     titles = [i for i, ln in enumerate(loc.lines) if table in normalize(ln)]
+    if page is not None:
+        line_page = {}
+        for i, g in enumerate(loc.gline):
+            line_page.setdefault(g, loc.page_labels[loc.page[i] - 1])
+        titles = [i for i in titles if line_page.get(i + 1) == page]
     for t in titles:
-        header = None
-        for j in range(t + 1, min(len(loc.lines), t + 400)):
-            line = loc.lines[j]
-            if "\f" in line and j > t + 1:
+        limit = min(len(loc.lines), t + 400)
+        for j in range(t + 2, limit):
+            if "\f" in loc.lines[j]:
+                limit = j
                 break
-            cs = [normalize(c) for c in cells(line)]
+        if FDS_TAG.match(row):
+            hit = tagged_cell(loc, t, row, limit)
+            if hit:
+                found.append(hit)
+            continue
+        hit, header = None, None
+        for j in range(t + 1, limit):
+            cs = [normalize(c) for c in cells(loc.lines[j])]
             if header is None:
                 if column in cs:
                     header = (cs, cs.index(column))
                 continue
-            if cs and cs[0] == row:
+            if cs and row_label(cs[0]) == row:
                 head, col = header
                 from_right = len(head) - 1 - col
                 idx = len(cs) - 1 - from_right
                 if idx >= 1:
-                    found.append((cs[idx], j + 1))
+                    hit = (cs[idx], j + 1)
                 break
+        if hit is None:
+            hit = stacked_cell(loc, t, row, column, limit)
+        if hit:
+            found.append(hit)
     return found
 
 

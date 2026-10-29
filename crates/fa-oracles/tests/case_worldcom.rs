@@ -21,9 +21,9 @@ type Files = Vec<(&'static str, String)>;
 /// The sourced facts: the pilot slice's four entry sentences and four
 /// periods, the assurance facts of SRC-WC-401 and SRC-WC-406 (W1), p.26's
 /// exact amount for F4 (A8), W2's sixteen sentences of F1, F3 and F6-F11
-/// with the 4Q01 heading, and W2's twenty-five instruction-document,
-/// context, second-source and AN-100 sentences.
-const SOURCED: usize = 52;
+/// with the 4Q01 heading, W2's twenty-five instruction-document, context,
+/// second-source and AN-100 sentences, and its eight statement cells.
+const SOURCED: usize = 60;
 
 /// W2's booking dates, derived from year-less days and their reporting
 /// periods (`day_in_period`) or from an earlier date (`date_offset`), each
@@ -42,9 +42,10 @@ const DATES: [(&str, &str, &str); 9] = [
 
 /// Every fact: the sourced ones, the interpretations (A8's F4 and F12;
 /// W2's F1, F5, F6, F6-approval, F8, F10, F11, F13 and F12F13-doc), the
-/// booking dates, F2's two booking days and the 1Q01 earnings release's
-/// date.
-const FACTS: usize = SOURCED + 11 + DATES.len() + 2;
+/// booking dates, F2's two booking days, the 1Q01 earnings release's date,
+/// and the two statement-level derivations (the EX-27 dollars and the
+/// FY2000 reclassification).
+const FACTS: usize = SOURCED + 11 + DATES.len() + 4;
 
 /// W1's sources ledger, in file order.
 const SOURCES: [&str; 10] = [
@@ -419,6 +420,188 @@ fn wc_postit_typed_derived_fails_k_derive() {
         "K-DERIVE",
         "F12F13-doc",
         &["`postit_is_instruction_document` is not in the derivation table"],
+    );
+}
+
+/// The exact amounts the T rows rest on, each a checked i128 of cents read
+/// from the committed values (no float anywhere): p.26's $560,000,000,
+/// F9's $742,725,000, the restating filing's "previously reported" FY2000
+/// total and the EX-27's FY1999 total at its multiplier.
+#[test]
+fn wc_scaled_amounts_are_exact() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    let cents = |fact: &str, ordinal: i128| -> i128 {
+        let v = case
+            .values
+            .iter()
+            .find(|v| v.fact == fact && v.ordinal == ordinal)
+            .expect("the value");
+        v.value.parse().expect("an integer value")
+    };
+    assert_eq!(cents("F4-p26", 1), 56_000_000_000);
+    assert_eq!(cents("F9", 1), 74_272_500_000);
+    assert_eq!(cents("W-ST-ta2000-prev", 1), 9_872_700_000_000);
+    assert_eq!(cents("W-ST-ta1999-ex27", 1), 9_107_200_000_000);
+    assert_eq!(cents("W-ST-ta2000-reclass", 1), 17_600_000_000);
+}
+
+/// W-T-02's A, both deltas and B are four facts with four anchors, so no B
+/// value feeds an A or a delta (the K-TAUT precondition W6 relies on). The
+/// restated B and the filed figure share the vintage-independent cell key,
+/// so K-VINTAGE sees the restating filing supersede the filed one; the
+/// restater's "previously reported" A is its own column of that row.
+#[test]
+fn wc_statement_bridge_inputs_are_three_separate_facts() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    let ids = [
+        "W-ST-ta2000-prev",
+        "W-ST-ta2000-adj1",
+        "W-ST-ta2000-adj2",
+        "W-ST-ta2000-restated",
+    ];
+    let sourced: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            case.facts
+                .iter()
+                .find(|f| f.id == *id)
+                .and_then(|f| f.sourced())
+                .expect("a sourced cell")
+        })
+        .collect();
+    let anchors: std::collections::BTreeSet<&str> =
+        sourced.iter().map(|s| s.anchor.as_str()).collect();
+    assert_eq!(anchors.len(), 4, "{anchors:?}");
+    assert!(sourced.iter().all(|s| s.source == "SRC-WC-406"));
+    let cell = |id: &str| {
+        case.facts
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.sourced())
+            .and_then(|s| s.cell.clone())
+    };
+    for id in ["W-ST-ta2000-restated", "W-ST-ta2000-filed"] {
+        assert_eq!(cell(id).as_deref(), Some("total_assets@2000-12-31"), "{id}");
+    }
+    assert_eq!(
+        cell("W-ST-ta2000-prev").as_deref(),
+        Some("total_assets:previously_reported@2000-12-31")
+    );
+}
+
+/// The previously reported FY2000 total rewritten as the filed vintage's
+/// 98,903 after `verify` fails offline.
+#[test]
+fn wc_ta2000_prev_value_edited_fails_k_bind_offline() {
+    let mut files = worldcom();
+    let marker = "fact = \"W-ST-ta2000-prev\"\n";
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "literal = \"98,727\"",
+        "literal = \"98,903\"",
+    );
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "value = \"9872700000000\"",
+        "value = \"9890300000000\"",
+    );
+    check_fails(
+        &files,
+        "K-BIND",
+        "W-ST-ta2000-prev",
+        &["values_sha256 mismatch"],
+    );
+}
+
+/// The previously reported figure re-pointed at the filed 10-K405: its
+/// receipt names the restating filing, so the load refuses the copy.
+#[test]
+fn wc_ta2000_prev_repointed_to_401_fails_receipt_mismatch() {
+    let mut files = worldcom();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"W-ST-ta2000-prev\"\n",
+        "source = \"SRC-WC-406\"",
+        "source = \"SRC-WC-401\"",
+    );
+    let line = row_header_line(&files, "receipts.toml", "fact = \"W-ST-ta2000-prev\"\n");
+    refused(
+        &files,
+        LoadErrorKind::ReceiptMismatch,
+        "receipts.toml",
+        "W-ST-ta2000-prev",
+        line,
+        &["receipt source `SRC-WC-406` differs from the fact's `SRC-WC-401`"],
+    );
+}
+
+/// The EX-27 multiplier read as 1,000 makes the derived FY1999 total a
+/// thousand times too small: K-DERIVE names the derived fact.
+#[test]
+fn wc_ex27_multiplier_edited_fails_k_derive() {
+    let mut files = worldcom();
+    let marker = "fact = \"W-ST-ex27-1999-mult\"\n";
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "literal = \"1,000,000\"",
+        "literal = \"1,000\"",
+    );
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "value = \"1000000\"",
+        "value = \"1000\"",
+    );
+    check_fails(
+        &files,
+        "K-DERIVE",
+        "W-ST-ta1999-ex27",
+        &["expected 9107200000000, computed 9107200000"],
+    );
+}
+
+/// An EX-27 cell re-anchored as a line (its receipt made consistent, so the
+/// load accepts the copy) is refused by K-ANCHOR: the schedule's
+/// anchor_scheme is table_cell only.
+#[test]
+fn wc_ex27_fact_anchored_line_fails_k_anchor() {
+    let mut files = worldcom();
+    let anchor = "FINANCIAL DATA SCHEDULE DEC. 31, 1999|<TOTAL-ASSETS>|<C>";
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"W-ST-ex27-1999-ta\"\n",
+        &format!("anchor_kind = \"table_cell\"\nanchor = \"{anchor}\""),
+        "anchor_kind = \"line\"\nanchor = \"l8667-8667\"",
+    );
+    let receipt = "fact = \"W-ST-ex27-1999-ta\"\n";
+    edit_row(
+        &mut files,
+        "receipts.toml",
+        receipt,
+        &format!("anchor = \"{anchor}\""),
+        "anchor = \"l8667-8667\"",
+    );
+    edit_row(
+        &mut files,
+        "receipts.toml",
+        receipt,
+        "alignment = \"value\"",
+        "alignment = \"sentence\"",
+    );
+    check_fails(
+        &files,
+        "K-ANCHOR",
+        "W-ST-ex27-1999-ta",
+        &["`line` is not in source SRC-WC-EX27-1999's anchor_scheme"],
     );
 }
 

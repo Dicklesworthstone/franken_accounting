@@ -745,6 +745,125 @@ quote_sha256 = "4f00c04931caf9a3c2dfbb5828407687122bca51a0fdfa38e40877c4cf1e6ea3
 about_scope = "period:2001Q4"
 granularity = "period_total"
 
+# Statement-level facts (§6.2; granularity statement_line, bound by exact cell value). They feed
+# only the statement variant and W-NOTE-01, never an entry-level book. `cell` is the
+# vintage-independent key K-VINTAGE compares across filings: SRC-WC-406 restates SRC-WC-401, and a
+# source has one fact per cell, so the restater's own total_assets@2000-12-31 is its restated
+# 44,188 and its "previously reported" column is the member key :previously_reported.
+# SRC-WC-406's restatement table is printed twice (p.49 and p.137), so its anchors pin p.49.
+
+[[fact]]
+id = "W-ST-ta2000-prev"
+provenance = "sourced"
+source = "SRC-WC-406"
+anchor_kind = "table_cell"
+anchor = "As of December 31, 2000@p49|Total|Previously Reported(1)"
+quote_sha256 = "bf2c2392b30c9bd6f5d9bb4317984017b01a988ad371a6ab1bf66f18d643725a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets:previously_reported@2000-12-31"
+
+[[fact]]
+id = "W-ST-ta2000-adj1"
+provenance = "sourced"
+source = "SRC-WC-406"
+anchor_kind = "table_cell"
+anchor = "As of December 31, 2000@p49|Total|Embratel/ Avantel"
+quote_sha256 = "b23dff25c2dc69b2bd8f1c4e70bc59a0342733544c459f406ca4d5fab3b4f34e"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets:embratel_avantel@2000-12-31"
+
+[[fact]]
+id = "W-ST-ta2000-adj2"
+provenance = "sourced"
+source = "SRC-WC-406"
+anchor_kind = "table_cell"
+anchor = "As of December 31, 2000@p49|Total|Other Restatement Adjustments"
+quote_sha256 = "d8b1c4a12a367138c7e7b1d716f7ca2bc3672e6c6c8c8e89b16f71bc4f982f72"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets:other_restatement_adjustments@2000-12-31"
+
+[[fact]]
+id = "W-ST-ta2000-restated"
+provenance = "sourced"
+source = "SRC-WC-406"
+anchor_kind = "table_cell"
+anchor = "As of December 31, 2000@p49|Total|As Restated"
+quote_sha256 = "9cbddc5799cb4594a0f547752da64ee4a42b5ab6ec1c16022ef8360a3dc4449f"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets@2000-12-31"
+
+[[fact]]
+id = "W-ST-ta1999-restated"
+provenance = "sourced"
+source = "SRC-WC-406"
+anchor_kind = "table_cell"
+anchor = "As of December 31,@p37|Total assets|1999"
+quote_sha256 = "168fa950944d469959de376b5a2f374bd9c21e0b637fd286fe5ae8486b2ac135"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets@1999-12-31"
+
+# The filed FY2000 figure is the 10-K405's selected data, which its legend says was "derived from
+# the WorldCom audited financial statements" (extraction l.2705); the audited balance sheet prints
+# the same $98,903 on an unlabeled total line (l.5593).
+
+[[fact]]
+id = "W-ST-ta2000-filed"
+provenance = "sourced"
+source = "SRC-WC-401"
+anchor_kind = "table_cell"
+anchor = "AT OR FOR THE YEARS ENDED DECEMBER 31,|Total assets|2000"
+quote_sha256 = "603a7e71a12341263d992d64c1f9cf8cf4e67ec64059ade5a204a5bc9d6d2691"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets@2000-12-31"
+
+# The FY1999 EX-27 prints TOTAL-ASSETS at its MULTIPLIER: two facts, and the dollar figure is
+# derived from both (a two-input scale).
+
+[[fact]]
+id = "W-ST-ex27-1999-ta"
+provenance = "sourced"
+source = "SRC-WC-EX27-1999"
+anchor_kind = "table_cell"
+anchor = "FINANCIAL DATA SCHEDULE DEC. 31, 1999|<TOTAL-ASSETS>|<C>"
+quote_sha256 = "ad3eff14951ad6ce4d48405e97f5e34526215a29ce1b8f0847c10895f73233cb"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets@1999-12-31"
+
+[[fact]]
+id = "W-ST-ex27-1999-mult"
+provenance = "sourced"
+source = "SRC-WC-EX27-1999"
+anchor_kind = "table_cell"
+anchor = "FINANCIAL DATA SCHEDULE DEC. 31, 1999|<MULTIPLIER>|<C>"
+quote_sha256 = "50891936fc76a98c62e59a25cac7b61eb512c3e7cc7ab95cc7bd75b9f554fc3b"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+
+[[fact]]
+id = "W-ST-ta1999-ex27"
+provenance = "derived"
+from = ["W-ST-ex27-1999-ta", "W-ST-ex27-1999-mult"]
+rule = "scale"
+params = ["multiplier=from:W-ST-ex27-1999-mult", "unit=USD"]
+
+# The restating filing footnotes only that "certain amounts have been reclassified" (a sentence it
+# prints under several tables, so it occurs more than once); it states no amount. The $176 million
+# between the filed and the previously reported total is derived.
+
+[[fact]]
+id = "W-ST-ta2000-reclass"
+provenance = "derived"
+from = ["W-ST-ta2000-filed", "W-ST-ta2000-prev"]
+rule = "difference"
+params = []
+
 [[value]]
 fact = "F2-period"
 ordinal = 1
@@ -1496,3 +1615,103 @@ literal = "2001-04-23..2001-04-24"
 rule = "date_range_literal"
 value = "2001-04-23..2001-04-24"
 unit = ""
+
+[[value]]
+fact = "W-ST-ta2000-prev"
+ordinal = 1
+literal = "98,727"
+rule = "scale"
+param = 6
+value = "9872700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-ST-ta2000-adj1"
+ordinal = 1
+literal = "(745)"
+rule = "scale"
+param = 6
+value = "-74500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-ST-ta2000-adj2"
+ordinal = 1
+literal = "(53,794)"
+rule = "scale"
+param = 6
+value = "-5379400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-ST-ta2000-restated"
+ordinal = 1
+literal = "44,188"
+rule = "scale"
+param = 6
+value = "4418800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-ST-ta1999-restated"
+ordinal = 1
+literal = "85,280"
+rule = "scale"
+param = 6
+value = "8528000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-ST-ta2000-filed"
+ordinal = 1
+literal = "$98,903"
+rule = "scale"
+param = 6
+value = "9890300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-ST-ex27-1999-ta"
+ordinal = 1
+literal = "91,072"
+rule = "scale"
+param = 0
+value = "91072"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "W-ST-ex27-1999-mult"
+ordinal = 1
+literal = "1,000,000"
+rule = "scale"
+param = 0
+value = "1000000"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "W-ST-ta1999-ex27"
+ordinal = 1
+literal = "9107200000000"
+rule = "scale"
+param = 0
+value = "9107200000000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "W-ST-ta2000-reclass"
+ordinal = 1
+literal = "17600000000"
+rule = "scale"
+param = 0
+value = "17600000000"
+unit = "USD"
+precision = 0

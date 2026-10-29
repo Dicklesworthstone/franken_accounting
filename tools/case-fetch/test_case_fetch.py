@@ -379,6 +379,50 @@ class Locate(unittest.TestCase):
         self.assertTrue(any("printed page 99" in p for p in b.problems), b.problems)
 
 
+class TableCells(unittest.TestCase):
+    """The table layouts filings print (synthetic text in each shape)."""
+
+    # EDGAR's stripped HTML: header cells over several lines, the label above its values;
+    # the same table printed twice, on printed pages 48 and 49.
+    STACKED_PAGE = ("As of December 31, 2000\n\nPreviously\nReported(1)\n\nOther\nAdjustments\n\n"
+                    "As Restated\n\nAssets:\n\nCurrent assets\n$\t9,657\t$\t(160\t)\t$\t9,497\n\n"
+                    "Total\n$\t98,727\t$\t(54,539\t)\t$\t44,188\n\n{n}\n")
+    STACKED = STACKED_PAGE.format(n=48) + "\f" + STACKED_PAGE.format(n=49)
+    YEARS = ("As of December 31,\n\nPro Forma\n\n2002(4)\n\n2002\n\n1999\n\n"
+             "(Unaudited)\t(Restated)\t(Restated)\n\nTotal assets\n24,247\t26,536\t85,280\n")
+    LEADERS = ("SELECTED DATA\n                  1999       2000\n"
+               "Total assets............  $91,072    $98,903\n")
+    FDS = ("<DESCRIPTION>FINANCIAL DATA SCHEDULE DEC. 31, 1999\n<MULTIPLIER> 1,000,000\n"
+           "<S>             <C>\n<TOTAL-ASSETS>                91,072\n")
+
+    def cell(self, text, anchor):
+        return [c for c, _ in cf.table_cell(cf.Located(text), anchor)]
+
+    def test_stacked_layout_reads_multi_line_headers_from_the_right(self):
+        table = "As of December 31, 2000@p49"
+        self.assertEqual(self.cell(self.STACKED, f"{table}|Total|Previously Reported(1)"), ["98,727"])
+        self.assertEqual(self.cell(self.STACKED, f"{table}|Total|Other Adjustments"), ["(54,539)"])
+        self.assertEqual(self.cell(self.STACKED, f"{table}|Total|As Restated"), ["44,188"])
+        # Without the page pin the twice-printed table resolves twice (verify refuses it).
+        self.assertEqual(self.cell(self.STACKED, "As of December 31, 2000|Total|As Restated"),
+                         ["44,188", "44,188"])
+        self.assertEqual(self.cell(self.YEARS, "As of December 31,|Total assets|1999"), ["85,280"])
+        self.assertEqual(self.cell(self.YEARS, "As of December 31,|Total assets|2002"), ["26,536"])
+
+    def test_leader_dots_and_fds_tags(self):
+        self.assertEqual(self.cell(self.LEADERS, "SELECTED DATA|Total assets|2000"), ["$98,903"])
+        fds = "FINANCIAL DATA SCHEDULE DEC. 31, 1999"
+        self.assertEqual(self.cell(self.FDS, f"{fds}|<TOTAL-ASSETS>|<C>"), ["91,072"])
+        self.assertEqual(self.cell(self.FDS, f"{fds}|<MULTIPLIER>|<C>"), ["1,000,000"])
+        self.assertEqual(self.cell(self.FDS, f"{fds}|<CASH>|<C>"), [])
+
+    def test_unknown_column_or_row_finds_nothing(self):
+        self.assertEqual(self.cell(self.STACKED, "As of December 31, 2000@p49|Total|Restated"), [])
+        self.assertEqual(self.cell(self.STACKED, "As of December 31, 2000@p49|Goodwill|As Restated"),
+                         [])
+        self.assertEqual(self.cell(self.STACKED, "As of December 31, 2000@p50|Total|As Restated"), [])
+
+
 class SharedFixtures(unittest.TestCase):
     """The rows fa-oracles' Rust checks read too (binding_fixtures.toml)."""
 
