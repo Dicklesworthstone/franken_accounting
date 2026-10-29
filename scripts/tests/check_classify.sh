@@ -324,9 +324,36 @@ PY
   gate_pass "split_test_job_list_covers_the_workspace ($(wc -l <"$list" | tr -d ' ') jobs)"
 }
 
+# 5. The proof summary (fa-0hs4.2): check.sh's exit hook prints exactly what
+#    local_proof_verify.sh requires of a transcript, one `ALL GATES GREEN` for
+#    a green run and `QUALITY GATE RED` on stdout and stderr for anything else.
+check_summary_matches_the_proof_verifier() {
+  local case rc pass fail unrun want out
+  if ! grep -qx 'gate_init "check.sh" check_summary' "$SOURCE_ROOT/scripts/check.sh"; then
+    gate_fail "check_summary_matches_the_proof_verifier — check.sh does not register check_summary as its exit hook"
+    return 1
+  fi
+  for case in "0 3 0 0 green" "1 3 1 0 red" "2 3 0 1 red" "0 3 0 1 red" "0 0 0 0 red"; do
+    read -r rc pass fail unrun want <<<"$case"
+    out="$base/summary-$rc-$pass-$fail-$unrun"
+    # shellcheck disable=SC1090,SC2034  # check_summary reads the GATE_* tallies.
+    (. "$harness"; GATE_PASS=$pass GATE_FAIL=$fail GATE_UNRUN=$unrun; check_summary "$rc") \
+      >"$out.out" 2>"$out.err"
+    if [ "$want" = green ]; then
+      [ "$(cat "$out.out")" = "ALL GATES GREEN" ] && [ ! -s "$out.err" ] && continue
+    else
+      [ "$(cat "$out.out")" = "QUALITY GATE RED" ] && [ "$(cat "$out.err")" = "QUALITY GATE RED" ] && continue
+    fi
+    gate_fail "check_summary_matches_the_proof_verifier — exit $rc with $pass/$fail/$unrun passed/failed/unrun: stdout '$(cat "$out.out")', stderr '$(cat "$out.err")' (want $want)"
+    return 1
+  done
+  gate_pass "check_summary_matches_the_proof_verifier (green, failed, unrun, unrun under exit 0, no assertions)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
 split_test_job_list_covers_the_workspace
+check_summary_matches_the_proof_verifier
 
 gate_verdict

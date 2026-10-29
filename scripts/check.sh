@@ -182,7 +182,21 @@ is_rch_offloader_unrun() {
   return 1
 }
 
-gate_init "check.sh"
+# check_summary <exit status>: the exit trap's tally hook. local_proof_verify.sh
+# binds every proof to one anchored summary: exactly one `ALL GATES GREEN` on a
+# green run, and `QUALITY GATE RED` on stdout and stderr on any other exit, an
+# early death included. Before this hook no script printed either line, so no
+# real proof, green or red, could verify (fa-0hs4.2).
+check_summary() {
+  if [ "$1" -eq 0 ] && [ "$GATE_FAIL" -eq 0 ] && [ "$GATE_UNRUN" -eq 0 ] && [ "$GATE_PASS" -gt 0 ]; then
+    printf 'ALL GATES GREEN\n'
+  else
+    printf 'QUALITY GATE RED\n'
+    printf 'QUALITY GATE RED\n' >&2
+  fi
+}
+
+gate_init "check.sh" check_summary
 if [ -n "${CHECK_RESUME_FROM:-}" ]; then
   if ! bash "$ROOT/scripts/local_proof_verify.sh" --repository "$ROOT" --for-resume "$CHECK_RESUME_FROM" \
       >"$LOG_DIR/resume-verification.log"; then
