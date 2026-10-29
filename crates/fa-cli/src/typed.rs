@@ -973,6 +973,11 @@ fn resolve_reserve(ctx: &mut Ctx<'_>, args: &Args, posts: bool) -> Result<(), Fa
 /// a bare reversal; `fa reverse` is that.
 pub(crate) fn replace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     const EXAMPLE: &str = "fa replace <vid> --reason WrongAmount --intent corrected.json --json";
+    if args.flag("--review").is_some() {
+        // The retained artifact already names its target, dates, keys and both
+        // sealed proposals. The shared handler refuses any attempted overrides.
+        return crate::cli::reverse_cmd(ctx, args);
+    }
     if args.flag_all("--intent").len() != 1 {
         return Err(usage(
             "fa replace posts the corrected entry with the reversal: name it once with --intent <file|->",

@@ -43,6 +43,8 @@ const FREE: [&str; 6] = ["1000", "1200", "2000", "3000", "4000", "6000"];
 
 #[path = "migration/limits.rs"]
 mod migration_limits;
+#[path = "migration/replay_resolutions.rs"]
+mod replay_resolutions;
 
 /// xorshift64*: deterministic, dependency-free.
 struct Rng(u64);
@@ -2370,8 +2372,13 @@ fn replay_verification_carries_pending_cells_and_refolds_releases() {
         literal_replay_pairs(&k, &scratch, &map)
     );
     assert_eq!(
-        work.full_fold_pairs, 3,
-        "genesis plus both non-additive releases"
+        work.full_fold_pairs, 1,
+        "only genesis needs a literal fold; both releases carry their original holds"
+    );
+    assert_eq!(work.resolved_holds, 4, "two targets on each book");
+    assert_eq!(
+        work.released_legs, 8,
+        "both complete original vectors on each book"
     );
     assert!(
         work.appended_legs >= 12,

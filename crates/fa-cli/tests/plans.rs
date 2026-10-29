@@ -15,6 +15,8 @@ use fa_cli::json::{self, Json};
 
 #[path = "plans/correction_drafts.rs"]
 mod correction_drafts;
+#[path = "plans/correction_reviews.rs"]
+mod correction_reviews;
 
 fn run(book: &Path, args: &[&str], input: Option<&[u8]>) -> (i32, Json) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))

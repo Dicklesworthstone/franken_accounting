@@ -33,6 +33,9 @@
 //! and explicit overrides; economic classification and approval are not judged.
 //! Equity roll-forwards independently reproduce the complete equity/income
 //! chart, owner movements, closing transfers and opening-to-closing identity.
+//! Native statement comparisons replay both historical statements before
+//! deriving every line delta and zero-balance chart mapping change. Both
+//! sources retain one exact shared registry closure and selected definition.
 //! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
@@ -65,6 +68,7 @@ mod reconciliation;
 mod registry;
 mod roll_forward;
 mod statement;
+mod statement_diff;
 mod temporal;
 pub use aging::{
     VerifiedAgedOpenItem, VerifiedAging, VerifiedAgingAmounts, VerifiedAgingBand,
@@ -111,6 +115,7 @@ pub use roll_forward::{
     RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
 };
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
+pub use statement_diff::{StatementLineChange, StatementMappingChange, VerifiedStatementDiff};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
 mod tests;
@@ -199,6 +204,8 @@ pub struct VerifiedReport {
     pub rows: Vec<ReportRow>,
     /// Present for independently reconstructed native financial statements.
     pub statement: Option<VerifiedStatement>,
+    /// Two complete native statements and their exact historical bridge.
+    pub statement_diff: Option<VerifiedStatementDiff>,
     /// Authenticated dimension hierarchy and exact values included in the fold.
     pub dimension: Option<VerifiedDimensionSelection>,
     /// Present for independently reconstructed native open-item reports.
@@ -620,6 +627,11 @@ fn verify_report_with_inputs(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let statement_diff = if statement_diff::recognizes(certificate_bytes) {
+        Some(statement_diff::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     // Each supported composition has a fixed depth. Equity has one roll-forward
     // source; split cash flow also retains its original roll-forward directly,
     // and policy cash flow has one direct-cash source over a roll-forward.
@@ -695,8 +707,16 @@ fn verify_report_with_inputs(
         .map(|value| value.source)
         .or_else(|| due_date.as_ref().map(|value| value.source))
         .or_else(|| roll_forward.as_ref().map(|value| value.source))
+        .or_else(|| statement_diff.as_ref().map(|value| value.after))
         .unwrap_or(certificate_bytes);
     let cert = certificate(source)?;
+    let before_statement = statement_diff
+        .as_ref()
+        .map(|comparison| certificate(comparison.before))
+        .transpose()?;
+    if let Some(before) = &before_statement {
+        statement_diff::bind(before, &cert)?;
+    }
     if (aging.is_some() || due_date.is_some())
         && (!matches!(cert.selection, Selection::OpenItems(_)) || cert.time_selection.is_some())
     {
@@ -739,6 +759,7 @@ fn verify_report_with_inputs(
         .or_else(|| aging.as_ref().map(|value| value.digest))
         .or_else(|| due_date.as_ref().map(|value| value.digest))
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
+        .or_else(|| statement_diff.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     if cert.functional != (major == 3) {
         return Err(failed(
@@ -761,10 +782,12 @@ fn verify_report_with_inputs(
             "registry bundles require a native statement, OpenItems, ExplainBalance, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
-    if (is_open_items || is_explanation || roll_forward.is_some()) && major != 2 {
+    if (is_open_items || is_explanation || roll_forward.is_some() || statement_diff.is_some())
+        && major != 2
+    {
         return Err(failed(
             "registry_closure",
-            "native v3 reports, roll-forwards, equity and direct cash flows require a version-2 bundle with their authenticated complete registry closure",
+            "native v3 reports, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -899,86 +922,16 @@ fn verify_report_with_inputs(
     if let Some(time) = &cert.time_selection {
         temporal::verify(time, cert.known_at, anchor.through_seq, envelopes, &records)?;
     }
-    let mut hashes = Vec::new();
-    let mut last_seq = None;
-    let mut ordinal = 0u32;
-    for e in envelopes
-        .iter()
-        .filter(|e| e.kind == KIND_ENTRY && e.commit_seq <= cert.known_at)
-    {
-        if last_seq != Some(e.commit_seq) {
-            ordinal = 0;
-            last_seq = Some(e.commit_seq);
-        }
-        let mut historical = e.clone();
-        historical.within_commit_ordinal = ordinal;
-        ordinal = ordinal
-            .checked_add(1)
-            .ok_or_else(|| failed("historical_prefix", "entry ordinal overflow"))?;
-        hashes.push(leaf_hash(&historical.encode()));
-    }
-    if hashes.len() as u64 != cert.leaves || root_of(&hashes) != cert.journal_root {
-        return Err(failed(
-            "historical_prefix",
-            "the authenticated entries at known-at do not reproduce the certificate's journal root",
-        ));
-    }
-    let (visible_migrations, migration_activations) =
-        crate::migration_balance::report_visibility_at(envelopes, &records, &bodies, cert.known_at)
-            .map_err(|e| failed("migration_visibility", e.to_string()))?;
-    let mut schema = metadata::Schema::default();
-    let mut dimension_history = dimension::History::default();
-    let mut infos = BTreeMap::new();
-    let mut by_digest = BTreeMap::new();
-    for (index, (envelope, (len, payload))) in envelopes.iter().zip(&records).enumerate() {
-        if envelope.kind != KIND_ENTRY || envelope.commit_seq > cert.known_at {
-            continue;
-        }
-        let info = metadata::entry_info(&payload[..*len], envelope)?;
-        if let Some((kind, body)) = info.schema {
-            schema.apply(kind, body, &cert.book, envelope.commit_seq)?;
-            if cert.dimension.is_some() {
-                dimension_history.apply(kind, body, &cert.book)?;
-            }
-        }
-        if by_digest.insert(envelope.record_digest, index).is_some() {
-            return Err(failed(
-                "entry_identity",
-                "duplicate entry digest in the prefix",
-            ));
-        }
-        infos.insert(index, info);
-    }
-    let mut resolved = BTreeSet::new();
-    let mut releases = BTreeMap::new();
-    for (index, info) in &infos {
-        let e = &envelopes[*index];
-        if e.class != 3 {
-            continue;
-        }
-        let target = info
-            .resolution
-            .ok_or_else(|| failed("pending_resolution", "resolution lacks a pending target"))?;
-        let target_index = *by_digest
-            .get(&target.1)
-            .ok_or_else(|| failed("pending_resolution", "pending target is missing"))?;
-        let original = &envelopes[target_index];
-        if original.class != 2
-            // An atomic batch can publish its Pending and Resolution together.
-            // Prefix ordinals order identities, not member execution. The
-            // authenticated target digest, derived VId and single resolution
-            // establish the snapshot's lifecycle without trusting that order.
-            || original.commit_seq > e.commit_seq
-            || !infos[&target_index].matches_identity(target.0)
-            || !resolved.insert(target_index)
-        {
-            return Err(failed(
-                "pending_resolution",
-                "invalid or duplicate pending resolution",
-            ));
-        }
-        releases.insert(target_index, e.commit_seq);
-    }
+    let HistoricalInputs {
+        visible_migrations,
+        migration_activations,
+        schema,
+        dimension_history,
+        infos,
+        by_digest,
+        resolved,
+        releases,
+    } = historical_inputs(&cert, envelopes, &records, &bodies)?;
     let dimension = cert
         .dimension
         .as_ref()
@@ -1058,6 +1011,7 @@ fn verify_report_with_inputs(
             periods,
             rows: Vec::new(),
             statement: None,
+            statement_diff: None,
             dimension: None,
             open_items: None,
             explanation: None,
@@ -1163,6 +1117,7 @@ fn verify_report_with_inputs(
                     periods: control.periods,
                     rows: Vec::new(),
                     statement: None,
+                    statement_diff: None,
                     dimension: None,
                     open_items: None,
                     explanation: None,
@@ -1196,6 +1151,7 @@ fn verify_report_with_inputs(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                statement_diff: None,
                 dimension: None,
                 open_items: None,
                 explanation: None,
@@ -1280,6 +1236,7 @@ fn verify_report_with_inputs(
                     periods: control.periods,
                     rows: Vec::new(),
                     statement: None,
+                    statement_diff: None,
                     dimension: None,
                     open_items: None,
                     explanation: None,
@@ -1313,6 +1270,7 @@ fn verify_report_with_inputs(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                statement_diff: None,
                 dimension: None,
                 open_items: None,
                 explanation: None,
@@ -1346,6 +1304,7 @@ fn verify_report_with_inputs(
             periods: Vec::new(),
             rows: Vec::new(),
             statement: None,
+            statement_diff: None,
             dimension: None,
             open_items: Some(open_items),
             explanation: None,
@@ -1400,6 +1359,7 @@ fn verify_report_with_inputs(
             periods: vec![period.clone()],
             rows: Vec::new(),
             statement: None,
+            statement_diff: None,
             dimension: None,
             open_items: None,
             explanation: Some(explanation),
@@ -1447,19 +1407,75 @@ fn verify_report_with_inputs(
                 "statement definition, columns, lines, complete mappings or canonical bytes differ from independent replay",
             ));
         }
+        let effective_through = Some(statement.columns[0].effective_through);
+        let (statement, statement_diff, output, output_digest) = if let (
+            Some(request),
+            Some(before_certificate),
+        ) =
+            (&statement_diff, &before_statement)
+        {
+            let Selection::Statement(before_selection) = &before_certificate.selection else {
+                return Err(failed(
+                    "supported_report",
+                    "comparison source is not a statement",
+                ));
+            };
+            let before_bodies = crate::migration_balance::report_bodies_at(
+                envelopes,
+                &records,
+                &bodies,
+                before_certificate.known_at,
+            )
+            .map_err(|e| failed("migration_visibility", e.to_string()))?;
+            let before_inputs =
+                historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
+            let (before, before_output) = statement::replay(
+                before_selection,
+                &before_certificate.book,
+                &before_certificate.branch,
+                before_certificate.known_at,
+                &units,
+                &before_inputs.schema,
+                envelopes,
+                &before_inputs.infos,
+                &legs,
+                &before_inputs.visible_migrations,
+                &before_inputs.resolved,
+            )?;
+            if before_output != before_certificate.output {
+                return Err(failed(
+                    "report_recomputation",
+                    "the comparison's earlier statement differs from its independently replayed historical source",
+                ));
+            }
+            let (comparison, output) = statement_diff::replay(
+                request,
+                before_certificate,
+                &cert,
+                before,
+                &before_output,
+                statement,
+                &output,
+            )?;
+            let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+            (None, Some(comparison), output, output_digest)
+        } else {
+            (Some(statement), None, output, cert.output_digest)
+        };
         return Ok(VerifiedReport {
             scope: "recomputation",
             bundle_digest: digest,
-            certificate_digest: cert.digest,
-            output_digest: cert.output_digest,
+            certificate_digest,
+            output_digest,
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
-            effective_through: Some(statement.columns[0].effective_through),
+            effective_through,
             activity: selection.activity(),
             periods: selection.periods.clone(),
             rows: Vec::new(),
-            statement: Some(statement),
+            statement,
+            statement_diff,
             dimension: None,
             open_items: None,
             explanation: None,
@@ -1538,6 +1554,7 @@ fn verify_report_with_inputs(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                statement_diff: None,
                 dimension: None,
                 open_items: None,
                 explanation: None,
@@ -1626,6 +1643,7 @@ fn verify_report_with_inputs(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                statement_diff: None,
                 dimension: None,
                 open_items: None,
                 explanation: None,
@@ -1659,6 +1677,7 @@ fn verify_report_with_inputs(
             periods: Vec::new(),
             rows: Vec::new(),
             statement: None,
+            statement_diff: None,
             dimension: None,
             open_items: None,
             explanation: None,
@@ -1692,6 +1711,7 @@ fn verify_report_with_inputs(
         periods,
         rows,
         statement: None,
+        statement_diff: None,
         dimension,
         open_items: None,
         explanation: None,
@@ -1710,6 +1730,118 @@ fn verify_report_with_inputs(
         output,
         checked_records: records.len(),
         receipt,
+    })
+}
+
+struct HistoricalInputs<'a> {
+    visible_migrations: BTreeSet<u64>,
+    migration_activations: BTreeMap<u64, u64>,
+    schema: metadata::Schema,
+    dimension_history: dimension::History,
+    infos: BTreeMap<usize, metadata::EntryInfo<'a>>,
+    by_digest: BTreeMap<[u8; 32], usize>,
+    resolved: BTreeSet<usize>,
+    releases: BTreeMap<usize, u64>,
+}
+
+/// Reconstruct one source at its exact historical frontier. A comparison must
+/// call this for each side: later chart controls, finalized migrations and
+/// pending resolutions cannot change the earlier source's meaning.
+fn historical_inputs<'a>(
+    cert: &Certificate<'_>,
+    envelopes: &[crate::envelope::LeafEnvelope],
+    records: &[(usize, &'a [u8])],
+    bodies: &[(u64, &[u8])],
+) -> Result<HistoricalInputs<'a>, ReportError> {
+    let mut hashes = Vec::new();
+    let mut last_seq = None;
+    let mut ordinal = 0u32;
+    for e in envelopes
+        .iter()
+        .filter(|e| e.kind == KIND_ENTRY && e.commit_seq <= cert.known_at)
+    {
+        if last_seq != Some(e.commit_seq) {
+            ordinal = 0;
+            last_seq = Some(e.commit_seq);
+        }
+        let mut historical = e.clone();
+        historical.within_commit_ordinal = ordinal;
+        ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| failed("historical_prefix", "entry ordinal overflow"))?;
+        hashes.push(leaf_hash(&historical.encode()));
+    }
+    if hashes.len() as u64 != cert.leaves || root_of(&hashes) != cert.journal_root {
+        return Err(failed(
+            "historical_prefix",
+            "the authenticated entries at known-at do not reproduce the certificate's journal root",
+        ));
+    }
+    let (visible_migrations, migration_activations) =
+        crate::migration_balance::report_visibility_at(envelopes, records, bodies, cert.known_at)
+            .map_err(|e| failed("migration_visibility", e.to_string()))?;
+    let mut schema = metadata::Schema::default();
+    let mut dimension_history = dimension::History::default();
+    let mut infos = BTreeMap::new();
+    let mut by_digest = BTreeMap::new();
+    for (index, (envelope, (len, payload))) in envelopes.iter().zip(records).enumerate() {
+        if envelope.kind != KIND_ENTRY || envelope.commit_seq > cert.known_at {
+            continue;
+        }
+        let info = metadata::entry_info(&payload[..*len], envelope)?;
+        if let Some((kind, body)) = info.schema {
+            schema.apply(kind, body, &cert.book, envelope.commit_seq)?;
+            if cert.dimension.is_some() {
+                dimension_history.apply(kind, body, &cert.book)?;
+            }
+        }
+        if by_digest.insert(envelope.record_digest, index).is_some() {
+            return Err(failed(
+                "entry_identity",
+                "duplicate entry digest in the prefix",
+            ));
+        }
+        infos.insert(index, info);
+    }
+    let mut resolved = BTreeSet::new();
+    let mut releases = BTreeMap::new();
+    for (index, info) in &infos {
+        let e = &envelopes[*index];
+        if e.class != 3 {
+            continue;
+        }
+        let target = info
+            .resolution
+            .ok_or_else(|| failed("pending_resolution", "resolution lacks a pending target"))?;
+        let target_index = *by_digest
+            .get(&target.1)
+            .ok_or_else(|| failed("pending_resolution", "pending target is missing"))?;
+        let original = &envelopes[target_index];
+        if original.class != 2
+            // An atomic batch can publish its Pending and Resolution together.
+            // Prefix ordinals order identities, not member execution. The
+            // authenticated target digest, derived VId and single resolution
+            // establish the snapshot's lifecycle without trusting that order.
+            || original.commit_seq > e.commit_seq
+            || !infos[&target_index].matches_identity(target.0)
+            || !resolved.insert(target_index)
+        {
+            return Err(failed(
+                "pending_resolution",
+                "invalid or duplicate pending resolution",
+            ));
+        }
+        releases.insert(target_index, e.commit_seq);
+    }
+    Ok(HistoricalInputs {
+        visible_migrations,
+        migration_activations,
+        schema,
+        dimension_history,
+        infos,
+        by_digest,
+        resolved,
+        releases,
     })
 }
 

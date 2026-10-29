@@ -379,11 +379,11 @@ name = "replace"
 summary = "Correct an entry (plan §15.3, Appendix B Replace): its exact Reversal and the corrected Replacement commit as one pair, both or neither. Typed sugar over fa reverse --replace-with."
 writes = true
 subcommands = []
-flags = ["--reason", "--intent", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft"]
-switches = ["--dry-run"]
-events = ["corrected", "replacement_plan", "draft_planned"]
+flags = ["--reason", "--intent", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--review", "--review-out", "--digest", "--approval", "--reversal-approval"]
+switches = ["--dry-run", "--review-only"]
+events = ["corrected", "replacement_plan", "draft_planned", "replacement_reviewed"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["replace <vid|E:vid> --reason <name|code> --intent <corrected.json|-> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The corrected entry intent carries the legs, without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. --effective, --period, --key and --description apply to the reversal, as on fa reverse. The corrected entry is required: fa reverse <vid> --reason <name> reverses without a replacement. --draft retains the complete reviewed pair in an empty draft for independent promotion; the draft holds exactly this correction and cannot mix it with other operations."]
+usage = ["replace <vid|E:vid> --reason <name|code> --intent <corrected.json|-> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --draft <name>]", "replace [<vid|E:vid>] --review <file|hex|-> --digest <review_digest> [--approval <replacement-approval-vid>]... [--reversal-approval <reversal-approval-vid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The corrected entry intent carries the legs, without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. --effective, --period, --key and --description apply to the reversal, as on fa reverse. The corrected entry is required when creating a pair: fa reverse <vid> --reason <name> reverses without a replacement. --draft retains the complete reviewed pair in an empty draft for independent promotion; the draft holds exactly this correction and cannot mix it with other operations.", "--review-only or --review-out retains both exact sealed, unapproved proposals without executing the posting laws. Approve each required member with fa approve --proposal <member.proposal_digest>, then restore the complete pair with the independently saved review_digest. --approval attaches only to Replacement; --reversal-approval attaches only to Reversal. The review supplies its own target, dates, keys, reason and evidence, so restore refuses overrides. A Closed correction still requires post_closed and an independent Replacement approval; a Locked period remains refused. Review creation, native dry-run and draft retention are separate modes. --yes confirms only a direct operator publication, never a review or draft. Agent reviews can enter a dedicated draft after approvals; they cannot publish trunk entries."]
 example = "fa replace <vid> --reason WrongAmount --intent corrected.json --book ./books/myco --json"
 
 
@@ -416,11 +416,11 @@ name = "reverse"
 summary = "Post the exact reversal of an entry with a registered reason, preserving the original entry and its lineage."
 writes = true
 subcommands = []
-flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--replace-with"]
-switches = ["--dry-run"]
-events = ["reversed", "recorded", "plan", "draft_planned", "corrected", "replacement_plan"]
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out", "--draft", "--replace-with", "--review", "--review-out", "--digest", "--approval", "--reversal-approval"]
+switches = ["--dry-run", "--review-only"]
+events = ["reversed", "recorded", "plan", "draft_planned", "corrected", "replacement_plan", "replacement_reviewed"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|-> [--dry-run [--plan-out <new-file>] | --draft <name>]   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. The dry-run returns one sealed plan containing both members; fa commit --plan <file|-> revalidates and publishes both atomically. Agent-profile dry runs cannot commit to trunk; --draft retains the complete pair in an empty draft for an independent promoter. A correction draft holds only that pair, and promotion preserves both reviewed entries atomically. A Replacement posted alone remains FA-REF-160.)"]
+usage = ["reverse <vid|E:vid> --reason <name|code> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--grant <op>]... [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The default effective date and period are the target's; --effective never chooses an open period automatically. The default key is reverse:<target vid>. Repeating the same request returns the original outcome; changing a committed reversal is refused.", "--dry-run rehearses the exact derived reversal without publishing it; commit its reviewed sealed plan with fa commit --plan <file|-> at the same book snapshot.", "Reasons are registered in reason_codes.toml (scope supersession): WrongAccount, WrongPeriod, WrongAmount, Duplicate, and the other listed codes. Other requires --description. A reason records the preparer's statement, not its truth.", "reverse <vid> --reason <name> --replace-with <file.json|-> [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --draft <name>]   (plan §8.2: the exact reversal and the corrected Replacement commit as one pair, both or neither. The replacement intent is an entry intent without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. The dry-run returns one sealed plan containing both members; fa commit --plan <file|-> revalidates and publishes both atomically. Agent-profile dry runs cannot commit to trunk; --draft retains the complete pair in an empty draft for an independent promoter. A correction draft holds only that pair, and promotion preserves both reviewed entries atomically. A Replacement posted alone remains FA-REF-160.)", "reverse [<vid|E:vid>] --review <file|hex|-> --digest <review_digest> [--approval <replacement-approval-vid>]... [--reversal-approval <reversal-approval-vid>]... [--dry-run [--plan-out <new-file>] | --draft <name>] restores a complete unapproved correction review exactly as fa replace. Review creation requires --replace-with; it retains both sealed proposals without claiming a successful rehearsal. Approvals attach to their named member, all current laws remain enforced, and restore refuses changes to target, reason, dates, keys, evidence or amounts."]
 example = "fa reverse <vid> --reason WrongAccount --book ./books/myco --json"
 
 [[verb]]
@@ -1930,6 +1930,12 @@ name = "replacement_plan"
 book = true
 doc = "Zero-write rehearsal of one atomic Reversal and Replacement. The ordered members show both exact prepared entries. bytes carries one canonical joint-authenticated artifact; neither member authenticates as a standalone PostEntry plan. The certificate binds both requests, approvals, periods, capability, policy, basis and complete native effects. Agent-profile dry runs cannot commit to trunk; a dedicated correction draft retains both reviewed entries for independent promotion. The joint Certificate and both CITES edges will be retained atomically on plan publication."
 fields = ["intent_kind:string", "target:hex", "principal:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "members:[replacement_plan_member]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+
+[[event]]
+name = "replacement_reviewed"
+book = true
+doc = "An unexecuted correction request containing exactly one unapproved Reversal and Replacement of the same target and reason. Both sealed proposals, including their dates, keys, evidence and native or functional amounts, are retained in the complete canonical bytes; the displayed legs show native amounts. review_digest binds the complete artifact and must be retained independently before restore. Each approval binds its member's proposal_digest, not the review digest. Neither correction entry was published; a bound delivery records its required AccessEvent before disclosure. This is neither a native rehearsal, certificate, signature nor posting permit. The kernel evaluates current authority, period law, target validity, approvals and SoD before planning, draft retention or publication."
+fields = ["target:hex", "target_digest:hex", "principal:hex", "review_digest:hex", "members:[replacement_review_member]", "bytes:hex", "file:string?"]
 
 [[event]]
 name = "replacement_plan_committed"
@@ -3648,6 +3654,11 @@ doc = "One ordered member of the joint correction artifact: exact request and pr
 fields = ["class:string", "effective_date:date", "period:string", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "entry_digest:hex", "legs:[plan_leg]", "supersedes:[lineage]", "evidence:[evidence_head]", "approvals:int"]
 
 [[shape]]
+name = "replacement_review_member"
+doc = "One exact unapproved correction proposal. The period is its explicit discriminator when present; dates and keys belong to this member. Approval references must bind this proposal_digest. Complete provenance and sealed fields remain in the review bytes."
+fields = ["class:string", "effective_date:date", "period:string?", "idempotency_key:hex", "proposal_digest:hex", "legs:[plan_leg]"]
+
+[[shape]]
 name = "batch_plan_member"
 doc = "One ordered member of an atomic batch rehearsal, with its derived entry identity and exact request/prepared digests. Complete sealed bytes and supplied approvals remain in the portable artifact."
 fields = ["index:int", "vid:hex", "class:string", "effective_date:date", "period:string", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "entry_digest:hex", "legs:[batch_plan_leg]", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "evidence:[evidence_head]", "approvals:int"]
@@ -3902,7 +3913,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input"]
+repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget"]
 
@@ -4467,14 +4478,14 @@ cluster = "fa.post"
 name = "reverse"
 verb = "reverse"
 subcommands = []
-positionals = ["vid"]
-flags = ["--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft", "--replace-with"]
-switches = ["--dry-run"]
+positionals = ["vid?"]
+flags = ["--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft", "--replace-with", "--review", "--digest", "--approval", "--reversal-approval"]
+switches = ["--dry-run", "--review-only"]
 stdin_property = "replace_with"
 stdin_kind = "object"
 stdin_via = "--replace-with"
-required = ["vid", "--reason"]
-dont = ["Don't re-enter the target's amounts: the reversal derives its exact opposite legs and preserves its evidence lineage.", "Don't pick an effective date to dodge the period law. The default is the target's date; a supplied date must be in the same or a later admissible period.", "Don't use Other without a description of the stated reason; a reason code does not attest that the explanation is true."]
+required = []
+dont = ["Don't re-enter the target's amounts: a new reversal requires vid and reason, and derives its exact opposite legs from the target while preserving evidence lineage.", "Don't pick an effective date to dodge the period law. The default is the target's date; a supplied date must be in the same or a later admissible period.", "Don't use Other without a description of the stated reason; a reason code does not attest that the explanation is true.", "To obtain approvals for a correction, supply replace_with and review_only. Restore its complete bytes in review with the independently retained digest, approval for Replacement and reversal_approval for Reversal. The artifact supplies vid, dates and keys; omit the original input fields. Agent work enters an empty draft for independent promotion; no review grants trunk posting authority."]
 mistakes = ["Omitting reason or using an unregistered name (for example, use WrongAccount, WrongAmount or Duplicate).", "Trying to reverse an already reversed entry with a different reason: cite the existing reversal or explicitly reverse that reversal.", "Posting a corrected entry as a separate Original after the reversal: pass the corrected entry intent as replace_with so the Reversal and its Replacement commit as one pair (a Replacement alone is FA-REF-160)."]
 
 [[mcp.tool]]
@@ -4494,15 +4505,15 @@ cluster = "fa.correct"
 name = "replace"
 verb = "replace"
 subcommands = []
-positionals = ["vid"]
-flags = ["--intent", "--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft"]
-switches = ["--dry-run"]
+positionals = ["vid?"]
+flags = ["--intent", "--reason", "--effective", "--period", "--key", "--description", "--evidence", "--draft", "--review", "--digest", "--approval", "--reversal-approval"]
+switches = ["--dry-run", "--review-only"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
-required = ["vid", "--reason", "--intent"]
-dont = ["Pass the complete corrected entry as intent: its legs, effective_date and evidence. The reversal derives its exact opposite legs from the target; never re-enter them.", "Don't post the corrected entry as a separate Original: a Replacement exists only paired with its Reversal, and this tool commits both or neither.", "Don't pick an effective date to dodge the period law: the reversal defaults to the target's date, and a Closed period needs post_closed with one approval.", "For Agent preparation, pass draft naming an empty draft to retain the reviewed pair for independent promotion. That draft holds one complete correction; don't combine draft with dry_run or mix in other operations."]
-mistakes = ["Omitting intent: to reverse without a replacement, use fa_post_reverse.", "A JSON number in a leg amount (write \"300.00 USD\").", "Omitting reason or using an unregistered name (WrongAmount and WrongAccount are the usual ones)."]
+required = []
+dont = ["For a new correction, supply vid, reason and the complete corrected entry as intent: its legs, effective_date and evidence. The reversal derives its exact opposite legs from the target; never re-enter them.", "Don't post the corrected entry as a separate Original: a Replacement exists only paired with its Reversal, and this tool commits both or neither.", "Don't pick an effective date to dodge the period law: the reversal defaults to the target's date, and a Closed period needs post_closed with one independent approval.", "Use review_only to retain both exact unapproved proposals. After each required member is approved, pass the complete bytes hex string in review, its independently saved digest, approval for Replacement and reversal_approval for Reversal. Do not resupply intent, reason, dates, keys or evidence; they are already fixed in the review.", "For Agent preparation, pass draft naming an empty draft to retain the approved reviewed pair for independent promotion. That draft holds one complete correction; don't combine draft with dry_run or review_only, or mix in other operations. A review never grants trunk posting authority."]
+mistakes = ["Omitting intent for a new pair: restore a complete review instead, or use fa_post_reverse to reverse without a replacement.", "A JSON number in a leg amount (write \"300.00 USD\").", "Omitting reason when constructing a new pair or using an unregistered name (WrongAmount and WrongAccount are the usual ones).", "Passing a Replacement approval in reversal_approval, or treating review_digest as a member proposal_digest."]
 
 [[mcp.tool]]
 cluster = "fa.post"

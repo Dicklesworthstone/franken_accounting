@@ -20,6 +20,8 @@ mod prefix;
 mod report;
 #[path = "proofs/roll_forward.rs"]
 mod roll_forward;
+#[path = "proofs/statement_diff.rs"]
+mod statement_diff;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
