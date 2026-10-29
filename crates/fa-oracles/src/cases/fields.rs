@@ -246,6 +246,18 @@ pub(crate) fn is_date(s: &str) -> bool {
     d <= days
 }
 
+/// Whether `s` is a `month_day_literal` result: ISO 8601's year-less
+/// `--MM-DD` (a day of some year, so `--02-29` is one), then optionally one
+/// space and a weekday name.
+#[must_use]
+pub(crate) fn is_month_day(s: &str) -> bool {
+    let (md, weekday) = s.split_once(' ').map_or((s, None), |(md, w)| (md, Some(w)));
+    md.len() == 7
+        && md.starts_with("--")
+        && is_date(&format!("2000{}", &md[1..]))
+        && weekday.is_none_or(|w| super::date::WEEKDAYS.contains(&w))
+}
+
 /// Whether `s` is an integer string (optional leading `-`, digits only).
 #[must_use]
 pub(crate) fn is_integer(s: &str) -> bool {

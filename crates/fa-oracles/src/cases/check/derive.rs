@@ -5,7 +5,7 @@
 //! event whose `resource_amount_rule` names a fact, carries that amount.
 //!
 //! A derived fact's inputs are its `from` facts in order, less those a
-//! `<name>=from:<fact>` parameter reads: a rows fact's input is its
+//! `<name>=from:<fact>[#<n>]` parameter reads: a rows fact's input is its
 //! committed rows file, any other fact's its first `[[value]]`. Its result
 //! is compared with its own first `[[value]]`. A pending fact (owner
 //! decision 2b) or a leg naming one is counted, never recomputed.
@@ -128,6 +128,7 @@ fn recompute(
         .iter()
         .flatten()
         .filter_map(|p| p.as_str()?.split_once("=from:").map(|(_, f)| f))
+        .map(|f| f.split_once('#').map_or(f, |(f, _)| f))
         .collect();
     let mut inputs = Vec::new();
     for from in d

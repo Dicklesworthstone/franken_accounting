@@ -10,7 +10,7 @@
 use fa_registry::toml::{Document, Table, Value as TomlValue};
 
 use super::error::{LoadError, LoadErrorKind};
-use super::fields::{Row, is_date, is_integer, is_sha256_hex};
+use super::fields::{Row, is_date, is_integer, is_month_day, is_sha256_hex};
 use super::rows::row_line;
 use super::source::{AnchorKind, Assurance, closed, put, put_opt, put_strs};
 
@@ -43,6 +43,7 @@ closed_set! {
         DateLiteral => "date_literal",
         DateRangeLiteral => "date_range_literal",
         MonthLiteral => "month_literal",
+        MonthDayLiteral => "month_day_literal",
         NumberWord => "number_word",
         PeriodLiteral => "period_literal",
     }
@@ -520,6 +521,7 @@ pub(crate) fn parse_values(
                 .split_once("..")
                 .is_some_and(|(a, b)| is_date(a) && is_date(b) && a <= b),
             LiteralRule::MonthLiteral => is_date(&format!("{value}-01")),
+            LiteralRule::MonthDayLiteral => is_month_day(&value),
             LiteralRule::PeriodLiteral => !value.is_empty(),
         };
         if !shape_ok {

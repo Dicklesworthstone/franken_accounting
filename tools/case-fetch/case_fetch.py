@@ -118,6 +118,7 @@ MONTHS = {
     )
     for name in names
 }
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 NUMBER_WORDS = {
     w: i
     for i, w in enumerate(
@@ -741,6 +742,25 @@ def apply_rule(rule, literal, param, unit, precision, scales):
             if mo:
                 return f"{int(m.group(2)):04d}-{mo:02d}"
         raise RuleError(f"`{literal}` is not a month")
+    if rule == "month_day_literal":
+        import datetime
+        words = [w for w in re.split(r"[\s,]+", literal) if w]
+        for i, w in enumerate(words):
+            mo = MONTHS.get(w.rstrip(".,").lower())
+            nxt = words[i + 1].rstrip(".,") if i + 1 < len(words) else ""
+            if mo is None or not (1 <= len(nxt) <= 2 and nxt.isascii() and nxt.isdigit()):
+                continue
+            after = words[i + 2].rstrip(".,") if i + 2 < len(words) else ""
+            if len(after) == 4 and after.isascii() and after.isdigit():
+                raise RuleError(f"`{literal}` carries its year; it is a date_literal")
+            try:
+                datetime.date(2000, mo, int(nxt))
+            except ValueError as e:
+                raise RuleError(f"`{literal}` is not a day of any year") from e
+            prev = words[i - 1].rstrip(".,").lower() if i > 0 else ""
+            weekday = next((n for n in WEEKDAY_NAMES if n.lower() == prev), None)
+            return f"--{mo:02d}-{int(nxt):02d}" + (f" {weekday}" if weekday else "")
+        raise RuleError(f"`{literal}` is not a month and day")
     if rule == "period_literal":
         phrase = re.sub(r"^(?:(?:the|in|for|during)\s+)+", "", literal.strip(), flags=re.I)
         phrase = phrase.rstrip(".,;:")

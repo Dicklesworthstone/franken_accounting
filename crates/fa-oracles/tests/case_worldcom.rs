@@ -9,6 +9,7 @@
 //! on F9's, the slice's exact-dollar entry.
 
 use fa_oracles::cases::check::{CheckFailure, Verdict, run_load_checks};
+use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::WORLDCOM;
 use fa_oracles::cases::error::{LoadError, LoadErrorKind};
 use fa_oracles::cases::fact::values_canonical;
@@ -18,12 +19,29 @@ use fa_oracles::sha256;
 type Files = Vec<(&'static str, String)>;
 
 /// The sourced facts: the pilot slice's four entry sentences and four
-/// periods, the assurance facts of SRC-WC-401 and SRC-WC-406 (W1), and
-/// p.26's exact amount for F4 (A8).
-const SOURCED: usize = 11;
+/// periods, the assurance facts of SRC-WC-401 and SRC-WC-406 (W1), p.26's
+/// exact amount for F4 (A8), and W2's thirteen sentences of F1, F3 and
+/// F6-F11 with the 4Q01 heading.
+const SOURCED: usize = 24;
 
-/// Every fact: the sourced ones and A8's interpretations F4 and F12.
-const FACTS: usize = SOURCED + 2;
+/// W2's booking dates, derived from year-less days and their reporting
+/// periods (`day_in_period`) or from an earlier date (`date_offset`), each
+/// with the weekday the plan states or the civil calendar gives.
+const DATES: [(&str, &str, &str); 9] = [
+    ("F1-date", "2001-04-20", "Friday"),
+    ("F5-date", "2001-07-17", "Tuesday"),
+    ("F6-date", "2001-08-22", "Wednesday"),
+    ("F7-date", "2001-08-25", "Saturday"),
+    ("F8-date", "2001-09-20", "Thursday"),
+    ("F9-date", "2001-10-19", "Friday"),
+    ("F11-date", "2002-01-25", "Friday"),
+    ("F12-date", "2002-04-12", "Friday"),
+    ("F13-date", "2002-04-17", "Wednesday"),
+];
+
+/// Every fact: the sourced ones, the interpretations (A8's F4 and F12;
+/// W2's F1, F5, F6, F6-approval, F8, F10, F11 and F13) and the dates.
+const FACTS: usize = SOURCED + 10 + DATES.len();
 
 /// W1's sources ledger, in file order.
 const SOURCES: [&str; 10] = [
@@ -196,6 +214,72 @@ fn wc_pilot_slice_binds_offline() {
     ] {
         assert_eq!(row(id).assurance_fact.as_deref(), Some(fact));
     }
+}
+
+/// W2's booking dates recompute under K-DERIVE (§6.2): a year-less day takes
+/// its year from the period the entry adjusts, F1's written "Friday" agrees
+/// with 2001-04-20, F7 is three days after F6 (a Saturday) and F11 two days
+/// after F10's dated draft entry.
+#[test]
+fn wc_derived_dates_recompute() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    let r = run_load_checks(&case)
+        .into_iter()
+        .find(|r| r.check == "K-DERIVE")
+        .expect("K-DERIVE");
+    assert_eq!(r.verdict, Verdict::Pass, "{}", r.render(Some("worldcom")));
+    for (id, day, weekday) in DATES {
+        assert!(r.rows.iter().any(|row| row == id), "{id} is examined");
+        let v = case
+            .values
+            .iter()
+            .find(|v| v.fact == id)
+            .expect("a derived value");
+        assert_eq!(v.value, day, "{id}");
+        assert_eq!(
+            Day::parse(day).map(Day::weekday),
+            Some(weekday),
+            "{id} {day}"
+        );
+    }
+}
+
+#[test]
+fn wc_f7_date_edited_fails_k_derive() {
+    let mut files = worldcom();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "[[value]]\nfact = \"F7-date\"",
+        "value = \"2001-08-25\"",
+        "value = \"2001-08-24\"",
+    );
+    check_fails(
+        &files,
+        "K-DERIVE",
+        "F7-date",
+        &["expected 2001-08-24, computed 2001-08-25"],
+    );
+}
+
+/// F1's day read against the wrong quarter: 2002-04-20 is a Saturday, and
+/// the sentence writes Friday, so the year is refused, never guessed.
+#[test]
+fn wc_f1_date_in_the_wrong_year_fails_its_weekday() {
+    let mut files = worldcom();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"F1-date\"\n",
+        "from = [\"F2-period\", ",
+        "from = [\"F12F13-period\", ",
+    );
+    check_fails(
+        &files,
+        "K-DERIVE",
+        "F1-date",
+        &["2002-04-20 is a Saturday, but the literal writes Friday"],
+    );
 }
 
 #[test]

@@ -13,10 +13,9 @@
 # interpretations of it. A period fact serves every entry of its quarter: W2 cites F2-period for
 # F1 and F3, F9-period for F6-F8.
 #
-# The entry sentences on pp.106, 108, 113 and 116 give their booking days without a year
-# ("April 23 and 24", "July 17", "October 19", "April 12"), which date_literal and
-# date_range_literal refuse, so no booking-date [[value]] rests on them; the year comes from the
-# reporting period (W2 decides the derivation).
+# The entry sentences on pp.106, 108, 111, 113 and 116 give their booking days without a year
+# ("Friday, April 20", "July 17", "October 19", "April 12"): each is a `month_day_literal`
+# value, and W2's derived `F<n>-date` facts take the year from the reporting period.
 
 [[fact]]
 id = "F2-period"
@@ -123,6 +122,275 @@ from = ["F12F13-p116"]
 reader = "case-author-1"
 second_reader = "case-second-reader"
 rationale = "p.116 l.3 states the two 1Q02 entries in one sentence; F12 is the first, $718 million on April 12, reducing line cost expense and capitalizing it. F13 ($100 million on April 17) is W2's."
+
+# W2 (§15 W2): the rest of the entry facts. `F<n>` is the one sentence that states an entry, or
+# the interpretation joining its sentences (and, where the booking quarter is read from it, the
+# report's quarter heading). A sentence naming the quarter an adjustment ORIGINATED in (F6's
+# "first quarter 2001", F8's "2Q01") is scoped by that quarter; the entry's booking quarter comes
+# from its section heading through the interpretation.
+
+[[fact]]
+id = "F1-p106a"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p106:l3-3"
+quote_sha256 = "0e1a78a1d2f55e806bc9ba6a13fdcecf0cad67b180a359a688c49f3618e12699"
+about_scope = "entry:F1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F1-p106b"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p106:l3-3"
+quote_sha256 = "0d56c455fb19a8bb642f56205bf201501479ec54d3a6fecd29db2b0056a4aeda"
+about_scope = "entry:F1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F1"
+provenance = "interpretation"
+from = ["F1-p106a", "F1-p106b", "F2-period"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.106 l.3 states the instruction to reduce line costs by $771 million and increase two asset accounts by the total, $629 million into Other Long Term Assets and $142 million into Construction in Progress, and that the entries were booked on Friday, April 20; they sit under the report's first-quarter 2001 heading, so they adjust 2001Q1. \"The entries\" is plural: one entry or several is a branch."
+
+[[fact]]
+id = "F3"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p106:l5-5"
+quote_sha256 = "7e55f7cd036dd5faae736dfb76898547575e7586400e0cbefc329416c35a5c85"
+about_scope = "entry:F3"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F5"
+provenance = "interpretation"
+from = ["F4F5-p108"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.108 l.7 states the two July 17 entries in one sentence; F5 is the second, $50 million of line costs moved into SG&A expenses, an expense-to-expense move."
+
+[[fact]]
+id = "F6-p111"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p111:l3-3"
+quote_sha256 = "743c5572f56cad5d17c8263c52033c19571898d2550830914abccb0339636da7"
+about_scope = "period:2001Q1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F6-p111b"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p111:l3-3"
+quote_sha256 = "56118ab7873bbf195cf7c1e6a06832878589eedd413365ec5dfe6bc5daee1eb8"
+about_scope = "entry:F6"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F6"
+provenance = "interpretation"
+from = ["F6-p111", "F9-period"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.111 l.3 states the August 22 transfer of $544 million of the first quarter 2001 corporate adjustment out of Construction in Progress into an asset clearing account, cleared into ten assets of exactly $54.4 million each under the Fiber Optic Cable account; it sits under the report's third-quarter 2001 heading, so the entry is booked in 2001Q3. Its two intents are F6a (into clearing) and F6b (out to the ten items)."
+
+[[fact]]
+id = "F6-approval"
+provenance = "interpretation"
+from = ["F6-p111b"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.111 l.3: the director rarely entered and approved entries himself, so his involvement in these transfers was unusual. The natural reading of the \"so\" clause is that he both entered and approved the August 22 transfers (self-approval). The weaker reading, that he only entered them, is the basis of W-P-01-CF-01."
+
+[[fact]]
+id = "F7"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p111:l3-3"
+quote_sha256 = "e893ebbf21c1690bdc8201903c9b08eb0cb79690f6efcecc434fcb1b0ea2f64c"
+about_scope = "entry:F7"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F8-p111a"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p111:l5-5"
+quote_sha256 = "be980ef35aaddb0b6bc186e1585c678dfcaccc8a3235b3397173383fe39e8398"
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F8-p111b"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p111:l5-5"
+quote_sha256 = "15583c5d6bb4fb1931dcad6f1dcdd2f3aae873c7cfef76c7f7511d9a1d40113b"
+about_scope = "entry:F8"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F8"
+provenance = "interpretation"
+from = ["F8-p111a", "F8-p111b", "F9-period"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.111 l.5 states the September 20 transfer of the 2Q01 adjustment of $560 million out of Construction in Progress into 12 assets, five totaling $250 million in Ocean Cable, three totaling $150 million in Computer Equipment and four totaling $160 million in Fiber Optic Cable; it sits under the report's third-quarter 2001 heading, so the entry is booked in 2001Q3. Whether it was one entry or twelve (p.261) is the entry_decomposition branch."
+
+[[fact]]
+id = "F10-period"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p114:l3-3"
+quote_sha256 = "47abb64021dc397c5c739ffc64d7ae3aec4f2e9ba4050899a6e8294904f0af04"
+about_scope = "period:2001Q4"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F10-p114"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p114:l9-9"
+quote_sha256 = "848d3851d57ca605cb48a5dc9257db659b6ce747e68540aedc4dd9debb7fc26f"
+about_scope = "entry:F10"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F10-p114b"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p114:l9-9"
+quote_sha256 = "1c607b4c484df7b7284ac71a75e59b398df1073224e7b8a27daac2cf1275012f"
+about_scope = "entry:F10"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F10"
+provenance = "interpretation"
+from = ["F10-p114", "F10-p114b", "F10-period"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.114 l.9 states that on January 23, 2002 a draft journal entry transferred $941 million from line cost expense to PP&E, and that the entry was made that same day into furniture and fixture accounts (plural; the split is unsourced); it sits under the report's fourth-quarter 2001 heading, so the entry adjusts 2001Q4 and is booked on 2002-01-23 (F10-p114's date)."
+
+[[fact]]
+id = "F11-p114"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p114:l9-9"
+quote_sha256 = "a5e215776b858b31bd6fc4be9ba5eda3fd707b153f0c81b4384904f47bb5b93b"
+about_scope = "entry:F11"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F11-p115"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p115:l1-1"
+quote_sha256 = "2efd8a5f17d2efc5742b3b54b628e7c3d265b0f0270d4a32206c47d7f847cf0b"
+about_scope = "entry:F11"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F11"
+provenance = "interpretation"
+from = ["F11-p114", "F11-p115", "F10-period"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "One sentence crosses the page break between p.114 and p.115, so the extraction holds it as two blocks: two days after F10, $100 million of the $941 million moved out of one of the asset accounts, offset by an accrual release from a general corporate accrual account; booked in 2001Q4 with F10."
+
+[[fact]]
+id = "F13"
+provenance = "interpretation"
+from = ["F12F13-p116"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.116 l.3 states the two 1Q02 entries in one sentence; F13 is the second, $100 million on April 17, reducing line cost expense and capitalizing it."
+
+# Booking dates (§6.2: the date fixes commit order relative to period transitions, releases and
+# filings). The sentences give the day without its year, so each date is derived (K-DERIVE
+# recomputes it): `day_in_period` takes the year from the reporting period the entry adjusts, and
+# a written weekday ("Friday, April 20") must agree. F4's day is p.26's literal; F10's is p.114's.
+# F2's "April 23 and 24" is a year-less range: its booking days are still owed. F3 has no day.
+
+[[fact]]
+id = "F1-date"
+provenance = "derived"
+from = ["F2-period", "F1-p106b"]
+rule = "day_in_period"
+params = ["day=from:F1-p106b#1"]
+
+[[fact]]
+id = "F5-date"
+provenance = "derived"
+from = ["F4F5-period", "F4F5-p108"]
+rule = "day_in_period"
+params = ["day=from:F4F5-p108#4"]
+
+[[fact]]
+id = "F6-date"
+provenance = "derived"
+from = ["F9-period", "F6-p111"]
+rule = "day_in_period"
+params = ["day=from:F6-p111#1"]
+
+[[fact]]
+id = "F7-date"
+provenance = "derived"
+from = ["F6-date", "F7"]
+rule = "date_offset"
+params = ["days=from:F7#1"]
+
+[[fact]]
+id = "F8-date"
+provenance = "derived"
+from = ["F9-period", "F8-p111a"]
+rule = "day_in_period"
+params = ["day=from:F8-p111a#1"]
+
+[[fact]]
+id = "F9-date"
+provenance = "derived"
+from = ["F9-period", "F9"]
+rule = "day_in_period"
+params = ["day=from:F9#2"]
+
+[[fact]]
+id = "F11-date"
+provenance = "derived"
+from = ["F10-p114", "F11-p114"]
+rule = "date_offset"
+params = ["days=from:F11-p114#1"]
+
+[[fact]]
+id = "F12-date"
+provenance = "derived"
+from = ["F12F13-period", "F12F13-p116"]
+rule = "day_in_period"
+params = ["day=from:F12F13-p116#4"]
+
+[[fact]]
+id = "F13-date"
+provenance = "derived"
+from = ["F12F13-period", "F12F13-p116"]
+rule = "day_in_period"
+params = ["day=from:F12F13-p116#5"]
 
 # Assurance facts (§2.2, A1a): the sentence in each filer row that establishes its `assurance`.
 # W1 lands them so SRC-WC-401 and SRC-WC-406 load; W2 keeps them.
@@ -275,4 +543,364 @@ ordinal = 2
 literal = "July 17, 2001"
 rule = "date_literal"
 value = "2001-07-17"
+unit = ""
+
+[[value]]
+fact = "F4F5-p108"
+ordinal = 4
+literal = "July 17"
+rule = "month_day_literal"
+value = "--07-17"
+unit = ""
+
+[[value]]
+fact = "F9"
+ordinal = 2
+literal = "October 19"
+rule = "month_day_literal"
+value = "--10-19"
+unit = ""
+
+[[value]]
+fact = "F12F13-p116"
+ordinal = 4
+literal = "April 12"
+rule = "month_day_literal"
+value = "--04-12"
+unit = ""
+
+[[value]]
+fact = "F12F13-p116"
+ordinal = 5
+literal = "April 17"
+rule = "month_day_literal"
+value = "--04-17"
+unit = ""
+
+[[value]]
+fact = "F1-p106a"
+ordinal = 1
+literal = "$771 million"
+rule = "scale"
+param = 6
+value = "77100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F1-p106a"
+ordinal = 2
+literal = "$629 million"
+rule = "scale"
+param = 6
+value = "62900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F1-p106a"
+ordinal = 3
+literal = "$142 million"
+rule = "scale"
+param = 6
+value = "14200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F1-p106b"
+ordinal = 1
+literal = "Friday, April 20"
+rule = "month_day_literal"
+value = "--04-20 Friday"
+unit = ""
+
+[[value]]
+fact = "F3"
+ordinal = 1
+literal = "$227 million"
+rule = "scale"
+param = 6
+value = "22700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F6-p111"
+ordinal = 1
+literal = "August 22"
+rule = "month_day_literal"
+value = "--08-22"
+unit = ""
+
+[[value]]
+fact = "F6-p111"
+ordinal = 2
+literal = "$544 million"
+rule = "scale"
+param = 6
+value = "54400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F6-p111"
+ordinal = 3
+literal = "first quarter 2001"
+rule = "period_literal"
+value = "2001Q1"
+unit = ""
+
+[[value]]
+fact = "F6-p111"
+ordinal = 4
+literal = "10"
+rule = "scale"
+param = 0
+value = "10"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "F6-p111"
+ordinal = 5
+literal = "$54.4 million"
+rule = "scale"
+param = 6
+value = "5440000000"
+unit = "USD"
+precision = 5
+
+[[value]]
+fact = "F7"
+ordinal = 1
+literal = "Three"
+rule = "number_word"
+value = "3"
+unit = ""
+
+[[value]]
+fact = "F7"
+ordinal = 2
+literal = "$0.2 million"
+rule = "scale"
+param = 6
+value = "20000000"
+unit = "USD"
+precision = 5
+
+[[value]]
+fact = "F8-p111a"
+ordinal = 1
+literal = "September 20"
+rule = "month_day_literal"
+value = "--09-20"
+unit = ""
+
+[[value]]
+fact = "F8-p111a"
+ordinal = 2
+literal = "2Q01"
+rule = "period_literal"
+value = "2001Q2"
+unit = ""
+
+[[value]]
+fact = "F8-p111a"
+ordinal = 3
+literal = "$560 million"
+rule = "scale"
+param = 6
+value = "56000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F8-p111a"
+ordinal = 4
+literal = "12"
+rule = "scale"
+param = 0
+value = "12"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "F8-p111b"
+ordinal = 1
+literal = "five"
+rule = "number_word"
+value = "5"
+unit = ""
+
+[[value]]
+fact = "F8-p111b"
+ordinal = 2
+literal = "$250 million"
+rule = "scale"
+param = 6
+value = "25000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F8-p111b"
+ordinal = 3
+literal = "three"
+rule = "number_word"
+value = "3"
+unit = ""
+
+[[value]]
+fact = "F8-p111b"
+ordinal = 4
+literal = "$150 million"
+rule = "scale"
+param = 6
+value = "15000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F8-p111b"
+ordinal = 5
+literal = "four"
+rule = "number_word"
+value = "4"
+unit = ""
+
+[[value]]
+fact = "F8-p111b"
+ordinal = 6
+literal = "$160 million"
+rule = "scale"
+param = 6
+value = "16000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F10-period"
+ordinal = 1
+literal = "Fourth Quarter 2001"
+rule = "period_literal"
+value = "2001Q4"
+unit = ""
+
+[[value]]
+fact = "F10-p114"
+ordinal = 1
+literal = "January 23, 2002"
+rule = "date_literal"
+value = "2002-01-23"
+unit = ""
+
+[[value]]
+fact = "F10-p114"
+ordinal = 2
+literal = "$941 million"
+rule = "scale"
+param = 6
+value = "94100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F11-p114"
+ordinal = 1
+literal = "Two"
+rule = "number_word"
+value = "2"
+unit = ""
+
+[[value]]
+fact = "F11-p114"
+ordinal = 2
+literal = "$100 million"
+rule = "scale"
+param = 6
+value = "10000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F11-p115"
+ordinal = 1
+literal = "$941 million"
+rule = "scale"
+param = 6
+value = "94100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F1-date"
+ordinal = 1
+literal = "2001-04-20"
+rule = "date_literal"
+value = "2001-04-20"
+unit = ""
+
+[[value]]
+fact = "F5-date"
+ordinal = 1
+literal = "2001-07-17"
+rule = "date_literal"
+value = "2001-07-17"
+unit = ""
+
+[[value]]
+fact = "F6-date"
+ordinal = 1
+literal = "2001-08-22"
+rule = "date_literal"
+value = "2001-08-22"
+unit = ""
+
+[[value]]
+fact = "F7-date"
+ordinal = 1
+literal = "2001-08-25"
+rule = "date_literal"
+value = "2001-08-25"
+unit = ""
+
+[[value]]
+fact = "F8-date"
+ordinal = 1
+literal = "2001-09-20"
+rule = "date_literal"
+value = "2001-09-20"
+unit = ""
+
+[[value]]
+fact = "F9-date"
+ordinal = 1
+literal = "2001-10-19"
+rule = "date_literal"
+value = "2001-10-19"
+unit = ""
+
+[[value]]
+fact = "F11-date"
+ordinal = 1
+literal = "2002-01-25"
+rule = "date_literal"
+value = "2002-01-25"
+unit = ""
+
+[[value]]
+fact = "F12-date"
+ordinal = 1
+literal = "2002-04-12"
+rule = "date_literal"
+value = "2002-04-12"
+unit = ""
+
+[[value]]
+fact = "F13-date"
+ordinal = 1
+literal = "2002-04-17"
+rule = "date_literal"
+value = "2002-04-17"
 unit = ""

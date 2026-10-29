@@ -441,6 +441,12 @@ class Rules(unittest.TestCase):
                                    "on or about and between July 17 and 19, 2000"),
                          "2000-07-17..2000-07-19")
         self.assertEqual(self.rule("month_literal", "In September 2001"), "2001-09")
+        self.assertEqual(self.rule("month_day_literal", "Friday, April 20"), "--04-20 Friday")
+        self.assertEqual(self.rule("month_day_literal", "On August 22"), "--08-22")
+        self.assertEqual(self.rule("month_day_literal", "February 29"), "--02-29")
+        for planted in ("July 17, 2001", "February 30", "Friday"):
+            with self.assertRaises(cf.RuleError, msg=planted):
+                self.rule("month_day_literal", planted)
         self.assertEqual(self.rule("period_literal", "the second quarter of 2001"), "2001Q2")
         self.assertEqual(self.rule("period_literal", "1Q02"), "2002Q1")
 

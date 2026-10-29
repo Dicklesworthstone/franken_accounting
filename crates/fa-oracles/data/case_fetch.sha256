@@ -1,4 +1,4 @@
-b1bd79172ab9f87bd137c873000d773b9a95d58475089db8b36b1cf4ac2d1586  tools/case-fetch/case_fetch.py
+d8ab405fa89b31940edc4ef441ab9113a64c9b8d148b48907c3e83bc9e7fa8b4  tools/case-fetch/case_fetch.py
 91ced63566f551cfe9f88dc571b0fd0daa680bce77abdb1e7d41f976d9e685fc  tools/case-fetch/fixtures/case/facts.toml
 d3345dc252697e3909165ee968989f6f41c87530a43432f64ffdc67b313f32c5  tools/case-fetch/fixtures/case/sources.toml
 b4be391f4395ac29a38c6276585bc1b76d0417b5052c21fc15097e0723bfda1f  tools/case-fetch/fixtures/docs/blocked.txt
@@ -6,4 +6,4 @@ b4be391f4395ac29a38c6276585bc1b76d0417b5052c21fc15097e0723bfda1f  tools/case-fet
 fe40083c51351cda6f879a4ad2ff62e080fe14ea294bc3b0e76faa7e3f6f3db9  tools/case-fetch/fixtures/docs/filing.htm
 5accdba7fe966ef6444728d112699de56c89f5c7080be2f1e03e8b1b9d91a65d  tools/case-fetch/fixtures/docs/instance.xml
 c686376f11b3ce4d2248257e0c727ef3237e003fe5a5a1d72d32791842b8f8ed  tools/case-fetch/fixtures/docs/report.txt
-9fc2eae6f6123915ca09950dfc314f5ba36bf36fd29eb11a6b9d637fa8a7c6b1  tools/case-fetch/test_case_fetch.py
+faa083c60b38a72dd3b9eeac35bea4c1965ca03d100196a86b4c7f89ec94ba99  tools/case-fetch/test_case_fetch.py

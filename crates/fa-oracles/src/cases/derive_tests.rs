@@ -170,6 +170,8 @@ fn interpretive_flags_match_section_2_4() {
         "period_literal",
         "date_range_literal",
         "month_literal",
+        "month_day_literal",
+        "day_in_period",
         "sum",
         "difference",
         "negate",
@@ -247,6 +249,62 @@ fn plan_examples_recompute() {
         eval("remainder", &[], &["98727", "41000", "20000"]),
         Ok("37727".into())
     );
+}
+
+/// A year-less booking day (WorldCom's "Friday, April 20", "On August 22")
+/// takes its year from the reporting period it adjusts: the one matching
+/// day from the period's first day through `after_days` past its close. A
+/// written weekday must agree; an ambiguous or empty window is refused.
+#[test]
+fn day_in_period_reads_its_year_from_the_period_and_checks_the_weekday() {
+    assert_eq!(
+        eval("month_day_literal", &[], &["Friday, April 20"]),
+        Ok("--04-20 Friday".into())
+    );
+    assert_eq!(
+        eval("month_day_literal", &[], &["On August 22"]),
+        Ok("--08-22".into())
+    );
+    for planted in ["July 17, 2001", "February 30", "Friday"] {
+        assert!(
+            eval("month_day_literal", &[], &[planted]).is_err(),
+            "{planted} is refused"
+        );
+    }
+    // F1 (1Q01, booked after the close), F6 (inside 3Q01), and a 4Q01 entry
+    // booked in January, whose year is the next one.
+    assert_eq!(
+        eval("day_in_period", &[("day", "--04-20 Friday")], &["2001Q1"]),
+        Ok("2001-04-20".into())
+    );
+    assert_eq!(
+        eval("day_in_period", &[("day", "--08-22")], &["2001Q3"]),
+        Ok("2001-08-22".into())
+    );
+    assert_eq!(
+        eval("day_in_period", &[("day", "--01-23")], &["2001Q4"]),
+        Ok("2002-01-23".into())
+    );
+    // 2002-04-20 is a Saturday: the written weekday refuses the wrong year.
+    let wrong_year = eval("day_in_period", &[("day", "--04-20 Friday")], &["2002Q1"]);
+    assert!(
+        wrong_year
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("2002-04-20 is a Saturday")),
+        "{wrong_year:?}"
+    );
+    // Before the period (a 2Q01 entry dated in January), and a fiscal year
+    // whose window holds the day twice, are refused, never guessed.
+    for (period, day) in [("2001Q2", "--01-15"), ("FY2001", "--02-10")] {
+        let r = eval("day_in_period", &[("day", day)], &[period]);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("exactly one is required")),
+            "{period} {day}: {r:?}"
+        );
+    }
+    // A 29 February outside a leap year matches no day.
+    assert!(eval("day_in_period", &[("day", "--02-29")], &["2001Q1"]).is_err());
 }
 
 #[test]
@@ -544,6 +602,43 @@ fn two_input_scale_with_a_multiplier_that_is_not_a_power_of_ten_is_refused() {
         rules.evaluate("scale", &params, &["91072".into()]),
         Err(DeriveError::BadParam(_))
     ));
+}
+
+/// `from:<fact>#<n>` reads the value of ordinal n, so a sentence whose
+/// booking day is not its first value (WorldCom's p.116: "$818 million …
+/// $718 million on April 12") feeds `day_in_period` without renumbering the
+/// values its book legs cite; a missing ordinal is refused.
+#[test]
+fn param_from_a_numbered_value_reads_that_value() {
+    let rules = rules();
+    let values = [
+        value("P", "2002Q1"),
+        value("S", "81800000000"),
+        Value {
+            ordinal: 2,
+            ..value("S", "--04-12")
+        },
+    ];
+    let d = Derived {
+        rule: "day_in_period".into(),
+        ..derived(&["P", "S"], &["day=from:S#2"])
+    };
+    let params = rules.params_of(&d, &values).expect("params resolve");
+    assert_eq!(params.get("day").map(String::as_str), Some("--04-12"));
+    assert_eq!(
+        rules.evaluate("day_in_period", &params, &["2002Q1".into()]),
+        Ok("2002-04-12".into())
+    );
+    for bad in ["day=from:S#3", "day=from:S#two"] {
+        let d = Derived {
+            rule: "day_in_period".into(),
+            ..derived(&["P", "S"], &[bad])
+        };
+        assert!(
+            matches!(rules.params_of(&d, &values), Err(DeriveError::BadParam(_))),
+            "{bad} is refused"
+        );
+    }
 }
 
 #[test]

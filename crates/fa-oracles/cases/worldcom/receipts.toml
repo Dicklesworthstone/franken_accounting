@@ -3,13 +3,125 @@
 
 [[receipt]]
 source = "SRC-WC-001"
+fact = "F1-p106a"
+anchor = "p106:l3-3"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "0e1a78a1d2f55e806bc9ba6a13fdcecf0cad67b180a359a688c49f3618e12699"
+values_sha256 = "1a19236a1c911f2cbd3e065ba6a0fbfb0bde4674134c9d1f6188f260476f2751"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F1-p106b"
+anchor = "p106:l3-3"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "0d56c455fb19a8bb642f56205bf201501479ec54d3a6fecd29db2b0056a4aeda"
+values_sha256 = "88244cb297993ccd72c8e5f448ba221fc0a6bd6f2844776d83bfb6868ff18b37"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F10-p114"
+anchor = "p114:l9-9"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "848d3851d57ca605cb48a5dc9257db659b6ce747e68540aedc4dd9debb7fc26f"
+values_sha256 = "7773cad384e89f6a5c4d339926d1b82ea24ea990095da82c43b37e0e283e9d8c"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F10-p114b"
+anchor = "p114:l9-9"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "1c607b4c484df7b7284ac71a75e59b398df1073224e7b8a27daac2cf1275012f"
+values_sha256 = "93b58699c665a33f3b2b7b754a120e95e464ae115ff3b8b733b77cf93dd4fd9b"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F10-period"
+anchor = "p114:l3-3"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "47abb64021dc397c5c739ffc64d7ae3aec4f2e9ba4050899a6e8294904f0af04"
+values_sha256 = "99250f7933109255051c2e62d5212ea41c621f17f19e21d34bd482f2b62626ac"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F11-p114"
+anchor = "p114:l9-9"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "a5e215776b858b31bd6fc4be9ba5eda3fd707b153f0c81b4384904f47bb5b93b"
+values_sha256 = "ad431fbddc0384b911cc9fcc4824d998cccf0dce56d437b9982ef63eff83825c"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F11-p115"
+anchor = "p115:l1-1"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "2efd8a5f17d2efc5742b3b54b628e7c3d265b0f0270d4a32206c47d7f847cf0b"
+values_sha256 = "7b0c809952a51e00757b2db2fe0eb0cfd5132ee1d09a2961f0ee4b29724f9c40"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
 fact = "F12F13-p116"
 anchor = "p116:l3-3"
 verified_utc = "2026-10-29T01:59:22Z"
 tool_version = "case-fetch-v2"
 extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
 quote_sha256 = "ee05faa29e7fb1044d45bfd0908360c05234b8e57ee421cb203da06e3cbbe92d"
-values_sha256 = "78e80d5bb76b31c6c7eb2846191e344c9cc3c073d41eda62ad11f446d66b7394"
+values_sha256 = "3b33b89c5f1efdb05e8e5826a90a6f28e81ca288c62c4700acadfb269aab26d0"
 alignment = "sentence"
 quote_found_once = true
 aligned = true
@@ -67,6 +179,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-WC-001"
+fact = "F3"
+anchor = "p106:l5-5"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "7e55f7cd036dd5faae736dfb76898547575e7586400e0cbefc329416c35a5c85"
+values_sha256 = "23e79079f7b3209f6365a3d7a884a414cab8df3f77c0b273879a04f3aa9b828a"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
 fact = "F4-p26"
 anchor = "p26:l5-5"
 verified_utc = "2026-10-29T01:59:22Z"
@@ -89,7 +217,7 @@ verified_utc = "2026-10-29T01:59:22Z"
 tool_version = "case-fetch-v2"
 extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
 quote_sha256 = "5e686574a7044cc6340bfd4f3dfceeff0ec5d4191de679eb8438556514d1f7e0"
-values_sha256 = "e3d4d776b8aa31bc19ccba3c3a841b3c9f69d921da80e24385a2f0e10a2a31ae"
+values_sha256 = "460e6afe21e931fff819ba02174cc3cd710044204215f118bb1ff80591bb7350"
 alignment = "sentence"
 quote_found_once = true
 aligned = true
@@ -115,13 +243,93 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-WC-001"
+fact = "F6-p111"
+anchor = "p111:l3-3"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "743c5572f56cad5d17c8263c52033c19571898d2550830914abccb0339636da7"
+values_sha256 = "cc6bae50e4aeb94e701a9417e49e26ae64a2ccc03719a006d490659cd0fb4b37"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F6-p111b"
+anchor = "p111:l3-3"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "56118ab7873bbf195cf7c1e6a06832878589eedd413365ec5dfe6bc5daee1eb8"
+values_sha256 = "775a122ed441ef659f21e5c31a2bbc3675ea09b2600d02a40ff404085946036c"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F7"
+anchor = "p111:l3-3"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "e893ebbf21c1690bdc8201903c9b08eb0cb79690f6efcecc434fcb1b0ea2f64c"
+values_sha256 = "4f93cb403a1b408229f02d3e3d6b406fcf8868b6d1aa5b5c8362f21bbacee0ce"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F8-p111a"
+anchor = "p111:l5-5"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "be980ef35aaddb0b6bc186e1585c678dfcaccc8a3235b3397173383fe39e8398"
+values_sha256 = "adedc9686af4007b46d860a827e0e1416ba9d7441ac9f965c0cbcb92998b3c4e"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F8-p111b"
+anchor = "p111:l5-5"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "15583c5d6bb4fb1931dcad6f1dcdd2f3aae873c7cfef76c7f7511d9a1d40113b"
+values_sha256 = "d2950839ae5175231fcd94dc7178f8dc566e2a0885167e501f2724b2f384875e"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
 fact = "F9"
 anchor = "p113:l3-3"
 verified_utc = "2026-10-29T01:59:22Z"
 tool_version = "case-fetch-v2"
 extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
 quote_sha256 = "eddbf0b77b3aef09e93cc6dad482b962e60aa11347a729c11c5b1b9c3056aadf"
-values_sha256 = "0a426cf5bfeeb95f1c057ccad14ba6d501edfdc2eba6d4b08c718c727c7542b9"
+values_sha256 = "3b70a831cbca8ba3a7ab82f50070ac2d5eb87a7b4b29d6d56a5055568ae59150"
 alignment = "sentence"
 quote_found_once = true
 aligned = true

@@ -109,6 +109,32 @@ example_output = "2001-09"
 example_basis = "plan §2.4"
 
 [[rule]]
+id = "month_day_literal"
+arity = 1
+params = []
+semantics = "A written day without its year (Month D, after an optional weekday) to ISO 8601's year-less --MM-DD, followed by one space and the weekday when the literal writes one. A literal that carries its year is a date_literal and is refused; the year is never read here."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["Friday, April 20"]
+example_params = []
+example_output = "--04-20 Friday"
+example_basis = "plan §6.2 (F1, SRC-WC-001 p.106)"
+
+[[rule]]
+id = "day_in_period"
+arity = 1
+params = ["day:str", "after_days:int"]
+semantics = "The one day with the day param's month and day (a month_day_literal value, day=from:<fact>#<n>) from the input reporting period's first day through after_days days (default 92) past its last day: an entry adjusting a period is booked during it or after its close. The input is a period fact's label, YYYYQn, FYyyyy or YYYY-MM. No such day, more than one, or a written weekday the day does not fall on is refused."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["2001Q1"]
+example_params = ["day=--04-20 Friday"]
+example_output = "2001-04-20"
+example_basis = "plan §6.2 (F1: booked Friday, April 20, for 1Q01)"
+
+[[rule]]
 id = "sum"
 arity = 0
 params = []

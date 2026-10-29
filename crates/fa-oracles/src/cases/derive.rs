@@ -358,8 +358,9 @@ impl Rules {
     }
 
     /// A derived fact's parameters: each `name=value` token, a `from:<fact>`
-    /// value read from that fact's first `[[value]]` (which must be among the
-    /// derived fact's `from`).
+    /// value read from that fact's first `[[value]]`, or `from:<fact>#<n>`
+    /// from its `[[value]]` of ordinal n (the fact must be among the derived
+    /// fact's `from`).
     ///
     /// # Errors
     ///
@@ -375,7 +376,16 @@ impl Rules {
                 .as_str()
                 .ok_or_else(|| bad("a derived fact's params are `<name>=<value>` strings"))?;
             let resolved = match t.split_once("=from:") {
-                Some((name, fact)) => {
+                Some((name, read)) => {
+                    let (fact, ordinal) = match read.split_once('#') {
+                        Some((fact, n)) => {
+                            let n = n.parse::<i128>().map_err(|_| {
+                                bad(format!("`{t}`: the ordinal after `#` is an integer"))
+                            })?;
+                            (fact, Some(n))
+                        }
+                        None => (read, None),
+                    };
                     if !derived.from.iter().any(|f| f == fact) {
                         return Err(bad(format!(
                             "`{t}` reads `{fact}`, which is not among the fact's `from`"
@@ -383,9 +393,9 @@ impl Rules {
                     }
                     let v = values
                         .iter()
-                        .filter(|v| v.fact == fact)
+                        .filter(|v| v.fact == fact && ordinal.is_none_or(|n| v.ordinal == n))
                         .min_by_key(|v| v.ordinal)
-                        .ok_or_else(|| bad(format!("`{fact}` has no [[value]]")))?;
+                        .ok_or_else(|| bad(format!("`{read}` names no [[value]]")))?;
                     format!("{name}={}", v.value)
                 }
                 None => t.to_string(),
@@ -440,6 +450,8 @@ impl Rules {
             "period_literal" => period_literal(&inputs[0]),
             "date_range_literal" => date_range_literal(&inputs[0]),
             "month_literal" => month_literal(&inputs[0]),
+            "month_day_literal" => month_day_literal(&inputs[0]),
+            "day_in_period" => day_in_period(&text("day"), &inputs[0], int("after_days", 92)?),
             "sum" => {
                 if is_rows(&inputs[0]) {
                     let unit = text("unit");
@@ -1221,6 +1233,81 @@ fn month_literal(literal: &str) -> Result<String, DeriveError> {
         }
     }
     Err(bad(format!("`{literal}` is not a month with its year")))
+}
+
+/// A written day without its year (`August 22`, `Friday, April 20`) to
+/// ISO 8601's year-less `--MM-DD`, followed by the weekday the literal
+/// writes before it (`--04-20 Friday`). A literal that carries its year is
+/// a `date_literal`, refused here; February 29 is a day of some year.
+fn month_day_literal(literal: &str) -> Result<String, DeriveError> {
+    let w = words(literal);
+    for i in 0..w.len() {
+        let (Some(m), Some(d)) = (month_of(&w[i]), w.get(i + 1).and_then(|x| day_num(x))) else {
+            continue;
+        };
+        if w.get(i + 2).and_then(|x| year_of(x)).is_some() {
+            return Err(bad(format!(
+                "`{literal}` carries its year; it is a date_literal"
+            )));
+        }
+        if d == 0 || d > super::date::days_in_month(2000, m) {
+            return Err(bad(format!("`{literal}` is not a day of any year")));
+        }
+        let weekday = i.checked_sub(1).and_then(|j| {
+            super::date::WEEKDAYS
+                .iter()
+                .find(|n| n.eq_ignore_ascii_case(w[j].trim_end_matches(['.', ','])))
+        });
+        return Ok(match weekday {
+            Some(n) => format!("--{m:02}-{d:02} {n}"),
+            None => format!("--{m:02}-{d:02}"),
+        });
+    }
+    Err(bad(format!("`{literal}` is not a month and day")))
+}
+
+/// The one day with a `month_day_literal` value's month and day (`day`) from
+/// the reporting period's first day through `after_days` days past its last
+/// (an entry adjusting a period is booked during it or after its close).
+/// No such day, or more than one, is refused; so is a written weekday the
+/// day does not fall on.
+fn day_in_period(month_day: &str, period: &str, after_days: i128) -> Result<String, DeriveError> {
+    let (md, weekday) = month_day
+        .split_once(' ')
+        .map_or((month_day, None), |(md, w)| (md, Some(w)));
+    let (m, d) = md
+        .strip_prefix("--")
+        .and_then(|r| r.split_once('-'))
+        .and_then(|(m, d)| Some((m.parse::<u32>().ok()?, d.parse::<u32>().ok()?)))
+        .ok_or_else(|| bad(format!("`{month_day}` is not a --MM-DD day")))?;
+    let span = super::scope::period_span(period)
+        .ok_or_else(|| bad(format!("`{period}` is not a period label")))?;
+    if after_days < 0 {
+        return Err(bad("`after_days` cannot be negative"));
+    }
+    let last = span
+        .last
+        .add_days(i64::try_from(after_days).map_err(|_| DeriveError::Overflow)?);
+    let found: Vec<Day> = (span.first.year..=last.year)
+        .filter_map(|y| Day::parse(&format!("{y:04}-{m:02}-{d:02}")))
+        .filter(|day| span.first <= *day && *day <= last)
+        .collect();
+    let [day] = found.as_slice() else {
+        return Err(bad(format!(
+            "{} days match {md} from {} through {last}; exactly one is required",
+            found.len(),
+            span.first
+        )));
+    };
+    if let Some(w) = weekday
+        && w != day.weekday()
+    {
+        return Err(bad(format!(
+            "{day} is a {}, but the literal writes {w}",
+            day.weekday()
+        )));
+    }
+    Ok(day.to_string())
 }
 
 fn number_word(literal: &str) -> Result<i128, DeriveError> {
