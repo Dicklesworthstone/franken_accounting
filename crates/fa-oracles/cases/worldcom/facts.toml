@@ -196,12 +196,32 @@ about_scope = "entry:F6"
 granularity = "journal_entry"
 
 [[fact]]
+id = "F6-p260"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p260:l3-3"
+quote_sha256 = "5ca9a7c1c8a3a8d7a83fa5a8ed43f415694aac486abf89bd8f536f0be4d3d8b0"
+about_scope = "entry:F6"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F6-p261"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p261:l1-1"
+quote_sha256 = "292f130e02e6296ebc7d8b862f857852bc7ca074e6d47aeb15c6e57ac162d50c"
+about_scope = "entry:F6"
+granularity = "journal_entry"
+
+[[fact]]
 id = "F6"
 provenance = "interpretation"
-from = ["F6-p111", "F9-period"]
+from = ["F6-p111", "F6-p260", "F6-p261", "F9-period"]
 reader = "case-author-1"
 second_reader = "case-second-reader"
-rationale = "p.111 l.3 states the August 22 transfer of $544 million of the first quarter 2001 corporate adjustment out of Construction in Progress into an asset clearing account, cleared into ten assets of exactly $54.4 million each under the Fiber Optic Cable account; it sits under the report's third-quarter 2001 heading, so the entry is booked in 2001Q3. Its two intents are F6a (into clearing) and F6b (out to the ten items)."
+rationale = "p.111 l.3 states the August 22 transfer of $544 million of the first quarter 2001 corporate adjustment out of Construction in Progress into an asset clearing account, cleared into ten assets of exactly $54.4 million each under the Fiber Optic Cable account; pp.260-261 (one sentence across the page break, held as two blocks) say the $544 million left the CIP accounts in 10 different entries of the same round-dollar amount. It sits under the report's third-quarter 2001 heading, so the entry is booked in 2001Q3. Its two intents are F6a (into clearing) and F6b (out to the ten items); one allocation or ten two-leg entries is the subledger_to_gl_legs reading."
 
 [[fact]]
 id = "F6-approval"
@@ -242,12 +262,22 @@ about_scope = "entry:F8"
 granularity = "journal_entry"
 
 [[fact]]
+id = "F8-p261"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p261:l1-1"
+quote_sha256 = "8fb60ed02c0c6676ab3ea76de7b86fe501e189035b1f4331464e4744c01fac23"
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+
+[[fact]]
 id = "F8"
 provenance = "interpretation"
-from = ["F8-p111a", "F8-p111b", "F9-period"]
+from = ["F8-p111a", "F8-p111b", "F8-p261", "F9-period"]
 reader = "case-author-1"
 second_reader = "case-second-reader"
-rationale = "p.111 l.5 states the September 20 transfer of the 2Q01 adjustment of $560 million out of Construction in Progress into 12 assets, five totaling $250 million in Ocean Cable, three totaling $150 million in Computer Equipment and four totaling $160 million in Fiber Optic Cable; it sits under the report's third-quarter 2001 heading, so the entry is booked in 2001Q3. Whether it was one entry or twelve (p.261) is the entry_decomposition branch."
+rationale = "p.111 l.5 states the September 20 transfer of the 2Q01 adjustment of $560 million out of Construction in Progress into 12 assets, five totaling $250 million in Ocean Cable, three totaling $150 million in Computer Equipment and four totaling $160 million in Fiber Optic Cable; p.261 says the September 2001 transfer of the second quarter's $560 million was made as 12 entries in similar, round-dollar amounts. It sits under the report's third-quarter 2001 heading, so the entry is booked in 2001Q3. One entry or twelve is the entry_decomposition branch (one_entry / twelve_entries)."
 
 [[fact]]
 id = "F10-period"
@@ -327,7 +357,15 @@ rationale = "p.116 l.3 states the two 1Q02 entries in one sentence; F13 is the s
 # filings). The sentences give the day without its year, so each date is derived (K-DERIVE
 # recomputes it): `day_in_period` takes the year from the reporting period the entry adjusts, and
 # a written weekday ("Friday, April 20") must agree. F4's day is p.26's literal; F10's is p.114's.
-# F2's "April 23 and 24" is a year-less range: its booking days are still owed. F3 has no day.
+# F2's "Over the course of April 23 and 24" is a year-less range: F2-date is its two days. F3 has
+# no day.
+
+[[fact]]
+id = "F2-date"
+provenance = "derived"
+from = ["F2-period", "F2"]
+rule = "day_in_period"
+params = ["day=from:F2#2"]
 
 [[fact]]
 id = "F1-date"
@@ -414,6 +452,298 @@ anchor = "l1146-1146"
 quote_sha256 = "9192d2c0efadadfa0d8a5b1549650b9370e2b4143b71692af2016c04bedcbf00"
 about_scope = "period:FY2000"
 granularity = "statement_line"
+
+# W2's instruction documents (§6.2). Only F10's is dated: its draft journal entry is the p.114
+# sentence F10-p114 itself (one fact per sentence), dated 2002-01-23. F1-doc's "March 2001" is the
+# document's title, not a date, so it carries no month value.
+
+[[fact]]
+id = "F1-doc"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p106:l3-3"
+quote_sha256 = "7e4966f9e13a9d6b2c293866356c6979fcaeff7298f0f66d61b8f4cb563a4313"
+about_scope = "entry:F1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F1-p105"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p105:l9-9"
+quote_sha256 = "0ffcddffce313752e698a41cf09b077f3c567399913d3644305ba3c138181aae"
+about_scope = "period:2001Q1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F9-p113b"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p113:l7-7"
+quote_sha256 = "8f4a7c6c68f3444482407010418bb9ef3a744c497c91b852fa52930628a34ddb"
+about_scope = "entry:F9"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F9-doc"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p113:l7-7"
+quote_sha256 = "b849421cf68c8762c043101a7c7186ce6de26dd8999b412f93f5259751de8843"
+about_scope = "entry:F9"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F12F13-p116b"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p116:l5-5"
+quote_sha256 = "9c022b59043899b764b7dfebadaddeed37ea2dfd5482856c1146919483a354b8"
+about_scope = "period:2002Q1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F12F13-doc"
+provenance = "interpretation"
+from = ["F12F13-p116", "F12F13-p116b"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.116 l.3 says the preparer booked the two 1Q02 entries ($718 million and $100 million, $818 million in all); p.116 l.5 says the preparer then handed Capital Reporting a Post-it Note that had the $818 million adjustment on it. Read together, the undated Post-it is F12's and F13's instruction document. The weaker reading, that the record gives F12 and F13 no instruction document (the note was handed on after booking, to another group), keeps evidence_attached and document_date as branches (W-P-02, W-D-06)."
+
+# Context facts (§6.2). Scheme-level characterizations back an entry only through an
+# interpretation (K-SCOPE), so they are `period_total` facts over the scheme's quarters.
+
+[[fact]]
+id = "W-CTX-afe"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p103:l3-3"
+quote_sha256 = "99417d5c71501f6c49a6ec1f4ac78eb8651cd4a7bdc6e72beafad9d8e846394e"
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-round"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p90:l5-5"
+quote_sha256 = "6f71cc959d8cd2f25454797f53e35ce396e693d857f242bcfe3b215caa03ad4e"
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-round-usage"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p21:l3-3"
+quote_sha256 = "d6bfca643086a049786c05d488179524a66829e50395d2299f44789de7a26525"
+about_scope = "scheme:round-dollar-entries"
+granularity = "period_total"
+
+# Earnings releases: 2Q01's and 3Q01's sentences carry the year; 1Q01's gives "April 26", whose
+# year is the quarter's (W-CTX-er-2001Q1-date).
+
+[[fact]]
+id = "W-CTX-er-2001Q1"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p107:l7-7"
+quote_sha256 = "91b875112c84665f2c95f9b59359f9f8c8e97d258cb1ea7c9ef328599990ad15"
+about_scope = "period:2001Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-er-2001Q1-date"
+provenance = "derived"
+from = ["F2-period", "W-CTX-er-2001Q1"]
+rule = "day_in_period"
+params = ["day=from:W-CTX-er-2001Q1#1"]
+
+[[fact]]
+id = "W-CTX-er-2001Q2"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p110:l1-1"
+quote_sha256 = "a39e4d3aa28670181fac1c17981ebd70a6ab5bf6c95094e061058e4295638e47"
+about_scope = "period:2001Q2"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-er-2001Q3"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p114:l1-1"
+quote_sha256 = "9ac917e40893e962fde19c73cab01a35fbda011e175e4c22edf5b900a3f21920"
+about_scope = "period:2001Q3"
+granularity = "period_total"
+
+# Filing dates: the complaint's "on or about" (SRC-WC-002 ¶¶48-50; the hedge is not modelled, no
+# expectation reads it) and the report's 3Q01 10-Q (p.301).
+
+[[fact]]
+id = "W-CTX-filed-2001Q1"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para48"
+quote_sha256 = "cf6ac85ab6cfa23808b1d24e296a2b745619e3fdfa7664f08933308b4e43d8fd"
+about_scope = "period:2001Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-filed-2001Q2"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para49"
+quote_sha256 = "adc5f3fc43ba76abae227531efca875ac4088e0f3cdf3d046172b62caedd97b0"
+about_scope = "period:2001Q2"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-filed-2001Q3"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p301:l3-3"
+quote_sha256 = "4051f922fd553391d31c342ccad7241de30d609e4f42e87bf3c38fb5c66a242a"
+about_scope = "period:2001Q3"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-filed-FY2001"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para50"
+quote_sha256 = "50982cb9f8426a7353b2f9eaf164084df6b42db64a5676c76ed88cffc1a1c450"
+about_scope = "period:FY2001"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-filed-2002Q1"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para50"
+quote_sha256 = "99204169b8b8ab7151ecaa7a5dd7fb37766ab42475879b4dbe7f528910f6a5d3"
+about_scope = "period:2002Q1"
+granularity = "period_total"
+
+# Oral instructions and support. ¶7's "these accounting entries" are ¶6's, which run from the
+# 3Q00 reserve releases through the 1Q02 capitalization, so its scheme spans both; ¶29 binds only
+# the first quarter of 2001 (the research's own scope error, §2.1).
+
+[[fact]]
+id = "W-CTX-oral-ppe"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para30"
+quote_sha256 = "ef7894040ddbecf8b3a76f8e37f96ee793123ca054cf9ab15b97c50cf4de5b92"
+about_scope = "period:2001Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-oral-1q02"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p116:l3-3"
+quote_sha256 = "13205013324f24e1907ae4200e0a1a0be589755b89cf48d40d0f95398d3f5e68"
+about_scope = "period:2002Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-support-p7"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para7"
+quote_sha256 = "e166058bde2b440838071b819e6ebd6432834424a4686927fb4bd8af996f6552"
+about_scope = "scheme:line-costs-2000Q3-2002Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-CTX-support-p29"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para29"
+quote_sha256 = "8ac86345ff9f387371ed8d7e9b897e4c834c2127dcff9452d8e9af1801aa6d84"
+about_scope = "period:2001Q1"
+granularity = "period_total"
+
+# Second sources (§6.4): the complaint's "approximately" quarter totals moved to PP&E capital
+# expenditure accounts, joined to a Beresford entry only through an interpretation. ¶32's and ¶34's
+# "$560 million" sentences are word for word the same, so neither occurs once in the extraction
+# and neither binds (verify's uniqueness is the whole extraction's): both are owed.
+
+[[fact]]
+id = "W-SEC-2001Q1"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para30"
+quote_sha256 = "f858b67fe3f2b3af7834ca0859aff30275879c0a28f71a9593d4fe409e2261d4"
+about_scope = "period:2001Q1"
+granularity = "period_total"
+
+[[fact]]
+id = "W-SEC-2001Q3"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para33"
+quote_sha256 = "721371a99ea87c6922e3de74f1e681413d6b6bc197ffd06641700f0df8cbbc66"
+about_scope = "period:2001Q3"
+granularity = "period_total"
+
+[[fact]]
+id = "W-SEC-2002Q1"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para35"
+quote_sha256 = "2342b3dcbfb525826a08637e289ede112e517495eb6c5c42603b2924c3dc92f7"
+about_scope = "period:2002Q1"
+granularity = "period_total"
+
+# AN-100, quarantined (§6.2): ¶34 dates the 4Q01 reduction "in or around February 2002", while the
+# report dates F10's draft entry 2002-01-23. No expectation's basis may contain an AN100-* fact;
+# F10 rests on the report alone. The bare month is a month_literal (2002-02); the "in or around"
+# hedge is wider than the month and is not modelled.
+
+[[fact]]
+id = "AN100-1"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para34"
+quote_sha256 = "b0f6c1d9ac546d29aa392636ec2678d19554373c95ba7ec66e1cf1d797b4ca10"
+about_scope = "period:2001Q4"
+granularity = "period_total"
+
+[[fact]]
+id = "AN100-2"
+provenance = "sourced"
+source = "SRC-WC-002"
+anchor_kind = "paragraph"
+anchor = "para34"
+quote_sha256 = "4f00c04931caf9a3c2dfbb5828407687122bca51a0fdfa38e40877c4cf1e6ea3"
+about_scope = "period:2001Q4"
+granularity = "period_total"
 
 [[value]]
 fact = "F2-period"
@@ -903,4 +1233,266 @@ ordinal = 1
 literal = "2002-04-17"
 rule = "date_literal"
 value = "2002-04-17"
+unit = ""
+
+[[value]]
+fact = "F6-p260"
+ordinal = 1
+literal = "$544 million"
+rule = "scale"
+param = 6
+value = "54400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F6-p261"
+ordinal = 1
+literal = "10"
+rule = "scale"
+param = 0
+value = "10"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "F8-p261"
+ordinal = 1
+literal = "September 2001"
+rule = "month_literal"
+value = "2001-09"
+unit = ""
+
+[[value]]
+fact = "F8-p261"
+ordinal = 2
+literal = "$560 million"
+rule = "scale"
+param = 6
+value = "56000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F8-p261"
+ordinal = 3
+literal = "the second quarter of 2001"
+rule = "period_literal"
+value = "2001Q2"
+unit = ""
+
+[[value]]
+fact = "F8-p261"
+ordinal = 4
+literal = "12"
+rule = "scale"
+param = 0
+value = "12"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "F9-p113b"
+ordinal = 1
+literal = "$300 million"
+rule = "scale"
+param = 6
+value = "30000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F9-p113b"
+ordinal = 2
+literal = "$442 million"
+rule = "scale"
+param = 6
+value = "44200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F12F13-p116b"
+ordinal = 1
+literal = "$818 million"
+rule = "scale"
+param = 6
+value = "81800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-CTX-er-2001Q1"
+ordinal = 1
+literal = "April 26"
+rule = "month_day_literal"
+value = "--04-26"
+unit = ""
+
+[[value]]
+fact = "W-CTX-er-2001Q1"
+ordinal = 2
+literal = "first quarter 2001"
+rule = "period_literal"
+value = "2001Q1"
+unit = ""
+
+[[value]]
+fact = "W-CTX-er-2001Q1-date"
+ordinal = 1
+literal = "2001-04-26"
+rule = "date_literal"
+value = "2001-04-26"
+unit = ""
+
+[[value]]
+fact = "W-CTX-er-2001Q2"
+ordinal = 1
+literal = "2Q01"
+rule = "period_literal"
+value = "2001Q2"
+unit = ""
+
+[[value]]
+fact = "W-CTX-er-2001Q2"
+ordinal = 2
+literal = "July 26, 2001"
+rule = "date_literal"
+value = "2001-07-26"
+unit = ""
+
+[[value]]
+fact = "W-CTX-er-2001Q3"
+ordinal = 1
+literal = "third quarter 2001"
+rule = "period_literal"
+value = "2001Q3"
+unit = ""
+
+[[value]]
+fact = "W-CTX-er-2001Q3"
+ordinal = 2
+literal = "October 25, 2001"
+rule = "date_literal"
+value = "2001-10-25"
+unit = ""
+
+[[value]]
+fact = "W-CTX-filed-2001Q1"
+ordinal = 1
+literal = "May 15, 2001"
+rule = "date_literal"
+value = "2001-05-15"
+unit = ""
+
+[[value]]
+fact = "W-CTX-filed-2001Q2"
+ordinal = 1
+literal = "August 14, 2001"
+rule = "date_literal"
+value = "2001-08-14"
+unit = ""
+
+[[value]]
+fact = "W-CTX-filed-2001Q3"
+ordinal = 1
+literal = "November 14, 2001"
+rule = "date_literal"
+value = "2001-11-14"
+unit = ""
+
+[[value]]
+fact = "W-CTX-filed-FY2001"
+ordinal = 1
+literal = "March 31, 2002"
+rule = "date_literal"
+value = "2002-03-31"
+unit = ""
+
+[[value]]
+fact = "W-CTX-filed-2002Q1"
+ordinal = 1
+literal = "May 15, 2002"
+rule = "date_literal"
+value = "2002-05-15"
+unit = ""
+
+[[value]]
+fact = "W-CTX-oral-ppe"
+ordinal = 1
+literal = "April 2001"
+rule = "month_literal"
+value = "2001-04"
+unit = ""
+
+[[value]]
+fact = "W-SEC-2001Q1"
+ordinal = 1
+literal = "$771 million"
+rule = "scale"
+param = 6
+value = "77100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-SEC-2001Q3"
+ordinal = 1
+literal = "$743 million"
+rule = "scale"
+param = 6
+value = "74300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "W-SEC-2002Q1"
+ordinal = 1
+literal = "$818 million"
+rule = "scale"
+param = 6
+value = "81800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "AN100-1"
+ordinal = 1
+literal = "February 2002"
+rule = "month_literal"
+value = "2002-02"
+unit = ""
+
+[[value]]
+fact = "AN100-1"
+ordinal = 2
+literal = "$941 million"
+rule = "scale"
+param = 6
+value = "94100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "AN100-2"
+ordinal = 1
+literal = "February 2002"
+rule = "month_literal"
+value = "2002-02"
+unit = ""
+
+[[value]]
+fact = "F2"
+ordinal = 2
+literal = "April 23 and 24"
+rule = "month_day_literal"
+value = "--04-23..--04-24"
+unit = ""
+
+[[value]]
+fact = "F2-date"
+ordinal = 1
+literal = "2001-04-23..2001-04-24"
+rule = "date_range_literal"
+value = "2001-04-23..2001-04-24"
 unit = ""

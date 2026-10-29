@@ -1237,21 +1237,36 @@ fn month_literal(literal: &str) -> Result<String, DeriveError> {
 
 /// A written day without its year (`August 22`, `Friday, April 20`) to
 /// ISO 8601's year-less `--MM-DD`, followed by the weekday the literal
-/// writes before it (`--04-20 Friday`). A literal that carries its year is
-/// a `date_literal`, refused here; February 29 is a day of some year.
+/// writes before it (`--04-20 Friday`), or a same-month range (`April 23 and
+/// 24`) to `--MM-DD..--MM-DD`. A literal that carries its year is a
+/// `date_literal` or `date_range_literal`, refused here; February 29 is a
+/// day of some year.
 fn month_day_literal(literal: &str) -> Result<String, DeriveError> {
     let w = words(literal);
     for i in 0..w.len() {
         let (Some(m), Some(d)) = (month_of(&w[i]), w.get(i + 1).and_then(|x| day_num(x))) else {
             continue;
         };
-        if w.get(i + 2).and_then(|x| year_of(x)).is_some() {
+        // A same-month range ("April 23 and 24") reads both days.
+        let d2 = w
+            .get(i + 2)
+            .filter(|x| matches!(x.as_str(), "and" | "through" | "to" | "-" | "\u{2013}"))
+            .and_then(|_| w.get(i + 3).and_then(|x| day_num(x)));
+        let year_at = if d2.is_some() { i + 4 } else { i + 2 };
+        if w.get(year_at).and_then(|x| year_of(x)).is_some() {
             return Err(bad(format!(
-                "`{literal}` carries its year; it is a date_literal"
+                "`{literal}` carries its year; it is a date_literal or date_range_literal"
             )));
         }
-        if d == 0 || d > super::date::days_in_month(2000, m) {
+        let last = super::date::days_in_month(2000, m);
+        if d == 0 || d > last || d2.is_some_and(|d2| d2 == 0 || d2 > last) {
             return Err(bad(format!("`{literal}` is not a day of any year")));
+        }
+        if let Some(d2) = d2 {
+            if d2 < d {
+                return Err(bad(format!("`{literal}` runs backwards")));
+            }
+            return Ok(format!("--{m:02}-{d:02}..--{m:02}-{d2:02}"));
         }
         let weekday = i.checked_sub(1).and_then(|j| {
             super::date::WEEKDAYS
@@ -1268,10 +1283,17 @@ fn month_day_literal(literal: &str) -> Result<String, DeriveError> {
 
 /// The one day with a `month_day_literal` value's month and day (`day`) from
 /// the reporting period's first day through `after_days` days past its last
-/// (an entry adjusting a period is booked during it or after its close).
-/// No such day, or more than one, is refused; so is a written weekday the
-/// day does not fall on.
+/// (an entry adjusting a period is booked during it or after its close); a
+/// range value gives the range of its two days. No such day, or more than
+/// one, is refused; so is a written weekday the day does not fall on.
 fn day_in_period(month_day: &str, period: &str, after_days: i128) -> Result<String, DeriveError> {
+    if let Some((a, b)) = month_day.split_once("..") {
+        let day = |md: &str| {
+            day_in_period(md, period, after_days)
+                .and_then(|d| Day::parse(&d).ok_or_else(|| bad(format!("`{d}` is not a day"))))
+        };
+        return range(day(a)?, day(b)?);
+    }
     let (md, weekday) = month_day
         .split_once(' ')
         .map_or((month_day, None), |(md, w)| (md, Some(w)));

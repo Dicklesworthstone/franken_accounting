@@ -12,7 +12,7 @@ use fa_oracles::cases::check::{CheckFailure, Verdict, run_load_checks};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::WORLDCOM;
 use fa_oracles::cases::error::{LoadError, LoadErrorKind};
-use fa_oracles::cases::fact::values_canonical;
+use fa_oracles::cases::fact::{Provenance, values_canonical};
 use fa_oracles::cases::{Case, CaseFiles, load};
 use fa_oracles::sha256;
 
@@ -20,9 +20,10 @@ type Files = Vec<(&'static str, String)>;
 
 /// The sourced facts: the pilot slice's four entry sentences and four
 /// periods, the assurance facts of SRC-WC-401 and SRC-WC-406 (W1), p.26's
-/// exact amount for F4 (A8), and W2's thirteen sentences of F1, F3 and
-/// F6-F11 with the 4Q01 heading.
-const SOURCED: usize = 24;
+/// exact amount for F4 (A8), W2's sixteen sentences of F1, F3 and F6-F11
+/// with the 4Q01 heading, and W2's twenty-five instruction-document,
+/// context, second-source and AN-100 sentences.
+const SOURCED: usize = 52;
 
 /// W2's booking dates, derived from year-less days and their reporting
 /// periods (`day_in_period`) or from an earlier date (`date_offset`), each
@@ -40,8 +41,10 @@ const DATES: [(&str, &str, &str); 9] = [
 ];
 
 /// Every fact: the sourced ones, the interpretations (A8's F4 and F12;
-/// W2's F1, F5, F6, F6-approval, F8, F10, F11 and F13) and the dates.
-const FACTS: usize = SOURCED + 10 + DATES.len();
+/// W2's F1, F5, F6, F6-approval, F8, F10, F11, F13 and F12F13-doc), the
+/// booking dates, F2's two booking days and the 1Q01 earnings release's
+/// date.
+const FACTS: usize = SOURCED + 11 + DATES.len() + 2;
 
 /// W1's sources ledger, in file order.
 const SOURCES: [&str; 10] = [
@@ -242,6 +245,63 @@ fn wc_derived_dates_recompute() {
             "{id} {day}"
         );
     }
+    // F2's "Over the course of April 23 and 24": a branch over two days,
+    // Monday and Tuesday.
+    assert!(r.rows.iter().any(|row| row == "F2-date"));
+    let f2 = case
+        .values
+        .iter()
+        .find(|v| v.fact == "F2-date")
+        .expect("F2's days");
+    assert_eq!(f2.value, "2001-04-23..2001-04-24");
+    assert_eq!(
+        ["2001-04-23", "2001-04-24"].map(|d| Day::parse(d).map(Day::weekday)),
+        [Some("Monday"), Some("Tuesday")]
+    );
+}
+
+/// AN-100 (§6.2): ¶34's "in or around February 2002" is a bare month, read
+/// as `2002-02` (a branch over its 28 days: 2002 is not a leap year), and no
+/// expectation's basis reaches an `AN100-*` fact through any interpretation
+/// or derivation, so F10's date rests on the report alone.
+#[test]
+fn wc_an100_is_a_bare_month_no_expectation_rests_on() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    for id in ["AN100-1", "AN100-2"] {
+        let v = case
+            .values
+            .iter()
+            .find(|v| v.fact == id && v.rule.as_str() == "month_literal")
+            .expect("its month");
+        assert_eq!(
+            (v.literal.as_str(), v.value.as_str()),
+            ("February 2002", "2002-02")
+        );
+    }
+    assert!(Day::parse("2002-02-28").is_some() && Day::parse("2002-02-29").is_none());
+    let from = |id: &str| -> Vec<String> {
+        match case
+            .facts
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| &f.provenance)
+        {
+            Some(Provenance::Interpretation(i)) => i.from.clone(),
+            Some(Provenance::Derived(d)) => d.from.clone(),
+            _ => Vec::new(),
+        }
+    };
+    let expectations = case.expectations.as_ref().expect("expectations");
+    for e in &expectations.expectations {
+        let mut stack: Vec<String> = e.fields.strs("basis").unwrap_or(&[]).to_vec();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            assert!(!id.starts_with("AN100-"), "{} rests on {id}", e.id);
+            if seen.insert(id.clone()) {
+                stack.extend(from(&id));
+            }
+        }
+    }
 }
 
 #[test]
@@ -279,6 +339,86 @@ fn wc_f1_date_in_the_wrong_year_fails_its_weekday() {
         "K-DERIVE",
         "F1-date",
         &["2002-04-20 is a Saturday, but the literal writes Friday"],
+    );
+}
+
+/// The research's own scope error (§2.1): ¶29 is about the first quarter of
+/// 2001, so re-scoping it to F12 (a 1Q02 entry) after `verify` fails
+/// offline: its receipt's values_sha256 binds the scope.
+#[test]
+fn wc_p29_rescoped_to_f12_fails_k_bind_offline() {
+    let mut files = worldcom();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"W-CTX-support-p29\"\n",
+        "about_scope = \"period:2001Q1\"",
+        "about_scope = \"entry:F12\"",
+    );
+    check_fails(
+        &files,
+        "K-BIND",
+        "W-CTX-support-p29",
+        &["values_sha256 mismatch"],
+    );
+}
+
+/// p.108 states only "$560 million": rewriting its value as p.26's exact
+/// dollars fails offline, which is why F4 is an interpretation of the two.
+#[test]
+fn wc_f4_p108_exact_dollar_value_fails_k_bind_offline() {
+    let mut files = worldcom();
+    let marker = "fact = \"F4F5-p108\"\nordinal = 2\n";
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "literal = \"$560 million\"\nrule = \"scale\"\nparam = 6",
+        "literal = \"$560,000,000\"\nrule = \"scale\"\nparam = 0",
+    );
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "precision = 6",
+        "precision = 0",
+    );
+    check_fails(&files, "K-BIND", "F4F5-p108", &["values_sha256 mismatch"]);
+}
+
+/// The Post-it reading is an interpretation: no registered rule produces
+/// it, so typing it `derived` fails K-DERIVE naming the fact.
+#[test]
+fn wc_postit_typed_derived_fails_k_derive() {
+    let mut files = worldcom();
+    let marker = "id = \"F12F13-doc\"\n";
+    let rationale = {
+        let t = text(&files, "facts.toml");
+        let at = t.find(marker).expect("the row") + marker.len();
+        let start = at + t[at..].find("rationale = ").expect("its rationale");
+        let end = start + t[start..].find('\n').expect("one line") + 1;
+        t[start..end].to_string()
+    };
+    edit_row(&mut files, "facts.toml", marker, &rationale, "");
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "provenance = \"interpretation\"",
+        "provenance = \"derived\"",
+    );
+    edit_row(
+        &mut files,
+        "facts.toml",
+        marker,
+        "reader = \"case-author-1\"\nsecond_reader = \"case-second-reader\"\n",
+        "rule = \"postit_is_instruction_document\"\nparams = []\n",
+    );
+    check_fails(
+        &files,
+        "K-DERIVE",
+        "F12F13-doc",
+        &["`postit_is_instruction_document` is not in the derivation table"],
     );
 }
 
@@ -354,7 +494,7 @@ fn wc_complaint_fact_with_page_anchor_fails_k_anchor() {
     let values_sha256 = sha256::hex(&sha256::digest(&values_canonical(scope, &[])));
     text_mut(&mut files, "receipts.toml").push_str(&format!(
         "\n[[receipt]]\nsource = \"SRC-WC-002\"\nfact = \"W-PLANT-002\"\nanchor = \"p3:l1-2\"\n\
-         verified_utc = \"2026-10-29T01:59:22Z\"\ntool_version = \"case-fetch-v2\"\n\
+         verified_utc = \"2026-10-29T01:59:22Z\"\ntool_version = \"case-fetch-v3\"\n\
          extraction_sha256 = \"{quote}\"\nquote_sha256 = \"{quote}\"\nvalues_sha256 = \"{values_sha256}\"\n\
          alignment = \"sentence\"\nquote_found_once = true\naligned = true\nvalues_in_quote = true\n\
          scope_ok = true\noriginal_hash_compared = false\n"

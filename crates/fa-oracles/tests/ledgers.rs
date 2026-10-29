@@ -253,12 +253,12 @@ fn ledgers_validate_offline() {
         last.starts_with(&format!("LEDGERS cases={} ", CASES.len())) && last.contains(" fail=0 "),
         "{last}"
     );
-    // WorldCom's binding lines: every fact (43) and every sourced fact (24) examined.
+    // WorldCom's binding lines: every fact (74) and every sourced fact (52) examined.
     for (check, n) in [
-        ("K-PROV", 43),
-        ("K-BIND", 24),
-        ("K-SCOPE", 24),
-        ("K-ANCHOR", 24),
+        ("K-PROV", 74),
+        ("K-BIND", 52),
+        ("K-SCOPE", 52),
+        ("K-ANCHOR", 52),
     ] {
         let line = format!("CHECK worldcom {check} PASS examined={n}/{n}");
         assert!(t.lines.contains(&line), "{line}\n{}", t.text());
@@ -388,8 +388,8 @@ fn receipt_for_a_non_sourced_fact_fails() {
 fn committed_quote_text_fails_while_od_2a_is_undecided() {
     let files = worldcom_with(
         "facts.toml",
-        "about_scope = \"entry:F9\"\n",
-        "quote = \"planted quote text\"\nabout_scope = \"entry:F9\"\n",
+        "quote_sha256 = \"eddbf0b77b3aef09e93cc6dad482b962e60aa11347a729c11c5b1b9c3056aadf\"\nabout_scope = \"entry:F9\"\n",
+        "quote_sha256 = \"eddbf0b77b3aef09e93cc6dad482b962e60aa11347a729c11c5b1b9c3056aadf\"\nquote = \"planted quote text\"\nabout_scope = \"entry:F9\"\n",
     );
     let t = validate_copy(&files, CASE_CHECKS);
     assert!(
@@ -416,8 +416,10 @@ fn a_quote_over_the_word_bound_is_refused_once_quotes_are_allowed() {
     let long = vec!["word"; MAX_QUOTE_WORDS + 1].join(" ");
     let files = worldcom_with(
         "facts.toml",
-        "about_scope = \"entry:F9\"\n",
-        &format!("quote = \"{long}\"\nabout_scope = \"entry:F9\"\n"),
+        "quote_sha256 = \"eddbf0b77b3aef09e93cc6dad482b962e60aa11347a729c11c5b1b9c3056aadf\"\nabout_scope = \"entry:F9\"\n",
+        &format!(
+            "quote_sha256 = \"eddbf0b77b3aef09e93cc6dad482b962e60aa11347a729c11c5b1b9c3056aadf\"\nquote = \"{long}\"\nabout_scope = \"entry:F9\"\n"
+        ),
     );
     let t = validate_copy(&files, CASE_CHECKS);
     // Refused either way: by OD 2a now, by the word bound once it is allowed.

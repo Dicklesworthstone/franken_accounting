@@ -194,6 +194,48 @@ quote = "The ledger was reviewed."
 aligned = true
 count = 2
 
+[[sentence]]
+id = "curly-closing-quote"
+text = "Myers gave Sethi a note that said “assume $742 million.” Later they talked."
+quote = "Later they talked."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "footnote-marker-ends-a-sentence"
+text = "They made 10 entries in round amounts.84 In September they made 12 more."
+quote = "In September they made 12 more."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "footnote-marker-stays-with-its-sentence"
+text = "They made 10 entries in round amounts.84 In September they made 12 more."
+quote = "They made 10 entries in round amounts.84"
+aligned = true
+count = 1
+
+[[sentence]]
+id = "decimal-is-no-footnote"
+text = "Each asset was $54.4 Million in the ledger. Done."
+quote = "Each asset was $54."
+aligned = false
+count = 1
+
+[[sentence]]
+id = "footnote-before-lower-case-is-no-end"
+text = "See exhibit A.1 for the list. Done."
+quote = "See exhibit A.1"
+aligned = false
+count = 1
+
+[[sentence]]
+id = "abbreviation-before-digits-is-no-footnote"
+text = "See p.26 Of the report. Done."
+quote = "See p.26"
+aligned = false
+count = 1
+
 [[scope]]
 id = "sec-paragraph-29"
 quote = "These entries for the first quarter of 2001 were made without any supporting documentation or proper business rationale."

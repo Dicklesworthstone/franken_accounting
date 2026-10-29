@@ -71,7 +71,8 @@ fn tool_files(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>) {
             .to_string();
         let rel = format!("{rel}/{name}");
         if path.is_dir() {
-            if name != "__pycache__" {
+            // Interpreter and linter caches are not tool files.
+            if name != "__pycache__" && name != ".ruff_cache" {
                 tool_files(&path, &rel, out);
             }
         } else if !name.ends_with(".pyc") {

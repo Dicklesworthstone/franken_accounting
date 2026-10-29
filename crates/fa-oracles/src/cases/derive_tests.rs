@@ -265,12 +265,31 @@ fn day_in_period_reads_its_year_from_the_period_and_checks_the_weekday() {
         eval("month_day_literal", &[], &["On August 22"]),
         Ok("--08-22".into())
     );
-    for planted in ["July 17, 2001", "February 30", "Friday"] {
+    // F2's "Over the course of April 23 and 24": a same-month range.
+    assert_eq!(
+        eval(
+            "month_day_literal",
+            &[],
+            &["Over the course of April 23 and 24"]
+        ),
+        Ok("--04-23..--04-24".into())
+    );
+    for planted in [
+        "July 17, 2001",
+        "February 30",
+        "Friday",
+        "April 24 and 23",
+        "April 23 and 24, 2001",
+    ] {
         assert!(
             eval("month_day_literal", &[], &[planted]).is_err(),
             "{planted} is refused"
         );
     }
+    assert_eq!(
+        eval("day_in_period", &[("day", "--04-23..--04-24")], &["2001Q1"]),
+        Ok("2001-04-23..2001-04-24".into())
+    );
     // F1 (1Q01, booked after the close), F6 (inside 3Q01), and a 4Q01 entry
     // booked in January, whose year is the next one.
     assert_eq!(

@@ -150,8 +150,9 @@ verify_*.sh
 newfile.txt
 repro_*.rs
 
-# Python tooling cache (scripts/)
+# Python tooling caches (scripts/, tools/)
 __pycache__/
+.ruff_cache/
 
 # Skill-loop / repo-janitor scratch
 .skill-loop-progress.md

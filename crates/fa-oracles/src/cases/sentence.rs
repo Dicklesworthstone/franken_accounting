@@ -2,10 +2,12 @@
 //! fa-yugf.7, A3a), the same rules as `tools/case-fetch/case_fetch.py`'s
 //! `sentence_bounds`, tested on the same `[[sentence]]` rows of
 //! `data/binding_fixtures.toml`:
-//! - a quote starts at the text's start, or after `[.?!]`, an optional
-//!   closing `"` or `)`, and whitespace;
-//! - it ends with `[.?!]` and an optional closing `"` or `)` followed by
-//!   whitespace or the end;
+//! - a quote starts at the text's start, or after a sentence end and
+//!   whitespace;
+//! - it ends with `[.?!]` and an optional closing `"`, `)` or `”` followed by
+//!   whitespace or the end, or followed by a footnote marker glued to it
+//!   (1–3 digits, the terminator after a letter, then a space and an
+//!   upper-case letter: "amounts.84 In"), which the sentence keeps;
 //! - a `.` whose preceding token (after a leading `(`, `[` or quote mark) is
 //!   a registered abbreviation is not a boundary;
 //! - a block boundary (a blank line or a page break of the raw text) is also
@@ -75,9 +77,14 @@ impl Sentences {
             let mut end = i + 1;
             if matches!(bytes.get(end), Some(b'"' | b')')) {
                 end += 1;
+            } else if norm[end..].starts_with('\u{201d}') {
+                end += '\u{201d}'.len_utf8();
             }
             if end != bytes.len() && bytes[end] != b' ' {
-                continue;
+                match footnote_marker(&norm, i, end) {
+                    Some(after) => end = after,
+                    None => continue,
+                }
             }
             if b == b'.' && abbreviated(&norm, i) {
                 continue;
@@ -162,6 +169,26 @@ impl core::fmt::Display for FindError {
 }
 
 impl core::error::Error for FindError {}
+
+/// The end of a footnote marker glued to the terminator at `dot`
+/// ("amounts.84 In"): 1–3 ASCII digits at `at`, after a terminator that
+/// follows a letter, then a space and an upper-case ASCII letter.
+fn footnote_marker(norm: &str, dot: usize, at: usize) -> Option<usize> {
+    let bytes = norm.as_bytes();
+    let digits = bytes[at..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    let after = at + digits;
+    ((1..=3).contains(&digits)
+        && bytes.get(after) == Some(&b' ')
+        && bytes.get(after + 1).is_some_and(u8::is_ascii_uppercase)
+        && norm[..dot]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphabetic))
+    .then_some(after)
+}
 
 fn abbreviated(norm: &str, dot: usize) -> bool {
     let start = norm[..dot].rfind(' ').map_or(0, |s| s + 1);

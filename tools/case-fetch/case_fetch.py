@@ -77,7 +77,7 @@ import zlib
 from fractions import Fraction
 from pathlib import Path
 
-TOOL_VERSION = "case-fetch-v2"
+TOOL_VERSION = "case-fetch-v3"
 STRIP_VERSION = "case-fetch-strip-v1"
 SCOPE_VERSION = "case-fetch-scope-v2"
 EXTRACT_TOOL = "case_fetch.py extract"
@@ -601,7 +601,10 @@ def page_label(page_text, index):
     return str(index)
 
 
-TERMINATOR = re.compile(r'[.?!]["\)]?(?= |$)')
+TERMINATOR = re.compile(r'[.?!]["\)”]?(?= |$)')
+# A footnote marker glued to the terminator after a word ("amounts.84 In"): the sentence ends
+# after the marker when a capital letter starts the next one.
+FOOTNOTED = re.compile(r'(?<=[^\W\d_])[.?!]["\)”]?[0-9]{1,3}(?= [A-Z])')
 
 
 def abbreviated(norm, dot):
@@ -614,12 +617,13 @@ def sentence_bounds(norm, block_starts=(), block_ends=()):
     """Sentence start and end offsets in a normalized text; the block
     boundaries come from the raw extraction's blank lines and page breaks."""
     starts, ends = {0} | set(block_starts), set(block_ends) | {len(norm)}
-    for m in TERMINATOR.finditer(norm):
-        if norm[m.start()] == "." and abbreviated(norm, m.start()):
-            continue
-        ends.add(m.end())
-        if m.end() < len(norm):
-            starts.add(m.end() + 1)
+    for pattern in (TERMINATOR, FOOTNOTED):
+        for m in pattern.finditer(norm):
+            if norm[m.start()] == "." and abbreviated(norm, m.start()):
+                continue
+            ends.add(m.end())
+            if m.end() < len(norm):
+                starts.add(m.end() + 1)
     return starts, ends
 
 
@@ -750,13 +754,28 @@ def apply_rule(rule, literal, param, unit, precision, scales):
             nxt = words[i + 1].rstrip(".,") if i + 1 < len(words) else ""
             if mo is None or not (1 <= len(nxt) <= 2 and nxt.isascii() and nxt.isdigit()):
                 continue
-            after = words[i + 2].rstrip(".,") if i + 2 < len(words) else ""
+            # A same-month range ("April 23 and 24") reads both days.
+            joiner = words[i + 2] if i + 2 < len(words) else ""
+            last = words[i + 3].rstrip(".,") if i + 3 < len(words) else ""
+            d2 = None
+            if joiner in ("and", "through", "to", "-", "–") and (
+                    1 <= len(last) <= 2 and last.isascii() and last.isdigit()):
+                d2 = int(last)
+            at = i + 4 if d2 is not None else i + 2
+            after = words[at].rstrip(".,") if at < len(words) else ""
             if len(after) == 4 and after.isascii() and after.isdigit():
-                raise RuleError(f"`{literal}` carries its year; it is a date_literal")
+                raise RuleError(f"`{literal}` carries its year; it is a date_literal "
+                                "or date_range_literal")
             try:
                 datetime.date(2000, mo, int(nxt))
+                if d2 is not None:
+                    datetime.date(2000, mo, d2)
             except ValueError as e:
                 raise RuleError(f"`{literal}` is not a day of any year") from e
+            if d2 is not None:
+                if d2 < int(nxt):
+                    raise RuleError(f"`{literal}` runs backwards")
+                return f"--{mo:02d}-{int(nxt):02d}..--{mo:02d}-{d2:02d}"
             prev = words[i - 1].rstrip(".,").lower() if i > 0 else ""
             weekday = next((n for n in WEEKDAY_NAMES if n.lower() == prev), None)
             return f"--{mo:02d}-{int(nxt):02d}" + (f" {weekday}" if weekday else "")
