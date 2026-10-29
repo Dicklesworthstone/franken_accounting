@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=5100b68601d9b584bac9de58c6dff64062fa9f2b
+tree=058f2d8dbc4283431c55521335d3a75f02ffee6e
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=vmi1227854
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=755
+log_dir=/run/user/1000/fa-t0z233-1-1
+recorded_utc=2026-10-27T17:14:56Z

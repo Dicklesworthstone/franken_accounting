@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=49f6a5fa1aca0b985557fc49a7f118ce7391f36c
+tree=14a14ec44d3d8110bcc1ee53c9c7fbea4d72335c
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=hz2
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=435
+log_dir=/data/tmp/claude-1000/-data-projects-franken-accounting/b7366853-b02b-489e-bb45-a6d09900055d/scratchpad/tier0_driftcite_logs
+recorded_utc=2026-10-27T20:44:24Z
