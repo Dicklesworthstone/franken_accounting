@@ -241,17 +241,20 @@ fn equity_certification_reopens_replays_and_tracks_backdated_changes() {
                 movement.kind == fa_verify::report::EquityActivityKind::ClosingTransfer
             })
             .collect::<Vec<_>>();
+        let accounts: std::collections::BTreeSet<u128> = transfers
+            .iter()
+            .map(|movement| movement.account_id)
+            .collect();
+        // Each closed nominal balance carries its own equity leg (0676d8514
+        // closes retained carrying buckets one by one), so retained earnings
+        // takes two legs here, one for the revenue and one for the expense.
         assert_eq!(
             transfers.len(),
             4,
-            "one closing leg per route, before netting"
+            "one closing leg per route, before netting: {transfers:?}"
         );
         assert_eq!(
-            transfers
-                .iter()
-                .map(|movement| movement.account_id)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
+            accounts.len(),
             3,
             "revenue and expense each route separately into retained earnings"
         );

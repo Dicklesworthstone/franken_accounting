@@ -204,7 +204,118 @@ Remote command finished: exit=1 in 900ms"
   return 0
 }
 
+# 3. The split `test` step (fa-0hs4.2): check.sh's real cargo_test_jobs over a
+#    fixed three-job list and a fake rch whose answer per job comes from the
+#    scenario. Prints "<status> <alpha attempts> <job headers in test.log>".
+invoke_test_jobs() {
+  local scenario="$1"
+  local step_dir="$base/jobs-$scenario"
+  mkdir -p "$step_dir/bin" "$step_dir/state"
+  cat > "$step_dir/bin/rch" <<'EOF'
+#!/usr/bin/env bash
+# Fake `rch exec -- cargo test -j N --no-fail-fast <job args>`.
+args="$*"
+key="$(printf '%s' "$args" | tr -c 'A-Za-z0-9' '_')"
+attempt=$(( $(cat "$FAKE_STATE/$key" 2>/dev/null || echo 0) + 1 ))
+echo "$attempt" > "$FAKE_STATE/$key"
+ran() { printf 'Selected worker: w1 at u@h\nrunning %s test%s\n' "$1" "$([ "$1" = 1 ] || echo s)"; }
+pass() { ran 1; printf 'test %s ... ok\n\ntest result: ok. 1 passed; 0 failed\nRemote command finished: exit=0 in 9ms\n' "$1"; exit 0; }
+case "$FAKE_SCENARIO:$args" in
+  fail-first:*-p\ alpha*)
+    ran 1; printf 'test a ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed\nRemote command finished: exit=101 in 9ms\n'; exit 101 ;;
+  refused-once:*-p\ alpha*)
+    [ "$attempt" -ge 2 ] && pass a
+    printf '[RCH] no admissible workers available; refusing local fallback\n'; exit 103 ;;
+  refused-always:*-p\ alpha*)
+    printf '[RCH] no admissible workers available; refusing local fallback\n'; exit 103 ;;
+  cap-kill:*-p\ alpha*)
+    ran 1; printf 'Remote command finished: exit=137 in 1800000ms\n'; exit 137 ;;
+  stale:*--exact\ slow*)
+    ran 0; printf '\ntest result: ok. 0 passed; 0 failed; 1 filtered out\nRemote command finished: exit=0 in 9ms\n'; exit 0 ;;
+  *-p\ alpha*) pass a ;;
+  *--exact\ slow*) pass slow ;;
+  *) pass x ;;
+esac
+EOF
+  chmod +x "$step_dir/bin/rch"
+  (
+    export PATH="$step_dir/bin:$PATH" FAKE_STATE="$step_dir/state" FAKE_SCENARIO="$scenario"
+    export CHECK_LOG_DIR="$step_dir/logs"
+    export CHECK_STEP_MANIFEST="$step_dir/step-verdicts.jsonl"
+    mkdir -p "$CHECK_LOG_DIR"
+    # shellcheck source=../lib/gate_verdict.sh
+    . "$SOURCE_ROOT/scripts/lib/gate_verdict.sh"
+    gate_init "inner"
+    # shellcheck disable=SC1090
+    . "$harness"
+    list_test_jobs() {
+      printf 'alpha\t-p alpha\nbeta.test.x\t-p beta --test x -- --exact --skip slow\n'
+      printf 'beta.test.x.isolated.slow\t-p beta --test x -- --exact slow\n'
+    }
+    cargo_test_jobs
+  ) > "$step_dir/stdout.log" 2> "$step_dir/stderr.log" || true
+  local status alpha headers
+  status="$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["status"])' "$step_dir/step-verdicts.jsonl" 2>/dev/null)"
+  [ -n "$status" ] && grep -q "^$status test" "$step_dir/stdout.log" || status="MISMATCH:${status:-none}:$(head -c 200 "$step_dir/stdout.log")"
+  alpha="$(cat "$step_dir/state/"*alpha* 2>/dev/null || echo 0)"
+  headers="$(grep -c '^==== test job .* (exit ' "$step_dir/logs/test.log" 2>/dev/null)"
+  printf '%s %s %s\n' "$status" "$alpha" "${headers:-0}"
+}
+
+split_test_jobs_compose_one_step() {
+  local got expect scenario
+  for scenario in pass fail-first refused-once refused-always cap-kill stale; do
+    got="$(invoke_test_jobs "$scenario")"
+    case "$scenario" in
+      # Every job ran once and its output is in the one step log.
+      pass) expect="PASS 1 3" ;;
+      # A red job fails the step and never hides the jobs after it.
+      fail-first) expect="FAIL 1 3" ;;
+      # A command the offloader never ran is retried; the retry decides.
+      refused-once) expect="PASS 2 3" ;;
+      refused-always) expect="UNRUN 3 3" ;;
+      # A cap kill executed: a failure, never retried.
+      cap-kill) expect="FAIL 1 3" ;;
+      # An isolated test that matches nothing fails, so the list cannot rot.
+      stale) expect="FAIL 1 3" ;;
+    esac
+    if [ "$got" != "$expect" ]; then
+      gate_fail "split_test_jobs_compose_one_step — scenario $scenario: got '$got', expected '$expect' (status, alpha attempts, job headers)"
+      return 1
+    fi
+  done
+  gate_pass "split_test_jobs_compose_one_step (pass, fail-first, refused-once, refused-always, cap-kill, stale)"
+}
+
+# 4. The real job list covers every workspace package, and every TEST_ISOLATED
+#    entry names a target of a split package (otherwise list_test_jobs exits 1).
+split_test_job_list_covers_the_workspace() {
+  local list="$base/jobs.tsv" missing
+  # shellcheck disable=SC1090,SC2034  # list_test_jobs reads ROOT.
+  if ! (ROOT="$SOURCE_ROOT"; . "$harness"; list_test_jobs) >"$list" 2>"$base/jobs.err"; then
+    gate_fail "split_test_job_list_covers_the_workspace — list_test_jobs failed: $(head -c 300 "$base/jobs.err")"
+    return 1
+  fi
+  missing="$(python3 - "$SOURCE_ROOT" "$list" <<'PY'
+import glob, os, sys, tomllib
+root, listed = sys.argv[1], open(sys.argv[2]).read()
+packages = []
+for pattern in tomllib.load(open(os.path.join(root, "Cargo.toml"), "rb"))["workspace"]["members"]:
+    for d in glob.glob(os.path.join(root, pattern)):
+        packages.append(tomllib.load(open(os.path.join(d, "Cargo.toml"), "rb"))["package"]["name"])
+print(" ".join(p for p in packages if f"\t-p {p}\n" not in listed and f"\t-p {p} " not in listed))
+PY
+)"
+  if [ -n "$missing" ] || ! grep -q '\.isolated\.' "$list"; then
+    gate_fail "split_test_job_list_covers_the_workspace — packages without a job: ${missing:-none}; isolated jobs: $(grep -c '\.isolated\.' "$list")"
+    return 1
+  fi
+  gate_pass "split_test_job_list_covers_the_workspace ($(wc -l <"$list" | tr -d ' ') jobs)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
+split_test_jobs_compose_one_step
+split_test_job_list_covers_the_workspace
 
 gate_verdict

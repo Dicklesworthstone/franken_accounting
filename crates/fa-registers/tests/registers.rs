@@ -1946,6 +1946,9 @@ fn invoice_with_terms(
     let mut invoice = h.proposal(h.expense_legs(cents), key, EntryClass::ORIGINAL);
     invoice.effective_date = date;
     if let Some((status, installments)) = terms {
+        // An extension block needs a minor that admits one (Appendix A
+        // fa:entry:v1), as every product path that attaches terms writes.
+        invoice.schema_minor = invoice.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
         invoice.extensions.push(
             InlineObligationTerms::to_extension(&[InlineObligationTerms {
                 ordinal: 1,
@@ -5022,7 +5025,14 @@ fn fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book() {
             (err.code, err.exit),
             (fa_journal::refusal::code::SETTLE_SHAPE, exit::REFUSAL)
         );
-        assert!(err.message.contains("explicitly applied foreign leg"));
+        // The vector's own shape check (its applied foreign leg first)
+        // refuses it before the settlement's (7f075b7d2); both name the
+        // missing applied foreign leg.
+        assert!(
+            err.message.contains("applied foreign leg"),
+            "{}",
+            err.message
+        );
     }
     assert_eq!(h.db.frontier().unwrap(), before);
 }

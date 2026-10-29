@@ -578,7 +578,7 @@ try:
     if records.get("test", {}).get("status") == "PASS":
         require(records.get("test-list", {}).get("status") == "PASS", "test PASS lacks an inventory witness")
         listed = collections.Counter(re.findall(r"^\s*(.+): test$", (root / "steps/test-list.log").read_text(), re.M))
-        executed = collections.Counter(re.findall(r"^test (\S+)(?: - should panic)? \.\.\. (?:ok|ignored(?:, [^\n]*)?)$", (root / "steps/test.log").read_text(), re.M))
+        executed = collections.Counter(re.findall(r"^test (.+?)(?: - should panic)? \.\.\. (?:ok|ignored(?:, [^\n]*)?)$", (root / "steps/test.log").read_text(), re.M))
         require(bool(listed) and listed == executed, "listed/executed test inventories differ")
     sources_dir = root / "sources"
     actual_sources = {path.name for path in sources_dir.iterdir()} if sources_dir.exists() else set()
