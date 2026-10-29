@@ -108,12 +108,16 @@ fn functional_statement_export_requires_authority_and_authenticated_original_rat
                 .is_err()
         );
     }
-    let produced = fixture
+    let pinned = fixture
         .book
         .produce_report_bundle(PRINCIPAL, &producer(), Some(state), &certificate)
         .unwrap()
-        .unwrap()
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(pinned.code, "FA-REF-011");
+    assert_eq!(pinned.exit, 7);
+    assert!(pinned.message.contains("known_at"), "{pinned:?}");
+    assert_eq!(fixture.book.head().unwrap(), before);
+    let produced = produce(&mut fixture, state, &certificate);
     assert_eq!(
         verify(&fixture, &produced, &certificate).output,
         certificate.output

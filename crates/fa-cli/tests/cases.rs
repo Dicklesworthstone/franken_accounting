@@ -462,6 +462,11 @@ fn _selftest_neg_read_back_t_never_passes_as_t() {
         HARNESS_VERBS,
     )
     .expect_err("a claimed T re-typed R fails the case");
+    assert!(
+        !o.rows_ok,
+        "the claimed type must fail independently of the wall-time budget: {}",
+        o.text()
+    );
     let row = o.row("_selftest-T-01").unwrap_or_default();
     assert!(
         !row.starts_with("PASS _selftest-T-01 T ")

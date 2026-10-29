@@ -370,8 +370,11 @@ fn functional_export_keeps_exact_residual_and_refuses_a_pinned_producer() {
     let state = checkpoint(&mut fixture.book);
     let pin = fixture.book.head().unwrap();
     fixture.post(b"later-than-producer-pin", day(2, 5), 100, 12);
+    let before = fixture.book.head().unwrap();
     // Bundle integrity reads reach HEAD, so a producer pinned below it is
     // refused even for a checkpoint inside its pin (fa-0x0, f68db34f6).
+    // The selected historical certificate does not bound export's current
+    // journal/checkpoint integrity reads. A pinned token cannot authorize them.
     let pinned = fixture
         .book
         .produce_report_bundle(
@@ -384,6 +387,7 @@ fn functional_export_keeps_exact_residual_and_refuses_a_pinned_producer() {
         .unwrap_err();
     assert_eq!((pinned.code, pinned.exit), ("FA-REF-011", 7));
     assert!(pinned.message.contains("`known_at`"), "{}", pinned.message);
+    assert_eq!(fixture.book.head().unwrap(), before);
     let produced = produce(&mut fixture, state, &certificate);
     let verified = verify(&fixture, &produced, &certificate);
     assert_eq!(verified.output, certificate.output);
@@ -393,6 +397,7 @@ fn functional_export_keeps_exact_residual_and_refuses_a_pinned_producer() {
         .unwrap()
         .unwrap_err();
     assert!(denied.message.contains("produce"));
+    assert_eq!(fixture.book.head().unwrap(), before);
 }
 
 #[path = "portable/transitions.rs"]
