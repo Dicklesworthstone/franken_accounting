@@ -1953,7 +1953,7 @@ fn a_draft_reversal_uses_the_retained_target_and_cannot_read_another_owners_draf
         &f.dir,
         "draft-reversal.json",
         &format!(
-            r#"{{"class":"Reversal","idempotency_key":"draft-reversal","reverses":"{}","reason":"WrongAmount"}}"#,
+            r#"{{"class":"Reversal","effective_date":"2026-03-10","idempotency_key":"draft-reversal","reverses":"{}","reason":"WrongAmount"}}"#,
             text(&original, "entry")
         ),
     );
