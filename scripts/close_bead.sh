@@ -268,8 +268,24 @@ def load_verdict_inventory(repo, verdict_spec, for_close=False):
             lf = proof_dir / "steps" / (step_stem + ".log")
             text = lf.read_text(encoding="utf-8", errors="replace")
             if step_stem == "test":
-                for m in re.finditer(r"^test\s+(\S+)(?: - should panic)?\s+\.\.\.\s+(ok|FAILED)$", text, re.M):
-                    (passed if m.group(2) == "ok" else failed).add(m.group(1))
+                # cargo names an integration test by its path inside its test
+                # binary, never by the binary; only the preceding
+                # `Running tests/<bin>.rs` line says which binary ran it. Each
+                # case is recorded bare and as `<bin>::<path>`, so a
+                # `crate::<bin>::<path>` acceptance line can match it.
+                binary = None
+                for line in text.splitlines():
+                    run = re.match(r"^\s*(?:Running|Doc-tests)\s+(\S+)", line)
+                    if run or line.startswith("==== test job "):
+                        named = re.fullmatch(r"tests/([A-Za-z0-9_-]+)(?:\.rs|/main\.rs)", run.group(1)) if run else None
+                        binary = named.group(1) if named else None
+                        continue
+                    m = re.match(r"^test\s+(\S+)(?: - should panic)?\s+\.\.\.\s+(ok|FAILED)$", line)
+                    if m:
+                        cases = passed if m.group(2) == "ok" else failed
+                        cases.add(m.group(1))
+                        if binary:
+                            cases.add(f"{binary}::{m.group(1)}")
             for m in re.finditer(r"^(PASS|FAIL|ok)\s+([A-Za-z0-9_.:/-]+)", text, re.M):
                 kind, cname = m.group(1), m.group(2)
                 target_Set = failed if kind == "FAIL" else passed

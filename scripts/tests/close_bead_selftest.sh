@@ -103,7 +103,7 @@ if [ "${FAKE_CHECK_MODE:-pass}" = "split-1" ]; then
   exit 2
 fi
 
-printf '  fa_journal::retention::tests::floor_enforced: test\n  fa_journal::retention::tests::cadence_checked: test\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test-list.log"
+printf '  fa_journal::retention::tests::floor_enforced: test\n  fa_journal::retention::tests::cadence_checked: test\n  carried::posts_balance: test\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test-list.log"
 d_list="$(sha256sum "$log_dir/test-list.log" | awk '{print $1}')"
 
 cat > "$log_dir/test.log" <<'EOF'
@@ -111,6 +111,11 @@ test fa_journal::retention::tests::floor_enforced ... ok
 test fa_journal::retention::tests::cadence_checked ... ok
 PASS scripts/tests/close_bead_selftest.sh::closes_with_cited_note
 test result: ok. 2 passed; 0 failed; 0 ignored
+     Running tests/ledger.rs (target/debug/deps/ledger-0123456789abcdef)
+
+running 1 test
+test carried::posts_balance ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored
 Remote command finished: exit=0
 [RCH] remote hz2 (1s)
 EOF
@@ -162,6 +167,16 @@ beads = [
         "description": "Code bead trying none loophole.\n\n```acceptance-tests\nnone: trying to skip tests on crates/ edit\n```\n",
     },
     {"id": "fa-no-block", "status": "in_progress", "description": "Code without an acceptance block"},
+    {
+        "id": "fa-binary-qualified",
+        "status": "in_progress",
+        "description": "Integration test named with its binary.\n\n```acceptance-tests\nfa-journal::ledger::carried::posts_balance\n```\n",
+    },
+    {
+        "id": "fa-wrong-binary",
+        "status": "in_progress",
+        "description": "Integration test named with another binary.\n\n```acceptance-tests\nfa-journal::other::carried::posts_balance\n```\n",
+    },
 ]
 path.write_text("\n".join(json.dumps(b) for b in beads) + "\n")
 PY
@@ -172,7 +187,7 @@ git config user.name "Close Bead Self-Test"
 git config user.email "close-bead@example.invalid"
 printf 'pub fn init() {}\n' > crates/fa/src/lib.rs
 git add .
-git commit -q -m "feat: initial implementation (fa-good, fa-missing-test, fa-failed-test, fa-code-loophole, fa-no-block)"
+git commit -q -m "feat: initial implementation (fa-good, fa-missing-test, fa-failed-test, fa-code-loophole, fa-no-block, fa-binary-qualified, fa-wrong-binary)"
 
 printf '# Guide\n' > docs/guide.md
 git add docs/guide.md
@@ -222,6 +237,23 @@ PY
   git add .beads/issues.jsonl
   git commit -q -m "chore(beads): close fa-good"
   gate_pass "closes_with_cited_note (bead fa-good closed with verdict_note=${note_id:0:12} cited in close_reason)"
+}
+
+# 1b. cargo prints an integration test without its binary; an acceptance line
+# naming the binary that ran it matches, one naming another binary does not.
+matches_integration_tests_by_their_binary() {
+  local out rc=0
+  out="$(bash scripts/close_bead.sh fa-wrong-binary --verdict "$note_id" --repository "$fixture" --reason "should fail" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "matches_integration_tests_by_their_binary: a line naming another binary closed ($out)"
+  grep -Fq "missing from verdict" <<< "$out" \
+    || fail "matches_integration_tests_by_their_binary: expected a missing-test refusal for the wrong binary ($out)"
+  out="$(bash scripts/close_bead.sh fa-binary-qualified --verdict "$note_id" --repository "$fixture" --reason "ledger test green" 2>&1)" \
+    || fail "matches_integration_tests_by_their_binary: the binary-qualified line was refused ($out)"
+  grep -Fq "CLOSE_BEAD_OK bead=fa-binary-qualified" <<< "$out" \
+    || fail "matches_integration_tests_by_their_binary: missing CLOSE_BEAD_OK ($out)"
+  git add .beads/issues.jsonl
+  git commit -q -m "chore(beads): close fa-binary-qualified"
+  gate_pass "matches_integration_tests_by_their_binary (crate::<bin>::<path> closes from a Running tests/<bin>.rs section; another binary is refused)"
 }
 
 # 2. Acceptance test: planted negative — a bead naming a test that does not exist is refused
@@ -340,7 +372,7 @@ process_closure_and_regression_checks() {
 
   local debt_json
   debt_json="$(bash scripts/close_bead.sh --closure-debt --verdict "$pass_proof" --repository "$fixture" --json)"
-  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["closed_total"]==2 and d["process_closures"]==1 and d["closure_debt_count"]==0, d' "$debt_json" \
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["closed_total"]==3 and d["verdict_cited_closures"]==2 and d["process_closures"]==1 and d["closure_debt_count"]==0, d' "$debt_json" \
     || fail "process_closure: unexpected closure-debt report ($debt_json)"
 
   bash scripts/close_bead.sh --regression-check --days 30 --verdict "$pass_proof" --repository "$fixture" >/dev/null \
@@ -490,6 +522,7 @@ refuses_manifest_without_acceptance_block() {
 
 parser_unit_tests
 closes_with_cited_note
+matches_integration_tests_by_their_binary
 refuses_note_whose_step_tree_differs_from_commit_tree
 refuses_note_started_before_its_commit
 refuses_test_names_reported_outside_the_test_step
