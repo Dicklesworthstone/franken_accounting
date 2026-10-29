@@ -217,14 +217,22 @@ fn err(line: usize, message: &str) -> TomlError {
 }
 
 /// Remove a trailing `# comment`, honouring `#` inside strings.
+///
+/// The scan is over bytes: every byte it branches on is ASCII, and no byte
+/// of a multi-byte UTF-8 character is, so it finds the `#` a scan over
+/// characters finds. Every registry is parsed on each start-up, and most
+/// lines carry no `#`.
 fn strip_comment(line: &str) -> &str {
+    if !line.as_bytes().contains(&b'#') {
+        return line;
+    }
     let mut in_str = false;
     let mut escaped = false;
-    for (i, c) in line.char_indices() {
-        match c {
-            '\\' if in_str => escaped = !escaped,
-            '"' if !escaped => in_str = !in_str,
-            '#' if !in_str => return &line[..i],
+    for (i, b) in line.bytes().enumerate() {
+        match b {
+            b'\\' if in_str => escaped = !escaped,
+            b'"' if !escaped => in_str = !in_str,
+            b'#' if !in_str => return &line[..i],
             _ => escaped = false,
         }
     }
@@ -264,26 +272,31 @@ fn parse_int(text: &str, line: usize) -> Result<i128, TomlError> {
         .map_err(|_| err(line, &format!("unsupported value `{text}`")))
 }
 
+/// A basic string's value and what follows its closing quote. The text
+/// between escapes is copied a run at a time: `"` and `\` are ASCII, so a
+/// byte search for them splits only on character boundaries.
 fn parse_string(rest: &str, line: usize) -> Result<(String, &str), TomlError> {
     let mut out = String::new();
-    let mut chars = rest.char_indices();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '"' => return Ok((out, &rest[i + 1..])),
-            '\\' => {
-                let (_, e) = chars.next().ok_or_else(|| err(line, "dangling escape"))?;
-                out.push(match e {
-                    'n' => '\n',
-                    't' => '\t',
-                    '"' => '"',
-                    '\\' => '\\',
-                    other => return Err(err(line, &format!("unsupported escape \\{other}"))),
-                });
-            }
-            c => out.push(c),
+    let mut tail = rest;
+    loop {
+        let Some(i) = tail.bytes().position(|b| b == b'"' || b == b'\\') else {
+            return Err(err(line, "unterminated string"));
+        };
+        out.push_str(&tail[..i]);
+        if tail.as_bytes()[i] == b'"' {
+            return Ok((out, &tail[i + 1..]));
         }
+        let mut chars = tail[i + 1..].chars();
+        let e = chars.next().ok_or_else(|| err(line, "dangling escape"))?;
+        out.push(match e {
+            'n' => '\n',
+            't' => '\t',
+            '"' => '"',
+            '\\' => '\\',
+            other => return Err(err(line, &format!("unsupported escape \\{other}"))),
+        });
+        tail = chars.as_str();
     }
-    Err(err(line, "unterminated string"))
 }
 
 fn parse_array(inner: &str, line: usize) -> Result<Value, TomlError> {
@@ -380,6 +393,77 @@ name = "neg"
             assert_ne!(canonical(changed), base, "{changed}");
         }
         assert!(base.starts_with(Document::CANONICAL_FORMAT));
+    }
+
+    /// The character scans the byte scans replaced, kept as their reference.
+    fn strip_comment_chars(line: &str) -> &str {
+        let mut in_str = false;
+        let mut escaped = false;
+        for (i, c) in line.char_indices() {
+            match c {
+                '\\' if in_str => escaped = !escaped,
+                '"' if !escaped => in_str = !in_str,
+                '#' if !in_str => return &line[..i],
+                _ => escaped = false,
+            }
+        }
+        line
+    }
+
+    fn parse_string_chars(rest: &str, line: usize) -> Result<(String, &str), TomlError> {
+        let mut out = String::new();
+        let mut chars = rest.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '"' => return Ok((out, &rest[i + 1..])),
+                '\\' => {
+                    let (_, e) = chars.next().ok_or_else(|| err(line, "dangling escape"))?;
+                    out.push(match e {
+                        'n' => '\n',
+                        't' => '\t',
+                        '"' => '"',
+                        '\\' => '\\',
+                        other => return Err(err(line, &format!("unsupported escape \\{other}"))),
+                    });
+                }
+                c => out.push(c),
+            }
+        }
+        Err(err(line, "unterminated string"))
+    }
+
+    #[test]
+    fn byte_scans_agree_with_the_char_scans_they_replaced() {
+        let edges = "k = \"caf\u{e9} \u{2014} \u{1f600} # x\" # c\n\
+                     k = \"a\\\"b # c\" # d\n\
+                     k = \"\\q\"\n\
+                     k = \"tail\\\n\
+                     k = \"open\n\
+                     k = \"\u{e9}\\n\u{e9}\\t\\\\\" # \u{e9}\n\
+                     # only a comment \u{e9}\n\
+                     k = [\"a\", \"#\", \"\\\"#\"] # c\n";
+        let mut quotes = 0usize;
+        for text in [
+            include_str!("../../../registries/verbs.toml"),
+            include_str!("../../../registries/refusal_catalog.toml"),
+            include_str!("../../../registries/sod_policy.toml"),
+            include_str!("../../../registries/procedures.toml"),
+            include_str!("../../../registries/invariants.toml"),
+            edges,
+        ] {
+            for raw in text.lines() {
+                assert_eq!(strip_comment(raw), strip_comment_chars(raw), "{raw}");
+                for (i, _) in raw.match_indices('"') {
+                    let rest = &raw[i + 1..];
+                    assert_eq!(parse_string(rest, 7), parse_string_chars(rest, 7), "{rest}");
+                    quotes += 1;
+                }
+            }
+        }
+        assert!(
+            quotes > 20_000,
+            "every string start of the corpus: {quotes}"
+        );
     }
 
     #[test]
