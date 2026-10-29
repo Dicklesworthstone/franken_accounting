@@ -496,6 +496,69 @@ EOF
   gate_pass "invariant_gates_wait_for_a_passing_test_step (UNRUN test step: both UNRUN, nothing judged; PASS: both run)"
 }
 
+# CHECK_TEST_WORKERS spreads the test step: each package's jobs and its listing
+# run on one assigned worker (heaviest package first, onto the least-loaded
+# worker), so no worker builds the whole pool; a listing the offloader never
+# runs leaves test-list UNRUN.
+test_jobs_and_listings_follow_their_package_worker() {
+  local scenario dir want_list
+  for scenario in pass refused-list; do
+    dir="$base/spread-$scenario"
+    mkdir -p "$dir/bin" "$dir/state" "$dir/ws/alpha/tests" "$dir/ws/beta/tests" "$dir/ws/gamma" "$dir/logs"
+    printf '[workspace]\nmembers = ["alpha", "beta", "gamma"]\n' > "$dir/ws/Cargo.toml"
+    for p in alpha beta gamma; do printf '[package]\nname = "%s"\n' "$p" > "$dir/ws/$p/Cargo.toml"; done
+    : > "$dir/ws/alpha/tests/a1.rs"; : > "$dir/ws/alpha/tests/a2.rs"; : > "$dir/ws/alpha/tests/a3.rs"
+    : > "$dir/ws/beta/tests/b1.rs"
+    cat > "$dir/bin/rch" <<'EOF'
+#!/usr/bin/env bash
+args="$*"
+printf '%s|%s\n' "${RCH_WORKER:-default}" "$args" >> "$FAKE_STATE/workers"
+printf 'Selected worker: %s at u@h\n' "${RCH_WORKER:-default}"
+case "$FAKE_SCENARIO:$args" in
+  refused-list:*-p\ beta\ --\ --list*)
+    printf '[RCH] no admissible workers available; refusing local fallback\n'; exit 103 ;;
+  *--\ --list*)
+    printf 'case_one: test\nRemote command finished: exit=0 in 9ms\n'; exit 0 ;;
+  *)
+    printf 'running 1 test\ntest case_one ... ok\n\ntest result: ok. 1 passed; 0 failed\nRemote command finished: exit=0 in 9ms\n'; exit 0 ;;
+esac
+EOF
+    chmod +x "$dir/bin/rch"
+    (
+      export PATH="$dir/bin:$PATH" FAKE_STATE="$dir/state" FAKE_SCENARIO="$scenario"
+      export CHECK_LOG_DIR="$dir/logs" CHECK_STEP_MANIFEST="$dir/step-verdicts.jsonl" CHECK_TEST_WORKERS="w1 w2"
+      # shellcheck source=../lib/gate_verdict.sh
+      . "$SOURCE_ROOT/scripts/lib/gate_verdict.sh"
+      gate_init "inner"
+      # shellcheck disable=SC1090
+      . "$harness"
+      # shellcheck disable=SC2034  # read by assign_test_workers.
+      ROOT="$dir/ws"
+      list_test_jobs() {
+        printf 'alpha.lib\t-p alpha --lib\nalpha.test.a1\t-p alpha --test a1\nalpha.test.a2\t-p alpha --test a2\n'
+        printf 'beta\t-p beta\ngamma\t-p gamma\n'
+      }
+      cargo_test_jobs
+      cargo_test_lists
+    ) > "$dir/stdout.log" 2>&1
+    # alpha weighs 4 -> w1; beta (2) and gamma (1) -> w2.
+    if grep -E '^w2\|.*-p alpha|^w1\|.*-p (beta|gamma)|^default\|' "$dir/state/workers" >/dev/null \
+      || [ "$(grep -c '^w1|.*-p alpha' "$dir/state/workers")" -lt 4 ] \
+      || ! grep -q '^w2|.*-p gamma -- --list' "$dir/state/workers" \
+      || ! grep -q '^PASS test (5 jobs' "$dir/stdout.log"; then
+      gate_fail "test_jobs_and_listings_follow_their_package_worker — $scenario: $(tr '\n' '|' < "$dir/state/workers") / $(tr '\n' '|' < "$dir/stdout.log")"
+      return 1
+    fi
+    want_list='PASS test-list (3 package listings)'
+    [ "$scenario" = refused-list ] && want_list='UNRUN test-list — 1 of 3 package listings did not run or complete: beta'
+    if ! grep -Fq "$want_list" "$dir/stdout.log"; then
+      gate_fail "test_jobs_and_listings_follow_their_package_worker — $scenario: test-list: $(grep -E '^(PASS|FAIL|UNRUN) test-list' "$dir/stdout.log")"
+      return 1
+    fi
+  done
+  gate_pass "test_jobs_and_listings_follow_their_package_worker (alpha->w1, beta+gamma->w2 for jobs and listings; a refused listing is UNRUN)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
@@ -504,5 +567,6 @@ check_summary_matches_the_proof_verifier
 ubs_scan_classifies_each_package_scan
 run_gate_protects_the_step_manifest
 invariant_gates_wait_for_a_passing_test_step
+test_jobs_and_listings_follow_their_package_worker
 
 gate_verdict

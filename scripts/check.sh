@@ -267,6 +267,11 @@ run_step() {
 # `test result: ok.` line with a positive passed count for test steps).
 # Missing markers classify as UNRUN (retryable), never PASS.
 CHECK_JOBS="${CHECK_JOBS:-2}"
+# CHECK_TEST_WORKERS="<worker> <worker>...": each package's test jobs and its
+# test listing run on one assigned worker, so no worker has to hold the whole
+# test pool (about 62 GB on 2026-10-29, more than any worker kept free; rch
+# drops slots near 15 GB free). Unset, every rch step uses $RCH_WORKER.
+CHECK_TEST_WORKERS="${CHECK_TEST_WORKERS:-}"
 cargo_build() {
   local label="$1" sub="$2"; shift 2
   local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
@@ -437,6 +442,41 @@ PY
 
 # cargo_test_jobs: the `test` step (see above). Job logs go to
 # $LOG_DIR/test-jobs/<label>.log; the step log is $LOG_DIR/test.log.
+# assign_test_workers <jobs.tsv>: one "<package>\t<worker>" line per package
+# in the job list, over $CHECK_TEST_WORKERS. A package weighs its test
+# binaries plus one; heaviest first onto the least-loaded worker, list order
+# breaking ties, so a given job list and worker list always assign alike.
+assign_test_workers() {
+  # shellcheck disable=SC2086  # the worker list splits into arguments.
+  python3 -B - "$ROOT" "$1" $CHECK_TEST_WORKERS <<'PY'
+import glob
+import os
+import sys
+import tomllib
+
+root, jobs, workers = sys.argv[1], sys.argv[2], sys.argv[3:]
+dirs = {}
+with open(os.path.join(root, "Cargo.toml"), "rb") as handle:
+    members = tomllib.load(handle)["workspace"]["members"]
+for pattern in members:
+    for directory in sorted(glob.glob(os.path.join(root, pattern))):
+        with open(os.path.join(directory, "Cargo.toml"), "rb") as handle:
+            dirs[tomllib.load(handle)["package"]["name"]] = directory
+order = []
+with open(jobs) as handle:
+    for line in handle:
+        package = line.split("\t", 1)[0].split(".", 1)[0].strip()
+        if package and package not in order:
+            order.append(package)
+weight = {p: 1 + len(glob.glob(os.path.join(dirs.get(p, "/nonexistent"), "tests", "*.rs"))) for p in order}
+load = {w: 0 for w in workers}
+for package in sorted(order, key=lambda p: (-weight[p], order.index(p))):
+    worker = min(workers, key=lambda w: (load[w], workers.index(w)))
+    load[worker] += weight[package]
+    print(f"{package}\t{worker}")
+PY
+}
+
 cargo_test_jobs() {
   local label="test"
   local log="$LOG_DIR/test.log"
@@ -462,6 +502,14 @@ cargo_test_jobs() {
     return
   fi
   : >"$log"
+  local -A test_worker=()
+  local package worker
+  if [ -n "$CHECK_TEST_WORKERS" ]; then
+    while IFS=$'\t' read -r package worker; do
+      test_worker[$package]="$worker"
+      printf '==== test worker %s: %s\n' "$package" "$worker" >>"$log"
+    done < <(assign_test_workers "$jobs")
+  fi
   local job args job_log rc attempt count=0
   local -a argv budget failed=() unrun=() stale=()
   while IFS=$'\t' read -r job args; do
@@ -471,6 +519,7 @@ cargo_test_jobs() {
     read -r -a argv <<<"$args"
     budget=()
     [[ "$job" == *.isolated.* ]] && budget=("RCH_TEST_TIMEOUT_SEC=$CHECK_ISOLATED_TIMEOUT_SEC")
+    [ -n "${test_worker[${job%%.*}]:-}" ] && budget+=("RCH_WORKER=${test_worker[${job%%.*}]}")
     attempt=0
     while :; do
       attempt=$((attempt + 1))
@@ -515,6 +564,72 @@ cargo_test_jobs() {
   else
     record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label ($count jobs, $passed_total passed)"
+  fi
+}
+
+# test-list under CHECK_TEST_WORKERS: `cargo test -p <package> -- --list` for
+# every package, each on the worker its test jobs used (whose artifacts it
+# reuses), composed into one log. Every listing must complete with the
+# offloader's marker; a listing the offloader never ran is retried and then
+# UNRUN, an executed failure is FAIL, and zero listed tests is UNRUN.
+cargo_test_lists() {
+  local label="test-list"
+  local log="$LOG_DIR/test-list.log"
+  if try_reuse_step "$label" "$log"; then
+    return
+  fi
+  local started t0 finished dur
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t0="$(date +%s)"
+  if ! command -v rch >/dev/null 2>&1; then
+    finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" 0 "$log"
+    gate_unrun "$label — rch is not installed; compiling steps go through rch (AGENTS.md); log: $log"
+    return
+  fi
+  local jobs="$LOG_DIR/test-jobs.tsv" job_dir="$LOG_DIR/test-jobs"
+  mkdir -p "$job_dir"
+  [ -s "$jobs" ] || list_test_jobs >"$jobs" 2>"$job_dir/list.err"
+  : >"$log"
+  local package worker part rc attempt count=0
+  local -a failed=() unrun=()
+  while IFS=$'\t' read -r package worker; do
+    count=$((count + 1))
+    part="$job_dir/list-$package.log"
+    attempt=0
+    while :; do
+      attempt=$((attempt + 1))
+      RCH_WORKER="$worker" RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+        rch exec -- cargo test -j "$CHECK_JOBS" -p "$package" -- --list </dev/null >"$part" 2>&1
+      rc=$?
+      if [ "$rc" -ne 0 ] && is_rch_offloader_unrun "$rc" "$part" && [ "$attempt" -lt "$CHECK_TEST_ATTEMPTS" ]; then
+        continue
+      fi
+      break
+    done
+    { printf '==== test list %s on %s (exit %s)\n' "$package" "$worker" "$rc"; cat "$part"; } >>"$log"
+    if [ "$rc" -eq 0 ] && grep -Fq 'Remote command finished: exit=0' "$part"; then
+      :
+    elif [ "$rc" -eq 0 ] || is_rch_offloader_unrun "$rc" "$part"; then
+      unrun+=("$package")
+    else
+      failed+=("$package")
+    fi
+  done < <(assign_test_workers "$jobs")
+  finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  dur=$(($(date +%s) - t0))
+  if [ "${#failed[@]}" -gt 0 ]; then
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
+    gate_fail "$label (${#failed[@]} of $count package listings failed: ${failed[*]}); log: $log"
+  elif [ "${#unrun[@]}" -gt 0 ] || [ "$count" -eq 0 ]; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
+    gate_unrun "$label — ${#unrun[@]} of $count package listings did not run or complete: ${unrun[*]:-no packages} (retryable, not a product verdict); log: $log"
+  elif ! grep -Eq ': test$' "$log"; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
+    gate_unrun "$label — every listing exited 0 with zero listed tests; log: $log"
+  else
+    record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
+    gate_pass "$label ($count package listings)"
   fi
 }
 
@@ -604,7 +719,11 @@ if [ "$QUICK" -eq 0 ]; then
   # The split test jobs run first: each builds its package's artifacts under
   # the worker cap, so test-list's one --workspace build mostly reuses them.
   cargo_test_jobs
-  cargo_build "test-list" test --workspace -- --list
+  if [ -n "$CHECK_TEST_WORKERS" ]; then
+    cargo_test_lists
+  else
+    cargo_build "test-list" test --workspace -- --list
+  fi
   # Gate evidence witness & per-crate ratchet (bead fa-czx): listed tests match
   # executed tests, no source test disappears without `Retired-tests:`, and
   # per-crate negative test / assert counts do not decrease without
