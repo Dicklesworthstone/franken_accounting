@@ -1,13 +1,15 @@
-# WorldCom's claims (plan §6.4, §15 A8): two detections, a no-finding with its mutation twin, and two
-# first refusals over the native book's F2, F4 and F9. W-NOTE-01 waits for W2's restatement-table
-# facts.
+# WorldCom's claims (plan §6.4, §15 A8) over the native book's F2 and F4: two detections, a
+# no-finding with its mutation twin, and two first refusals. Still owed (fa-yugf.20): W-D-01 on F9
+# (its leg_split cells add or remove a debit leg, which the sweep cannot yet encode beside the
+# target), the filler variants the D and N rows' invariance witness needs (A11a), and W-NOTE-01
+# (W2's restatement-table facts).
 
 [[expectation]]
 id = "W-D-01"
 type = "D"
 book_variant = "native"
 statement_template = "D.detection"
-basis = ["F4", "F4-p26", "F9"]
+basis = ["F4", "F4-p26"]
 granularity = "journal_entry"
 capabilities = ["procedure:expense.capitalization@2"]
 procedure = "expense.capitalization"
@@ -69,29 +71,14 @@ expectation = "W-D-01"
 fact = "F4"
 basis = ["F4", "F4-p26"]
 admitted_cell = ["evidence_attached=placeholder_reviewed"]
-cite = ["F4#0"]
+cite = ["1500", "6100", "6110", "6120"]
 cite_status = "Sd"
 severity = "High"
 severity_status = "S"
-statistic_name = "capitalized_amount"
+statistic_name = "capitalized_expense_amount"
 statistic_value = "56000000000"
 statistic_scale = 2
 statistic_status = "Sd"
-
-[[target]]
-expectation = "W-D-01"
-fact = "F9"
-basis = ["F9"]
-branch_attrs = ["leg_split"]
-admitted_cell = ["evidence_attached=placeholder_reviewed"]
-cite = ["F9#0"]
-cite_status = "Rel(account_vid_order)"
-rel_rule = "min_vid_debit_leg{fixed_asset}"
-severity = "High"
-severity_status = "S"
-statistic_name = "capitalized_amount"
-statistic_scale = 2
-statistic_status = "B(leg_split)"
 
 [[target]]
 expectation = "W-D-03"
@@ -115,25 +102,6 @@ fact = "F4"
 branch_attrs = ["entry_class", "period_state_at_commit"]
 
 [[branch_cell]]
-expectation = "W-D-01"
-target = "F9"
-cell = ["one_debit_leg"]
-expect = "finding"
-statistic_value = "74272500000"
-record_consistent = true
-default = true
-
-[[branch_cell]]
-expectation = "W-D-01"
-target = "F9"
-cell = ["two_debit_legs"]
-expect = "finding"
-statistic_value = "30000000000"
-record_consistent = false
-
-# Per-leg residues of F4's three credit legs (A5a): in nnn only the debit leg
-# is round. No sourced fact selects a split, so no cell is record-consistent.
-[[branch_cell]]
 expectation = "W-D-03"
 target = "F4"
 cell = ["nnn"]
@@ -155,3 +123,87 @@ target = "F4"
 cell = ["Original", "Closed"]
 expect = "FA-REF-010"
 record_consistent = true
+
+# W-P-02's other evidence cells, from evidence_policy.toml#Original (plan §9.3): an AgentUpload
+# placeholder counts only once a Reviewed attestation exists (FA-REF-086); a reviewed one admits.
+
+[[branch_cell]]
+expectation = "W-P-02"
+target = "F4"
+cell = ["placeholder_unreviewed"]
+expect = "FA-REF-086"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-02"
+target = "F4"
+cell = ["placeholder_reviewed"]
+expect = "admit"
+record_consistent = false
+
+# W-P-03's other cells, from admissibility.toml (Appendix C) and F4's principal, whose grants
+# are read and post: `refuse` is FA-REF-010; a `with:post_softclosed` or `with:post_closed`
+# cell needs a capability that principal lacks, FA-REF-011.
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Original", "Future"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Original", "Open"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Original", "SoftClosed"]
+expect = "FA-REF-011"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Original", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Adjusting", "Future"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Adjusting", "Open"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Adjusting", "SoftClosed"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Adjusting", "Closed"]
+expect = "FA-REF-011"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Adjusting", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false

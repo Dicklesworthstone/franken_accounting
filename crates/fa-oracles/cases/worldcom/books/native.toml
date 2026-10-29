@@ -624,6 +624,14 @@ kind = "engagement_file"
 ref = "finding:W-D-01"
 principal = "examiner-1"
 
+# W-D-03's procedure: its D cells read this recorded run, as W-D-01's read step 51's.
+[[step]]
+seq = 53
+kind = "finding_record"
+ref = "jet.round_amounts@1"
+known_at = "pre_case"
+principal = "examiner-1"
+
 [[step]]
 seq = 60
 kind = "case_open"
