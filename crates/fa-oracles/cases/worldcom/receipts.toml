@@ -128,3 +128,35 @@ aligned = true
 values_in_quote = true
 scope_ok = true
 original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-401"
+fact = "W-ST-401-opinion"
+anchor = "l5536-5541"
+verified_utc = "2026-10-29T02:58:01Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "7f562d953d18c441ef4f1b662f45b00cd07a52483e5efdd7c0fac91e976ee91c"
+quote_sha256 = "dea1b3fd23a1b38e9be7fd03e67c619339f8e582f59ecf46066a367da5eb8028"
+values_sha256 = "fa64e43071f580e25558757da5a8781904c5a7cae88426866168a9b625176fdd"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W-ST-406-item6"
+anchor = "l1146-1146"
+verified_utc = "2026-10-29T02:58:02Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"
+quote_sha256 = "9192d2c0efadadfa0d8a5b1549650b9370e2b4143b71692af2016c04bedcbf00"
+values_sha256 = "fa64e43071f580e25558757da5a8781904c5a7cae88426866168a9b625176fdd"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

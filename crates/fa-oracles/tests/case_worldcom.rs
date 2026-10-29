@@ -1,7 +1,8 @@
 //! The committed WorldCom case at load time (docs/FORENSIC_CASE_STUDIES_PLAN.md
-//! §15 W1): the pilot slice binds offline, and each planted negative edits an
-//! in-memory copy of the embedded case text and is refused by the check that
-//! owns it. The committed files are never edited. W2 and W3 add theirs here.
+//! §15 W1): the sources ledger, the pilot slice and the two assurance facts
+//! bind offline, and each planted negative edits an in-memory copy of the
+//! embedded case text and is refused by the check that owns it. The committed
+//! files are never edited. W2 and W3 add theirs here.
 //!
 //! The slice has no F4-p26 fact (its `entry:F4` scope needs A8's F4
 //! interpretation), so the negatives the plan states on F4's p.26 rows plant
@@ -16,8 +17,23 @@ use fa_oracles::sha256;
 
 type Files = Vec<(&'static str, String)>;
 
-/// The pilot slice's sourced facts: four entry sentences and four periods.
-const SOURCED: usize = 8;
+/// W1's sourced facts: the pilot slice's four entry sentences and four
+/// periods, and the assurance facts of SRC-WC-401 and SRC-WC-406.
+const SOURCED: usize = 10;
+
+/// W1's sources ledger, in file order.
+const SOURCES: [&str; 10] = [
+    "SRC-WC-001",
+    "SRC-WC-002",
+    "SRC-WC-003",
+    "SRC-WC-004",
+    "SRC-WC-401",
+    "SRC-WC-406",
+    "SRC-WC-EX27-1999",
+    "SRC-WC-ABIDE",
+    "SRC-WC-8K-20020626",
+    "SRC-WC-8K-20020626-EX991",
+];
 
 fn worldcom() -> Files {
     WORLDCOM
@@ -153,30 +169,38 @@ fn wc_pilot_slice_binds_offline() {
     );
     assert_eq!(case.receipts.len(), SOURCED);
     assert!(case.receipts.iter().all(|r| !r.original_hash_compared));
+    // Every row is OK and archive-captured; the restating filing names the
+    // vintages it restates, and each filer row's assurance rests on a fact.
+    let ids: Vec<&str> = case.sources.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, SOURCES);
+    for s in &case.sources {
+        assert_eq!(s.status.as_str(), "OK", "{}", s.id);
+        assert_eq!(s.retrieval_route.as_str(), "archive_capture", "{}", s.id);
+        assert!(s.sha256.len() == 64 && s.extraction.is_some(), "{}", s.id);
+    }
+    let row = |id: &str| case.sources.iter().find(|s| s.id == id).unwrap();
+    assert_eq!(
+        row("SRC-WC-406").restates.as_deref(),
+        Some(&["SRC-WC-401".to_string(), "SRC-WC-EX27-1999".to_string()][..])
+    );
+    for (id, fact) in [
+        ("SRC-WC-401", "W-ST-401-opinion"),
+        ("SRC-WC-406", "W-ST-406-item6"),
+    ] {
+        assert_eq!(row(id).assurance_fact.as_deref(), Some(fact));
+    }
 }
 
 #[test]
 fn wc_fact_citing_blocked_source_is_refused() {
     let mut files = worldcom();
-    text_mut(&mut files, "sources.toml").push_str(concat!(
-        "\n[[source]]\n",
+    edit_row(
+        &mut files,
+        "sources.toml",
         "id = \"SRC-WC-ABIDE\"\n",
-        "title = \"SEC v. Mark P. Abide, Litigation Release 19776\"\n",
-        "publisher = \"U.S. Securities and Exchange Commission\"\n",
-        "original_url = \"https://www.sec.gov/litigation/litreleases/2006/lr19776.htm\"\n",
-        "retrieval_route = \"archive_capture\"\n",
-        "original_hash_compared = false\n",
-        "retrieved_utc = \"\"\n",
-        "sha256 = \"\"\n",
-        "format = \"htm\"\n",
-        "redistribution_basis = \"government-work\"\n",
-        "assertion_status = \"allegation\"\n",
-        "anchor_scheme = [\"paragraph\", \"line\"]\n",
-        "status = \"BLOCKED\"\n",
-        "status_reason = \"unread candidate\"\n",
-        "filed_on = \"2006-07-27\"\n",
-        "restates = []\n",
-    ));
+        "status = \"OK\"",
+        "status = \"BLOCKED\"\nstatus_reason = \"unread candidate\"",
+    );
     edit_row(
         &mut files,
         "facts.toml",
@@ -225,25 +249,9 @@ fn wc_receipt_hash_mismatch_fails() {
 
 #[test]
 fn wc_complaint_fact_with_page_anchor_fails_k_anchor() {
+    // W1 lands no SRC-WC-002 fact (its paragraph facts are W2's), so the copy
+    // adds one with a `page` anchor against the complaint's paragraph scheme.
     let mut files = worldcom();
-    text_mut(&mut files, "sources.toml").push_str(concat!(
-        "\n[[source]]\n",
-        "id = \"SRC-WC-002\"\n",
-        "title = \"SEC v. Betty L. Vinson and Troy M. Normand, complaint\"\n",
-        "publisher = \"U.S. Securities and Exchange Commission\"\n",
-        "original_url = \"https://www.sec.gov/litigation/complaints/comp17783.htm\"\n",
-        "retrieval_route = \"archive_capture\"\n",
-        "original_hash_compared = false\n",
-        "retrieved_utc = \"\"\n",
-        "sha256 = \"\"\n",
-        "format = \"htm\"\n",
-        "redistribution_basis = \"government-work\"\n",
-        "assertion_status = \"allegation\"\n",
-        "anchor_scheme = [\"paragraph\"]\n",
-        "status = \"OK\"\n",
-        "filed_on = \"\"\n",
-        "restates = []\n",
-    ));
     let quote = "0000000000000000000000000000000000000000000000000000000000000002";
     let scope = "period:2001Q2";
     text_mut(&mut files, "facts.toml").push_str(&format!(
@@ -349,16 +357,16 @@ fn wc_source_row_without_filed_on_fails() {
     edit_row(
         &mut files,
         "sources.toml",
-        "id = \"SRC-WC-001\"\n",
-        "filed_on = \"2003-06-09\"\n",
+        "id = \"SRC-WC-406\"\n",
+        "filed_on = \"2004-03-12\"\n",
         "",
     );
-    let line = row_header_line(&files, "sources.toml", "id = \"SRC-WC-001\"\n");
+    let line = row_header_line(&files, "sources.toml", "id = \"SRC-WC-406\"\n");
     refused(
         &files,
         LoadErrorKind::MissingField,
         "sources.toml",
-        "SRC-WC-001",
+        "SRC-WC-406",
         line,
         &["filed_on"],
     );

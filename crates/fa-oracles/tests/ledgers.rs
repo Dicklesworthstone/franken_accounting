@@ -255,7 +255,7 @@ fn ledgers_validate_offline() {
     );
     // The WorldCom slice's binding lines (W1): every sourced fact examined.
     for check in ["K-PROV", "K-BIND", "K-SCOPE", "K-ANCHOR"] {
-        let line = format!("CHECK worldcom {check} PASS examined=8/8");
+        let line = format!("CHECK worldcom {check} PASS examined=10/10");
         assert!(t.lines.contains(&line), "{line}\n{}", t.text());
     }
     assert!(t.lines.contains(
@@ -446,13 +446,18 @@ fn check_examining_fewer_rows_than_its_input_fails() {
         .map(|(p, t)| (*p, (*t).to_string()))
         .collect();
     let t = validate_copy(&files, &skip);
-    assert_fails(
-        &t,
-        &[
-            "FAIL worldcom case:worldcom:skip",
-            "examined 7 + pending 0 < inputs 8",
-        ],
+    let facts = load(&CaseFiles {
+        id: WORLDCOM.id,
+        files: WORLDCOM.files,
+    })
+    .expect("the committed case loads")
+    .facts
+    .len();
+    let skipped = format!(
+        "examined {} + pending 0 < inputs {facts} (a skipped row)",
+        facts - 1
     );
+    assert_fails(&t, &["FAIL worldcom case:worldcom:skip", &skipped]);
 }
 
 // --- markers -----------------------------------------------------------------

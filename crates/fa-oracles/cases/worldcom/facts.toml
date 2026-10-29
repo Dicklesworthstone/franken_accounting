@@ -98,6 +98,29 @@ quote_sha256 = "ee05faa29e7fb1044d45bfd0908360c05234b8e57ee421cb203da06e3cbbe92d
 about_scope = "period:2002Q1"
 granularity = "journal_entry"
 
+# Assurance facts (§2.2, A1a): the sentence in each filer row that establishes its `assurance`.
+# W1 lands them so SRC-WC-401 and SRC-WC-406 load; W2 keeps them.
+
+[[fact]]
+id = "W-ST-401-opinion"
+provenance = "sourced"
+source = "SRC-WC-401"
+anchor_kind = "line"
+anchor = "l5536-5541"
+quote_sha256 = "dea1b3fd23a1b38e9be7fd03e67c619339f8e582f59ecf46066a367da5eb8028"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+
+[[fact]]
+id = "W-ST-406-item6"
+provenance = "sourced"
+source = "SRC-WC-406"
+anchor_kind = "line"
+anchor = "l1146-1146"
+quote_sha256 = "9192d2c0efadadfa0d8a5b1549650b9370e2b4143b71692af2016c04bedcbf00"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+
 [[value]]
 fact = "F2-period"
 ordinal = 1

@@ -22,3 +22,187 @@ status = "OK"
 filed_on = "2003-06-09"
 restates = []
 notes = "Accession 0000931763-03-001862, an 8-K (FILED AS OF DATE 20030609 in the archived submission header); the report is dated 2003-03-31. The 2011-06-04 capture is 1,250,212 bytes: the HTML inside EDGAR's SGML document wrapper (102-byte header, 22-byte trailer). The archived accession directory listing (2024-01-15) gives dex991.htm as 1,250,094 bytes, so these bytes are not shown to be the original's. A 2026-10-05 capture (1,250,323 bytes, with an injected script element) yields the same extraction."
+
+[[source]]
+id = "SRC-WC-002"
+title = "Securities and Exchange Commission v. Betty L. Vinson and Troy M. Normand, complaint"
+publisher = "U.S. Securities and Exchange Commission"
+original_url = "https://www.sec.gov/litigation/complaints/comp17783.htm"
+archive_url = "http://web.archive.org/web/20070104031304id_/http://sec.gov:80/litigation/complaints/comp17783.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:57:58Z"
+sha256 = "68f431cfe86540bf4b73ba0881e51df5aa3f02452c8513bdb2e59ec768212cd4"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "45f39db6210da447e2f7501d090ff211fab7ef56b87a87873bef733e3cd568c3"]
+redistribution_basis = "government-work"
+assertion_status = "allegation"
+anchor_scheme = ["paragraph"]
+status = "OK"
+filed_on = ""
+restates = []
+notes = "Civil Action No. 02 Civ. 8083 (S.D.N.Y.), as Litigation Release 19776 cites it. The page states no filing date (its footer reads Modified: 10/31/2002), so filed_on is empty. 45,344 bytes as captured 2007-01-04."
+
+[[source]]
+id = "SRC-WC-003"
+title = "Securities and Exchange Commission v. Buford Yates, Jr., complaint"
+publisher = "U.S. Securities and Exchange Commission"
+original_url = "https://www.sec.gov/litigation/complaints/comp17771.htm"
+archive_url = "http://web.archive.org/web/20070206193905id_/http://www.sec.gov:80/litigation/complaints/comp17771.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:57:59Z"
+sha256 = "61be66f4df2a20046c6808825a1459bb9c3b071b57afaeba453a725538bb1ab9"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "0e6b75bd402bcd0ffe00f3c7261ddb74424411e283022fb6945ae729bd5191e7"]
+redistribution_basis = "government-work"
+assertion_status = "allegation"
+anchor_scheme = ["paragraph"]
+status = "OK"
+filed_on = "2002-10-07"
+restates = []
+notes = "Civil Action No. 02 Civ. 7958 (S.D.N.Y.), as Litigation Release 19776 cites it. filed_on is the complaint's own 'Dated: October 7, 2002'. 41,480 bytes as captured 2007-02-06."
+
+[[source]]
+id = "SRC-WC-004"
+title = "Securities and Exchange Commission v. David F. Myers, complaint"
+publisher = "U.S. Securities and Exchange Commission"
+original_url = "https://www.sec.gov/litigation/complaints/comp17753.htm"
+archive_url = "http://web.archive.org/web/20061208023641id_/http://www.sec.gov:80/litigation/complaints/comp17753.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:00Z"
+sha256 = "23ddbeca402e62a5ca3f4ad11bae56859d47484b7b0c776f5f164b217afdb8e1"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "8419589475a79f732eccb5e6561f73583533cee63fb991f958c205e824123316"]
+redistribution_basis = "government-work"
+assertion_status = "allegation"
+anchor_scheme = ["paragraph"]
+status = "OK"
+filed_on = "2002-09-26"
+restates = []
+notes = "Civil Action No. 02 Civ. 7749 (S.D.N.Y.), as Litigation Release 19776 cites it. filed_on is the complaint's own 'Dated: September 26, 2002'. 43,375 bytes as captured 2006-12-08."
+
+[[source]]
+id = "SRC-WC-401"
+title = "WorldCom, Inc. Annual Report on Form 10-K405 for fiscal year 2000 (originally filed)"
+publisher = "WorldCom, Inc."
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000091205701505916/a2043540z10-k405.txt"
+archive_url = "http://web.archive.org/web/20170324055212id_/https://www.sec.gov/Archives/edgar/data/723527/000091205701505916/a2043540z10-k405.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:01Z"
+sha256 = "7f562d953d18c441ef4f1b662f45b00cd07a52483e5efdd7c0fac91e976ee91c"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "7f562d953d18c441ef4f1b662f45b00cd07a52483e5efdd7c0fac91e976ee91c"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+assurance_fact = "W-ST-401-opinion"
+anchor_scheme = ["table_cell", "line"]
+status = "OK"
+filed_on = "2001-03-30"
+restates = []
+notes = "Accession 0000912057-01-505916; filed_on is the date the archived accession listing (2025-07-04) gives. Arthur Andersen LLP's report, dated March 30, 2001, covers the balance sheets as of December 31, 1999 and 2000 (W-ST-401-opinion). 563,081 bytes as captured 2017-03-24, against the listing's 563,011, so the bytes are not shown to be the original's."
+
+[[source]]
+id = "SRC-WC-406"
+title = "WorldCom, Inc. Annual Report on Form 10-K for fiscal year 2002 (restating 2001 and 2000)"
+publisher = "WorldCom, Inc. (MCI)"
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000119312504039709/d10k.htm"
+archive_url = "http://web.archive.org/web/20121117131117id_/http://www.sec.gov:80/Archives/edgar/data/723527/000119312504039709/d10k.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:02Z"
+sha256 = "74eeb197f0c11ba8a25ed65133589fc2dee6e5cd71d54309873e1dcb6096fdbb"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "6f072b892205338fb6ea5e9635007144175271cc59e9a0d7ced4a2826b52d145"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_not_from_audited_statements"
+assurance = "not-from-audited"
+assurance_fact = "W-ST-406-item6"
+anchor_scheme = ["table_cell", "line"]
+status = "OK"
+filed_on = "2004-03-12"
+restates = ["SRC-WC-401", "SRC-WC-EX27-1999"]
+notes = "Accession 0001193125-04-039709; filed_on is the date the archived accession listing (2025-06-06) gives. One assertion_status for the row: the audit report (extraction line 3644) covers the balance sheets as of December 31, 2002 and 2001, which no fact cites, while Item 6 excludes the summarized balance-sheet data as of December 31, 2000 and 1999 from the audited data (W-ST-406-item6); the figures the case cites from this filing are that excluded or selected data (W2). 2,503,387 bytes as captured 2012-11-17, against the listing's 2,503,284."
+
+[[source]]
+id = "SRC-WC-EX27-1999"
+title = "MCI WorldCom, Inc. Annual Report on Form 10-K for fiscal year 1999, full submission (EX-27.1 Financial Data Schedule)"
+publisher = "MCI WorldCom, Inc."
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000093176300000735/0000931763-00-000735.txt"
+archive_url = "http://web.archive.org/web/20160315055812id_/http://www.sec.gov:80/Archives/edgar/data/723527/000093176300000735/0000931763-00-000735.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:06Z"
+sha256 = "3dbc2f7e2867bca637174396889984a5c103ee5a8e66df479cc353ece39c5548"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "3dbc2f7e2867bca637174396889984a5c103ee5a8e66df479cc353ece39c5548"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2000-03-30"
+restates = []
+notes = "Accession 0000931763-00-000735, the whole submission (the only file in its archived listing); filed_on is its header's FILED AS OF DATE 20000330. EX-27.1 (SEQUENCE 6, 'FINANCIAL DATA SCHEDULE DEC. 31, 1999', MULTIPLIER 1,000,000) gives TOTAL-ASSETS 91,072; its legend says it is extracted from the financial statements. The assurance row and its fact (the FY1999 audit report in this submission) are W2's. 492,379 bytes as captured 2016-03-15."
+
+[[source]]
+id = "SRC-WC-ABIDE"
+title = "Securities and Exchange Commission v. Mark P. Abide, 06 Civ. 5660 (S.D.N.Y.), complaint"
+publisher = "U.S. Securities and Exchange Commission"
+original_url = "https://www.sec.gov/litigation/complaints/2006/comp19776.pdf"
+archive_url = "http://web.archive.org/web/20220124122428id_/http://www.sec.gov/litigation/complaints/2006/comp19776.pdf"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:05Z"
+sha256 = "fc08e7766dfeba8b0a5c28f9780e145732f12cc2dd63b48a9ec7d6e62874f061"
+format = "pdf"
+extraction = ["case_fetch.py extract", "pdftotext 26.01.0 -layout", "db88624f4abf7f9ff5e448c8346aa0ee04e3ebbc80c4bb0ca08a16b51a690254"]
+redistribution_basis = "government-work"
+assertion_status = "allegation"
+anchor_scheme = ["paragraph"]
+status = "OK"
+filed_on = "2006-07-27"
+restates = []
+notes = "Read (W1 sub-task 1): para 27 Myers directed the transfer out of CIP; para 28 Abide personally prepared and booked the 2001-08-22 transfers and split the $544 million into ten $54.4 million assets; para 29 the 2Q01 $560 million moved on September 20, 2001 in 12 journal entries. A scanned pdf: its text layer has OCR errors, so sentence hashes are of that text under the recorded pdftotext version. filed_on is the complaint's own 'Dated: July 27, 2006' (Litigation Release 19776 announces it the same day). 1,204,591 bytes as captured 2022-01-24."
+
+[[source]]
+id = "SRC-WC-8K-20020626"
+title = "WorldCom, Inc. Current Report on Form 8-K, date of report June 25, 2002 (intention to restate 2001 and the first quarter of 2002)"
+publisher = "WorldCom, Inc."
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000091205702025338/a2083227z8-k.txt"
+archive_url = "http://web.archive.org/web/20251012122058id_/https://www.sec.gov/Archives/edgar/data/723527/000091205702025338/a2083227z8-k.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:03Z"
+sha256 = "a1fa1a2d32c80288c237ea720152a137ebd7f5b6054c981282ab61a2ea9c57f1"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "a1fa1a2d32c80288c237ea720152a137ebd7f5b6054c981282ab61a2ea9c57f1"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+anchor_scheme = ["line"]
+status = "OK"
+filed_on = "2002-06-26"
+restates = []
+notes = "W1 sub-task 2: the non-reliance announcement. Item 4.02 did not exist before August 2004, so it is an Item 5 (Other Events) 8-K: 'On June 25, 2002, the Company issued a press release announcing its intention to restate its financial statements for 2001 and the first quarter of 2002'. Accession 0000912057-02-025338; filed_on is the archived listing's date and the 8-K's signature date. 2,477 bytes as captured 2025-10-12, against the listing's 2,370."
+
+[[source]]
+id = "SRC-WC-8K-20020626-EX991"
+title = "WorldCom, Inc. press release dated June 25, 2002 (Exhibit 99.1 to the 8-K of June 26, 2002)"
+publisher = "WorldCom, Inc."
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000091205702025338/a2083227zex-99_1.txt"
+archive_url = "http://web.archive.org/web/20170324055217id_/https://www.sec.gov/Archives/edgar/data/723527/000091205702025338/a2083227zex-99_1.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T02:58:04Z"
+sha256 = "469f819735606e21613227cd8594ced7181614ccd7770d2dd8a7feda157d7e49"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "469f819735606e21613227cd8594ced7181614ccd7770d2dd8a7feda157d7e49"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+anchor_scheme = ["line"]
+status = "OK"
+filed_on = "2002-06-26"
+restates = []
+notes = "The press release the 8-K files as Exhibit 99.1. 7,460 bytes as captured 2017-03-24, against the listing's 7,339."
