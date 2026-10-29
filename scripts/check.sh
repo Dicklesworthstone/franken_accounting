@@ -356,7 +356,10 @@ TEST_SPLIT_PACKAGES="fa fa-cli fa-journal fa-mcp fa-notary fa-verify fad"
 # share of the cap. Sweep of 10-27 (vmi1153651): the fa metamorphic binary
 # took 1,598-1,640 s, its last 1,500 s these five tests in parallel; the
 # capsule-ceiling batch test alone ran about 55 min of a 3,553 s fa-journal
-# lib run (gate z190, fa-wo2n's O(m^2) staging), past the 1800 s cap.
+# lib run (gate z190, fa-wo2n's O(m^2) staging), past the 1800 s cap. Alone
+# under a 5400 s budget on vmi1227854 (10-29) it was still running after
+# about 64 min of test time when the budget killed it, so the isolated
+# budget allows 3 h.
 TEST_ISOLATED=(
   "fa --test=metamorphic draft_promote_equals_trunk_post"
   "fa --test=metamorphic export_import_identity_on_fixture_books"
@@ -366,7 +369,7 @@ TEST_ISOLATED=(
   "fa-journal --lib batch::tests::batch_exceeding_v1_capsule_ceiling_refuses_with_fa_ref_201_and_split_bound"
 )
 CHECK_TEST_ATTEMPTS="${CHECK_TEST_ATTEMPTS:-3}"
-CHECK_ISOLATED_TIMEOUT_SEC="${CHECK_ISOLATED_TIMEOUT_SEC:-5400}"
+CHECK_ISOLATED_TIMEOUT_SEC="${CHECK_ISOLATED_TIMEOUT_SEC:-10800}"
 
 # list_test_jobs: one "<label>\t<cargo test arguments>" line per job.
 list_test_jobs() {

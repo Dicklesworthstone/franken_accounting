@@ -81,6 +81,9 @@ tree_hash="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
 toolchain="$(rustc --version 2>/dev/null || echo unavailable)"
 log_dir="${CHECK_LOG_DIR:-/tmp}"
 manifest="${CHECK_STEP_MANIFEST:-/dev/null}"
+# A step record carries the real time it ran: local_proof_verify.sh refuses
+# a step that started before its proof (7f075b7d2).
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$log_dir"
 printf '  sample::test_one: test\n  sample::test_two: test\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test-list.log"
 list_digest="$(sha256sum "$log_dir/test-list.log" | awk '{print $1}')"
@@ -88,10 +91,10 @@ if [ -e RED ]; then
   printf 'test sample::test_one ... FAILED\ntest result: FAILED. 0 passed; 1 failed\nRemote command finished: exit=101\n[RCH] remote hz2 (1s)\n' > "$log_dir/test.log"
   test_digest="$(sha256sum "$log_dir/test.log" | awk '{print $1}')"
   {
-    printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-20T00:00:00Z","finished":"2026-10-20T00:00:01Z","duration_secs":1,"log_digest":"%s"}\n' \
-      "$tree_hash" "$toolchain" "$list_digest"
-    printf '{"step":"test","status":"FAIL","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-20T00:00:01Z","finished":"2026-10-20T00:00:02Z","duration_secs":1,"log_digest":"%s"}\n' \
-      "$tree_hash" "$toolchain" "$test_digest"
+    printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+      "$tree_hash" "$toolchain" "$now" "$now" "$list_digest"
+    printf '{"step":"test","status":"FAIL","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+      "$tree_hash" "$toolchain" "$now" "$now" "$test_digest"
   } > "$manifest"
   printf 'PASS test-list\n'
   printf 'FAIL fake gate: RED is tracked\n'
@@ -102,10 +105,10 @@ fi
 printf 'test sample::test_one ... ok\ntest sample::test_two ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test.log"
 test_digest="$(sha256sum "$log_dir/test.log" | awk '{print $1}')"
 {
-  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-20T00:00:00Z","finished":"2026-10-20T00:00:01Z","duration_secs":1,"log_digest":"%s"}\n' \
-    "$tree_hash" "$toolchain" "$list_digest"
-  printf '{"step":"test","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-20T00:00:01Z","finished":"2026-10-20T00:00:02Z","duration_secs":1,"log_digest":"%s"}\n' \
-    "$tree_hash" "$toolchain" "$test_digest"
+  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$now" "$now" "$list_digest"
+  printf '{"step":"test","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$now" "$now" "$test_digest"
 } > "$manifest"
 printf 'PASS test-list\n'
 printf 'PASS test\n'

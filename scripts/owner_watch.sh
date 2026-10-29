@@ -265,8 +265,8 @@ evaluate_once() {
 
   # Gate capacity & disk headroom summary from scripts/gate_health.sh (fa-abhg)
   local gate_health_summary=""
-  if [ -r "$ROOT/scripts/gate_health.sh" ]; then
-    gate_health_summary="$(bash "$ROOT/scripts/gate_health.sh" --repo "$worktree" 2>/dev/null \
+  if [ -r "$root/scripts/gate_health.sh" ]; then
+    gate_health_summary="$(bash "$root/scripts/gate_health.sh" --repo "$worktree" 2>/dev/null \
       | sed -n 's/^GATE_HEALTH_SUMMARY=//p' | tail -n 1 || true)"
   fi
 
