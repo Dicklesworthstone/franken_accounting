@@ -1333,6 +1333,45 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
     }
     let mut documents = documents.into_iter();
     let (narrative, authority) = (documents.next().unwrap(), documents.next().unwrap());
+    // A prior-period adjustment corrects February through retained earnings
+    // (FA-REF-202): an Equity leaf holding that role takes the credit.
+    let schema = Capability::embedded(VId(1), &["schema_change"]).unwrap();
+    book.open_account(
+        &cx,
+        &AccountSpec {
+            code: "3000".into(),
+            name: "Retained earnings".into(),
+            account_type: fa_model::AccountType::EQUITY.0,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        },
+        date,
+        None,
+        VId(1),
+        date,
+        b"crash-retained-earnings",
+        &schema,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    book.record_account_role(
+        &cx,
+        &crate::account_role::AccountRoleSpec {
+            account: account_vid(book_id, "3000"),
+            role: "retained_earnings".into(),
+            assigned: true,
+        },
+        VId(1),
+        b"crash-retained-earnings-role",
+        &schema,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     book.open_case(
         &cx,
         restate.clone(),
@@ -1369,11 +1408,11 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
         ),
         LegPayload::simple(
             Side::Credit,
-            account_vid(book_id, "6000"),
+            account_vid(book_id, "3000"),
             Amount::new(usd, 50_000),
         ),
     ];
-    let planned = EntryPayload {
+    let mut planned = EntryPayload {
         principal_ref: planner_vid,
         description: book.seal_text(&cx, "the February receipt").unwrap(),
         unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
@@ -1381,6 +1420,12 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
         idempotency_key: b"crash-case-receipt".to_vec(),
         ..request.proposal.clone()
     };
+    planned
+        .with_prior_period_adjustment(&fa_model::PeriodRef {
+            calendar: book.context().calendar.id.clone(),
+            code: "FY2026-P02".into(),
+        })
+        .unwrap();
     let plan = book
         .record_scenario_intent(
             &cx,
@@ -1413,7 +1458,9 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
             scenario: "adjusted".into(),
             certificate: retained.digest,
             fork_at,
-            periods: vec!["FY2026-P02".into()],
+            // A prior-period adjustment reviews the corrected period and
+            // its posting effect in March (FA-REF-177).
+            periods: vec!["FY2026-P02".into(), march.clone()],
             intents: vec![plan],
         },
         date,

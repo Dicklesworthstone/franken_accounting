@@ -185,9 +185,15 @@ impl Harness {
                 }])
                 .unwrap()
             })
-            .collect();
+            .collect::<Vec<_>>();
         let proposal = EntryPayload {
-            schema_minor: 0,
+            // An extension block needs a minor that admits one (Appendix A
+            // fa:entry:v1), as every product path that attaches terms writes.
+            schema_minor: if extensions.is_empty() {
+                0
+            } else {
+                fa_model::entry::EXTENSIONS_MINOR
+            },
             book_id: BOOK,
             branch_id: Id128::TRUNK,
             class: EntryClass::ORIGINAL,

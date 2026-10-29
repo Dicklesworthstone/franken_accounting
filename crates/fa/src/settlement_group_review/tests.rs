@@ -38,7 +38,7 @@ struct Harness {
     vfs: MemVfs,
     evidence: EvidenceRef,
     usd: UnitId,
-    eur: UnitId,
+    btc: UnitId,
 }
 
 impl Harness {
@@ -48,7 +48,7 @@ impl Harness {
         let cx = PurposeContexts::narrow_runtime_root(&root);
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
-        let eur = units.lookup("EUR").unwrap();
+        let btc = units.lookup("BTC").unwrap();
         let vfs = MemVfs::new().unwrap();
         let mut book = runtime
             .block_on(AsyncBook::create_with_vfs(
@@ -80,7 +80,7 @@ impl Harness {
                 },
                 normal_balance: u8::from(matches!(code, "payable" | "capital")),
                 is_leaf: true,
-                unit_policy: UnitPolicy::AnyCurrency,
+                unit_policy: UnitPolicy::AnyUnit,
                 parent_code: None,
                 limit: None,
             })
@@ -136,7 +136,7 @@ impl Harness {
             vfs,
             evidence: document.evidence_ref(1),
             usd,
-            eur,
+            btc,
         }
     }
     fn cx(&self) -> PurposeContexts {
@@ -239,7 +239,7 @@ impl Harness {
             vfs,
             evidence,
             usd,
-            eur,
+            btc,
         } = self;
         drop(book);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -259,7 +259,7 @@ impl Harness {
             vfs,
             evidence,
             usd,
-            eur,
+            btc,
         }
     }
 }
@@ -277,8 +277,8 @@ fn fixture() -> Fixture {
     let bill = h.post(h.proposal(
         "bill",
         vec![
-            leg(Side::Debit, "cash", h.eur, 70),
-            leg(Side::Credit, "payable", h.eur, 70),
+            leg(Side::Debit, "cash", h.btc, 70),
+            leg(Side::Credit, "payable", h.btc, 70),
         ],
     ));
     let unused = h.invoice("unused", 90);
@@ -288,8 +288,8 @@ fn fixture() -> Fixture {
             vec![
                 leg(Side::Debit, "cash", h.usd, 60),
                 leg(Side::Credit, "receivable", h.usd, 60),
-                leg(Side::Debit, "payable", h.eur, 80),
-                leg(Side::Credit, "cash", h.eur, 80),
+                leg(Side::Debit, "payable", h.btc, 80),
+                leg(Side::Credit, "cash", h.btc, 80),
             ],
         ),
         payments: vec![

@@ -418,6 +418,8 @@ fn obligation(
         fixture.legs(fixture.usd, ("6000", "2000"), amount),
     );
     if let Some((status, installments)) = terms {
+        // A minor-0 payload has no extension block (FA-REF-100).
+        proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
         proposal.extensions.push(
             InlineObligationTerms::to_extension(&[InlineObligationTerms {
                 ordinal: 1,

@@ -40,7 +40,7 @@ struct Harness {
     book: AsyncBook<MemVfs>,
     evidence: EvidenceRef,
     usd: UnitId,
-    eur: UnitId,
+    btc: UnitId,
 }
 
 impl Harness {
@@ -50,7 +50,7 @@ impl Harness {
         let cx = PurposeContexts::narrow_runtime_root(&root);
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
-        let eur = units.lookup("EUR").unwrap();
+        let btc = units.lookup("BTC").unwrap();
         let mut book = runtime
             .block_on(AsyncBook::create_with_vfs(
                 &cx,
@@ -81,7 +81,7 @@ impl Harness {
                 },
                 normal_balance: u8::from(matches!(code, "payable" | "capital")),
                 is_leaf: true,
-                unit_policy: UnitPolicy::AnyCurrency,
+                unit_policy: UnitPolicy::AnyUnit,
                 parent_code: None,
                 limit: None,
             })
@@ -136,7 +136,7 @@ impl Harness {
             book,
             evidence: document.evidence_ref(1),
             usd,
-            eur,
+            btc,
         }
     }
 
@@ -203,8 +203,8 @@ fn fixture(amount: i128) -> (Harness, EntryRef, SettlementGroupRequest) {
         vec![
             leg(Side::Debit, "receivable", h.usd, amount),
             leg(Side::Credit, "capital", h.usd, amount),
-            leg(Side::Debit, "cash", h.eur, 70),
-            leg(Side::Credit, "payable", h.eur, 70),
+            leg(Side::Debit, "cash", h.btc, 70),
+            leg(Side::Credit, "payable", h.btc, 70),
         ],
     ));
     let request = SettlementGroupRequest {
@@ -213,8 +213,8 @@ fn fixture(amount: i128) -> (Harness, EntryRef, SettlementGroupRequest) {
             vec![
                 leg(Side::Debit, "cash", h.usd, amount + 25),
                 leg(Side::Credit, "receivable", h.usd, amount + 25),
-                leg(Side::Debit, "payable", h.eur, 60),
-                leg(Side::Credit, "cash", h.eur, 60),
+                leg(Side::Debit, "payable", h.btc, 60),
+                leg(Side::Credit, "cash", h.btc, 60),
             ],
         ),
         payments: vec![
