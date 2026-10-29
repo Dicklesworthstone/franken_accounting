@@ -569,6 +569,28 @@ run_gate() {
   fi
 }
 
+# The invariant gates judge checkers only over a passing test step. A test
+# step that did not run every job leaves checkers out of the transcript for
+# reasons that are not the product's (2026-10-29: 195 refused jobs read as 283
+# failed checkers), so both stay UNRUN until the test step passes.
+run_invariant_gates() {
+  if grep -F '"step":"test",' "$STEP_MANIFEST" 2>/dev/null | tail -n 1 | grep -Fq '"status":"PASS"'; then
+    run_gate "invariants" "$ROOT/scripts/invariants_check.sh" \
+      "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log"
+    run_gate "invariants-negative" "$ROOT/scripts/tests/invariants_negative.sh" \
+      "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log" "$LOG_DIR/invariants-negative"
+    return
+  fi
+  local label log now
+  for label in invariants invariants-negative; do
+    log="$LOG_DIR/$label.log"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'UNRUN %s — the test step did not pass, so its transcript is incomplete\n' "$label" >"$log"
+    record_step_verdict "$label" "UNRUN" "$now" "$now" 0 "$log"
+    gate_unrun "$label — the test step did not pass; checkers are judged only over a passing test step; log: $log"
+  done
+}
+
 # ---- Rust -------------------------------------------------------------------
 if [ "$BENCH_ONLY" -eq 1 ]; then
   cargo_build "bench-smoke" run -p fa-bench --bin fa-bench -- --smoke --json
@@ -592,10 +614,7 @@ if [ "$QUICK" -eq 0 ]; then
   # Invariant cross-check (bead fa-37f): every live clause's checker and
   # negative tests ran and passed in THIS run's test transcript; then the
   # same gate is shown able to fail on a planted rename.
-  run_gate "invariants" "$ROOT/scripts/invariants_check.sh" \
-    "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log"
-  run_gate "invariants-negative" "$ROOT/scripts/tests/invariants_negative.sh" \
-    "$ROOT/registries/invariants.toml" "$LOG_DIR/test.log" "$LOG_DIR/invariants-negative"
+  run_invariant_gates
   # The robot-schema fixture pin (plan Appendix D, bead fa-12x): `fa
   # robot-docs schema --json` equals registries/robot_schema/<v>.jsonl byte
   # for byte. Its own target, so a missing pin is a failure, never zero
