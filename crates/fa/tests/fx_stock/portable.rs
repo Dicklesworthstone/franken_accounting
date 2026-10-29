@@ -347,7 +347,7 @@ fn independent_verifier_rejects_missing_duplicate_and_substituted_rate_bodies() 
 }
 
 #[test]
-fn functional_export_keeps_exact_residual_and_honors_a_pinned_producer() {
+fn functional_export_keeps_exact_residual_and_refuses_a_pinned_producer() {
     let mut fixture = Fixture::new();
     let rate = fixture.rate(day(1, 5), 15, "Half-even residual source");
     let mut proposal = fixture.proposal(b"portable-residual", day(1, 5), 2);
@@ -370,7 +370,9 @@ fn functional_export_keeps_exact_residual_and_honors_a_pinned_producer() {
     let state = checkpoint(&mut fixture.book);
     let pin = fixture.book.head().unwrap();
     fixture.post(b"later-than-producer-pin", day(2, 5), 100, 12);
-    let produced = fixture
+    // Bundle integrity reads reach HEAD, so a producer pinned below it is
+    // refused even for a checkpoint inside its pin (fa-0x0, f68db34f6).
+    let pinned = fixture
         .book
         .produce_report_bundle(
             PRINCIPAL,
@@ -379,8 +381,10 @@ fn functional_export_keeps_exact_residual_and_honors_a_pinned_producer() {
             &certificate,
         )
         .unwrap()
-        .unwrap()
-        .unwrap();
+        .unwrap_err();
+    assert_eq!((pinned.code, pinned.exit), ("FA-REF-011", 7));
+    assert!(pinned.message.contains("`known_at`"), "{}", pinned.message);
+    let produced = produce(&mut fixture, state, &certificate);
     let verified = verify(&fixture, &produced, &certificate);
     assert_eq!(verified.output, certificate.output);
     let denied = fixture

@@ -92,10 +92,13 @@ fn functional_statement_export_requires_authority_and_authenticated_original_rat
     let pin = fixture.book.head().unwrap();
     fixture.post(b"statement-after-producer-pin", day(2, 5), 500, 12);
     let before = fixture.book.head().unwrap();
+    // Bundle integrity reads reach HEAD, so a pinned producer is refused
+    // even when its pin covers the certificate (fa-0x0, f68db34f6).
     for denied in [
         cap(&["read"]),
         producer().for_accounts(&["1200"]).unwrap(),
         producer().known_at_most(CommitSeq(certificate.known_at.0 - 1)),
+        producer().known_at_most(pin),
     ] {
         assert!(
             fixture
@@ -107,12 +110,7 @@ fn functional_statement_export_requires_authority_and_authenticated_original_rat
     }
     let produced = fixture
         .book
-        .produce_report_bundle(
-            PRINCIPAL,
-            &producer().known_at_most(pin),
-            Some(state),
-            &certificate,
-        )
+        .produce_report_bundle(PRINCIPAL, &producer(), Some(state), &certificate)
         .unwrap()
         .unwrap()
         .unwrap();
