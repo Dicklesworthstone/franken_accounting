@@ -677,6 +677,16 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // certificate change in the same window is not excluded. The new pins are
     // the values this test printed on x86_64. They still do not supply the
     // unrun aarch64 qualification.
+    // Re-pinned 2026-10-29 (StormyJay, fa-0hs4.2): only the bundle digest
+    // moved, at c249647dd (fa-0hs4.12). Checkpoint state minor 2 binds access
+    // events as accumulator leaves, and the Prefix bundle carries that
+    // checkpoint; certificates do not bind it. Measured on x86_64
+    // (vmi1153651): 2ff05c4c5 (its parent) prints every prior pin, while
+    // c249647dd and df8944f30 print the new bundle digest with the fold,
+    // report bytes and tb/bs/is certificates unchanged. This does not supply
+    // the still-unrun aarch64 qualification.
+    // Prior bundle pin (564d2c052), retained here:
+    // 4cda282123726a42fbd17de94fb68c2f74fe5023466c6c417d00d621ed8da0b0
     // Prior tb/bs/is certificate and bundle pins (ef4585e7c), retained here:
     // d5080d0f6aa895594babc1dd1071e132e0b552c284d11843243d60ae951d5608
     // 564f51a70a5d2dcd1662f5b8839da0212de08a9a59aa90de01d868a85892cb27
@@ -753,7 +763,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "4cda282123726a42fbd17de94fb68c2f74fe5023466c6c417d00d621ed8da0b0",
+        "2993756cf3a92e2873504e814a6e3f2d4f6024f3372cb80979050740c41741a7",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );
