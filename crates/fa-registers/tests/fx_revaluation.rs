@@ -413,6 +413,7 @@ impl Fixture {
             source_account: self.account(source),
             rate_document: rate.oid(self.book.book_id).unwrap(),
             entity: None,
+            item_allocation: false,
         }
     }
 

@@ -6004,6 +6004,20 @@ impl Book {
         with_store!(&self.store, core => core.verify_fx_conversions(&self.purposes(), known_at))
     }
 
+    /// Verify FX laws against complete native history after reopening a book.
+    /// Current whole-book Read and Verify authority admit loading and replay;
+    /// the selected prefix is retained and no journal commit is published.
+    pub fn verify_fx_conversions_with_history(
+        &mut self,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_journal::FxConversionVerification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_fx_conversions_with_history(&purposes, capability, known_at)
+        ))
+    }
+
     /// Compare period projections with retained birth declarations and
     /// transitions (plan §7.3, FA-INV-02). Complete journal integrity additionally
     /// requires [`Self::verify_periods_with_history`]; this projection check alone

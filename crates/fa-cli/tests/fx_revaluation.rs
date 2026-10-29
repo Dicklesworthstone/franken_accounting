@@ -4,6 +4,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "fx_revaluation/settlement.rs"]
+mod settlement;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};

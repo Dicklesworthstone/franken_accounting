@@ -2373,6 +2373,48 @@ impl FxLaws {
             }
             let carrying_close =
                 id == 8 || code == "year_end_close_carrying" || name == "YearEndCloseCarrying";
+            for (expected_id, expected_code, expected_name, purpose, selector, allowed) in [
+                (
+                    9,
+                    "period_end_item_revaluation",
+                    "PeriodEndItemRevaluation",
+                    "PeriodClose",
+                    "period_end_date",
+                    ["Revaluation"].as_slice(),
+                ),
+                (
+                    10,
+                    "settlement_allocated_carrying",
+                    "SettlementAllocatedCarrying",
+                    "Settlement",
+                    "settlement_and_settled_item_dates",
+                    ["Original", "Adjusting", "Reversal"].as_slice(),
+                ),
+            ] {
+                if !carrying_close
+                    && (id == expected_id || code == expected_code || name == expected_name)
+                    && (id != expected_id
+                        || version != 1
+                        || code != expected_code
+                        || name != expected_name
+                        || rate_purpose != purpose
+                        || date_selector != selector
+                        || rounding_law != "HalfEven"
+                        || residual_mode != "none"
+                        || status != "live"
+                        || !admitted_classes
+                            .iter()
+                            .map(String::as_str)
+                            .eq(allowed.iter().copied()))
+                {
+                    return Err(invalid(
+                        R,
+                        format!(
+                            "{expected_name} id {expected_id} version 1 requires its exact source-bound rate, HalfEven, no residual and registered class scope"
+                        ),
+                    ));
+                }
+            }
             if carrying_close {
                 if id != 8
                     || version != 1
@@ -2486,10 +2528,10 @@ impl FxLaws {
                 meaning,
             });
         }
-        if laws.len() != 8 {
+        if laws.len() != 10 {
             return Err(invalid(
                 R,
-                format!("expected 8 [[law]] rows, found {}", laws.len()),
+                format!("expected 10 [[law]] rows, found {}", laws.len()),
             ));
         }
         for required_code in [
@@ -2501,6 +2543,8 @@ impl FxLaws {
             "remeasurement_temporal",
             "remeasurement_ias29_hyperinflation",
             "year_end_close_carrying",
+            "period_end_item_revaluation",
+            "settlement_allocated_carrying",
         ] {
             if !seen_codes.contains(required_code) {
                 return Err(invalid(
@@ -2873,7 +2917,7 @@ mod tests {
         assert_eq!(tracing_laws.replenishment_modes.len(), 2);
 
         let fx_laws = FxLaws::embedded(&classes).expect("fx_laws.toml");
-        assert_eq!(fx_laws.laws.len(), 8);
+        assert_eq!(fx_laws.laws.len(), 10);
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
@@ -2920,6 +2964,84 @@ mod tests {
         let unquoted_spot =
             FX_LAWS_TOML.replacen("rate_purpose = \"SpotClose\"", "rate_purpose = \"None\"", 1);
         assert!(FxLaws::parse(&unquoted_spot, &classes).is_err());
+    }
+
+    #[test]
+    fn allocated_fx_registry_pins_identity_rounding_and_complete_class_scope() {
+        let classes = crate::EntryClasses::embedded().unwrap();
+        let registry = FxLaws::embedded(&classes).unwrap();
+        for (id, code, name, purpose, date, allowed) in [
+            (
+                9,
+                "period_end_item_revaluation",
+                "PeriodEndItemRevaluation",
+                "PeriodClose",
+                "period_end_date",
+                "[\"Revaluation\"]",
+            ),
+            (
+                10,
+                "settlement_allocated_carrying",
+                "SettlementAllocatedCarrying",
+                "Settlement",
+                "settlement_and_settled_item_dates",
+                "[\"Original\", \"Adjusting\", \"Reversal\"]",
+            ),
+        ] {
+            let row = registry.laws.iter().find(|law| law.id == id).unwrap();
+            assert_eq!(
+                (&*row.name, row.version, &*row.rounding_law),
+                (name, 1, "HalfEven")
+            );
+            let marker = format!("id = {id}\nversion = 1");
+            let start = FX_LAWS_TOML.find(&marker).unwrap();
+            let end = FX_LAWS_TOML[start..]
+                .find("\n[[")
+                .map_or(FX_LAWS_TOML.len(), |offset| start + offset);
+            let body = &FX_LAWS_TOML[start..end];
+            let mutations: [(&str, String, String); 10] = [
+                ("id", id.to_string(), "90".into()),
+                ("version", "1".into(), "2".into()),
+                ("code", format!("\"{code}\""), "\"other\"".into()),
+                ("name", format!("\"{name}\""), "\"Other\"".into()),
+                (
+                    "rate_purpose",
+                    format!("\"{purpose}\""),
+                    "\"SpotClose\"".into(),
+                ),
+                (
+                    "date_selector",
+                    format!("\"{date}\""),
+                    "\"entry_effective_date\"".into(),
+                ),
+                ("rounding_law", "\"HalfEven\"".into(), "\"HalfUp\"".into()),
+                (
+                    "residual_mode",
+                    "\"none\"".into(),
+                    "\"designated_leg\"".into(),
+                ),
+                ("admitted_classes", allowed.into(), "[\"Original\"]".into()),
+                ("status", "\"live\"".into(), "\"reserved\"".into()),
+            ];
+            for (field, value, forged) in mutations {
+                let changed = body.replacen(
+                    &format!("{field} = {value}"),
+                    &format!("{field} = {forged}"),
+                    1,
+                );
+                assert_ne!(changed, body, "negative must mutate {name}.{field}");
+                let changed = format!(
+                    "{}{}{}",
+                    &FX_LAWS_TOML[..start],
+                    changed,
+                    &FX_LAWS_TOML[end..]
+                );
+                assert!(
+                    FxLaws::parse(&changed, &classes).is_err(),
+                    "must refuse changed {name}.{field}"
+                );
+            }
+        }
     }
 
     #[test]

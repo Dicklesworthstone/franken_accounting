@@ -6,6 +6,8 @@
 //! Every fresh posting reproduces the original and current source populations;
 //! its complete preparation frontier remains guarded until publication.
 
+mod items;
+
 use std::collections::BTreeMap;
 
 use asupersync::fs::Vfs;
@@ -40,6 +42,10 @@ pub struct FxRevaluationRequest {
     pub rate_document: Oid,
     /// A legal-entity dimension value, required when the book has several.
     pub entity: Option<VId>,
+    /// Freeze a complete, homogeneous open-item population under the
+    /// registered LargestRemainder allocation law. Legacy aggregate
+    /// adjustments never acquire an inferred item allocation.
+    pub item_allocation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,7 +113,7 @@ impl PreparedFxRevaluation {
         &self.legs
     }
     pub fn is_noop(&self) -> bool {
-        self.delta == 0
+        self.legs.is_empty()
     }
 
     /// Add the verified calculation to an otherwise empty Revaluation intent.
@@ -143,7 +149,11 @@ impl PreparedFxRevaluation {
                 "the template must name the selected period and its last included date",
             ));
         }
-        template.schema_minor = EXTENSIONS_MINOR;
+        template.schema_minor = if self.basis.item_allocation.is_some() {
+            fa_model::entry::FX_ITEM_CARRYING_SCHEMA_MINOR
+        } else {
+            EXTENSIONS_MINOR
+        };
         template.legs = self.legs.clone();
         template.unit_totals =
             EntryPayload::fold_unit_totals(&template.legs).map_err(unsupported)?;
@@ -291,6 +301,16 @@ fn selected_entity(spec: &BookSpec, entity: Option<VId>) -> Result<Option<VId>, 
     }
 }
 
+pub(crate) fn item_entity(spec: &BookSpec, leg: &LegPayload) -> Result<Option<VId>, Refusal> {
+    selected_entity(
+        spec,
+        leg.dimension_set
+            .iter()
+            .find(|(dimension, _)| *dimension == LEGAL_ENTITY_DIMENSION)
+            .map(|(_, value)| *value),
+    )
+}
+
 fn leg_entity(spec: &BookSpec, leg: &LegPayload) -> Result<Option<VId>, Refusal> {
     // An analytic value is revalued with its account, as it closes with it
     // (fa-ficc); a fund or a party has no revaluation treatment yet.
@@ -301,13 +321,7 @@ fn leg_entity(spec: &BookSpec, leg: &LegPayload) -> Result<Option<VId>, Refusal>
             "an exposure or valuation leg uses a dimension without an implemented revaluation treatment",
         ));
     }
-    selected_entity(
-        spec,
-        leg.dimension_set
-            .iter()
-            .find(|(dimension, _)| *dimension == LEGAL_ENTITY_DIMENSION)
-            .map(|(_, value)| *value),
-    )
+    item_entity(spec, leg)
 }
 
 fn route_accounts<'a>(
@@ -473,9 +487,13 @@ fn add_signed(net: &mut i128, side: Side, magnitude: i128) -> Result<(), Refusal
             "a retained monetary contribution has a nonpositive magnitude",
         ));
     }
+    add_component(net, side, magnitude)
+}
+
+fn add_component(net: &mut i128, side: Side, amount: i128) -> Result<(), Refusal> {
     *net = match side {
-        Side::Debit => net.checked_add(magnitude),
-        Side::Credit => net.checked_sub(magnitude),
+        Side::Debit => net.checked_add(amount),
+        Side::Credit => net.checked_sub(amount),
     }
     .ok_or_else(|| {
         invalid("the exact cumulative exposure or carrying amount exceeds i128 range")
@@ -501,19 +519,40 @@ fn recognized_adjustment(
             "a retained valuation adjustment has no functional totals",
         ));
     };
+    let item_profile = basis.item_allocation.is_some();
+    let expected_law = if item_profile {
+        FxLawId::PeriodEndItemRevaluation
+    } else {
+        FxLawId::PeriodEndRevaluation
+    };
+    let mut gross = 0i128;
+    for pair in legs.chunks(2) {
+        if pair.len() != 2
+            || pair[0].account_ref != route.valuation_account
+            || pair[1].account_ref != route.unrealized_account
+            || pair[0].side == pair[1].side
+            || pair[0].amount != pair[1].amount
+            || pair[0].amount.unit != base_unit
+            || pair[0].amount.mantissa <= 0
+            || pair[0].dimension_set != pair[1].dimension_set
+        {
+            return Err(unsupported(
+                "retained valuation legs do not form exact ordered source-route pairs",
+            ));
+        }
+        gross = gross
+            .checked_add(pair[0].amount.mantissa)
+            .ok_or_else(|| invalid("retained valuation gross overflow"))?;
+    }
     if basis.source_account != source
         || basis.observed_at >= recorded_at
-        || legs.len() != 2
-        || legs[0].account_ref != route.valuation_account
-        || legs[1].account_ref != route.unrealized_account
-        || legs[0].side == legs[1].side
-        || legs[0].amount != legs[1].amount
-        || legs[0].amount.unit != base_unit
+        || legs.is_empty()
+        || (!item_profile && legs.len() != 2)
         || legs.iter().any(|leg| leg.base_amount != Some(leg.amount))
         || totals.unit_id != base_unit.0
-        || totals.debits != legs[0].amount.mantissa
+        || totals.debits != gross
         || totals.credits != totals.debits
-        || totals.fx_law_oid != FxLawId::PeriodEndRevaluation.oid()
+        || totals.fx_law_oid != expected_law.oid()
         || totals.rate_doc_oids != [basis.rate_document]
         || totals.residual.is_some()
         || !entry.proposal.evidence.contains(&EvidenceRef {
@@ -659,6 +698,17 @@ fn observe<V: Vfs + Clone>(
             .iter()
             .any(|leg| leg.account_ref == route.valuation_account)
         {
+            if crate::carrying::has_allocated_basis(&entry.proposal) {
+                if let Err(refusal) =
+                    items::recognized_release(db, at, &entry, request.source_account, &route)?
+                {
+                    return Ok(Err(refusal));
+                }
+                if entry.proposal.effective_date <= date {
+                    entries.push((row.created_at, row.vid, entry));
+                }
+                continue;
+            }
             let prior = match recognized_adjustment(
                 &entry,
                 row.created_at,
@@ -685,7 +735,11 @@ fn observe<V: Vfs + Clone>(
                 )));
             }
             for leg in &entry.proposal.legs {
-                let prior_entity = match leg_entity(&spec, leg) {
+                let prior_entity = match if prior.item_allocation.is_some() {
+                    item_entity(&spec, leg)
+                } else {
+                    leg_entity(&spec, leg)
+                } {
                     Ok(entity) => entity,
                     Err(refusal) => return Ok(Err(refusal)),
                 };
@@ -704,14 +758,18 @@ fn observe<V: Vfs + Clone>(
     let mut source_native_net = 0_i128;
     let mut source_base_net = 0_i128;
     let mut prior_adjustment_net = 0_i128;
-    for (recorded_at, vid, entry) in entries {
+    for (recorded_at, vid, entry) in &entries {
         for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
             if leg.account_ref != request.source_account
                 && leg.account_ref != route.valuation_account
             {
                 continue;
             }
-            let leg_entity = match leg_entity(&spec, leg) {
+            let leg_entity = match if request.item_allocation {
+                item_entity(&spec, leg)
+            } else {
+                leg_entity(&spec, leg)
+            } {
                 Ok(entity) => entity,
                 Err(refusal) => return Ok(Err(refusal)),
             };
@@ -730,6 +788,7 @@ fn observe<V: Vfs + Clone>(
                 };
                 if leg.amount.unit != native_unit
                     || base.unit != spec.base_unit
+                    || base.mantissa < 0
                     || entry
                         .proposal
                         .base_totals
@@ -742,7 +801,7 @@ fn observe<V: Vfs + Clone>(
                 }
                 if let Err(refusal) =
                     add_signed(&mut source_native_net, leg.side, leg.amount.mantissa)
-                        .and_then(|()| add_signed(&mut source_base_net, leg.side, base.mantissa))
+                        .and_then(|()| add_component(&mut source_base_net, leg.side, base.mantissa))
                 {
                     return Ok(Err(refusal));
                 }
@@ -815,6 +874,33 @@ fn observe<V: Vfs + Clone>(
             residual: None,
         });
     }
+    let item_allocation = if request.item_allocation {
+        match items::population(
+            db,
+            cx,
+            book,
+            request,
+            &spec,
+            &route,
+            at,
+            date,
+            entity,
+            &entries,
+            source_native_net,
+            source_base_net,
+            prior_adjustment_net,
+            target_base_net,
+        )? {
+            Ok((allocation, item_legs, item_totals)) => {
+                legs = item_legs;
+                base_totals = item_totals;
+                allocation
+            }
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    } else {
+        None
+    };
     Ok(Ok(PreparedFxRevaluation {
         request: FxRevaluationRequest {
             entity,
@@ -831,6 +917,7 @@ fn observe<V: Vfs + Clone>(
             rate_document: request.rate_document,
             rate_commit: evidence.doc_commit,
             source_digest: hash.finalize().0,
+            item_allocation,
         },
         route,
         native_unit,
@@ -859,6 +946,79 @@ fn reproduces(
         && observed.base_totals == proposal.base_totals
         && !observed.is_noop()
         && proposal.evidence.contains(&observed.evidence)
+}
+
+/// The carrying fold consumes retained allocations only after every allocation
+/// for this source independently reproduces both its selected and precommit
+/// histories. `observe` uses the inner item fold, so this is an ordered audit,
+/// not recursive trust in earlier revaluation computations.
+pub(crate) fn verify_item_history<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    source: VId,
+    at: CommitSeq,
+) -> Outcome<()> {
+    let mut adjustments = Vec::new();
+    for row in db.vertices_at(at)? {
+        cx.query()
+            .checkpoint()
+            .map_err(fgdb::WriteTxnError::Interrupted)?;
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let Some((entry, recorded)) = crate::post::read_entry_at(db, row.vid, at)? else {
+            continue;
+        };
+        let Some((_, raw)) = entry
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
+        else {
+            continue;
+        };
+        let basis = FxRevaluationBasis::decode(raw)
+            .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+        if basis.source_account == source && basis.item_allocation.is_some() {
+            adjustments.push((recorded, row.vid, entry.proposal, basis));
+        }
+    }
+    adjustments.sort_by_key(|(recorded, vid, _, _)| (*recorded, *vid));
+    let current = asupersync::Cx::current().ok_or_else(|| {
+        KernelError::Corrupt("item allocation verification requires caller context".into())
+    })?;
+    let stripped = current.restrict::<asupersync::cx::cap::None>();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    for (recorded, _, proposal, basis) in adjustments {
+        let request = FxRevaluationRequest {
+            period: basis.period.clone(),
+            source_account: source,
+            rate_document: basis.rate_document,
+            entity: basis.entity,
+            item_allocation: true,
+        };
+        let before = CommitSeq(recorded.0.checked_sub(1).ok_or_else(|| {
+            KernelError::Corrupt("item allocation was published at sequence zero".into())
+        })?);
+        if basis.observed_at > before {
+            return Ok(Err(invalid(
+                "item allocation observation does not precede publication",
+            )));
+        }
+        for prefix in [basis.observed_at, before] {
+            let prepared = match observe(db, cx, book, &request, prefix, &mut budget)? {
+                Ok(prepared) => prepared,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if !reproduces(&prepared, &basis, &proposal) {
+                return Ok(Err(invalid(
+                    "retained item allocation does not reproduce its complete original and publication source populations",
+                )));
+            }
+        }
+    }
+    Ok(Ok(()))
 }
 
 /// Verify old source-bound adjustments in recorded order before exposing the
@@ -924,6 +1084,7 @@ fn observe_verified<V: Vfs + Clone>(
             source_account: basis.source_account,
             rate_document: basis.rate_document,
             entity: basis.entity,
+            item_allocation: basis.item_allocation.is_some(),
         };
         let before_publication = CommitSeq(recorded_at.0.checked_sub(1).ok_or_else(|| {
             KernelError::Corrupt("a retained revaluation has sequence zero".into())
@@ -955,7 +1116,7 @@ pub(crate) fn admit(proposal: &EntryPayload) -> Result<Option<FxRevaluationBasis
         return Ok(None);
     };
     if proposal.class != EntryClass::REVALUATION
-        || proposal.schema_minor != EXTENSIONS_MINOR
+        || proposal.schema_minor < EXTENSIONS_MINOR
         || proposal.extensions.len() != 1
         || !matches!(&proposal.origin, EntryOrigin::Intent { intent_kind: 1, .. })
         || proposal.control.is_some()
@@ -994,6 +1155,10 @@ pub(crate) fn is_source_bound(proposal: &EntryPayload) -> bool {
         .as_ref()
         .is_some_and(|totals| totals.fx_law_oid == FxLawId::PeriodEndRevaluation.oid())
         || proposal
+            .base_totals
+            .as_ref()
+            .is_some_and(|totals| totals.fx_law_oid == FxLawId::PeriodEndItemRevaluation.oid())
+        || proposal
             .extensions
             .iter()
             .any(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
@@ -1030,7 +1195,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         let current = asupersync::Cx::current().ok_or_else(|| KernelError::Corrupt("revaluation arithmetic requires the installed caller context".into()))?;
         let arithmetic = current.restrict::<asupersync::cx::cap::None>();
         let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
-        let request = FxRevaluationRequest { period: basis.period.clone(), source_account: basis.source_account, rate_document: basis.rate_document, entity: basis.entity };
+        let request = FxRevaluationRequest { period: basis.period.clone(), source_account: basis.source_account, rate_document: basis.rate_document, entity: basis.entity, item_allocation: basis.item_allocation.is_some() };
         for at in [basis.observed_at, txn.basis()] {
             let observed = match observe_verified(db, cx, book, &request, at, &mut budget)? { Ok(observed) => observed, Err(refusal) => return Ok(Err(refusal)) };
             if !reproduces(&observed, basis, proposal) { return Ok(Err(changed("the Revaluation entry does not reproduce its original and current cumulative exposure, carrying basis, rate and routes"))); }

@@ -453,6 +453,41 @@ fn with_approvals(review: PostIntent, args: &Args) -> Result<PostIntent, Fail> {
         .map_err(|error| usage(format!("FX approval references: {error}"), EXAMPLE))
 }
 
+fn item_allocation_preview(
+    prepared: &PreparedFxRevaluation,
+    units: &fa_money::UnitRegistry,
+) -> Result<Json, Fail> {
+    let Some(allocation) = &prepared.basis().item_allocation else {
+        return Ok(Json::Null);
+    };
+    let mut items = Vec::with_capacity(allocation.items.len());
+    for item in &allocation.items {
+        let current = item
+            .historical_base
+            .checked_add(item.prior_valuation)
+            .map_err(|error| Fail::Internal(error.to_string()))?;
+        let delta = item
+            .target_base
+            .checked_sub(current)
+            .map_err(|error| Fail::Internal(error.to_string()))?;
+        let render = |amount| render_amount(amount, units).map(s);
+        items.push(obj(vec![
+            ("target", s(format!("{:032x}", item.target.vid.0))),
+            ("target_digest", s(hex(&item.target.entry_digest))),
+            ("ordinal", Json::Int(i128::from(item.ordinal))),
+            ("open_native", render(item.open_native)?),
+            ("historical_base", render(item.historical_base)?),
+            ("prior_valuation", render(item.prior_valuation)?),
+            ("target_base", render(item.target_base)?),
+            ("delta", render(delta)?),
+        ]));
+    }
+    Ok(obj(vec![
+        ("law", s("LargestRemainder:v1")),
+        ("items", Json::Arr(items)),
+    ]))
+}
+
 pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     options(
         args,
@@ -470,7 +505,7 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--digest",
             "--plan-out",
         ],
-        &["--dry-run", "--review-only"],
+        &["--dry-run", "--review-only", "--allocate-open-items"],
     )?;
     check_post_planning_options(args)?;
     let review_only = args.switch("--review-only") || args.flag("--review-out").is_some();
@@ -486,6 +521,7 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let bound = ctx.authority().is_some();
     if let Some(path) = args.flag("--review") {
         if review_only
+            || args.switch("--allocate-open-items")
             || [
                 "--period",
                 "--account",
@@ -575,6 +611,7 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     entity: args
                         .flag("--entity")
                         .map(|code| entity_value_vid(book_id, code)),
+                    item_allocation: args.switch("--allocate-open-items"),
                 },
                 &capability,
             )??,
@@ -602,7 +639,11 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("source_native_net", render(prepared.source_native_net())?),
                 ("current_carrying_net", render(prepared.current_carrying_net())?),
                 ("target_base_net", render(prepared.target_base_net())?),
-                ("reason", s("functional carrying value already equals the closing-rate target; no entry was published")),
+                ("reason", s(if prepared.basis().item_allocation.is_some() {
+                    "every open item's carrying value already equals its allocated closing target; no entry was published"
+                } else {
+                    "functional carrying value already equals the closing-rate target; no entry was published"
+                })),
             ],
             "FX carrying value already equals the closing-rate target; no entry was published",
         );
@@ -653,12 +694,23 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             ("target_base_net", render(prepared.target_base_net())?),
             ("delta", render(prepared.delta())?),
+            (
+                "item_allocation",
+                item_allocation_preview(&prepared, &book.context().units)?,
+            ),
             ("legs", legs),
             ("review_digest", s(hex(&review_digest))),
             ("proposal_digest", s(hex(&proposal_digest))),
             ("bytes", s(hex(&bytes))),
             ("file", args.flag("--review-out").map_or(Json::Null, s)),
-            ("scope", s("period-end-fx-revaluation-proposal")),
+            (
+                "scope",
+                s(if prepared.basis().item_allocation.is_some() {
+                    "period-end-fx-item-revaluation-proposal"
+                } else {
+                    "period-end-fx-revaluation-proposal"
+                }),
+            ),
         ];
         let units = &book.context().units;
         let mut human = format!(
@@ -674,6 +726,20 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             hex(&proposal_digest),
             hex(&review_digest),
         );
+        if let Some(allocation) = &prepared.basis().item_allocation {
+            human.push_str("\nOpen-item closing values (LargestRemainder v1):");
+            for item in &allocation.items {
+                human.push_str(&format!(
+                    "\n  E:{:032x}:{}: native {}; historical {}; prior valuation {}; closing target {}",
+                    item.target.vid.0,
+                    item.ordinal,
+                    render_amount(item.open_native, units)?,
+                    render_amount(item.historical_base, units)?,
+                    render_amount(item.prior_valuation, units)?,
+                    render_amount(item.target_base, units)?,
+                ));
+            }
+        }
         if let Some(path) = args.flag("--review-out") {
             write_review_file(&ctx.files, path, &bytes)?;
             human.push_str(&format!("\nReview file: {path}"));

@@ -125,6 +125,34 @@ status = "live"
 standard_ref = "plan §5.2, §7.5; FA-INV-01.base, FA-INV-04.functional-fold"
 meaning = "Year-end closing transfers each nominal account's exact recorded native and functional carrying balances to its declared equity destination, reproducing its saved source prefix and precommit balances. It applies no new rate or rounding, cites no Rate documents of its own, and carries no conversion residual. Any inherited reversal valuation must preserve those amounts; separate target-class and period laws remain authoritative, and Closing corrections use incremental reclose."
 
+[[law]]
+id = 9
+version = 1
+code = "period_end_item_revaluation"
+name = "PeriodEndItemRevaluation"
+rate_purpose = "PeriodClose"
+date_selector = "period_end_date"
+rounding_law = "HalfEven"
+residual_mode = "none"
+admitted_classes = ["Revaluation"]
+status = "live"
+standard_ref = "plan §5.2, §5.7, §6.3, §6.4; FA-INV-01.base"
+meaning = "Explicit open-item revaluation of a complete homogeneous-side foreign source population. LargestRemainder v1 allocates the HalfEven-rounded aggregate closing value in proportion to open native amounts, with ties ordered by immutable target VID and leg ordinal. Each item's target less its remaining historical cost and previous allocated valuation posts as its own signed valuation/unrealized pair, including offsetting zero-net redistributions. The retained version-2 source basis binds every item and the complete source prefix; unknown exposure, legacy unallocated adjustments and retroactive changes to recorded application schedules refuse."
+
+[[law]]
+id = 10
+version = 1
+code = "settlement_allocated_carrying"
+name = "SettlementAllocatedCarrying"
+rate_purpose = "Settlement"
+date_selector = "settlement_and_settled_item_dates"
+rounding_law = "HalfEven"
+residual_mode = "none"
+admitted_classes = ["Original", "Adjusting", "Reversal"]
+status = "live"
+standard_ref = "plan §5.2, §5.7; FA-INV-01.realized-fx"
+meaning = "Settlement following a retained PeriodEndItemRevaluation. RemainingCarryingValue independently relieves historical cost and total carrying value with HalfEven, and a final application takes every remaining unit of each. Their signed difference is released from the original dedicated valuation account and reclassified against unrealized FX. Foreign source and conversion legs retain historical-cost relief; cash less that historical relief is realized FX, so the current-period net equals cash less total carrying relief. Extension 37 binds the journal-derived item state, exact historical/total/valuation relief and immutable routes. Exact reversals restore recorded amounts, including zero relief; no current quote recomputes an undo and no legacy aggregate adjustment is implicitly allocated."
+
 [[application_difference_kind]]
 tag = 1
 name = "Discount"

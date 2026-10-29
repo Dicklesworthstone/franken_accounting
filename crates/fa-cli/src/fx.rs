@@ -273,7 +273,10 @@ pub(crate) fn value_intent(
             INTENT_USAGE,
         ));
     }
-    if fx.get("law").and_then(Json::as_str) == Some("SettlementCarryingBasis") {
+    if matches!(
+        fx.get("law").and_then(Json::as_str),
+        Some("SettlementCarryingBasis" | "SettlementAllocatedCarrying")
+    ) {
         return settlement_intent(book, capability, fx, proposal);
     }
     strict_object(fx, &["law", "rates"], "intent.fx", INTENT_USAGE)?;
@@ -327,11 +330,12 @@ pub(crate) fn is_carrying_group(doc: &Json) -> bool {
     doc.get("payments")
         .or_else(|| doc.get("applications"))
         .is_some()
-        && doc
-            .get("fx")
-            .and_then(|fx| fx.get("law"))
-            .and_then(Json::as_str)
-            == Some("SettlementCarryingBasis")
+        && matches!(
+            doc.get("fx")
+                .and_then(|fx| fx.get("law"))
+                .and_then(Json::as_str),
+            Some("SettlementCarryingBasis" | "SettlementAllocatedCarrying")
+        )
 }
 
 /// Retain the original native allocation observations while deriving the full
@@ -402,13 +406,18 @@ fn settlement_intent(
     fx: &Json,
     mut proposal: EntryPayload,
 ) -> Result<EntryPayload, Fail> {
-    const FIX: &str = "supply pairs of functional-currency cash and one fully applied foreign control leg, with distinct target legs, and fx:{law: SettlementCarryingBasis, rates:[D:oid], conversion_account:<code>, realized_fx_account:<code>}; receipt/payment accept --fx-rate, --conversion and --realized-fx with exactly one --applies <vid>:<leg>=<foreign amount>";
+    const FIX: &str = "supply pairs of functional-currency cash and one fully applied foreign control leg, with distinct target legs, and fx:{law: SettlementCarryingBasis | SettlementAllocatedCarrying, rates:[D:oid], conversion_account:<code>, realized_fx_account:<code>}; receipt/payment accept --fx-rate, --fx-law, --conversion and --realized-fx with exactly one --applies <vid>:<leg>=<foreign amount>";
     strict_object(
         fx,
         &["law", "rates", "conversion_account", "realized_fx_account"],
         "intent.fx",
         FIX,
     )?;
+    let requested_law = match required_string(fx, "law", "intent.fx", FIX)? {
+        "SettlementCarryingBasis" => FxLawId::SettlementCarryingBasis,
+        "SettlementAllocatedCarrying" => FxLawId::SettlementAllocatedCarrying,
+        _ => return Err(usage("unsupported settlement carrying law", FIX)),
+    };
     let rates = fx.get("rates").and_then(Json::as_arr).ok_or_else(|| {
         usage(
             "FX settlement requires one retained Settlement Rate document",
@@ -485,6 +494,17 @@ fn settlement_intent(
     proposal.legs.clear();
     proposal.unit_totals.clear();
     let prepared = book.prepare_fx_settlement_group(capability, &requests, proposal)??;
+    if prepared
+        .proposal()
+        .base_totals
+        .as_ref()
+        .is_none_or(|totals| totals.fx_law_oid != requested_law.oid())
+    {
+        return Err(usage(
+            "the named settlement law does not match the retained item's carrying basis",
+            "use SettlementAllocatedCarrying for an item with a retained --allocate-open-items revaluation; otherwise use SettlementCarryingBasis",
+        ));
+    }
     let mut ranges = Vec::new();
     for ((applying, _), item) in declared.iter().zip(prepared.items()) {
         if applying.account_ref != item.carrying.account

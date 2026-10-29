@@ -43,10 +43,11 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// The highest additive minor this reader understands in full. Minor 0 is
 /// the original layout; minor 1 appends the extension block, and minor 2
 /// admits the named proportional-post basis, and minor 3 admits the
-/// prior-period-adjustment source period. A writer may
+/// prior-period-adjustment source period. Minor 4 admits allocated FX carrying
+/// values and their exact settlement releases. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 3;
+pub const SCHEMA_MINOR: u16 = 4;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -250,6 +251,10 @@ pub const PROPORTIONAL_POST_SCHEMA_MINOR: u16 = 2;
 /// marker also rides an Original/Adjusting scenario template, so the
 /// rehearsal and the case's approved derivation bind the same period.
 pub const PRIOR_PERIOD_ADJUSTMENT_EXTENSION: u16 = 36;
+/// Extension 37 retains the historical-cost and allocated valuation relief
+/// of each source-bound FX settlement component, including exact reversals.
+pub const FX_SETTLEMENT_VALUATION_EXTENSION: u16 = 37;
+pub const FX_ITEM_CARRYING_SCHEMA_MINOR: u16 = 4;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -301,6 +306,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     PRODUCTION_BATES_EXTENSION,
     STATEMENT_ISSUANCE_EXTENSION,
     FX_REVALUATION_EXTENSION,
+    FX_SETTLEMENT_VALUATION_EXTENSION,
     ENGAGEMENT_PROFILE_EXTENSION,
     PROPOSED_ADJUSTMENT_EXTENSION,
     RESTATEMENT_CASE_EXTENSION,
@@ -1985,6 +1991,36 @@ impl EntryPayload {
             return Err(invalid(
                 "extensions.fx_revaluation",
                 "requires a canonical source-bound FX revaluation basis on a Revaluation PostEntry intent",
+            ));
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
+            && crate::revaluation::FxRevaluationBasis::decode(bytes)
+                .is_ok_and(|basis| basis.item_allocation.is_some())
+            && self.schema_minor < FX_ITEM_CARRYING_SCHEMA_MINOR
+        {
+            return Err(invalid(
+                "extensions.fx_revaluation",
+                "allocated item carrying values require schema minor 4 or later",
+            ));
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == FX_SETTLEMENT_VALUATION_EXTENSION)
+            && (self.schema_minor < FX_ITEM_CARRYING_SCHEMA_MINOR
+                || self.base_totals.is_none()
+                || !matches!(
+                    self.class,
+                    EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+                )
+                || crate::revaluation::FxSettlementValuationBasis::decode(bytes).is_err())
+        {
+            return Err(invalid(
+                "extensions.fx_settlement_valuation",
+                "requires functional totals and a canonical allocated-carrying settlement basis on Original, Adjusting or an exact Reversal at schema minor 4 or later",
             ));
         }
         for leg in &self.legs {

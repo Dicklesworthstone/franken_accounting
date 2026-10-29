@@ -204,6 +204,9 @@ pub struct PreparedPost {
     /// The period's vertex, whose state the preparation witnessed: a
     /// lost commit reads it again to say whether that state moved.
     period_vertex: VId,
+    /// Immutable rows already authenticated by the FX reversal ancestry walk.
+    /// Their point-conflict refusal precedes the additional aggregate guard.
+    valuation_ancestors: Vec<VertexRow>,
     security_policy_epoch: u64,
     effects_digest: [u8; 32],
     identity: Identity,
@@ -295,6 +298,14 @@ pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, 
     Ok(dependency == fa_registry::DependencyClass::Aggregate
         || crate::revaluation::is_source_bound(proposal)
         || crate::carrying::is_source_bound(proposal)
+        || crate::carrying::has_allocated_basis(proposal)
+        || (proposal.class == EntryClass::REVERSAL
+            && proposal.base_totals.as_ref().is_some_and(|total| {
+                proposal
+                    .legs
+                    .iter()
+                    .any(|leg| leg.amount.unit.0 != total.unit_id)
+            }))
         || proposal
             .extensions
             .iter()
@@ -399,6 +410,21 @@ impl PreparedPost {
         };
         let independent_carrying =
             carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
+        // The posting pipeline has already witnessed the exact side-swap
+        // and staged its recorded UNSETTLES effects. Legacy carrying undos
+        // therefore compose through those transactional application mirrors;
+        // they do not calculate a new relief from another batch member.
+        // stage_batch still retains and checks the complete prefix guard.
+        let recorded_carrying_undo = self.request.proposal.class == EntryClass::REVERSAL
+            && !crate::carrying::has_allocated_basis(&self.request.proposal)
+            && self
+                .request
+                .proposal
+                .base_totals
+                .as_ref()
+                .is_some_and(|total| {
+                    total.fx_law_oid == crate::fx::FxLawId::SettlementCarryingBasis.oid()
+                });
         // A case's PPA members have already passed case membership and the
         // retained-earnings role fold in prepare_post_in. They share one
         // committed basis; stage_batch retains the aggregate dependency and
@@ -408,7 +434,7 @@ impl PreparedPost {
             && self.request.proposal.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT;
         if self.planning != planning
             || self.paired_reversal.is_some()
-            || (aggregate && !independent_carrying && !case_adjustment)
+            || (aggregate && !independent_carrying && !recorded_carrying_undo && !case_adjustment)
         {
             self.txn.abort();
             return Err(KernelError::Corrupt(
@@ -469,6 +495,7 @@ impl PreparedPost {
             entry_ref,
             period,
             period_vertex,
+            valuation_ancestors,
             security_policy_epoch: _,
             effects_digest: _,
             identity,
@@ -583,6 +610,29 @@ impl PreparedPost {
         }
         let aggregate = requires_aggregate_basis(&request.proposal)?;
         if aggregate && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?) {
+            // A foreign reversal also guards against a newly appended item
+            // allocation, which need not mutate its original source. Preserve
+            // the older point-witness conflict when an authenticated ancestor
+            // itself changed; unchanged ancestors still fail the prefix guard.
+            // Neither case refreshes the transaction or publishes its effects.
+            for ancestor in &valuation_ancestors {
+                commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
+                if db.vertex(ancestor.vid)?.as_ref() != Some(ancestor) {
+                    let conflict = period_state_changed(db, period_vertex, &period, txn.basis())?
+                        .unwrap_or_else(|| Refusal::new(
+                            code::CONFLICT,
+                            exit::CONFLICT,
+                            format!(
+                                "a concurrent commit changed the witnessed FX valuation ancestor {:032x}",
+                                ancestor.vid.0,
+                            ),
+                            "FG-LAW-FCW-01 (first committer wins)",
+                            "re-plan and retry from the original valuation's current authenticated history",
+                        ));
+                    txn.abort();
+                    return Ok(Err(conflict));
+                }
+            }
             txn.abort();
             return Ok(Err(refusal));
         }
@@ -1990,6 +2040,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(crate::carrying::unsupported_batch()));
         }
     }
+    if proposal.class == EntryClass::REVERSAL && crate::carrying::has_allocated_basis(proposal) {
+        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some()
+            || replacement_basis.is_some()
+            || matches!(
+                admission,
+                Admission::Promote(_) | Admission::ScratchDraft(_)
+            )
+        {
+            return Ok(Err(crate::carrying::unsupported_batch()));
+        }
+    }
     // Allocation is admitted only by recomputing its exact, evidence-bound
     // native legs. This also rejects its provenance on a different class.
     let allocation = match crate::allocation::admit(proposal) {
@@ -3342,25 +3406,26 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // A new exact reversal inherits its original valuation. This is derived
     // only after recorded retries have returned, from witnessed immutable
     // ancestry; its own posting date and period still govern every other law.
-    let fx_origin = match (&fx_claim, reversal_target) {
+    let (fx_origin, valuation_ancestors) = match (&fx_claim, reversal_target) {
         (Some(claim), Some(target))
             if matches!(
                 claim.law,
                 crate::fx::FxLawId::SpotClose
                     | crate::fx::FxLawId::PeriodAverage
                     | crate::fx::FxLawId::SettlementCarryingBasis
+                    | crate::fx::FxLawId::SettlementAllocatedCarrying
                     | crate::fx::FxLawId::YearEndCloseCarrying
             ) =>
         {
             match reversal_fx_origin(&txn, db, ctx, book, proposal, target)? {
-                Ok(origin) => Some(origin),
+                Ok((origin, period, ancestors)) => (Some((origin, period)), ancestors),
                 Err(refusal) => {
                     txn.abort();
                     return Ok(Err(refusal));
                 }
             }
         }
-        _ => None,
+        _ => (None, Vec::new()),
     };
     if let Some(claim) = &fx_claim
         && let Err(refusal) = crate::fx::verify_in_txn(
@@ -3880,6 +3945,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if !exact_side_swap(&original.proposal, proposal) {
             txn.abort();
             return Ok(Err(reversal_shape(target.vid)));
+        }
+        if let Err(refusal) = crate::carrying::validate_reversal(
+            db,
+            ctx,
+            book,
+            target,
+            &original.proposal,
+            proposal,
+            txn.basis(),
+        )? {
+            txn.abort();
+            return Ok(Err(refusal));
         }
         // 7c. Application effects (plan §5.7, §8.2): a target or any ancestor
         //     in its witnessed reversal chain with live applications against its
@@ -4626,6 +4703,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         entry_ref: entry.entry_ref(evid),
         entry,
         period_vertex: period_vid(&book.calendar.id, &period.code),
+        valuation_ancestors,
         period: period.code,
         security_policy_epoch: epoch,
         effects_digest,
@@ -4789,6 +4867,14 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
 /// additional supporting evidence may be cited without changing the quote.
 pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
     !original.legs.is_empty()
+        && original
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION)
+            == reversal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION)
         && original.base_totals == reversal.base_totals
         && original.base_totals.as_ref().is_none_or(|totals| {
             totals.rate_doc_oids.iter().all(|oid| {
@@ -4839,11 +4925,12 @@ fn reversal_fx_origin<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     proposal: &EntryPayload,
     target: EntryRef,
-) -> Outcome<(EntryPayload, fa_time::PeriodDef)> {
+) -> Outcome<(EntryPayload, fa_time::PeriodDef, Vec<VertexRow>)> {
     let mut child = proposal.clone();
     let mut handle = target;
     let mut first = true;
     let mut seen = BTreeSet::new();
+    let mut ancestors = Vec::new();
     loop {
         ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
         if !seen.insert(handle.vid) {
@@ -4890,6 +4977,7 @@ fn reversal_fx_origin<V: asupersync::fs::Vfs + Clone>(
                 handle.vid.0,
             )));
         }
+        ancestors.push(row);
         if entry.proposal.class != EntryClass::REVERSAL {
             let origin = entry.proposal;
             // Period boundaries come from the immutable calendar declaration,
@@ -4939,7 +5027,7 @@ fn reversal_fx_origin<V: asupersync::fs::Vfs + Clone>(
                 ))
             })?
             .clone();
-            return Ok(Ok((origin, period)));
+            return Ok(Ok((origin, period, ancestors)));
         }
         let next = match entry.proposal.supersession.as_slice() {
             [parent] if parent.kind == SupersessionKind::Reverses => parent.target,
