@@ -1,0 +1,357 @@
+# WorldCom's migration book (plan §6.3 `migration`, §6.4 W-D-02, §15 A8b; beads fa-yugf.18, .21):
+# F6, the record's one documented approval, replayed as legacy history so jet.self_approved can read
+# who entered and who approved it. F6a (CIP to the asset clearing account, $544 million) and F6b (the
+# clearing account to the ten Fiber Optic Cable items at the sourced $54.4 million each, one legacy
+# entry: the subledger_to_gl_legs reading) are Migration chunks. Their legacy entered-by is the
+# property-accounting director; their approved-by is the W-D-02 branch `approvals_recorded`, the
+# director too on F6-approval's natural reading. The fiscal year starts with F6's quarter, so both
+# 2001 quarters precede the opening date and are born Historical and Locked, and each has a non-zero
+# cumulative legacy trial balance. The run is a sole-source FullDetail run finalized with two
+# approvals; the declared legacy trial balance is derived from these chunks (legacy_tb_from_chunks),
+# so its tie-out supports no claim.
+
+[book]
+variant = "migration"
+opening_date = "2002-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2001Q3"
+start = "2001-07-01"
+end = "2001-09-30"
+fiscal_year = 2001
+kind = "Historical"
+
+[[period]]
+code = "2001Q4"
+start = "2001-10-01"
+end = "2001-12-31"
+fiscal_year = 2001
+kind = "Historical"
+
+[[period]]
+code = "2002Q1"
+start = "2002-01-01"
+end = "2002-03-31"
+fiscal_year = 2002
+kind = "Normal"
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "post", "migrate"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[account]]
+code = "1500"
+name_fact = "F2"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1551"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1552"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1553"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1554"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1555"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1556"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1557"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1558"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1559"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1560"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1590"
+name_fact = "F6"
+type = "Asset"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-LEGACY-TB"
+stub_of = "legacy_tb"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[branch_class]]
+id = "bc-F6-approvals"
+attribute = "approvals_recorded"
+rule = "legacy_approval_pair"
+values = ["approved_by_is_entered_by", "entered_by_only"]
+
+[[default]]
+attribute = "approval_encoding"
+rule = "migration_legacy_pair"
+rationale = "the record states F6's approval only as the director's habit (p.111); a native approval needs A0 and draft self-promotion attaches none, so the approval is the chunk's legacy entered-by/approved-by pair (plan §6.4 W-D-02)"
+
+[[default]]
+attribute = "approvals_recorded"
+rule = "approved_by_is_entered_by"
+rationale = "F6-approval: on p.111's natural reading the director both entered and approved the August 22 transfers; the weaker reading, entered only, is the class entered_by_only"
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "as on the native book: the record dates the booking, and the entry's sourced reporting period ends on its effective date (plan §6.2)"
+
+# F6a: CIP to the asset clearing account, staged as one legacy chunk.
+[[intent]]
+id = "F6a"
+fact = "F6"
+class = "Migration"
+principal = "case-closer-1"
+effective_date = "2001-09-30"
+memo = "CIP to the asset clearing account (legacy history)"
+evidence = "DOC-LEGACY-TB"
+idempotency_key = "wc-mig-F6a"
+source_entered_by = "property-accounting-director-1"
+source_approved_by = "property-accounting-director-1"
+
+[[leg]]
+intent = "F6a"
+ordinal = 0
+account = "1590"
+side = "Dr"
+amount_literal = "544000000.00"
+amount_rule = "value:F6-p111#2"
+unit = "USD"
+
+[[leg]]
+intent = "F6a"
+ordinal = 1
+account = "1500"
+side = "Cr"
+amount_literal = "544000000.00"
+amount_rule = "value:F6-p111#2"
+unit = "USD"
+
+# F6b: the clearing account to the ten Fiber Optic Cable items at the sourced $54.4 million each,
+# one legacy entry (the subledger_to_gl_legs reading).
+[[intent]]
+id = "F6b"
+fact = "F6"
+class = "Migration"
+principal = "case-closer-1"
+effective_date = "2001-09-30"
+memo = "the asset clearing account to ten Fiber Optic Cable items (legacy history)"
+evidence = "DOC-LEGACY-TB"
+idempotency_key = "wc-mig-F6b"
+source_entered_by = "property-accounting-director-1"
+source_approved_by = "property-accounting-director-1"
+
+[[leg]]
+intent = "F6b"
+ordinal = 0
+account = "1551"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 1
+account = "1552"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 2
+account = "1553"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 3
+account = "1554"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 4
+account = "1555"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 5
+account = "1556"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 6
+account = "1557"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 7
+account = "1558"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 8
+account = "1559"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 9
+account = "1560"
+side = "Dr"
+amount_literal = "54400000.00"
+amount_rule = "value:F6-p111#5"
+unit = "USD"
+
+[[leg]]
+intent = "F6b"
+ordinal = 10
+account = "1590"
+side = "Cr"
+amount_literal = "544000000.00"
+amount_rule = "value:F6-p111#2"
+unit = "USD"
+
+[[step]]
+seq = 1
+kind = "migrate_open"
+ref = "DOC-LEGACY-TB"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "migrate_stage"
+ref = "F6a..F6b"
+principal = "case-closer-1"
+approvers = ["case-approver-1", "case-approver-2"]
+
+[[step]]
+seq = 3
+kind = "migrate_finalize"
+ref = "1"
+principal = "case-closer-1"
+approvers = ["case-approver-1", "case-approver-2"]
+
+[[step]]
+seq = 4
+kind = "finding_record"
+ref = "jet.self_approved@1"
+principal = "examiner-1"

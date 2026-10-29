@@ -72,6 +72,10 @@ pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
             include_str!("../../cases/worldcom/books/statement.toml"),
         ),
         (
+            "books/migration.toml",
+            include_str!("../../cases/worldcom/books/migration.toml"),
+        ),
+        (
             "expectations.toml",
             include_str!("../../cases/worldcom/expectations.toml"),
         ),

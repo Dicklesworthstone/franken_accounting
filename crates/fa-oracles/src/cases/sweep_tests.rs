@@ -247,3 +247,63 @@ fn coresident_copies_encode_each_cell_by_its_first_witness() {
         assert_eq!(letters, copy.cell.key[0]);
     }
 }
+
+/// A8b: on a migration stem a copy is staged as a chunk of its own, by a
+/// `migrate_stage` step right after the step whose range holds the target,
+/// and an `approvals_recorded` cell sets its legacy `source_approved_by`.
+#[test]
+fn coresident_copies_on_a_migration_stem_are_staged_with_their_legacy_approval() {
+    let case =
+        crate::cases::load(&crate::cases::embedded::WORLDCOM.case_files()).expect("worldcom loads");
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-D-02").expect("W-D-02");
+    let t = set
+        .targets_of("W-D-02")
+        .find(|t| t.fact == "F6a")
+        .expect("F6a");
+    let table = enumerate(&case, e, t).expect("F6a's table");
+    let (book, copies) = coresident(&case, "migration", &table).expect("copies");
+    let ids: Vec<&str> = copies.iter().map(|c| c.intent.as_str()).collect();
+    assert_eq!(ids, ["F6a~c1", "F6a~c2"]);
+    let at = book
+        .steps
+        .iter()
+        .position(|s| s.reference == "F6a..F6b")
+        .expect("the stage step");
+    let next: Vec<(&str, &str)> = book.steps[at + 1..at + 3]
+        .iter()
+        .map(|s| (s.kind.as_str(), s.reference.as_str()))
+        .collect();
+    assert_eq!(
+        next,
+        [
+            ("migrate_stage", "F6a~c1..F6a~c1"),
+            ("migrate_stage", "F6a~c2..F6a~c2")
+        ]
+    );
+    let approved: Vec<(&[String], Option<&str>)> = copies
+        .iter()
+        .map(|c| {
+            let it = book
+                .intents
+                .iter()
+                .find(|i| i.id == c.intent)
+                .expect("the copy");
+            assert_eq!(
+                it.source_entered_by.as_deref(),
+                Some("property-accounting-director-1")
+            );
+            (c.cell.key.as_slice(), it.source_approved_by.as_deref())
+        })
+        .collect();
+    assert_eq!(
+        approved,
+        [
+            (
+                &["approved_by_is_entered_by".to_string()][..],
+                Some("property-accounting-director-1")
+            ),
+            (&["entered_by_only".to_string()][..], None),
+        ]
+    );
+}

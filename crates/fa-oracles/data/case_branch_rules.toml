@@ -110,3 +110,16 @@ parameters = []
 classes = ["none", "placeholder_unreviewed", "placeholder_reviewed", "manual_assertion"]
 components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/post.rs:3049"
+
+# A migrated entry's legacy approval (A8b, §6.4 W-D-02): jet.self_approved counts a legacy pair
+# whose approved-by is its entered-by as one approval by the preparer, and reads no pair without
+# an approved-by. A co-resident copy encodes the class on its legacy source_approved_by.
+[[rule]]
+id = "legacy_approval_pair"
+attribute = "approvals_recorded"
+reader = "jet.self_approved@1"
+class_rule = "enum"
+parameters = []
+classes = ["approved_by_is_entered_by", "entered_by_only"]
+components = ["cite", "severity", "statistic"]
+code_justification = "crates/fa-lantern/src/jet.rs:361"

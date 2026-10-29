@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use super::Case;
 use super::amount::format_amount;
-use super::book::{BookVariant, BranchAttribute, CELL_KEY_SUFFIX_BYTES, StepKind};
+use super::book::{BookVariant, BranchAttribute, CELL_KEY_SUFFIX_BYTES, StepKind, VariantKind};
 use super::branch::{Cell, CellPart, Enumeration, WitnessValue, witnesses};
 use super::error::{LoadError, LoadErrorKind};
 use super::expect::ExpectationType;
@@ -331,10 +331,16 @@ pub struct CellCopy {
 /// and posted under its own [`cell_key`]. The copies are each other's
 /// filler; the target itself stays, since later steps may name it.
 ///
+/// On a migration stem the target is staged by the `migrate_stage` step
+/// whose range holds it, and each copy is staged as a chunk of its own by a
+/// `migrate_stage` step right after that one (A8b); an `approvals_recorded`
+/// cell sets the copy's legacy `source_approved_by` (rule
+/// `legacy_approval_pair`).
+///
 /// # Errors
 ///
-/// A target with no intent step or authored key, or a cell attribute with
-/// no co-resident encoding.
+/// A target with no intent or stage step or no authored key, or a cell
+/// attribute with no co-resident encoding.
 pub fn coresident(
     case: &Case,
     variant: &str,
@@ -378,14 +384,33 @@ pub fn coresident(
             format!("{} has no authored idempotency key", target.id),
         )
     })?;
+    let staged = book.kind == VariantKind::Migration;
+    let target_pos = book.intents.iter().position(|i| i.id == target.id);
+    let holds = |range: &str| {
+        let Some((a, b)) = range.split_once("..") else {
+            return false;
+        };
+        let pos = |id: &str| book.intents.iter().position(|i| i.id == id);
+        matches!((pos(a), pos(b), target_pos), (Some(a), Some(b), Some(t)) if a <= t && t <= b)
+    };
     let at = book
         .steps
         .iter()
-        .position(|s| s.step_kind() == Some(StepKind::Intent) && s.reference == target.id)
+        .position(|s| {
+            if staged {
+                s.step_kind() == Some(StepKind::MigrateStage) && holds(&s.reference)
+            } else {
+                s.step_kind() == Some(StepKind::Intent) && s.reference == target.id
+            }
+        })
         .ok_or_else(|| {
             err(
                 LoadErrorKind::DanglingKey,
-                format!("{} has no intent step to post its cells beside", target.id),
+                format!(
+                    "{} has no {} step to post its cells beside",
+                    target.id,
+                    if staged { "migrate_stage" } else { "intent" }
+                ),
             )
         })?;
     let target_legs: Vec<_> = book
@@ -435,6 +460,20 @@ pub fn coresident(
                 (_, WitnessValue::Class(v))
                     if *attr == BranchAttribute::EvidenceAttached
                         && v == "placeholder_reviewed" => {}
+                (_, WitnessValue::Class(v))
+                    if staged
+                        && *attr == BranchAttribute::ApprovalsRecorded
+                        && v == "approved_by_is_entered_by" =>
+                {
+                    it.source_approved_by.clone_from(&it.source_entered_by);
+                }
+                (_, WitnessValue::Class(v))
+                    if staged
+                        && *attr == BranchAttribute::ApprovalsRecorded
+                        && v == "entered_by_only" =>
+                {
+                    it.source_approved_by = None;
+                }
                 _ => {
                     return Err(err(
                         LoadErrorKind::UnknownValue,
@@ -447,7 +486,11 @@ pub fn coresident(
             }
         }
         let mut step = book.steps[at].clone();
-        step.reference.clone_from(&id);
+        step.reference = if staged {
+            format!("{id}..{id}")
+        } else {
+            id.clone()
+        };
         book.steps.insert(at + 1 + n, step);
         book.intents.push(it);
         book.legs.extend(legs);

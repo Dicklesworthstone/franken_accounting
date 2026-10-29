@@ -245,3 +245,76 @@ id = "W-NOTE-01"
 case = "worldcom"
 basis = ["W-ST-ta1999-ex27", "W-ST-ta1999-restated"]
 template = "NOTE.observation"
+
+# W-D-02 (plan §6.4, §15 A8b): jet.self_approved on F6's director entries, on the migration book.
+# The record states the approval only as the director's habit (p.111), so the finding is a branch of
+# approvals_recorded: on approved_by_is_entered_by (F6-approval's natural reading) each entry is
+# flagged High with one own approval of its one recorded approval; on entered_by_only nothing is.
+# Each chunk cites the run's legacy trial balance, a reviewed reconstruction that stands in for the
+# record's unpublished documents as a reviewed placeholder does: the admitted evidence cell.
+[[expectation]]
+id = "W-D-02"
+type = "D"
+book_variant = "migration"
+statement_template = "D.detection"
+basis = ["F6", "F6-approval"]
+granularity = "journal_entry"
+capabilities = ["procedure:jet.self_approved@1"]
+procedure = "jet.self_approved"
+version = 1
+
+[[target]]
+expectation = "W-D-02"
+fact = "F6a"
+basis = ["F6", "F6-approval"]
+admitted_cell = ["evidence_attached=placeholder_reviewed"]
+branch_attrs = ["approvals_recorded"]
+cite_status = "B(approvals_recorded)"
+severity_status = "B(approvals_recorded)"
+statistic_status = "B(approvals_recorded)"
+
+[[target]]
+expectation = "W-D-02"
+fact = "F6b"
+basis = ["F6", "F6-approval"]
+admitted_cell = ["evidence_attached=placeholder_reviewed"]
+branch_attrs = ["approvals_recorded"]
+cite_status = "B(approvals_recorded)"
+severity_status = "B(approvals_recorded)"
+statistic_status = "B(approvals_recorded)"
+
+[[branch_cell]]
+expectation = "W-D-02"
+target = "F6a"
+cell = ["approved_by_is_entered_by"]
+expect = "finding"
+cite = []
+severity = "High"
+statistic_value = "1"
+record_consistent = true
+default = true
+
+[[branch_cell]]
+expectation = "W-D-02"
+target = "F6a"
+cell = ["entered_by_only"]
+expect = "no_finding"
+record_consistent = true
+
+[[branch_cell]]
+expectation = "W-D-02"
+target = "F6b"
+cell = ["approved_by_is_entered_by"]
+expect = "finding"
+cite = []
+severity = "High"
+statistic_value = "1"
+record_consistent = true
+default = true
+
+[[branch_cell]]
+expectation = "W-D-02"
+target = "F6b"
+cell = ["entered_by_only"]
+expect = "no_finding"
+record_consistent = true

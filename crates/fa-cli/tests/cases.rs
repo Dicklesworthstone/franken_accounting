@@ -112,6 +112,53 @@ fn worldcom() {
     assert!(o.rows_ok, "{text}");
 }
 
+/// A8b (§6.4 W-D-02): F6 as legacy history on WorldCom's migration book.
+/// The run opens, stages F6a and F6b (each one-approval twin refused
+/// FA-REF-012) and finalizes; jet.self_approved sees neither chunk before
+/// finalize. After it, each target flags on the approved_by_is_entered_by
+/// cell (High, one own approval) and on no other, as its authored cells
+/// say, and every cell waits only on filler invariance.
+#[test]
+fn worldcom_w_d_02_flags_f6_on_the_legacy_pair_cell_only() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let migration: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("MIGRATION "))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        migration,
+        [
+            "MIGRATION migration open run=$RUN_1 periods=2001Q3,2001Q4",
+            "MIGRATION migration stage F6a..F6b one_approval=refused:FA-REF-012:exit=7 F6a=staged one_approval=refused:FA-REF-012:exit=7 F6b=staged",
+            "MIGRATION migration finalize before=jet.self_approved:0 finalize=Finalized",
+        ],
+        "{text}"
+    );
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-D-02")
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "UNRUN W-D-02 D migration F6a/approvals_recorded=approved_by_is_entered_by procedure=jet.self_approved@1 finding=yes cite severity=High statistic=1 reason=filler_invariance",
+            "UNRUN W-D-02 D migration F6a/approvals_recorded=entered_by_only procedure=jet.self_approved@1 finding=no reason=filler_invariance",
+            "UNRUN W-D-02 D migration F6b/approvals_recorded=approved_by_is_entered_by procedure=jet.self_approved@1 finding=yes cite severity=High statistic=1 reason=filler_invariance",
+            "UNRUN W-D-02 D migration F6b/approvals_recorded=entered_by_only procedure=jet.self_approved@1 finding=no reason=filler_invariance",
+        ],
+        "{text}"
+    );
+}
+
 /// A12 (§12.1, Appendix Z.7): the first green T. The self-test's bridge T
 /// reads its certified B (900.00, A plus the case's delta), holds its
 /// contributing-entry witness (A11b), and passes its outsider check: its
