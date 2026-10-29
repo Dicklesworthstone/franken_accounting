@@ -218,6 +218,7 @@ args="$*"
 key="$(printf '%s' "$args" | tr -c 'A-Za-z0-9' '_')"
 attempt=$(( $(cat "$FAKE_STATE/$key" 2>/dev/null || echo 0) + 1 ))
 echo "$attempt" > "$FAKE_STATE/$key"
+printf '%s|%s\n' "${RCH_TEST_TIMEOUT_SEC:-fleet}" "$args" >> "$FAKE_STATE/budgets"
 ran() { printf 'Selected worker: w1 at u@h\nrunning %s test%s\n' "$1" "$([ "$1" = 1 ] || echo s)"; }
 pass() { ran 1; printf 'test %s ... ok\n\ntest result: ok. 1 passed; 0 failed\nRemote command finished: exit=0 in 9ms\n' "$1"; exit 0; }
 case "$FAKE_SCENARIO:$args" in
@@ -240,7 +241,8 @@ EOF
   chmod +x "$step_dir/bin/rch"
   (
     export PATH="$step_dir/bin:$PATH" FAKE_STATE="$step_dir/state" FAKE_SCENARIO="$scenario"
-    export CHECK_LOG_DIR="$step_dir/logs"
+    export CHECK_LOG_DIR="$step_dir/logs" CHECK_ISOLATED_TIMEOUT_SEC=4321
+    unset RCH_TEST_TIMEOUT_SEC
     export CHECK_STEP_MANIFEST="$step_dir/step-verdicts.jsonl"
     mkdir -p "$CHECK_LOG_DIR"
     # shellcheck source=../lib/gate_verdict.sh
@@ -284,7 +286,16 @@ split_test_jobs_compose_one_step() {
       return 1
     fi
   done
-  gate_pass "split_test_jobs_compose_one_step (pass, fail-first, refused-once, refused-always, cap-kill, stale)"
+  # Only the isolated command carries its own budget; the others keep the
+  # fleet's cap.
+  local budgets
+  budgets="$(cut -d' ' -f1 "$base/jobs-pass/state/budgets" | tr '\n' ' ')"
+  if [ "$budgets" != "fleet|exec fleet|exec 4321|exec " ] \
+    || ! grep -q '^4321|.* -- --exact slow$' "$base/jobs-pass/state/budgets"; then
+    gate_fail "split_test_jobs_compose_one_step — rch test budgets per command: '$budgets' (want fleet, fleet, then 4321 for the isolated job)"
+    return 1
+  fi
+  gate_pass "split_test_jobs_compose_one_step (pass, fail-first, refused-once, refused-always, cap-kill, stale; isolated budget)"
 }
 
 # 4. The real job list covers every workspace package, and every TEST_ISOLATED

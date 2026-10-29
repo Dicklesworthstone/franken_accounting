@@ -334,11 +334,15 @@ cargo_build() {
 # command the offloader never ran is retried (CHECK_TEST_ATTEMPTS); an
 # executed failure, a cap kill (exit 137) included, never is. An isolated
 # test that matches no test fails the step, so the list cannot go stale.
+# An isolated command runs one test, so it carries its own rch test budget
+# (CHECK_ISOLATED_TIMEOUT_SEC, via RCH_TEST_TIMEOUT_SEC); every other command
+# keeps the fleet's cap.
 TEST_SPLIT_PACKAGES="fa fa-cli fa-journal fa-mcp fa-notary fa-verify fad"
 # "<package> <--lib|--test=NAME> <test path>": tests that alone take a large
 # share of the cap. Sweep of 10-27 (vmi1153651): the fa metamorphic binary
 # took 1,598-1,640 s, its last 1,500 s these five tests in parallel; the
-# capsule-ceiling batch test exceeds 25 min (fa-wo2n's O(m^2) staging).
+# capsule-ceiling batch test alone ran about 55 min of a 3,553 s fa-journal
+# lib run (gate z190, fa-wo2n's O(m^2) staging), past the 1800 s cap.
 TEST_ISOLATED=(
   "fa --test=metamorphic draft_promote_equals_trunk_post"
   "fa --test=metamorphic export_import_identity_on_fixture_books"
@@ -348,6 +352,7 @@ TEST_ISOLATED=(
   "fa-journal --lib batch::tests::batch_exceeding_v1_capsule_ceiling_refuses_with_fa_ref_201_and_split_bound"
 )
 CHECK_TEST_ATTEMPTS="${CHECK_TEST_ATTEMPTS:-3}"
+CHECK_ISOLATED_TIMEOUT_SEC="${CHECK_ISOLATED_TIMEOUT_SEC:-5400}"
 
 # list_test_jobs: one "<label>\t<cargo test arguments>" line per job.
 list_test_jobs() {
@@ -441,16 +446,18 @@ cargo_test_jobs() {
   fi
   : >"$log"
   local job args job_log rc attempt count=0
-  local -a argv failed=() unrun=() stale=()
+  local -a argv budget failed=() unrun=() stale=()
   while IFS=$'\t' read -r job args; do
     [ -n "$job" ] || continue
     count=$((count + 1))
     job_log="$job_dir/$job.log"
     read -r -a argv <<<"$args"
+    budget=()
+    [[ "$job" == *.isolated.* ]] && budget=("RCH_TEST_TIMEOUT_SEC=$CHECK_ISOLATED_TIMEOUT_SEC")
     attempt=0
     while :; do
       attempt=$((attempt + 1))
-      RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+      env "${budget[@]}" RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
         rch exec -- cargo test -j "$CHECK_JOBS" --no-fail-fast "${argv[@]}" </dev/null >"$job_log" 2>&1
       rc=$?
       if [ "$rc" -ne 0 ] && is_rch_offloader_unrun "$rc" "$job_log" && [ "$attempt" -lt "$CHECK_TEST_ATTEMPTS" ]; then
