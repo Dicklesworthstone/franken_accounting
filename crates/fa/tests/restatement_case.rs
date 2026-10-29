@@ -816,13 +816,30 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap_err();
     assert_eq!(alone.code, code::CASE_MEMBERSHIP, "{alone:?}");
     assert_eq!(book.head().unwrap(), head);
-    // A superseding case kind posts only delta-law entries: a Restatement
-    // case's derivation refuses a plain posting.
-    let delta =
+    // A PPA marker cannot be repurposed for another case kind. This is a
+    // distinct guard from the delta-law shape of an ordinary template.
+    let wrong_kind =
         fa_journal::derive_member(book_id, CaseKind::Restatement, 1, plan, &planned, PRINCIPAL)
             .unwrap()
             .unwrap_err();
+    assert_eq!(
+        wrong_kind.code,
+        code::PRIOR_PERIOD_ADJUSTMENT,
+        "{wrong_kind:?}"
+    );
+    // A superseding case kind posts only delta-law entries: a Restatement
+    // case's derivation refuses a plain posting.
+    let mut plain = planned.clone();
+    plain
+        .extensions
+        .retain(|(tag, _)| *tag != fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION);
+    assert!(plain.prior_period_adjustment().unwrap().is_none());
+    let delta =
+        fa_journal::derive_member(book_id, CaseKind::Restatement, 1, plan, &plain, PRINCIPAL)
+            .unwrap()
+            .unwrap_err();
     assert_eq!(delta.code, code::CASE_MEMBERSHIP, "{delta:?}");
+    assert_eq!(book.head().unwrap(), head);
 
     // An approver may not post: the entry's row excludes its preparer.
     let approver = Capability::embedded(VId(2), &["restate", "post", "read"]).unwrap();

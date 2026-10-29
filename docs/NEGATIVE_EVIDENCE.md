@@ -1092,3 +1092,34 @@ Their native rerun remains pending. The original one-run exception has
 been used; an explicit extension for continued remote-only qualification
 has been requested. The 55 passing tests are scoped evidence, not a
 workspace PASS, Tier 0, Tier 1, original PPA closure or release result.
+
+## 2026-10-28 UTC — PPA case fixture mixed two independent refusals
+
+The complete `fa::restatement_case` integration target on the new equity-view
+source (base `3323cf0c`, three source overlays) ran all eight tests: seven
+passed and `a_prior_period_adjustment_case_posts_its_approved_manifest_once`
+failed at line 825. Client and remote exit were 101, with RCH terminal
+acknowledgement and retirement true. Receipt root
+`a7399d157c41430cc1d1217d51f8839b453442cf8ef75a30b7bdfa37f5172875`
+matched all 1,477 local source files before the repair. No ignored or
+filtered tests were reported; assertions after the failing check were not
+reached in that PPA test.
+
+The failing check expected `FA-REF-178` when deriving a Restatement member
+from a plain Original posting. Its shared template now carries the
+mandatory PPA `relates_to` extension, so it is no longer that plain input.
+The existing `derive_member` law first refuses a PPA marker on a non-PPA
+case (`FA-REF-202`), before checking the delta-law class/supersession shape.
+My initial status diagnosis called the marker missing; reading the exact
+call and predicate showed that the incompatible marker is present.
+
+The test now checks both contracts separately: the unchanged marked
+template must refuse with `FA-REF-202`; a clone with only the registered
+PPA extension removed must still refuse with the original `FA-REF-178`.
+The original marker-bearing proposal and positive case workflow remain
+unchanged. A new head-equality assertion confirms these derivations write
+nothing. The admitted/rejected split is therefore two valid negative
+fixtures with their distinct strict refusals; no production validator,
+authority, amount, expected success, original assertion or gate is relaxed.
+This source analysis is not a passing rerun. The full target and current
+successor qualification must actually execute before any closure.
