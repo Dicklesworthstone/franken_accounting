@@ -1078,6 +1078,91 @@ fn read_against(
     ))
 }
 
+/// The drift read-back of a kernel-attested T (§5.3): once the case has
+/// moved the cell, `recon.assertion_drift` reports exactly the as-filed
+/// assertion (any attestation but the T's own, whose B still equals the
+/// fold), with the drift's magnitude |B - A| at the unit's scale as its
+/// statistic. The token is `<drift>@attestation:<step>`, or what was seen.
+fn drift_read_back(
+    run: &BookRun<'_>,
+    e: &Expectation,
+    drift: &FindingRun,
+) -> (String, Option<String>) {
+    let published = e.fields.str("published").unwrap_or("-");
+    let Some((b, unit)) = run.value_of(published) else {
+        return (
+            "unread".into(),
+            Some(format!(
+                "expected a [[value]] of published fact {published} observed none"
+            )),
+        );
+    };
+    let scale = super::reads::scale_of(&unit).unwrap_or(0);
+    let own = format!("attestation:{}", e.id);
+    let cited: Vec<(String, &Json)> = drift
+        .findings
+        .iter()
+        .flat_map(|f| {
+            project(run, f)
+                .cites
+                .into_iter()
+                .filter(|c| c.starts_with("attestation:"))
+                .map(move |c| (c, f))
+        })
+        .collect();
+    if cited.iter().any(|(c, _)| *c == own) {
+        return (
+            format!("on:{own}"),
+            Some(format!(
+                "expected no drift finding on {own}, which equals the fold, observed one"
+            )),
+        );
+    }
+    let [(cite, f)] = cited.as_slice() else {
+        return (
+            format!("findings:{}", cited.len()),
+            Some(format!(
+                "expected one drift finding citing the as-filed attestation observed {}",
+                cited.len()
+            )),
+        );
+    };
+    let step = cite.trim_start_matches("attestation:");
+    let asserted = run
+        .assertions
+        .get(step)
+        .and_then(|a| a.balance.split_once(' '))
+        .and_then(|(amount, _)| parse_amount(amount, scale).ok());
+    let Some(a) = asserted else {
+        return (
+            cite.clone(),
+            Some(format!(
+                "expected the asserted balance of {step} observed none"
+            )),
+        );
+    };
+    let stat = f.get("statistic");
+    let field = |k: &str| stat.and_then(|s| s.get(k));
+    let name = field("name").and_then(Json::as_str).unwrap_or("-");
+    let value = field("value").and_then(Json::as_int);
+    let stat_scale = field("scale").and_then(Json::as_int);
+    let want = b.checked_sub(a).and_then(i128::checked_abs);
+    let token = format!(
+        "{}@{cite}",
+        value.map_or_else(|| "-".into(), |v| format_amount(v, scale))
+    );
+    if name != "assertion_drift" || value != want || stat_scale != Some(i128::from(scale)) {
+        let why = format!(
+            "expected drift assertion_drift={} scale={scale} on {cite} observed {name}={} scale={}",
+            want.map_or_else(|| "-".into(), |w| format_amount(w, scale)),
+            value.map_or_else(|| "-".into(), |v| v.to_string()),
+            int_text(stat_scale)
+        );
+        return (token, Some(why));
+    }
+    (token, None)
+}
+
 /// A T row (§5.3): its certified read equals its published value; a
 /// `per_account` T is kernel-attested, so its `assert_balance` step must
 /// have recorded B as a RegisterEquals attestation that holds, and its twins
@@ -1177,6 +1262,12 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
                     }
                 }
             }
+        }
+        // §5.3's drift read-back, when the book records the drift run.
+        if let Some(drift) = run.runs.get("recon.assertion_drift") {
+            let (token, why) = drift_read_back(run, e, drift);
+            row.projection.push(("drift".into(), token));
+            fails.extend(why);
         }
     }
     let mut witnesses = vec![("kind".to_string(), kind.to_string())];

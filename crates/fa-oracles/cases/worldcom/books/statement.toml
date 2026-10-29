@@ -337,8 +337,18 @@ ref = "W-T-02"
 principal = "case-reconciler-1"
 evidence = "DOC-406"
 
+# The drift read-back (plan §5.3): after the case, recon.assertion_drift reports the as-filed
+# assertion of A, moved by the two deltas (|B - A| = 54,539,000,000.00); B's own attestation
+# still equals the fold, so it reports nothing on it.
 [[step]]
 seq = 21
+kind = "finding_record"
+ref = "recon.assertion_drift@1"
+known_at = "head"
+principal = "examiner-1"
+
+[[step]]
+seq = 22
 kind = "checkpoint"
 ref = "restated"
 principal = "examiner-witness"
