@@ -106,6 +106,16 @@ debug = "line-tables-only"
 incremental = false
 overflow-checks = true
 
+# Every `fa` and `fad` process parses and validates the embedded verbs.toml
+# (660 KB) when it starts. Unoptimized, that costs about 30 ms of CPU, 96% of
+# a trivial call, and every CLI test pays it once per invocation. These two
+# crates hold that path; overflow checks stay on.
+[profile.dev.package.fa-registry]
+opt-level = 3
+
+[profile.dev.package.fa-verbs]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 overflow-checks = true
