@@ -72,6 +72,7 @@ pub mod normalize;
 pub mod observe;
 pub mod outsider_kind;
 pub mod phrases;
+pub mod policy;
 pub mod receipt;
 pub mod reference;
 pub mod rel;
