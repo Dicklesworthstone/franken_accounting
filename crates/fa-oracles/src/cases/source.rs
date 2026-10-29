@@ -172,7 +172,9 @@ pub(crate) fn parse_rows(
         let src_status_raw = r.req_str("status", errs);
         let status_reason = r.opt_str("status_reason", errs);
         let notes = r.opt_str("notes", errs);
-        let filed_on = r.opt_str("filed_on", errs);
+        // Every row states its vintage (§4.1, K-VINTAGE): a date, or empty
+        // when the document gives none.
+        let filed_on = Some(r.req_str("filed_on", errs));
         let restates = r.opt_strs("restates", errs);
         r.finish(&[], "", errs);
 

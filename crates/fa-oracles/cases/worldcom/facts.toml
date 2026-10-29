@@ -1,0 +1,211 @@
+# WorldCom facts (plan §6, §15 W1/W2). Hash-first (§1.3, §4.4): each sourced fact carries its
+# anchor and the SHA-256 of its sentence-aligned normalized quote, never the quote text, until
+# owner decision 2a. `case_fetch.py verify worldcom` re-finds every quote and writes receipts.toml.
+#
+# W1's pilot slice: the Beresford (SRC-WC-001) sentences stating F2, F4 (p.108), F9 and F12, and
+# the sentence naming each pilot entry's reporting period. W2 adds F1-F13 and keeps these ids and
+# values; A8 adds the interpretations (F4 joins F4F5-p108 with p.26's exact amount, which lands
+# with it, since its `entry:F4` scope needs that interpretation).
+#
+# One fact per sentence (§6.2). p.108 l.7 states both of the 2001-07-17 entries (F4's $560M to
+# Construction in Progress and F5's $50M to SG&A) in one sentence, and p.116 l.3 both 1Q02 entries
+# (F12 $718M, F13 $100M), so each is one sourced fact over its quarter; F4/F5 and F12/F13 are
+# interpretations of it. A period fact serves every entry of its quarter: W2 cites F2-period for
+# F1 and F3, F9-period for F6-F8.
+#
+# The entry sentences on pp.106, 108, 113 and 116 give their booking days without a year
+# ("April 23 and 24", "July 17", "October 19", "April 12"), which date_literal and
+# date_range_literal refuse, so no booking-date [[value]] rests on them; the year comes from the
+# reporting period (W2 decides the derivation).
+
+[[fact]]
+id = "F2-period"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p105:l7-7"
+quote_sha256 = "a66561ec7fdfae63161e4c54f4bc2ba62943abee30744c458dc225a19345a6e2"
+about_scope = "period:2001Q1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F2"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p106:l5-5"
+quote_sha256 = "507d686b1068e6647fe81659e5810929534179acf11877d38accc0b6430202c3"
+about_scope = "entry:F2"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F4F5-period"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p108:l5-5"
+quote_sha256 = "9b350eddc05c8ea8029c150c5a52294efa5bed5ec0ba4d9b2c7d675828ca5de8"
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F4F5-p108"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p108:l7-7"
+quote_sha256 = "5e686574a7044cc6340bfd4f3dfceeff0ec5d4191de679eb8438556514d1f7e0"
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F9-period"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p110:l3-3"
+quote_sha256 = "c7ffcb92a332c00b685392669d9dfecf7ee8b74fbcc5b65948e6e5416cb4e9b5"
+about_scope = "period:2001Q3"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F9"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p113:l3-3"
+quote_sha256 = "eddbf0b77b3aef09e93cc6dad482b962e60aa11347a729c11c5b1b9c3056aadf"
+about_scope = "entry:F9"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F12F13-period"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p116:l3-3"
+quote_sha256 = "06f5c2445ec24734d91a8e044ecf8b8f3f044f10a39199dbf6a498166967a2d6"
+about_scope = "period:2002Q1"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F12F13-p116"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p116:l3-3"
+quote_sha256 = "ee05faa29e7fb1044d45bfd0908360c05234b8e57ee421cb203da06e3cbbe92d"
+about_scope = "period:2002Q1"
+granularity = "journal_entry"
+
+[[value]]
+fact = "F2-period"
+ordinal = 1
+literal = "First Quarter 2001"
+rule = "period_literal"
+value = "2001Q1"
+unit = ""
+
+[[value]]
+fact = "F2"
+ordinal = 1
+literal = "$402 million"
+rule = "scale"
+param = 6
+value = "40200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F4F5-period"
+ordinal = 1
+literal = "the second quarter of 2001"
+rule = "period_literal"
+value = "2001Q2"
+unit = ""
+
+[[value]]
+fact = "F4F5-p108"
+ordinal = 1
+literal = "$610 million"
+rule = "scale"
+param = 6
+value = "61000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F4F5-p108"
+ordinal = 2
+literal = "$560 million"
+rule = "scale"
+param = 6
+value = "56000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F4F5-p108"
+ordinal = 3
+literal = "$50 million"
+rule = "scale"
+param = 6
+value = "5000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F9-period"
+ordinal = 1
+literal = "Third Quarter 2001"
+rule = "period_literal"
+value = "2001Q3"
+unit = ""
+
+[[value]]
+fact = "F9"
+ordinal = 1
+literal = "$742,725,000"
+rule = "scale"
+param = 0
+value = "74272500000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F12F13-period"
+ordinal = 1
+literal = "the first quarter 2002"
+rule = "period_literal"
+value = "2002Q1"
+unit = ""
+
+[[value]]
+fact = "F12F13-p116"
+ordinal = 1
+literal = "$818 million"
+rule = "scale"
+param = 6
+value = "81800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F12F13-p116"
+ordinal = 2
+literal = "$718 million"
+rule = "scale"
+param = 6
+value = "71800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F12F13-p116"
+ordinal = 3
+literal = "$100 million"
+rule = "scale"
+param = 6
+value = "10000000000"
+unit = "USD"
+precision = 6

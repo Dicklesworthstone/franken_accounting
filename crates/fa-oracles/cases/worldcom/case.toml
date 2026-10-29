@@ -1,0 +1,13 @@
+# WorldCom line-cost capitalization (plan §6). W1's minimal header (§15 W1): the sources ledger,
+# the pilot slice's sourced facts and their receipts, no claims yet. A8 adds `claims` and
+# `capabilities`, W3 adds `variants` and the books.
+id = "worldcom"
+letter = "W"
+title = "WorldCom line-cost capitalization, 2001 to 1Q02"
+version = 1
+kind = "case"
+scope = "the documented line-cost capitalization entries of 2001 and 1Q02 (sources and receipts only until A8)"
+claims = []
+capabilities = []
+pinned_commit = "3f0af70f0"
+variants = []

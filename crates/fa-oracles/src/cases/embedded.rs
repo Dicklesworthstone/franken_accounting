@@ -15,7 +15,7 @@ pub struct EmbeddedCase {
 }
 
 /// Every committed case.
-pub const CASES: &[EmbeddedCase] = &[SELFTEST];
+pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM];
 
 /// The harness self-test (A7a; A8a completes it).
 pub const SELFTEST: EmbeddedCase = EmbeddedCase {
@@ -37,6 +37,27 @@ pub const SELFTEST: EmbeddedCase = EmbeddedCase {
         (
             "expectations.toml",
             include_str!("../../cases/_selftest/expectations.toml"),
+        ),
+    ],
+};
+
+/// WorldCom (W1: the sources ledger, the pilot slice's sourced facts and
+/// their receipts; A8 and W2-W9 add the rest).
+pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
+    id: "worldcom",
+    files: &[
+        ("case.toml", include_str!("../../cases/worldcom/case.toml")),
+        (
+            "sources.toml",
+            include_str!("../../cases/worldcom/sources.toml"),
+        ),
+        (
+            "facts.toml",
+            include_str!("../../cases/worldcom/facts.toml"),
+        ),
+        (
+            "receipts.toml",
+            include_str!("../../cases/worldcom/receipts.toml"),
         ),
     ],
 };

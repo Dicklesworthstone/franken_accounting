@@ -1,0 +1,24 @@
+# WorldCom sources ledger (plan §4.1, §6.1, §15 W1). Hand-authored. Facts may cite only `OK`
+# rows. Retrieval is archive-first until owner decision 1 grants a sec.gov contact
+# (`FA_SEC_CONTACT`): an Internet Archive capture, `original_hash_compared = false`.
+# `case_fetch.py fetch worldcom` re-downloads each OK row and must reproduce its `sha256`.
+
+[[source]]
+id = "SRC-WC-001"
+title = "Report of Investigation by the Special Investigative Committee of the Board of Directors of WorldCom, Inc."
+publisher = "WorldCom, Inc. (EDGAR exhibit 99.1)"
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000093176303001862/dex991.htm"
+archive_url = "http://web.archive.org/web/20110604154603id_/http://www.sec.gov/Archives/edgar/data/723527/000093176303001862/dex991.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-29T01:59:22Z"
+sha256 = "84b4a1222856af6c1fd10c5002868cbbf289e7c7b2c02204e25d306909a03d43"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"]
+redistribution_basis = "company-commissioned/edgar-exhibit"
+assertion_status = "investigative_finding"
+anchor_scheme = ["page"]
+status = "OK"
+filed_on = "2003-06-09"
+restates = []
+notes = "Accession 0000931763-03-001862, an 8-K (FILED AS OF DATE 20030609 in the archived submission header); the report is dated 2003-03-31. The 2011-06-04 capture is 1,250,212 bytes: the HTML inside EDGAR's SGML document wrapper (102-byte header, 22-byte trailer). The archived accession directory listing (2024-01-15) gives dex991.htm as 1,250,094 bytes, so these bytes are not shown to be the original's. A 2026-10-05 capture (1,250,323 bytes, with an injected script element) yields the same extraction."
