@@ -1,6 +1,9 @@
-# WorldCom's native book (plan §3.2a, §6.2, §6.3, §15 A8): the four pilot entries F2, F4, F9 and
-# F12 posted as the record describes them, each amount cited to a sourced [[value]] row, each
-# encoding choice a declared default below or a branch class.
+# WorldCom's native book (plan §3.2a, §6.2, §6.3, §15 A8, W3): the documented entries posted as
+# the record describes them, each amount cited to a sourced [[value]] row, each encoding choice a
+# declared default below or a branch class. A8's pilot posted F2, F4, F9 and F12; W3 adds F1, F3,
+# F5, F6 (as F6a into the asset clearing account and F6b, the allocation out of it to ten Fiber Optic
+# Cable sub-ledger items), F7 (likewise, F7a/F7b, the $0.2 million that remained, an eleventh item),
+# F8, F10, F11 and F13.
 
 [book]
 variant = "native"
@@ -58,6 +61,16 @@ grants = ["read", "post"]
 
 [[principal]]
 label = "property-accounting-director-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "gen-acct-manager-2"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "property-accounting-specialist-1"
 profile = "Human"
 grants = ["read", "post"]
 
@@ -152,6 +165,186 @@ role = ""
 opened = "2000-12-31"
 role_map_rule = "role_map"
 
+# furniture and fixtures a (F10's "furniture and fixture accounts")
+[[account]]
+code = "1530"
+name_fact = "F10"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# furniture and fixtures b
+[[account]]
+code = "1531"
+name_fact = "F10"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Ocean Cable
+[[account]]
+code = "1540"
+name_fact = "F8"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Computer Equipment
+[[account]]
+code = "1541"
+name_fact = "F8"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable (F8's leaf)
+[[account]]
+code = "1542"
+name_fact = "F8"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Ocean Cable Liability accrual
+[[account]]
+code = "2100"
+name_fact = "F3"
+type = "Liability"
+role = "accrued_expense"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# the general corporate accrual
+[[account]]
+code = "2110"
+name_fact = "F11"
+type = "Liability"
+role = "accrued_expense"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# SG&A expenses
+[[account]]
+code = "6200"
+name_fact = "F5"
+type = "Expense"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# the asset clearing account F6 and F7 pass through
+[[account]]
+code = "1590"
+name_fact = "F6"
+type = "Asset"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 01 of F6's ten
+[[account]]
+code = "1551"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 02 of F6's ten
+[[account]]
+code = "1552"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 03 of F6's ten
+[[account]]
+code = "1553"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 04 of F6's ten
+[[account]]
+code = "1554"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 05 of F6's ten
+[[account]]
+code = "1555"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 06 of F6's ten
+[[account]]
+code = "1556"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 07 of F6's ten
+[[account]]
+code = "1557"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 08 of F6's ten
+[[account]]
+code = "1558"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 09 of F6's ten
+[[account]]
+code = "1559"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# Fiber Optic Cable sub-ledger item 10 of F6's ten
+[[account]]
+code = "1560"
+name_fact = "F6"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+# the eleventh item, F7's $0.2 million (the report's "11 assets")
+[[account]]
+code = "1561"
+name_fact = "F7"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
 [[document]]
 id = "DOC-PH-F2"
 stub_of = "placeholder:F2"
@@ -177,6 +370,60 @@ grade = "AgentUpload"
 reviewed_by = "case-second-reader"
 
 [[document]]
+id = "DOC-PH-F1"
+stub_of = "placeholder:F1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F3"
+stub_of = "placeholder:F3"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F5"
+stub_of = "placeholder:F5"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F8"
+stub_of = "placeholder:F8"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F10"
+stub_of = "placeholder:F10"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F11"
+stub_of = "placeholder:F11"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F13"
+stub_of = "placeholder:F13"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F6"
+stub_of = "placeholder:F6"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F7"
+stub_of = "placeholder:F7"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
 id = "DOC-406"
 stub_of = "SRC-WC-406"
 grade = "AgentUpload"
@@ -186,7 +433,7 @@ reviewed_by = "case-second-reader"
 id = "F2"
 fact = "F2"
 class = "Original"
-principal = "property-accounting-director-1"
+principal = "gen-acct-manager-2"
 effective_date = "2001-03-31"
 memo = "OLTA to CIP"
 evidence = "DOC-PH-F2"
@@ -216,11 +463,128 @@ idempotency_key = "wc-F9"
 id = "F12"
 fact = "F12"
 class = "Original"
-principal = "property-accounting-director-1"
+principal = "gen-acct-manager-1"
 effective_date = "2002-03-31"
 memo = "line cost expense to capital"
 evidence = "DOC-PH-F12"
 idempotency_key = "wc-F12"
+
+[[intent]]
+id = "F1"
+fact = "F1"
+class = "Original"
+principal = "gen-acct-manager-2"
+effective_date = "2001-03-31"
+memo = "line costs to OLTA and CIP"
+evidence = "DOC-PH-F1"
+idempotency_key = "wc-F1"
+
+[[intent]]
+id = "F3"
+fact = "F3"
+class = "Original"
+principal = "property-accounting-director-1"
+effective_date = "2001-03-31"
+memo = "OLTA offset by an accrual release"
+evidence = "DOC-PH-F3"
+idempotency_key = "wc-F3"
+
+[[intent]]
+id = "F5"
+fact = "F5"
+class = "Original"
+principal = "gen-acct-manager-1"
+effective_date = "2001-06-30"
+memo = "line costs to SG&A"
+evidence = "DOC-PH-F5"
+idempotency_key = "wc-F5"
+
+[[intent]]
+id = "F8"
+fact = "F8"
+class = "Original"
+principal = "property-accounting-specialist-1"
+effective_date = "2001-09-30"
+memo = "CIP to twelve assets"
+evidence = "DOC-PH-F8"
+idempotency_key = "wc-F8"
+
+[[intent]]
+id = "F10"
+fact = "F10"
+class = "Original"
+principal = "gen-acct-manager-1"
+effective_date = "2001-12-31"
+memo = "line cost expense to furniture and fixtures"
+evidence = "DOC-PH-F10"
+idempotency_key = "wc-F10"
+
+[[intent]]
+id = "F11"
+fact = "F11"
+class = "Original"
+principal = "property-accounting-director-1"
+effective_date = "2001-12-31"
+memo = "an asset account offset by an accrual release"
+evidence = "DOC-PH-F11"
+idempotency_key = "wc-F11"
+
+[[intent]]
+id = "F13"
+fact = "F13"
+class = "Original"
+principal = "gen-acct-manager-1"
+effective_date = "2002-03-31"
+memo = "line cost expense to capital"
+evidence = "DOC-PH-F13"
+idempotency_key = "wc-F13"
+
+[[intent]]
+id = "F6a"
+fact = "F6"
+class = "Original"
+principal = "property-accounting-director-1"
+effective_date = "2001-09-30"
+memo = "CIP to the asset clearing account"
+evidence = "DOC-PH-F6"
+idempotency_key = "wc-F6a"
+
+# F6b: the clearing account cleared into ten equal items by the registered law (W-T-04 reads the
+# computed legs); the sourced "$54.4 million" each is never posted, only the total.
+[[intent]]
+id = "F6b"
+fact = "F6"
+class = "Allocation"
+principal = "property-accounting-director-1"
+effective_date = "2001-09-30"
+memo = "the asset clearing account to ten Fiber Optic Cable items"
+evidence = "DOC-PH-F6"
+idempotency_key = "wc-F6b"
+allocation_law = "EqualSplitResidualFirst"
+allocation_total = "544000000.00"
+allocation_source = "1590"
+allocation_source_side = "credit"
+allocation_targets = ["1551", "1552", "1553", "1554", "1555", "1556", "1557", "1558", "1559", "1560"]
+
+[[intent]]
+id = "F7a"
+fact = "F7"
+class = "Original"
+principal = "property-accounting-specialist-1"
+effective_date = "2001-09-30"
+memo = "the remaining CIP to the asset clearing account"
+evidence = "DOC-PH-F7"
+idempotency_key = "wc-F7a"
+
+[[intent]]
+id = "F7b"
+fact = "F7"
+class = "Original"
+principal = "property-accounting-specialist-1"
+effective_date = "2001-09-30"
+memo = "the asset clearing account to the eleventh item"
+evidence = "DOC-PH-F7"
+idempotency_key = "wc-F7b"
 
 [[intent]]
 id = "delta-F4"
@@ -365,6 +729,224 @@ amount_rule = "value:F12F13-p116#2"
 unit = "USD"
 
 [[leg]]
+intent = "F1"
+ordinal = 0
+account = "1400"
+side = "Dr"
+amount_literal = "629000000.00"
+amount_rule = "value:F1-p106a#2"
+unit = "USD"
+
+[[leg]]
+intent = "F1"
+ordinal = 1
+account = "1500"
+side = "Dr"
+amount_literal = "142000000.00"
+amount_rule = "value:F1-p106a#3"
+unit = "USD"
+
+[[leg]]
+intent = "F1"
+ordinal = 2
+account = "6100"
+side = "Cr"
+amount_literal = "771000000.00"
+amount_rule = "value:F1-p106a#1"
+unit = "USD"
+
+[[leg]]
+intent = "F3"
+ordinal = 0
+account = "2100"
+side = "Dr"
+amount_literal = "227000000.00"
+amount_rule = "value:F3#1"
+unit = "USD"
+
+[[leg]]
+intent = "F3"
+ordinal = 1
+account = "1400"
+side = "Cr"
+amount_literal = "227000000.00"
+amount_rule = "value:F3#1"
+unit = "USD"
+
+[[leg]]
+intent = "F5"
+ordinal = 0
+account = "6200"
+side = "Dr"
+amount_literal = "50000000.00"
+amount_rule = "value:F4F5-p108#3"
+unit = "USD"
+
+[[leg]]
+intent = "F5"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "50000000.00"
+amount_rule = "value:F4F5-p108#3"
+unit = "USD"
+
+[[leg]]
+intent = "F8"
+ordinal = 0
+account = "1540"
+side = "Dr"
+amount_literal = "250000000.00"
+amount_rule = "value:F8-p111b#2"
+unit = "USD"
+
+[[leg]]
+intent = "F8"
+ordinal = 1
+account = "1541"
+side = "Dr"
+amount_literal = "150000000.00"
+amount_rule = "value:F8-p111b#4"
+unit = "USD"
+
+[[leg]]
+intent = "F8"
+ordinal = 2
+account = "1542"
+side = "Dr"
+amount_literal = "160000000.00"
+amount_rule = "value:F8-p111b#6"
+unit = "USD"
+
+[[leg]]
+intent = "F8"
+ordinal = 3
+account = "1500"
+side = "Cr"
+amount_literal = "560000000.00"
+amount_rule = "value:F8-p111a#3"
+unit = "USD"
+
+# F10's debit is over "furniture and fixture accounts" (plural) with the split unsourced
+# (plan §6.2): one leg per named account, amounts a branch; the literals are one member.
+[[leg]]
+intent = "F10"
+ordinal = 0
+account = "1530"
+side = "Dr"
+amount_literal = "470500000.00"
+amount_rule = "branch:bc-F10-debit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F10"
+ordinal = 1
+account = "1531"
+side = "Dr"
+amount_literal = "470500000.00"
+amount_rule = "branch:bc-F10-debit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F10"
+ordinal = 2
+account = "6100"
+side = "Cr"
+amount_literal = "941000000.00"
+amount_rule = "value:F10-p114#2"
+unit = "USD"
+
+[[leg]]
+intent = "F11"
+ordinal = 0
+account = "2110"
+side = "Dr"
+amount_literal = "100000000.00"
+amount_rule = "value:F11-p114#2"
+unit = "USD"
+
+[[leg]]
+intent = "F11"
+ordinal = 1
+account = "1530"
+side = "Cr"
+amount_literal = "100000000.00"
+amount_rule = "value:F11-p114#2"
+unit = "USD"
+
+[[leg]]
+intent = "F13"
+ordinal = 0
+account = "1520"
+side = "Dr"
+amount_literal = "100000000.00"
+amount_rule = "value:F12F13-p116#3"
+unit = "USD"
+
+[[leg]]
+intent = "F13"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "100000000.00"
+amount_rule = "value:F12F13-p116#3"
+unit = "USD"
+
+[[leg]]
+intent = "F6a"
+ordinal = 0
+account = "1590"
+side = "Dr"
+amount_literal = "544000000.00"
+amount_rule = "value:F6-p111#2"
+unit = "USD"
+
+[[leg]]
+intent = "F6a"
+ordinal = 1
+account = "1500"
+side = "Cr"
+amount_literal = "544000000.00"
+amount_rule = "value:F6-p111#2"
+unit = "USD"
+
+[[leg]]
+intent = "F7a"
+ordinal = 0
+account = "1590"
+side = "Dr"
+amount_literal = "200000.00"
+amount_rule = "value:F7#2"
+unit = "USD"
+
+[[leg]]
+intent = "F7a"
+ordinal = 1
+account = "1500"
+side = "Cr"
+amount_literal = "200000.00"
+amount_rule = "value:F7#2"
+unit = "USD"
+
+[[leg]]
+intent = "F7b"
+ordinal = 0
+account = "1561"
+side = "Dr"
+amount_literal = "200000.00"
+amount_rule = "value:F7#2"
+unit = "USD"
+
+[[leg]]
+intent = "F7b"
+ordinal = 1
+account = "1590"
+side = "Cr"
+amount_literal = "200000.00"
+amount_rule = "value:F7#2"
+unit = "USD"
+
+[[leg]]
 intent = "delta-F4"
 ordinal = 0
 account = "1500"
@@ -443,6 +1025,12 @@ rule = "round_residue_legs"
 values = ["multiple", "non_multiple"]
 
 [[branch_class]]
+id = "bc-F10-debit-split"
+attribute = "leg_split"
+rule = "round_residue_legs"
+values = ["multiple", "non_multiple"]
+
+[[branch_class]]
 id = "bc-F9-debit-legs"
 attribute = "leg_split"
 rule = "capitalized_debit_legs"
@@ -485,7 +1073,7 @@ rationale = "the record describes the entries' documents without publishing them
 [[default]]
 attribute = "acting_principal"
 rule = "role_of_record"
-rationale = "the role the record names prepared the entry; where it names none, the property accounting director, who directed the transfers"
+rationale = "the role the record names booked the entry (F1, F2: the 1Q01 manager; F4, F5, F10, F12, F13: the 2Q01 manager; F8: the property accounting specialist); where it names none (F3, F9, F11), the property accounting director, who directed the transfers"
 
 [[default]]
 attribute = "case_determination_date"
@@ -549,18 +1137,28 @@ ref = "2002Q2"
 principal = "case-closer-1"
 
 [[step]]
+seq = 9
+kind = "intent"
+ref = "F1"
+
+[[step]]
 seq = 10
 kind = "intent"
 ref = "F2"
 
 [[step]]
 seq = 11
+kind = "intent"
+ref = "F3"
+
+[[step]]
+seq = 12
 kind = "period_close"
 ref = "2001Q1"
 principal = "case-closer-1"
 
 [[step]]
-seq = 12
+seq = 13
 kind = "period_lock"
 ref = "2001Q1"
 principal = "case-closer-1"
@@ -573,9 +1171,39 @@ ref = "F4"
 
 [[step]]
 seq = 21
+kind = "intent"
+ref = "F5"
+
+[[step]]
+seq = 22
 kind = "period_close"
 ref = "2001Q2"
 principal = "case-closer-1"
+
+[[step]]
+seq = 24
+kind = "intent"
+ref = "F6a"
+
+[[step]]
+seq = 25
+kind = "allocate"
+ref = "F6b"
+
+[[step]]
+seq = 26
+kind = "intent"
+ref = "F7a"
+
+[[step]]
+seq = 27
+kind = "intent"
+ref = "F7b"
+
+[[step]]
+seq = 29
+kind = "intent"
+ref = "F8"
 
 [[step]]
 seq = 30
@@ -590,6 +1218,16 @@ principal = "case-closer-1"
 
 [[step]]
 seq = 32
+kind = "intent"
+ref = "F10"
+
+[[step]]
+seq = 33
+kind = "intent"
+ref = "F11"
+
+[[step]]
+seq = 34
 kind = "period_close"
 ref = "2001Q4"
 principal = "case-closer-1"
@@ -601,6 +1239,11 @@ ref = "F12"
 
 [[step]]
 seq = 41
+kind = "intent"
+ref = "F13"
+
+[[step]]
+seq = 42
 kind = "period_close"
 ref = "2002Q1"
 principal = "case-closer-1"
