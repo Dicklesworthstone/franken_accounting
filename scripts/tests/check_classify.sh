@@ -43,6 +43,7 @@ HDR
 sed -n '/^hash_file() {/,/^gate_init /{ /^gate_init /!p; }' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
 sed -n '/^run_step() {/,/^run_gate() {/{ /^run_gate() {/!p; }' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
 sed -n '/^run_gate() {/,/^}/p' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
+sed -n '/^run_invariant_gates() {/,/^}/p' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
 
 # Helper that runs a single step through check.sh's actual run_step or cargo_build
 # in a subshell and echoes the recorded status from step-verdicts.jsonl.
@@ -450,6 +451,51 @@ EOF
   gate_pass "run_gate_protects_the_step_manifest (truncation blocked, earlier record kept; a changed manifest fails the step)"
 }
 
+# The invariant gates judge the transcript only after a passing test step:
+# with the test step UNRUN both are recorded UNRUN and neither checker runs;
+# with it PASS both run.
+invariant_gates_wait_for_a_passing_test_step() {
+  local dir="$base/invariants" status out
+  mkdir -p "$dir/scripts/tests" "$dir/registries"
+  cat > "$dir/scripts/invariants_check.sh" <<'EOF'
+#!/usr/bin/env bash
+touch "$INVARIANTS_RAN"
+exit 0
+EOF
+  cp "$dir/scripts/invariants_check.sh" "$dir/scripts/tests/invariants_negative.sh"
+  for status in UNRUN PASS; do
+    out="$dir/$status"
+    mkdir -p "$out/logs"
+    (
+      export CHECK_LOG_DIR="$out/logs" CHECK_STEP_MANIFEST="$out/step-verdicts.jsonl"
+      export INVARIANTS_RAN="$out/ran-invariants"
+      # shellcheck source=../lib/gate_verdict.sh
+      . "$SOURCE_ROOT/scripts/lib/gate_verdict.sh"
+      gate_init "inner"
+      # shellcheck disable=SC1090
+      . "$harness"
+      # shellcheck disable=SC2034  # read by run_invariant_gates.
+      ROOT="$dir"
+      printf '{"step":"test","status":"%s"}\n' "$status" >> "$STEP_MANIFEST"
+      run_invariant_gates
+    ) > "$out/stdout.log" 2>&1
+    if [ "$status" = UNRUN ]; then
+      if [ -e "$out/ran-invariants" ] \
+        || [ "$(grep -c '"status":"UNRUN"' "$out/step-verdicts.jsonl")" -ne 3 ] \
+        || ! grep -q '^UNRUN invariants — the test step did not pass' "$out/stdout.log" \
+        || ! grep -q '^UNRUN invariants-negative — the test step did not pass' "$out/stdout.log"; then
+        gate_fail "invariant_gates_wait_for_a_passing_test_step — with the test step UNRUN: $(tr '\n' '|' < "$out/stdout.log")"
+        return 1
+      fi
+    elif [ ! -e "$out/ran-invariants" ] || ! grep -q '^PASS invariants ' "$out/stdout.log" \
+      || ! grep -q '^PASS invariants-negative ' "$out/stdout.log"; then
+      gate_fail "invariant_gates_wait_for_a_passing_test_step — with the test step PASS the gates did not run: $(tr '\n' '|' < "$out/stdout.log")"
+      return 1
+    fi
+  done
+  gate_pass "invariant_gates_wait_for_a_passing_test_step (UNRUN test step: both UNRUN, nothing judged; PASS: both run)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
@@ -457,5 +503,6 @@ split_test_job_list_covers_the_workspace
 check_summary_matches_the_proof_verifier
 ubs_scan_classifies_each_package_scan
 run_gate_protects_the_step_manifest
+invariant_gates_wait_for_a_passing_test_step
 
 gate_verdict
