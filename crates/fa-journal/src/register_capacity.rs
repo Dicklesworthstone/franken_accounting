@@ -279,6 +279,10 @@ pub struct CapacityHistory {
     /// The delta rows examined to carry this summary forward, or `None` when
     /// it was summarized from the whole book.
     carried_rows: Option<u64>,
+    /// Work of the last admission attempt, separate from carrying the
+    /// committed prefix. A carried prefix alone does not prove that admission
+    /// avoided the literal scan.
+    admission: SummaryAdmission,
 }
 
 impl CapacityHistory {
@@ -301,6 +305,27 @@ impl CapacityHistory {
     pub fn summarized(&self) -> bool {
         self.cells.is_some()
     }
+
+    /// Whether the last carried admission answered from the summary rather
+    /// than falling back to the literal whole-book capacity scan. This does
+    /// not count the initial construction or later extension of the summary.
+    #[must_use]
+    pub fn admitted_from_summary(&self) -> bool {
+        self.admission.fits
+    }
+
+    /// Original Pending targets point-read by the last carried admission.
+    /// This excludes the earlier history extension and any literal fallback.
+    #[must_use]
+    pub fn resolution_targets_read(&self) -> usize {
+        self.admission.targets_read
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct SummaryAdmission {
+    fits: bool,
+    targets_read: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -433,6 +458,7 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
         marker,
         cells: None,
         carried_rows: None,
+        admission: SummaryAdmission::default(),
     };
     let Some(spec) = crate::genesis::read_book_spec_at(db, at)? else {
         return Ok(unusable);
@@ -464,6 +490,7 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
         marker,
         cells: Some(cells),
         carried_rows: None,
+        admission: SummaryAdmission::default(),
     })
 }
 
@@ -491,6 +518,7 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
             marker,
             cells: None,
             carried_rows: Some(0),
+            admission: SummaryAdmission::default(),
         }));
     };
     let mut born = Vec::new();
@@ -572,14 +600,18 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
         marker,
         cells: usable.then_some(cells),
         carried_rows: Some(examined),
+        admission: SummaryAdmission::default(),
     }))
 }
 
 /// Whether the summarized columns plus the staged and proposed legs fit, for
 /// the affected accounts. `true` only where the scan would also admit: no
-/// staged Resolution or migration chunk, every leg valid, every final column
-/// within the maximum (legs are nonnegative, so every partial sum is too).
-/// The scan's witnesses are read the same way.
+/// migration chunk, every leg valid, every final column within the maximum.
+/// Resolutions remove their original Pending vectors before any additions,
+/// including new holds in the same atomic batch. Only columns touched by
+/// these effects are copied from the summary; unrelated history is not read.
+/// Anything this shortcut cannot prove still receives the original scan and
+/// its original first error. The scan's account witnesses are retained.
 fn fits<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
@@ -588,72 +620,132 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
     accounts: &BTreeSet<VId>,
     staged: &[VId],
     extra: Option<(VId, &Entry)>,
-) -> Result<bool, KernelError> {
+) -> Result<SummaryAdmission, KernelError> {
+    let mut admission = SummaryAdmission::default();
     for account in accounts {
         txn.vertex(db, *account)?;
     }
     if cells.book_id != book_id || cells.maximum != maximum()? {
-        return Ok(false);
+        return Ok(admission);
     }
     match crate::genesis::read_book_spec_at(db, txn.basis())? {
         Some(spec) if spec.base_unit == cells.base => {}
-        _ => return Ok(false),
+        _ => return Ok(admission),
     }
-    let mut proposed = Vec::new();
+    // The literal scan overlays staged identities in a map. Preserve that
+    // set rather than charging a repeated staged identity more than once.
+    let mut proposed = BTreeMap::new();
     for vid in staged {
         if let Some(row) = txn.vertex(db, *vid)?
             && row.labels.contains(&label::ENTRY)
         {
             let Ok(bytes) = crate::rows::bytes(&row, property::FA_PAYLOAD, "entry._fa_payload")
             else {
-                return Ok(false);
+                return Ok(admission);
             };
             let Ok(entry) = Entry::decode(&bytes) else {
-                return Ok(false);
+                return Ok(admission);
             };
             if entry.proposal.book_id == book_id && entry.proposal.branch_id == Id128::TRUNK {
-                proposed.push(entry);
+                proposed.insert(*vid, entry);
             }
         }
     }
-    if let Some((_, entry)) = extra {
-        proposed.push(entry.clone());
+    if let Some((vid, entry)) = extra {
+        proposed.entry(vid).or_insert_with(|| entry.clone());
+    }
+    let mut releases = BTreeMap::new();
+    for entry in proposed.values() {
+        if matches!(entry.proposal.origin, EntryOrigin::Migration { .. }) {
+            return Ok(admission);
+        }
+        if entry.proposal.class == EntryClass::RESOLUTION {
+            let Some(target) = entry
+                .proposal
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.resolution_of)
+            else {
+                return Ok(admission);
+            };
+            if cells.released.contains(&target.vid)
+                || releases.insert(target.vid, target.entry_digest).is_some()
+            {
+                return Ok(admission);
+            }
+        }
     }
     let mut columns: BTreeMap<(VId, UnitId, bool), [i128; 4]> = BTreeMap::new();
-    for entry in &proposed {
-        if entry.proposal.class == EntryClass::RESOLUTION
-            || matches!(entry.proposal.origin, EntryOrigin::Migration { .. })
-        {
-            return Ok(false);
+    for (target, digest) in &releases {
+        admission.targets_read = admission.targets_read.saturating_add(1);
+        let original = match entry_at(db, book_id, *target, txn.basis())? {
+            Ok(original) => original,
+            Err(()) => return Ok(admission),
+        };
+        // An original born inside this batch has never contributed to the
+        // committed summary. It is omitted below, not subtracted from an
+        // older hold that happens to use the same account and unit.
+        let Some(hold) = original.as_ref().or_else(|| proposed.get(target)) else {
+            return Ok(admission);
+        };
+        if hold.proposal.class != EntryClass::PENDING || hold.entry_digest != *digest {
+            return Ok(admission);
         }
-        let pending = entry.proposal.class == EntryClass::PENDING;
-        for leg in &entry.proposal.legs {
-            if !accounts.contains(&leg.account_ref) {
-                continue;
-            }
-            let column = usize::from(pending) * 2 + usize::from(leg.side == Side::Credit);
-            let Ok(legs) = leg_columns(leg, cells.base) else {
-                return Ok(false);
-            };
-            for (unit, functional, mantissa) in legs {
-                if mantissa < 0 {
-                    return Ok(false);
-                }
-                let key = (leg.account_ref, unit, functional);
-                let cell = columns
-                    .entry(key)
-                    .or_insert_with(|| cells.columns.get(&key).copied().unwrap_or_default());
-                let Some(next) = cell[column]
-                    .checked_add(mantissa)
-                    .filter(|v| *v <= cells.maximum)
-                else {
-                    return Ok(false);
-                };
-                cell[column] = next;
-            }
+        if original.is_some() && !fit_columns(cells, accounts, &mut columns, hold, true) {
+            return Ok(admission);
         }
     }
-    Ok(true)
+    for (vid, entry) in &proposed {
+        if entry.proposal.class == EntryClass::PENDING && releases.contains_key(vid) {
+            continue;
+        }
+        if !fit_columns(cells, accounts, &mut columns, entry, false) {
+            return Ok(admission);
+        }
+    }
+    admission.fits = true;
+    Ok(admission)
+}
+
+/// One proposed contribution to the sparse admission overlay. Removal is
+/// used only for an exactly identified, committed Pending target. Native and
+/// functional columns obey the same checked bounds as the literal scan.
+fn fit_columns(
+    cells: &Cells,
+    accounts: &BTreeSet<VId>,
+    columns: &mut BTreeMap<(VId, UnitId, bool), [i128; 4]>,
+    entry: &Entry,
+    remove: bool,
+) -> bool {
+    let pending = entry.proposal.class == EntryClass::PENDING;
+    for leg in &entry.proposal.legs {
+        if !accounts.contains(&leg.account_ref) {
+            continue;
+        }
+        let column = usize::from(pending) * 2 + usize::from(leg.side == Side::Credit);
+        let Ok(legs) = leg_columns(leg, cells.base) else {
+            return false;
+        };
+        for (unit, functional, mantissa) in legs {
+            if mantissa < 0 {
+                return false;
+            }
+            let key = (leg.account_ref, unit, functional);
+            let cell = columns
+                .entry(key)
+                .or_insert_with(|| cells.columns.get(&key).copied().unwrap_or_default());
+            let next = if remove {
+                cell[column].checked_sub(mantissa)
+            } else {
+                cell[column].checked_add(mantissa)
+            };
+            let Some(next) = next.filter(|v| (0..=cells.maximum).contains(v)) else {
+                return false;
+            };
+            cell[column] = next;
+        }
+    }
+    true
 }
 
 /// [`admit`] for a long-lived book that carries `history` between its own
@@ -713,14 +805,15 @@ fn admit_carried_including<V: asupersync::fs::Vfs + Clone>(
         Some(previous) => carry(db, ctx, previous, basis)?,
         None => None,
     };
-    let summary = match carried {
+    let mut summary = match carried {
         Some(summary) => summary,
         None => summarize(db, ctx, book_id, basis)?,
     };
-    let fit = match &summary.cells {
+    summary.admission = match &summary.cells {
         Some(cells) => fits(txn, db, cells, book_id, accounts, &staged, extra)?,
-        None => false,
+        None => SummaryAdmission::default(),
     };
+    let fit = summary.admission.fits;
     *history = Some(summary);
     if fit {
         return Ok(Ok(()));
