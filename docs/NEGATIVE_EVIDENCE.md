@@ -1171,3 +1171,96 @@ it neither duplicates citations in production nor permits an unsupported
 source. All signed-bundle, fixed-prefix, receipt and wrong-certificate checks
 remain. These MCP repairs require an actual complete-package rerun before
 being credited as passing.
+
+## 2026-10-29 UTC — Follow-up native failures are retained
+
+The complete pinned CLI package subsequently finished with 718 passes, five
+failures and the same two existing ignored tests; remote/client exit 101.
+The complete `fa` package finished with 908 passes and 25 failures, exit 101.
+Neither is a workspace PASS. The later merged canonical source is a different
+cut; these failures are not silently relabeled against it.
+
+Two shared fixture builders wrote maturity extensions on schema-minor-0
+entries. Eight due-date and three portable aging tests therefore stopped at
+`FA-REF-100` before reaching their intended assertions. They now name the
+current schema minor, retaining all installments, amounts and mutation checks.
+The raw draft-reversal fixture also supplies its actual effective date, which
+the generic `post` contract requires. Event coverage now invokes the real
+`replacement_reviewed` path and checks that reviewing publishes no book change;
+the exact equality between observed and registered events remains intact.
+
+The first subledger-size repair was wrong: longer descriptions and more
+unrelated journal entries do not enlarge the embedded trial-balance result.
+That attempt really failed its unchanged size assertion. The replacement
+fixture uses distinct non-control asset cells and one balanced entry so the
+actual certified result grows. It retains the AR/AP gross totals, the 16-KiB
+and public inline-threshold checks, and all replay/wrong-scope checks.
+
+The send-phase timeout control assumed an 8-MiB encoded request exceeded the
+socket buffer. A read-only probe of the failing worker found a 16-MiB default.
+The test enlarges its valid frame while retaining its 300-ms deadline, joined
+peer, watchdog and exact SendingRequest expectation. No timeout or phase is
+relaxed. Its first qualification attempt failed SSH before native outcomes;
+supported recovery acknowledged that job. That transport result is not a test
+failure or pass.
+
+The claimed-T case selftest exposed a distinct validator defect: the runner
+compared a retyped R row with its already-inferred R type, so it could accept
+the original T claim. The separate gate repair compares with the declared
+claim type. Its existing failing negative and every positive case remain
+unchanged; the complete case target must qualify the admitted/rejected split.
+This is a gate strengthening, not evidence that the accounting product gained
+a capability, and it does not authorize any original Bead closure.
+
+Finally, the case-post crash matrix stopped before fault injection because
+its PPA template omitted `relates_to` and credited current expense. Its setup
+now journals an Equity retained-earnings leaf and role, identifies February,
+and posts the same 50,000 minor units through that leaf. All seven crash points,
+approval identities, recovery/retry and register/journal assertions remain;
+new assertions also require the retained-earnings leg to survive atomically
+with cash and forbid a current-expense effect. These changes still need native
+qualification. The separate foreign-cash carrying-policy, cross-target digest
+and pinned-producer failures remain unresolved; their controls are preserved.
+
+### Follow-up qualification and integration boundary
+
+The corrected PPA crash matrix passed in the complete pinned library and
+statements run (684 passes, nine preserved foreign-currency group failures,
+exit 101). All eleven formerly schema-blocked maturity/aging cases passed.
+The complete CLI library passed 76 tests with the larger valid socket frame;
+neither its 300-ms send deadline nor its three-second watchdog was increased.
+The CLI and plans follow-up targets passed 139 and 36 tests respectively.
+
+The remaining subledger fixture failed during chart import: its single retained
+schema row was 16,670 bytes, above the substrate's 16,384-byte limit. The next
+candidate uses 32-account imports and eight balanced 32-cell postings. This
+keeps all 256 report cells, the aggregate 2.56 USD offset, exact AR/AP totals
+and original certificate-size and replay checks. Qualification is pending.
+The full repository check also caught an intermediate unused `mut` in this
+edit; that compile-lint failure remains recorded, and the `mut` was removed.
+
+Concurrent integration admitted a161b652's substitution of BTC/AnyUnit for
+the original EUR/AnyCurrency group scenarios. This makes the group mechanics
+green without proving foreign-currency relief. The original EUR expectations
+are restored; the new explicit missing-carrying-basis refusal remains. The
+PPA fixture also retains the stronger candidate's February-and-March source
+certificate and exact retained-earnings/no-current-expense atomicity checks.
+Neither an earlier scoped pass nor this integration is a current-tree verdict.
+
+Two functional-export tests expected a pinned producer to authorize export's
+current journal/checkpoint integrity reads. The current whole-book reach
+guard correctly refuses that scope. The candidate tests now require exact
+`FA-REF-011`/exit 7 and no publication, then export the same historical
+certificate with current whole-book authority. Exact residual/output and all
+original-rate, receipt, signature and forged-receiver controls remain. The
+production guard is unchanged, and native qualification is pending.
+
+The claimed-type causal control initially failed to distinguish old and new
+runners: clean 1eab06bf's original runner passed the existing single negative
+(one pass, 73 filtered, 104 seconds). That test accepts an overall case failure,
+which can also come from its unchanged wall-time budget. Its row still prints
+PASS/R, so those assertions alone do not prove the original T claim was refused.
+The candidate now additionally requires `rows_ok == false`, as the runner's
+existing contract recommends for tests of non-budget behavior. All previous
+assertions and budgets remain. The earlier complete 74-test pass does not
+qualify this stronger test body; both bodies must be compared on the same base.

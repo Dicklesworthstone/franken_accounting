@@ -1413,6 +1413,7 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
         ),
     ];
     let mut planned = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
         principal_ref: planner_vid,
         description: book.seal_text(&cx, "the February receipt").unwrap(),
         unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
@@ -1440,7 +1441,7 @@ async fn approved_case(root: &Cx, seed: u64) -> ApprovedCase {
     let certified = book
         .certify_trial_balance(
             &cx,
-            crate::TrialBalanceSelection::Periods(vec![march.clone()]),
+            crate::TrialBalanceSelection::Periods(vec!["FY2026-P02".into(), march.clone()]),
             None,
         )
         .unwrap()
@@ -1591,6 +1592,19 @@ fn case_post_crash_matrix() -> Vec<CrashObservation> {
                         && cell.debits == 50_000
                 })
             };
+            let retained_earnings_cell = |fold: &Fold| {
+                fold.cells.iter().any(|cell| {
+                    cell.key.account == account_vid(book_id, "3000")
+                        && cell.key.unit_id == usd.0
+                        && cell.credits == 50_000
+                })
+            };
+            let current_expense_cell = |fold: &Fold| {
+                fold.cells.iter().any(|cell| {
+                    cell.key.account == account_vid(book_id, "6000")
+                        && (cell.debits != 0 || cell.credits != 0)
+                })
+            };
             let fold = book
                 .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
                 .await
@@ -1598,6 +1612,8 @@ fn case_post_crash_matrix() -> Vec<CrashObservation> {
                 .unwrap()
                 .fold;
             assert_eq!(receipt_cell(&fold), kept, "{point:?}: {fold:?}");
+            assert_eq!(retained_earnings_cell(&fold), kept, "{point:?}: {fold:?}");
+            assert!(!current_expense_cell(&fold), "{point:?}: {fold:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
                 "{point:?}"
@@ -1618,6 +1634,8 @@ fn case_post_crash_matrix() -> Vec<CrashObservation> {
                 .unwrap()
                 .fold;
             assert!(receipt_cell(&fold), "{point:?}: {fold:?}");
+            assert!(retained_earnings_cell(&fold), "{point:?}: {fold:?}");
+            assert!(!current_expense_cell(&fold), "{point:?}: {fold:?}");
             assert!(
                 book.verify_registers(&cx, &march).unwrap().is_green(),
                 "{point:?}"

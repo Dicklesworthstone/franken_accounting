@@ -37,7 +37,7 @@ struct Harness {
     vfs: MemVfs,
     evidence: EvidenceRef,
     usd: UnitId,
-    btc: UnitId,
+    eur: UnitId,
 }
 
 impl Harness {
@@ -47,7 +47,7 @@ impl Harness {
         let cx = PurposeContexts::narrow_runtime_root(&root);
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
-        let btc = units.lookup("BTC").unwrap();
+        let eur = units.lookup("EUR").unwrap();
         let vfs = MemVfs::new().unwrap();
         let mut book = runtime
             .block_on(AsyncBook::create_with_vfs(
@@ -79,7 +79,7 @@ impl Harness {
                 },
                 normal_balance: u8::from(matches!(code, "payable" | "capital")),
                 is_leaf: true,
-                unit_policy: UnitPolicy::AnyUnit,
+                unit_policy: UnitPolicy::AnyCurrency,
                 parent_code: None,
                 limit: None,
             })
@@ -135,7 +135,7 @@ impl Harness {
             vfs,
             evidence: document.evidence_ref(1),
             usd,
-            btc,
+            eur,
         }
     }
 
@@ -272,7 +272,7 @@ impl Harness {
             vfs,
             evidence,
             usd,
-            btc,
+            eur,
         } = self;
         drop(book);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -292,7 +292,7 @@ impl Harness {
             vfs,
             evidence,
             usd,
-            btc,
+            eur,
         }
     }
 }
@@ -301,10 +301,10 @@ fn fixture() -> (Harness, EntryRef, EntryRef, SettlementGroupRequest) {
     let mut h = Harness::new();
     let invoice = h.invoice("usd-invoice", 100);
     let bill = h.post(h.proposal(
-        "btc-bill",
+        "eur-bill",
         vec![
-            leg(Side::Debit, "cash", h.btc, 70),
-            leg(Side::Credit, "payable", h.btc, 70),
+            leg(Side::Debit, "cash", h.eur, 70),
+            leg(Side::Credit, "payable", h.eur, 70),
         ],
     ));
     let request = SettlementGroupRequest {
@@ -313,8 +313,8 @@ fn fixture() -> (Harness, EntryRef, EntryRef, SettlementGroupRequest) {
             vec![
                 leg(Side::Debit, "cash", h.usd, 125),
                 leg(Side::Credit, "receivable", h.usd, 125),
-                leg(Side::Debit, "payable", h.btc, 60),
-                leg(Side::Credit, "cash", h.btc, 60),
+                leg(Side::Debit, "payable", h.eur, 60),
+                leg(Side::Credit, "cash", h.eur, 60),
             ],
         ),
         payments: vec![
@@ -331,13 +331,13 @@ fn fixture() -> (Harness, EntryRef, EntryRef, SettlementGroupRequest) {
     (h, invoice, bill, request)
 }
 
-/// The capability gap these fixtures route around (fa-pvt7): since 7df9b1ac3
+/// The capability gap these original EUR fixtures expose (fa-pvt7): since 7df9b1ac3
 /// a foreign-currency applying leg must carry its source-bound
 /// RemainingCarryingValue basis, and no carrying-aware group path exists
 /// yet (one foreign application goes through `prepare_fx_settlement`). A
 /// group applying a EUR bill in this USD book is therefore refused FA-REF-071
-/// at planning, and nothing is published. The group-mechanics tests apply
-/// their second native unit as a commodity (BTC), which carries no FX law.
+/// at planning, and nothing is published. The positive EUR group tests stay
+/// in place until the carrying-aware group path satisfies their expectations.
 #[test]
 fn foreign_currency_application_in_a_group_is_refused_without_its_carrying_basis() {
     let mut h = Harness::new();
@@ -395,7 +395,7 @@ fn mixed_native_units_and_debit_credit_applications_publish_as_one_entry() {
     expected.legs[2].settles = vec![fa_model::Settlement {
         target: bill,
         ordinal: 1,
-        amount: Amount::new(h.btc, 60),
+        amount: Amount::new(h.eur, 60),
     }];
     assert_eq!(
         prepared.proposal(),
@@ -592,7 +592,7 @@ fn authority_covers_the_whole_payment_and_is_rechecked_at_rehearsal() {
         cap()
             .with_ceiling(h.usd, 100)
             .unwrap()
-            .with_ceiling(h.btc, 100)
+            .with_ceiling(h.eur, 100)
             .unwrap(),
     ];
     for capability in capabilities {

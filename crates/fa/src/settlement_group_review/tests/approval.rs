@@ -199,9 +199,9 @@ fn authority_scope_amount_expiry_and_separation_fail_without_any_approval_public
         Capability::embedded(VId(8), &["read", "post"]).unwrap(),
         approver().expiring_at(head),
         approver().for_books(&[Id128([0x55; 16])]).unwrap(),
-        // BTC allocation is only 70, but the complete payable/cash legs are 80.
+        // EUR allocation is only 70, but the complete payable/cash legs are 80.
         // Approving allocations rather than full entry legs would miss this.
-        approver().with_ceiling(h.btc, 75).unwrap(),
+        approver().with_ceiling(h.eur, 75).unwrap(),
     ];
     for capability in denied {
         assert!(
@@ -263,10 +263,10 @@ fn changed_first_or_later_allocation_never_publishes_a_partial_group_approval() 
         if change_later_leg {
             let request = SettlementPostRequest {
                 proposal: h.proposal(
-                    "competing-btc",
+                    "competing-eur",
                     vec![
-                        leg(Side::Debit, "payable", h.btc, 5),
-                        leg(Side::Credit, "cash", h.btc, 5),
+                        leg(Side::Debit, "payable", h.eur, 5),
+                        leg(Side::Credit, "cash", h.eur, 5),
                     ],
                 ),
                 payment_leg: 0,

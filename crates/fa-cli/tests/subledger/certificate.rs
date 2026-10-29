@@ -202,14 +202,18 @@ fn native_ar_and_ap_certificates_reopen_replay_and_distinguish_gross_scope_chang
         "--evidence",
         &f.evidence,
     ]);
-    let mut legs = (0..256)
-        .map(|index| {
-            format!(r#"{{"side":"debit","account":"CHUNK-{index:03}","amount":"0.01 USD"}}"#)
-        })
-        .collect::<Vec<_>>();
-    legs.push(r#"{"side":"credit","account":"1000","amount":"2.56 USD"}"#.into());
-    let intent = f.file("certificate-cells.json", &format!(r#"{{"effective_date":"2026-03-15","idempotency_key":"certificate-cells","legs":[{}]}}"#, legs.join(",")));
-    f.ok(&["post", "--intent", &intent, "--evidence", &f.evidence]);
+    // A large report spans many small committed entries; an oversized entry
+    // itself would be refused before certificate fragmentation is exercised.
+    for batch in 0..8 {
+        let mut legs = (batch * 32..(batch + 1) * 32)
+            .map(|index| {
+                format!(r#"{{"side":"debit","account":"CHUNK-{index:03}","amount":"0.01 USD"}}"#)
+            })
+            .collect::<Vec<_>>();
+        legs.push(r#"{"side":"credit","account":"1000","amount":"0.32 USD"}"#.into());
+        let intent = f.file(&format!("certificate-cells-{batch}.json"), &format!(r#"{{"effective_date":"2026-03-15","idempotency_key":"certificate-cells-{batch}","legs":[{}]}}"#, legs.join(",")));
+        f.ok(&["post", "--intent", &intent, "--evidence", &f.evidence]);
+    }
     let at = f.head();
     let mut saved = Vec::new();
     for (code, control, debit, credit) in [
