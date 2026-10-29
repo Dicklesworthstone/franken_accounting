@@ -193,9 +193,12 @@ fn a_peer_that_never_reads_the_request_cannot_block_the_sender_forever() {
     let (path, listener) = socket();
     let daemon = daemon(300);
     let mut request = request();
-    // Larger than a local socket's send buffer, but within the registered
-    // frame bound. The peer deliberately reads nothing at all.
-    request.stdin = Some(vec![b'x'; 4 * 1024 * 1024]);
+    // The worker's default send buffer can be 16 MiB: the old 4 MiB stdin
+    // encoded to only 8 MiB and could finish sending without a peer read.
+    // A 32 MiB hex payload forces backpressure while staying below the
+    // registered 64 MiB frame bound. Keep the same deadline and exact phase.
+    request.stdin = Some(vec![b'x'; 16 * 1024 * 1024]);
+    assert!(32 * 1024 * 1024 + 1024 < daemon.max_frame_bytes);
     let (release, released) = mpsc::channel();
     std::thread::scope(|scope| {
         let peer = scope.spawn(move || {
