@@ -41,8 +41,8 @@ pub const SELFTEST: EmbeddedCase = EmbeddedCase {
     ],
 };
 
-/// WorldCom (W1: the sources ledger, the pilot slice's sourced facts and
-/// their receipts; A8 and W2-W9 add the rest).
+/// WorldCom (W1: the sources ledger and receipts; A8: the pilot on the
+/// native book; W2-W9 add the rest).
 pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
     id: "worldcom",
     files: &[
@@ -58,6 +58,18 @@ pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
         (
             "receipts.toml",
             include_str!("../../cases/worldcom/receipts.toml"),
+        ),
+        (
+            "roles.toml",
+            include_str!("../../cases/worldcom/roles.toml"),
+        ),
+        (
+            "books/native.toml",
+            include_str!("../../cases/worldcom/books/native.toml"),
+        ),
+        (
+            "expectations.toml",
+            include_str!("../../cases/worldcom/expectations.toml"),
         ),
     ],
 };

@@ -3,9 +3,9 @@
 # owner decision 2a. `case_fetch.py verify worldcom` re-finds every quote and writes receipts.toml.
 #
 # W1's pilot slice: the Beresford (SRC-WC-001) sentences stating F2, F4 (p.108), F9 and F12, and
-# the sentence naming each pilot entry's reporting period. W2 adds F1-F13 and keeps these ids and
-# values; A8 adds the interpretations (F4 joins F4F5-p108 with p.26's exact amount, which lands
-# with it, since its `entry:F4` scope needs that interpretation).
+# the sentence naming each pilot entry's reporting period. A8 adds p.26's exact amount (F4-p26)
+# and the interpretations its intents name: F4 (F4F5-p108 joined with F4-p26) and F12 (the first
+# entry of F12F13-p116). W2 adds F1-F13 and keeps these ids and values.
 #
 # One fact per sentence (§6.2). p.108 l.7 states both of the 2001-07-17 entries (F4's $560M to
 # Construction in Progress and F5's $50M to SG&A) in one sentence, and p.116 l.3 both 1Q02 entries
@@ -59,6 +59,24 @@ about_scope = "period:2001Q2"
 granularity = "journal_entry"
 
 [[fact]]
+id = "F4-p26"
+provenance = "sourced"
+source = "SRC-WC-001"
+anchor_kind = "page"
+anchor = "p26:l5-5"
+quote_sha256 = "47812c150276dd80ff183415ec6f6504ccac5d7ce830d48077e0089a61ef336b"
+about_scope = "entry:F4"
+granularity = "journal_entry"
+
+[[fact]]
+id = "F4"
+provenance = "interpretation"
+from = ["F4F5-p108", "F4-p26"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.108 l.7 describes the July 17 transfer of $560 million of line costs to a Construction in Progress account, credited over three line cost accounts; p.26 l.5 gives an unsupported entry of exactly $560,000,000 on July 17, 2001. Read together they are one entry: the CIP debit is 560,000,000.00. The weaker reading, two different $560 million entries that day, has nothing in the record behind it. The split of the three credits is unsourced (a branch)."
+
+[[fact]]
 id = "F9-period"
 provenance = "sourced"
 source = "SRC-WC-001"
@@ -97,6 +115,14 @@ anchor = "p116:l3-3"
 quote_sha256 = "ee05faa29e7fb1044d45bfd0908360c05234b8e57ee421cb203da06e3cbbe92d"
 about_scope = "period:2002Q1"
 granularity = "journal_entry"
+
+[[fact]]
+id = "F12"
+provenance = "interpretation"
+from = ["F12F13-p116"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "p.116 l.3 states the two 1Q02 entries in one sentence; F12 is the first, $718 million on April 12, reducing line cost expense and capitalizing it. F13 ($100 million on April 17) is W2's."
 
 # Assurance facts (§2.2, A1a): the sentence in each filer row that establishes its `assurance`.
 # W1 lands them so SRC-WC-401 and SRC-WC-406 load; W2 keeps them.
@@ -232,3 +258,21 @@ param = 6
 value = "10000000000"
 unit = "USD"
 precision = 6
+
+[[value]]
+fact = "F4-p26"
+ordinal = 1
+literal = "$560,000,000"
+rule = "scale"
+param = 0
+value = "56000000000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F4-p26"
+ordinal = 2
+literal = "July 17, 2001"
+rule = "date_literal"
+value = "2001-07-17"
+unit = ""

@@ -1,0 +1,694 @@
+# WorldCom's native book (plan §3.2a, §6.2, §6.3, §15 A8): the four pilot entries F2, F4, F9 and
+# F12 posted as the record describes them, each amount cited to a sourced [[value]] row, each
+# encoding choice a declared default below or a branch class.
+
+[book]
+variant = "native"
+opening_date = "2001-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2001Q1"
+start = "2001-01-01"
+end = "2001-03-31"
+fiscal_year = 2001
+kind = "Normal"
+
+[[period]]
+code = "2001Q2"
+start = "2001-04-01"
+end = "2001-06-30"
+fiscal_year = 2001
+kind = "Normal"
+
+[[period]]
+code = "2001Q3"
+start = "2001-07-01"
+end = "2001-09-30"
+fiscal_year = 2001
+kind = "Normal"
+
+[[period]]
+code = "2001Q4"
+start = "2001-10-01"
+end = "2001-12-31"
+fiscal_year = 2001
+kind = "Normal"
+
+[[period]]
+code = "2002Q1"
+start = "2002-01-01"
+end = "2002-03-31"
+fiscal_year = 2002
+kind = "Normal"
+
+[[period]]
+code = "2002Q2"
+start = "2002-04-01"
+end = "2002-06-30"
+fiscal_year = 2002
+kind = "Normal"
+
+[[principal]]
+label = "gen-acct-manager-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "property-accounting-director-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-poster-1"
+profile = "Human"
+grants = ["read", "post", "restate", "produce"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[principal]]
+label = "examiner-witness"
+profile = "Human"
+grants = ["read", "witness"]
+
+[[account]]
+code = "1400"
+name_fact = "F2"
+type = "Asset"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1500"
+name_fact = "F2"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1510"
+name_fact = "F9"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1520"
+name_fact = "F12"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6100"
+name_fact = "F4"
+type = "Expense"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6110"
+name_fact = "F4"
+type = "Expense"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6120"
+name_fact = "F4"
+type = "Expense"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-PH-F2"
+stub_of = "placeholder:F2"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F4"
+stub_of = "placeholder:F4"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F9"
+stub_of = "placeholder:F9"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-F12"
+stub_of = "placeholder:F12"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-406"
+stub_of = "SRC-WC-406"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "F2"
+fact = "F2"
+class = "Original"
+principal = "property-accounting-director-1"
+effective_date = "2001-03-31"
+memo = "OLTA to CIP"
+evidence = "DOC-PH-F2"
+idempotency_key = "wc-F2"
+
+[[intent]]
+id = "F4"
+fact = "F4"
+class = "Original"
+principal = "gen-acct-manager-1"
+effective_date = "2001-06-30"
+memo = "line costs to CIP"
+evidence = "DOC-PH-F4"
+idempotency_key = "wc-F4"
+
+[[intent]]
+id = "F9"
+fact = "F9"
+class = "Original"
+principal = "property-accounting-director-1"
+effective_date = "2001-09-30"
+memo = "line costs to PP&E"
+evidence = "DOC-PH-F9"
+idempotency_key = "wc-F9"
+
+[[intent]]
+id = "F12"
+fact = "F12"
+class = "Original"
+principal = "property-accounting-director-1"
+effective_date = "2002-03-31"
+memo = "line cost expense to capital"
+evidence = "DOC-PH-F12"
+idempotency_key = "wc-F12"
+
+[[intent]]
+id = "delta-F4"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2001-06-30"
+evidence = "DOC-406"
+idempotency_key = "wc-delta-F4"
+target = "F4"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
+[[intent]]
+id = "delta-F9"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2001-09-30"
+evidence = "DOC-406"
+idempotency_key = "wc-delta-F9"
+target = "F9"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
+[[intent]]
+id = "delta-F12"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2002-03-31"
+evidence = "DOC-406"
+idempotency_key = "wc-delta-F12"
+target = "F12"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
+[[case]]
+id = "R1"
+kind = "Restatement"
+periods = ["2001Q2", "2001Q3", "2002Q1"]
+determined_on = "default"
+authority = "DOC-406"
+disclosure = "DOC-406"
+approvers = ["case-approver-1", "case-approver-2"]
+poster = "case-poster-1"
+
+[[leg]]
+intent = "F2"
+ordinal = 0
+account = "1500"
+side = "Dr"
+amount_literal = "402000000.00"
+amount_rule = "value:F2#1"
+unit = "USD"
+
+[[leg]]
+intent = "F2"
+ordinal = 1
+account = "1400"
+side = "Cr"
+amount_literal = "402000000.00"
+amount_rule = "value:F2#1"
+unit = "USD"
+
+[[leg]]
+intent = "F4"
+ordinal = 0
+account = "1500"
+side = "Dr"
+amount_literal = "560000000.00"
+amount_rule = "value:F4-p26#1"
+unit = "USD"
+
+# F4's credits are over "three separate line cost accounts" with the split
+# unsourced (plan §6.2): one leg per named account (the declared default),
+# amounts a branch (A5a). The literals are one member of the nnn cell.
+[[leg]]
+intent = "F4"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "186666666.67"
+amount_rule = "branch:bc-F4-credit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F4"
+ordinal = 2
+account = "6110"
+side = "Cr"
+amount_literal = "186666666.67"
+amount_rule = "branch:bc-F4-credit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F4"
+ordinal = 3
+account = "6120"
+side = "Cr"
+amount_literal = "186666666.66"
+amount_rule = "branch:bc-F4-credit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F9"
+ordinal = 0
+account = "1510"
+side = "Dr"
+amount_literal = "742725000.00"
+amount_rule = "value:F9#1"
+unit = "USD"
+
+[[leg]]
+intent = "F9"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "742725000.00"
+amount_rule = "value:F9#1"
+unit = "USD"
+
+[[leg]]
+intent = "F12"
+ordinal = 0
+account = "1520"
+side = "Dr"
+amount_literal = "718000000.00"
+amount_rule = "value:F12F13-p116#2"
+unit = "USD"
+
+[[leg]]
+intent = "F12"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "718000000.00"
+amount_rule = "value:F12F13-p116#2"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F4"
+ordinal = 0
+account = "1500"
+side = "Cr"
+amount_literal = "560000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F4"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "186666666.67"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F4"
+ordinal = 2
+account = "6110"
+side = "Dr"
+amount_literal = "186666666.67"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F4"
+ordinal = 3
+account = "6120"
+side = "Dr"
+amount_literal = "186666666.66"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F9"
+ordinal = 0
+account = "1510"
+side = "Cr"
+amount_literal = "742725000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F9"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "742725000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F12"
+ordinal = 0
+account = "1520"
+side = "Cr"
+amount_literal = "718000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F12"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "718000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[branch_class]]
+id = "bc-F4-credit-split"
+attribute = "leg_split"
+rule = "round_residue_legs"
+values = ["multiple", "non_multiple"]
+
+[[branch_class]]
+id = "bc-F9-debit-legs"
+attribute = "leg_split"
+rule = "capitalized_debit_legs"
+values = ["one_debit_leg", "two_debit_legs"]
+
+[[branch_class]]
+id = "bc-effective-date"
+attribute = "effective_date"
+rule = "period_end_window"
+values = ["inside_window", "outside_window"]
+
+[[branch_class]]
+id = "bc-entry-class"
+attribute = "entry_class"
+rule = "entry_class_admission"
+values = ["Original", "Adjusting"]
+
+[[branch_class]]
+id = "bc-period-state"
+attribute = "period_state_at_commit"
+rule = "period_state_admission"
+values = ["Future", "Open", "SoftClosed", "Closed", "Locked"]
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "the record dates bookings, not effective dates; each entry's sourced reporting period ends on its effective date (plan §6.2)"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the record describes the entries' documents without publishing them; a placeholder reviewed by case-second-reader stands in (plan §2.6)"
+
+[[default]]
+attribute = "acting_principal"
+rule = "role_of_record"
+rationale = "the role the record names prepared the entry; where it names none, the property accounting director, who directed the transfers"
+
+[[default]]
+attribute = "case_determination_date"
+rule = "restating_filing_date"
+rationale = "the restating filing's date is public, fixed and never precedes the restated figures (plan §2.6); the June 2002 announcement (SRC-WC-8K-20020626) becomes the sourced date once its fact lands (W2/W3)"
+
+[[default]]
+attribute = "leg_split"
+rule = "one_leg_per_named_account"
+rationale = "the record names one account per side of each transfer; one leg per named (account, side) is the encoding (plan §2.6 rule 2, §6.4 W-D-01)"
+
+[[default]]
+attribute = "entry_class"
+rule = "Original"
+rationale = "the record describes ordinary journal entries; Original is the class such an entry posts under (plan §2.6 rule 2)"
+
+[[default]]
+attribute = "period_state_at_commit"
+rule = "Open"
+rationale = "the record dates each entry inside its quarter, before that quarter's close: the book posts it while its period is Open (plan §2.6 rule 2)"
+
+[[default]]
+attribute = "reason"
+rule = "WrongAccount"
+rationale = "the entries moved line costs into asset accounts; the correction's reason is the account, never Fraud (K-REASON)"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2001Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "period_open"
+ref = "2001Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 3
+kind = "period_open"
+ref = "2001Q3"
+principal = "case-closer-1"
+
+[[step]]
+seq = 4
+kind = "period_open"
+ref = "2001Q4"
+principal = "case-closer-1"
+
+[[step]]
+seq = 5
+kind = "period_open"
+ref = "2002Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 6
+kind = "period_open"
+ref = "2002Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 10
+kind = "intent"
+ref = "F2"
+
+[[step]]
+seq = 11
+kind = "period_close"
+ref = "2001Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 12
+kind = "period_lock"
+ref = "2001Q1"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 20
+kind = "intent"
+ref = "F4"
+
+[[step]]
+seq = 21
+kind = "period_close"
+ref = "2001Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 30
+kind = "intent"
+ref = "F9"
+
+[[step]]
+seq = 31
+kind = "period_close"
+ref = "2001Q3"
+principal = "case-closer-1"
+
+[[step]]
+seq = 32
+kind = "period_close"
+ref = "2001Q4"
+principal = "case-closer-1"
+
+[[step]]
+seq = 40
+kind = "intent"
+ref = "F12"
+
+[[step]]
+seq = 41
+kind = "period_close"
+ref = "2002Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 50
+kind = "checkpoint"
+ref = "pre-case"
+principal = "examiner-1"
+
+[[step]]
+seq = 51
+kind = "finding_record"
+ref = "expense.capitalization@2"
+known_at = "pre_case"
+principal = "examiner-1"
+
+[[step]]
+seq = 52
+kind = "engagement_file"
+ref = "finding:W-D-01"
+principal = "examiner-1"
+
+[[step]]
+seq = 60
+kind = "case_open"
+ref = "R1"
+principal = "case-poster-1"
+
+[[step]]
+seq = 61
+kind = "case_determine"
+ref = "R1"
+principal = "case-poster-1"
+
+[[step]]
+seq = 62
+kind = "scenario_fork"
+ref = "restate"
+principal = "case-poster-1"
+
+[[step]]
+seq = 63
+kind = "scenario_run"
+ref = "restate"
+principal = "case-poster-1"
+
+[[step]]
+seq = 64
+kind = "scenario_diff"
+ref = "restate"
+principal = "case-poster-1"
+
+[[step]]
+seq = 65
+kind = "case_rehearse"
+ref = "R1"
+principal = "case-poster-1"
+
+[[step]]
+seq = 66
+kind = "case_approve"
+ref = "R1"
+
+[[step]]
+seq = 67
+kind = "case_post"
+ref = "R1"
+
+[[step]]
+seq = 68
+kind = "case_disclose"
+ref = "R1"
+principal = "case-poster-1"
+
+[[step]]
+seq = 69
+kind = "case_close"
+ref = "R1"
+principal = "case-poster-1"
+
+[[step]]
+seq = 70
+kind = "checkpoint"
+ref = "post-case"
+principal = "examiner-1"
+
+[[step]]
+seq = 71
+kind = "checkpoint_witness"
+ref = "post-case"

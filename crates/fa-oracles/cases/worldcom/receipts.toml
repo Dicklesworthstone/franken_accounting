@@ -67,6 +67,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-WC-001"
+fact = "F4-p26"
+anchor = "p26:l5-5"
+verified_utc = "2026-10-29T01:59:22Z"
+tool_version = "case-fetch-v2"
+extraction_sha256 = "54541a4138021c320271c0ab165ed61bd2e8280caa019d33a32b2bf5fccf681f"
+quote_sha256 = "47812c150276dd80ff183415ec6f6504ccac5d7ce830d48077e0089a61ef336b"
+values_sha256 = "7add7ba5bd3342cacefc9782b8a74fd70c9e7ca8c5f9fec3ab3533a3be306d87"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
 fact = "F4F5-p108"
 anchor = "p108:l7-7"
 verified_utc = "2026-10-29T01:59:22Z"
