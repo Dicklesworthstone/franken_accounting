@@ -21,6 +21,13 @@ gate_init "check-classify"
 
 base="${TMPDIR:-/tmp}/fa-check-classify-$$-${RANDOM:-0}"
 mkdir -p "$base/bin" "$base/logs"
+# Inside a real proof, local_proof.sh exports CHECK_STEP_MANIFEST and
+# CHECK_LOG_DIR for check.sh. The harness below truncates $STEP_MANIFEST and
+# records into it, so an inherited value would erase the real proof's step
+# records. Every case starts from this selftest's own files instead.
+export CHECK_LOG_DIR="$base/logs"
+export CHECK_STEP_MANIFEST="$base/step-verdicts.jsonl"
+unset CHECK_RESUME_FROM
 
 # Extract the real helpers (hash_file, extract_worker, record_step_verdict,
 # try_reuse_step, is_rch_offloader_unrun) and run_step/cargo_build from check.sh.
@@ -35,6 +42,7 @@ CHECK_TOOLCHAIN="rustc 1.100.0-nightly"
 HDR
 sed -n '/^hash_file() {/,/^gate_init /{ /^gate_init /!p; }' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
 sed -n '/^run_step() {/,/^run_gate() {/{ /^run_gate() {/!p; }' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
+sed -n '/^run_gate() {/,/^}/p' "$SOURCE_ROOT/scripts/check.sh" >> "$harness"
 
 # Helper that runs a single step through check.sh's actual run_step or cargo_build
 # in a subshell and echoes the recorded status from step-verdicts.jsonl.
@@ -403,11 +411,51 @@ EOF
   gate_pass "ubs_scan_classifies_each_package_scan (clean, critical, partial, crashed, nothing in scope)"
 }
 
+# run_gate runs a gate script with this run's step manifest read-only, and a
+# script that changes the manifest anyway fails its own step: no gate script
+# can erase the records of the steps before it.
+run_gate_protects_the_step_manifest() {
+  local dir="$base/run-gate"
+  mkdir -p "$dir/logs"
+  cat > "$dir/truncate.sh" <<'EOF'
+#!/usr/bin/env bash
+: > "$CHECK_STEP_MANIFEST" 2>/dev/null
+exit 0
+EOF
+  cat > "$dir/append.sh" <<'EOF'
+#!/usr/bin/env bash
+chmod u+w "$CHECK_STEP_MANIFEST"
+printf '{}\n' >> "$CHECK_STEP_MANIFEST"
+exit 0
+EOF
+  (
+    export CHECK_LOG_DIR="$dir/logs" CHECK_STEP_MANIFEST="$dir/step-verdicts.jsonl"
+    # shellcheck source=../lib/gate_verdict.sh
+    . "$SOURCE_ROOT/scripts/lib/gate_verdict.sh"
+    gate_init "inner"
+    # shellcheck disable=SC1090
+    . "$harness"
+    printf '{"step":"earlier","status":"PASS"}\n' >> "$STEP_MANIFEST"
+    run_gate "truncating-script" "$dir/truncate.sh"
+    run_gate "appending-script" "$dir/append.sh"
+  ) > "$dir/stdout.log" 2>&1
+  if ! head -n 1 "$dir/step-verdicts.jsonl" | grep -Fq '"step":"earlier"'; then
+    gate_fail "run_gate_protects_the_step_manifest — an earlier step record was erased: $(head -c 200 "$dir/step-verdicts.jsonl")"
+    return 1
+  fi
+  if ! grep -q "^FAIL appending-script changed this run's step manifest" "$dir/stdout.log"; then
+    gate_fail "run_gate_protects_the_step_manifest — a script that changed the manifest did not fail its step: $(tr '\n' '|' < "$dir/stdout.log")"
+    return 1
+  fi
+  gate_pass "run_gate_protects_the_step_manifest (truncation blocked, earlier record kept; a changed manifest fails the step)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
 split_test_job_list_covers_the_workspace
 check_summary_matches_the_proof_verifier
 ubs_scan_classifies_each_package_scan
+run_gate_protects_the_step_manifest
 
 gate_verdict

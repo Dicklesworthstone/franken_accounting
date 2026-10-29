@@ -532,14 +532,31 @@ run_gate() {
   local started t0 finished t1 dur
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   t0="$(date +%s)"
+  # A gate script never writes this run's step manifest. A selftest that
+  # inherited CHECK_STEP_MANIFEST once truncated it, erasing every earlier
+  # record, so the script runs with the manifest read-only, and a manifest
+  # that changed anyway fails the step.
+  local manifest_sum="absent"
+  if [ -f "$STEP_MANIFEST" ]; then
+    manifest_sum="$(sha256sum "$STEP_MANIFEST" | cut -d' ' -f1)"
+    chmod a-w "$STEP_MANIFEST"
+  fi
   bash "$@" >"$log" 2>&1
   local rc=$?
+  local manifest_now="absent"
+  if [ -f "$STEP_MANIFEST" ]; then
+    chmod u+w "$STEP_MANIFEST"
+    manifest_now="$(sha256sum "$STEP_MANIFEST" | cut -d' ' -f1)"
+  fi
   finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   t1="$(date +%s)"
   dur=$((t1 - t0))
   local tally
   tally="$(grep -E '^[a-z0-9-]+: [0-9]+ passed, [0-9]+ failed, [0-9]+ unrun$' "$log" | tail -n 1)"
-  if [ "$rc" -eq 0 ]; then
+  if [ "$manifest_now" != "$manifest_sum" ]; then
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
+    gate_fail "$label changed this run's step manifest ($STEP_MANIFEST); a gate script must not inherit CHECK_STEP_MANIFEST; log: $log"
+  elif [ "$rc" -eq 0 ]; then
     record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label ($tally)"
   elif [ "$rc" -eq 2 ] && grep -q '^UNRUN ' "$log"; then
