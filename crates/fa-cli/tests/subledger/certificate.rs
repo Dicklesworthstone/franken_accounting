@@ -197,6 +197,16 @@ fn native_ar_and_ap_certificates_reopen_replay_and_distinguish_gross_scope_chang
         "--evidence",
         &f.evidence,
     ]);
+    // Retain enough genuine native history to cross the fragment boundary.
+    // These cash/revenue entries leave both subledger control accounts alone.
+    let description = "x".repeat(fa_model::limits::MAX_DESCRIPTION_BYTES);
+    for index in 0..20 {
+        let intent = f.file(
+            &format!("certificate-history-{index}.json"),
+            &format!(r#"{{"effective_date":"2026-03-15","idempotency_key":"certificate-history-{index}","description":"{description}","legs":[{{"side":"debit","account":"1000","amount":"0.01 USD"}},{{"side":"credit","account":"4000","amount":"0.01 USD"}}]}}"#),
+        );
+        f.ok(&["post", "--intent", &intent, "--evidence", &f.evidence]);
+    }
     let at = f.head();
     let mut saved = Vec::new();
     for (code, control, debit, credit) in [
@@ -231,6 +241,7 @@ fn native_ar_and_ap_certificates_reopen_replay_and_distinguish_gross_scope_chang
             bytes.len() > 16 * 1024,
             "exercise chunked retained native sources"
         );
+        assert!(bytes.len() > fa::MAX_INLINE_CERTIFICATE_BYTES);
         let certificate = fa::NativeSubledgerCertificate::decode(&bytes).unwrap();
         assert_eq!(
             fa::ReportArtifact::decode(&bytes).unwrap().family(),

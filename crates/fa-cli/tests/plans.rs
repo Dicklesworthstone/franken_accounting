@@ -1638,12 +1638,63 @@ fn a_draft_receipt_applies_to_an_unpublished_invoice_and_refuses_overapplication
         );
     }
     let items = ok(&f.book, &["open-items", "--account", "1200"]);
-    assert_eq!(integer(&items, "count"), 1);
-    assert!(
-        items.render().contains("\"open\":\"30.00 USD\""),
-        "{}",
+    let rows = get(&items, "items").as_arr().unwrap();
+    assert_eq!(integer(&items, "count"), 2);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| text(row, "open") != "0.00 USD")
+            .count(),
+        1,
+        "only the invoice remains open: {}",
         items.render()
     );
+    for (planned, ordinal, side, original, applied_amount, applied_out, open) in [
+        (
+            &invoice,
+            0,
+            "debit",
+            "50.00 USD",
+            "20.00 USD",
+            "0.00 USD",
+            "30.00 USD",
+        ),
+        (
+            &applied,
+            1,
+            "credit",
+            "20.00 USD",
+            "0.00 USD",
+            "20.00 USD",
+            "0.00 USD",
+        ),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| text(row, "entry") == text(planned, "entry"))
+            .unwrap();
+        assert_eq!(integer(row, "ordinal"), ordinal);
+        assert_eq!(text(row, "side"), side);
+        assert_eq!(text(row, "original"), original);
+        assert_eq!(text(row, "applied"), applied_amount);
+        assert_eq!(text(row, "applied_out"), applied_out);
+        assert_eq!(text(row, "open"), open);
+        let applications = get(row, "applications").as_arr().unwrap();
+        if ordinal == 0 {
+            assert_eq!(applications.len(), 1);
+            assert_eq!(text(&applications[0], "entry"), text(&applied, "entry"));
+            assert_eq!(integer(&applications[0], "ordinal"), 1);
+            assert_eq!(text(&applications[0], "amount"), "20.00 USD");
+            assert_eq!(
+                integer(&applications[0], "recorded_at"),
+                integer(&promoted, "recorded_at")
+            );
+            assert_eq!(get(&applications[0], "live"), &Json::Bool(true));
+        } else {
+            assert!(applications.is_empty());
+        }
+    }
+    ok(&f.book, &["verify", "open-items"]);
     // Once promoted, the immutable trunk target supplies the same digest:
     // retrying the original receipt does not need an open draft rehearsal.
     assert_eq!(
@@ -1902,7 +1953,7 @@ fn a_draft_reversal_uses_the_retained_target_and_cannot_read_another_owners_draf
         &f.dir,
         "draft-reversal.json",
         &format!(
-            r#"{{"idempotency_key":"draft-reversal","reverses":"{}","reason":"WrongAmount"}}"#,
+            r#"{{"class":"Reversal","idempotency_key":"draft-reversal","reverses":"{}","reason":"WrongAmount"}}"#,
             text(&original, "entry")
         ),
     );
@@ -1910,7 +1961,7 @@ fn a_draft_reversal_uses_the_retained_target_and_cannot_read_another_owners_draf
     let (code, refused) = run(
         &f.book,
         &[
-            "reverse",
+            "post",
             "--intent",
             &reversal_file,
             "--draft",
@@ -1925,7 +1976,7 @@ fn a_draft_reversal_uses_the_retained_target_and_cannot_read_another_owners_draf
     let reversed = ok(
         &f.book,
         &[
-            "reverse",
+            "post",
             "--intent",
             &reversal_file,
             "--draft",

@@ -3065,13 +3065,9 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
 
     // Refused before anything is published.
     let before = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
-    for (extra, replacement, expected) in [
-        (
-            vec!["--draft", "d1"],
-            corrected.as_str(),
-            "cannot be planned into a draft",
-        ),
-        (vec![], with_class.as_str(), "takes no `class`"),
+    for (extra, replacement, expected_code, expected) in [
+        (vec!["--draft", "d1"], corrected.as_str(), 3, "FA-REF-157"),
+        (vec![], with_class.as_str(), 2, "takes no `class`"),
     ] {
         let mut args = vec![
             "reverse",
@@ -3086,7 +3082,8 @@ fn reverse_with_a_replacement_posts_one_atomic_correction() -> std::io::Result<(
         ];
         args.extend(extra);
         let (code, out, err) = fa(Some(&book), &args);
-        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+        assert_eq!(code, expected_code, "{args:?}\n{out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{out}");
         assert!(out.contains(expected), "{expected}: {out}");
     }
     assert_eq!(
@@ -14475,8 +14472,8 @@ fn due_date_aging_reads_journaled_maturity_through_the_binary() -> std::io::Resu
     assert_eq!(text(&unscheduled[0], "open"), "10.00 USD");
     assert_eq!(arr(&data, "unscheduled_totals").len(), 1, "{out}");
 
-    // Control reconciliation remains a separate path, and the basis belongs
-    // to gl aging alone. Certification is covered by proofs::aging.
+    // Control reconciliation needs one explicit posting account, and the
+    // basis belongs to gl aging alone. Certification is covered by proofs::aging.
     for (args, says) in [
         (
             vec![
@@ -14489,7 +14486,7 @@ fn due_date_aging_reads_journaled_maturity_through_the_binary() -> std::io::Resu
                 "--reconcile",
                 "--json",
             ],
-            "control reconciliation is not yet supported",
+            "due-date aging reconciliation requires one explicit posting account",
         ),
         (
             vec![
@@ -21795,8 +21792,8 @@ fn replace_posts_the_reversal_and_its_replacement_as_one_pair() -> std::io::Resu
     let before = tb();
 
     // Planted: refused before anything is published.
-    for (what, extra) in [
-        ("no corrected entry", vec![]),
+    for (what, extra, expected_code) in [
+        ("no corrected entry", vec![], 2),
         (
             "two corrected entries",
             vec![
@@ -21805,18 +21802,23 @@ fn replace_posts_the_reversal_and_its_replacement_as_one_pair() -> std::io::Resu
                 "--intent",
                 corrected.as_str(),
             ],
+            2,
         ),
         (
-            "a draft",
+            "an unknown draft",
             vec!["--intent", corrected.as_str(), "--draft", "d1"],
+            3,
         ),
     ] {
         let mut args = vec!["replace", vid.as_str(), "--reason", "WrongAmount"];
         args.extend(extra);
         args.extend(["--evidence", ev.as_str(), "--json"]);
         let (code, out, err) = fa(Some(&book), &args);
-        assert_eq!(code, 2, "{what}: {out}\n{err}");
+        assert_eq!(code, expected_code, "{what}: {out}\n{err}");
         assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+        if expected_code == 3 {
+            assert!(out.contains("FA-REF-157"), "{what}: {out}");
+        }
     }
     let (_, out, _) = fa(
         Some(&book),

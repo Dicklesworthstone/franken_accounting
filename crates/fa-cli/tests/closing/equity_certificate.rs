@@ -243,9 +243,41 @@ fn equity_certification_reopens_replays_and_tracks_backdated_changes() {
             .collect::<Vec<_>>();
         assert_eq!(
             transfers.len(),
-            3,
-            "Closing moves revenue, expense and retained earnings"
+            4,
+            "one closing leg per route, before netting"
         );
+        assert_eq!(
+            transfers
+                .iter()
+                .map(|movement| movement.account_id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "revenue and expense each route separately into retained earnings"
+        );
+        let mut amounts = transfers
+            .iter()
+            .map(|movement| (movement.debits, movement.credits))
+            .collect::<Vec<_>>();
+        amounts.sort_unstable();
+        assert_eq!(amounts, [(0, 2_000), (0, 10_000), (2_000, 0), (10_000, 0)]);
+        let book_id = certificate
+            .source_certificate()
+            .source_certificate()
+            .book_id;
+        let mut routed = transfers
+            .iter()
+            .map(|movement| (movement.account_id, movement.debits, movement.credits))
+            .collect::<Vec<_>>();
+        routed.sort_unstable();
+        let mut expected = [
+            (fa_model::account_vid(book_id, "3000").0, 0, 10_000),
+            (fa_model::account_vid(book_id, "3000").0, 2_000, 0),
+            (fa_model::account_vid(book_id, "4000").0, 10_000, 0),
+            (fa_model::account_vid(book_id, "6000").0, 0, 2_000),
+        ];
+        expected.sort_unstable();
+        assert_eq!(routed, expected);
         assert_eq!(
             transfers
                 .iter()

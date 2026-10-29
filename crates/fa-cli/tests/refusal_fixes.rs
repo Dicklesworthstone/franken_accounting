@@ -723,6 +723,31 @@ const CASES: &[Case] = &[
 
 const MORE_CASES: &[Case] = &[
     Case {
+        name: "prior-period-adjustment-needs-reviewed-case",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            let mut correction = intent(
+                "unreviewed-prior-period-adjustment",
+                "2026-03-10",
+                vec![
+                    leg("debit", "6000", "5.00 USD"),
+                    leg("credit", "1000", "5.00 USD"),
+                ],
+            );
+            set_field(&mut correction, "relates_to", "FY2025-P12");
+            post(correction)
+        },
+        steps: &[(
+            "FA-REF-202",
+            Apply::Judgment(
+                "the preparer must identify the earlier error, choose the retained-earnings correction and obtain independent approvals of its case; a generic fix must not choose accounts or bypass that review",
+            ),
+        )],
+    },
+    Case {
         name: "reversal-reason",
         entities: &[],
         setup: &[],
