@@ -253,9 +253,12 @@ if mutation == 'inventory': text = text.replace('test sample::two ... ok\n', '')
 if mutation == 'extra': text += 'test sample::invented ... ok\n'
 if mutation == 'standard-names':
     text += 'test sample::panic - should panic ... ok\ntest sample::ignored ... ignored, fixture reason\n'
-    text = text.replace('2 passed; 0 failed; 0 ignored', '3 passed; 0 failed; 1 ignored')
+    # A doc test's name has spaces (fa-0hs4.2: every workspace run lists some).
+    text += 'test crates/x/src/lib.rs - x::Y<A,B>::z (line 3) - compile ... ok\n'
+    text = text.replace('2 passed; 0 failed; 0 ignored', '4 passed; 0 failed; 1 ignored')
     listing = root / 'steps/test-list.log'
-    listing.write_text(listing.read_text() + 'sample::panic: test\nsample::ignored: test\n')
+    listing.write_text(listing.read_text() + 'sample::panic: test\nsample::ignored: test\n'
+                       'crates/x/src/lib.rs - x::Y<A,B>::z (line 3) - compile: test\n')
 if mutation == 'uncertain': text += 'RCH_SCOPED_COMPLETION_UNCONFIRMED\n'
 if mutation == 'contradictory': text += 'test sample::three ... FAILED\n'
 if mutation == 'worker': text = text.replace('remote fixture-worker (', 'remote different-worker (')

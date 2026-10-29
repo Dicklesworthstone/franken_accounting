@@ -14,7 +14,8 @@
 #
 # STEPS (36 in full mode):
 # CANONICAL_STEPS: bench-smoke, fmt, check, clippy, test-list, test, gate-evidence, invariants, invariants-negative, robot-schema, fuzz-smoke, conformance-mutation, deny, installer-integration, ubs, shellcheck, gate-evidence-negative, local-proof-selftest, tier0-selftest, check-classify, merge-train-selftest, owner-watch-selftest, close-bead-selftest, gate-health-selftest, docs-sync, registries, registry-check, reachability, forbidden-deps, foundations, foundations-negative, doctrine, doctrine-negative, reference-boundary, topology, topology-negative
-#   fmt, check, clippy (-D warnings), test-list + test, gate-evidence
+#   fmt, check, clippy (-D warnings), test-list + test (one rch command per
+#   package or test target, each under the worker cap, fa-0hs4.2), gate-evidence
 #   (completion markers, test-inventory witness, per-crate ratchet, fa-czx)
 #   and its planted negative, invariants (fa-37f) and its planted negative,
 #   robot-schema (fa-12x), fuzz-smoke (fa-tre), bench-smoke (fa-tu58),
@@ -320,6 +321,179 @@ cargo_build() {
   fi
 }
 
+# ---- the workspace test, one rch command per job (fa-0hs4.2) ----------------
+# rch kills any one remote command at its build/test cap (1800 s), and a
+# single `cargo test --workspace` has not finished under it since 10-25. So
+# `test` runs, in sequence, one command per package; one per lib+bins, doc and
+# integration target of the packages in TEST_SPLIT_PACKAGES; and one per test
+# in TEST_ISOLATED, which its target's command skips by exact name. The step
+# log is their concatenation. Nothing is excluded: test-list stays one
+# --workspace listing, so gate-evidence's inventory witness (and
+# local_proof_verify's) fails the step if the split ever drops a test. Each
+# command runs --no-fail-fast, so one red binary never hides another. A
+# command the offloader never ran is retried (CHECK_TEST_ATTEMPTS); an
+# executed failure, a cap kill (exit 137) included, never is. An isolated
+# test that matches no test fails the step, so the list cannot go stale.
+TEST_SPLIT_PACKAGES="fa fa-cli fa-journal fa-mcp fa-notary fa-verify fad"
+# "<package> <--lib|--test=NAME> <test path>": tests that alone take a large
+# share of the cap. Sweep of 10-27 (vmi1153651): the fa metamorphic binary
+# took 1,598-1,640 s, its last 1,500 s these five tests in parallel; the
+# capsule-ceiling batch test exceeds 25 min (fa-wo2n's O(m^2) staging).
+TEST_ISOLATED=(
+  "fa --test=metamorphic draft_promote_equals_trunk_post"
+  "fa --test=metamorphic export_import_identity_on_fixture_books"
+  "fa --test=metamorphic metamorphic_draft_promote_equals_trunk_post"
+  "fa --test=metamorphic metamorphic_export_reread_identity_on_fixture_books"
+  "fa --test=metamorphic retention_cut_preserves_certified_results"
+  "fa-journal --lib batch::tests::batch_exceeding_v1_capsule_ceiling_refuses_with_fa_ref_201_and_split_bound"
+)
+CHECK_TEST_ATTEMPTS="${CHECK_TEST_ATTEMPTS:-3}"
+
+# list_test_jobs: one "<label>\t<cargo test arguments>" line per job.
+list_test_jobs() {
+  python3 -B - "$ROOT" "$TEST_SPLIT_PACKAGES" "${TEST_ISOLATED[@]}" <<'PY'
+import glob
+import os
+import sys
+import tomllib
+
+root, split = sys.argv[1], set(sys.argv[2].split())
+isolated = {}
+for spec in sys.argv[3:]:
+    package, selector, test = spec.split()
+    isolated.setdefault((package, selector), []).append(test)
+
+
+def load(path):
+    with open(path, "rb") as handle:
+        return tomllib.load(handle)
+
+
+def exists(directory, pattern):
+    return bool(glob.glob(os.path.join(directory, pattern)))
+
+
+members = []
+for pattern in load(os.path.join(root, "Cargo.toml"))["workspace"]["members"]:
+    members.extend(sorted(glob.glob(os.path.join(root, pattern))))
+placed = set()
+for directory in members:
+    manifest = load(os.path.join(directory, "Cargo.toml"))
+    name = manifest["package"]["name"]
+    if name not in split:
+        print(f"{name}\t-p {name}")
+        continue
+    has_lib = "lib" in manifest or exists(directory, "src/lib.rs")
+    has_bins = bool(manifest.get("bin")) or any(
+        exists(directory, p) for p in ("src/main.rs", "src/bin/*.rs", "src/bin/*/main.rs"))
+    targets = []
+    if has_lib or has_bins:
+        unit = (["--lib"] if has_lib else []) + (["--bins"] if has_bins else [])
+        targets.append(("lib", "--lib", unit, ["--lib"]))
+    tests = {test["name"] for test in manifest.get("test", [])}
+    if manifest["package"].get("autotests", True):
+        tests.update(os.path.basename(p)[:-3] for p in glob.glob(os.path.join(directory, "tests/*.rs")))
+        tests.update(os.path.basename(os.path.dirname(p))
+                     for p in glob.glob(os.path.join(directory, "tests/*/main.rs")))
+    for test in sorted(tests):
+        targets.append((f"test.{test}", f"--test={test}", ["--test", test], ["--test", test]))
+    for suffix, selector, args, alone in targets:
+        slow = isolated.get((name, selector), [])
+        skips = ["--", "--exact"] + [arg for test in slow for arg in ("--skip", test)] if slow else []
+        print(f"{name}.{suffix}\t" + " ".join(["-p", name, *args, *skips]))
+        for test in slow:
+            placed.add((name, selector, test))
+            label = test.replace("::", ".")
+            print(f"{name}.{suffix}.isolated.{label}\t" + " ".join(["-p", name, *alone, "--", "--exact", test]))
+    if has_lib:
+        print(f"{name}.doc\t-p {name} --doc")
+unplaced = [f"{p} {s} {t}" for (p, s), tests in isolated.items() for t in tests if (p, s, t) not in placed]
+if unplaced:
+    sys.exit("TEST_ISOLATED names no target of a split package: " + "; ".join(unplaced))
+PY
+}
+
+# cargo_test_jobs: the `test` step (see above). Job logs go to
+# $LOG_DIR/test-jobs/<label>.log; the step log is $LOG_DIR/test.log.
+cargo_test_jobs() {
+  local label="test"
+  local log="$LOG_DIR/test.log"
+  if try_reuse_step "$label" "$log"; then
+    return
+  fi
+  local started t0 finished t1 dur
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t0="$(date +%s)"
+  local jobs="$LOG_DIR/test-jobs.tsv" job_dir="$LOG_DIR/test-jobs"
+  mkdir -p "$job_dir"
+  if ! command -v rch >/dev/null 2>&1; then
+    finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" 0 "$log"
+    gate_unrun "$label — rch is not installed; compiling steps go through rch (AGENTS.md); log: $log"
+    return
+  fi
+  if ! list_test_jobs >"$jobs" 2>"$job_dir/list.err" || [ ! -s "$jobs" ]; then
+    cp "$job_dir/list.err" "$log"
+    finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$(($(date +%s) - t0))" "$log"
+    gate_fail "$label — cannot enumerate the test jobs: $(head -c 300 "$job_dir/list.err"); log: $log"
+    return
+  fi
+  : >"$log"
+  local job args job_log rc attempt count=0
+  local -a argv failed=() unrun=() stale=()
+  while IFS=$'\t' read -r job args; do
+    [ -n "$job" ] || continue
+    count=$((count + 1))
+    job_log="$job_dir/$job.log"
+    read -r -a argv <<<"$args"
+    attempt=0
+    while :; do
+      attempt=$((attempt + 1))
+      RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
+        rch exec -- cargo test -j "$CHECK_JOBS" --no-fail-fast "${argv[@]}" </dev/null >"$job_log" 2>&1
+      rc=$?
+      if [ "$rc" -ne 0 ] && is_rch_offloader_unrun "$rc" "$job_log" && [ "$attempt" -lt "$CHECK_TEST_ATTEMPTS" ]; then
+        { printf '==== test job %s: cargo test %s (attempt %s not run by the offloader, exit %s; retrying)\n' \
+            "$job" "$args" "$attempt" "$rc"
+          cat "$job_log"; } >>"$log"
+        continue
+      fi
+      break
+    done
+    { printf '==== test job %s: cargo test %s (exit %s)\n' "$job" "$args" "$rc"; cat "$job_log"; } >>"$log"
+    if [ "$rc" -eq 0 ] && grep -Fq 'Remote command finished: exit=0' "$job_log"; then
+      if [[ "$job" == *.isolated.* ]] && ! grep -Eq '^running 1 test$' "$job_log"; then
+        stale+=("$job")
+      fi
+    elif [ "$rc" -eq 0 ] || is_rch_offloader_unrun "$rc" "$job_log"; then
+      unrun+=("$job")
+    else
+      failed+=("$job")
+    fi
+  done <"$jobs"
+  finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  t1="$(date +%s)"
+  dur=$((t1 - t0))
+  local passed_total
+  passed_total="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") sum += $(i - 1) } END { print sum + 0 }' "$log")"
+  if [ "${#failed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
+    record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
+    gate_fail "$label (${#failed[@]} of $count jobs failed: ${failed[*]:-none}; isolated tests matching no test: ${stale[*]:-none}); log: $log"
+    gate_diag "---- $label: failed tests"
+    grep -E '^test .+ \.\.\. FAILED$' "$log" >&2 || true
+  elif [ "${#unrun[@]}" -gt 0 ]; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
+    gate_unrun "$label — ${#unrun[@]} of $count jobs did not run or complete after $CHECK_TEST_ATTEMPTS attempts: ${unrun[*]} (retryable, not a product verdict); log: $log"
+  elif ! grep -Eq '^test result: ok\. ' "$log" || [ "${passed_total:-0}" -le 0 ]; then
+    record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
+    gate_unrun "$label — $count jobs exited 0 without a positive 'test result: ok. N passed' completion marker; log: $log"
+  else
+    record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
+    gate_pass "$label ($count jobs, $passed_total passed)"
+  fi
+}
+
 # run_gate <label> <script> <args...>
 # A sub-gate that reports under the verdict contract itself (bead fa-37f):
 # exit 0 is PASS; exit 2 with an UNRUN line in its transcript is UNRUN;
@@ -365,7 +539,7 @@ cargo_build "check" check --workspace --all-targets
 cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
   cargo_build "test-list" test --workspace -- --list
-  cargo_build "test" test --workspace
+  cargo_test_jobs
   # Gate evidence witness & per-crate ratchet (bead fa-czx): listed tests match
   # executed tests, no source test disappears without `Retired-tests:`, and
   # per-crate negative test / assert counts do not decrease without
