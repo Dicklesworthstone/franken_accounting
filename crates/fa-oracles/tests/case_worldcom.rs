@@ -17,9 +17,13 @@ use fa_oracles::sha256;
 
 type Files = Vec<(&'static str, String)>;
 
-/// W1's sourced facts: the pilot slice's four entry sentences and four
-/// periods, and the assurance facts of SRC-WC-401 and SRC-WC-406.
-const SOURCED: usize = 10;
+/// The sourced facts: the pilot slice's four entry sentences and four
+/// periods, the assurance facts of SRC-WC-401 and SRC-WC-406 (W1), and
+/// p.26's exact amount for F4 (A8).
+const SOURCED: usize = 11;
+
+/// Every fact: the sourced ones and A8's interpretations F4 and F12.
+const FACTS: usize = SOURCED + 2;
 
 /// W1's sources ledger, in file order.
 const SOURCES: [&str; 10] = [
@@ -147,14 +151,17 @@ fn check_fails(files: &Files, check: &str, row: &str, needles: &[&str]) -> Check
 fn wc_pilot_slice_binds_offline() {
     let case = load_copy(&worldcom()).expect("the committed case loads");
     let reports = run_load_checks(&case);
-    for check in ["K-PROV", "K-BIND", "K-SCOPE", "K-ANCHOR"] {
+    // K-PROV reads every fact; the binding checks read the sourced ones.
+    for (check, n) in [
+        ("K-PROV", FACTS),
+        ("K-BIND", SOURCED),
+        ("K-SCOPE", SOURCED),
+        ("K-ANCHOR", SOURCED),
+    ] {
         let r = reports.iter().find(|r| r.check == check).expect(check);
         assert_eq!(r.verdict, Verdict::Pass, "{}", r.render(Some("worldcom")));
-        assert_eq!((r.examined, r.inputs), (SOURCED, SOURCED), "{check}");
+        assert_eq!((r.examined, r.inputs), (n, n), "{check}");
     }
-    // No derived fact until W2/A8: K-DERIVE examined nothing, never PASS.
-    let derive = reports.iter().find(|r| r.check == "K-DERIVE").unwrap();
-    assert_eq!((derive.verdict, derive.examined), (Verdict::Unrun, 0));
     for r in &reports {
         assert_ne!(r.verdict, Verdict::Fail, "{}", r.render(Some("worldcom")));
     }

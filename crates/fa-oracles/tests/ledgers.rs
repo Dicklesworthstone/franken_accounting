@@ -253,9 +253,14 @@ fn ledgers_validate_offline() {
         last.starts_with(&format!("LEDGERS cases={} ", CASES.len())) && last.contains(" fail=0 "),
         "{last}"
     );
-    // The WorldCom slice's binding lines (W1): every sourced fact examined.
-    for check in ["K-PROV", "K-BIND", "K-SCOPE", "K-ANCHOR"] {
-        let line = format!("CHECK worldcom {check} PASS examined=10/10");
+    // WorldCom's binding lines: every fact (13) and every sourced fact (11) examined.
+    for (check, n) in [
+        ("K-PROV", 13),
+        ("K-BIND", 11),
+        ("K-SCOPE", 11),
+        ("K-ANCHOR", 11),
+    ] {
+        let line = format!("CHECK worldcom {check} PASS examined={n}/{n}");
         assert!(t.lines.contains(&line), "{line}\n{}", t.text());
     }
     assert!(t.lines.contains(

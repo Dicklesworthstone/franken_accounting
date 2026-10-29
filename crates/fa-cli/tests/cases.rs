@@ -97,6 +97,19 @@ fn _selftest() {
     );
 }
 
+/// A8 (§15): the WorldCom pilot on the native book. F2, F4, F9 and F12 post
+/// as the record describes them, and the claimed rows (W-D-01 and W-D-03,
+/// the detections; W-N-01, the no-finding with its mutation twin; W-P-02
+/// and W-P-03, the first refusals) pass through every witness the runner
+/// holds them to, against the plan's predicted values.
+#[test]
+fn worldcom() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    println!("{text}");
+    assert!(o.rows_ok, "{text}");
+}
+
 /// A12 (§12.1, Appendix Z.7): the first green T. The self-test's bridge T
 /// reads its certified B (900.00, A plus the case's delta), holds its
 /// contributing-entry witness (A11b), and passes its outsider check: its
