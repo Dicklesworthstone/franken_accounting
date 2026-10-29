@@ -58,6 +58,7 @@ interpretation only).
 """
 
 import argparse
+import gzip
 import hashlib
 import html.parser
 import json
@@ -72,6 +73,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.parsers.expat
+import zlib
 from fractions import Fraction
 from pathlib import Path
 
@@ -276,7 +278,28 @@ def user_agent(url):
 def urlopen_bytes(url, agent):
     req = urllib.request.Request(url, headers={"User-Agent": agent})
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read()
+        data = resp.read()
+        coding = resp.headers.get("Content-Encoding", "")
+    return decode_content(data, coding)
+
+
+def decode_content(data, coding):
+    """The document's own bytes. An Internet Archive capture replays the
+    original response's Content-Encoding (EDGAR serves gzip), which urllib
+    leaves applied; the recorded sha256 and the extraction are of the
+    document, never of its compression. An unsupported or corrupt coding is
+    an OSError, which fetch reports UNRUN."""
+    coding = (coding or "").strip().lower()
+    try:
+        if coding in ("", "identity"):
+            return data
+        if coding in ("gzip", "x-gzip"):
+            return gzip.decompress(data)
+        if coding == "deflate":
+            return zlib.decompress(data)
+    except (OSError, EOFError, zlib.error) as e:
+        raise OSError(f"Content-Encoding {coding} does not decode: {e}") from e
+    raise OSError(f"unsupported Content-Encoding {coding}")
 
 
 class Throttle:

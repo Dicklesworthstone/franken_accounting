@@ -8,6 +8,7 @@ and a guard on socket.connect refuses every other address.
 """
 
 import contextlib
+import gzip
 import hashlib
 import http.server
 import io
@@ -21,6 +22,7 @@ import tempfile
 import threading
 import tomllib
 import unittest
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -522,6 +524,20 @@ class XbrlFacts(unittest.TestCase):
         self.assertIn("srt:RestatementAxis=srt:RestatementAdjustmentMember", rows[1][7])
 
 
+class DecodeContent(unittest.TestCase):
+    def test_identity_gzip_and_deflate_decode_and_anything_else_refuses(self):
+        doc = b"<html>report</html>"
+        self.assertEqual(cf.decode_content(doc, ""), doc)
+        self.assertEqual(cf.decode_content(doc, "identity"), doc)
+        self.assertEqual(cf.decode_content(gzip.compress(doc), "gzip"), doc)
+        self.assertEqual(cf.decode_content(gzip.compress(doc), " GZIP "), doc)
+        self.assertEqual(cf.decode_content(zlib.compress(doc), "deflate"), doc)
+        with self.assertRaises(OSError):
+            cf.decode_content(doc, "br")
+        with self.assertRaises(OSError):
+            cf.decode_content(doc, "gzip")
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     agents = []
 
@@ -536,18 +552,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class GzipHandler(Handler):
+    """Serves each document gzip-encoded, as an Internet Archive capture of an
+    EDGAR response arrives (Content-Encoding: gzip)."""
+
+    def do_GET(self):
+        Handler.agents.append(self.headers.get("User-Agent", ""))
+        body = gzip.compress((DOCS / self.path.lstrip("/")).read_bytes(), mtime=0)
+        self.send_response(200)
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 class Fetch(unittest.TestCase):
-    def serve(self):
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    def serve(self, handler=Handler):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server.server_address[1]
 
-    def case_on_port(self):
+    def case_on_port(self, handler=Handler):
         case = Case(self)
-        port = self.serve()
+        port = self.serve(handler)
         path = case.dir / "sources.toml"
         path.write_text(path.read_text(encoding="utf-8").replace("PORT", str(port)),
                         encoding="utf-8")
@@ -569,6 +599,16 @@ class Fetch(unittest.TestCase):
         code, out, _ = case.run("fetch")
         self.assertEqual(code, 0, out)
         self.assertIn("CACHED SRC-FX-001", out)
+
+    def test_fetch_decodes_a_gzip_content_encoding_before_hashing(self):
+        case = self.case_on_port(GzipHandler)
+        with mock.patch.object(cf, "MIN_REQUEST_INTERVAL_S", 0.0):
+            code, out, _ = case.run("fetch", "--source", "SRC-FX-001")
+        self.assertEqual(code, 0, out)
+        report = (DOCS / "report.txt").read_bytes()
+        self.assertIn(f"FETCHED SRC-FX-001 sha256={sha(report)}", out)
+        self.assertTrue(out.rstrip().endswith("verified"), out)
+        self.assertEqual((case.cache / sha(report)).read_bytes(), report)
 
     def test_fetch_single_blocked_source_prints_an_unverified_sha256(self):
         case = self.case_on_port()
