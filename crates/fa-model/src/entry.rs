@@ -232,10 +232,11 @@ pub const RECURRING_OCCURRENCE_EXTENSION: u16 = 31;
 /// bytes (`fa_canon::encode_inputs`), so its derivation can be re-run
 /// (plan §10.3, FA-INV-05 `rule-reproduction`).
 pub const RULE_INPUTS_EXTENSION: u16 = 32;
-/// Extension tag 33, `fa:obligation-maturity:v1` (plan §11.6, bead fa-5dpd):
-/// when the obligations this entry books on its credit legs fall due
-/// ([`crate::obligation::InlineObligationTerms`]); validated against the
-/// legs by [`crate::obligation::validate_terms`].
+/// Extension tag 33, `fa:obligation-maturity:v1|v2` (plan §11.6, beads
+/// fa-5dpd / fa-0hs4.13): when an entry's open items fall due. Version 1
+/// admits credit obligations only; version 2 also admits debit receivables
+/// ([`crate::obligation::InlineObligationTerms`]). Both are validated against
+/// the legs by [`crate::obligation::validate_terms`].
 pub const OBLIGATION_MATURITY_EXTENSION: u16 = 33;
 /// Extension tag 34, `fa:valuation-adjustment:v1` (plan §11.6, bead fa-8j3g):
 /// explicit dated valuation inputs this entry carries
@@ -3586,6 +3587,42 @@ mod tests {
             why(with((OBLIGATION_MATURITY_EXTENSION, vec![1, 2, 3])))
                 .is_some_and(|w| w.contains("decode"))
         );
+    }
+
+    #[test]
+    fn receivable_maturity_is_admitted_and_covered_by_the_proposal_digest() {
+        use crate::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
+        let mut p = proposal(two_legs());
+        let mut terms = vec![InlineObligationTerms {
+            ordinal: 0,
+            status: ObligationStatus::Contractual,
+            installments: vec![ObligationInstallment {
+                due_date: DateDay(20_100),
+                amount: 120_000,
+            }],
+        }];
+        p.extensions = vec![InlineObligationTerms::to_extension_for_legs(&terms, &p.legs).unwrap()];
+        p.validate().unwrap();
+        let digest = p.proposal_digest().unwrap();
+        let sealed = p.clone().seal(Vec::new(), None).unwrap();
+        assert_eq!(Entry::decode(&sealed.encode().unwrap()).unwrap(), sealed);
+
+        terms[0].installments[0].due_date = DateDay(20_101);
+        let mut changed = p.clone();
+        changed.extensions =
+            vec![InlineObligationTerms::to_extension_for_legs(&terms, &changed.legs).unwrap()];
+        assert_ne!(changed.proposal_digest().unwrap(), digest);
+
+        // The same debit declaration cannot be laundered into an older
+        // credit-only entry by changing only the extension's version.
+        p.extensions[0].1[..2].copy_from_slice(&1u16.to_le_bytes());
+        assert!(matches!(
+            p.validate(),
+            Err(EntryError::Invalid {
+                what: "extensions.obligation_maturity",
+                why: "names a debit leg; an obligation is booked on a credit leg",
+            })
+        ));
     }
 
     /// A disposal basis is a versioned posting contract, not an opaque tag.

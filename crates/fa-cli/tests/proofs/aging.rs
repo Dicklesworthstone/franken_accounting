@@ -587,6 +587,193 @@ fn due_date_aging_bundle_verifies_offline() {
 }
 
 #[test]
+fn receivable_due_date_aging_bundle_verifies_offline_with_partial_receipts() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "receivables-chart.json",
+        r#"{"accounts":[{"code":"1100","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    ok(&fixture.book, &["chart", "import", &chart]);
+    ok(&fixture.book, &["period", "open", "FY2026-P04"]);
+    let invoice_json = r#"{"effective_date":"2026-03-01","idempotency_key":"net-30-receivable","legs":[{"side":"debit","account":"1100","amount":"100.00 USD"},{"side":"credit","account":"4000","amount":"100.00 USD"}],"obligation_maturity":[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"100.00 USD"}]}]}"#;
+    let invoice = write(&fixture.dir, "net-30-invoice.json", invoice_json);
+    let posted = ok(
+        &fixture.book,
+        &["post", "--intent", &invoice, "--evidence", &evidence],
+    );
+    for (key, status, amount) in [
+        ("ar-missing", "\"missing_maturity\"", "10.00"),
+        ("ar-disputed", "\"disputed\",\"reason_code\":7", "20.00"),
+    ] {
+        let input = write(
+            &fixture.dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-02","idempotency_key":"{key}","legs":[{{"side":"debit","account":"1100","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}],"obligation_maturity":[{{"ordinal":0,"status":{status}}}]}}"#,
+            ),
+        );
+        ok(
+            &fixture.book,
+            &["post", "--intent", &input, "--evidence", &evidence],
+        );
+    }
+    let before_receipt = fixture.head();
+    let receipt = write(
+        &fixture.dir,
+        "partial-ar-receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-04-15","idempotency_key":"partial-ar-receipt","legs":[{{"side":"debit","account":"1000","amount":"25.00 USD"}},{{"side":"credit","account":"1100","amount":"25.00 USD","settles":[{{"entry":"{}","ordinal":0,"amount":"25.00 USD"}}]}}]}}"#,
+            text(&posted, "vid"),
+        ),
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &receipt, "--evidence", &evidence],
+    );
+    let after_receipt = fixture.head();
+    let cases = [
+        ("2026-03-31", after_receipt, 10_000, 0, 0),
+        ("2026-04-01", after_receipt, 10_000, 1, 0),
+        ("2026-05-01", after_receipt, 7_500, 31, 2_500),
+        ("2026-05-01", before_receipt, 10_000, 31, 0),
+    ];
+    let certificates: Vec<_> = cases
+        .iter()
+        .map(|(through, known_at, _, _, _)| {
+            certify(
+                &fixture,
+                &[
+                    "gl",
+                    "aging",
+                    "--basis",
+                    "due-date",
+                    "--account",
+                    "1100",
+                    "--as-of",
+                    through,
+                    "--as-known-at",
+                    &known_at.to_string(),
+                ],
+            )
+        })
+        .collect();
+    // A later backdated receivable must not leak into any retained prefix.
+    let later = write(
+        &fixture.dir,
+        "late-ar-invoice.json",
+        &invoice_json.replace("net-30-receivable", "late-ar-receivable"),
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &later, "--evidence", &evidence],
+    );
+    let state = fixture.checkpoint();
+    let key = fixture.open().checkpoint_public_key();
+    for ((through, known_at, open, overdue, applied), metadata) in
+        cases.into_iter().zip(certificates)
+    {
+        let certificate = fa::DueDateAgingCertificate::decode(&bytes(&metadata)).unwrap();
+        let locator = format!("C:{}", text(&metadata, "oid"));
+        let request = format!(
+            r#"{{"kind":"due-date-aging","account":"1100","through":"{through}","known_at":{known_at},"buckets":[0,30,60,90]}}"#,
+        );
+        let produced = ok(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--expect",
+                &request,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        let verified = fa_verify::report::verify_report_expected(
+            &bytes(&produced),
+            &[key],
+            None,
+            Some(&unhex(text(&produced, "receipt"))),
+            Some(certificate.digest()),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output());
+        let aging = verified.due_date_aging.unwrap();
+        assert_eq!(aging.known_at, known_at);
+        assert_eq!(aging.items.len(), 1);
+        let item = &aging.items[0];
+        assert!(item.item.debit);
+        assert_eq!((item.open, item.days_past_due), (open, overdue));
+        assert_eq!(item.item.applied, applied);
+        assert_eq!(aging.totals[0].amounts.debits, open);
+        assert_eq!(aging.totals[0].amounts.credits, 0);
+        assert_eq!(aging.unscheduled.len(), 2);
+        assert_eq!(aging.unscheduled_totals[0].amounts.debits, 3_000);
+        assert!(aging.unscheduled.iter().any(|item| {
+            item.reason == fa_verify::report::VerifiedUnscheduled::MissingMaturity
+        }));
+        assert!(aging.unscheduled.iter().any(|item| {
+            item.reason == fa_verify::report::VerifiedUnscheduled::Disputed { reason_code: 7 }
+        }));
+    }
+
+    let metadata = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--basis",
+            "due-date",
+            "--reconcile",
+            "--account",
+            "1100",
+            "--as-of",
+            "2026-05-01",
+            "--as-known-at",
+            &after_receipt.to_string(),
+        ],
+    );
+    let certificate = fa::DueDateAgingReconciliationCertificate::decode(&bytes(&metadata)).unwrap();
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    let request = format!(
+        r#"{{"kind":"due-date-aging-reconciliation","account":"1100","through":"2026-05-01","known_at":{after_receipt},"buckets":[0,30,60,90]}}"#,
+    );
+    let state = fixture.checkpoint();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--expect",
+            &request,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &bytes(&produced),
+        &[key],
+        None,
+        Some(&unhex(text(&produced, "receipt"))),
+        Some(certificate.digest()),
+    )
+    .unwrap();
+    let report = verified.due_date_aging_reconciliation.unwrap();
+    assert!(report.is_reconciled());
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(
+        (report.rows[0].posted_net, report.rows[0].open_net),
+        (10_500, 10_500)
+    );
+    assert_eq!(report.rows[0].open_item_count, 3);
+}
+
+#[test]
 fn retained_equity_exports_recompute_the_outer_report_and_require_its_pin() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();

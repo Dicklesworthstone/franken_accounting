@@ -1,8 +1,9 @@
-//! `obligation_maturity` on an entry intent (plan §11.6, bead fa-5dpd): when the
-//! obligations an entry books on its credit legs fall due. They are
-//! journaled with the entry as extension 33 (`fa:obligation-maturity:v1`),
-//! which the kernel validates against the legs, so `solvency.cash_flow_test`
-//! counts a debt by when it is due rather than when it was booked.
+//! `obligation_maturity` on an entry intent (plan §11.6, beads fa-5dpd and
+//! fa-0hs4.13): contractual maturity on payable credit legs and receivable
+//! debit legs. Extension 33 retains v1 bytes for credit-only declarations;
+//! declarations naming a debit leg use v2. The kernel validates the terms
+//! against the legs; due-date aging preserves both sides, while the
+//! cash-flow solvency procedure considers only liabilities.
 
 use fa::Book;
 use fa_model::EntryPayload;
@@ -16,7 +17,7 @@ use fa_time::DateDay;
 use crate::cli::{Fail, usage};
 use crate::json::Json;
 
-pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of a credit leg; status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
+pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of the payable credit leg or receivable debit leg; status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
 
 /// The intent's `obligation_maturity`, if any, as the proposal's extension 33.
 pub(crate) fn declare_terms(
@@ -45,7 +46,9 @@ pub(crate) fn declare_terms(
                 .map_err(|_| usage(format!("{what}: ordinal {n} is out of range"), USAGE))?,
             _ => {
                 return Err(usage(
-                    format!("{what}: ordinal must be the 0-based index of a credit leg"),
+                    format!(
+                        "{what}: ordinal must be the 0-based index of the payable or receivable leg"
+                    ),
                     USAGE,
                 ));
             }
@@ -127,7 +130,7 @@ pub(crate) fn declare_terms(
         });
     }
     terms.sort_by_key(|term| term.ordinal);
-    let bytes = InlineObligationTerms::encode_list(&terms)
+    let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &proposal.legs)
         .map_err(|e| usage(format!("obligation_maturity: {e:?}"), USAGE))?;
     validate_terms(&bytes, &proposal.legs)
         .map_err(|(field, why)| usage(format!("{field} {why}"), USAGE))?;
