@@ -450,8 +450,9 @@ const STOCKS: [(&str, i128, [&str; 4]); 3] = [
 ];
 const YEAR_ENDS: [&str; 4] = ["1997-12-31", "1998-12-31", "1999-12-31", "2000-12-31"];
 
-/// E4's books load (A1b): the two footing books and the two bridge books,
-/// every intent of each balancing per unit in exact minor units; the
+/// E4's books load (A1b): the two footing books, the two bridge books and
+/// the native book, every intent of each balancing per unit in exact minor
+/// units; the
 /// 10-Q's bridge book holds FY1997-FY2000, fifteen as-filed postings and
 /// twenty-two restating ones.
 #[test]
@@ -461,6 +462,7 @@ fn enron_e4_books_load() {
     assert_eq!(
         stems,
         [
+            "native",
             "statement-10k2000",
             "statement-10q2001q3",
             "statement-bridge-10q",

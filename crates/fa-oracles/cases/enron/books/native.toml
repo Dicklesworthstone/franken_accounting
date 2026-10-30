@@ -1,0 +1,493 @@
+# Enron's native book (plan §7.2a; E3's first slice, carrying E4's E-T-03). The notes-for-stock
+# entries the special committee documents, booked as Enron booked them: the Talon note (NFS1,
+# $172 million, April 2000) and the March 2001 notes (NFS2e, $828 million), each an increase to
+# notes receivable and to shareholders' equity. The Restatement case reverses both, as the
+# committee's "proper accounting" sentence (NFS-PROPER) says they should have been booked: no
+# asset, no equity. Its certified statement diff is E-T-03's read. Quarters 2000Q1-2001Q3; every
+# quarter through 2001Q2 is locked before the case.
+
+[book]
+variant = "native"
+opening_date = "2000-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2000Q1"
+start = "2000-01-01"
+end = "2000-03-31"
+fiscal_year = 2000
+kind = "Normal"
+
+[[period]]
+code = "2000Q2"
+start = "2000-04-01"
+end = "2000-06-30"
+fiscal_year = 2000
+kind = "Normal"
+
+[[period]]
+code = "2000Q3"
+start = "2000-07-01"
+end = "2000-09-30"
+fiscal_year = 2000
+kind = "Normal"
+
+[[period]]
+code = "2000Q4"
+start = "2000-10-01"
+end = "2000-12-31"
+fiscal_year = 2000
+kind = "Normal"
+
+[[period]]
+code = "2001Q1"
+start = "2001-01-01"
+end = "2001-03-31"
+fiscal_year = 2001
+kind = "Normal"
+
+[[period]]
+code = "2001Q2"
+start = "2001-04-01"
+end = "2001-06-30"
+fiscal_year = 2001
+kind = "Normal"
+
+[[period]]
+code = "2001Q3"
+start = "2001-07-01"
+end = "2001-09-30"
+fiscal_year = 2001
+kind = "Normal"
+
+[[principal]]
+label = "case-filer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-poster-1"
+profile = "Human"
+grants = ["read", "post", "restate", "produce"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[principal]]
+label = "examiner-witness"
+profile = "Human"
+grants = ["read", "witness"]
+
+[[account]]
+code = "1100"
+name_fact = "NFS1"
+type = "Asset"
+role = "receivable"
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3100"
+name_fact = "NFS1"
+type = "Equity"
+role = "contributed_capital"
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-ENR-10Q"
+stub_of = "SRC-ENR-003"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-NFS1"
+stub_of = "placeholder:NFS1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-NFS2e"
+stub_of = "placeholder:NFS2e"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "NFS1"
+fact = "NFS1"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2000-06-30"
+memo = "the Talon note booked as notes receivable and shareholders' equity (NFS1)"
+evidence = "DOC-PH-NFS1"
+idempotency_key = "enr-native-nfs1"
+
+[[leg]]
+intent = "NFS1"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "172000000.00"
+amount_rule = "value:NFS1#1"
+unit = "USD"
+
+[[leg]]
+intent = "NFS1"
+ordinal = 1
+account = "3100"
+side = "Cr"
+amount_literal = "172000000.00"
+amount_rule = "value:NFS1#1"
+unit = "USD"
+
+[[intent]]
+id = "NFS2e"
+fact = "NFS2e"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2001-03-31"
+memo = "the March 2001 notes booked as notes receivable and shareholders' equity (NFS2e)"
+evidence = "DOC-PH-NFS2e"
+idempotency_key = "enr-native-nfs2e"
+
+[[leg]]
+intent = "NFS2e"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "828000000.00"
+amount_rule = "value:NFS2#1"
+unit = "USD"
+
+[[leg]]
+intent = "NFS2e"
+ordinal = 1
+account = "3100"
+side = "Cr"
+amount_literal = "828000000.00"
+amount_rule = "value:NFS2#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-NFS1"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-06-30"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-native-delta-nfs1"
+target = "NFS1"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate-raptor"
+
+[[leg]]
+intent = "delta-NFS1"
+ordinal = 0
+account = "1100"
+side = "Cr"
+amount_literal = "172000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-NFS1"
+ordinal = 1
+account = "3100"
+side = "Dr"
+amount_literal = "172000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[intent]]
+id = "delta-NFS2e"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2001-03-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-native-delta-nfs2e"
+target = "NFS2e"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate-raptor"
+
+[[leg]]
+intent = "delta-NFS2e"
+ordinal = 0
+account = "1100"
+side = "Cr"
+amount_literal = "828000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-NFS2e"
+ordinal = 1
+account = "3100"
+side = "Dr"
+amount_literal = "828000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[case]]
+id = "enr-raptor"
+kind = "Restatement"
+periods = ["2000Q2", "2000Q3", "2000Q4", "2001Q1", "2001Q2"]
+determined_on = "default"
+authority = "DOC-ENR-10Q"
+disclosure = "DOC-ENR-10Q"
+approvers = ["case-approver-1", "case-approver-2"]
+poster = "case-poster-1"
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the notes the committee describes are not public; each entry cites a reconstruction placeholder of its fact, reviewed by case-second-reader, and the case cites the 10-Q's stub (plan §2.7)"
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "the committee gives the months (April 2000, March 2001), not the days: each entry is effective on its quarter's last day, which every day of the month shares a quarter with"
+
+[[default]]
+attribute = "case_determination_date"
+rule = "restating_filing_date"
+rationale = "the 10-Q (filed 2001-11-19) is the later restating filing that prints the Raptor equity adjustment line E-T-03 compares (plan §2.6); §7.1 has no Item 4.02 8-K row"
+
+[[default]]
+attribute = "reason"
+rule = "WrongAccount"
+rationale = "the committee: the proper accounting would have been to show the notes receivable as a reduction to shareholders' equity (NFS-PROPER); the amounts were right and the accounts wrong, and a restatement is never Fraud (K-REASON)"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2000Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "period_open"
+ref = "2000Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 3
+kind = "period_open"
+ref = "2000Q3"
+principal = "case-closer-1"
+
+[[step]]
+seq = 4
+kind = "period_open"
+ref = "2000Q4"
+principal = "case-closer-1"
+
+[[step]]
+seq = 5
+kind = "period_open"
+ref = "2001Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 6
+kind = "period_open"
+ref = "2001Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 7
+kind = "period_open"
+ref = "2001Q3"
+principal = "case-closer-1"
+
+[[step]]
+seq = 8
+kind = "intent"
+ref = "NFS1"
+
+[[step]]
+seq = 9
+kind = "intent"
+ref = "NFS2e"
+
+[[step]]
+seq = 10
+kind = "period_close"
+ref = "2000Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 11
+kind = "period_lock"
+ref = "2000Q1"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 12
+kind = "period_close"
+ref = "2000Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 13
+kind = "period_lock"
+ref = "2000Q2"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 14
+kind = "period_close"
+ref = "2000Q3"
+principal = "case-closer-1"
+
+[[step]]
+seq = 15
+kind = "period_lock"
+ref = "2000Q3"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 16
+kind = "period_close"
+ref = "2000Q4"
+principal = "case-closer-1"
+
+[[step]]
+seq = 17
+kind = "period_lock"
+ref = "2000Q4"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 18
+kind = "period_close"
+ref = "2001Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 19
+kind = "period_lock"
+ref = "2001Q1"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 20
+kind = "period_close"
+ref = "2001Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 21
+kind = "period_lock"
+ref = "2001Q2"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+# A12 (plan §12.7): the examiner witness cosigns the as-booked checkpoint before the case; after
+# it the runner cosigns the restated book with --previous, which must extend it.
+
+[[step]]
+seq = 22
+kind = "checkpoint"
+ref = "as-booked"
+principal = "examiner-witness"
+
+[[step]]
+seq = 23
+kind = "checkpoint_witness"
+ref = "as-booked"
+
+[[step]]
+seq = 24
+kind = "case_open"
+ref = "enr-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 25
+kind = "case_determine"
+ref = "enr-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 26
+kind = "scenario_fork"
+ref = "restate-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 27
+kind = "scenario_run"
+ref = "restate-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 28
+kind = "scenario_diff"
+ref = "restate-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 29
+kind = "case_rehearse"
+ref = "enr-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 30
+kind = "case_approve"
+ref = "enr-raptor"
+
+[[step]]
+seq = 31
+kind = "case_post"
+ref = "enr-raptor"
+
+[[step]]
+seq = 32
+kind = "case_disclose"
+ref = "enr-raptor"
+principal = "case-poster-1"
+
+[[step]]
+seq = 33
+kind = "case_close"
+ref = "enr-raptor"
+principal = "case-poster-1"

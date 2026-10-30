@@ -4,7 +4,7 @@
 
 Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries); the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it, every line and the printed totals they foot to; and the restatement bridges from the as-filed figures to the 8-K's restated FY1999 net income, total assets and equity, and to the 10-Q's restated net income (FY1998-FY2000) and total assets, debt and equity (FY1997-FY2000).
 
-Claimed rows: `E-R-01`, `E-R-02`, `E-T-01`, `E-T-02`, `E-T-04`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `E-R-01`, `E-R-02`, `E-T-01`, `E-T-02`, `E-T-03`, `E-T-04`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -492,6 +492,49 @@ Declared defaults (each an encoding choice the record does not fix):
 | `case_determination_date` | `restating_filing_date` | the restating filing's date (the 10-Q's filing date, 2001-11-19) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
 | `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
 
+### Book `native` (native)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-native`): not yet evaluated: filler_invariance.
+
+Opened 2000-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `2000Q1` | 2000-01-01 | 2000-03-31 | 2000 | Normal |
+| `2000Q2` | 2000-04-01 | 2000-06-30 | 2000 | Normal |
+| `2000Q3` | 2000-07-01 | 2000-09-30 | 2000 | Normal |
+| `2000Q4` | 2000-10-01 | 2000-12-31 | 2000 | Normal |
+| `2001Q1` | 2001-01-01 | 2001-03-31 | 2001 | Normal |
+| `2001Q2` | 2001-04-01 | 2001-06-30 | 2001 | Normal |
+| `2001Q3` | 2001-07-01 | 2001-09-30 | 2001 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1100` | Asset | `NFS1` |
+| `3100` | Equity | `NFS1` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+| `NFS1` | `NFS1` | Original | 2000-06-30 |
+| `NFS2e` | `NFS2e` | Original | 2001-03-31 |
+| `delta-NFS1` | `derived:negate` | Restatement | 2000-06-30 |
+| `delta-NFS2e` | `derived:negate` | Restatement | 2001-03-31 |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-ENR-10Q` | `SRC-ENR-003` | AgentUpload |
+| `DOC-PH-NFS1` | `placeholder:NFS1` | AgentUpload |
+| `DOC-PH-NFS2e` | `placeholder:NFS2e` | AgentUpload |
+
+Declared defaults (each an encoding choice the record does not fix):
+
+| Attribute | Rule | Why |
+|---|---|---|
+| `evidence_attached` | `placeholder_reviewed` | the notes the committee describes are not public; each entry cites a reconstruction placeholder of its fact, reviewed by case-second-reader, and the case cites the 10-Q's stub (plan §2.7) |
+| `effective_date` | `reporting_period_last_day` | the committee gives the months (April 2000, March 2001), not the days: each entry is effective on its quarter's last day, which every day of the month shares a quarter with |
+| `case_determination_date` | `restating_filing_date` | the 10-Q (filed 2001-11-19) is the later restating filing that prints the Raptor equity adjustment line E-T-03 compares (plan §2.6); §7.1 has no Item 4.02 8-K row |
+| `reason` | `WrongAccount` | the committee: the proper accounting would have been to show the notes receivable as a reduction to shareholders' equity (NFS-PROPER); the amounts were right and the accounts wrong, and a restatement is never Fraud (K-REASON) |
+
 ## Findings, refusals, tie-outs and read-backs
 
 ### `E-T-02`: exact tie-out (T.footing)
@@ -590,6 +633,21 @@ Sources: `SRC-ENR-008` (reported (audited)).
 | `10K-DEBT-A-FY2000` | `default` | R | PASS | record-consistent | kind=read_back read=balance,2100,FY2000,as-originally-reported value=10229000000.00 gql=ok |
 | `BS10K-TOTAL-EQUITY` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY2000,as-originally-reported value=11470000000.00 gql=ok |
 
+### `E-T-03`: exact tie-out (T.delta)
+
+On the book `native`, the certified change below equals the published adjustment exactly, from the posted adjustments `NFS1`, `NFS2e`.
+
+Sources: `SRC-ENR-005` (the committee found).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `N3-RAPTOR-TA-FY2000` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,assets,2000Q4,case=enr-raptor value=-172000000.00 contrib=holds outsider=replay:verified append_only=ok |
+| `N3-RAPTOR-EQ-FY2000` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,total_equity,2000Q4,case=enr-raptor value=-172000000.00 contrib=holds outsider=replay:verified append_only=ok |
+| `N3-RAPTOR-TA-2001Q1` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,assets,2001Q1,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
+| `N3-RAPTOR-EQ-2001Q1` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,total_equity,2001Q1,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
+| `N3-RAPTOR-TA-2001Q2` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,assets,2001Q2,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
+| `N3-RAPTOR-EQ-2001Q2` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,total_equity,2001Q2,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
+
 ## Restatement cases
 
 The runner reads each restatement case back with `fa case show` after its history: its state, its kind and its determination day.
@@ -598,4 +656,5 @@ The runner reads each restatement case back with `fa case show` after its histor
 |---|---|---|---|
 | `E-CASE-enr-10q` | `statement-bridge-10q` | PASS | kind=case_show read=case show,enr-10q state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1997:SupersededBy:later_entries=5 superseded=FY1998:SupersededBy:later_entries=10 superseded=FY1999:SupersededBy:later_entries=16 superseded=FY2000:SupersededBy:later_entries=22 |
 | `E-CASE-enr-8k-fy1999` | `statement-bridge-8k-fy1999` | PASS | kind=case_show read=case show,enr-8k-fy1999 state=Closed case_kind=Restatement determined_on=2001-11-08 authority=DOC-ENR-8K disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1999:SupersededBy:later_entries=9 |
+| `E-CASE-enr-raptor` | `native` | PASS | kind=case_show read=case show,enr-raptor state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
 

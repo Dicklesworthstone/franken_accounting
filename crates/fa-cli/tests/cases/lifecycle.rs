@@ -472,20 +472,31 @@ impl<'c> BookRun<'c> {
     }
 
     /// A `scenario_diff` step: `fa scenario diff <name>` over every period
-    /// the scenario's intents fall in, its certificate written to a file a
-    /// later `case_rehearse` cites.
+    /// the scenario's intents fall in and every period the case that next
+    /// rehearses it declares (`fa case rehearse` refuses a diff that does
+    /// not cover each period the case affects, FA-REF-177), its certificate
+    /// written to a file that `case_rehearse` cites.
     pub(crate) fn scenario_diff(&mut self, step: &StepDef) {
         let name = step.reference.clone();
         let planned = self.planned_into(&name);
         let book = self.book;
+        let declared: Vec<&str> = book
+            .steps
+            .iter()
+            .filter(|s| s.seq > step.seq && s.step_kind() == Some(StepKind::CaseRehearse))
+            .min_by_key(|s| s.seq)
+            .and_then(|s| book.cases.iter().find(|c| c.id == s.reference))
+            .map(|c| c.periods.iter().map(String::as_str).collect())
+            .unwrap_or_default();
         let codes: Vec<String> = book
             .periods
             .iter()
             .filter(|p| {
-                planned.iter().any(|i| {
-                    p.start.as_str() <= i.effective_date.as_str()
-                        && i.effective_date.as_str() <= p.end.as_str()
-                })
+                declared.contains(&p.code.as_str())
+                    || planned.iter().any(|i| {
+                        p.start.as_str() <= i.effective_date.as_str()
+                            && i.effective_date.as_str() <= p.end.as_str()
+                    })
             })
             .filter_map(|p| self.periods.get(&p.code).cloned())
             .collect();
