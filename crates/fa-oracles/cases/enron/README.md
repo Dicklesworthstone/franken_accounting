@@ -193,6 +193,12 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `N3-RAPTOR-EQ-2001Q1` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#4\|1st Qtr` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
 | `8K-RAPTOR-EQ-2001Q2` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#5\|2ND QTR` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
 | `N3-RAPTOR-EQ-2001Q2` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#4\|2nd Qtr` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `RAP1` | `SRC-ENR-005` | `p122:l46-47` | 2001-04-13; 2001-03-26 | the committee found | dated_aggregate |
+| `RAP2` | `SRC-ENR-005` | `p123:l44-45` | 2001-03-30 | the committee found | dated_aggregate |
+| `NFS1` | `SRC-ENR-005` | `p125:l37-41` | 172,000,000.00 USD; 2000-04 | the committee found | journal_entry |
+| `NFS2` | `SRC-ENR-005` | `p125:l43-47` | 828,000,000.00 USD; 2001-03 | the committee found | period_total |
+| `NFS3` | `SRC-ENR-005` | `p126:l28-32` | 1,000,000,000.00 USD; 172,000,000.00 USD; 828,000,000.00 USD | the committee found | period_total |
+| `NFS-PROPER` | `SRC-ENR-005` | `p126:l12-16` | - | the committee found | period_total |
 
 ### Readings of the record
 
@@ -227,6 +233,9 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 - `N3-EQ-D-CHG-FY2000`, derived by `difference` from `N3-EQ-D-FY2000`, `N3-EQ-D-FY1999`: -335,000,000.00 USD
 - `ENR-BRIDGE-10Q`, an interpretation of `10K-TA-A-FY1997`, `10K-DEBT-A-FY1997`, `10K-EQ-A-FY1997`, `10K-NI-A-FY1998`, read by `case-author-1` and second reader `case-second-reader`: The 10-Q bridge book holds four of the figures Note 3 bridges, each on its own account: total assets on an asset account, debt on a liability account, equity on an equity account, and net income on a revenue account. A book needs balanced entries, so total assets, debt and equity each post against one liability account that holds what they leave, and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. A stock figure posts in its first year, FY1997, and in each later year as its change from the year before, so the certified balance at each year-end is the printed figure; a stock line's adjustments post per printed column in FY1997, and in each later year as the change in the line's total adjustment, the sum of its printed columns. Net income is a flow: each year's figure and each of its adjustments post in that year. Each adjustment posts against the same balancing account as the figure it adjusts.
 - `EX27-EQ-A-FY1999`, derived by `sum` from `EX27-EQ1-A-FY1999`, `EX27-EQ2-A-FY1999`, `EX27-EQ3-A-FY1999`: 9,570,000,000.00 USD
+- `RAP-E`, an interpretation of `RAP1`, `RAP2`, read by `case-author-1` and second reader `case-second-reader`: The Raptor restructuring is encoded as one entry whose documents are those RAP1 and RAP2 date: transaction documents dated April 13, 2001, effective as of March 26, 2001, and a letter agreement executed March 30, 2001. Its legs and amount are not in the quotes, so E3 declares them.
+- `NFS2e`, an interpretation of `NFS2`, read by `case-author-1` and second reader `case-second-reader`: NFS2 states similar entries in March 2001 for notes totaling $828 million, without their count. One $828 million entry encodes them, booked as NFS1 is: an increase to notes receivable and to shareholders' equity. The count is E3's declared default.
+- `NFS-SUM`, derived by `sum` from `NFS1`, `NFS2`: 1,000,000,000.00 USD
 
 ## How this book was built
 
