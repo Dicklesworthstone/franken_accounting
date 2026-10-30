@@ -199,6 +199,8 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `NFS2` | `SRC-ENR-005` | `p125:l43-47` | 828,000,000.00 USD; 2001-03 | the committee found | period_total |
 | `NFS3` | `SRC-ENR-005` | `p126:l28-32` | 1,000,000,000.00 USD; 172,000,000.00 USD; 828,000,000.00 USD | the committee found | period_total |
 | `NFS-PROPER` | `SRC-ENR-005` | `p126:l12-16` | - | the committee found | period_total |
+| `RR1` | `SRC-ENR-001` | `p37:l6-14` | 2000-07-17..2000-07-19 | the indictment charges | dated_aggregate |
+| `RR2` | `SRC-ENR-001` | `p13:l9-16` | - | the indictment charges | period_total |
 
 ### Readings of the record
 
@@ -248,6 +250,8 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 - `REM-A-FY2000`, derived by `remainder` from `BS10K-TOTAL-ASSETS`, `10K-DEBT-A-FY2000`, `BS10K-TOTAL-EQUITY`: 43,804,000,000.00 USD
 - `REM-D-FY2000`, derived by `remainder` from `N3-TA-D-FY2000`, `N3-DEBT-D1-FY2000`, `N3-EQ-D-FY2000`: -24,000,000.00 USD
 - `REM-B-FY2000`, derived by `remainder` from `BS10Q-TOTAL-ASSETS`, `N3-DEBT-B-FY2000`, `BS10Q-TOTAL-EQUITY`: 43,780,000,000.00 USD
+- `RR1e`, an interpretation of `RR1`, read by `case-author-1` and second reader `case-second-reader`: RR1 charges that entries, with no count, were made on or about and between July 17 and 19, 2000, after the second quarter ended, releasing funds from a reserve account so that Enron reported a better second-quarter earnings per share. One encoded entry stands for the charged entries (E3's declared default count of one), booked on one day of the window (E3's branch over its three days), into the quarter whose result the release improved. The weaker reading, several entries of unknown split, changes no E-P-01 cell: each cell's premises are the entry's class, period state, grants and evidence, never its amount or count.
+- `RR-AMT`, synthetic (no amount-reading procedure carries a claim on this entry): the indictment states the amount only as millions of dollars (p.13)
 
 ## How this book was built
 
