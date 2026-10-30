@@ -21,6 +21,9 @@ source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 gate_init "owner-watch-selftest"
 
 fail() {
+  # The EXIT trap samples the tree from the current directory: from inside
+  # a fixture clone it would report the source tree as moved.
+  cd "$source_root" 2>/dev/null || true
   gate_fail "$*"
   exit 1
 }
