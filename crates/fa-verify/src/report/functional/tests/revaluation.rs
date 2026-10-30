@@ -261,6 +261,194 @@ fn mutate_basis(record: &Record, mutate: impl FnOnce(&mut Vec<u8>)) -> Record {
     finish(w, record.envelope.commit_seq)
 }
 
+fn promotion(seq: u64, draft: u128, to: u8) -> Record {
+    let key = framed_hash(
+        b"fa:draft-record-key:v1",
+        &[&[2], &draft.to_le_bytes(), &[]],
+    );
+    let mut w = prefix(25, 30);
+    w.buf[2..4].copy_from_slice(&1u16.to_le_bytes());
+    w.count(0)
+        .u8(1)
+        .u8(3)
+        .u128(draft)
+        .u8(1)
+        .u8(to)
+        .count(1)
+        .u8(0)
+        .u128(456)
+        .u16(0)
+        .count(0)
+        .u8(0)
+        .bytes(&key)
+        .u8(3)
+        .u16(11)
+        .fixed(&[7; 32])
+        .u128(PRINCIPAL)
+        .u8(0)
+        .count(0)
+        .count(0)
+        .u8(0)
+        .count(0)
+        .count(0)
+        .count(0);
+    finish(w, seq)
+}
+
+fn with_promotion(records: &[Record], marker: Record) -> Vec<Record> {
+    let mut result = records.to_vec();
+    let mut marker = marker;
+    marker.envelope.within_commit_ordinal = 1;
+    result.push(marker);
+    result
+}
+
+#[test]
+fn promoted_revaluation_replays_the_same_source_derived_cumulative_adjustment() {
+    let (records, rates) = history();
+    let (expected, output) = replay(&records, &rates).unwrap();
+    assert_eq!(net(&expected, "1000"), 110);
+    assert_eq!(net(&expected, "1290"), 10);
+    assert_eq!(net(&expected, "4700"), -10);
+
+    let promoted = with_promotion(&records, promotion(8, 123, 2));
+    let verified = migration::verify_packed(&promoted, 8, &rates, &output, &[]).unwrap();
+    assert_eq!(verified.output, output);
+    assert_eq!(verified.functional_trial_balance.unwrap(), expected);
+
+    // Control order is immaterial to a fold only because the admitted
+    // sibling is precisely the nonmonetary promotion record.
+    let mut reordered = promoted;
+    reordered[7].envelope.within_commit_ordinal = 1;
+    reordered[8].envelope.within_commit_ordinal = 0;
+    reordered.swap(7, 8);
+    assert_eq!(
+        migration::verify_packed(&reordered, 8, &rates, &output, &[])
+            .unwrap()
+            .output,
+        output
+    );
+}
+
+#[test]
+fn promoted_revaluation_refuses_extra_effects_and_forged_promotion_metadata() {
+    let (records, rates) = history();
+    let (_, output) = replay(&records, &rates).unwrap();
+    for sibling in [
+        promotion(8, 123, 3),
+        control(8, 1, 14, &route_body(), b"sibling-routes"),
+        transition(8, 1, 2),
+        entry(
+            8,
+            1,
+            10,
+            b"sibling-source",
+            &pair(100, 110),
+            Some((1, &rates[0], None)),
+            None,
+            None,
+        ),
+    ] {
+        let bad = with_promotion(&records, sibling);
+        assert_eq!(
+            migration::verify_packed(&bad, 8, &rates, &output, &[])
+                .unwrap_err()
+                .predicate,
+            "functional_revaluation"
+        );
+    }
+    let mut bad = with_promotion(&records, promotion(8, 123, 2));
+    let mut second = promotion(8, 124, 2);
+    second.envelope.within_commit_ordinal = 2;
+    bad.push(second);
+    assert_eq!(
+        migration::verify_packed(&bad, 8, &rates, &output, &[])
+            .unwrap_err()
+            .predicate,
+        "functional_revaluation",
+        "one adjustment cannot stand in for two promoted drafts"
+    );
+
+    let marker = promotion(8, 123, 2);
+    let key = framed_hash(
+        b"fa:draft-record-key:v1",
+        &[&[2], &123u128.to_le_bytes(), &[]],
+    );
+    let start = marker
+        .bytes
+        .windows(key.len())
+        .position(|value| value == key)
+        .unwrap();
+    let mut malformed = Writer::default();
+    malformed.fixed(&marker.bytes[..marker.len]);
+    malformed.buf[start] ^= 1;
+    let bad = with_promotion(&records, finish(malformed, 8));
+    assert_eq!(
+        migration::verify_packed(&bad, 8, &rates, &output, &[])
+            .unwrap_err()
+            .predicate,
+        "functional_revaluation",
+        "a resealed control with another deterministic record key is not a promotion sibling"
+    );
+}
+
+#[test]
+fn promoted_revaluation_still_rejects_stale_sources_and_balanced_false_amounts() {
+    let (records, rates) = history();
+    let (_, output) = replay(&records, &rates).unwrap();
+    let mut wrong = records.clone();
+    wrong[7] = adjustment(
+        8,
+        7,
+        b"false-reviewed-delta",
+        20,
+        &records[3],
+        &rates[1],
+        &[&records[5]],
+    );
+    let wrong = with_promotion(&wrong, promotion(8, 123, 2));
+    assert_eq!(
+        migration::verify_packed(&wrong, 8, &rates, &output, &[])
+            .unwrap_err()
+            .predicate,
+        "functional_revaluation"
+    );
+
+    let mut stale = records[..7].to_vec();
+    stale.push(entry(
+        8,
+        1,
+        10,
+        b"late-source-before-promotion",
+        &pair(100, 110),
+        Some((1, &rates[0], None)),
+        None,
+        None,
+    ));
+    stale.push(adjustment(
+        9,
+        7,
+        b"stale-promoted-adjustment",
+        10,
+        &records[3],
+        &rates[1],
+        &[&records[5]],
+    ));
+    let stale = with_promotion(&stale, promotion(9, 123, 2));
+    assert_eq!(
+        migration::verify_packed(&stale, 9, &rates, &output, &[])
+            .unwrap_err()
+            .predicate,
+        "functional_revaluation",
+        "approval metadata cannot make an obsolete observed source current"
+    );
+    let promoted = with_promotion(&records, promotion(8, 123, 2));
+    assert!(
+        migration::verify_packed(&promoted, 8, &rates[..1], &output, &[]).is_err(),
+        "promotion never replaces the authenticated closing Rate evidence"
+    );
+}
+
 #[test]
 fn aggregate_revaluation_reprices_the_exposure_and_only_the_repeated_delta_offline() {
     let (mut records, mut rates) = history();

@@ -16,11 +16,11 @@ fn invalid(detail: &str) -> ReportError {
     failed("functional_closing", detail)
 }
 
-/// A governed singleton close shares its publication with its draft's
+/// A governed singleton source-bound entry shares its publication with its draft's
 /// Promote record. That exact metadata shape has no monetary, schema or
 /// period effect. Recognizing it does not assert the draft's authorization
 /// or lifecycle proof, which remains outside this report certificate.
-fn promotion_control(proposal: &[u8]) -> Result<bool, ReportError> {
+pub(super) fn promotion_control(proposal: &[u8]) -> Result<bool, ReportError> {
     let mut header = Reader::new(proposal);
     if header.u16("draft.major")? != 1 || header.u16("draft.minor")? != 1 {
         return Ok(false);

@@ -20,7 +20,8 @@ use fgdb_types::VId;
 use crate::args::Args;
 use crate::cli::{
     Ctx, Fail, check_post_planning_options, emit_post_plan, emit_posted, hex, known_at_read_flag,
-    parse_digest, parse_vid, read_review_bytes, render_amount, usage, write_review_file,
+    parse_digest, parse_vid, plan_intent_into_draft, read_review_bytes, render_amount, usage,
+    write_review_file,
 };
 use crate::json::{Json, obj, s};
 
@@ -504,6 +505,7 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--review-out",
             "--digest",
             "--plan-out",
+            "--draft",
         ],
         &["--dry-run", "--review-only", "--allocate-open-items"],
     )?;
@@ -514,6 +516,22 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "choose a proposal review or a native --dry-run plan",
             EXAMPLE,
         ));
+    }
+    let draft = args.flag("--draft");
+    if draft.is_some()
+        && (args.flag("--review").is_none()
+            || review_only
+            || args.switch("--dry-run")
+            || args.flag("--plan-out").is_some()
+            || args.switch("--yes"))
+    {
+        return Err(usage(
+            "--draft retains an unchanged reviewed revaluation, without a native plan or publication",
+            "fa fx revalue --review <file|hex|-> --digest <review_digest> --draft <owned-empty-draft>",
+        ));
+    }
+    if draft.is_some() {
+        let _ = required(args, "--draft")?;
     }
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read", "post"])?;
@@ -551,20 +569,29 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?;
         if review
-            .digest()
+            .canonical_bytes()
             .map_err(|error| Fail::Internal(error.to_string()))?
-            != expected
+            != bytes
+            || review
+                .digest()
+                .map_err(|error| Fail::Internal(error.to_string()))?
+                != expected
             || review.proposal().class != EntryClass::REVALUATION
             || review.proposal().book_id != book.context().book_id
+            || review.proposal().branch_id != Id128::TRUNK
+            || review.proposal().principal_ref != principal
             || !review.approvals().is_empty()
         {
             return Err(usage(
-                "FX review digest, book or type does not match",
-                "use its independently retained review_digest",
+                "FX review bytes, digest, book, type or acting principal do not match",
+                "restore the unchanged review and its independently retained review_digest under the original principal",
             ));
         }
         read_review_rate(&mut book, &capability, &review)?;
         let intent = with_approvals(review, args)?;
+        if let Some(name) = draft {
+            return plan_intent_into_draft(&ctx.out, &mut book, capability, name, intent);
+        }
         if args.switch("--dry-run") {
             let plan = book.plan(intent, &capability)??;
             return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);

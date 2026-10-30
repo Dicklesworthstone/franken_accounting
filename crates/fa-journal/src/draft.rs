@@ -1071,6 +1071,12 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         {
             return Ok(Err(refusal));
         }
+        if (intent.proposal().class == EntryClass::REVALUATION
+            || crate::revaluation::is_source_bound(intent.proposal()))
+            && let Err(refusal) = crate::revaluation::authorize(db, book, capability)?
+        {
+            return Ok(Err(refusal));
+        }
     }
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
@@ -1271,9 +1277,16 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(Err(refusal));
     }
-    // A Closing may enter only its own dedicated singleton draft. The
+    if (p.class == EntryClass::REVALUATION || crate::revaluation::is_source_bound(p))
+        && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
+    {
+        return Ok(Err(refusal));
+    }
+    // Closing and Revaluation enter only their dedicated singleton drafts. The
     // complete ordered preview proves that exception before any Plan record.
-    if !crate::batch::batchable(p.class) && p.class != EntryClass::CLOSING {
+    if !crate::batch::batchable(p.class)
+        && !matches!(p.class, EntryClass::CLOSING | EntryClass::REVALUATION)
+    {
         return Ok(Err(usage(
             format!(
                 "a {} entry cannot join a draft: its promotion is one batch of PostEntry intents",
@@ -1601,6 +1614,12 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     for planned in &view.intents {
         if crate::asset_cost::has_basis(planned.intent.proposal())
             && let Err(refusal) = crate::asset_cost::authorize(db, book, &planned.capability)?
+        {
+            return Ok(Err(refusal));
+        }
+        if (planned.intent.proposal().class == EntryClass::REVALUATION
+            || crate::revaluation::is_source_bound(planned.intent.proposal()))
+            && let Err(refusal) = crate::revaluation::authorize(db, book, &planned.capability)?
         {
             return Ok(Err(refusal));
         }

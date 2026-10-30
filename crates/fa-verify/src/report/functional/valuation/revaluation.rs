@@ -598,12 +598,24 @@ pub(super) fn verify<'a>(
     for (&index, info) in infos {
         if let Some(raw) = info.fx_revaluation_basis {
             let basis = Basis::read(raw)?;
-            if infos.keys().any(|other| {
-                *other != index && envelopes[*other].commit_seq == envelopes[index].commit_seq
+            // Promotion atomically appends the one reviewed adjustment and
+            // an inert DraftControl::Promote record. No monetary, period or
+            // schema sibling is allowed: its ordering would invalidate the
+            // old/current source proof. This recognizes transport metadata,
+            // not an independently verified approval or draft lifecycle.
+            let mut promotion_seen = false;
+            for other in infos.keys().filter(|other| {
+                **other != index && envelopes[**other].commit_seq == envelopes[index].commit_seq
             }) {
-                return Err(invalid(
-                    "aggregate revaluation requires its own Entry publication; a sibling effect has no admitted execution order",
-                ));
+                if promotion_seen
+                    || envelopes[*other].class != 25
+                    || !super::closing::promotion_control(&records[*other].1[..records[*other].0])?
+                {
+                    return Err(invalid(
+                        "aggregate revaluation cannot share publication with a monetary or source-changing Entry",
+                    ));
+                }
+                promotion_seen = true;
             }
             if !publications.insert((basis.source, envelopes[index].commit_seq)) {
                 return Err(invalid(

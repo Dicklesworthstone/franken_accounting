@@ -619,6 +619,20 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &[
+                "fx",
+                "revalue",
+                "--review",
+                ZERO_DIGEST,
+                "--digest",
+                ZERO_DIGEST,
+                "--draft",
+                "reviewed-fx",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
             &["approve", "--proposal", ZERO_DIGEST],
             &[Op::Approve],
             Reaches,

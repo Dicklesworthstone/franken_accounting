@@ -741,6 +741,7 @@ fn fx_revaluation_previews_are_typed_and_do_not_supply_host_paths_or_commit_conf
         assert_eq!(schema["properties"][property]["type"], json!("boolean"));
     }
     assert_eq!(schema["properties"]["review"]["type"], json!("string"));
+    assert_eq!(schema["properties"]["draft"]["type"], json!("string"));
     let authority = fa_cli::authority::LaunchAuthority::new(
         std::path::PathBuf::from("/unused-fx-book"),
         None,
@@ -753,6 +754,58 @@ fn fx_revaluation_previews_are_typed_and_do_not_supply_host_paths_or_commit_conf
         "period": "FY2026-P03", "account": "1200",
         "rate": format!("D:{}", "ab".repeat(32)), "key": "review-fx",
     });
+    let draft = json!({
+        "review": "ab".repeat(80), "digest": "cd".repeat(32), "draft": "reviewed-fx"
+    });
+    let retained = revalue.invocation(&mcp, reg, &draft).unwrap();
+    let parsed = fa_cli::args::parse(&retained.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.flag("--draft"), Some("reviewed-fx"));
+    assert!(!parsed.switch("--yes"));
+    assert_eq!(
+        fa_cli::cli::bound_command_admissible(reg, "fx", &parsed, &authority)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read", "post"],
+    );
+    let translated = mcp
+        .command_to_call(
+            reg,
+            &format!(
+                "fa fx revalue --review {} --digest {} --draft reviewed-fx --json",
+                "ab".repeat(80),
+                "cd".repeat(32),
+            ),
+        )
+        .unwrap();
+    assert_eq!(translated.tool, "fa_fx_revalue");
+    assert_eq!(translated.arguments, draft);
+    assert!(mcp.is_call_admissible(reg, &translated, &authority));
+    for omitted in ["review", "digest", "draft"] {
+        let mut incomplete = draft.clone();
+        incomplete.as_object_mut().unwrap().remove(omitted);
+        let invocation = revalue.invocation(&mcp, reg, &incomplete).unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        let refusal = fa_cli::cli::bound_command_admissible(reg, "fx", &parsed, &authority)
+            .expect_err("an incomplete draft request cannot authorize native publication");
+        assert!(refusal.contains("FA-REF-007"), "{refusal}");
+    }
+    let mut bad_draft = draft.clone();
+    bad_draft["draft"] = json!(true);
+    assert!(revalue.invocation(&mcp, reg, &bad_draft).is_err());
+    for grants in [&["read"][..], &["post"][..]] {
+        let missing = fa_cli::authority::LaunchAuthority::new(
+            std::path::PathBuf::from("/unused-fx-book"),
+            None,
+            "fx-agent",
+            fa_cli::authority::LaunchProfile::Agent,
+            grants,
+        )
+        .unwrap();
+        assert!(!mcp.is_call_admissible(reg, &translated, &missing));
+    }
     for preview in ["review_only", "dry_run"] {
         let mut arguments = selectors.clone();
         arguments[preview] = json!(true);
@@ -796,7 +849,12 @@ fn fx_revaluation_previews_are_typed_and_do_not_supply_host_paths_or_commit_conf
             assert!(refused.message.contains(property), "{refused:?}");
         }
     }
-    assert!(schema["properties"].get("yes").is_none());
+    for forbidden in ["yes", "post", "grant", "principal"] {
+        assert!(schema["properties"].get(forbidden).is_none());
+        let mut supplied = draft.clone();
+        supplied[forbidden] = JsonValue::Null;
+        assert!(revalue.invocation(&mcp, reg, &supplied).is_err());
+    }
     assert!(
         mcp.command_to_call(
             reg,

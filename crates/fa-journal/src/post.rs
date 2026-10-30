@@ -400,10 +400,7 @@ impl PreparedPost {
     pub(crate) fn into_member(
         self,
         planning: bool,
-        carrying: Option<crate::batch::IndependentCarryingBatch>,
-        disposal: Option<crate::batch::IndependentDisposalBatch>,
-        asset_charge: Option<crate::batch::IndependentAssetChargeBatch>,
-        closing: Option<crate::batch::SingletonClosingDraft>,
+        proofs: crate::batch::AggregateProofs,
         admission: Admission,
     ) -> Result<(WriteTxn, BatchMember, crate::batch::TemplateByteTracker), KernelError> {
         let aggregate = match requires_aggregate_basis(&self.request.proposal) {
@@ -414,13 +411,15 @@ impl PreparedPost {
             }
         };
         let independent_carrying =
-            carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
+            proofs.carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
         let independent_disposal =
-            disposal.is_some() && crate::disposal::has_basis(&self.request.proposal);
+            proofs.disposal.is_some() && crate::disposal::has_basis(&self.request.proposal);
         let independent_asset_charge =
-            asset_charge.is_some() && crate::asset_cost::has_basis(&self.request.proposal);
+            proofs.asset_charge.is_some() && crate::asset_cost::has_basis(&self.request.proposal);
         let singleton_closing =
-            closing.is_some() && self.request.proposal.class == EntryClass::CLOSING;
+            proofs.closing.is_some() && self.request.proposal.class == EntryClass::CLOSING;
+        let singleton_revaluation =
+            proofs.revaluation.is_some() && self.request.proposal.class == EntryClass::REVALUATION;
         // The posting pipeline has already witnessed the exact side-swap
         // and staged its recorded UNSETTLES effects. Legacy carrying undos
         // therefore compose through those transactional application mirrors;
@@ -450,6 +449,7 @@ impl PreparedPost {
                 && !independent_disposal
                 && !independent_asset_charge
                 && !singleton_closing
+                && !singleton_revaluation
                 && !recorded_carrying_undo
                 && !case_adjustment)
         {
@@ -1460,25 +1460,25 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    if crate::asset_cost::has_basis(&req.proposal) && member.asset_charge.is_none() {
+    if crate::asset_cost::has_basis(&req.proposal) && member.proofs.asset_charge.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
         }
         return Ok(Err(crate::asset_cost::unsupported_batch()));
     }
-    if crate::disposal::has_basis(&req.proposal) && member.disposal.is_none() {
+    if crate::disposal::has_basis(&req.proposal) && member.proofs.disposal.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
         }
         return Ok(Err(crate::disposal::unsupported_batch()));
     }
-    if crate::revaluation::is_source_bound(&req.proposal) {
+    if crate::revaluation::is_source_bound(&req.proposal) && member.proofs.revaluation.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
         }
         return Ok(Err(crate::revaluation::unsupported_batch()));
     }
-    if crate::carrying::is_source_bound(&req.proposal) && member.carrying.is_none() {
+    if crate::carrying::is_source_bound(&req.proposal) && member.proofs.carrying.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
         }
@@ -1929,17 +1929,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    let (carried, carrying_batch, disposal_batch, asset_charge_batch, closing_draft) = match member
-    {
-        Some(member) => (
-            member.txn,
-            member.carrying,
-            member.disposal,
-            member.asset_charge,
-            member.closing,
-        ),
-        None => (None, None, None, None, None),
+    let (carried, proofs) = match member {
+        Some(member) => (member.txn, member.proofs),
+        None => (None, crate::batch::AggregateProofs::default()),
     };
+    let crate::batch::AggregateProofs {
+        carrying: carrying_batch,
+        disposal: disposal_batch,
+        asset_charge: asset_charge_batch,
+        closing: closing_draft,
+        revaluation: revaluation_draft,
+    } = proofs;
     let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
@@ -2096,10 +2096,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
         if carried.is_some()
-            || matches!(
-                admission,
-                Admission::Promote(_) | Admission::ScratchDraft(_)
-            )
+            || replacement_basis.is_some()
+            || !(matches!(admission, Admission::Commit | Admission::Plan)
+                || (matches!(
+                    admission,
+                    Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+                ) && revaluation_draft.is_some()))
         {
             return Ok(Err(crate::revaluation::unsupported_batch()));
         }

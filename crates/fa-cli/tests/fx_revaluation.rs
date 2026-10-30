@@ -105,6 +105,43 @@ fn head(book: &Path) -> i128 {
     integer(info.get("coordinate").unwrap(), "known_at")
 }
 
+fn fx_agent(f: &Fixture, grants: &[&str], args: &[&str]) -> (u8, Json) {
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "fx-agent",
+        fa_cli::authority::LaunchProfile::Agent,
+        grants,
+    )
+    .expect("fixed FX Agent authority");
+    let mut argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    argv.push("--json".into());
+    let (status, output) = fa_cli::entry::fa_with_authority(
+        &argv,
+        fa_cli::cli::Files {
+            cwd: None,
+            stdin: fa_cli::cli::Stdin::Missing,
+        },
+        &authority,
+        true,
+    );
+    let lines: Vec<_> = output.stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "args={args:?}: {output:?}");
+    fa_cli::verbs::registry()
+        .expect("registry")
+        .check_line(lines[0])
+        .expect("registered FX Agent result");
+    let event = json::parse(lines[0]).expect("robot line");
+    assert_eq!(event.get("authority"), Some(&authority.envelope_json()));
+    (status, event)
+}
+
+fn agent_ok(f: &Fixture, args: &[&str]) -> Json {
+    let (status, event) = fx_agent(f, &["read", "post"], args);
+    assert_eq!(status, 0, "args={args:?}: {}", event.render());
+    event
+}
+
 /// AccessEvents recorded after `since` (fa-7dw): a read-only token's command
 /// records one before it observes the book, refused or not.
 fn access_events_since(book: &Path, since: i128) -> i128 {
@@ -331,6 +368,224 @@ impl Fixture {
             .unwrap()
             .0
     }
+}
+
+#[test]
+fn agent_revaluation_review_survives_a_draft_and_independent_human_promotion() {
+    const DRAFT: &str = "reviewed-january-fx";
+    let f = Fixture::new();
+    f.post_source("agent-exposure", false, "100.00");
+    let closing = f.closing_rate(12);
+    let rate = format!("D:{}", text(data(&closing), "oid"));
+    agent_ok(&f, &["draft", "new", DRAFT]);
+    let original = ok(&f.book, &["tb", "--period", PERIOD]);
+    let review = agent_ok(
+        &f,
+        &[
+            "fx",
+            "revalue",
+            "--period",
+            PERIOD,
+            "--account",
+            "1200",
+            "--rate",
+            &rate,
+            "--key",
+            "agent-fx-january",
+            "--review-only",
+        ],
+    );
+    assert_eq!(text(&review, "event"), "fx_revaluation_reviewed");
+    assert_eq!(text(data(&review), "delta"), "10.00 USD");
+    assert_eq!(
+        leg_nets(&review),
+        BTreeMap::from([("1290".into(), 1_000), ("4700".into(), -1_000),])
+    );
+    let append = [
+        "fx",
+        "revalue",
+        "--review",
+        text(data(&review), "bytes"),
+        "--digest",
+        text(data(&review), "review_digest"),
+        "--draft",
+        DRAFT,
+    ];
+    let planned = agent_ok(&f, &append);
+    assert_eq!(text(&planned, "event"), "draft_planned");
+    assert_eq!(
+        text(data(&planned), "proposal_digest"),
+        text(data(&review), "proposal_digest"),
+    );
+    let before = head(&f.book);
+    let retry = agent_ok(&f, &append);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        text(data(&retry), "control_entry"),
+        text(data(&planned), "control_entry"),
+    );
+    assert_eq!(head(&f.book), before);
+    let current = ok(&f.book, &["tb", "--period", PERIOD]);
+    assert_eq!(rows(data(&current), "rows"), rows(data(&original), "rows"));
+    {
+        let keys = BookKeys::load(&f.book.join("book.keys")).unwrap();
+        let book = Book::open_dir(&f.book, keys, Entropy::production()).unwrap();
+        let draft = book.draft(DRAFT).unwrap().unwrap();
+        assert_eq!(draft.intents.len(), 1);
+        assert_eq!(
+            hex(&draft.intents[0].intent.canonical_bytes().unwrap()),
+            text(data(&review), "bytes"),
+            "the original sealed source and Rate choices survive restart",
+        );
+        assert!(!draft.intents[0].capability.holds(fa::Op::Approve));
+    }
+    let (status, refused) = fx_agent(&f, &["read", "post"], &append[..6]);
+    assert_eq!(status, 7, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-007");
+    let (status, refused) = run(
+        &f.book,
+        &["draft", "promote", DRAFT, "--as", "fx-agent", "--yes"],
+        None,
+    );
+    assert_eq!(status, 7, "{}", refused.render());
+    assert_eq!(head(&f.book), before);
+    let promote = ["draft", "promote", DRAFT, "--as", "fx-controller", "--yes"];
+    let promoted = ok(&f.book, &promote);
+    assert_eq!(text(&promoted, "event"), "draft_promoted");
+    assert_eq!(rows(data(&promoted), "entries").len(), 1);
+    let entry = rows(data(&promoted), "entries")[0].as_str().unwrap();
+    assert_eq!(entry, text(data(&planned), "entry"));
+    let retained = PostIntent::decode(&decode_hex(text(data(&review), "bytes"))).unwrap();
+    assert_eq!(f.entry(entry).proposal, *retained.proposal());
+    let after = head(&f.book);
+    let retried = ok(&f.book, &promote);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&f.book), after);
+}
+
+#[test]
+fn revaluation_draft_restoration_refuses_mode_changes_and_stale_source_publication() {
+    const DRAFT: &str = "reviewed-fx-source";
+    let f = Fixture::new();
+    f.post_source("original-draft-exposure", false, "100.00");
+    let closing = f.closing_rate(12);
+    let rate = format!("D:{}", text(data(&closing), "oid"));
+    agent_ok(&f, &["draft", "new", DRAFT]);
+    let request = [
+        "fx",
+        "revalue",
+        "--period",
+        PERIOD,
+        "--account",
+        "1200",
+        "--rate",
+        &rate,
+        "--key",
+        "retained-agent-fx",
+        "--review-only",
+    ];
+    let review = agent_ok(&f, &request);
+    let append = [
+        "fx",
+        "revalue",
+        "--review",
+        text(data(&review), "bytes"),
+        "--digest",
+        text(data(&review), "review_digest"),
+        "--draft",
+        DRAFT,
+    ];
+    let before = head(&f.book);
+    for grants in [&["read"][..], &["post"][..]] {
+        let (status, refused) = fx_agent(&f, grants, &append);
+        assert_eq!(status, 7, "{}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), code::CAPABILITY);
+        assert_eq!(head(&f.book), before);
+    }
+    for extra in [
+        vec!["--dry-run"],
+        vec!["--review-only"],
+        vec!["--plan-out", "unwritten.plan"],
+        vec!["--plan", "unread.plan"],
+        vec!["--allocate-open-items"],
+        vec!["--account", "2200"],
+        vec!["--rate", &rate],
+        vec!["--key", "unreviewed-key"],
+        vec!["--post"],
+        vec!["--yes"],
+    ] {
+        let mut args = append.to_vec();
+        args.extend(extra);
+        let (status, refused) = fx_agent(&f, &["read", "post"], &args);
+        assert_ne!(status, 0, "{}", refused.render());
+        assert_eq!(head(&f.book), before);
+    }
+    let mut fresh_draft = request.to_vec();
+    fresh_draft.extend(["--draft", DRAFT]);
+    assert_ne!(fx_agent(&f, &["read", "post"], &fresh_draft).0, 0);
+    let mut wrong_holder = append.to_vec();
+    wrong_holder.extend(["--as", "different-fx-preparer"]);
+    let (status, refused) = run(&f.book, &wrong_holder, None);
+    assert_eq!(status, 2, "{}", refused.render());
+    let wrong_digest = "00".repeat(32);
+    let mut wrong_review = append;
+    wrong_review[5] = &wrong_digest;
+    assert_ne!(fx_agent(&f, &["read", "post"], &wrong_review).0, 0);
+    wrong_review = append;
+    wrong_review[3] = "/outside-launch-root/fx.review";
+    assert_ne!(fx_agent(&f, &["read", "post"], &wrong_review).0, 0);
+    assert_eq!(head(&f.book), before);
+    let planned = agent_ok(&f, &append);
+    assert_eq!(text(&planned, "event"), "draft_planned");
+
+    let mut second_request = request;
+    second_request[9] = "second-agent-fx";
+    let second = agent_ok(&f, &second_request);
+    let before = head(&f.book);
+    let (status, refused) = fx_agent(
+        &f,
+        &["read", "post"],
+        &[
+            "fx",
+            "revalue",
+            "--review",
+            text(data(&second), "bytes"),
+            "--digest",
+            text(data(&second), "review_digest"),
+            "--draft",
+            DRAFT,
+        ],
+    );
+    assert_ne!(
+        status,
+        0,
+        "multiple revaluations must refuse: {}",
+        refused.render()
+    );
+    assert_eq!(head(&f.book), before);
+
+    f.post_source("later-draft-exposure", false, "50.00");
+    let before = head(&f.book);
+    let original = ok(&f.book, &["tb", "--period", PERIOD]);
+    let (status, refused) = run(
+        &f.book,
+        &["draft", "promote", DRAFT, "--as", "fx-controller", "--yes"],
+        None,
+    );
+    assert_eq!(status, 6, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), code::PLAN_INVALIDATED);
+    assert_eq!(head(&f.book), before);
+    let current = ok(&f.book, &["tb", "--period", PERIOD]);
+    assert_eq!(rows(data(&current), "rows"), rows(data(&original), "rows"));
+    let draft = ok(&f.book, &["draft", "show", DRAFT]);
+    assert_eq!(text(data(&draft).get("draft").unwrap(), "state"), "open");
+    assert_eq!(rows(data(&draft), "intents").len(), 1);
 }
 
 #[test]

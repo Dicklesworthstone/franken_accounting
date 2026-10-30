@@ -2386,6 +2386,18 @@ fn closing_draft_only(verb: &str, args: &Args) -> bool {
         && args.flag("--digest").is_some()
 }
 
+/// A retained FX review can only append to a dedicated owned singleton draft.
+/// This exception reaches the typed handler, which rejects selector overrides
+/// and native plan/confirmation modes before reading the review. It never
+/// supplies permission to publish the revaluation itself.
+fn revaluation_draft_only(verb: &str, args: &Args) -> bool {
+    verb == "fx"
+        && args.positional.get(1).map(String::as_str) == Some("revalue")
+        && args.flag("--draft").is_some()
+        && args.flag("--review").is_some()
+        && args.flag("--digest").is_some()
+}
+
 /// `fa recover <target> --dry-run` derives and releases its prepared changes
 /// without publishing; only publication needs confirmation.
 fn recovery_preview_only(verb: &str, args: &Args) -> bool {
@@ -2497,6 +2509,7 @@ pub fn bound_command_admissible(
         && !post_plan_only(verb, args)
         && !correction_draft_only(verb, args)
         && !closing_draft_only(verb, args)
+        && !revaluation_draft_only(verb, args)
         && !(authority.can_confirm() && confirmed(args))
     {
         for d in reg.dangerous_for(verb, sub) {
@@ -3024,6 +3037,7 @@ fn gate_from_argv(
         || post_plan_only(&verb.name, args)
         || correction_draft_only(&verb.name, args)
         || closing_draft_only(&verb.name, args)
+        || revaluation_draft_only(&verb.name, args)
         || recovery_preview_only(&verb.name, args)
     {
         return Ok(());

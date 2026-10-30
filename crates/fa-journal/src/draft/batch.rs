@@ -175,6 +175,12 @@ pub async fn plan_batch_into_draft<V: asupersync::fs::Vfs + Clone>(
         {
             return Ok(Err(refusal.at("member", index)));
         }
+        if (intent.proposal().class == EntryClass::REVALUATION
+            || crate::revaluation::is_source_bound(intent.proposal()))
+            && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
+        {
+            return Ok(Err(refusal.at("member", index)));
+        }
         if !crate::batch::batchable(intent.proposal().class) {
             return Ok(Err(usage(
                 format!("draft batch member {index} has a class that cannot join one promotion"),

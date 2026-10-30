@@ -76,12 +76,25 @@ pub(crate) struct IndependentAssetChargeBatch(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SingletonClosingDraft(());
 
-pub(crate) struct MemberPreparation {
-    pub(crate) txn: Option<WriteTxn>,
+/// A source-bound revaluation can be rehearsed and promoted only as the
+/// complete draft's one intrinsic effect. No sibling can change its source.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SingletonRevaluationDraft(());
+
+/// The complete batch's private source-composition proofs travel together
+/// through preparation and publication. An empty set grants no exception.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AggregateProofs {
     pub(crate) carrying: Option<IndependentCarryingBatch>,
     pub(crate) disposal: Option<IndependentDisposalBatch>,
     pub(crate) asset_charge: Option<IndependentAssetChargeBatch>,
     pub(crate) closing: Option<SingletonClosingDraft>,
+    pub(crate) revaluation: Option<SingletonRevaluationDraft>,
+}
+
+pub(crate) struct MemberPreparation {
+    pub(crate) txn: Option<WriteTxn>,
+    pub(crate) proofs: AggregateProofs,
 }
 
 fn singleton_closing_draft(
@@ -110,6 +123,28 @@ fn singleton_closing_draft(
         return Err(crate::closing::draft_scope_refusal());
     }
     Ok(Some(SingletonClosingDraft(())))
+}
+
+fn singleton_revaluation_draft(
+    batch: &PostBatch,
+    admission: Admission,
+) -> Result<Option<SingletonRevaluationDraft>, Refusal> {
+    if !matches!(
+        admission,
+        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+    ) || !batch.members().iter().any(|member| {
+        member.proposal().class == EntryClass::REVALUATION
+            || crate::revaluation::is_source_bound(member.proposal())
+    }) {
+        return Ok(None);
+    }
+    if batch.members().len() != 1
+        || batch.members()[0].proposal().class != EntryClass::REVALUATION
+        || crate::revaluation::admit(batch.members()[0].proposal())?.is_none()
+    {
+        return Err(crate::revaluation::unsupported_batch());
+    }
+    Ok(Some(SingletonRevaluationDraft(())))
 }
 
 fn independent_carrying_batch(
@@ -913,6 +948,10 @@ fn judge_retry<V: Vfs + Clone>(
         Ok(closing) => closing,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let revaluation = match singleton_revaluation_draft(batch, admission) {
+        Ok(proof) => proof,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let carrying = match independent_carrying_batch(batch, admission) {
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
@@ -926,6 +965,13 @@ fn judge_retry<V: Vfs + Clone>(
             Ok(proof) => proof,
             Err(refusal) => return Ok(Err(refusal)),
         };
+    let proofs = AggregateProofs {
+        carrying,
+        disposal,
+        asset_charge,
+        closing,
+        revaluation,
+    };
     // A single-entry claim at this common key is a conflict. Read only its
     // VID-only metadata here: a batch capability need not reach that entry.
     let lookup = db.begin(&ctx.txn())?;
@@ -946,13 +992,7 @@ fn judge_retry<V: Vfs + Clone>(
             book,
             member_request(intent, capability),
             admission,
-            MemberPreparation {
-                txn: None,
-                carrying,
-                disposal,
-                asset_charge,
-                closing,
-            },
+            MemberPreparation { txn: None, proofs },
             None,
             &mut reconciliation,
         )? {
@@ -1054,6 +1094,12 @@ pub(crate) fn authorize_members<V: Vfs + Clone>(
         }
         if crate::asset_cost::has_basis(intent.proposal())
             && let Err(refusal) = crate::asset_cost::authorize(db, book, capability)?
+        {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+        if (intent.proposal().class == EntryClass::REVALUATION
+            || crate::revaluation::is_source_bound(intent.proposal()))
+            && let Err(refusal) = crate::revaluation::authorize(db, book, capability)?
         {
             return Ok(Err(member_refusal(index, refusal)));
         }
@@ -1221,11 +1267,16 @@ fn stage_batch_with<V: Vfs + Clone>(
         Ok(closing) => closing,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let revaluation = match singleton_revaluation_draft(batch, admission) {
+        Ok(proof) => proof,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     if let Some((i, member)) = batch.members().iter().enumerate().find(|(_, m)| {
         // A restatement case's own Post batches its case-bound entries
         // (plan §8.3); the posting law checks each is the case's.
         !batchable(m.proposal().class)
             && !(m.proposal().class == EntryClass::CLOSING && closing.is_some())
+            && !(m.proposal().class == EntryClass::REVALUATION && revaluation.is_some())
             && !(matches!(admission, Admission::Case(_))
                 && crate::case::case_bound(m.proposal().class))
     }) {
@@ -1261,6 +1312,13 @@ fn stage_batch_with<V: Vfs + Clone>(
             Ok(proof) => proof,
             Err(refusal) => return Ok(Err(refusal)),
         };
+    let proofs = AggregateProofs {
+        carrying,
+        disposal,
+        asset_charge,
+        closing,
+        revaluation,
+    };
     let mut txn: Option<WriteTxn> = None;
     let mut tracker = TemplateByteTracker::default();
     // Every member stages into one transaction, so the reconciliation
@@ -1280,10 +1338,7 @@ fn stage_batch_with<V: Vfs + Clone>(
             admission,
             MemberPreparation {
                 txn: txn.take(),
-                carrying,
-                disposal,
-                asset_charge,
-                closing,
+                proofs,
             },
             Some(std::mem::take(&mut tracker)),
             reconciliation,
@@ -1331,14 +1386,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         }
         security_policy_epoch = Some(epoch);
         resolved.push(prepared.entry().clone());
-        let (staged, member, next_tracker) = prepared.into_member(
-            planning,
-            carrying,
-            disposal,
-            asset_charge,
-            closing,
-            admission,
-        )?;
+        let (staged, member, next_tracker) = prepared.into_member(planning, proofs, admission)?;
         tracker = next_tracker;
         let current_bytes = tracker.total_bytes();
         if current_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
