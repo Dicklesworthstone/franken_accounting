@@ -116,8 +116,11 @@ fn worldcom() {
 /// and promotes it himself. On the cell the posting laws admit (the
 /// reviewed placeholder), the owner check refuses the promotion FA-REF-008
 /// (exit 7); with no evidence or an unreviewed placeholder the plan's own
-/// first refusal decides. The reference decides each cell the same way. The
-/// entry_approval cells wait on A0.
+/// first refusal decides. (b) entry_approval (A0): the proposal sealed with
+/// `fa post --review-out`, approved by the director himself and posted with
+/// that approval is refused FA-REF-008 whatever the evidence, since SoD runs
+/// before the evidence minimum. The reference decides each cell the same
+/// way, and W-P-01 is claimed.
 #[test]
 fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
     let o = outcome("worldcom");
@@ -138,9 +141,9 @@ fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
             "PASS W-P-01 P native F6a/approval_encoding=draft_self_promotion,evidence_attached=none state=Open route=draft refusal=FA-REF-080 exit=3 ref=agree",
             "PASS W-P-01 P native F6a/approval_encoding=draft_self_promotion,evidence_attached=placeholder_unreviewed state=Open route=draft refusal=FA-REF-086 exit=3 record_consistent=false ref=agree",
             "PASS W-P-01 P native F6a/approval_encoding=draft_self_promotion,evidence_attached=placeholder_reviewed state=Open route=draft refusal=FA-REF-008 exit=7 ref=agree",
-            "UNRUN W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=none reason=A0: an approval attached at fa post or fa commit",
-            "UNRUN W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_unreviewed reason=A0: an approval attached at fa post or fa commit",
-            "UNRUN W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_reviewed reason=A0: an approval attached at fa post or fa commit",
+            "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=none state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree",
+            "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_unreviewed state=Open route=approval refusal=FA-REF-008 exit=7 record_consistent=false ref=agree",
+            "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_reviewed state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree",
         ],
         "{text}"
     );

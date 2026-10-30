@@ -323,9 +323,10 @@ record_consistent = true
 # only as the director's habit (p.111; F6-approval). (a) draft_self_promotion: the director plans
 # F6a into a draft of his own and promotes it himself; the owner check refuses the promotion
 # (FA-REF-008, sod_policy.toml#draft-promote) on every cell whose plan the posting laws admit, and
-# a cell they refuse gives that first refusal instead. (b) entry_approval needs A0 (fa post takes
-# no --approval), so its cells are pending; an approval attached at commit is checked before the
-# evidence minimum, so the director's own approval would refuse FA-REF-008 on every evidence value.
+# a cell they refuse gives that first refusal instead. (b) entry_approval: the proposal sealed with
+# fa post --review-out, approved by the director himself, and posted carrying that approval; SoD is
+# checked before the evidence minimum, so his own approval is refused FA-REF-008 on every evidence
+# value.
 [[expectation]]
 id = "W-P-01"
 type = "P"
@@ -371,7 +372,6 @@ target = "F6a"
 cell = ["entry_approval", "placeholder_reviewed"]
 expect = "FA-REF-008"
 record_consistent = true
-pending = "A0: an approval attached at fa post or fa commit"
 
 [[branch_cell]]
 expectation = "W-P-01"
@@ -379,7 +379,6 @@ target = "F6a"
 cell = ["entry_approval", "none"]
 expect = "FA-REF-008"
 record_consistent = true
-pending = "A0: an approval attached at fa post or fa commit"
 
 [[branch_cell]]
 expectation = "W-P-01"
@@ -387,7 +386,6 @@ target = "F6a"
 cell = ["entry_approval", "placeholder_unreviewed"]
 expect = "FA-REF-008"
 record_consistent = false
-pending = "A0: an approval attached at fa post or fa commit"
 
 # W-P-01-CF-01 (plan §6.4): the same F6a with no approval attached. SoD then has nothing to refuse,
 # step 5b decides on the evidence, and with the reviewed placeholder the post is admitted: the

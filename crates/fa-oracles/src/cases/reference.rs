@@ -460,7 +460,9 @@ impl<'c> ReferenceAdapter<'c> {
         if let Verdict::Refused { code } = oracle.post(&reference) {
             return Ok(Ok(Some(code)));
         }
-        // 2. SoD over the intent's approvals (none recorded by a P cell).
+        // 2. SoD over the intent's approvals: none recorded by a P cell,
+        //    except an entry_approval cell's own approval by the preparer,
+        //    attached at post (A0, §6.4 W-P-01(b)).
         let key = SodKey {
             class: reference.class.clone(),
             state: Some(state),
@@ -478,7 +480,16 @@ impl<'c> ReferenceAdapter<'c> {
             .iter()
             .find(|p| p.label == intent.principal)
             .map_or("Human", |p| p.profile.as_str());
-        let approvals: Vec<Approval> = Vec::new();
+        let approvals: Vec<Approval> =
+            if cell.approval_encoding.as_deref() == Some("entry_approval") {
+                vec![Approval {
+                    principal: principal_id(&intent.principal),
+                    profile: profile.to_string(),
+                    op: req.approver_op.clone(),
+                }]
+            } else {
+                Vec::new()
+            };
         if let Some((code, _)) = sod::verdict(
             req,
             matrix_approvals,
@@ -911,6 +922,29 @@ mod tests {
             a.first_refusal(f4(&case), &none),
             Ok(Ok(Some("FA-REF-080")))
         );
+    }
+
+    /// W-P-01(b)'s cells (A0): the preparer's own approval attached at post
+    /// is refused FA-REF-008 before the evidence minimum is read, so the
+    /// cell with no evidence is FA-REF-008 too.
+    #[test]
+    fn entry_self_approval_cell_is_fa_ref_008_before_the_evidence_minimum() {
+        let case = pilot_planted(&[]);
+        let a = ReferenceAdapter::new(&case, &case.books["native"]).expect("the adapter");
+        let approved = |evidence: &str, key: &str| CellSetting {
+            approval_encoding: Some("entry_approval".into()),
+            ..cell(None, Some(evidence), key)
+        };
+        for (evidence, key) in [
+            ("placeholder_reviewed", "wp01b-reviewed"),
+            ("none", "wp01b-none"),
+        ] {
+            assert_eq!(
+                a.first_refusal(f4(&case), &approved(evidence, key)),
+                Ok(Ok(Some("FA-REF-008"))),
+                "{evidence}"
+            );
+        }
     }
 
     #[test]

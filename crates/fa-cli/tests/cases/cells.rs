@@ -181,10 +181,16 @@ impl Sweeper<'_, '_> {
         // A draft self-promotion cell (A8b): planned into a draft of the
         // principal's own, which the principal then promotes.
         let mut draft = false;
+        // An entry approval cell (A0): the principal's own approval attached
+        // at post.
+        let mut approval = false;
         for (attr, value) in cell.attrs.iter().zip(&cell.key) {
             match attr {
                 BranchAttribute::ApprovalEncoding if value == "draft_self_promotion" => {
                     draft = true;
+                }
+                BranchAttribute::ApprovalEncoding if value == "entry_approval" => {
+                    approval = true;
                 }
                 // No approval attached: the plain post (a CF's cell, A5b).
                 BranchAttribute::ApprovalEncoding if value == "none" => {}
@@ -290,8 +296,73 @@ impl Sweeper<'_, '_> {
             args
         };
         let reference = format!("{}/{}", cell.target, row.cell);
-        let dry = match (&asserted, draft) {
-            (Some(_), true) => {
+        // The entry-approval route (A0, §6.4 W-P-01(b)): the proposal sealed
+        // with `--review-out`, approved by the principal himself, and posted
+        // carrying that approval by dry run.
+        let approved = if approval && asserted.is_none() && !draft {
+            let review = self
+                .run
+                .work
+                .join(format!("{}.review", cell.idempotency_key));
+            let sealed = self.run.call(
+                0,
+                &reference,
+                "post",
+                post_args(&[s("--review-out"), review.display().to_string()], false),
+            );
+            let digests = sealed
+                .str_field("post_reviewed", "review_digest")
+                .zip(sealed.str_field("post_reviewed", "proposal_digest"));
+            Some(match digests {
+                Some((review_digest, proposal)) => {
+                    let Some(vid) = self.run.approve_as(0, &intent.principal, &proposal) else {
+                        row.verdict = RowVerdict::Fail;
+                        row.reason = Some(
+                            "expected the principal's approval of the sealed proposal observed none"
+                                .into(),
+                        );
+                        self.out.push(SweptCell {
+                            row,
+                            reproduce: None,
+                        });
+                        return;
+                    };
+                    self.run.call(
+                        0,
+                        &reference,
+                        "post",
+                        vec![
+                            s("post"),
+                            s("--review"),
+                            review.display().to_string(),
+                            s("--digest"),
+                            review_digest,
+                            s("--approval"),
+                            vid,
+                            s("--dry-run"),
+                            s("--plan-out"),
+                            plan.display().to_string(),
+                            s("--as"),
+                            intent.principal.clone(),
+                            s("--json"),
+                        ],
+                    )
+                }
+                None => sealed,
+            })
+        } else if approval {
+            row.reason = Some("needs:A7c (an entry approval with a draft or an assertion)".into());
+            self.out.push(SweptCell {
+                row,
+                reproduce: None,
+            });
+            return;
+        } else {
+            None
+        };
+        let dry = match (approved, &asserted, draft) {
+            (Some(call), _, _) => call,
+            (None, Some(_), true) => {
                 row.reason = Some("needs:A7c (a manual assertion planned into a draft)".into());
                 self.out.push(SweptCell {
                     row,
@@ -299,7 +370,7 @@ impl Sweeper<'_, '_> {
                 });
                 return;
             }
-            (Some(code), false) => {
+            (None, Some(code), false) => {
                 self.run
                     .call(0, &reference, "document", attest_args(code, true))
             }
@@ -308,7 +379,7 @@ impl Sweeper<'_, '_> {
             // then the principal's own `fa draft promote`. A refused plan is
             // the cell's first refusal; the owner's promotion of the empty
             // draft is refused too and is logged, not counted.
-            (None, true) => {
+            (None, None, true) => {
                 let name = cell.idempotency_key.clone();
                 let promote = vec![
                     s("draft"),
@@ -345,7 +416,7 @@ impl Sweeper<'_, '_> {
                     opened
                 }
             }
-            (None, false) => self.run.call(0, &reference, "post", post_args(&[], true)),
+            (None, None, false) => self.run.call(0, &reference, "post", post_args(&[], true)),
         };
         let observed = outcome(&dry);
         // Representatives per route: an asserted admit is committed from
@@ -353,13 +424,15 @@ impl Sweeper<'_, '_> {
         // draft cell has no separate commit: its promotion is the commit.
         let route = if draft {
             "draft"
+        } else if approval {
+            "approval"
         } else if asserted.is_some() {
             "attest"
         } else {
             "post"
         };
-        if draft {
-            row.projection.push(("route".into(), "draft".into()));
+        if draft || approval {
+            row.projection.push(("route".into(), route.into()));
         }
         row.projection.push(("refusal".into(), observed.clone()));
         row.projection.push(("exit".into(), dry.exit.to_string()));
@@ -369,7 +442,9 @@ impl Sweeper<'_, '_> {
         }
         let mut fails: Vec<String> = Vec::new();
         let mut repro: Vec<String> = Vec::new();
-        if !draft && self.represented.insert(format!("{route}:{observed}")) {
+        // A draft or entry-approval cell is decided by its own route, with no
+        // representative commit.
+        if !draft && !approval && self.represented.insert(format!("{route}:{observed}")) {
             let extra: Vec<String> = self
                 .plant
                 .filter(|p| p.cell == cell.key)
