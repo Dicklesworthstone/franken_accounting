@@ -3258,6 +3258,19 @@ impl Book {
         ))
     }
 
+    /// Read the native asset register at one recorded prefix. This includes
+    /// every effect recorded there and is not an effective-as-of statement.
+    pub fn asset_register(
+        &mut self,
+        known_at: Option<fgdb_types::CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::AssetRegister> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.asset_register(&purposes, known_at, capability)
+        ))
+    }
+
     /// Compute a finite cumulative charge from immutable acquisition history.
     pub fn prepare_asset_charge(
         &mut self,

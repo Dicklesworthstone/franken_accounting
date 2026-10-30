@@ -862,3 +862,181 @@ fn typed_and_raw_reversals_retain_the_exact_asset_charge_basis() {
         &["verify", "schedules"],
     );
 }
+
+#[test]
+fn asset_register_tracks_recorded_balances_and_reversals_without_writes() {
+    fn position(
+        report: &Json,
+        source_live: bool,
+        recognized: &str,
+        carrying: &str,
+        remaining: &str,
+        covered: Option<&str>,
+    ) {
+        assert_eq!(text(report, "event"), "asset_register");
+        assert_eq!(
+            text(data(report), "basis"),
+            "all schedule effects recorded through known_at; no effective-date cutoff"
+        );
+        let rows = rows(data(report), "rows");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(text(row, "original_cost"), "100.00 USD");
+        assert_eq!(row.get("source_live"), Some(&Json::Bool(source_live)));
+        assert_eq!(text(row, "recognized"), recognized);
+        assert_eq!(text(row, "carrying_amount"), carrying);
+        assert_eq!(text(row, "remaining_depreciable"), remaining);
+        match covered {
+            Some(period) => assert_eq!(text(row, "covered_through"), period),
+            None => assert_eq!(row.get("covered_through"), Some(&Json::Null)),
+        }
+        let terms = row.get("schedule").unwrap().get("terms").unwrap();
+        assert_eq!(text(terms, "name"), "press");
+    }
+
+    let f = Fixture::new();
+    f.schedule("press", "depreciation", "0.00 USD");
+    let before_charge = head(&f.book);
+    let review = f.review("depreciate", "press", FIRST, "press-charge");
+    let posted = f.post_review("depreciate", &review);
+    let charge_vid = text(data(&posted), "vid");
+    let after_charge = head(&f.book);
+    let current = ok(
+        &f.book,
+        "read current asset register",
+        &["schedule", "asset", "register"],
+    );
+    position(
+        &current,
+        true,
+        "33.33 USD",
+        "66.67 USD",
+        "66.67 USD",
+        Some(FIRST),
+    );
+    assert_eq!(integer(data(&current), "known_at"), after_charge);
+    assert_eq!(
+        integer(current.get("coordinate").unwrap(), "known_at"),
+        after_charge
+    );
+    let explicit_head = ok(
+        &f.book,
+        "read asset register at explicit HEAD after reopening",
+        &["schedule", "asset", "register", "--as-known-at", "HEAD"],
+    );
+    assert_eq!(data(&explicit_head), data(&current));
+    assert_eq!(
+        integer(explicit_head.get("coordinate").unwrap(), "known_at"),
+        after_charge
+    );
+    let before_charge_arg = before_charge.to_string();
+    let historical = ok(
+        &f.book,
+        "read asset register before first charge",
+        &[
+            "schedule",
+            "asset",
+            "register",
+            "--as-known-at",
+            &before_charge_arg,
+        ],
+    );
+    position(
+        &historical,
+        true,
+        "0.00 USD",
+        "100.00 USD",
+        "100.00 USD",
+        None,
+    );
+    assert_eq!(integer(data(&historical), "known_at"), before_charge);
+    assert_eq!(
+        integer(historical.get("coordinate").unwrap(), "known_at"),
+        before_charge
+    );
+    assert_eq!(
+        head(&f.book),
+        after_charge,
+        "register reads publish nothing"
+    );
+
+    ok(
+        &f.book,
+        "reverse charge before correcting acquisition",
+        &[
+            "reverse",
+            charge_vid,
+            "--reason",
+            "WrongAmount",
+            "--grant",
+            "read",
+        ],
+    );
+    let after_reversal = head(&f.book);
+    let restored = ok(
+        &f.book,
+        "read restored asset carrying amount",
+        &["schedule", "asset", "register"],
+    );
+    position(
+        &restored,
+        true,
+        "0.00 USD",
+        "100.00 USD",
+        "100.00 USD",
+        Some(FIRST),
+    );
+    assert_eq!(head(&f.book), after_reversal);
+    ok(
+        &f.book,
+        "reverse acquisition after reversing all charges",
+        &[
+            "reverse",
+            &f.acquisition,
+            "--reason",
+            "DataEntryError",
+            "--grant",
+            "read",
+        ],
+    );
+    let after_source_reversal = head(&f.book);
+    let removed = ok(
+        &f.book,
+        "read register after acquisition reversal",
+        &["schedule", "asset", "register"],
+    );
+    position(
+        &removed,
+        false,
+        "0.00 USD",
+        "0.00 USD",
+        "0.00 USD",
+        Some(FIRST),
+    );
+    let after_charge_arg = after_charge.to_string();
+    let historical = ok(
+        &f.book,
+        "read original charge state after later reversals",
+        &[
+            "schedule",
+            "asset",
+            "register",
+            "--as-known-at",
+            &after_charge_arg,
+        ],
+    );
+    position(
+        &historical,
+        true,
+        "33.33 USD",
+        "66.67 USD",
+        "66.67 USD",
+        Some(FIRST),
+    );
+    assert_eq!(integer(data(&historical), "known_at"), after_charge);
+    assert_eq!(head(&f.book), after_source_reversal);
+    let retried = f.post_review("depreciate", &review);
+    assert_eq!(text(&retried, "event"), "recorded");
+    assert_eq!(text(data(&retried), "vid"), charge_vid);
+    assert_eq!(head(&f.book), after_source_reversal);
+}

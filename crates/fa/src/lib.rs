@@ -130,9 +130,9 @@ pub use aging::{
 };
 pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCATION_REVIEW_BYTES};
 pub use asset_cost::{
-    AssetChargeBasis, AssetChargeRequest, AssetCostKind, AssetScheduleRecorded,
-    AssetScheduleRequest, AssetScheduleSpec, PreparedAssetCharge, StoredAssetSchedule,
-    asset_schedule_proposal,
+    AssetChargeBasis, AssetChargeRequest, AssetCostKind, AssetRegister, AssetRegisterRow,
+    AssetScheduleRecorded, AssetScheduleRequest, AssetScheduleSpec, PreparedAssetCharge,
+    StoredAssetSchedule, asset_schedule_proposal,
 };
 pub use async_book::AsyncBook;
 pub use balance_allocation::{

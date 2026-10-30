@@ -3,7 +3,7 @@
 use super::*;
 use fa_journal::asset_cost::{
     AssetChargeRequest, AssetCostKind, AssetScheduleRecorded, AssetScheduleRequest,
-    AssetScheduleSpec, PreparedAssetCharge, asset_schedules, create_asset_schedule,
+    AssetScheduleSpec, PreparedAssetCharge, asset_register, asset_schedules, create_asset_schedule,
     prepare_asset_charge, verify_asset_schedules,
 };
 use fa_model::PeriodRef;
@@ -640,4 +640,226 @@ fn duplicate_immutable_terms_wrong_kind_wrong_digest_and_unauthorized_reads_refu
         .is_err()
     );
     assert_eq!(f.h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn read_only_asset_register_reports_cost_salvage_and_all_recorded_recognition() {
+    let mut f = Fixture::new(AssetCostKind::Depreciation, 107, 7, 3);
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let registered_at = f.h.db.frontier().unwrap();
+    let initial = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, registered_at)
+        .unwrap()
+        .unwrap();
+    assert_eq!(initial.known_at, registered_at);
+    assert_eq!(initial.rows.len(), 1);
+    let row = &initial.rows[0];
+    assert_eq!(row.schedule.entry, f.schedule.entry);
+    assert_eq!(row.original_cost, Amount::new(f.h.usd, 107));
+    assert!(row.source_live);
+    assert_eq!(row.recognized.mantissa, 0);
+    assert_eq!(row.carrying_amount.mantissa, 107);
+    assert_eq!(row.remaining_depreciable.mantissa, 100);
+    assert_eq!(row.covered_through, None);
+    assert_eq!(f.h.db.frontier().unwrap(), registered_at);
+
+    let first = f.proposal(3, b"register-march-charge");
+    f.h.post(posting(first)).unwrap();
+    let first_at = f.h.db.frontier().unwrap();
+    let partial = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, first_at)
+        .unwrap()
+        .unwrap();
+    let row = &partial.rows[0];
+    assert_eq!(row.recognized.mantissa, 33);
+    assert_eq!(row.carrying_amount.mantissa, 74);
+    assert_eq!(row.remaining_depreciable.mantissa, 67);
+    assert_eq!(row.covered_through.as_ref().unwrap().code, "FY2026-P03");
+
+    // Recording the May catch-up changes HEAD regardless of its effective
+    // date. The explicit older recorded prefix retains the March numbers.
+    let complete = f.proposal(5, b"register-may-catchup");
+    f.h.post(posting(complete)).unwrap();
+    let completed_at = f.h.db.frontier().unwrap();
+    let completed = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, completed_at)
+        .unwrap()
+        .unwrap();
+    let row = &completed.rows[0];
+    assert!(row.source_live);
+    assert_eq!(row.recognized.mantissa, 100);
+    assert_eq!(row.carrying_amount.mantissa, 7);
+    assert_eq!(row.remaining_depreciable.mantissa, 0);
+    assert_eq!(row.covered_through.as_ref().unwrap().code, "FY2026-P05");
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, first_at)
+            .unwrap()
+            .unwrap(),
+        partial
+    );
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, registered_at)
+            .unwrap()
+            .unwrap(),
+        initial
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), completed_at);
+}
+
+#[test]
+fn asset_register_preserves_cost_and_coverage_when_acquisition_is_reversed() {
+    let mut f = Fixture::new(AssetCostKind::Amortization, 107, 7, 3);
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let charge = f.proposal(4, b"register-charge-before-undo");
+    let target = f.h.post(posting(charge.clone())).unwrap().entry_ref();
+    let charged_at = f.h.db.frontier().unwrap();
+    let charged = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, charged_at)
+        .unwrap()
+        .unwrap();
+    assert_eq!(charged.rows[0].recognized.mantissa, 67);
+    assert_eq!(charged.rows[0].carrying_amount.mantissa, 40);
+    assert_eq!(charged.rows[0].remaining_depreciable.mantissa, 33);
+    f.h.post(posting(undo(&charge, target, b"register-undo-charge")))
+        .unwrap();
+    let restored_at = f.h.db.frontier().unwrap();
+    let restored = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, restored_at)
+        .unwrap()
+        .unwrap();
+    assert!(restored.rows[0].source_live);
+    assert_eq!(restored.rows[0].recognized.mantissa, 0);
+    assert_eq!(restored.rows[0].carrying_amount.mantissa, 107);
+    assert_eq!(restored.rows[0].remaining_depreciable.mantissa, 100);
+    assert_eq!(
+        restored.rows[0].covered_through.as_ref().unwrap().code,
+        "FY2026-P04"
+    );
+
+    f.h.post(posting(undo(
+        &f.source,
+        f.acquisition,
+        b"register-undo-source",
+    )))
+    .unwrap();
+    let removed_at = f.h.db.frontier().unwrap();
+    let removed = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, removed_at)
+        .unwrap()
+        .unwrap();
+    let row = &removed.rows[0];
+    assert!(!row.source_live);
+    assert_eq!(row.original_cost.mantissa, 107);
+    assert_eq!(row.recognized.mantissa, 0);
+    assert_eq!(row.carrying_amount, Amount::new(f.h.usd, 0));
+    assert_eq!(row.remaining_depreciable, Amount::new(f.h.usd, 0));
+    assert_eq!(row.covered_through.as_ref().unwrap().code, "FY2026-P04");
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &read, charged_at)
+            .unwrap()
+            .unwrap(),
+        charged
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), removed_at);
+}
+
+#[test]
+fn historical_asset_register_requires_current_read_authority_and_respects_pins() {
+    let mut f = Fixture::new(AssetCostKind::Depreciation, 100, 0, 3);
+    let pin = f.h.db.frontier().unwrap();
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let pinned = read.clone().known_at_most(pin);
+    let expected = asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &pinned, pin)
+        .unwrap()
+        .unwrap();
+    let charge = f.proposal(3, b"register-after-reader-pin");
+    f.h.post(posting(charge)).unwrap();
+    let head = f.h.db.frontier().unwrap();
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &pinned, pin)
+            .unwrap()
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &pinned, head)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        7
+    );
+    let expired = read.clone().expiring_at(pin);
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &expired, pin)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        7
+    );
+    let no_read = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    assert_eq!(
+        asset_register(&f.h.db, &f.h.ctx(), &f.h.book, &no_read, pin)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        7
+    );
+    assert!(
+        asset_register(
+            &f.h.db,
+            &f.h.ctx(),
+            &f.h.book,
+            &read,
+            fgdb_types::CommitSeq(head.0 + 1)
+        )
+        .unwrap()
+        .is_err()
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn asset_register_has_stable_name_order_and_does_not_leak_future_schedules() {
+    let mut f = Fixture::new(AssetCostKind::Depreciation, 100, 0, 3);
+    let pin = f.h.db.frontier().unwrap();
+    let mut source = f.source.clone();
+    source.idempotency_key = b"register-second-source".to_vec();
+    let acquisition = f.h.post(posting(source.clone())).unwrap().entry_ref();
+    let mut spec = f.schedule.spec.clone();
+    spec.name = "alpha-intangible".into();
+    spec.kind = AssetCostKind::Amortization;
+    spec.acquisition = acquisition;
+    let request = AssetScheduleRequest {
+        principal: PRINCIPAL,
+        spec,
+        effective_date: f.h.day(),
+        idempotency_key: b"register-second-schedule".to_vec(),
+        description: source.description,
+        approvals: vec![],
+    };
+    let schema = Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap();
+    let cx = f.h.ctx();
+    f.h.runtime
+        .block_on(create_asset_schedule(
+            &mut f.h.db,
+            &cx,
+            &f.h.book,
+            &schema,
+            request,
+        ))
+        .unwrap()
+        .unwrap();
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let head = f.h.db.frontier().unwrap();
+    let register = asset_register(&f.h.db, &cx, &f.h.book, &read, head)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        register
+            .rows
+            .iter()
+            .map(|row| row.schedule.spec.name.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha-intangible", "press"]
+    );
+    let historical = asset_register(&f.h.db, &cx, &f.h.book, &read, pin)
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.rows.len(), 1);
+    assert_eq!(historical.rows[0].schedule.spec.name, "press");
+    assert_eq!(f.h.db.frontier().unwrap(), head);
 }

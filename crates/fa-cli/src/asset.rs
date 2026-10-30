@@ -20,7 +20,9 @@ use crate::cli::{
 };
 use crate::json::{Json, obj, s};
 
-const SCHEDULE_USAGE: &str = "fa schedule asset create NAME --kind depreciation|amortization --acquisition VID --leg N --first-period FY2026-P01 --periods 36 --salvage '0 USD' --expense 6100 --accumulated 1590 --rounding-law HalfEven --date YYYY-MM-DD --key KEY [--review-only]; or schedule asset show NAME | list [--as-known-at SEQ]";
+const SCHEDULE_USAGE: &str = "fa schedule asset create NAME --kind depreciation|amortization --acquisition VID --leg N --first-period FY2026-P01 --periods 36 --salvage '0 USD' --expense 6100 --accumulated 1590 --rounding-law HalfEven --date YYYY-MM-DD --key KEY [--review-only]; or schedule asset show NAME | list | register [--as-known-at SEQ]";
+const REGISTER_BASIS: &str =
+    "all schedule effects recorded through known_at; no effective-date cutoff";
 const CHARGE_USAGE: &str = "fa depreciate|amortize --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --dry-run [--plan-out FILE]]; resume with --review <file|hex|-> --digest <review_digest> [--approval VID]";
 const SCHEDULE_INPUTS: &[&str] = &[
     "--kind",
@@ -245,8 +247,9 @@ pub(crate) fn schedule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(2).map(String::as_str) {
         Some("create") => create(ctx, args),
         Some("show" | "list") => show(ctx, args),
+        Some("register") => register(ctx, args),
         _ => Err(usage(
-            "asset schedules need create, show or list",
+            "asset schedules need create, show, list or register",
             SCHEDULE_USAGE,
         )),
     }
@@ -300,6 +303,73 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         vec![
             ("known_at", Json::Int(i128::from(at.0))),
             ("schedules", Json::Arr(rows)),
+        ],
+        &human.join("\n"),
+    );
+    Ok(())
+}
+
+fn register(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 3 {
+        return Err(usage("asset register takes no operands", SCHEDULE_USAGE));
+    }
+    options(args, &["--as-known-at"], &[])?;
+    let capability = ctx.capability(args, &["read"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        fa_policy::admit_read(&capability, capability.holder(), book.context().book_id)
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(capability.holder(), &capability)??;
+        Ok(())
+    })?;
+    let (requested, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
+    let at = book
+        .read_scope(capability.holder(), &capability)??
+        .admit_whole_book(requested)??;
+    let register = book.asset_register(Some(at), &capability)??;
+    let mut rows = Vec::with_capacity(register.rows.len());
+    let mut human = vec![format!(
+        "Asset register at recorded prefix {} ({REGISTER_BASIS}).",
+        register.known_at.0
+    )];
+    for row in &register.rows {
+        let units = &book.context().units;
+        let original_cost = render_amount(row.original_cost, units)?;
+        let recognized = render_amount(row.recognized, units)?;
+        let carrying = render_amount(row.carrying_amount, units)?;
+        let remaining = render_amount(row.remaining_depreciable, units)?;
+        human.push(format!(
+            "{}: source {}, original cost {original_cost}, recognized {recognized}, carrying {carrying}, remaining depreciable {remaining}, covered through {}",
+            row.schedule.spec.name,
+            if row.source_live { "live" } else { "reversed" },
+            row.covered_through
+                .as_ref()
+                .map_or("none", |period| period.code.as_str()),
+        ));
+        rows.push(obj(vec![
+            ("schedule", stored_json(&row.schedule, &book)?),
+            ("original_cost", s(original_cost)),
+            ("source_live", Json::Bool(row.source_live)),
+            ("recognized", s(recognized)),
+            ("carrying_amount", s(carrying)),
+            ("remaining_depreciable", s(remaining)),
+            (
+                "covered_through",
+                row.covered_through
+                    .as_ref()
+                    .map_or(Json::Null, |period| s(&period.code)),
+            ),
+        ]));
+    }
+    if register.rows.is_empty() {
+        human.push("No asset schedules at this recorded prefix.".into());
+    }
+    ctx.out.known_at(register.known_at);
+    ctx.out.event(
+        "asset_register",
+        vec![
+            ("known_at", Json::Int(i128::from(register.known_at.0))),
+            ("basis", s(REGISTER_BASIS)),
+            ("rows", Json::Arr(rows)),
         ],
         &human.join("\n"),
     );

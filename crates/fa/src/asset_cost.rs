@@ -9,12 +9,35 @@ use fgdb_types::context::PurposeContexts;
 use crate::{AsyncBook, Outcome};
 
 pub use fa_journal::asset_cost::{
-    AssetChargeBasis, AssetChargeRequest, AssetCostKind, AssetScheduleRecorded,
-    AssetScheduleRequest, AssetScheduleSpec, PreparedAssetCharge, StoredAssetSchedule,
-    asset_schedule_proposal,
+    AssetChargeBasis, AssetChargeRequest, AssetCostKind, AssetRegister, AssetRegisterRow,
+    AssetScheduleRecorded, AssetScheduleRequest, AssetScheduleSpec, PreparedAssetCharge,
+    StoredAssetSchedule, asset_schedule_proposal,
 };
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Asset reports prove immutable source history even for HEAD. General
+    /// report preflight may omit hydration for a current-schema checkpoint,
+    /// so explicitly load the retained prefix after admitting current Read.
+    async fn prepare_asset_history(
+        &mut self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<()> {
+        if let Err(refusal) = self
+            .prepare_report_history(cx, capability.holder(), capability, known_at)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        // Each native reader repeats current capability and selected-prefix
+        // admission before its fold, including after this awaited hydration.
+        Ok(Ok(()))
+    }
+
     pub async fn create_asset_schedule(
         &mut self,
         cx: &PurposeContexts,
@@ -75,20 +98,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
         capability: &Capability,
     ) -> Outcome<Vec<StoredAssetSchedule>> {
-        if let Err(refusal) = self
-            .prepare_report_history(cx, capability.holder(), capability, known_at)
-            .await?
-        {
-            return Ok(Err(refusal));
-        }
-        // Current-head asset reads also replay immutable history. Authorize
-        // before hydration; the native reader rechecks authority after await.
-        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+        if let Err(refusal) = self.prepare_asset_history(cx, known_at, capability).await? {
             return Ok(Err(refusal));
         }
         self.query(cx, |db, book| {
             let at = known_at.unwrap_or(db.frontier().map_err(fa_journal::KernelError::from)?);
             Ok(fa_journal::asset_cost::asset_schedules(
+                db, cx, book, capability, at,
+            )?)
+        })
+    }
+
+    /// Inspect acquisition cost, net recognition and remaining basis with Read
+    /// authority only. The selected coordinate includes all recorded effects;
+    /// it does not filter them by financial effective date.
+    pub async fn asset_register(
+        &mut self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<AssetRegister> {
+        if let Err(refusal) = self.prepare_asset_history(cx, known_at, capability).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            let at = known_at.unwrap_or(db.frontier().map_err(fa_journal::KernelError::from)?);
+            Ok(fa_journal::asset_cost::asset_register(
                 db, cx, book, capability, at,
             )?)
         })

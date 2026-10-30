@@ -36,6 +36,28 @@ pub struct StoredAssetSchedule {
     pub recorded_at: CommitSeq,
 }
 
+/// One acquisition schedule as it stood at the register's recorded prefix.
+/// All recorded charges and exact reversals contribute, regardless of their
+/// effective dates. This is not an effective-as-of financial statement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetRegisterRow {
+    pub schedule: StoredAssetSchedule,
+    pub original_cost: Amount,
+    pub source_live: bool,
+    pub recognized: Amount,
+    pub carrying_amount: Amount,
+    pub remaining_depreciable: Amount,
+    /// Highest period ever charged, retained even if that charge was reversed.
+    pub covered_through: Option<PeriodRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetRegister {
+    pub known_at: CommitSeq,
+    /// Stable schedule-name order, including fully recognized and reversed assets.
+    pub rows: Vec<AssetRegisterRow>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetScheduleRecorded {
     pub entry: EntryRef,
@@ -279,6 +301,7 @@ fn guard_bytes(book: Id128, source: EntryRef, last: EntryRef) -> Result<Vec<u8>,
 struct ChargeState {
     recognized: i128,
     high_water: Option<i64>,
+    covered_through: Option<PeriodRef>,
     versions: Vec<(CommitSeq, i128, Option<i64>)>,
 }
 
@@ -588,6 +611,7 @@ fn history<V: Vfs + Clone>(
                     ));
                 }
                 state.high_water = Some(period_index(&selected));
+                state.covered_through = Some(basis.through_period.clone());
                 delta
             } else if entry.proposal.class == EntryClass::REVERSAL {
                 if entry.proposal.supersession.len() != 1
@@ -1059,13 +1083,13 @@ pub async fn create_asset_schedule_proposal<V: Vfs + Clone>(
     }
 }
 
-pub fn asset_schedules<V: Vfs + Clone>(
+fn authorized_history<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     cap: &Capability,
     at: CommitSeq,
-) -> Outcome<Vec<StoredAssetSchedule>> {
+) -> Outcome<History> {
     if let Err(r) = crate::policy::admit_reads(db, book, cap.holder(), cap)? {
         return Ok(Err(r));
     }
@@ -1077,12 +1101,89 @@ pub fn asset_schedules<V: Vfs + Clone>(
     if at > db.frontier()? {
         return Ok(Err(invalid("the selected prefix is in the future")));
     }
-    let mut schedules = history(db, cx, book, at)?
-        .schedules
-        .into_values()
-        .collect::<Vec<_>>();
+    Ok(Ok(history(db, cx, book, at)?))
+}
+
+pub fn asset_schedules<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    cap: &Capability,
+    at: CommitSeq,
+) -> Outcome<Vec<StoredAssetSchedule>> {
+    let history = match authorized_history(db, cx, book, cap, at)? {
+        Ok(history) => history,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let mut schedules = history.schedules.into_values().collect::<Vec<_>>();
     schedules.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
     Ok(Ok(schedules))
+}
+
+/// Reconstruct the asset register once at an explicit recorded prefix under
+/// current whole-book Read authority. Posting authority is neither requested
+/// nor inferred. Terms, cost and all recognition effects come from that same
+/// immutable prefix; later reversals cannot change a historical row.
+pub fn asset_register<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    cap: &Capability,
+    at: CommitSeq,
+) -> Outcome<AssetRegister> {
+    let history = match authorized_history(db, cx, book, cap, at)? {
+        Ok(history) => history,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let mut rows = Vec::with_capacity(history.schedules.len());
+    for schedule in history.schedules.values() {
+        cx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        let original_cost =
+            source_cost(&history, schedule).map_err(|refusal| corrupt(refusal.message))?;
+        let source_live = live_source(&history, schedule.spec.acquisition.vid)
+            .map_err(|refusal| corrupt(refusal.message))?;
+        let state = history
+            .states
+            .get(&schedule.entry.vid)
+            .ok_or_else(|| corrupt("asset register schedule has no recognition state"))?;
+        let recognized = Amount::new(original_cost.unit, state.recognized);
+        let (carrying_amount, remaining_depreciable) = if source_live {
+            let carrying = original_cost.checked_sub(recognized).map_err(corrupt)?;
+            let remaining = original_cost
+                .checked_sub(schedule.spec.salvage)
+                .and_then(|basis| basis.checked_sub(recognized))
+                .map_err(corrupt)?;
+            if carrying.mantissa < schedule.spec.salvage.mantissa || remaining.mantissa < 0 {
+                return Err(corrupt(
+                    "asset register recognition exceeds depreciable cost",
+                ));
+            }
+            (carrying, remaining)
+        } else {
+            if recognized.mantissa != 0 {
+                return Err(corrupt(
+                    "a reversed acquisition retains recognized asset cost",
+                ));
+            }
+            (
+                Amount::new(original_cost.unit, 0),
+                Amount::new(original_cost.unit, 0),
+            )
+        };
+        rows.push(AssetRegisterRow {
+            schedule: schedule.clone(),
+            original_cost,
+            source_live,
+            recognized,
+            carrying_amount,
+            remaining_depreciable,
+            covered_through: state.covered_through.clone(),
+        });
+    }
+    rows.sort_by(|a, b| a.schedule.spec.name.cmp(&b.schedule.spec.name));
+    Ok(Ok(AssetRegister { known_at: at, rows }))
 }
 
 fn derive<V: Vfs + Clone>(
