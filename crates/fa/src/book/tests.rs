@@ -67,6 +67,20 @@ where
     Fut: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
+    lab_outcome_and_trace(seed, test).0
+}
+
+/// `lab_outcome`, also returning the run's trace fingerprint: the lab's
+/// canonical (Foata) fingerprint of the schedule's equivalence class, so a
+/// campaign counts the interleavings it actually explored.
+fn lab_outcome_and_trace<T, Fut>(
+    seed: u64,
+    test: impl FnOnce(Cx) -> Fut + Send + 'static,
+) -> (Result<Option<T>, asupersync::runtime::JoinError>, u64)
+where
+    Fut: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
     let mut runtime = LabRuntime::new(LabConfig::new(seed).with_auto_advance());
     let root = runtime.state.create_root_region(Budget::INFINITE);
     // Keep the task wrapper's Send proof independent of the fixture's deeply
@@ -88,7 +102,7 @@ where
     );
     let report = runtime.report();
     assert!(report.lab_test_passed(), "lab oracles: {report:?}");
-    handle.try_join()
+    (handle.try_join(), report.trace_fingerprint)
 }
 
 /// A bounded lifecycle smoke test of the real facade, not the full
@@ -2129,7 +2143,7 @@ fn assert_lab_campaign(
     runs: &[CrashObservation],
     barriers: &[&'static str],
 ) {
-    use fa_registry::evidence_artifacts::{ArtifactWitness, EvidenceArtifacts, LabCampaignWitness};
+    use fa_registry::evidence_artifacts::LabCampaignWitness;
     use std::collections::{BTreeMap, BTreeSet};
 
     let cells: BTreeSet<_> = runs.iter().map(|r| (r.barrier, r.case)).collect();
@@ -2177,6 +2191,15 @@ fn assert_lab_campaign(
             })
             .collect(),
     };
+    assert_lab_witness(id, witness);
+}
+
+/// Print a lab campaign's computed witness in the ledger's field syntax,
+/// then require it to equal `id`'s row in `evidence_artifacts.toml`, so a
+/// manifest the campaign did not produce fails its producing test.
+fn assert_lab_witness(id: &str, witness: fa_registry::evidence_artifacts::LabCampaignWitness) {
+    use fa_registry::evidence_artifacts::{ArtifactWitness, EvidenceArtifacts};
+
     println!(
         "{id} witness:\nseed_manifest_sha256 = \"{}\"\nschedule_count = {}\nexplored_interleavings = {}\ncertificate_hashes_blake3 = [{}]",
         witness.seed_manifest_sha256,
@@ -2558,6 +2581,502 @@ fn two_phase_holds_expire_exactly_once_under_lab_as_fa_art_lab_03() {
         b"fa:lab-witness:two-phase-expiry:v1",
         &runs,
         &["expiry_sweep", "void_vs_sweep"],
+    );
+}
+
+/// One Genesis run's durable results, independent of the runtime and
+/// filesystem it ran on: the head after the idempotent retry, BLAKE3 of the
+/// replayed trial balance's canonical bytes and of its certificate's, and
+/// March's fold digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GenesisOutcome {
+    head: CommitSeq,
+    tb_blake3: [u8; 32],
+    certificate_blake3: [u8; 32],
+    fold_digest: [u8; 32],
+}
+
+/// What a Genesis run's first half hands its reopened second half.
+struct GenesisBeforeCrash {
+    rent: PostRequest,
+    rent_ref: fa_model::EntryRef,
+    march: String,
+    fold: Fold,
+    certified: crate::CertifiedTrialBalance,
+}
+
+const GENESIS_KEYS: u8 = 0x47;
+
+/// Plan §19's Genesis slice (scoreboard GEN-01 … GEN-05 and GEN-07 …
+/// GEN-10) on the runtime and filesystem the caller supplies, up to the
+/// crash. The book is dropped on return.
+async fn genesis_until_crash<V: Vfs + Clone>(
+    cx: &PurposeContexts,
+    vfs: V,
+    dir: &Path,
+    seed: u64,
+) -> GenesisBeforeCrash {
+    let book_id = Id128([GENESIS_KEYS; 16]);
+    let (spec, usd) = spec(book_id);
+    // GEN-01: create a book.
+    let mut book = AsyncBook::create_with_vfs(
+        cx,
+        vfs,
+        dir,
+        BookKeys::for_development(GENESIS_KEYS),
+        spec,
+        Entropy::deterministic(seed),
+    )
+    .await
+    .expect("GEN-01: create the book");
+    let principal = VId(1);
+    let schema = Capability::embedded(principal, &["schema_change"]).unwrap();
+    let close = Capability::embedded(principal, &["close"]).unwrap();
+    // GEN-02: the chart and calendar, as journaled schema effects.
+    book.install_chart(
+        cx,
+        &chart(usd),
+        principal,
+        DateDay::from_ymd(2026, 2, 1).unwrap(),
+        b"genesis-chart",
+        &schema,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (_, periods) = book
+        .create_periods(cx, 2026, principal, &schema)
+        .await
+        .unwrap()
+        .unwrap();
+    let period = |day: DateDay| {
+        periods
+            .iter()
+            .find(|p| p.kind == PeriodKind::Normal && p.contains(day))
+            .expect("a normal period")
+            .code
+            .clone()
+    };
+    let february_day = DateDay::from_ymd(2026, 2, 15).unwrap();
+    let march_day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let (february, march) = (period(february_day), period(march_day));
+    for (code, key) in [
+        (&february, &b"open-february"[..]),
+        (&march, &b"open-march"[..]),
+    ] {
+        book.transition_period(cx, code, PeriodTransition::Open, principal, 1, key, &close)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let document = fa_journal::Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: principal,
+        bytes: b"Invoices: February and March rent, USD 1500.00 each".to_vec(),
+    };
+    book.add_document(cx, &document).await.unwrap().unwrap();
+    let evidence = document.evidence_ref(1);
+    let poster = Capability::embedded(principal, &["post"]).unwrap();
+    // A rent entry: `debit` cents to 6000, `credit` cents from 1000.
+    let request = |description, day: DateDay, key: &[u8], debit: i128, credit: i128| {
+        let legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "6000"),
+                Amount::new(usd, debit),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "1000"),
+                Amount::new(usd, credit),
+            ),
+        ];
+        PostRequest {
+            proposal: EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: None,
+                description,
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: key.to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: principal,
+                session_ref: None,
+                evidence: vec![evidence],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            },
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: poster.clone(),
+        }
+    };
+    // February's rent, then February soft-closed and closed: GEN-10's
+    // Closed period.
+    let description = book.seal_text(cx, "February rent").unwrap();
+    book.post(
+        cx,
+        request(
+            description,
+            february_day,
+            b"genesis-february-rent",
+            150_000,
+            150_000,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    for (transition, key) in [
+        (PeriodTransition::SoftClose, &b"soft-close-february"[..]),
+        (PeriodTransition::Close, &b"close-february"[..]),
+    ] {
+        book.transition_period(cx, &february, transition, principal, 1, key, &close)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    // GEN-03: a balanced two-leg entry through admit, resolve, laws, plan
+    // and commit.
+    let description = book.seal_text(cx, "March rent").unwrap();
+    let rent = request(
+        description,
+        march_day,
+        b"genesis-march-rent",
+        150_000,
+        150_000,
+    );
+    let posted = book.post(cx, rent.clone()).await.unwrap().unwrap();
+    assert!(
+        matches!(posted, Posted::Committed { .. }),
+        "GEN-03: {posted:?}"
+    );
+    let head = book.head(cx).unwrap();
+    // GEN-09: an unbalanced proposal is refused with exit 3 and the
+    // per-unit imbalance, and nothing is written.
+    let description = book.seal_text(cx, "unbalanced rent").unwrap();
+    let refusal = book
+        .post(
+            cx,
+            request(
+                description,
+                march_day,
+                b"genesis-unbalanced",
+                120_000,
+                119_999,
+            ),
+        )
+        .await
+        .unwrap()
+        .expect_err("GEN-09: an unbalanced proposal posted");
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        ("FA-REF-001", fa_journal::exit::REFUSAL),
+        "GEN-09: {refusal:?}"
+    );
+    assert!(
+        refusal
+            .message
+            .contains("debits 1200.00 USD ≠ credits 1199.99 USD (difference 0.01 USD)"),
+        "GEN-09: {}",
+        refusal.message
+    );
+    assert_eq!(book.head(cx).unwrap(), head, "GEN-09 wrote");
+    // GEN-10: an Original into the Closed period is refused with exit 7 and
+    // its matrix cell, even under `post_closed`, and nothing is written.
+    let description = book.seal_text(cx, "late February rent").unwrap();
+    let mut late = request(description, february_day, b"genesis-late", 150_000, 150_000);
+    late.capability = Capability::embedded(principal, &["post", "post_closed"]).unwrap();
+    let refusal = book
+        .post(cx, late)
+        .await
+        .unwrap()
+        .expect_err("GEN-10: an Original posted into a Closed period");
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        ("FA-REF-010", fa_journal::exit::SAFETY),
+        "GEN-10: {refusal:?}"
+    );
+    assert!(
+        refusal.cite.contains("Original") && refusal.cite.contains("Closed"),
+        "GEN-10: {}",
+        refusal.cite
+    );
+    assert_eq!(book.head(cx).unwrap(), head, "GEN-10 wrote");
+    // GEN-04: the derived legs exist and equal the payload.
+    let projections = book.verify_projections(cx, None).unwrap();
+    assert!(projections.is_green(), "GEN-04: {projections:?}");
+    assert_eq!(projections.legs_checked, 4, "GEN-04: {projections:?}");
+    // GEN-05: the register maintainer advances and balance = fold.
+    let maintainer = maintenance_capability(principal);
+    book.advance_registers(cx, principal, &maintainer, &february)
+        .await
+        .unwrap()
+        .unwrap();
+    let fold = book
+        .advance_registers(cx, principal, &maintainer, &march)
+        .await
+        .unwrap()
+        .unwrap()
+        .fold;
+    assert_rent_cells(&fold, book_id, usd, false);
+    assert_eq!(fold, book.fold_period(cx, &march).unwrap(), "GEN-05");
+    // GEN-07: the certified trial balance.
+    let certified = book
+        .certify_trial_balance(
+            cx,
+            crate::TrialBalanceSelection::Periods(vec![february.clone(), march.clone()]),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        certified.report.is_balanced(),
+        "GEN-07: {:?}",
+        certified.report
+    );
+    // GEN-08: `verify registers` is green.
+    for code in [&february, &march] {
+        assert!(
+            book.verify_registers(cx, code).unwrap().is_green(),
+            "GEN-08: {code}"
+        );
+    }
+    GenesisBeforeCrash {
+        rent,
+        rent_ref: posted.entry_ref(),
+        march,
+        fold,
+        certified,
+    }
+}
+
+/// The Genesis slice's GEN-06 recovery and GEN-11 on the reopened book:
+/// the entry is whole, its retry is recorded once, registers and
+/// projections verify, and the trial balance's certificate replays to the
+/// same bytes.
+async fn genesis_after_reopen<V: Vfs + Clone>(
+    cx: &PurposeContexts,
+    vfs: V,
+    dir: &Path,
+    seed: u64,
+    before: GenesisBeforeCrash,
+) -> GenesisOutcome {
+    let mut book = AsyncBook::open_with_vfs(
+        cx,
+        vfs,
+        dir,
+        BookKeys::for_development(GENESIS_KEYS),
+        Entropy::deterministic(seed),
+    )
+    .await
+    .expect("GEN-06: reopen after the crash");
+    let (entry, _) = book
+        .read_entry(cx, before.rent_ref.vid)
+        .unwrap()
+        .expect("GEN-06: the committed entry survived");
+    assert_eq!(entry.entry_digest, before.rent_ref.entry_digest, "GEN-06");
+    assert_eq!(
+        book.fold_period(cx, &before.march).unwrap(),
+        before.fold,
+        "GEN-06"
+    );
+    let head = book.head(cx).unwrap();
+    let retried = book.post(cx, before.rent).await.unwrap().unwrap();
+    assert!(
+        matches!(retried, Posted::AlreadyRecorded { .. }),
+        "GEN-06: {retried:?}"
+    );
+    assert_eq!(book.head(cx).unwrap(), head, "the idempotent retry wrote");
+    assert!(
+        book.verify_registers(cx, &before.march).unwrap().is_green(),
+        "GEN-08 after the reopen"
+    );
+    assert!(
+        book.verify_projections(cx, None).unwrap().is_green(),
+        "GEN-04 after the reopen"
+    );
+    // GEN-11: the certificate replays to the trial balance's bytes.
+    let replayed = book
+        .replay_trial_balance(cx, &before.certified.certificate)
+        .unwrap()
+        .unwrap();
+    let bytes = replayed.canonical_bytes().unwrap();
+    assert_eq!(
+        bytes,
+        before.certified.report.canonical_bytes().unwrap(),
+        "GEN-11"
+    );
+    GenesisOutcome {
+        head,
+        tb_blake3: fa_model::domain_digest(b"fa:lab-genesis:trial-balance:v1", &[&bytes]),
+        certificate_blake3: fa_model::domain_digest(
+            b"fa:lab-genesis:certificate:v1",
+            &[&before.certified.certificate.canonical_bytes().unwrap()],
+        ),
+        fold_digest: before.fold.fold_digest,
+    }
+}
+
+/// One Genesis run under the lab runtime over a fault VFS: seeded sync
+/// latency, and a crash that loses every directory entry no sync fenced.
+/// Returns its outcome and its trace fingerprint.
+fn genesis_under_lab(seed: u64) -> (GenesisOutcome, u64) {
+    let (outcome, trace) = lab_outcome_and_trace(seed, move |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let backing = cx.commit().with_restriction(MemVfs::new).unwrap();
+        let vfs = FaultVfs::with_clock(
+            backing,
+            FaultPlan {
+                seed,
+                latency: Trigger::PerMille(500),
+                latency_micros: 1 + seed % 7,
+                dirent_loss: Trigger::Always,
+                ..FaultPlan::faultless()
+            },
+            root,
+        );
+        let dir = Path::new("./genesis-book");
+        let before = genesis_until_crash(&cx, vfs.clone(), dir, seed).await;
+        cx.commit()
+            .with_restriction_async(vfs.crash())
+            .await
+            .unwrap();
+        genesis_after_reopen(&cx, vfs, dir, seed, before).await
+    });
+    (
+        outcome.expect("join lab task").expect("task finished"),
+        trace,
+    )
+}
+
+/// The same Genesis run live: the production runtime over the host
+/// filesystem, in a fresh temporary directory. A live run cannot lose
+/// power, so its crash is a process restart: the handle is dropped and the
+/// book reopens from disk.
+fn genesis_live(seed: u64) -> GenesisOutcome {
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "fa-genesis-live-{}-{seed}-{suffix}",
+        std::process::id()
+    ));
+    let before = runtime.block_on(genesis_until_crash(&cx, UnixVfs::new(), &dir, seed));
+    let outcome = runtime.block_on(genesis_after_reopen(
+        &cx,
+        UnixVfs::new(),
+        &dir,
+        seed,
+        before,
+    ));
+    std::fs::remove_dir_all(&dir).unwrap();
+    outcome
+}
+
+/// fa-0fl, scoreboard G1-01: "Genesis slice green under lab and live".
+/// Every Genesis row (GEN-01 … GEN-11) runs at the facade:
+/// - under the lab runtime over a fault VFS for 32 seeds (seeded sync
+///   latency; the crash loses every unfenced directory entry);
+/// - live for 4 of those seeds: the production runtime over the host
+///   filesystem, with a process restart in place of the crash.
+///
+/// Every run is green. A rerun lab seed is the same run, trace included.
+/// Each live run's head, trial balance bytes, certificate bytes and March
+/// fold equal its lab seed's.
+///
+/// It also produces FA-ART-LAB-04:
+/// - the run count;
+/// - the number of distinct lab trace fingerprints (the schedules the lab
+///   actually explored);
+/// - the SHA-256 of the (mode, seed) list;
+/// - one BLAKE3 digest per run of its mode, seed, head, trial balance,
+///   certificate and fold.
+///
+/// The witness is recomputed on every run and must equal the ledger row.
+/// After a deliberate change, rerun with `--nocapture` and copy the printed
+/// fields into the manifest and its ledger row.
+#[test]
+fn genesis_slice_is_green_under_lab_and_live_as_fa_art_lab_04() {
+    use fa_registry::evidence_artifacts::LabCampaignWitness;
+    use std::collections::BTreeSet;
+
+    let mut runs = Vec::new();
+    let mut traces = BTreeSet::new();
+    for seed in 1..=32 {
+        let (outcome, trace) = genesis_under_lab(seed);
+        if seed == 1 {
+            assert_eq!(
+                genesis_under_lab(seed),
+                (outcome.clone(), trace),
+                "a rerun lab seed must be the same run"
+            );
+        }
+        traces.insert(trace);
+        runs.push(("lab", seed, outcome));
+    }
+    for seed in 1..=4 {
+        let live = genesis_live(seed);
+        let lab = runs
+            .iter()
+            .find(|(mode, s, _)| *mode == "lab" && *s == seed)
+            .map(|(_, _, outcome)| outcome.clone())
+            .expect("the lab ran this seed");
+        assert_eq!(live, lab, "seed {seed}: live and lab disagree");
+        runs.push(("live", seed, live));
+    }
+
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut seeds = b"fa:lab-seeds:genesis-lab-and-live:v1".to_vec();
+    seeds.extend_from_slice(&u32::try_from(runs.len()).unwrap().to_le_bytes());
+    for (mode, seed, _) in &runs {
+        seeds.push(u8::try_from(mode.len()).unwrap());
+        seeds.extend_from_slice(mode.as_bytes());
+        seeds.extend_from_slice(&seed.to_le_bytes());
+    }
+    assert_lab_witness(
+        "FA-ART-LAB-04",
+        LabCampaignWitness {
+            seed_manifest_sha256: hex(&fa_docket::intake::sha256(&seeds)),
+            schedule_count: u64::try_from(runs.len()).unwrap(),
+            explored_interleavings: u64::try_from(traces.len()).unwrap(),
+            certificate_hashes_blake3: runs
+                .iter()
+                .map(|(mode, seed, outcome)| {
+                    hex(&fa_model::domain_digest(
+                        b"fa:lab-witness:genesis-lab-and-live:v1",
+                        &[
+                            mode.as_bytes(),
+                            &seed.to_le_bytes(),
+                            &outcome.head.0.to_le_bytes(),
+                            &outcome.tb_blake3,
+                            &outcome.certificate_blake3,
+                            &outcome.fold_digest,
+                        ],
+                    ))
+                })
+                .collect(),
+        },
     );
 }
 
