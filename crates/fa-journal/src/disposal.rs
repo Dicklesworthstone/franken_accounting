@@ -82,7 +82,7 @@ pub(crate) fn unsupported_batch() -> Refusal {
         exit::REFUSAL,
         "this compound operation cannot combine source-bound lot disposals",
         "plan §5.8–5.10 / §6.5 (the complete lot population is an aggregate dependency)",
-        "use native plans or an atomic batch of disposals from distinct lot accounts whose offsets do not touch another member's source; mixed batches, drafts, cases and counterfactual scenarios remain unsupported",
+        "use native plans, or an atomic batch or native draft of disposals from distinct lot accounts whose offsets do not touch another member's source; mixed batches, cases and counterfactual scenarios remain unsupported",
     )
 }
 
@@ -180,12 +180,11 @@ pub fn prepare_lot_disposal<V: Vfs + Clone>(
             regime: policy.policy.regime,
             rounding_law: policy.policy.rounding_law,
         };
-        let (outcome, legs) = match derive(db, cx, book, &basis, &policy, template.effective_date)?
-        {
+        let derived = match derive(db, cx, book, &basis, &policy, template.effective_date)? {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        template.legs = legs;
+        template.legs = derived.legs;
         template.unit_totals = EntryPayload::fold_unit_totals(&template.legs)
             .map_err(|error| KernelError::Corrupt(error.to_string()))?;
         if let Err(error) = template
@@ -196,7 +195,7 @@ pub fn prepare_lot_disposal<V: Vfs + Clone>(
         }
         Ok(Ok(PreparedLotDisposal {
             basis,
-            outcome,
+            outcome: derived.outcome,
             proposal: template,
         }))
     })
@@ -218,6 +217,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     cx: &PurposeContexts,
     book: &BookContext,
     proposal: &EntryPayload,
+    admission: crate::post::Admission,
 ) -> Outcome<()> {
     let basis = match proposal.lot_disposal_basis() {
         Ok(value) => value,
@@ -267,7 +267,19 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             "the lot law or policy handle differs from the account's retained policy",
         )));
     }
-    if let Err(refusal) = crate::post::check_aggregate_basis(basis.known_at, txn.basis()) {
+    let draft = matches!(
+        admission,
+        crate::post::Admission::PlanDraft(_)
+            | crate::post::Admission::Promote(_)
+            | crate::post::Admission::ScratchDraft(_)
+    );
+    // Native plans retain their exact-prefix law. An admitted draft must
+    // survive its own Plan records, but never silently refresh its reviewed
+    // proposal: the complete historical source is compared below with a new
+    // derivation at this transaction's actual prefix.
+    if (!draft || basis.known_at > txn.basis())
+        && let Err(refusal) = crate::post::check_aggregate_basis(basis.known_at, txn.basis())
+    {
         return Ok(Err(refusal));
     }
     // The point-read projection is a conflict witness, not independent
@@ -278,7 +290,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             "the disposal policy was absent at its observation prefix",
         )));
     };
-    let (_, expected) = match cx.query().with_restriction(|| {
+    let retained = match cx.query().with_restriction(|| {
         derive(
             db,
             cx,
@@ -291,10 +303,36 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         Ok(value) => value,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if proposal.legs != expected {
+    if proposal.legs != retained.legs {
         return Ok(Err(invalid(
             "the disposal legs, cost relief or application targets differ from the journal-derived lot law",
         )));
+    }
+    if draft && basis.known_at != txn.basis() {
+        let mut current_basis = basis.clone();
+        current_basis.known_at = txn.basis();
+        let current = match cx.query().with_restriction(|| {
+            derive(
+                db,
+                cx,
+                book,
+                &current_basis,
+                &policy,
+                proposal.effective_date,
+            )
+        })? {
+            Ok(value) => value,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if current.source != retained.source || current.legs != retained.legs {
+            return Ok(Err(Refusal::new(
+                code::PLAN_INVALIDATED,
+                exit::CONFLICT,
+                "the draft's complete lot source changed after the retained disposal review",
+                "plan §5.10 / §6.5 (retained lot sources and reviewed effects)",
+                "review the current lot population and prepare a new draft; a source posting followed by its reversal still changes the retained history",
+            )));
+        }
     }
     Ok(Ok(()))
 }
@@ -349,6 +387,19 @@ fn acquisition_shape(
     Ok(())
 }
 
+struct DerivedDisposal {
+    outcome: LotReliefOutcome,
+    legs: Vec<LegPayload>,
+    source: LotSource,
+}
+
+#[derive(PartialEq, Eq)]
+struct LotSource {
+    book: crate::genesis::BookSpec,
+    account: crate::rows::AccountRow,
+    history: LotHistory,
+}
+
 fn derive<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -356,7 +407,7 @@ fn derive<V: Vfs + Clone>(
     basis: &LotDisposalBasis,
     policy: &StoredLotPolicy,
     effective: DateDay,
-) -> Outcome<(LotReliefOutcome, Vec<LegPayload>)> {
+) -> Outcome<DerivedDisposal> {
     cx.query()
         .checkpoint()
         .map_err(WriteTxnError::Interrupted)?;
@@ -494,12 +545,25 @@ fn derive<V: Vfs + Clone>(
             Amount::new(spec.base_unit, outcome.total_relieved_cost),
         ));
     }
-    Ok(Ok((outcome, legs)))
+    Ok(Ok(DerivedDisposal {
+        outcome,
+        legs,
+        source: LotSource {
+            book: spec,
+            account: source,
+            history,
+        },
+    }))
 }
 
+#[derive(PartialEq, Eq)]
 struct LotHistory {
     candidates: Vec<LotCandidate>,
     digests: BTreeMap<VId, [u8; 32]>,
+    /// Every visible source-account entry, including exhausted acquisitions,
+    /// reversed applications and their undos. Equal balances alone must not
+    /// make changed history equivalent to a retained disposal review.
+    sources: Vec<(EntryRef, CommitSeq)>,
 }
 
 /// Each reversal suffix is evaluated once. A long reversal ancestry must
@@ -777,5 +841,16 @@ fn fold_lots(
     Ok(Ok(LotHistory {
         candidates,
         digests,
+        sources: entries
+            .iter()
+            .filter(|(_, (entry, _))| {
+                entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .any(|leg| leg.account_ref == basis.account)
+            })
+            .map(|(vid, (entry, seq))| (entry.entry_ref(*vid), *seq))
+            .collect(),
     }))
 }

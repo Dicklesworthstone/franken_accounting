@@ -196,8 +196,8 @@ today_barrier_count = 2
 derived_objects = "batch census + DraftSet transition"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
-complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition + one final-overlay capacity fold O(snapshot vertices + journal legs), retaining conservative native row/insertion witnesses without extra writes"
-notes = "intent replay with revalidation; bounded by both max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
+complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition + one final-overlay capacity fold O(snapshot vertices + journal legs), retaining conservative native row/insertion witnesses without extra writes. Independent lot-disposal drafts additionally validate distinct source/offset accounts in O(N log N + total_legs log N), retain each member's immutable-history lot fold, and, when its reviewed prefix differs from the current prefix, derive both retained and current sources and compare the complete source-account EntryRef/sequence history, book/account metadata and derived relief. These are existing full history scans/folds per member, not a constant-time admission claim."
+notes = "intent replay with revalidation; bounded by both max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201). Lot review bytes and proposal digests remain unchanged through draft planning, scratch rehearsal and independent authorized promotion. Control-only or unrelated prefix advancement is permitted only with identical complete lot-source history and current policy; a changed and reversed acquisition still invalidates the review. The final current-prefix guard protects publication. Mixed, same-source and cross-source dependent lot drafts remain refused, and a draft review never authorizes an Agent to post to trunk."
 
 [[operation_class]]
 id = "period_transition"

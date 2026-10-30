@@ -117,8 +117,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// the posting kernel independently rederives every leg and application.
     ///
     /// The first profile covers native-cost, dimensionless debit Asset lots on
-    /// an AnyUnit account. A stale basis is refused rather than silently choosing
-    /// different lots. Retain the resulting PostPlan for uncertain-ack retries.
+    /// an AnyUnit account. Native PostPlans require their exact prefix. An Agent
+    /// may retain the proposal in a draft; promotion rederives unchanged sources
+    /// without changing the reviewed bytes. Preparation grants no trunk authority.
     pub async fn prepare_lot_disposal(
         &mut self,
         cx: &PurposeContexts,
@@ -126,14 +127,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &LotDisposalPostRequest,
         template: EntryPayload,
     ) -> Outcome<PreparedLotDisposal> {
+        // This method derives a proposal and writes nothing. Judge the full
+        // explicit request as a plan, so an Agent can review lots without
+        // receiving direct trunk authority. Read/Post, ceilings and whole-book
+        // scope all precede history hydration; the native factory rechecks
+        // current policy after it.
+        if let Err(denial) =
+            fa_policy::admit_read(capability, template.principal_ref, self.context.book_id)
+                .and_then(|()| {
+                    fa_policy::admit_base_for_plan(
+                        capability,
+                        &fa_policy::Intent {
+                            principal: template.principal_ref,
+                            trunk: true,
+                            op: Op::Post,
+                            book: self.context.book_id,
+                            legs: &[(request.quantity.unit, request.quantity.mantissa)],
+                        },
+                    )
+                })
+                .and_then(|()| {
+                    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+                })
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self
-            .prepare_source_history(
-                cx,
-                template.principal_ref,
-                capability,
-                Op::Post,
-                &[(request.quantity.unit, request.quantity.mantissa)],
-            )
+            .prepare_report_history(cx, template.principal_ref, capability, None)
             .await?
         {
             return Ok(Err(refusal));

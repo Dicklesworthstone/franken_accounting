@@ -85,6 +85,7 @@ fn independent_carrying_batch(
         admission,
         Admission::Commit
             | Admission::Plan
+            | Admission::PlanDraft(_)
             | Admission::VerifiedBatch(_)
             | Admission::Promote(_)
             | Admission::ScratchDraft(_)
@@ -158,7 +159,12 @@ fn independent_disposal_batch(
     }
     if !matches!(
         admission,
-        Admission::Commit | Admission::Plan | Admission::VerifiedBatch(_)
+        Admission::Commit
+            | Admission::Plan
+            | Admission::PlanDraft(_)
+            | Admission::VerifiedBatch(_)
+            | Admission::Promote(_)
+            | Admission::ScratchDraft(_)
     ) || batch.members().iter().any(|member| {
         member.proposal().class != EntryClass::ORIGINAL
             || !crate::disposal::has_basis(member.proposal())
@@ -1129,7 +1135,7 @@ fn stage_batch_with<V: Vfs + Clone>(
     let mut members: Vec<BatchMember> = Vec::with_capacity(batch.members().len());
     let mut resolved = Vec::with_capacity(batch.members().len());
     let mut security_policy_epoch = None;
-    let planning = matches!(admission, Admission::Plan);
+    let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
     for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
         let request = member_request(intent, capability);
         let prepared = match prepare_member(
@@ -1332,7 +1338,7 @@ pub(crate) async fn commit_batch_with_crash<V: Vfs + Clone>(
     staged: Box<StagedBatch>,
     crash_at: Option<fgdb::CrashPoint>,
 ) -> Outcome<BatchPosted> {
-    if staged.planning || matches!(admission, Admission::Plan) {
+    if staged.planning || matches!(admission, Admission::Plan | Admission::PlanDraft(_)) {
         staged.txn.abort();
         return Err(KernelError::Corrupt(
             "a batch rehearsal cannot be published; commit its authenticated plan".into(),

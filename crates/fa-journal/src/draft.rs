@@ -92,6 +92,12 @@ const PROMOTION_KEY_DOMAIN: &[u8] = b"fa:draft-promotion-key:v1";
 #[derive(Clone, Copy, Debug)]
 pub struct Promoting(());
 
+/// Only a draft's admitted preview can revalidate retained aggregate sources
+/// across its own journaled planning records. This remains a zero-write plan,
+/// and does not grant either promotion or direct trunk authority.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Planning(());
+
 /// The `state` projection of a `DraftSet` (lifecycle-by-transition).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraftState {
@@ -1049,7 +1055,14 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    let staged = match stage_batch(db, ctx, book, &capabilities, &batch, Admission::Plan)? {
+    let staged = match stage_batch(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        Admission::PlanDraft(Planning(())),
+    )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(BatchStage::Recorded(_)) => {
             return Err(KernelError::Corrupt(format!(

@@ -564,6 +564,319 @@ fn remaining_lots(book: &Path, account: &str) -> Vec<(String, String)> {
     remaining
 }
 
+fn lot_agent_token(dir: &Path, book: &Path) -> String {
+    let token = dir.join("lot-agent.token").display().to_string();
+    ok(
+        book,
+        "issue inventory agent",
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "inventory-agent",
+            "--profile",
+            "agent",
+            "--op",
+            "read",
+            "--op",
+            "post",
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "post",
+            "--json",
+        ],
+    );
+    token
+}
+
+fn lot_agent_review(book: &Path, token: &str, evidence: &str, account: &str, key: &str) -> Json {
+    doc(&ok(
+        book,
+        "agent retains disposal review",
+        &[
+            "--token",
+            token,
+            "dispose",
+            "--account",
+            account,
+            "--quantity",
+            "5.000000 SHARE",
+            "--quantity-offset",
+            "1499",
+            "--cost-offset",
+            "5100",
+            "--date",
+            "2026-03-15",
+            "--key",
+            key,
+            "--evidence",
+            evidence,
+            "--review-only",
+            "--json",
+        ],
+    ))
+}
+
+#[test]
+fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    let (dir, book, evidence, _, _) = batch_fixture()?;
+    let token = lot_agent_token(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let name = "inventory-review";
+    ok(
+        &book,
+        "agent opens draft",
+        &["--token", &token, "draft", "new", name, "--json"],
+    );
+    let mut reviews = Vec::new();
+    let mut batches = Vec::new();
+    for (account, key) in [("1400", "first-draft-lot"), ("1401", "second-draft-lot")] {
+        let before = frontier(&book);
+        let review = lot_agent_review(&book, &token, &evidence, account, key);
+        assert_eq!(
+            frontier(&book),
+            before,
+            "review preparation publishes nothing"
+        );
+        let batch = batch_file(&dir, key, vec![review_member(&review)]);
+        let planned = ok(
+            &book,
+            "append independently reviewed inventory",
+            &[
+                "--token", &token, "batch", "--intent", &batch, "--draft", name, "--json",
+            ],
+        );
+        assert_eq!(field(&planned, "event"), Some("draft_planned"));
+        reviews.push(retained_disposal(&review));
+        batches.push(batch);
+    }
+    assert!(
+        reviews[0]
+            .proposal()
+            .lot_disposal_basis()
+            .unwrap()
+            .unwrap()
+            .known_at
+            < reviews[1]
+                .proposal()
+                .lot_disposal_basis()
+                .unwrap()
+                .unwrap()
+                .known_at
+    );
+    let view = open().draft(name).unwrap().unwrap();
+    assert_eq!(view.intents.len(), 2);
+    for (planned, original) in view.intents.iter().zip(&reviews) {
+        assert_eq!(planned.intent, *original);
+    }
+    let original_first = remaining_lots(&book, "1400");
+    let original_second = remaining_lots(&book, "1401");
+    let before = frontier(&book);
+    let certificate = dir.join("lot-draft.cert").display().to_string();
+    let reviewed = ok(
+        &book,
+        "rehearse complete lot draft",
+        &[
+            "close",
+            "dry-run",
+            "--period",
+            "FY2026-P03",
+            "--draft",
+            name,
+            "--certificate-out",
+            &certificate,
+            "--json",
+        ],
+    );
+    let reviewed = doc(reviewed.lines().next().unwrap());
+    assert_eq!(int(&reviewed, "plans"), Some(2));
+    assert_eq!(arr(&reviewed, "entries").len(), 2);
+    assert_eq!(frontier(&book), before);
+    assert_eq!(remaining_lots(&book, "1400"), original_first);
+    assert_eq!(remaining_lots(&book, "1401"), original_second);
+
+    let (code, out, err) = run(
+        &book,
+        "agent cannot promote its inventory draft",
+        &["--token", &token, "draft", "promote", name, "--json"],
+    );
+    assert_eq!(code, 7, "{out}\n{err}");
+    let (code, out, err) = run(
+        &book,
+        "draft owner cannot self-approve with an owner capability",
+        &[
+            "draft",
+            "promote",
+            name,
+            "--as",
+            "inventory-agent",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-008"));
+    assert_eq!(frontier(&book), before);
+
+    let promoted = doc(&ok(
+        &book,
+        "controller promotes exact inventory relief",
+        &[
+            "draft",
+            "promote",
+            name,
+            "--as",
+            "controller",
+            "--yes",
+            "--json",
+        ],
+    ));
+    assert_eq!(promoted.get("entries"), reviewed.get("entries"));
+    for (vid, original) in arr(&promoted, "entries").iter().zip(&reviews) {
+        let vid = fgdb_types::VId(u128::from_str_radix(vid.as_str().unwrap(), 16).unwrap());
+        let (entry, at) = open().read_entry(vid).unwrap().unwrap();
+        assert_eq!(entry.proposal, *original.proposal());
+        assert_eq!(Some(i128::from(at.0)), int(&promoted, "recorded_at"));
+    }
+    assert_eq!(
+        remaining_lots(&book, "1400"),
+        vec![
+            ("10.000000 SHARE".into(), "20.00 USD".into()),
+            ("5.000000 SHARE".into(), "50.00 USD".into()),
+        ]
+    );
+    assert_eq!(
+        remaining_lots(&book, "1401"),
+        vec![("5.000000 SHARE".into(), "25.00 USD".into())]
+    );
+    let after = frontier(&book);
+    let replayed = ok(
+        &book,
+        "replay original lot draft certificate",
+        &["replay", &certificate, "--json"],
+    );
+    assert_eq!(doc(&replayed), reviewed);
+    for batch in &batches {
+        let retry = ok(
+            &book,
+            "retry original draft append after promotion",
+            &[
+                "--token", &token, "batch", "--intent", batch, "--draft", name, "--json",
+            ],
+        );
+        assert!(
+            retry
+                .lines()
+                .all(|line| field(line, "already_recorded") == Some("true"))
+        );
+    }
+    let retry = doc(&ok(
+        &book,
+        "retry independent lot promotion",
+        &[
+            "draft",
+            "promote",
+            name,
+            "--as",
+            "controller",
+            "--yes",
+            "--json",
+        ],
+    ));
+    assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(retry.get("entries"), promoted.get("entries"));
+    assert_eq!(frontier(&book), after);
+    Ok(())
+}
+
+#[test]
+fn stale_lot_draft_refuses_promotion_without_partial_inventory_relief() -> std::io::Result<()> {
+    let (dir, book, evidence, _, _) = batch_fixture()?;
+    let token = lot_agent_token(&dir, &book);
+    let name = "stale-inventory-review";
+    ok(
+        &book,
+        "agent opens stale draft",
+        &["--token", &token, "draft", "new", name, "--json"],
+    );
+    let first = lot_agent_review(&book, &token, &evidence, "1400", "stale-draft-first");
+    let second = lot_agent_review(&book, &token, &evidence, "1401", "stale-draft-second");
+    let batch = batch_file(
+        &dir,
+        "stale-lot-draft",
+        vec![review_member(&first), review_member(&second)],
+    );
+    ok(
+        &book,
+        "append two lot reviews",
+        &[
+            "--token", &token, "batch", "--intent", &batch, "--draft", name, "--json",
+        ],
+    );
+    ok(
+        &book,
+        "competing second inventory disposal",
+        &[
+            "dispose",
+            "--account",
+            "1401",
+            "--quantity",
+            "1.000000 SHARE",
+            "--quantity-offset",
+            "1499",
+            "--cost-offset",
+            "5100",
+            "--date",
+            "2026-03-15",
+            "--key",
+            "competing-disposal",
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
+    );
+    let before = frontier(&book);
+    let first_before = remaining_lots(&book, "1400");
+    let second_before = remaining_lots(&book, "1401");
+    let (code, out, err) = run(
+        &book,
+        "refuse stale second source atomically",
+        &[
+            "draft",
+            "promote",
+            name,
+            "--as",
+            "controller",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 6, "{out}\n{err}");
+    assert_eq!(
+        field(&out, "refusal_id"),
+        Some(fa_journal::refusal::code::PLAN_INVALIDATED)
+    );
+    assert!(out.contains("batch member 1"), "{out}");
+    assert_eq!(frontier(&book), before);
+    assert_eq!(remaining_lots(&book, "1400"), first_before);
+    assert_eq!(remaining_lots(&book, "1401"), second_before);
+    let view = doc(&ok(
+        &book,
+        "stale draft stays open",
+        &["draft", "show", name, "--json"],
+    ));
+    assert_eq!(text(view.get("draft").unwrap(), "state"), "open");
+    Ok(())
+}
+
 #[test]
 fn inline_disposal_reviews_plan_commit_and_retry_one_atomic_batch() -> std::io::Result<()> {
     let (dir, book, evidence, first, second) = batch_fixture()?;

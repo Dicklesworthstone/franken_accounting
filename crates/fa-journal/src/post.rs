@@ -1035,6 +1035,10 @@ pub(crate) enum Admission {
     Recurring(crate::recurring::Executing),
     /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
     Plan,
+    /// The complete ordered preview of an admitted draft. Retained aggregate
+    /// proposals may revalidate unchanged sources across planning records;
+    /// their original bytes remain fixed and this preparation cannot publish.
+    PlanDraft(crate::draft::Planning),
     /// One planned intent of a draft's promotion (plan §15.2): it publishes
     /// under its planner's own capability, every check of which still runs,
     /// while its trunk authority is the promoter's, whom [`crate::draft`]
@@ -1084,7 +1088,10 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     // used by the automatic reversal executor, whose attribution is System.
     let planning = matches!(
         admission,
-        Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_)
+        Admission::Plan
+            | Admission::PlanDraft(_)
+            | Admission::Promote(_)
+            | Admission::ScratchDraft(_)
     );
     let scope = match authorize_effects(
         db,
@@ -1911,7 +1918,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         Some(member) => (member.txn, member.carrying, member.disposal),
         None => (None, None, None),
     };
-    let planning = matches!(admission, Admission::Plan);
+    let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let proposal = &req.proposal;
     let pair_proposal = replacement_basis
@@ -1992,7 +1999,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // A lot disposal observes the complete native population at its exact
     // prefix. A native batch may share that prefix only when its complete
     // member set proves that no member can alter another member's lot source.
-    // Drafts, cases and scenarios have no disposal aggregate protocol.
+    // Native drafts also revalidate the complete retained source population
+    // at their current preparation prefix. Cases and scenarios remain refused.
     if crate::disposal::has_basis(proposal) {
         if let Err(refusal) = crate::disposal::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
@@ -2000,7 +2008,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if (carried.is_some() && disposal_batch.is_none())
             || replacement_basis.is_some()
             || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(admission, Admission::VerifiedBatch(_)) && disposal_batch.is_some()))
+                || (matches!(
+                    admission,
+                    Admission::VerifiedBatch(_)
+                        | Admission::PlanDraft(_)
+                        | Admission::Promote(_)
+                        | Admission::ScratchDraft(_)
+                ) && disposal_batch.is_some()))
         {
             return Ok(Err(crate::disposal::unsupported_batch()));
         }
@@ -2816,7 +2830,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = crate::disposal::validate_post(&txn, db, ctx, book, proposal)? {
+    if let Err(refusal) = crate::disposal::validate_post(&txn, db, ctx, book, proposal, admission)?
+    {
         txn.abort();
         return Ok(Err(refusal));
     }
