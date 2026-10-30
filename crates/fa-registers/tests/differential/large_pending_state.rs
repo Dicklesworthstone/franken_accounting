@@ -405,14 +405,14 @@ fn checkpoint_backed_state_refuses_resealed_reference_and_fragment_corruption() 
         &kernel.db,
         &ctx.query(),
         &kernel.book,
-        &[march.clone()],
+        std::slice::from_ref(march),
         None,
     )
     .unwrap();
     assert!(matches!(served, fa_registers::Served::Literal(_)));
     assert_eq!(
         report,
-        trial_balance_at(&kernel.db, &kernel.book, &[march.clone()], None).unwrap()
+        trial_balance_at(&kernel.db, &kernel.book, std::slice::from_ref(march), None).unwrap()
     );
 }
 
