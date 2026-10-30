@@ -258,8 +258,13 @@ else
     else
       executed=0
       grep -q 'Remote command finished' "$check_log" && executed=1
-      if [ "$check_rc" -eq 103 ] \
-        || { [ "$executed" -eq 0 ] && { [ "$check_rc" -eq 100 ] || grep -Eq '(\[RCH\].*(refusing local fallback|completion unconfirmed|no admissible worker)|no admissible workers|workers critical|disk pressure)' "$check_log"; }; }; then
+      # Without `Remote command finished` the check never ran on this tree,
+      # so its exit says nothing about the tree: an rch SSH timeout
+      # (`[RCH-E104] SSH command timed out (no local fallback)`, exit 1) is
+      # as UNRUN as a refusal (exit 103). check.sh classifies it the same
+      # way (`ssh_timeout_exit1_is_unrun`). A compile error ran remotely and
+      # always carries `Remote command finished: exit=101`, so it stays FAIL.
+      if [ "$check_rc" -eq 103 ] || [ "$executed" -eq 0 ]; then
         remote_refused=1
         remote_reason="rch offloader did not execute command (exit $check_rc)"
       else

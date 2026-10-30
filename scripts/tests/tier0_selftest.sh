@@ -36,6 +36,10 @@ if [ "${FAKE_RCH_MODE:-remote}" = "refuse" ]; then
   printf '[RCH] remote required; refusing local fallback: no admissible workers (3 workers critical, disk pressure)\n' >&2
   exit 103
 fi
+if [ "${FAKE_RCH_MODE:-remote}" = "ssh-timeout" ]; then
+  printf '[RCH] remote hz3 failed [RCH-E104] SSH command timed out (no local fallback)\n' >&2
+  exit 1
+fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--" ]; then
   shift 2
 fi
@@ -439,6 +443,28 @@ falls_back_to_local_lane_on_rch_refusal() {
   return 0
 }
 
+# 6. An rch transport failure before the check ran (RCH-E104 SSH timeout,
+#    exit 1, no `Remote command finished`) says nothing about the tree: the
+#    check is UNRUN and tier0 exits 2, never FAIL (2026-10-30, hz3).
+unexecuted_transport_failure_is_unrun() {
+  local rc=0
+  (
+    cd "$dev"
+    FAKE_RCH_MODE=ssh-timeout TIER0_DISABLE_LOCAL_FALLBACK=1 \
+      bash scripts/tier0.sh --log-dir "$base/ssh-timeout-logs"
+  ) > "$base/ssh-timeout.out" 2>&1 || rc=$?
+
+  # gate_unrun pairs every UNRUN line with an anchored FAIL line by design;
+  # what must not appear is the check's own FAIL verdict.
+  if [ "$rc" -ne 2 ] || ! grep -Eq '^UNRUN check tier0 UNRUN step=check ' "$base/ssh-timeout.out" \
+    || grep -q '^FAIL check tier0 FAIL ' "$base/ssh-timeout.out"; then
+    gate_fail "unexecuted_transport_failure_is_unrun — expected exit 2 and an UNRUN check, got $rc ($(cat "$base/ssh-timeout.out"))"
+    return 1
+  fi
+  gate_pass "unexecuted_transport_failure_is_unrun (RCH-E104 SSH timeout, exit 1, nothing executed -> UNRUN, exit 2)"
+  return 0
+}
+
 # 7. Note publication under a concurrent publisher: another clone moved the
 #    remote refs/notes/fa-tier0, so a plain push of this run's note is refused
 #    as non-fast-forward. --push-note must still publish this run's PASS note
@@ -545,6 +571,7 @@ if [ "$#" -gt 0 ]; then
       refuses_lib_type_error|\
       pre_push_requires_tier0_note|\
       falls_back_to_local_lane_on_rch_refusal|\
+      unexecuted_transport_failure_is_unrun|\
       unrun_refuses_to_fold_without_ejecting|\
       publishes_note_after_the_remote_notes_ref_moved)
         "$fn"
@@ -560,6 +587,7 @@ else
   refuses_lib_type_error
   pre_push_requires_tier0_note
   falls_back_to_local_lane_on_rch_refusal
+  unexecuted_transport_failure_is_unrun
   unrun_refuses_to_fold_without_ejecting
   publishes_note_after_the_remote_notes_ref_moved
 fi
