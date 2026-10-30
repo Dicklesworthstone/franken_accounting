@@ -905,7 +905,15 @@ impl BookRun<'_> {
             ];
             args.extend(flags.iter().cloned());
             args.extend(["--certify".to_string(), "--json".to_string()]);
-            let call = self.call(self.head, reference, "explain", args);
+            let call = if let Some(call) = self.explained.get(&args) {
+                call.clone()
+            } else {
+                let call = self.call(self.head, reference, "explain", args.clone());
+                if call.exit == 0 {
+                    self.explained.insert(args, call.clone());
+                }
+                call
+            };
             self.certificate_kind("ExplainBalance");
             if call.exit != 0 {
                 self.lines.push(reproduce(&call));

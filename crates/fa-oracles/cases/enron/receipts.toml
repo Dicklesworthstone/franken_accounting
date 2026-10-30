@@ -3,6 +3,102 @@
 
 [[receipt]]
 source = "SRC-ENR-008"
+fact = "10K-DEBT-A-FY1997"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Short-term and long-term debt|1997"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "4b656de30323c0f5d5034aa6a0f767699b34432b6f5956b651de65214e3380f8"
+values_sha256 = "8a318f38d2c9a6787360984d79bff4dcceff3517cd16b02d686f41614cae6a06"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-DEBT-A-FY1998"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Short-term and long-term debt|1998"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "207047fafc6cdaccddd8f959962a65488a070585a7dcc816c761f96b2eed76c7"
+values_sha256 = "4f40d80e591ebdce4ec04c1bdd9c57d9398b92757520a8b69cb0dbc3e08b210f"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-DEBT-A-FY1999"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Short-term and long-term debt|1999"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "b1043ad421e1f1369e4b3a4dfc61f20d81d677e2cef6e930394f321bad9e8c1f"
+values_sha256 = "103703aca0895f6a30ed8caff6443a1a216d2ee35cb5096819071103a12b3f5e"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-DEBT-A-FY2000"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Short-term and long-term debt|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "e202fa799eade994948aef823042f4a36ee978d56751774b76f5eca0e6b91aa4"
+values_sha256 = "7804ea472beb0d13d364d53b85325630f255803adb5d2d77c99e574333f2cd03"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-EQ-A-FY1997"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Shareholders' equity|1997"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "4856e928b7beac130bd4c3a528b4a324cf75b025e46eccf826ca68402ab3fd62"
+values_sha256 = "6afcf5c2c0060f299eea8161ba5944568b2803e656d083af95ef8ba15a202e55"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-EQ-A-FY1998"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Shareholders' equity|1998"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "907e4a5dbe319fd00d1e22c396b80d19b833c02c7e535cf66d3a142730753d80"
+values_sha256 = "d466400c29b9fc5b7962e7d54933b0aa6e0881b7077a3d0bae6ea748260905b3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
 fact = "10K-EQ-A-FY1999"
 anchor = "CONSOLIDATED BALANCE SHEET#2|Total shareholders' equity|1999"
 verified_utc = "2026-10-30T10:39:23Z"
@@ -19,6 +115,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-008"
+fact = "10K-NI-A-FY1998"
+anchor = "CONSOLIDATED INCOME STATEMENT|Net Income|1998"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "769e881d85fc5d27cb4cbc8382200d95b179cfdeb56e0b439da737069eaf8a5a"
+values_sha256 = "e36a719969ad157c81a16224eeb9bd19400b5c81dc861009004b5e76376b7a69"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
 fact = "10K-NI-A-FY1999"
 anchor = "CONSOLIDATED INCOME STATEMENT|Net Income|1999"
 verified_utc = "2026-10-30T10:39:23Z"
@@ -26,6 +138,54 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
 quote_sha256 = "64d94c866dffad6dab67498f5ed9cdf32a6e747e2c17e58d2535f549f7976cb0"
 values_sha256 = "03aa71c9f84117d38ccb6b9c88d06eef72fdd198ebbd1d3aa2ca12ccfd96008b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-NI-A-FY2000"
+anchor = "CONSOLIDATED INCOME STATEMENT|Net Income|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "8590ac062555493444893ec5871609dffedf8cf684d93f7533bc52ffc5611dc8"
+values_sha256 = "0c3707c84b6e875f232f78ec6d62d2d2d23122fd07d6d401a199c67c26fd26be"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-TA-A-FY1997"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Total Assets (millions)|1997"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "28f5e139d20737c6e9a88f2a2984fd330ed9508cffb9cdab5e30517f5d0ff407"
+values_sha256 = "06db8c56ebae5ab14cf566cb12561d449d5e1754e3f79f1eeae08e5dc113efb0"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "10K-TA-A-FY1998"
+anchor = "ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)|Total Assets (millions)|1998"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "f93ca09a28a709796b434a250ed57d55e2f05eeee55de44f7de068e635003200"
+values_sha256 = "9171b05bf9444eb367edef156c02f1c721a60af87863bc67ebc4922576a67b4e"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -1523,6 +1683,166 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-DEBT-B-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|DEBT RESTATED|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "cd8caac1d8a3c06ed2dfa9096c2ec0cfa40f5af2eb50081241857f5aef390222"
+values_sha256 = "19d101d4044502d14e2094a418ed4aad8760bd9bc6ae9f5f47f95ef95ebe05b2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-B-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|DEBT RESTATED|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "d25de49006e8d90ed736c204f9ec2fc0e317ae692831f975523fa67b46cc7309"
+values_sha256 = "e139a81b1e3af705394045e9a11381c13bedfa35b81abfcc632f1a57b2d4da3f"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-B-FY1999"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|DEBT RESTATED|1999"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "58da1899cf0fc7c4254c46c5f3094af4c719c29689e314e93ec06a64c31e1053"
+values_sha256 = "911daaef45ad836a1472010183efb373fd058eed7537327117adab473a34cb57"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-B-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|DEBT RESTATED|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "36101740bb7b457a31b0e417b7859d44bac12a219a222f30731c5751746d04af"
+values_sha256 = "5bcc681945c15e75c08aac9ba84920ec0264d9691bcec4722a7176d4a356de23"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-D1-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#3|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "2499d690642faa4da2a67b078236d1c031217f3c31cf2da2142c8e84e3d617f1"
+values_sha256 = "edeadaa5009c39b1e6fbb4b6b51b368efaaa4c1ce0cc5c139f6b27781357c3d8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-D1-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#3|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "04edd1d7736883194af3ddb232c337e53d17bc93cfd2140c4f4c4e0d966798b1"
+values_sha256 = "cdf1aa99d20e7f0b0be257a5b6dc10f86a981e6f06ead0f351e5ef526c322cf9"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-D1-FY1999"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#3|1999"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "bb9b8ef813475d1e0ad84e2505af6656d16c990b1f77efaf9324e8fbcae2db67"
+values_sha256 = "38882e226b256fd2c89c97a0293bac7eb3d9af0a9c3771b5b00e342219ef66d2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-DEBT-D1-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#3|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "67c312330b0371a0a37c565cf44ef264835147fea61261bf57380f338efcd8c9"
+values_sha256 = "02658e38206aca57720057593babd9f6fa9810b1d0c7451ada49d8d0068ea779"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-B-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|EQUITY RESTATED|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "10cbdbcdb7f58e7a335c8e8ed27e97cda76a5306d589769828747e535ead9972"
+values_sha256 = "83060fd88388f19c668a20b63cb31784d7eea9b200dcdc5bfb97ee1da7d4b2eb"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-B-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|EQUITY RESTATED|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "113d276a693924dc75f8f70f13014e7ca3bc37f19b79e24672977563e6986cec"
+values_sha256 = "e551ed4ce25b7461d9010675f652eee8c4d2c2fe15303d23e3438c76c99faecb"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-EQ-B-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|EQUITY RESTATED|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1530,6 +1850,38 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
 quote_sha256 = "b469a67100a312356d6d32de77a9c6b9f7594748eb6f7ccda4440b69bc7b8c90"
 values_sha256 = "b8e6334fb03dc2fa789f2c6ec3d850846b5395a573fbac331735e49182b0631b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-D1-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#4|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "1eb2df09ac7d721382fd39caa3c2c4c2604c1d52c438291a0dd8cd4b09628aca"
+values_sha256 = "e9863fe8c33c6ad6e1dd30c96023fba008d4c053cbfee2e8dd1c3a1876779dfc"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-D1-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#4|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "1497e20402cd8509df352ead9ed53b25d993d7d67e566665caae53f69c6a971a"
+values_sha256 = "b12fc8cfd05ea2608272993942b35b3d28b812795c65180ed305af1ea871ac85"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -1555,6 +1907,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-EQ-D1-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#4|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "1fe3a9211e26e782f9b5ae3987639132db50ccdaa52338e0a021fa2de186e7df"
+values_sha256 = "29cea8609176f9d4dea716c8b5b6be5d851878354d26372c5ce930d6b0e5f777"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-EQ-D2-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary#4|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1562,6 +1930,54 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
 quote_sha256 = "63f0edf9781ad285e1e52bcfc45e97b5d621870443c6b6f3edb2b45d6d65d29d"
 values_sha256 = "9a6ac410f5f56dd855a5ae6a0f04e4977648a2c684f77abc61590943ccb67f5b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-D2-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary#4|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "39fa9ec190eee7b6f4dff1100d6343e10918d044c75eac8f9e9a2596173f80c9"
+values_sha256 = "1220b8061d79b729c8a60f536f858589b3629bf5b68a7cc82ba05683542a354a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-D4-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#4|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "ff783979ec1d7ad116bdc393f59e267cd5255a55eef61702d88a4ebcdb341f27"
+values_sha256 = "4263b384c37a2cbde380a48a68fe7aa7b1f206979975c5d5d305292f87c3aebe"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-EQ-D4-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#4|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "999ae75823ddb85015fe6dc2becee15fcd7f1d26ddb5a460eb45fc01036d1766"
+values_sha256 = "fd0bedbd4186f478c36f3bffbcaa04fe8692db74d9d737391a9bb13ffd01e6d1"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -1587,6 +2003,38 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-EQ-D4-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#4|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "0f668dff09ec744d34b2bfdcea35a06b39b3ec158a2502f3699aef6a8b2e940b"
+values_sha256 = "2553c9ab5799af438d88f73d129770ccd5acc615c8bfadb3cd3db33e1e7f8944"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-NI-B-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Net Income Restated|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "621cb5d0bdea9584dc9f7ede1479e7cca67f8d9778d7e3c8c5cb8aa9eaef47ef"
+values_sha256 = "e2293cec202f61814614ffa394b6ece889c2729a80d33e3c7004f2172402732a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-NI-B-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|Net Income Restated|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1594,6 +2042,38 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
 quote_sha256 = "2618182c3894875e16eeafa6c24e1fe926150ebc6403980c2cb1bbff192d296d"
 values_sha256 = "d6d2010c00fca9cd9fc9374ab776d2db905c75947cc3c55ad72b2585ac0bc51a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-NI-B-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Net Income Restated|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "ac93f3a0fee5afa2d9399d5d0f257dc92bbde89b1e48452e1bfac3c5c1dc99db"
+values_sha256 = "4dd8970a756b4093ef4c4f0a1234cc19ed5500b7d5370ecaf4d608750ff85998"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-NI-D1-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "fad6a080de40200c02751d543f1e1827aab6e31c4f0ee58ec926ac11dc1f34ba"
+values_sha256 = "1cad765cbf244d45bb96ad4b3bf04a4af43a92f28f1bdfb847e2303a5d5876bc"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -1619,6 +2099,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-NI-D1-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "a9d6c94d88dcde046901195afb58f6ef4875d7032c360e77441ff1387d4ff6c4"
+values_sha256 = "18535e5112172179284224ac40f73e10b24cf3c5fb14f078bb77d11eb6f9f338"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-NI-D2-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1626,6 +2122,38 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
 quote_sha256 = "387c5794a636b1fda8db1d44d8de91caeb0dc88c132a1ddc54219eb11bda405e"
 values_sha256 = "a49c2760525bff853a9c75a2c77fb4a35cf208a0cf4d5c282a40f5221a588be8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-NI-D2-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "241ce7ecc46a448f085356fe5edce69396734f4e2c265a52b84dedcccbf01acf"
+values_sha256 = "4a541372d99d9ce85c54248210d1147710f1bf74e2ae2327c97e904be6901c0b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-NI-D4-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "8d8feaf7780d6b65f43b3305ab71142e0bd5c8f36701fbe8db1f98f9599f14c9"
+values_sha256 = "0f2319f833a3f81eabfd0446846f61a4e35320da24f64aba1474a08bb1adfeb3"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -1651,6 +2179,86 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-NI-D4-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "b2c73d3c95d0ffc72240ea9d01ebf1dabe32cb69825776dbf56ec09e0cba3887"
+values_sha256 = "dd3ed4844cc43c593fe8804e23af1bff2ff9bc59d8a0bc46e29ae087bca6cead"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-RAPTOR-EQ-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Raptor equity adjustment#4|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "f7ae3d7ad64eb0d72b16812b02f28784a60bfe651637f20f4d49beb20bd4d949"
+values_sha256 = "19b4a0b29f9ad498f3825bbbe00279938edea622092bdcddb2065c0baddcf3bd"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-RAPTOR-TA-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Raptor equity adjustment#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "f7ae3d7ad64eb0d72b16812b02f28784a60bfe651637f20f4d49beb20bd4d949"
+values_sha256 = "19b4a0b29f9ad498f3825bbbe00279938edea622092bdcddb2065c0baddcf3bd"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-TA-B-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|TOTAL ASSETS RESTATED|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "a3973df3b8aacc857a62c9c5fc95c0128018678e204d678d50f649e23625e1f4"
+values_sha256 = "524e32fac3277155009d1d36caafccf5cf62414835897c984c6e528199ac8493"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-TA-B-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|TOTAL ASSETS RESTATED|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "a6dba082bbd7780e7ded582af7d9efab041c820087339919882fce8811e2fbdc"
+values_sha256 = "e5403772bb951708a6555aff010e0d16366c4e3c62afec9d4c0da6567eac3be8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-TA-B-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|TOTAL ASSETS RESTATED|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1658,6 +2266,38 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
 quote_sha256 = "3dbb7dec103cf6f640f32e63867e47d18ad37b038b5fe3c4776e068d29009947"
 values_sha256 = "1bcbdf8a2611e142ab0ec1a67696a1b945d9148905556dd972a516658220b2b3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-TA-D1-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#2|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "caa1aedb2a6ce96b39b9fde1a49e1ebcb431b6da4586da0aef56df9b78221d60"
+values_sha256 = "3826c0cbe7dcc0222614799ffa70eba15848728c27ac6d29df5278043b533f4c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-TA-D1-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#2|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "a512db2741cd20693e4b16f19891e72b9ff12cead72761fc5e92d2aaf34740c1"
+values_sha256 = "0f797418993d73aea33594ad677980d5d9e817d13b0388e08da96606b8233ed4"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -1683,6 +2323,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-TA-D1-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "65d65ecffc0d0fbcf8d90f904e87f7bd72f576e65cd246e05a56b210836672df"
+values_sha256 = "8b5d3b0ebcf3cf3fe9b600fdf226209d0bcf8bf9152bb54ca0902660fbdfc166"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-TA-D2-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary#2|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1699,6 +2355,38 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-003"
+fact = "N3-TA-D4-FY1997"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#2|1997"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "3de682a82a346edd98962e5bb7602e0cb88feba2579bbe71bf6898bd76833f68"
+values_sha256 = "7a1460ccaae3a20a3ed8388677f55583af2d13a37980d5e44a726434ad917541"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-TA-D4-FY1998"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#2|1998"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "f5477277236a0e5414ec1ca8f4672f066abcf4ff234f27b7833e5717f0af0750"
+values_sha256 = "d04dadbcc9261e6598efe2257e312ff6ce2d3feb6240651f646733ca8ca4ffe1"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
 fact = "N3-TA-D4-FY1999"
 anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#2|1999"
 verified_utc = "2026-10-30T10:39:19Z"
@@ -1706,6 +2394,22 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
 quote_sha256 = "f5477277236a0e5414ec1ca8f4672f066abcf4ff234f27b7833e5717f0af0750"
 values_sha256 = "7df13d0186b5744ec2dc4dccf37db5d438b2c8b470be1ab7f789a3df20b2f00c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "N3-TA-D4-FY2000"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "ff93750c73d046713de30af74ad1068f0848079c8e96da3e718fa7664f4fdffe"
+values_sha256 = "8e57cdca588c0caa1f7cfce22c0dcc04d006b8d179f8163808f7dfd4403d6b07"
 alignment = "value"
 quote_found_once = true
 aligned = true

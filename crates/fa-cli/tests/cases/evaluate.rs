@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::{CaseDef, StepKind, VariantKind};
-use fa_oracles::cases::contrib::{ContribVerdict, cross_check, named_inputs, witness};
+use fa_oracles::cases::contrib::{
+    ContribVerdict, cross_check, fold_periods, is_stock, named_inputs, witness,
+};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
@@ -491,21 +493,36 @@ fn case_show(run: &BookRun<'_>, c: &CaseDef) -> (Vec<(String, String)>, Vec<Stri
         }
     }
     // A12 (§12.7): each restated period's as-filed statement certificate is
-    // SupersededBy exactly the entries the case posted, an independent
-    // second half of the contributing-entry witness.
+    // SupersededBy exactly the entries the case posted that its balance
+    // sheet selects (those effective on or before the period's last day),
+    // an independent second half of the contributing-entry witness.
     let post_seq = run
         .book
         .steps
         .iter()
         .find(|x| x.step_kind() == Some(StepKind::CasePost) && x.reference == c.id)
         .map(|x| x.seq);
-    let posted: BTreeSet<String> = run
-        .posted_steps
-        .iter()
-        .filter(|(_, seq)| Some(**seq) == post_seq)
-        .filter_map(|(intent, _)| run.vids.get(intent).cloned())
-        .collect();
+    let posted_through = |end: &str| -> BTreeSet<String> {
+        run.posted_steps
+            .iter()
+            .filter(|(_, seq)| Some(**seq) == post_seq)
+            .filter(|(intent, _)| {
+                run.book
+                    .intents
+                    .iter()
+                    .any(|i| &i.id == *intent && i.effective_date.as_str() <= end)
+            })
+            .filter_map(|(intent, _)| run.vids.get(intent).cloned())
+            .collect()
+    };
     for (period, call) in r.map(|r| r.statuses.as_slice()).unwrap_or_default() {
+        let end = run
+            .book
+            .periods
+            .iter()
+            .find(|p| &p.code == period)
+            .map_or("", |p| p.end.as_str());
+        let posted = posted_through(end);
         let status = call
             .str_field("certificate_status", "status")
             .unwrap_or_else(|| "none".to_string());
@@ -523,7 +540,7 @@ fn case_show(run: &BookRun<'_>, c: &CaseDef) -> (Vec<(String, String)>, Vec<Stri
         ));
         if status != "SupersededBy" || later != posted {
             fails.push(format!(
-                "expected the as-filed certificate of {period} SupersededBy the case's {} posted entries observed {status} with {} later entries ({} of them posted by the case)",
+                "expected the as-filed certificate of {period} SupersededBy the {} entries the case posted through {end} observed {status} with {} later entries ({} of them posted by the case)",
                 posted.len(),
                 later.len(),
                 later.intersection(&posted).count()
@@ -1225,10 +1242,17 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         Err((_, why)) => fails.push(why),
     }
     // Kernel-attested (§5.3): a per_account T, and a bridge whose A and
-    // deltas sit on the one leaf account it reads, on a statement book.
+    // deltas sit on the one leaf account it reads in one period, on a
+    // statement book. `fa assert-balance` attests one period's register
+    // cell, so a stock read that folds several periods has no cell that
+    // holds B.
+    let account = super::reads::field(e, t, "read_target").unwrap_or("-");
+    let coordinate = super::reads::field(e, t, "read_coordinate").unwrap_or("-");
     let one_leaf_bridge = kind == "bridge"
         && run.book.kind == VariantKind::Statement
-        && super::reads::field(e, t, "read_verb") == Some("balance");
+        && super::reads::field(e, t, "read_verb") == Some("balance")
+        && fold_periods(run.book, is_stock(run.book, account), coordinate)
+            .is_some_and(|periods| periods.len() == 1);
     if kind == "per_account" || one_leaf_bridge {
         let step = t.map_or_else(|| e.id.clone(), |t| format!("{}#{}", e.id, t.fact));
         match run

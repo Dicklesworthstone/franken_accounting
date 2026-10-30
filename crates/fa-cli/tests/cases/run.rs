@@ -345,6 +345,14 @@ pub struct BookRun<'c> {
     pub run_replays: BTreeMap<String, Result<(), String>>,
     /// Each `migrate_open` step's seq -> the run vid it opened (A7m).
     pub migration_runs: BTreeMap<i128, String>,
+    /// Each `fa explain balance` argv the reads ran -> its successful call.
+    /// The reads run after the history, so one argv reads one journal; a
+    /// stock read that folds the periods an earlier read explained reuses
+    /// those cells and their certificates.
+    pub explained: BTreeMap<Vec<String>, Call>,
+    /// Each (certificate, account, unit) the report route verified -> the
+    /// account cell fa-verify recomputed from its bundle (A12).
+    pub recomputed: BTreeMap<(String, String, String), i128>,
 }
 
 impl<'c> BookRun<'c> {
@@ -399,6 +407,8 @@ impl<'c> BookRun<'c> {
             gql: BTreeMap::new(),
             run_replays: BTreeMap::new(),
             migration_runs: BTreeMap::new(),
+            explained: BTreeMap::new(),
+            recomputed: BTreeMap::new(),
         }
     }
 

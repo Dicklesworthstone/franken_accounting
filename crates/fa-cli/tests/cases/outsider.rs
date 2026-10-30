@@ -976,6 +976,16 @@ impl BookRun<'_> {
         let head = self.head;
         let mut sum = 0_i128;
         for oid in certificates {
+            // A certificate another read's route already verified (a stock
+            // read folds the cells of earlier periods' reads) adds its
+            // recomputed cell without a second bundle and replay.
+            let cell = (oid.clone(), target.to_string(), unit.clone());
+            if let Some(value) = self.recomputed.get(&cell) {
+                sum = sum
+                    .checked_add(*value)
+                    .ok_or("the recomputations overflow")?;
+                continue;
+            }
             let stem = self.work.join(format!("read-{}", self.steps.len()));
             let (fab, receipt, replayed) = (
                 stem.with_extension("fab").display().to_string(),
@@ -1076,6 +1086,7 @@ impl BookRun<'_> {
             sum = sum
                 .checked_add(recomputation.value)
                 .ok_or("the recomputations overflow")?;
+            self.recomputed.insert(cell, recomputation.value);
         }
         // A recomputed account cell is its net; B is as published.
         let sign =

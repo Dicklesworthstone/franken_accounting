@@ -1,0 +1,1595 @@
+# Enron's net income (FY1998-FY2000) and total assets, debt and equity (FY1997-FY2000) as the
+# FY2000 10-K reported them (A), restated by the Q3-2001 10-Q's Note 3 (plan §7.2, §7.2a; E4).
+# A stock posts in FY1997 and as its change in each later year, so each year-end balance is the
+# printed figure; net income posts in its own year (ENR-BRIDGE-10Q). The adjustments post
+# through one Restatement case over the four periods. The 8-K's FY1999 bridge has its own book
+# (case.toml's decision row E4-bridge-books).
+
+[book]
+variant = "statement-bridge-10q"
+opening_date = "1997-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "FY1997"
+start = "1997-01-01"
+end = "1997-12-31"
+fiscal_year = 1997
+kind = "Normal"
+
+[[period]]
+code = "FY1998"
+start = "1998-01-01"
+end = "1998-12-31"
+fiscal_year = 1998
+kind = "Normal"
+
+[[period]]
+code = "FY1999"
+start = "1999-01-01"
+end = "1999-12-31"
+fiscal_year = 1999
+kind = "Normal"
+
+[[period]]
+code = "FY2000"
+start = "2000-01-01"
+end = "2000-12-31"
+fiscal_year = 2000
+kind = "Normal"
+
+[[principal]]
+label = "case-filer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-poster-1"
+profile = "Human"
+grants = ["read", "post", "restate", "produce"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-reconciler-1"
+profile = "Human"
+grants = ["read", "reconcile"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[principal]]
+label = "examiner-witness"
+profile = "Human"
+grants = ["read", "witness"]
+
+[[account]]
+code = "1000"
+name_fact = "10K-TA-A-FY1997"
+type = "Asset"
+role = ""
+opened = "1996-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2000"
+name_fact = "ENR-BRIDGE-10Q"
+type = "Liability"
+role = ""
+opened = "1996-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2100"
+name_fact = "10K-DEBT-A-FY1997"
+type = "Liability"
+role = ""
+opened = "1996-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3000"
+name_fact = "10K-EQ-A-FY1997"
+type = "Equity"
+role = ""
+opened = "1996-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3900"
+name_fact = "ENR-BRIDGE-10Q"
+type = "Equity"
+role = ""
+opened = "1996-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "4000"
+name_fact = "10K-NI-A-FY1998"
+type = "Revenue"
+role = ""
+opened = "1996-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-ENR-10K"
+stub_of = "SRC-ENR-008"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-ENR-10Q"
+stub_of = "SRC-ENR-003"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "10K-TA-A-FY1997"
+fact = "10K-TA-A-FY1997"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1997-12-31"
+memo = "FY1997 total assets, as the FY2000 10-K reported it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ta-fy1997"
+
+[[leg]]
+intent = "10K-TA-A-FY1997"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "22552000000.00"
+amount_rule = "value:10K-TA-A-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "10K-TA-A-FY1997"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "22552000000.00"
+amount_rule = "value:10K-TA-A-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "10K-TA-A-FY1998"
+fact = "10K-TA-A-FY1998"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1998-12-31"
+memo = "FY1998 total assets, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ta-fy1998"
+
+[[leg]]
+intent = "10K-TA-A-FY1998"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "6798000000.00"
+amount_rule = "derived:10K-TA-A-CHG-FY1998"
+unit = "USD"
+
+[[leg]]
+intent = "10K-TA-A-FY1998"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "6798000000.00"
+amount_rule = "derived:10K-TA-A-CHG-FY1998"
+unit = "USD"
+
+[[intent]]
+id = "10K-TA-A-FY1999"
+fact = "10K-TA-A-FY1999"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1999-12-31"
+memo = "FY1999 total assets, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ta-fy1999"
+
+[[leg]]
+intent = "10K-TA-A-FY1999"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "4031000000.00"
+amount_rule = "derived:10K-TA-A-CHG-FY1999"
+unit = "USD"
+
+[[leg]]
+intent = "10K-TA-A-FY1999"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "4031000000.00"
+amount_rule = "derived:10K-TA-A-CHG-FY1999"
+unit = "USD"
+
+[[intent]]
+id = "BS10K-TOTAL-ASSETS"
+fact = "BS10K-TOTAL-ASSETS"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2000-12-31"
+memo = "FY2000 total assets, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ta-fy2000"
+
+[[leg]]
+intent = "BS10K-TOTAL-ASSETS"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "32122000000.00"
+amount_rule = "derived:10K-TA-A-CHG-FY2000"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-TOTAL-ASSETS"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "32122000000.00"
+amount_rule = "derived:10K-TA-A-CHG-FY2000"
+unit = "USD"
+
+[[intent]]
+id = "10K-DEBT-A-FY1997"
+fact = "10K-DEBT-A-FY1997"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1997-12-31"
+memo = "FY1997 debt, as the FY2000 10-K reported it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-debt-fy1997"
+
+[[leg]]
+intent = "10K-DEBT-A-FY1997"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "6254000000.00"
+amount_rule = "value:10K-DEBT-A-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "10K-DEBT-A-FY1997"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "6254000000.00"
+amount_rule = "value:10K-DEBT-A-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "10K-DEBT-A-FY1998"
+fact = "10K-DEBT-A-FY1998"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1998-12-31"
+memo = "FY1998 debt, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-debt-fy1998"
+
+[[leg]]
+intent = "10K-DEBT-A-FY1998"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "1103000000.00"
+amount_rule = "derived:10K-DEBT-A-CHG-FY1998"
+unit = "USD"
+
+[[leg]]
+intent = "10K-DEBT-A-FY1998"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "1103000000.00"
+amount_rule = "derived:10K-DEBT-A-CHG-FY1998"
+unit = "USD"
+
+[[intent]]
+id = "10K-DEBT-A-FY1999"
+fact = "10K-DEBT-A-FY1999"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1999-12-31"
+memo = "FY1999 debt, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-debt-fy1999"
+
+[[leg]]
+intent = "10K-DEBT-A-FY1999"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "795000000.00"
+amount_rule = "derived:10K-DEBT-A-CHG-FY1999"
+unit = "USD"
+
+[[leg]]
+intent = "10K-DEBT-A-FY1999"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "795000000.00"
+amount_rule = "derived:10K-DEBT-A-CHG-FY1999"
+unit = "USD"
+
+[[intent]]
+id = "10K-DEBT-A-FY2000"
+fact = "10K-DEBT-A-FY2000"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2000-12-31"
+memo = "FY2000 debt, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-debt-fy2000"
+
+[[leg]]
+intent = "10K-DEBT-A-FY2000"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "2077000000.00"
+amount_rule = "derived:10K-DEBT-A-CHG-FY2000"
+unit = "USD"
+
+[[leg]]
+intent = "10K-DEBT-A-FY2000"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "2077000000.00"
+amount_rule = "derived:10K-DEBT-A-CHG-FY2000"
+unit = "USD"
+
+[[intent]]
+id = "10K-EQ-A-FY1997"
+fact = "10K-EQ-A-FY1997"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1997-12-31"
+memo = "FY1997 equity, as the FY2000 10-K reported it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-eq-fy1997"
+
+[[leg]]
+intent = "10K-EQ-A-FY1997"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "5618000000.00"
+amount_rule = "value:10K-EQ-A-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "10K-EQ-A-FY1997"
+ordinal = 1
+account = "3000"
+side = "Cr"
+amount_literal = "5618000000.00"
+amount_rule = "value:10K-EQ-A-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "10K-EQ-A-FY1998"
+fact = "10K-EQ-A-FY1998"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1998-12-31"
+memo = "FY1998 equity, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-eq-fy1998"
+
+[[leg]]
+intent = "10K-EQ-A-FY1998"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "1430000000.00"
+amount_rule = "derived:10K-EQ-A-CHG-FY1998"
+unit = "USD"
+
+[[leg]]
+intent = "10K-EQ-A-FY1998"
+ordinal = 1
+account = "3000"
+side = "Cr"
+amount_literal = "1430000000.00"
+amount_rule = "derived:10K-EQ-A-CHG-FY1998"
+unit = "USD"
+
+[[intent]]
+id = "10K-EQ-A-FY1999"
+fact = "10K-EQ-A-FY1999"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1999-12-31"
+memo = "FY1999 equity, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-eq-fy1999"
+
+[[leg]]
+intent = "10K-EQ-A-FY1999"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "2522000000.00"
+amount_rule = "derived:10K-EQ-A-CHG-FY1999"
+unit = "USD"
+
+[[leg]]
+intent = "10K-EQ-A-FY1999"
+ordinal = 1
+account = "3000"
+side = "Cr"
+amount_literal = "2522000000.00"
+amount_rule = "derived:10K-EQ-A-CHG-FY1999"
+unit = "USD"
+
+[[intent]]
+id = "BS10K-TOTAL-EQUITY"
+fact = "BS10K-TOTAL-EQUITY"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2000-12-31"
+memo = "FY2000 equity, as the FY2000 10-K reported it (its change from the year before)"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-eq-fy2000"
+
+[[leg]]
+intent = "BS10K-TOTAL-EQUITY"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "1900000000.00"
+amount_rule = "derived:10K-EQ-A-CHG-FY2000"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-TOTAL-EQUITY"
+ordinal = 1
+account = "3000"
+side = "Cr"
+amount_literal = "1900000000.00"
+amount_rule = "derived:10K-EQ-A-CHG-FY2000"
+unit = "USD"
+
+[[intent]]
+id = "10K-NI-A-FY1998"
+fact = "10K-NI-A-FY1998"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1998-12-31"
+memo = "FY1998 net income, as the FY2000 10-K reported it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ni-fy1998"
+
+[[leg]]
+intent = "10K-NI-A-FY1998"
+ordinal = 0
+account = "3900"
+side = "Dr"
+amount_literal = "703000000.00"
+amount_rule = "value:10K-NI-A-FY1998#1"
+unit = "USD"
+
+[[leg]]
+intent = "10K-NI-A-FY1998"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "703000000.00"
+amount_rule = "value:10K-NI-A-FY1998#1"
+unit = "USD"
+
+[[intent]]
+id = "10K-NI-A-FY1999"
+fact = "10K-NI-A-FY1999"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "1999-12-31"
+memo = "FY1999 net income, as the FY2000 10-K reported it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ni-fy1999"
+
+[[leg]]
+intent = "10K-NI-A-FY1999"
+ordinal = 0
+account = "3900"
+side = "Dr"
+amount_literal = "893000000.00"
+amount_rule = "value:10K-NI-A-FY1999#1"
+unit = "USD"
+
+[[leg]]
+intent = "10K-NI-A-FY1999"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "893000000.00"
+amount_rule = "value:10K-NI-A-FY1999#1"
+unit = "USD"
+
+[[intent]]
+id = "10K-NI-A-FY2000"
+fact = "10K-NI-A-FY2000"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2000-12-31"
+memo = "FY2000 net income, as the FY2000 10-K reported it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-10q-a-ni-fy2000"
+
+[[leg]]
+intent = "10K-NI-A-FY2000"
+ordinal = 0
+account = "3900"
+side = "Dr"
+amount_literal = "979000000.00"
+amount_rule = "value:10K-NI-A-FY2000#1"
+unit = "USD"
+
+[[leg]]
+intent = "10K-NI-A-FY2000"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "979000000.00"
+amount_rule = "value:10K-NI-A-FY2000#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-TA-A-FY1997-1"
+fact = "N3-TA-D1-FY1997"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1997-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ta-a-fy1997-1"
+target = "10K-TA-A-FY1997"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1997-1"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "451000000.00"
+amount_rule = "value:N3-TA-D1-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1997-1"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "451000000.00"
+amount_rule = "value:N3-TA-D1-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-TA-A-FY1997-2"
+fact = "N3-TA-D4-FY1997"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1997-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ta-a-fy1997-2"
+target = "10K-TA-A-FY1997"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1997-2"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "79000000.00"
+amount_rule = "value:N3-TA-D4-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1997-2"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "79000000.00"
+amount_rule = "value:N3-TA-D4-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-TA-A-FY1998"
+fact = "N3-TA-D-CHG-FY1998"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1998-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ta-a-fy1998"
+target = "10K-TA-A-FY1998"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1998"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "280000000.00"
+amount_rule = "derived:N3-TA-D-CHG-FY1998"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1998"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "280000000.00"
+amount_rule = "derived:N3-TA-D-CHG-FY1998"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-TA-A-FY1999"
+fact = "N3-TA-D-CHG-FY1999"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1999-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ta-a-fy1999"
+target = "10K-TA-A-FY1999"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1999"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "201000000.00"
+amount_rule = "derived:N3-TA-D-CHG-FY1999"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-TA-A-FY1999"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "201000000.00"
+amount_rule = "derived:N3-TA-D-CHG-FY1999"
+unit = "USD"
+
+[[intent]]
+id = "delta-BS10K-TOTAL-ASSETS"
+fact = "N3-TA-D-CHG-FY2000"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-bs10k-total-assets"
+target = "BS10K-TOTAL-ASSETS"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-BS10K-TOTAL-ASSETS"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "468000000.00"
+amount_rule = "derived:N3-TA-D-CHG-FY2000"
+unit = "USD"
+
+[[leg]]
+intent = "delta-BS10K-TOTAL-ASSETS"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "468000000.00"
+amount_rule = "derived:N3-TA-D-CHG-FY2000"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-DEBT-A-FY1997"
+fact = "N3-DEBT-D1-FY1997"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1997-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-debt-a-fy1997"
+target = "10K-DEBT-A-FY1997"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY1997"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "711000000.00"
+amount_rule = "value:N3-DEBT-D1-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY1997"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "711000000.00"
+amount_rule = "value:N3-DEBT-D1-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-DEBT-A-FY1998"
+fact = "N3-DEBT-D-CHG-FY1998"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1998-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-debt-a-fy1998"
+target = "10K-DEBT-A-FY1998"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY1998"
+ordinal = 0
+account = "2100"
+side = "Dr"
+amount_literal = "150000000.00"
+amount_rule = "derived:N3-DEBT-D-CHG-FY1998"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY1998"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "150000000.00"
+amount_rule = "derived:N3-DEBT-D-CHG-FY1998"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-DEBT-A-FY1999"
+fact = "N3-DEBT-D-CHG-FY1999"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1999-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-debt-a-fy1999"
+target = "10K-DEBT-A-FY1999"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY1999"
+ordinal = 0
+account = "2000"
+side = "Dr"
+amount_literal = "124000000.00"
+amount_rule = "derived:N3-DEBT-D-CHG-FY1999"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY1999"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "124000000.00"
+amount_rule = "derived:N3-DEBT-D-CHG-FY1999"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-DEBT-A-FY2000"
+fact = "N3-DEBT-D-CHG-FY2000"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-debt-a-fy2000"
+target = "10K-DEBT-A-FY2000"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY2000"
+ordinal = 0
+account = "2100"
+side = "Dr"
+amount_literal = "57000000.00"
+amount_rule = "derived:N3-DEBT-D-CHG-FY2000"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-DEBT-A-FY2000"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "57000000.00"
+amount_rule = "derived:N3-DEBT-D-CHG-FY2000"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-EQ-A-FY1997-1"
+fact = "N3-EQ-D1-FY1997"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1997-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-eq-a-fy1997-1"
+target = "10K-EQ-A-FY1997"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1997-1"
+ordinal = 0
+account = "3000"
+side = "Dr"
+amount_literal = "258000000.00"
+amount_rule = "value:N3-EQ-D1-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1997-1"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "258000000.00"
+amount_rule = "value:N3-EQ-D1-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-EQ-A-FY1997-2"
+fact = "N3-EQ-D4-FY1997"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1997-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-eq-a-fy1997-2"
+target = "10K-EQ-A-FY1997"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1997-2"
+ordinal = 0
+account = "3000"
+side = "Dr"
+amount_literal = "51000000.00"
+amount_rule = "value:N3-EQ-D4-FY1997#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1997-2"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "51000000.00"
+amount_rule = "value:N3-EQ-D4-FY1997#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-EQ-A-FY1998"
+fact = "N3-EQ-D-CHG-FY1998"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1998-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-eq-a-fy1998"
+target = "10K-EQ-A-FY1998"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1998"
+ordinal = 0
+account = "3000"
+side = "Dr"
+amount_literal = "139000000.00"
+amount_rule = "derived:N3-EQ-D-CHG-FY1998"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1998"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "139000000.00"
+amount_rule = "derived:N3-EQ-D-CHG-FY1998"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-EQ-A-FY1999"
+fact = "N3-EQ-D-CHG-FY1999"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1999-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-eq-a-fy1999"
+target = "10K-EQ-A-FY1999"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1999"
+ordinal = 0
+account = "3000"
+side = "Dr"
+amount_literal = "398000000.00"
+amount_rule = "derived:N3-EQ-D-CHG-FY1999"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-EQ-A-FY1999"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "398000000.00"
+amount_rule = "derived:N3-EQ-D-CHG-FY1999"
+unit = "USD"
+
+[[intent]]
+id = "delta-BS10K-TOTAL-EQUITY"
+fact = "N3-EQ-D-CHG-FY2000"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-bs10k-total-equity"
+target = "BS10K-TOTAL-EQUITY"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-BS10K-TOTAL-EQUITY"
+ordinal = 0
+account = "3000"
+side = "Dr"
+amount_literal = "335000000.00"
+amount_rule = "derived:N3-EQ-D-CHG-FY2000"
+unit = "USD"
+
+[[leg]]
+intent = "delta-BS10K-TOTAL-EQUITY"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "335000000.00"
+amount_rule = "derived:N3-EQ-D-CHG-FY2000"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY1998-1"
+fact = "N3-NI-D1-FY1998"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1998-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy1998-1"
+target = "10K-NI-A-FY1998"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1998-1"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "133000000.00"
+amount_rule = "value:N3-NI-D1-FY1998#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1998-1"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "133000000.00"
+amount_rule = "value:N3-NI-D1-FY1998#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY1998-2"
+fact = "N3-NI-D4-FY1998"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1998-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy1998-2"
+target = "10K-NI-A-FY1998"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1998-2"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "6000000.00"
+amount_rule = "value:N3-NI-D4-FY1998#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1998-2"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "6000000.00"
+amount_rule = "value:N3-NI-D4-FY1998#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY1999-1"
+fact = "N3-NI-D1-FY1999"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1999-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy1999-1"
+target = "10K-NI-A-FY1999"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1999-1"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "153000000.00"
+amount_rule = "value:N3-NI-D1-FY1999#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1999-1"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "153000000.00"
+amount_rule = "value:N3-NI-D1-FY1999#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY1999-2"
+fact = "N3-NI-D2-FY1999"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1999-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy1999-2"
+target = "10K-NI-A-FY1999"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1999-2"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "95000000.00"
+amount_rule = "value:N3-NI-D2-FY1999#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1999-2"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "95000000.00"
+amount_rule = "value:N3-NI-D2-FY1999#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY1999-3"
+fact = "N3-NI-D4-FY1999"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "1999-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy1999-3"
+target = "10K-NI-A-FY1999"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1999-3"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "10000000.00"
+amount_rule = "value:N3-NI-D4-FY1999#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY1999-3"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "10000000.00"
+amount_rule = "value:N3-NI-D4-FY1999#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY2000-1"
+fact = "N3-NI-D1-FY2000"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy2000-1"
+target = "10K-NI-A-FY2000"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY2000-1"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "91000000.00"
+amount_rule = "value:N3-NI-D1-FY2000#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY2000-1"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "91000000.00"
+amount_rule = "value:N3-NI-D1-FY2000#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY2000-2"
+fact = "N3-NI-D2-FY2000"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy2000-2"
+target = "10K-NI-A-FY2000"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY2000-2"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "8000000.00"
+amount_rule = "value:N3-NI-D2-FY2000#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY2000-2"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "8000000.00"
+amount_rule = "value:N3-NI-D2-FY2000#1"
+unit = "USD"
+
+[[intent]]
+id = "delta-10K-NI-A-FY2000-3"
+fact = "N3-NI-D4-FY2000"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2000-12-31"
+evidence = "DOC-ENR-10Q"
+idempotency_key = "enr-10q-delta-10k-ni-a-fy2000-3"
+target = "10K-NI-A-FY2000"
+target_kind = "restates"
+reason = "WrongAmount"
+scenario = "restate-10q"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY2000-3"
+ordinal = 0
+account = "4000"
+side = "Dr"
+amount_literal = "38000000.00"
+amount_rule = "value:N3-NI-D4-FY2000#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-10K-NI-A-FY2000-3"
+ordinal = 1
+account = "3900"
+side = "Cr"
+amount_literal = "38000000.00"
+amount_rule = "value:N3-NI-D4-FY2000#1"
+unit = "USD"
+
+[[case]]
+id = "enr-10q"
+kind = "Restatement"
+periods = ["FY1997", "FY1998", "FY1999", "FY2000"]
+determined_on = "default"
+authority = "DOC-ENR-10Q"
+disclosure = "DOC-ENR-10Q"
+approvers = ["case-approver-1", "case-approver-2"]
+poster = "case-poster-1"
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the FY2000 10-K and the 10-Q are cited through their stubs, reviewed by case-second-reader (plan §2.7)"
+
+[[default]]
+attribute = "leg_split"
+rule = "statement_remainder"
+rationale = "each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-10Q), so every entry balances on the figure alone (plan §3.8)"
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "a fiscal year's figure, or its change, is as of the fiscal year-end, the period's last day"
+
+[[default]]
+attribute = "case_determination_date"
+rule = "restating_filing_date"
+rationale = "the restating filing's date (the 10-Q's filing date, 2001-11-19) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row"
+
+[[default]]
+attribute = "reason"
+rule = "WrongAmount"
+rationale = "the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON)"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "FY1997"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "period_open"
+ref = "FY1998"
+principal = "case-closer-1"
+
+[[step]]
+seq = 3
+kind = "period_open"
+ref = "FY1999"
+principal = "case-closer-1"
+
+[[step]]
+seq = 4
+kind = "period_open"
+ref = "FY2000"
+principal = "case-closer-1"
+
+[[step]]
+seq = 5
+kind = "intent"
+ref = "10K-TA-A-FY1997"
+
+[[step]]
+seq = 6
+kind = "intent"
+ref = "10K-DEBT-A-FY1997"
+
+[[step]]
+seq = 7
+kind = "intent"
+ref = "10K-EQ-A-FY1997"
+
+[[step]]
+seq = 8
+kind = "intent"
+ref = "10K-TA-A-FY1998"
+
+[[step]]
+seq = 9
+kind = "intent"
+ref = "10K-DEBT-A-FY1998"
+
+[[step]]
+seq = 10
+kind = "intent"
+ref = "10K-EQ-A-FY1998"
+
+[[step]]
+seq = 11
+kind = "intent"
+ref = "10K-NI-A-FY1998"
+
+[[step]]
+seq = 12
+kind = "intent"
+ref = "10K-TA-A-FY1999"
+
+[[step]]
+seq = 13
+kind = "intent"
+ref = "10K-DEBT-A-FY1999"
+
+[[step]]
+seq = 14
+kind = "intent"
+ref = "10K-EQ-A-FY1999"
+
+[[step]]
+seq = 15
+kind = "intent"
+ref = "10K-NI-A-FY1999"
+
+[[step]]
+seq = 16
+kind = "intent"
+ref = "BS10K-TOTAL-ASSETS"
+
+[[step]]
+seq = 17
+kind = "intent"
+ref = "10K-DEBT-A-FY2000"
+
+[[step]]
+seq = 18
+kind = "intent"
+ref = "BS10K-TOTAL-EQUITY"
+
+[[step]]
+seq = 19
+kind = "intent"
+ref = "10K-NI-A-FY2000"
+
+[[step]]
+seq = 20
+kind = "period_close"
+ref = "FY1997"
+principal = "case-closer-1"
+
+[[step]]
+seq = 21
+kind = "period_lock"
+ref = "FY1997"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 22
+kind = "period_close"
+ref = "FY1998"
+principal = "case-closer-1"
+
+[[step]]
+seq = 23
+kind = "period_lock"
+ref = "FY1998"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 24
+kind = "period_close"
+ref = "FY1999"
+principal = "case-closer-1"
+
+[[step]]
+seq = 25
+kind = "period_lock"
+ref = "FY1999"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 26
+kind = "period_close"
+ref = "FY2000"
+principal = "case-closer-1"
+
+[[step]]
+seq = 27
+kind = "period_lock"
+ref = "FY2000"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+# Each year's as-filed statement, issued citing the FY2000 10-K's stub: what an as-originally-
+# reported read returns, and the certificate the case's posted entries through that year must
+# supersede (A12).
+
+[[step]]
+seq = 28
+kind = "issue"
+ref = "FY1997"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-ENR-10K"
+
+[[step]]
+seq = 29
+kind = "issue"
+ref = "FY1998"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-ENR-10K"
+
+[[step]]
+seq = 30
+kind = "issue"
+ref = "FY1999"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-ENR-10K"
+
+[[step]]
+seq = 31
+kind = "issue"
+ref = "FY2000"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-ENR-10K"
+
+# A12 (plan §12.7): the examiner witness cosigns the as-filed checkpoint before the case;
+# after it the runner cosigns the restated book with --previous, which must extend it.
+
+[[step]]
+seq = 32
+kind = "checkpoint"
+ref = "as-filed"
+principal = "examiner-witness"
+
+[[step]]
+seq = 33
+kind = "checkpoint_witness"
+ref = "as-filed"
+
+[[step]]
+seq = 34
+kind = "case_open"
+ref = "enr-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 35
+kind = "case_determine"
+ref = "enr-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 36
+kind = "scenario_fork"
+ref = "restate-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 37
+kind = "scenario_run"
+ref = "restate-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 38
+kind = "scenario_diff"
+ref = "restate-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 39
+kind = "case_rehearse"
+ref = "enr-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 40
+kind = "case_approve"
+ref = "enr-10q"
+
+[[step]]
+seq = 41
+kind = "case_post"
+ref = "enr-10q"
+
+[[step]]
+seq = 42
+kind = "case_disclose"
+ref = "enr-10q"
+principal = "case-poster-1"
+
+[[step]]
+seq = 43
+kind = "case_close"
+ref = "enr-10q"
+principal = "case-poster-1"
+
+# The kernel-attested B (plan §5.3) of each read whose A and adjustments sit in one period:
+# FY1997's stocks and each year's net income, asserted as RegisterEquals attestations, their
+# twins one cent above and below refused FA-REF-140. A later year's stock folds several periods,
+# and no one period's cell holds it.
+
+[[step]]
+seq = 44
+kind = "assert_balance"
+ref = "E-T-01#N3-TA-B-FY1997"
+principal = "case-reconciler-1"
+evidence = "DOC-ENR-10Q"
+
+[[step]]
+seq = 45
+kind = "assert_balance"
+ref = "E-T-01#N3-DEBT-B-FY1997"
+principal = "case-reconciler-1"
+evidence = "DOC-ENR-10Q"
+
+[[step]]
+seq = 46
+kind = "assert_balance"
+ref = "E-T-01#N3-EQ-B-FY1997"
+principal = "case-reconciler-1"
+evidence = "DOC-ENR-10Q"
+
+[[step]]
+seq = 47
+kind = "assert_balance"
+ref = "E-T-01#N3-NI-B-FY1998"
+principal = "case-reconciler-1"
+evidence = "DOC-ENR-10Q"
+
+[[step]]
+seq = 48
+kind = "assert_balance"
+ref = "E-T-01#N3-NI-B-FY1999"
+principal = "case-reconciler-1"
+evidence = "DOC-ENR-10Q"
+
+[[step]]
+seq = 49
+kind = "assert_balance"
+ref = "E-T-01#N3-NI-B-FY2000"
+principal = "case-reconciler-1"
+evidence = "DOC-ENR-10Q"

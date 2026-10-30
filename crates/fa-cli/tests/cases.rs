@@ -192,10 +192,13 @@ fn lehman() {
 /// equity and liabilities-and-equity lines foot to the printed totals:
 /// read as reported in the 10-K's issuance on the 10-K's book, since the
 /// 10-Q restates those figures (E-T-02), and as currently stated on the
-/// 10-Q's (E-T-05). FY1999's net income, total assets and equity bridge
-/// from the as-filed figures through each restating vintage's adjustments:
-/// the 8-K's, read as reported in its issuance (E-T-04: 643 / 33,199 /
-/// 8,736 $M), and the 10-Q's (E-T-01: 635 / 33,272 / 8,724 $M); as
+/// 10-Q's (E-T-05). The restatement bridges run from the as-filed figures
+/// through each restating vintage's adjustments: the 8-K's FY1999 net
+/// income, total assets and equity, read as reported in its issuance
+/// (E-T-04: 643 / 33,199 / 8,736 $M), and the 10-Q's net income
+/// (FY1998-FY2000) and total assets, debt and equity (FY1997-FY2000) on one
+/// four-period book (E-T-01: FY1999 635 / 33,272 / 8,724 $M; FY2000 total
+/// assets 64,926 $M after the Raptor equity adjustment of -172); as
 /// originally reported, each book still reads the as-filed figures (E-R-02,
 /// E-R-01).
 #[test]
@@ -212,21 +215,13 @@ fn enron() {
         3,
         "{text}"
     );
-    assert_eq!(
-        count("PASS E-T-01 T statement-bridge-10q-fy1999 "),
-        3,
-        "{text}"
-    );
+    assert_eq!(count("PASS E-T-01 T statement-bridge-10q "), 15, "{text}");
     assert_eq!(
         count("PASS E-R-02 R statement-bridge-8k-fy1999 "),
         3,
         "{text}"
     );
-    assert_eq!(
-        count("PASS E-R-01 R statement-bridge-10q-fy1999 "),
-        3,
-        "{text}"
-    );
+    assert_eq!(count("PASS E-R-01 R statement-bridge-10q "), 15, "{text}");
     for (row, value) in [
         (
             "E-T-02 T statement-10k2000 BS10K-TOTAL-ASSETS",
@@ -241,12 +236,24 @@ fn enron() {
             "33199000000.00",
         ),
         (
-            "E-T-01 T statement-bridge-10q-fy1999 N3-TA-B-FY1999",
+            "E-T-01 T statement-bridge-10q N3-TA-B-FY1999",
             "33272000000.00",
         ),
         (
-            "E-R-01 R statement-bridge-10q-fy1999 10K-TA-A-FY1999",
+            "E-T-01 T statement-bridge-10q BS10Q-TOTAL-ASSETS",
+            "64926000000.00",
+        ),
+        (
+            "E-T-01 T statement-bridge-10q N3-DEBT-B-FY1997",
+            "6965000000.00",
+        ),
+        (
+            "E-R-01 R statement-bridge-10q 10K-TA-A-FY1999",
             "33381000000.00",
+        ),
+        (
+            "E-R-01 R statement-bridge-10q BS10K-TOTAL-ASSETS",
+            "65503000000.00",
         ),
     ] {
         assert!(
@@ -3710,7 +3717,7 @@ fn certificate_status_later_entries_missing_a_delta_fails() {
         row.starts_with("FAIL lifecycle-CASE-rc R ")
             && row.contains(" superseded=2026Q1:SupersededBy:later_entries=0 ")
             && row.contains(
-                "expected the as-filed certificate of 2026Q1 SupersededBy the case's 1 posted entries observed SupersededBy with 0 later entries (0 of them posted by the case)"
+                "expected the as-filed certificate of 2026Q1 SupersededBy the 1 entries the case posted through 2026-03-31 observed SupersededBy with 0 later entries (0 of them posted by the case)"
             ),
         "{}",
         o.text()

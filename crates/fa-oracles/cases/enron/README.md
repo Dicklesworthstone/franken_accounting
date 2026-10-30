@@ -2,7 +2,7 @@
 
 # Enron, the 1997-2001 restatements and the special purpose entities
 
-Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries), and the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it: every line, and the printed totals they foot to.
+Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries); the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it, every line and the printed totals they foot to; and the restatement bridges from the as-filed figures to the 8-K's restated FY1999 net income, total assets and equity, and to the 10-Q's restated net income (FY1998-FY2000) and total assets, debt and equity (FY1997-FY2000).
 
 Claimed rows: `E-R-01`, `E-R-02`, `E-T-01`, `E-T-02`, `E-T-04`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
@@ -132,12 +132,83 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `N3-EQ-D2-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary#4\|1999` | -166,000,000.00 USD | reported (unaudited) | statement_line |
 | `N3-EQ-D4-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#4\|1999` | -136,000,000.00 USD | reported (unaudited) | statement_line |
 | `N3-EQ-B-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|EQUITY RESTATED\|1999` | 8,724,000,000.00 USD | reported (unaudited) | statement_line |
+| `10K-NI-A-FY1998` | `SRC-ENR-008` | `CONSOLIDATED INCOME STATEMENT\|Net Income\|1998` | 703,000,000.00 USD | reported (audited) | statement_line |
+| `10K-NI-A-FY2000` | `SRC-ENR-008` | `CONSOLIDATED INCOME STATEMENT\|Net Income\|2000` | 979,000,000.00 USD | reported (audited) | statement_line |
+| `10K-TA-A-FY1997` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Total Assets (millions)\|1997` | 22,552,000,000.00 USD | reported (audited) | statement_line |
+| `10K-TA-A-FY1998` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Total Assets (millions)\|1998` | 29,350,000,000.00 USD | reported (audited) | statement_line |
+| `10K-DEBT-A-FY1997` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Short-term and long-term debt\|1997` | 6,254,000,000.00 USD | reported (audited) | statement_line |
+| `10K-DEBT-A-FY1998` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Short-term and long-term debt\|1998` | 7,357,000,000.00 USD | reported (audited) | statement_line |
+| `10K-DEBT-A-FY1999` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Short-term and long-term debt\|1999` | 8,152,000,000.00 USD | reported (audited) | statement_line |
+| `10K-DEBT-A-FY2000` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Short-term and long-term debt\|2000` | 10,229,000,000.00 USD | reported (audited) | statement_line |
+| `10K-EQ-A-FY1997` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Shareholders' equity\|1997` | 5,618,000,000.00 USD | reported (audited) | statement_line |
+| `10K-EQ-A-FY1998` | `SRC-ENR-008` | `ITEM 6.  SELECTED FINANCIAL DATA (UNAUDITED)\|Shareholders' equity\|1998` | 7,048,000,000.00 USD | reported (audited) | statement_line |
+| `N3-NI-D1-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco\|1998` | -133,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D4-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit\|1998` | -6,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-B-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Net Income Restated\|1998` | 564,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D1-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco\|2000` | -91,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D2-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary\|2000` | -8,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D4-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit\|2000` | -38,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-B-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Net Income Restated\|2000` | 842,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D1-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#2\|1997` | 451,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D4-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#2\|1997` | -79,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-B-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|TOTAL ASSETS RESTATED\|1997` | 22,924,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D1-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#2\|1998` | 160,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D4-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#2\|1998` | -68,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-B-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|TOTAL ASSETS RESTATED\|1998` | 29,442,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D1-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#2\|2000` | -161,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-RAPTOR-TA-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#2\|2000` | -172,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D4-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#2\|2000` | -244,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-D1-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#3\|1997` | 711,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-B-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|DEBT RESTATED\|1997` | 6,965,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-D1-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#3\|1998` | 561,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-B-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|DEBT RESTATED\|1998` | 7,918,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-D1-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#3\|1999` | 685,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-B-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|DEBT RESTATED\|1999` | 8,837,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-D1-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#3\|2000` | 628,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-DEBT-B-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|DEBT RESTATED\|2000` | 10,857,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D1-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#4\|1997` | -258,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D4-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#4\|1997` | -51,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-B-FY1997` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|EQUITY RESTATED\|1997` | 5,309,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D1-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#4\|1998` | -391,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D4-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#4\|1998` | -57,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-B-FY1998` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|EQUITY RESTATED\|1998` | 6,600,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D1-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#4\|2000` | -814,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D2-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary#4\|2000` | 60,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-RAPTOR-EQ-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#4\|2000` | -172,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D4-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#4\|2000` | -255,000,000.00 USD | reported (unaudited) | statement_line |
 
 ### Readings of the record
 
 - `BS10K-SFC`, an interpretation of `BS10K-CASH`, `BS10K-TRADE-RECEIVABLES`, `BS10K-OTHER-RECEIVABLES`, `BS10K-PRICE-RISK-ASSETS-CURRENT`, `BS10K-INVENTORIES`, `BS10K-DEPOSITS`, `BS10K-OTHER-CURRENT-ASSETS`, `BS10K-EQUITY-AFFILIATES`, `BS10K-PRICE-RISK-ASSETS-NONCURRENT`, `BS10K-GOODWILL`, `BS10K-OTHER-INVESTMENTS`, `BS10K-NATURAL-GAS-TRANSMISSION`, `BS10K-ELECTRIC-GENERATION`, `BS10K-FIBER-OPTIC`, `BS10K-CONSTRUCTION-IN-PROGRESS`, `BS10K-OTHER-PROPERTY`, `BS10K-ACCUMULATED-DEPRECIATION`, `BS10K-ACCOUNTS-PAYABLE`, `BS10K-PRICE-RISK-LIABILITIES-CURRENT`, `BS10K-SHORT-TERM-DEBT`, `BS10K-CUSTOMERS-DEPOSITS`, `BS10K-OTHER-CURRENT-LIABILITIES`, `BS10K-LONG-TERM-DEBT`, `BS10K-DEFERRED-INCOME-TAXES`, `BS10K-PRICE-RISK-LIABILITIES-NONCURRENT`, `BS10K-OTHER-DEFERRED-CREDITS`, `BS10K-MINORITY-INTERESTS`, `BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES`, `BS10K-SECOND-PREFERRED-STOCK`, `BS10K-JUNIOR-PREFERRED-STOCK`, `BS10K-COMMON-STOCK`, `BS10K-RETAINED-EARNINGS`, `BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME`, `BS10K-TREASURY-STOCK`, `BS10K-RESTRICTED-STOCK`, read by `case-author-1` and second reader `case-second-reader`: The 2000-12-31 consolidated balance sheet the FY2000 10-K prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed.
 - `BS10Q-SFC`, an interpretation of `BS10Q-CASH`, `BS10Q-TRADE-RECEIVABLES`, `BS10Q-OTHER-RECEIVABLES`, `BS10Q-PRICE-RISK-ASSETS-CURRENT`, `BS10Q-INVENTORIES`, `BS10Q-DEPOSITS`, `BS10Q-OTHER-CURRENT-ASSETS`, `BS10Q-EQUITY-AFFILIATES`, `BS10Q-PRICE-RISK-ASSETS-NONCURRENT`, `BS10Q-GOODWILL`, `BS10Q-OTHER-INVESTMENTS`, `BS10Q-NATURAL-GAS-TRANSMISSION`, `BS10Q-ELECTRIC-GENERATION`, `BS10Q-FIBER-OPTIC`, `BS10Q-CONSTRUCTION-IN-PROGRESS`, `BS10Q-OTHER-PROPERTY`, `BS10Q-ACCUMULATED-DEPRECIATION`, `BS10Q-ACCOUNTS-PAYABLE`, `BS10Q-PRICE-RISK-LIABILITIES-CURRENT`, `BS10Q-SHORT-TERM-DEBT`, `BS10Q-CUSTOMERS-DEPOSITS`, `BS10Q-OTHER-CURRENT-LIABILITIES`, `BS10Q-LONG-TERM-DEBT`, `BS10Q-DEFERRED-INCOME-TAXES`, `BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT`, `BS10Q-OTHER-DEFERRED-CREDITS`, `BS10Q-MINORITY-INTERESTS`, `BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES`, `BS10Q-SECOND-PREFERRED-STOCK`, `BS10Q-JUNIOR-PREFERRED-STOCK`, `BS10Q-COMMON-STOCK`, `BS10Q-RETAINED-EARNINGS`, `BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME`, `BS10Q-TREASURY-STOCK`, `BS10Q-RESTRICTED-STOCK`, read by `case-author-1` and second reader `case-second-reader`: The 2000-12-31 consolidated balance sheet the Q3-2001 10-Q prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed.
 - `ENR-BRIDGE-FY1999`, an interpretation of `10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`, read by `case-author-1` and second reader `case-second-reader`: A FY1999 bridge book holds three of the figures the restatements bridge, each on its own account: total assets on an asset account, equity on an equity account, and net income on a revenue account. Debt is not bridged here. A book needs balanced entries, so total assets and equity each post against one liability account that holds what the two leave (total assets less equity), and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. Each adjustment posts against the same balancing account as the figure it adjusts.
+- `N3-TA-D-FY1997`, derived by `sum` from `N3-TA-D1-FY1997`, `N3-TA-D4-FY1997`: 372,000,000.00 USD
+- `10K-TA-A-CHG-FY1998`, derived by `difference` from `10K-TA-A-FY1998`, `10K-TA-A-FY1997`: 6,798,000,000.00 USD
+- `N3-TA-D-FY1998`, derived by `sum` from `N3-TA-D1-FY1998`, `N3-TA-D4-FY1998`: 92,000,000.00 USD
+- `N3-TA-D-CHG-FY1998`, derived by `difference` from `N3-TA-D-FY1998`, `N3-TA-D-FY1997`: -280,000,000.00 USD
+- `10K-TA-A-CHG-FY1999`, derived by `difference` from `10K-TA-A-FY1999`, `10K-TA-A-FY1998`: 4,031,000,000.00 USD
+- `N3-TA-D-FY1999`, derived by `sum` from `N3-TA-D1-FY1999`, `N3-TA-D2-FY1999`, `N3-TA-D4-FY1999`: -109,000,000.00 USD
+- `N3-TA-D-CHG-FY1999`, derived by `difference` from `N3-TA-D-FY1999`, `N3-TA-D-FY1998`: -201,000,000.00 USD
+- `10K-TA-A-CHG-FY2000`, derived by `difference` from `BS10K-TOTAL-ASSETS`, `10K-TA-A-FY1999`: 32,122,000,000.00 USD
+- `N3-TA-D-FY2000`, derived by `sum` from `N3-TA-D1-FY2000`, `N3-RAPTOR-TA-FY2000`, `N3-TA-D4-FY2000`: -577,000,000.00 USD
+- `N3-TA-D-CHG-FY2000`, derived by `difference` from `N3-TA-D-FY2000`, `N3-TA-D-FY1999`: -468,000,000.00 USD
+- `10K-DEBT-A-CHG-FY1998`, derived by `difference` from `10K-DEBT-A-FY1998`, `10K-DEBT-A-FY1997`: 1,103,000,000.00 USD
+- `N3-DEBT-D-CHG-FY1998`, derived by `difference` from `N3-DEBT-D1-FY1998`, `N3-DEBT-D1-FY1997`: -150,000,000.00 USD
+- `10K-DEBT-A-CHG-FY1999`, derived by `difference` from `10K-DEBT-A-FY1999`, `10K-DEBT-A-FY1998`: 795,000,000.00 USD
+- `N3-DEBT-D-CHG-FY1999`, derived by `difference` from `N3-DEBT-D1-FY1999`, `N3-DEBT-D1-FY1998`: 124,000,000.00 USD
+- `10K-DEBT-A-CHG-FY2000`, derived by `difference` from `10K-DEBT-A-FY2000`, `10K-DEBT-A-FY1999`: 2,077,000,000.00 USD
+- `N3-DEBT-D-CHG-FY2000`, derived by `difference` from `N3-DEBT-D1-FY2000`, `N3-DEBT-D1-FY1999`: -57,000,000.00 USD
+- `N3-EQ-D-FY1997`, derived by `sum` from `N3-EQ-D1-FY1997`, `N3-EQ-D4-FY1997`: -309,000,000.00 USD
+- `10K-EQ-A-CHG-FY1998`, derived by `difference` from `10K-EQ-A-FY1998`, `10K-EQ-A-FY1997`: 1,430,000,000.00 USD
+- `N3-EQ-D-FY1998`, derived by `sum` from `N3-EQ-D1-FY1998`, `N3-EQ-D4-FY1998`: -448,000,000.00 USD
+- `N3-EQ-D-CHG-FY1998`, derived by `difference` from `N3-EQ-D-FY1998`, `N3-EQ-D-FY1997`: -139,000,000.00 USD
+- `10K-EQ-A-CHG-FY1999`, derived by `difference` from `10K-EQ-A-FY1999`, `10K-EQ-A-FY1998`: 2,522,000,000.00 USD
+- `N3-EQ-D-FY1999`, derived by `sum` from `N3-EQ-D1-FY1999`, `N3-EQ-D2-FY1999`, `N3-EQ-D4-FY1999`: -846,000,000.00 USD
+- `N3-EQ-D-CHG-FY1999`, derived by `difference` from `N3-EQ-D-FY1999`, `N3-EQ-D-FY1998`: -398,000,000.00 USD
+- `10K-EQ-A-CHG-FY2000`, derived by `difference` from `BS10K-TOTAL-EQUITY`, `10K-EQ-A-FY1999`: 1,900,000,000.00 USD
+- `N3-EQ-D-FY2000`, derived by `sum` from `N3-EQ-D1-FY2000`, `N3-EQ-D2-FY2000`, `N3-RAPTOR-EQ-FY2000`, `N3-EQ-D4-FY2000`: -1,181,000,000.00 USD
+- `N3-EQ-D-CHG-FY2000`, derived by `difference` from `N3-EQ-D-FY2000`, `N3-EQ-D-FY1999`: -335,000,000.00 USD
+- `ENR-BRIDGE-10Q`, an interpretation of `10K-TA-A-FY1997`, `10K-DEBT-A-FY1997`, `10K-EQ-A-FY1997`, `10K-NI-A-FY1998`, read by `case-author-1` and second reader `case-second-reader`: The 10-Q bridge book holds four of the figures Note 3 bridges, each on its own account: total assets on an asset account, debt on a liability account, equity on an equity account, and net income on a revenue account. A book needs balanced entries, so total assets, debt and equity each post against one liability account that holds what they leave, and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. A stock figure posts in its first year, FY1997, and in each later year as its change from the year before, so the certified balance at each year-end is the printed figure; a stock line's adjustments post per printed column in FY1997, and in each later year as the change in the line's total adjustment, the sum of its printed columns. Net income is a flow: each year's figure and each of its adjustments post in that year. Each adjustment posts against the same balancing account as the figure it adjusts.
 
 ## How this book was built
 
@@ -317,38 +388,67 @@ Declared defaults (each an encoding choice the record does not fix):
 | `case_determination_date` | `restating_filing_date` | the restating filing's date (the 8-K's filing date, 2001-11-08) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
 | `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
 
-### Book `statement-bridge-10q-fy1999` (statement)
+### Book `statement-bridge-10q` (statement)
 
-franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-bridge-10q-fy1999`): not yet evaluated: filler_invariance.
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-bridge-10q`): not yet evaluated: filler_invariance.
 
-Opened 1999-01-01 in USD, on the `custom` calendar.
+Opened 1997-01-01 in USD, on the `custom` calendar.
 
 | Period | Start | End | Fiscal year | Kind |
 |---|---|---|---|---|
+| `FY1997` | 1997-01-01 | 1997-12-31 | 1997 | Normal |
+| `FY1998` | 1998-01-01 | 1998-12-31 | 1998 | Normal |
 | `FY1999` | 1999-01-01 | 1999-12-31 | 1999 | Normal |
+| `FY2000` | 2000-01-01 | 2000-12-31 | 2000 | Normal |
 
 | Account | Type | Named by |
 |---|---|---|
-| `1000` | Asset | `10K-TA-A-FY1999` |
-| `2000` | Liability | `ENR-BRIDGE-FY1999` |
-| `3000` | Equity | `10K-EQ-A-FY1999` |
-| `3900` | Equity | `ENR-BRIDGE-FY1999` |
-| `4000` | Revenue | `10K-NI-A-FY1999` |
+| `1000` | Asset | `10K-TA-A-FY1997` |
+| `2000` | Liability | `ENR-BRIDGE-10Q` |
+| `2100` | Liability | `10K-DEBT-A-FY1997` |
+| `3000` | Equity | `10K-EQ-A-FY1997` |
+| `3900` | Equity | `ENR-BRIDGE-10Q` |
+| `4000` | Revenue | `10K-NI-A-FY1998` |
 
 | Intent | Fact | Class | Effective |
 |---|---|---|---|
+| `10K-TA-A-FY1997` | `10K-TA-A-FY1997` | Original | 1997-12-31 |
+| `10K-TA-A-FY1998` | `10K-TA-A-FY1998` | Original | 1998-12-31 |
 | `10K-TA-A-FY1999` | `10K-TA-A-FY1999` | Original | 1999-12-31 |
+| `BS10K-TOTAL-ASSETS` | `BS10K-TOTAL-ASSETS` | Original | 2000-12-31 |
+| `10K-DEBT-A-FY1997` | `10K-DEBT-A-FY1997` | Original | 1997-12-31 |
+| `10K-DEBT-A-FY1998` | `10K-DEBT-A-FY1998` | Original | 1998-12-31 |
+| `10K-DEBT-A-FY1999` | `10K-DEBT-A-FY1999` | Original | 1999-12-31 |
+| `10K-DEBT-A-FY2000` | `10K-DEBT-A-FY2000` | Original | 2000-12-31 |
+| `10K-EQ-A-FY1997` | `10K-EQ-A-FY1997` | Original | 1997-12-31 |
+| `10K-EQ-A-FY1998` | `10K-EQ-A-FY1998` | Original | 1998-12-31 |
 | `10K-EQ-A-FY1999` | `10K-EQ-A-FY1999` | Original | 1999-12-31 |
+| `BS10K-TOTAL-EQUITY` | `BS10K-TOTAL-EQUITY` | Original | 2000-12-31 |
+| `10K-NI-A-FY1998` | `10K-NI-A-FY1998` | Original | 1998-12-31 |
 | `10K-NI-A-FY1999` | `10K-NI-A-FY1999` | Original | 1999-12-31 |
-| `delta-10K-TA-A-FY1999-1` | `N3-TA-D1-FY1999` | Restatement | 1999-12-31 |
-| `delta-10K-TA-A-FY1999-2` | `N3-TA-D2-FY1999` | Restatement | 1999-12-31 |
-| `delta-10K-TA-A-FY1999-3` | `N3-TA-D4-FY1999` | Restatement | 1999-12-31 |
-| `delta-10K-EQ-A-FY1999-1` | `N3-EQ-D1-FY1999` | Restatement | 1999-12-31 |
-| `delta-10K-EQ-A-FY1999-2` | `N3-EQ-D2-FY1999` | Restatement | 1999-12-31 |
-| `delta-10K-EQ-A-FY1999-3` | `N3-EQ-D4-FY1999` | Restatement | 1999-12-31 |
+| `10K-NI-A-FY2000` | `10K-NI-A-FY2000` | Original | 2000-12-31 |
+| `delta-10K-TA-A-FY1997-1` | `N3-TA-D1-FY1997` | Restatement | 1997-12-31 |
+| `delta-10K-TA-A-FY1997-2` | `N3-TA-D4-FY1997` | Restatement | 1997-12-31 |
+| `delta-10K-TA-A-FY1998` | `N3-TA-D-CHG-FY1998` | Restatement | 1998-12-31 |
+| `delta-10K-TA-A-FY1999` | `N3-TA-D-CHG-FY1999` | Restatement | 1999-12-31 |
+| `delta-BS10K-TOTAL-ASSETS` | `N3-TA-D-CHG-FY2000` | Restatement | 2000-12-31 |
+| `delta-10K-DEBT-A-FY1997` | `N3-DEBT-D1-FY1997` | Restatement | 1997-12-31 |
+| `delta-10K-DEBT-A-FY1998` | `N3-DEBT-D-CHG-FY1998` | Restatement | 1998-12-31 |
+| `delta-10K-DEBT-A-FY1999` | `N3-DEBT-D-CHG-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-DEBT-A-FY2000` | `N3-DEBT-D-CHG-FY2000` | Restatement | 2000-12-31 |
+| `delta-10K-EQ-A-FY1997-1` | `N3-EQ-D1-FY1997` | Restatement | 1997-12-31 |
+| `delta-10K-EQ-A-FY1997-2` | `N3-EQ-D4-FY1997` | Restatement | 1997-12-31 |
+| `delta-10K-EQ-A-FY1998` | `N3-EQ-D-CHG-FY1998` | Restatement | 1998-12-31 |
+| `delta-10K-EQ-A-FY1999` | `N3-EQ-D-CHG-FY1999` | Restatement | 1999-12-31 |
+| `delta-BS10K-TOTAL-EQUITY` | `N3-EQ-D-CHG-FY2000` | Restatement | 2000-12-31 |
+| `delta-10K-NI-A-FY1998-1` | `N3-NI-D1-FY1998` | Restatement | 1998-12-31 |
+| `delta-10K-NI-A-FY1998-2` | `N3-NI-D4-FY1998` | Restatement | 1998-12-31 |
 | `delta-10K-NI-A-FY1999-1` | `N3-NI-D1-FY1999` | Restatement | 1999-12-31 |
 | `delta-10K-NI-A-FY1999-2` | `N3-NI-D2-FY1999` | Restatement | 1999-12-31 |
 | `delta-10K-NI-A-FY1999-3` | `N3-NI-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY2000-1` | `N3-NI-D1-FY2000` | Restatement | 2000-12-31 |
+| `delta-10K-NI-A-FY2000-2` | `N3-NI-D2-FY2000` | Restatement | 2000-12-31 |
+| `delta-10K-NI-A-FY2000-3` | `N3-NI-D4-FY2000` | Restatement | 2000-12-31 |
 
 | Document | Stands for | Grade |
 |---|---|---|
@@ -360,8 +460,8 @@ Declared defaults (each an encoding choice the record does not fix):
 | Attribute | Rule | Why |
 |---|---|---|
 | `evidence_attached` | `placeholder_reviewed` | the FY2000 10-K and the 10-Q are cited through their stubs, reviewed by case-second-reader (plan §2.7) |
-| `leg_split` | `statement_remainder` | each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-FY1999), so every entry balances on the figure alone (plan §3.8) |
-| `effective_date` | `reporting_period_last_day` | a FY1999 figure is as of the fiscal year-end, the period's last day |
+| `leg_split` | `statement_remainder` | each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-10Q), so every entry balances on the figure alone (plan §3.8) |
+| `effective_date` | `reporting_period_last_day` | a fiscal year's figure, or its change, is as of the fiscal year-end, the period's last day |
 | `case_determination_date` | `restating_filing_date` | the restating filing's date (the 10-Q's filing date, 2001-11-19) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
 | `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
 
@@ -417,27 +517,51 @@ Sources: `SRC-ENR-008` (reported (audited)).
 
 ### `E-T-01`: exact tie-out (T.bridge)
 
-On the book `statement-bridge-10q-fy1999`, franken_accounting's certified read of each line below equals the published B exactly at its declared precision, computed from separately sourced A and adjustments (`10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`, `N3-NI-D1-FY1999`, `N3-NI-D2-FY1999`, `N3-NI-D4-FY1999`, `N3-TA-D1-FY1999`, `N3-TA-D2-FY1999`, `N3-TA-D4-FY1999`, `N3-EQ-D1-FY1999`, `N3-EQ-D2-FY1999`, `N3-EQ-D4-FY1999`) that were posted: it reproduces the published bridge.
+On the book `statement-bridge-10q`, franken_accounting's certified read of each line below equals the published B exactly at its declared precision, computed from separately sourced A and adjustments (`10K-TA-A-FY1997`, `N3-TA-D1-FY1997`, `N3-TA-D4-FY1997`, `10K-DEBT-A-FY1997`, `N3-DEBT-D1-FY1997`, `10K-EQ-A-FY1997`, `N3-EQ-D1-FY1997`, `N3-EQ-D4-FY1997`, `10K-NI-A-FY1998`, `N3-NI-D1-FY1998`, `N3-NI-D4-FY1998`, `10K-TA-A-FY1998`, `N3-TA-D1-FY1998`, `N3-TA-D4-FY1998`, `10K-DEBT-A-FY1998`, `N3-DEBT-D1-FY1998`, `10K-EQ-A-FY1998`, `N3-EQ-D1-FY1998`, `N3-EQ-D4-FY1998`, `10K-NI-A-FY1999`, `N3-NI-D1-FY1999`, `N3-NI-D2-FY1999`, `N3-NI-D4-FY1999`, `10K-TA-A-FY1999`, `N3-TA-D1-FY1999`, `N3-TA-D2-FY1999`, `N3-TA-D4-FY1999`, `10K-DEBT-A-FY1999`, `N3-DEBT-D1-FY1999`, `10K-EQ-A-FY1999`, `N3-EQ-D1-FY1999`, `N3-EQ-D2-FY1999`, `N3-EQ-D4-FY1999`, `10K-NI-A-FY2000`, `N3-NI-D1-FY2000`, `N3-NI-D2-FY2000`, `N3-NI-D4-FY2000`, `BS10K-TOTAL-ASSETS`, `N3-TA-D1-FY2000`, `N3-RAPTOR-TA-FY2000`, `N3-TA-D4-FY2000`, `10K-DEBT-A-FY2000`, `N3-DEBT-D1-FY2000`, `BS10K-TOTAL-EQUITY`, `N3-EQ-D1-FY2000`, `N3-EQ-D2-FY2000`, `N3-RAPTOR-EQ-FY2000`, `N3-EQ-D4-FY2000`) that were posted: it reproduces the published bridge.
 
 Sources: `SRC-ENR-008` (reported (audited)), `SRC-ENR-003` (reported (unaudited)).
 
 | Target | Cell | Read as | Verdict | Record | Observed |
 |---|---|---|---|---|---|
+| `N3-TA-B-FY1997` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY1997,as-currently-stated value=22924000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-DEBT-B-FY1997` | `default` | T | PASS | record-consistent | kind=bridge read=balance,2100,FY1997,as-currently-stated value=6965000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-EQ-B-FY1997` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY1997,as-currently-stated value=5309000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-NI-B-FY1998` | `default` | T | PASS | record-consistent | kind=bridge read=balance,4000,FY1998,as-currently-stated value=564000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-TA-B-FY1998` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY1998,as-currently-stated value=29442000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `N3-DEBT-B-FY1998` | `default` | T | PASS | record-consistent | kind=bridge read=balance,2100,FY1998,as-currently-stated value=7918000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `N3-EQ-B-FY1998` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY1998,as-currently-stated value=6600000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
 | `N3-NI-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,4000,FY1999,as-currently-stated value=635000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
-| `N3-TA-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY1999,as-currently-stated value=33272000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
-| `N3-EQ-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY1999,as-currently-stated value=8724000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-TA-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY1999,as-currently-stated value=33272000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `N3-DEBT-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,2100,FY1999,as-currently-stated value=8837000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `N3-EQ-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY1999,as-currently-stated value=8724000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `N3-NI-B-FY2000` | `default` | T | PASS | record-consistent | kind=bridge read=balance,4000,FY2000,as-currently-stated value=842000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `BS10Q-TOTAL-ASSETS` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY2000,as-currently-stated value=64926000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `N3-DEBT-B-FY2000` | `default` | T | PASS | record-consistent | kind=bridge read=balance,2100,FY2000,as-currently-stated value=10857000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
+| `BS10Q-TOTAL-EQUITY` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY2000,as-currently-stated value=10289000000.00 gql=ok contrib=holds outsider=report:verified append_only=ok |
 
 ### `E-R-01`: read-back (R.read_back)
 
-On the book `statement-bridge-10q-fy1999`, each read below returns the posted value it names (`10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`).
+On the book `statement-bridge-10q`, each read below returns the posted value it names (`10K-TA-A-FY1997`, `10K-DEBT-A-FY1997`, `10K-EQ-A-FY1997`, `10K-NI-A-FY1998`, `10K-TA-A-FY1998`, `10K-DEBT-A-FY1998`, `10K-EQ-A-FY1998`, `10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-DEBT-A-FY1999`, `10K-EQ-A-FY1999`, `10K-NI-A-FY2000`, `BS10K-TOTAL-ASSETS`, `10K-DEBT-A-FY2000`, `BS10K-TOTAL-EQUITY`).
 
 Sources: `SRC-ENR-008` (reported (audited)).
 
 | Target | Cell | Read as | Verdict | Record | Observed |
 |---|---|---|---|---|---|
+| `10K-TA-A-FY1997` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,FY1997,as-originally-reported value=22552000000.00 gql=ok |
+| `10K-DEBT-A-FY1997` | `default` | R | PASS | record-consistent | kind=read_back read=balance,2100,FY1997,as-originally-reported value=6254000000.00 gql=ok |
+| `10K-EQ-A-FY1997` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY1997,as-originally-reported value=5618000000.00 gql=ok |
+| `10K-NI-A-FY1998` | `default` | R | PASS | record-consistent | kind=read_back read=balance,4000,FY1998,as-originally-reported value=703000000.00 gql=ok |
+| `10K-TA-A-FY1998` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,FY1998,as-originally-reported value=29350000000.00 gql=ok |
+| `10K-DEBT-A-FY1998` | `default` | R | PASS | record-consistent | kind=read_back read=balance,2100,FY1998,as-originally-reported value=7357000000.00 gql=ok |
+| `10K-EQ-A-FY1998` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY1998,as-originally-reported value=7048000000.00 gql=ok |
 | `10K-NI-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,4000,FY1999,as-originally-reported value=893000000.00 gql=ok |
 | `10K-TA-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,FY1999,as-originally-reported value=33381000000.00 gql=ok |
+| `10K-DEBT-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,2100,FY1999,as-originally-reported value=8152000000.00 gql=ok |
 | `10K-EQ-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY1999,as-originally-reported value=9570000000.00 gql=ok |
+| `10K-NI-A-FY2000` | `default` | R | PASS | record-consistent | kind=read_back read=balance,4000,FY2000,as-originally-reported value=979000000.00 gql=ok |
+| `BS10K-TOTAL-ASSETS` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,FY2000,as-originally-reported value=65503000000.00 gql=ok |
+| `10K-DEBT-A-FY2000` | `default` | R | PASS | record-consistent | kind=read_back read=balance,2100,FY2000,as-originally-reported value=10229000000.00 gql=ok |
+| `BS10K-TOTAL-EQUITY` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY2000,as-originally-reported value=11470000000.00 gql=ok |
 
 ## Restatement cases
 
@@ -445,6 +569,6 @@ The runner reads each restatement case back with `fa case show` after its histor
 
 | Row | Book | Verdict | Observed |
 |---|---|---|---|
-| `E-CASE-enr-10q-fy1999` | `statement-bridge-10q-fy1999` | PASS | kind=case_show read=case show,enr-10q-fy1999 state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1999:SupersededBy:later_entries=9 |
+| `E-CASE-enr-10q` | `statement-bridge-10q` | PASS | kind=case_show read=case show,enr-10q state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1997:SupersededBy:later_entries=5 superseded=FY1998:SupersededBy:later_entries=10 superseded=FY1999:SupersededBy:later_entries=16 superseded=FY2000:SupersededBy:later_entries=22 |
 | `E-CASE-enr-8k-fy1999` | `statement-bridge-8k-fy1999` | PASS | kind=case_show read=case show,enr-8k-fy1999 state=Closed case_kind=Restatement determined_on=2001-11-08 authority=DOC-ENR-8K disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1999:SupersededBy:later_entries=9 |
 
