@@ -132,6 +132,7 @@ pub(crate) trait TimedBook {
         cx: &Cx,
         cap: &Capability,
         max: usize,
+        history: &mut Option<fa::RecurringHistory>,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>>;
     async fn advance_sweep_index(
         &mut self,
@@ -181,8 +182,9 @@ impl TimedBook for Book {
         cx: &Cx,
         cap: &Capability,
         max: usize,
+        history: &mut Option<fa::RecurringHistory>,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
-        Book::sweep_recurring(self, cx, cap, max).await
+        Book::sweep_recurring_with_history(self, cx, cap, max, history).await
     }
 
     async fn advance_sweep_index(
@@ -235,8 +237,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
         cx: &Cx,
         cap: &Capability,
         max: usize,
+        history: &mut Option<fa::RecurringHistory>,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
-        AsyncBook::sweep_recurring(self, &PurposeContexts::narrow_runtime_root(cx), cap, max).await
+        AsyncBook::sweep_recurring_with_history(
+            self,
+            &PurposeContexts::narrow_runtime_root(cx),
+            cap,
+            max,
+            history,
+        )
+        .await
     }
 
     async fn advance_sweep_index(
@@ -287,6 +297,9 @@ pub struct TimedWork {
     // scan), so it is reported here instead of being dropped.
     sweep_index_current: Option<bool>,
     sweep_index_error: Option<String>,
+    // A verified native prefix, owned by this serving region. On restart it
+    // is absent; no mutable schedule projection supplies its initial truth.
+    recurring_history: Option<fa::RecurringHistory>,
     registers: Option<registers::RegisterWork>,
     register_wake: bool,
 }
@@ -324,6 +337,7 @@ impl TimedWork {
             error: None,
             sweep_index_current: None,
             sweep_index_error: None,
+            recurring_history: None,
             registers: None,
             register_wake: false,
         })
@@ -357,6 +371,7 @@ impl TimedWork {
             error: None,
             sweep_index_current: None,
             sweep_index_error: None,
+            recurring_history: None,
             registers: Some(registers::RegisterWork::new(periods)?),
             register_wake: false,
         })
@@ -611,8 +626,13 @@ impl TimedWork {
         }
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
         if let Some(batch) = admitted(
-            book.sweep_recurring(cx, capability, self.policy.sweep_batch)
-                .await,
+            book.sweep_recurring(
+                cx,
+                capability,
+                self.policy.sweep_batch,
+                &mut self.recurring_history,
+            )
+            .await,
         )? {
             cycle.recurring = batch.posted.len();
             cycle.blocked_recurring = batch.blocked.len();

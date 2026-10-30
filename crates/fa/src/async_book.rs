@@ -2719,6 +2719,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )
     }
 
+    /// Execute the same admitted sweep while carrying a verified recurring
+    /// prefix. Process state cannot authorize an occurrence or advance a
+    /// schedule; every occurrence still uses the ordinary posting pipeline.
+    pub async fn sweep_recurring_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+        history: &mut Option<crate::RecurringHistory>,
+    ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let req = sweep_request(capability, max_batch);
+        Ok(fa_journal::recurring::sweep_recurring_batch_with_history(
+            &mut self.db,
+            cx,
+            &self.context,
+            &req,
+            history,
+        )
+        .await?)
+    }
+
     /// Sweep expiry batches, then scheduled-reversal batches, until nothing
     /// remains under the latest tick. Each transaction is bounded by
     /// `max_batch`. A refusal or failure stops the sweep; earlier committed

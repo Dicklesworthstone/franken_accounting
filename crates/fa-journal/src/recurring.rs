@@ -21,8 +21,9 @@ use fa_model::{
 use fa_policy::{Capability, Intent, Op, Party, Profile, Reach};
 use fa_time::{DateDay, MonthEndPolicy, MonthlyRecurrence};
 use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
+use fgdb_delta_types::{DeltaRow, ElementId};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, MarkerRef, VId};
 
 use crate::genesis::BookContext;
 use crate::policy;
@@ -162,6 +163,44 @@ struct Record {
     created_at: CommitSeq,
     cancelled_at: Option<CommitSeq>,
     next_index: u64,
+}
+
+/// Reads performed while obtaining a verified recurring-schedule prefix.
+/// Counters advance at the actual reads; they exclude ordinary posting work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecurringReadWork {
+    pub snapshot_scans: u64,
+    pub snapshot_rows: u64,
+    pub delta_rows: u64,
+    pub entries_decoded: u64,
+}
+
+/// An owned result of the literal recurring lifecycle fold at a native prefix.
+///
+/// A daemon may carry this across cycles only when the chained native marker
+/// still identifies the same prefix and every later delta leaves that fold
+/// unchanged. Schedule changes, mutations, retired history and unfamiliar row
+/// families take the full-fold path. This is disposable process state, never
+/// a durable schedule authority or a substitute for current posting admission.
+#[derive(Clone, Debug)]
+pub struct RecurringHistory {
+    book_id: Id128,
+    at: CommitSeq,
+    marker: Option<MarkerRef>,
+    records: BTreeMap<VId, Record>,
+    work: RecurringReadWork,
+}
+
+impl RecurringHistory {
+    #[must_use]
+    pub fn verified_at(&self) -> CommitSeq {
+        self.at
+    }
+
+    #[must_use]
+    pub fn read_work(&self) -> RecurringReadWork {
+        self.work
+    }
 }
 
 /// Only this module constructs the posting token, after admitting the System
@@ -723,16 +762,29 @@ fn records<V: Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
 ) -> Result<BTreeMap<VId, Record>, KernelError> {
+    records_with_work(db, ctx, book, &mut RecurringReadWork::default())
+}
+
+fn records_with_work<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    work: &mut RecurringReadWork,
+) -> Result<BTreeMap<VId, Record>, KernelError> {
     ctx.query().with_restriction(|| {
         let mut records = BTreeMap::new();
         let mut roots = BTreeMap::new();
         let mut cancels = Vec::new();
         let mut occurrences = Vec::new();
         let at = db.frontier()?;
-        for row in db.vertices_at(at)? {
+        work.snapshot_scans = work.snapshot_scans.saturating_add(1);
+        let rows = db.vertices_at(at)?;
+        work.snapshot_rows = work.snapshot_rows.saturating_add(rows.len() as u64);
+        for row in rows {
             ctx.query().checkpoint().map_err(WriteTxnError::Interrupted)?;
             if row.labels.contains(&label::RECURRING_SCHEDULE) { roots.insert(row.vid, row.clone()); }
             if !row.labels.contains(&label::ENTRY) { continue; }
+            work.entries_decoded = work.entries_decoded.saturating_add(1);
             let entry = decode_entry(&row)?;
             if let Some(mark) = marker(&entry.proposal)? { occurrences.push((row.clone(), entry.clone(), mark)); }
             if !matches!(entry.proposal.origin, EntryOrigin::Control { control_kind: ControlKind::RECURRING_SCHEDULE, .. }) { continue; }
@@ -767,6 +819,7 @@ fn records<V: Vfs + Clone>(
         for (row, entry, (schedule, index, tick_ref)) in occurrences {
             let record = records.get_mut(&schedule).ok_or_else(|| corrupt("occurrence without creation"))?;
             let tick_row = db.vertex_at(tick_ref, row.created_at)?.ok_or_else(|| corrupt("occurrence tick missing"))?;
+            work.entries_decoded = work.entries_decoded.saturating_add(1);
             let tick_entry = decode_entry(&tick_row)?;
             let Some(ControlPayload::TimeTick { observed_utc_ns, monotonic_ok: true, .. }) = tick_entry.proposal.control else { return Err(corrupt("occurrence tick is not corroborated")); };
             let tick = Tick { observed_utc_ns, entry: tick_ref };
@@ -794,6 +847,162 @@ fn records<V: Vfs + Clone>(
         }
         Ok(records)
     })
+}
+
+fn history_matches<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    history: &RecurringHistory,
+) -> Result<bool, KernelError> {
+    if history.book_id != book.book_id || history.at > db.frontier()? || history.marker.is_none() {
+        return Ok(false);
+    }
+    match crate::rows::marker_at(db, history.at) {
+        Ok(marker) => Ok(marker == history.marker),
+        Err(KernelError::Read(fgdb::ReadError::DeltaCursorRetired { .. })) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Prove that the literal fold's inputs are unchanged across the complete tail.
+/// Newly created Entry payloads are decoded, just as the full scan decodes
+/// them; selection mirrors never decide that a payload is irrelevant. A
+/// recurring creation, cancellation or occurrence invalidates the shortcut.
+/// Any mutation of a prior Entry, any schedule projection mutation, a change
+/// to the book policy, or an unknown row family also invalidates it. The
+/// authoritative fold then reaches its original verdict, including corruption.
+fn history_unchanged<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    history: &RecurringHistory,
+    at: CommitSeq,
+    work: &mut RecurringReadWork,
+) -> Result<bool, KernelError> {
+    ctx.query().with_restriction(|| {
+        let mut through = history.at.0;
+        for batch in db.delta_since(history.at)? {
+            let seq = batch.commit_seq();
+            if seq > at {
+                break;
+            }
+            if through.checked_add(1) != Some(seq.0) {
+                return Ok(false);
+            }
+            for coordinate in batch.coordinate_entries() {
+                for delta in &coordinate.rows {
+                    ctx.query()
+                        .checkpoint()
+                        .map_err(WriteTxnError::Interrupted)?;
+                    work.delta_rows = work.delta_rows.saturating_add(1);
+                    match delta {
+                        DeltaRow::CreateVertex {
+                            vid,
+                            labels,
+                            valid_time,
+                            ..
+                        } => {
+                            if valid_time.is_some() || labels.contains(&label::RECURRING_SCHEDULE) {
+                                return Ok(false);
+                            }
+                            if labels.contains(&label::ENTRY) {
+                                let Some(row) = db.vertex_at(*vid, at)? else {
+                                    return Ok(false);
+                                };
+                                work.entries_decoded = work.entries_decoded.saturating_add(1);
+                                let Ok(entry) = decode_entry(&row) else {
+                                    return Ok(false);
+                                };
+                                let Ok(occurrence_marker) = marker(&entry.proposal) else {
+                                    return Ok(false);
+                                };
+                                if occurrence_marker.is_some()
+                                    || matches!(
+                                        entry.proposal.origin,
+                                        EntryOrigin::Control {
+                                            control_kind: ControlKind::RECURRING_SCHEDULE,
+                                            ..
+                                        }
+                                    )
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        DeltaRow::CreateEdge { .. }
+                        | DeltaRow::DeleteEdge { .. }
+                        | DeltaRow::Property {
+                            elem: ElementId::Edge(_),
+                            ..
+                        } => {}
+                        DeltaRow::LabelMembership { label: changed, .. }
+                            if *changed == label::ENTRY
+                                || *changed == label::RECURRING_SCHEDULE =>
+                        {
+                            return Ok(false);
+                        }
+                        DeltaRow::Property {
+                            elem: ElementId::Vertex(vid),
+                            property: key,
+                            ..
+                        } if *vid == crate::rows::book_root() && *key == property::FA_PAYLOAD => {
+                            return Ok(false);
+                        }
+                        DeltaRow::Property {
+                            elem: ElementId::Vertex(vid),
+                            ..
+                        }
+                        | DeltaRow::LabelMembership { vid, .. } => {
+                            if history.records.contains_key(vid)
+                                || db.vertex_at(*vid, at)?.is_some_and(|row| {
+                                    row.labels.contains(&label::ENTRY)
+                                        || row.labels.contains(&label::RECURRING_SCHEDULE)
+                                })
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        // Retirements, valid-time changes and other native
+                        // row families have no recurring carry law.
+                        _ => return Ok(false),
+                    }
+                }
+            }
+            through = seq.0;
+        }
+        Ok(through == at.0)
+    })
+}
+
+async fn refresh_history<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    history: &mut Option<RecurringHistory>,
+) -> Outcome<()> {
+    let at = db.frontier()?;
+    let mut work = RecurringReadWork::default();
+    if let Some(mut previous) = history.take()
+        && history_matches(db, book, &previous)?
+        && history_unchanged(db, ctx, &previous, at, &mut work)?
+    {
+        previous.at = at;
+        previous.marker = crate::rows::marker_at(db, at)?;
+        previous.work = work;
+        *history = Some(previous);
+        return Ok(Ok(()));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
+    let records = records_with_work(db, ctx, book, &mut work)?;
+    *history = Some(RecurringHistory {
+        book_id: book.book_id,
+        at,
+        marker: crate::rows::marker_at(db, at)?,
+        records,
+        work,
+    });
+    Ok(Ok(()))
 }
 
 /// Verify the recurring projection against the immutable journal. The caller
@@ -1079,6 +1288,19 @@ pub async fn sweep_recurring_batch<V: Vfs + Clone>(
     book: &BookContext,
     req: &SweepRequest,
 ) -> Outcome<Option<RecurringBatch>> {
+    sweep_recurring_batch_with_history(db, ctx, book, req, &mut None).await
+}
+
+/// The same sweep, carrying an owned verified prefix between invocations.
+/// Ordinary posts and timer ticks examine only their new delta rows. Any
+/// recurring lifecycle change takes the literal fold before execution.
+pub async fn sweep_recurring_batch_with_history<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    history: &mut Option<RecurringHistory>,
+) -> Outcome<Option<RecurringBatch>> {
     let key = fa_policy::sod::control_key("SweepControl", None, "Recurring");
     if let Err(d) = fa_policy::reach(&req.capability, &Reach::whole_book(true), None) {
         return Ok(Err(policy::refusal(&d)));
@@ -1089,8 +1311,17 @@ pub async fn sweep_recurring_batch<V: Vfs + Clone>(
     {
         return Ok(Err(r));
     }
-    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
-        return Ok(Err(r));
+    let retained = match history.as_ref() {
+        Some(previous) => history_matches(db, book, previous)?,
+        None => false,
+    };
+    if !retained {
+        // No caller can transplant a cached ordinal into another database
+        // or use a retired window to skip the authoritative reconstruction.
+        *history = None;
+        if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+            return Ok(Err(r));
+        }
     }
     let Some(tick) = ctx
         .query()
@@ -1117,7 +1348,14 @@ pub async fn sweep_recurring_batch<V: Vfs + Clone>(
         blocked: Vec::new(),
         more: false,
     };
-    let all = records(db, ctx, book)?;
+    if let Err(refusal) = refresh_history(db, ctx, book, history).await? {
+        return Ok(Err(refusal));
+    }
+    let all = history
+        .as_ref()
+        .ok_or_else(|| corrupt("verified recurring history missing"))?
+        .records
+        .clone();
     for (schedule, mut record) in all {
         loop {
             let date = match next_date(&record) {
