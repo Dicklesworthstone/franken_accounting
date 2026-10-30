@@ -45,10 +45,11 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// admits the named proportional-post basis, and minor 3 admits the
 /// prior-period-adjustment source period. Minor 4 admits allocated FX carrying
 /// values and their exact settlement releases; minor 5 admits law-bound lot
-/// disposal and its recorded-version account policy. A writer may
+/// disposal and its recorded-version account policy; minor 6 admits
+/// source-bound finite asset charges and their exact reversals. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 5;
+pub const SCHEMA_MINOR: u16 = 6;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -259,6 +260,10 @@ pub const FX_ITEM_CARRYING_SCHEMA_MINOR: u16 = 4;
 /// Source-bound disposal under the account's journaled lot policy (plan §6.5).
 pub const LOT_DISPOSAL_EXTENSION: u16 = 38;
 pub const LOT_DISPOSAL_SCHEMA_MINOR: u16 = 5;
+/// Source-bound cumulative depreciation or amortization under an immutable
+/// acquisition schedule. Only Adjusting charges and exact Reversals carry it.
+pub const ASSET_CHARGE_EXTENSION: u16 = 39;
+pub const ASSET_CHARGE_SCHEMA_MINOR: u16 = 6;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -332,6 +337,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     PROPORTIONAL_POST_EXTENSION,
     PRIOR_PERIOD_ADJUSTMENT_EXTENSION,
     LOT_DISPOSAL_EXTENSION,
+    ASSET_CHARGE_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -2044,6 +2050,19 @@ impl EntryPayload {
                 "requires a canonical law-bound lot disposal or its exact Reversal at schema minor 5 or later",
             ));
         }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == ASSET_CHARGE_EXTENSION)
+            && (self.schema_minor < ASSET_CHARGE_SCHEMA_MINOR
+                || !matches!(self.class, EntryClass::ADJUSTING | EntryClass::REVERSAL)
+                || crate::AssetChargeBasis::decode(bytes).is_err())
+        {
+            return Err(invalid(
+                "extensions.asset_charge",
+                "requires a canonical source-bound asset charge on Adjusting or its exact Reversal at schema minor 6 or later",
+            ));
+        }
         for leg in &self.legs {
             leg.validate()?;
         }
@@ -2534,6 +2553,35 @@ impl EntryPayload {
             .transpose()
     }
 
+    /// Bind a cumulative charge to its immutable acquisition schedule and
+    /// observed journal prefix. Native admission reproduces every amount.
+    pub fn set_asset_charge_basis(
+        &mut self,
+        basis: &crate::AssetChargeBasis,
+    ) -> Result<(), EntryError> {
+        let bytes = basis.encode()?;
+        crate::AssetChargeBasis::decode(&bytes)?;
+        self.schema_minor = self.schema_minor.max(ASSET_CHARGE_SCHEMA_MINOR);
+        match self
+            .extensions
+            .binary_search_by_key(&ASSET_CHARGE_EXTENSION, |(tag, _)| *tag)
+        {
+            Ok(index) => self.extensions[index].1 = bytes,
+            Err(index) => self
+                .extensions
+                .insert(index, (ASSET_CHARGE_EXTENSION, bytes)),
+        }
+        Ok(())
+    }
+
+    pub fn asset_charge_basis(&self) -> Result<Option<crate::AssetChargeBasis>, EntryError> {
+        self.extensions
+            .iter()
+            .find(|(tag, _)| *tag == ASSET_CHARGE_EXTENSION)
+            .map(|(_, bytes)| crate::AssetChargeBasis::decode(bytes).map_err(EntryError::from))
+            .transpose()
+    }
+
     /// Attach or replace the REA `Event` citation (`EVENT_REF_EXTENSION = 6`:
     /// `event_vid: u128 LE ‖ event_digest: [u8; 32]`, 48 bytes).
     pub fn with_event_ref(&mut self, event_vid: VId, event_digest: [u8; 32]) {
@@ -2955,6 +3003,45 @@ mod tests {
                 credits: 120_000
             }]
         );
+    }
+
+    #[test]
+    fn asset_charge_marker_is_versioned_class_bound_and_part_of_the_proposal() {
+        let basis = crate::AssetChargeBasis {
+            schedule: EntryRef {
+                vid: VId(41),
+                entry_digest: [6; 32],
+            },
+            through_period: PeriodRef {
+                calendar: "monthly".into(),
+                code: "FY2026-P03".into(),
+            },
+            known_at: fgdb_types::CommitSeq(47),
+        };
+        let mut charge = proposal(two_legs());
+        charge.schema_minor = 5;
+        charge.class = EntryClass::ADJUSTING;
+        charge.set_asset_charge_basis(&basis).unwrap();
+        assert_eq!(charge.schema_minor, ASSET_CHARGE_SCHEMA_MINOR);
+        assert_eq!(charge.asset_charge_basis().unwrap(), Some(basis.clone()));
+        let original_digest = charge.proposal_digest().unwrap();
+        let bytes = charge.clone().seal(vec![], None).unwrap().encode().unwrap();
+        assert_eq!(Entry::decode(&bytes).unwrap().proposal, charge);
+
+        let mut changed_basis = basis;
+        changed_basis.known_at = fgdb_types::CommitSeq(48);
+        charge.set_asset_charge_basis(&changed_basis).unwrap();
+        assert_eq!(charge.extensions.len(), 1);
+        assert_ne!(charge.proposal_digest().unwrap(), original_digest);
+
+        charge.schema_minor = 5;
+        assert!(charge.validate().is_err());
+        charge.schema_minor = ASSET_CHARGE_SCHEMA_MINOR;
+        charge.class = EntryClass::ORIGINAL;
+        assert!(charge.validate().is_err());
+        charge.class = EntryClass::ADJUSTING;
+        charge.extensions[0].1.push(0);
+        assert!(charge.validate().is_err());
     }
 
     /// fa-syy's negative: one changed leg changes `proposal_digest`, so any

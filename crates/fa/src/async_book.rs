@@ -5251,6 +5251,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             verification.executed += recurring.executed;
             verification.cancelled += recurring.cancelled;
             verification.drift.extend(recurring.drift);
+            let assets = fa_journal::asset_cost::verify_asset_schedules(db, cx, book)?;
+            verification.schedules_checked += assets.schedules_checked;
+            verification.executed += assets.executed;
+            verification.drift.extend(assets.drift);
             Ok(verification)
         })
     }

@@ -3222,6 +3222,55 @@ impl Book {
         ))
     }
 
+    /// Register immutable source-bound straight-line asset cost terms.
+    pub fn create_asset_schedule(
+        &mut self,
+        request: crate::AssetScheduleRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::AssetScheduleRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.create_asset_schedule(&purposes, request, capability)
+        ))
+    }
+
+    /// Commit the exact retained schedule review with current approvals.
+    pub fn create_asset_schedule_proposal(
+        &mut self,
+        proposal: fa_model::EntryPayload,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::AssetScheduleRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.create_asset_schedule_proposal(&purposes, proposal, approvals, capability)
+        ))
+    }
+
+    pub fn asset_schedules(
+        &mut self,
+        known_at: Option<fgdb_types::CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<crate::StoredAssetSchedule>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.asset_schedules(&purposes, known_at, capability)
+        ))
+    }
+
+    /// Compute a finite cumulative charge from immutable acquisition history.
+    pub fn prepare_asset_charge(
+        &mut self,
+        capability: &fa_policy::Capability,
+        request: &crate::AssetChargeRequest,
+        template: &fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedAssetCharge> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_asset_charge(&purposes, capability, request, template)
+        ))
+    }
+
     /// Install or change an account's journaled lot law. Changes require the
     /// policy's independent approvals over the exact reviewed proposal.
     pub fn set_lot_policy(

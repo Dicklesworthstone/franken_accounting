@@ -22,6 +22,7 @@
 
 pub mod access_event;
 pub mod account;
+pub mod asset_cost;
 pub mod bank_csv;
 pub mod canon;
 pub mod closing;
@@ -41,6 +42,7 @@ pub mod valuation;
 
 pub use access_event::{AccessEvent, AccessRecord};
 pub use account::AccountType;
+pub use asset_cost::{AssetChargeBasis, AssetCostKind, AssetScheduleSpec};
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
 pub use closing::YearEndCloseBasis;
 pub use entry::{

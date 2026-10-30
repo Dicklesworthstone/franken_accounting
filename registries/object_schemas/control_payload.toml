@@ -13,6 +13,13 @@ externally_verifiable = true
 variant_tags = ["0:PeriodTransition", "1:SchemaChange", "2:PolicyActivation", "3:LifecycleTransition", "4:TimeTick", "5:SweepCursor", "6:ScheduleCancelled", "7:CapabilityEvent", "8:HoldEvent", "9:ErasureCut", "10:MigrationControl", "11:ReservationRelease", "13:ImportRun"]
 
 [[decision]]
+field = "SchemaChange.kind=22"
+appendix_a = "Acquisition-bound finite asset schedules (plan §10.2, Appendix B)"
+code_type = "fa-model::asset_cost::AssetScheduleSpec; ASSET_SCHEDULE=22"
+rationale = "Canonical fa:asset-schedule:v1 bytes register a stable name, Depreciation or Amortization kind, acquisition EntryRef and leg ordinal, first PeriodRef, useful life of 1..=1200 periods, nonnegative salvage, expense and accumulated-cost routes and versioned rounding law. The source acquisition determines original cost. The native v1 profile uses monthly fiscal periods and native base-currency acquisitions; registration and charging are explicit operations. Immutable controls remain authoritative; an AssetSchedule guard projection protects source corrections and charge publication against races. No automatic ticks, re-estimation, impairment or foreign-currency schedule semantics are implied."
+tracking_bead = "fa-c34"
+
+[[decision]]
 field = "ImportRun"
 appendix_a = "ImportReceipt vertex (Appendix A)"
 code_type = "ControlPayload::ImportRun (tag 13, crates/fa-model/src/entry.rs:890)"

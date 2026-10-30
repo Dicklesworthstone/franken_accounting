@@ -370,6 +370,28 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
             // A role classifies an account without changing the chart; the
             // role fold (account_role) checks it names an account.
             Some(ControlPayload::SchemaChange {
+                kind: fa_model::asset_cost::SCHEMA_CHANGE_ASSET_SCHEDULE,
+                canonical_bytes,
+            }) => {
+                // The native asset-cost fold validates these immutable terms
+                // and their source guard; they do not change chart topology.
+                let spec = fa_model::asset_cost::AssetScheduleSpec::decode(canonical_bytes)
+                    .map_err(|error| corrupt(format!("asset schedule: {error}")))?;
+                // Absence cannot hide a governed source from a correction's
+                // point witness. The full asset fold separately reconstructs
+                // the projection's latest exact effect and financial state.
+                let guard = db.vertex_at(
+                    crate::asset_cost::source_guard_vid(book.book_id, spec.acquisition.vid),
+                    known_at,
+                )?;
+                if guard.is_none_or(|guard| guard.labels != [label::ASSET_SCHEDULE]) {
+                    return Err(corrupt(
+                        "asset schedule source guard is absent or relabeled",
+                    ));
+                }
+                continue;
+            }
+            Some(ControlPayload::SchemaChange {
                 kind: lots::SCHEMA_CHANGE_LOT_POLICY,
                 canonical_bytes,
             }) => {

@@ -79,6 +79,7 @@ fn recorded(name: &str, value: &RecurringRecorded) -> Vec<(&'static str, Json)> 
 
 pub(crate) fn schedule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
+        Some("asset") => crate::asset::schedule_cmd(ctx, args),
         Some("recurring") => match args.positional.get(2).map(String::as_str) {
             Some("create") => create(ctx, args),
             Some("list") => list(ctx, args),
@@ -87,7 +88,7 @@ pub(crate) fn schedule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         },
         Some("sweep") => sweep(ctx, args),
         _ => Err(usage(
-            "schedule needs recurring (create, list or cancel) or sweep",
+            "schedule needs asset (create, show or list), recurring (create, list or cancel) or sweep",
             HELP,
         )),
     }

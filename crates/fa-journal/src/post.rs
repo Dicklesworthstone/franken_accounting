@@ -300,6 +300,7 @@ pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, 
         || crate::carrying::is_source_bound(proposal)
         || crate::carrying::has_allocated_basis(proposal)
         || crate::disposal::has_basis(proposal)
+        || crate::asset_cost::has_basis(proposal)
         || (proposal.class == EntryClass::REVERSAL
             && proposal.base_totals.as_ref().is_some_and(|total| {
                 proposal
@@ -1451,6 +1452,12 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
+    if crate::asset_cost::has_basis(&req.proposal) {
+        if let Some(txn) = member.txn {
+            txn.abort();
+        }
+        return Ok(Err(crate::asset_cost::unsupported_batch()));
+    }
     if crate::disposal::has_basis(&req.proposal) && member.disposal.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
@@ -1996,6 +2003,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // own Post.
     let scratch_case = matches!(admission, Admission::ScratchScenario(_))
         && crate::case::case_bound(proposal.class);
+    if crate::asset_cost::has_basis(proposal) {
+        if let Err(refusal) = crate::asset_cost::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some()
+            || replacement_basis.is_some()
+            || !matches!(admission, Admission::Commit | Admission::Plan)
+        {
+            return Ok(Err(crate::asset_cost::unsupported_batch()));
+        }
+    }
     // A lot disposal observes the complete native population at its exact
     // prefix. A native batch may share that prefix only when its complete
     // member set proves that no member can alter another member's lot source.
@@ -2831,6 +2849,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
     if let Err(refusal) = crate::disposal::validate_post(&txn, db, ctx, book, proposal, admission)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) =
+        crate::asset_cost::validate_post(&txn, db, ctx, book, proposal, &req.capability)?
     {
         txn.abort();
         return Ok(Err(refusal));
@@ -4419,6 +4443,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let mirrors = entry_mirrors(&entry)?;
     template_tracker.create_vertex(relation::HAS_LEG, evid, 1, &mirrors);
     has_leg.create_vertex(evid, vec![label::ENTRY], mirrors);
+    crate::asset_cost::stage_post(
+        &txn,
+        db,
+        book,
+        &entry,
+        evid,
+        &mut has_leg,
+        &mut template_tracker,
+    )?;
     if let Some(basis) = &external_subledger {
         template_tracker.record_external_subledger(relation::HAS_LEG, basis);
         crate::external_subledger::stage(&mut has_leg, basis, entry.entry_ref(evid))?;
@@ -4928,6 +4961,14 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
 /// additional supporting evidence may be cited without changing the quote.
 pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
     !original.legs.is_empty()
+        && original
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::ASSET_CHARGE_EXTENSION)
+            == reversal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::ASSET_CHARGE_EXTENSION)
         && original
             .extensions
             .iter()

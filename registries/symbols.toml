@@ -555,3 +555,8 @@ name = "StatementDefinition"
 [[label]]
 id = 60
 name = "LotPolicy"
+
+# Source/charge concurrency guard; authoritative terms remain in SchemaChange 22.
+[[label]]
+id = 61
+name = "AssetSchedule"

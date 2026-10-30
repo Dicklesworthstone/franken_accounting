@@ -304,13 +304,13 @@ fn source_identity_kind_shape_and_all_records_are_enforced() {
                 "{INVOICE_HEADER}\n{},Vendor,SKU-1,3,12.34,37.02,USD\n",
                 hex(Oid([7; 32]))
             ),
-            exit::REFUSAL,
+            exit::USAGE,
         ),
         (
             "Invoice",
             "text/csv",
             format!("{INVOICE_HEADER}\n{po},Other Vendor,SKU-1,3,12.34,37.02,USD\n"),
-            exit::REFUSAL,
+            exit::USAGE,
         ),
         (
             "Invoice",

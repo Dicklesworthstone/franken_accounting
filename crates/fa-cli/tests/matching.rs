@@ -254,10 +254,10 @@ fn three_way_matching_reports_exact_variances_and_refuses_unrelated_or_malformed
     }
     let wrong_vendor =
         f.invoice_source("wrong-vendor.csv", "Unrelated Vendor", "4", "2.50", "10.00");
-    assert_eq!(run(&f.book, &f.args(&wrong_vendor)).0, 3);
+    assert_eq!(run(&f.book, &f.args(&wrong_vendor)).0, 2);
     let wrong_po = f.source("wrong-po.csv", "Invoice", &format!(
         "purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency\n{},\"Vendor, Inc\",SKU-1,4,2.50,10.00,USD\n", "01".repeat(32)));
-    assert_eq!(run(&f.book, &f.args(&wrong_po)).0, 3);
+    assert_eq!(run(&f.book, &f.args(&wrong_po)).0, 2);
     let malformed_remainder = f.source("malformed.csv", "Invoice", &format!(
         "purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency\n{},\"Vendor, Inc\",SKU-1,4,2.50,10.00,USD\n{},\"Vendor, Inc\",UNSELECTED,not-a-count,2.50,10.00,USD\n", f.po, f.po));
     assert_eq!(run(&f.book, &f.args(&malformed_remainder)).0, 2);

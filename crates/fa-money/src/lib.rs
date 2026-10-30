@@ -35,6 +35,7 @@ pub mod lot;
 pub mod proportional_post;
 pub mod rate;
 pub mod rounding;
+pub mod straight_line;
 pub mod unit;
 pub mod valuation;
 pub mod wide;

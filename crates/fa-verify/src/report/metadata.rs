@@ -1,6 +1,8 @@
 //! Metadata reconstructed from authenticated journal controls, never from
 //! producer-supplied account or period projections.
 
+mod asset_cost;
+
 use super::{ReportError, Selection, failed, text};
 use crate::codec::Reader;
 use crate::envelope::{
@@ -327,6 +329,9 @@ pub(super) fn entry_info<'a>(
             }
             if tag == 36 {
                 prior_period_adjustment = Some(bytes);
+            }
+            if tag == 39 {
+                asset_cost::charge(bytes, minor, envelope.class)?;
             }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
@@ -831,6 +836,10 @@ impl Schema {
                     ));
                 }
             }
+            // An asset schedule retains source provenance without changing
+            // the chart or periods. Ordinary reports check its frame and
+            // fold admitted legs; they do not prove asset-law admission.
+            22 => return asset_cost::schedule(bytes),
             // Existing REA controls, role/closing/FX declarations,
             // dimension values (17), requirements (18) and closes (19), and
             // Canon rule versions (20) change neither the immutable account

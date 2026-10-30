@@ -55,6 +55,7 @@ pub mod access_log;
 pub mod account_role;
 pub mod aging;
 pub mod allocation_review;
+pub mod asset_cost;
 pub mod async_book;
 pub mod balance_allocation;
 pub mod balance_allocation_review;
@@ -128,6 +129,11 @@ pub use aging::{
     MAX_AGING_RECONCILIATION_BYTES, OpenItemSnapshot, Unscheduled, UnscheduledItem,
 };
 pub use allocation_review::{AllocationReview, AllocationReviewError, MAX_ALLOCATION_REVIEW_BYTES};
+pub use asset_cost::{
+    AssetChargeBasis, AssetChargeRequest, AssetCostKind, AssetScheduleRecorded,
+    AssetScheduleRequest, AssetScheduleSpec, PreparedAssetCharge, StoredAssetSchedule,
+    asset_schedule_proposal,
+};
 pub use async_book::AsyncBook;
 pub use balance_allocation::{
     BalanceAllocationRequest, MAX_BALANCE_ALLOCATION_CONTRIBUTIONS, PreparedBalanceAllocation,

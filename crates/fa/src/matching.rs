@@ -500,7 +500,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(error) => {
                 return Ok(Err(Refusal::new(
                     code::STRUCTURE,
-                    exit::REFUSAL,
+                    exit::USAGE,
                     format!("three-way source comparison refused: {error}"),
                     "plan §5.7 / FA-INV-06 (references, vendor and item must agree; arithmetic must remain exact)",
                     "select corresponding source documents and the same exact item; no numerical agreement may override a different source identity",

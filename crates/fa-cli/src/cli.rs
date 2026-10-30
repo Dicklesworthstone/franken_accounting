@@ -100,6 +100,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("batch", crate::typed::batch_cmd),
     ("post-reserve", crate::typed::post_reserve_cmd),
     ("dispose", crate::disposal::dispose_cmd),
+    ("depreciate", crate::asset::depreciate),
+    ("amortize", crate::asset::amortize),
     ("void-reserve", crate::typed::void_reserve_cmd),
     ("replace", crate::typed::replace_cmd),
     ("commit", commit_cmd),
@@ -8135,6 +8137,7 @@ fn build_post_request_with_prior(
     let mut reversal_rate_evidence = Vec::new();
     let mut reversal_valuation_basis = None;
     let mut reversal_lot_basis = None;
+    let mut reversal_asset_basis = None;
     let mut target_evidence = Vec::new();
     let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
         // A Reclassification names its target and moves part of its legs to
@@ -8381,6 +8384,12 @@ fn build_post_request_with_prior(
             .extensions
             .iter()
             .find(|(tag, _)| *tag == fa_model::entry::LOT_DISPOSAL_EXTENSION)
+            .cloned();
+        reversal_asset_basis = target
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::ASSET_CHARGE_EXTENSION)
             .cloned();
         if let Some(totals) = &mut reversal_base_totals {
             std::mem::swap(&mut totals.debits, &mut totals.credits);
@@ -8730,6 +8739,13 @@ fn build_post_request_with_prior(
     }
     if let Some(extension) = reversal_lot_basis {
         proposal.schema_minor = fa_model::entry::LOT_DISPOSAL_SCHEMA_MINOR;
+        proposal.extensions.push(extension);
+        proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    }
+    if let Some(extension) = reversal_asset_basis {
+        proposal.schema_minor = proposal
+            .schema_minor
+            .max(fa_model::entry::ASSET_CHARGE_SCHEMA_MINOR);
         proposal.extensions.push(extension);
         proposal.extensions.sort_by_key(|(tag, _)| *tag);
     }

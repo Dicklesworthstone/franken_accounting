@@ -33,6 +33,8 @@ use fgdb_types::{CanonicalScalar, VId};
 
 #[path = "genesis/account_role.rs"]
 mod account_role_tests;
+#[path = "genesis/asset_cost.rs"]
+mod asset_cost_tests;
 #[path = "genesis/carrying.rs"]
 mod carrying_tests;
 #[path = "genesis/chart_outcome_keys.rs"]

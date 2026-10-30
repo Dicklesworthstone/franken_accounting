@@ -16,6 +16,7 @@
 
 mod access;
 pub mod args;
+mod asset;
 pub mod authority;
 mod bank;
 mod case;

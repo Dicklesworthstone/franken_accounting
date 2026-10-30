@@ -6794,14 +6794,14 @@ ops = ["read"]
 
 [[verb]]
 name = "schedule"
-summary = "Approved recurring fixed entries and System sweep execution driven by committed TimeEvidence: prepare an exact template and calendar cadence, activate it with independent approval, inspect journal-derived progress, stop future occurrences by cancellation lineage, or drain due timed holds and scheduled reversals in bounded batches (`fa sweep now`)."
+summary = "Immutable source-bound finite straight-line asset schedules, plus approved recurring fixed entries and System sweep execution driven by committed TimeEvidence: prepare an exact template and calendar cadence, activate it with independent approval, inspect journal-derived progress, stop future occurrences by cancellation lineage, or drain due timed holds and scheduled reversals in bounded batches (`fa sweep now`)."
 writes = true
-subcommands = ["recurring", "sweep"]
-flags = ["--template", "--every-months", "--month-end", "--end", "--plan", "--plan-out", "--approval", "--reason"]
-switches = ["--dry-run"]
-events = ["recurring_plan", "recurring_recorded", "recurring_schedules", "recurring_cancelled", "swept"]
+subcommands = ["recurring", "asset", "sweep"]
+flags = ["--template", "--every-months", "--month-end", "--end", "--plan", "--plan-out", "--approval", "--reason", "--kind", "--acquisition", "--leg", "--first-period", "--periods", "--salvage", "--expense", "--accumulated", "--rounding-law", "--date", "--key", "--description", "--review", "--digest", "--review-out", "--as-known-at"]
+switches = ["--dry-run", "--review-only"]
+events = ["recurring_plan", "recurring_recorded", "recurring_schedules", "recurring_cancelled", "swept", "asset_schedule_review", "asset_schedule_recorded", "asset_schedules"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["schedule recurring create <name> --template <entry.json|-> --every-months <positive integer> --month-end PreserveDay|ClampToMonthEnd|LastDayStaysLast [--end YYYY-MM-DD] --dry-run [--plan-out <new-file>]   (template is an Original intent with explicit native legs, evidence, idempotency_key and effective_date as its start. Description, evidence and effects are fixed. No applications, FX derivation, pending entries or automatic reversals. The plan binds the current execution capability and requires a declared book time-zone policy.)", "schedule recurring create <name> --plan <file|hex|-> --approval <vid>...   (one independent Human approves proposal_digest with fa approve. Use the unchanged plan and creator capability. Creation journals a ScheduleControl and is idempotent by schedule name. The plan authorizes fixed effects; it does not exempt later occurrences from current account, amount, authority, evidence or period laws.)", "schedule recurring list   (current schedules, explicit cadence, next occurrence and any calendar refusal; read authority required)", "schedule recurring cancel <name> --reason <text>   (creator or a principal holding approve may stop future execution under current read/post authority. Cancellation is journaled; existing occurrences require ordinary corrections.)", "sweep now   (or schedule sweep: host-only; drains due timed holds, due scheduled reversals and due recurring occurrences in bounded batches under the latest corroborated TimeEvidence tick and the book's intrinsic System principal, then advances the disposable paged sweep index to the head)", "The daemon sweeps due occurrences only under corroborated committed TimeEvidence ticks. Each occurrence has a deterministic schedule/index identity, and cancellation, tick and execution progress are transaction witnesses. A Closed period blocks the named occurrence. Agent-profile activation and draft recurring schedules remain unsupported in this slice; a Human creates the approved schedule."]
+usage = ["schedule asset create NAME --kind depreciation|amortization --acquisition VID --leg N --first-period FY2026-P01 --periods 36 --salvage '0 USD' --expense 6100 --accumulated 1590 --rounding-law HalfEven --date YYYY-MM-DD --key KEY [--review-only | --review-out FILE]", "An asset schedule derives cost from one live Original acquisition debit. Terms are immutable and unique by name and source leg. Version 1 supports monthly fiscal periods, finite straight-line native base-currency cost, single-entity books and dimensionless Expense/Asset posting leaves. It does not infer useful life or salvage, dispose assets, recalculate estimates, or execute automatically.", "schedule asset create NAME --review <file|hex|-> --digest <review_digest> [--approval VID]...   (restore exact sealed terms; read and schema_change authority, current policy and independent approvals apply). schedule asset show NAME | list [--as-known-at SEQ]. Post charges separately with depreciate or amortize.", "schedule recurring create <name> --template <entry.json|-> --every-months <positive integer> --month-end PreserveDay|ClampToMonthEnd|LastDayStaysLast [--end YYYY-MM-DD] --dry-run [--plan-out <new-file>]   (template is an Original intent with explicit native legs, evidence, idempotency_key and effective_date as its start. Description, evidence and effects are fixed. No applications, FX derivation, pending entries or automatic reversals. The plan binds the current execution capability and requires a declared book time-zone policy.)", "schedule recurring create <name> --plan <file|hex|-> --approval <vid>...   (one independent Human approves proposal_digest with fa approve. Use the unchanged plan and creator capability. Creation journals a ScheduleControl and is idempotent by schedule name. The plan authorizes fixed effects; it does not exempt later occurrences from current account, amount, authority, evidence or period laws.)", "schedule recurring list   (current schedules, explicit cadence, next occurrence and any calendar refusal; read authority required)", "schedule recurring cancel <name> --reason <text>   (creator or a principal holding approve may stop future execution under current read/post authority. Cancellation is journaled; existing occurrences require ordinary corrections.)", "sweep now   (or schedule sweep: host-only; drains due timed holds, due scheduled reversals and due recurring occurrences in bounded batches under the latest corroborated TimeEvidence tick and the book's intrinsic System principal, then advances the disposable paged sweep index to the head)", "The daemon sweeps due occurrences only under corroborated committed TimeEvidence ticks. Each occurrence has a deterministic schedule/index identity, and cancellation, tick and execution progress are transaction witnesses. A Closed period blocks the named occurrence. Agent-profile activation and draft recurring schedules remain unsupported in this slice; a Human creates the approved schedule."]
 example = "fa schedule recurring create monthly-rent --template rent.json --every-months 1 --month-end ClampToMonthEnd --end 2026-12-31 --dry-run --plan-out rent.plan --book ./books/myco --json"
 
 [[event]]
@@ -6859,7 +6859,7 @@ fields = ["account:hex", "side:string", "amount:string", "dimension_set:[batch_p
 [[mcp.cluster]]
 name = "fa.schedule"
 on_demand = true
-doc = "Approved fixed-entry monthly schedules over committed time evidence: prepare, activate, inspect and cancel. On demand; current read/post and independent Human approval govern activation."
+doc = "Immutable source-derived finite straight-line asset schedules and charges, plus approved fixed-entry monthly schedules over committed time evidence. Current authority and independent approval requirements apply to each workflow."
 
 [[mcp.tool]]
 cluster = "fa.schedule"
@@ -7073,4 +7073,127 @@ ops = ["read", "schema_change"]
 
 [[bound]]
 verbs = ["dispose"]
+ops = ["read", "post"]
+
+
+[[verb]]
+name = "depreciate"
+summary = "Derive and post cumulative straight-line depreciation from an immutable acquisition-bound schedule and live recognized charges."
+writes = true
+subcommands = []
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--review-out", "--plan-out"]
+switches = ["--dry-run", "--review-only"]
+events = ["asset_charge_review", "asset_charge_noop", "plan", "posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["depreciate --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --review-out FILE | --dry-run [--plan-out FILE]]", "The kernel derives cost from the acquisition and computes cumulative rounded depreciable cost through the selected monthly period, less live prior charges. It never accepts a caller-supplied expense. Salvage and finite useful life bound recognition. Coverage may advance or repeat, but never move backward, including after reversals. Zero delta emits asset_charge_noop without publication.", "depreciate --review <file|hex|-> --digest <review_digest> [--approval VID]... [--dry-run [--plan-out FILE]]. Preserve exact review bytes across approvals. The kernel rechecks the full source basis and guards races; exact recorded retries return the original result. Commit saved native plans through fa commit --plan FILE --grant read. Reviews do not grant posting authority."]
+example = "fa depreciate --schedule machine-1 --period FY2026-P03 --key machine-1-mar --evidence D:<oid> --dry-run --json"
+
+[[verb]]
+name = "amortize"
+summary = "Derive and post cumulative straight-line amortization from an immutable acquisition-bound schedule and live recognized charges."
+writes = true
+subcommands = []
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--review-out", "--plan-out"]
+switches = ["--dry-run", "--review-only"]
+events = ["asset_charge_review", "asset_charge_noop", "plan", "posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["amortize --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --review-out FILE | --dry-run [--plan-out FILE]]", "Uses the same exact cumulative law and safeguards as depreciate, with a schedule explicitly declared as Amortization. Only finite straight-line native base-currency schedules are supported; indefinite-life impairment, estimates and disposal are separate workflows.", "amortize --review <file|hex|-> --digest <review_digest> [--approval VID]... [--dry-run [--plan-out FILE]]. Commit a retained native plan using fa commit --plan FILE --grant read. Reversals reduce net recognized cost; a fresh key may recognize the missing amount at the same or later covered period, while exact retries retain the original outcome."]
+example = "fa amortize --schedule license-1 --period FY2026-P03 --key license-1-mar --evidence D:<oid> --review-only --json"
+
+[[shape]]
+name = "asset_schedule_terms"
+doc = "Immutable finite straight-line terms. Acquisition VID, digest and leg ordinal select native cost; useful life and salvage are explicit judgments supplied at declaration."
+fields = ["name:string", "kind:string", "acquisition:hex", "acquisition_digest:hex", "leg:int", "calendar:string", "first_period:string", "periods:int", "salvage:amount", "expense_account:hex", "accumulated_account:hex", "rounding_law:string"]
+
+[[shape]]
+name = "asset_schedule"
+doc = "An immutable asset schedule and its recorded control identity."
+fields = ["entry:hex", "entry_digest:hex", "recorded_at:seq", "terms:asset_schedule_terms"]
+
+[[shape]]
+name = "asset_charge_leg"
+doc = "An exact native expense debit or accumulated-cost credit derived by the kernel."
+fields = ["ordinal:int", "account_vid:hex", "side:string", "amount:amount"]
+
+[[event]]
+name = "asset_schedule_review"
+book = true
+doc = "Exact sealed asset schedule terms for independent review; no control has been recorded."
+fields = ["terms:asset_schedule_terms", "review_digest:hex", "proposal_digest:hex", "bytes:hex", "file:string?"]
+
+[[event]]
+name = "asset_schedule_recorded"
+book = true
+doc = "The immutable asset schedule was recorded with its source-race guard, or its exact prior outcome returned."
+fields = ["schedule:asset_schedule", "already_recorded:bool"]
+
+[[event]]
+name = "asset_schedules"
+book = true
+doc = "Asset schedule declarations selected at one recorded frontier under current whole-book disclosure authority. An absent name returns an empty list."
+fields = ["known_at:seq", "schedules:[asset_schedule]"]
+
+[[event]]
+name = "asset_charge_review"
+book = true
+doc = "A source-bound cumulative asset-cost charge proposal. The native kernel reproduces the acquisition cost, immutable terms, live prior recognition and exact legs before publication. Review bytes retain sealed fields across approvals; the review is neither approval nor posting permission."
+fields = ["kind:string", "schedule_entry:hex", "schedule_digest:hex", "period:string", "known_at:seq", "cost:amount", "target:amount", "recognized:amount", "delta:amount", "legs:[asset_charge_leg]", "review_digest:hex", "proposal_digest:hex", "bytes:hex", "file:string?"]
+
+[[event]]
+name = "asset_charge_noop"
+book = true
+doc = "Live cumulative recognition already equals the finite straight-line target; no monetary entry, review or native plan was published."
+fields = ["kind:string", "schedule_entry:hex", "schedule_digest:hex", "period:string", "known_at:seq", "cost:amount", "target:amount", "recognized:amount", "delta:amount", "reason:string"]
+
+[[mcp.tool]]
+cluster = "fa.schedule"
+name = "asset"
+verb = "schedule"
+subcommands = ["asset"]
+positionals = ["action", "name?"]
+flags = ["--kind", "--acquisition", "--leg", "--first-period", "--periods", "--salvage", "--expense", "--accumulated", "--rounding-law", "--date", "--key", "--description", "--review", "--digest", "--approval", "--as-known-at"]
+switches = ["--review-only"]
+required = ["action"]
+dont = ["Create an immutable schedule from one live Original acquisition debit using explicit useful life, salvage, Expense account and accumulated Asset account. Use review_only:true, retain complete bytes and review_digest, obtain required independent approvals, then restore the unchanged review under the original principal.", "Use action show with a name or list without a name for current or as_known_at inspection. Host review paths and output files are refused; supply inline review hex. Asset schedules do not automatically execute and cannot be amended or duplicated for the same acquisition leg."]
+mistakes = ["Typing a cost value instead of referencing the acquisition leg, or omitting salvage and rounding law.", "Assuming a fixed recurring template supplies source-derived depreciation or amortization."]
+
+[[mcp.tool]]
+cluster = "fa.schedule"
+name = "depreciate"
+verb = "depreciate"
+subcommands = []
+positionals = []
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest"]
+switches = ["--review-only", "--dry-run"]
+required = []
+dont = ["Declare the asset schedule first. Choose the cumulative through-period and an idempotency key; the kernel derives the amount. Review or rehearse using the fixed launch principal with current read/post authority. Agent trunk restrictions remain enforced.", "Restore only complete inline review hex and its independently retained digest. No host paths are read. A stale basis refuses; an exact recorded retry returns the original outcome. Ordinary reversals reduce live recognition but never reset the greatest covered period."]
+mistakes = ["Supplying an arbitrary expense, selecting a period before earlier covered periods, or using an amortization schedule."]
+
+[[mcp.tool]]
+cluster = "fa.schedule"
+name = "amortize"
+verb = "amortize"
+subcommands = []
+positionals = []
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest"]
+switches = ["--review-only", "--dry-run"]
+required = []
+dont = ["Use an immutable Amortization schedule with finite useful life. The kernel derives cumulative expense less live prior charges; preserve exact review or plan bytes for uncertain acknowledgments.", "Only inline review hex is accepted over MCP. Reviews do not confer authority or exempt current period, evidence or approval laws. Indefinite-life impairment, disposal, multi-entity or FX asset valuation are not in this profile."]
+mistakes = ["Using a depreciation schedule, overriding native amounts, or expecting automatic execution."]
+
+[[bound]]
+verbs = ["schedule"]
+subcommands = ["asset"]
+args = ["create"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["schedule"]
+subcommands = ["asset"]
+args = ["show", "list"]
+ops = ["read"]
+reach = "judged"
+
+[[bound]]
+verbs = ["depreciate", "amortize"]
 ops = ["read", "post"]
