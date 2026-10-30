@@ -98,12 +98,12 @@ example = "fa book create --book ./books/myco --name \"My Co\" --json"
 name = "chart"
 summary = "Install a chart of accounts as one journaled schema effect (from a file or an embedded template), list it, or list the templates; assign the account roles Lantern selects populations by, and list them."
 writes = true
-subcommands = ["import", "list", "show", "templates", "open", "close", "promote", "role", "roles"]
-flags = ["--date", "--key", "--template", "--opened", "--closed", "--on", "--as-known-at"]
-switches = ["--remove"]
-events = ["chart_installed", "accounts", "chart_account", "chart_templates", "account_lifecycle", "account_role_recorded", "account_roles"]
+subcommands = ["import", "list", "show", "templates", "open", "close", "promote", "role", "roles", "lot-policy"]
+flags = ["--date", "--key", "--template", "--opened", "--closed", "--on", "--as-known-at", "--account", "--law", "--regime", "--rounding-law", "--description", "--review", "--digest", "--review-out", "--approval"]
+switches = ["--remove", "--review-only"]
+events = ["chart_installed", "accounts", "chart_account", "chart_templates", "account_lifecycle", "account_role_recorded", "account_roles", "lot_policy", "lot_policy_review", "lot_policy_recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart show <code>   (one account: its row, normal side, parent and children codes, opened/closed/promoted dates and the commit that created it)", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (the account must have a zero balance in every unit; nothing posts to it on or after that day, and its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control.", "chart role <account> <role> [--remove] [--key K]   (assign a role registered in registries/account_roles.toml, or remove it with --remove; needs read and schema_change. The account must be a posting leaf of a type the role admits. An account that already holds, or already lacks, the role writes nothing. The default key is role:<account>:<role>:<n>, n counting the earlier changes of that role on that account)", "chart roles [--as-known-at HEAD|<seq>|<RFC3339>]   (every registered role, the procedures that select by it, and the accounts holding it; a chart import journals each account's \"roles\": [\"suspense\"] the same way)"]
+usage = ["chart import (<chart.json> | --template <name>) [--date YYYY-MM-DD] [--key K]   (an account may carry lower_bound/upper_bound: \"0.00\" in its unit and normal-balance sign; \"unit\": \"base\" is the book's base unit)", "chart list", "chart show <code>   (one account: its row, normal side, parent and children codes, opened/closed/promoted dates and the commit that created it)", "chart templates   (us-gaap-smb, ifrs-sme, us-bank-call-report: starting points, not GAAP, IFRS or regulatory advice)", "chart open <account.json|-> --opened YYYY-MM-DD [--closed YYYY-MM-DD] [--key K]   (one account object in the chart format, e.g. {\"code\":\"6100\",\"name\":\"Office supplies\",\"type\":\"Expense\",\"unit\":\"USD\"}; it accepts legs dated in [opened, closed))", "chart close <code> --on YYYY-MM-DD [--key K]   (the account must have a zero balance in every unit; nothing posts to it on or after that day, and its history stays)", "chart promote <code> --on YYYY-MM-DD [--key K]   (the leaf becomes a summary account from that day; new legs go to its children)", "open, close and promote are journaled SchemaChange controls under schema_change authority; no date defaults to today. The default key is account-open:<code>, or account-<action>:<code>:<day>, so an exact retry returns the recorded control.", "chart role <account> <role> [--remove] [--key K]   (assign a role registered in registries/account_roles.toml, or remove it with --remove; needs read and schema_change. The account must be a posting leaf of a type the role admits. An account that already holds, or already lacks, the role writes nothing. The default key is role:<account>:<role>:<n>, n counting the earlier changes of that role on that account)", "chart roles [--as-known-at HEAD|<seq>|<RFC3339>]   (every registered role, the procedures that select by it, and the accounts holding it; a chart import journals each account's \"roles\": [\"suspense\"] the same way)", "chart lot-policy show --account <code> [--as-known-at HEAD|<seq>|<RFC3339>]   (the recorded lot policy, under current read authority)", "chart lot-policy set --account <code> --law FIFO|LIFO|SpecificId|WeightedAverage --regime US-GAAP|US-TAX|IFRS [--rounding-law HalfEven] --date YYYY-MM-DD --key K [--review-only | --review-out <new-file>]   (first registration requires read and schema_change; every later declaration requires two independent approvals over the retained exact proposal)", "chart lot-policy set --review <file|hex|-> --digest <review_digest> --approval <vid> --approval <vid>   (review bytes retain sealed fields; fa approve --review <file> --digest <review_digest> approves their proposal. Policy selection follows recorded time. A backdated disposal cannot restore an earlier policy; historical entries retain their own law.)"]
 example = "fa chart import chart.json --book ./books/myco --json"
 
 [[verb]]
@@ -3821,7 +3821,7 @@ fields = ["entry:hex", "entry_digest:hex", "qty_ordinal:int", "cost_ordinal:int"
 [[shape]]
 name = "lot_relief"
 doc = "One disposal application (`RELIEVES {quantity, cost}`) against a lot; `live` is false when a reversal (`UNSETTLES`) undid the relief."
-fields = ["disposal_entry:hex", "qty_ordinal:int", "cost_ordinal:int?", "quantity:amount", "cost:amount", "recorded_at:seq", "live:bool"]
+fields = ["disposal_entry:hex", "qty_ordinal:int?", "cost_ordinal:int?", "quantity:amount", "cost:amount", "recorded_at:seq", "live:bool"]
 
 [[shape]]
 name = "lot_disposal_plan"
@@ -6940,3 +6940,92 @@ verbs = ["subledger"]
 subcommands = ["reconcile-feed"]
 ops = ["read"]
 reach = "judged"
+
+
+# Lot disposal is governed by immutable account policy and the native posting kernel.
+[[verb]]
+name = "dispose"
+summary = "Derive and post exact inventory quantity and cost relief under the account's journaled lot law, with an immutable source basis."
+writes = true
+subcommands = []
+flags = ["--account", "--quantity", "--quantity-offset", "--cost-offset", "--date", "--key", "--description", "--evidence", "--target", "--review", "--digest", "--review-out", "--plan-out", "--grant"]
+switches = ["--dry-run", "--review-only"]
+events = ["lot_disposal_review", "plan", "posted", "recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["dispose --account <lot-account> --quantity <amount> --quantity-offset <account> --cost-offset <account> --date YYYY-MM-DD --key K --evidence D:<oid> [--target <entry-vid>:<quantity-leg-ordinal>]... [--dry-run | --review-only | --review-out <new-file>]", "The journal supplies FIFO, LIFO, SpecificId or WeightedAverage, accounting regime and rounding from the latest recorded account policy. SpecificId alone takes ordered --target selections. Quantity and cost offset accounts are explicit: no proceeds, profit or cash amount is invented. The initial profile supports dimensionless native-cost debit Asset lots on an AnyUnit account; unsupported valuation, compound batch and branch contexts refuse.", "dispose --review <file|hex|-> --digest <review_digest> [--dry-run]   (restore the unchanged proposal; current read/post authority and ordinary evidence, period and amount laws still apply. A changed source basis refuses rather than choosing different lots. Exact recorded retries return their original outcome.)", "--dry-run rehearses and aborts the actual posting transaction. With --plan-out, retain the native plan and use fa commit --plan <file|-> --grant read with the same holder and grants. Review bytes are neither an approval nor a posting permit. Ordinary reversals restore the original quantity and cost applications."]
+example = "fa dispose --account 1400 --quantity '3 SHARE' --quantity-offset 1490 --cost-offset 5100 --date 2026-03-01 --key disposal-1 --evidence D:<oid> --dry-run --json"
+
+[[event]]
+name = "lot_policy"
+book = true
+doc = "The immutable lot-policy version selected by recorded prefix. Historical selection keeps current disclosure authority."
+fields = ["account:string", "known_at:seq", "found:bool", "law:string?", "regime:string?", "rounding_law:string?", "control_entry:hex?", "entry_digest:hex?", "recorded_at:seq?"]
+
+[[event]]
+name = "lot_policy_review"
+book = true
+doc = "An unchanged lot-policy PostIntent for independent approval; no policy has been published."
+fields = ["account_vid:hex", "law:string", "regime:string", "rounding_law:string", "review_digest:hex", "proposal_digest:hex", "bytes:hex", "file:string?"]
+
+[[event]]
+name = "lot_policy_recorded"
+book = true
+doc = "A lot-policy control and its point-witness projection were published atomically, or the exact original result was returned."
+fields = ["account_vid:hex", "law:string", "regime:string", "rounding_law:string", "control_entry:hex", "entry_digest:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "lot_disposal_review"
+book = true
+doc = "A derived disposal proposal at one complete lot-history basis. The native kernel independently reproduces every quantity and cost application before publishing."
+fields = ["account_vid:hex", "known_at:seq", "law:string", "regime:string", "rounding_law:string", "quantity:amount", "policy_entry:hex", "policy_digest:hex", "legs:[lot_disposal_leg]", "review_digest:hex", "proposal_digest:hex", "bytes:hex", "file:string?"]
+
+[[shape]]
+name = "lot_disposal_leg"
+doc = "One exact native leg derived by the lot law; applications counts its explicit immutable settlement targets."
+fields = ["ordinal:int", "account_vid:hex", "side:string", "amount:amount", "applications:int"]
+
+[[mcp.cluster]]
+name = "fa.lots"
+on_demand = true
+doc = "Journaled lot-cost policies and native disposal under FIFO, LIFO, SpecificId or WeightedAverage. Current read/post or schema authority remains required; views are available through fa_proof_gl."
+
+[[mcp.tool]]
+cluster = "fa.lots"
+name = "policy"
+verb = "chart"
+subcommands = ["lot-policy"]
+positionals = ["action"]
+flags = ["--account", "--law", "--regime", "--rounding-law", "--date", "--key", "--description", "--review", "--digest", "--approval", "--as-known-at"]
+switches = ["--review-only"]
+required = ["action"]
+dont = ["Use action show to read a policy at an explicit recorded prefix. Action set requires read and schema_change; changes require two independent approvals of the unchanged review.", "Supply review inline as complete hex with its independently retained digest; host paths and output files are not accepted. A policy declaration changes no historical accounting amounts."]
+mistakes = ["Choosing LIFO under IFRS.", "Resealing a reviewed proposal after obtaining approvals, or attempting to backdate the policy to select an old law."]
+
+[[mcp.tool]]
+cluster = "fa.lots"
+name = "dispose"
+verb = "dispose"
+subcommands = []
+positionals = []
+flags = ["--account", "--quantity", "--quantity-offset", "--cost-offset", "--date", "--key", "--description", "--evidence", "--target", "--review", "--digest"]
+switches = ["--dry-run", "--review-only"]
+required = []
+dont = ["Supply an exact unit-tagged quantity and explicit quantity and cost offset accounts; the selected account's journaled policy supplies the cost-flow law. SpecificId alone uses ordered target entry/ordinal pairs.", "Review and dry-run need the launch principal's current read and post authority. The Agent profile cannot post to trunk; a saved review cannot widen authority. The kernel refuses stale source bases, manual cost substitutions, missing bindings and unsupported branch or batch contexts.", "Use inline review bytes and digest when resuming; MCP never reads a host review or writes an output path. Preserve a native plan for exact uncertain-ack retry."]
+mistakes = ["Supplying an arbitrary cost amount; cost is derived from authenticated lot history.", "Using a currency as the quantity unit, pooling dimensioned acquisitions, or selecting an ungoverned account."]
+
+[[bound]]
+verbs = ["chart"]
+subcommands = ["lot-policy"]
+args = ["show"]
+ops = ["read"]
+reach = "judged"
+
+[[bound]]
+verbs = ["chart"]
+subcommands = ["lot-policy"]
+args = ["set"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["dispose"]
+ops = ["read", "post"]

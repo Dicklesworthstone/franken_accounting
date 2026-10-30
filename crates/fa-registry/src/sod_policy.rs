@@ -31,7 +31,7 @@ pub const EXCLUSIONS: &[&str] = &["preparer", "duplicate", "case_preparer", "ses
 const PERIOD_TRANSITIONS: &[&str] = &["Open", "SoftClose", "Close", "Lock", "Reopen"];
 const POLICY_TRANSITIONS: &[&str] = &["Activate", "ActivateRule", "ActivateStatement"];
 /// Chart and fiscal-calendar declarations are authorized book controls.
-const SCHEMA_TRANSITIONS: &[&str] = &["ChartInstall", "CreatePeriods"];
+const SCHEMA_TRANSITIONS: &[&str] = &["ChartInstall", "CreatePeriods", "ChangeLotPolicy"];
 /// A TimeEvidence tick (plan §7.1a).
 const TIME_TRANSITIONS: &[&str] = &["Tick"];
 /// One sweep batch and its SweepCursor: the expiry sweep's Expires (§5.4) or

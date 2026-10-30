@@ -44,10 +44,11 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// the original layout; minor 1 appends the extension block, and minor 2
 /// admits the named proportional-post basis, and minor 3 admits the
 /// prior-period-adjustment source period. Minor 4 admits allocated FX carrying
-/// values and their exact settlement releases. A writer may
+/// values and their exact settlement releases; minor 5 admits law-bound lot
+/// disposal and its recorded-version account policy. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 4;
+pub const SCHEMA_MINOR: u16 = 5;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -255,6 +256,9 @@ pub const PRIOR_PERIOD_ADJUSTMENT_EXTENSION: u16 = 36;
 /// of each source-bound FX settlement component, including exact reversals.
 pub const FX_SETTLEMENT_VALUATION_EXTENSION: u16 = 37;
 pub const FX_ITEM_CARRYING_SCHEMA_MINOR: u16 = 4;
+/// Source-bound disposal under the account's journaled lot policy (plan §6.5).
+pub const LOT_DISPOSAL_EXTENSION: u16 = 38;
+pub const LOT_DISPOSAL_SCHEMA_MINOR: u16 = 5;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -327,6 +331,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     VALUATION_ADJUSTMENT_EXTENSION,
     PROPORTIONAL_POST_EXTENSION,
     PRIOR_PERIOD_ADJUSTMENT_EXTENSION,
+    LOT_DISPOSAL_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -2023,6 +2028,22 @@ impl EntryPayload {
                 "requires functional totals and a canonical allocated-carrying settlement basis on Original, Adjusting or an exact Reversal at schema minor 4 or later",
             ));
         }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == LOT_DISPOSAL_EXTENSION)
+            && (self.schema_minor < LOT_DISPOSAL_SCHEMA_MINOR
+                || !matches!(
+                    self.class,
+                    EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+                )
+                || crate::LotDisposalBasis::decode(bytes).is_err())
+        {
+            return Err(invalid(
+                "extensions.lot_disposal",
+                "requires a canonical law-bound lot disposal or its exact Reversal at schema minor 5 or later",
+            ));
+        }
         for leg in &self.legs {
             leg.validate()?;
         }
@@ -2481,6 +2502,35 @@ impl EntryPayload {
             .iter()
             .find(|(tag, _)| *tag == PRIOR_PERIOD_ADJUSTMENT_EXTENSION)
             .map(|(_, bytes)| PriorPeriodAdjustment::decode(bytes))
+            .transpose()
+    }
+
+    /// Attach the complete intrinsic lot-disposal inputs before sealing the
+    /// proposal. Accounting admission reproduces the derived settlement legs.
+    pub fn set_lot_disposal_basis(
+        &mut self,
+        basis: &crate::LotDisposalBasis,
+    ) -> Result<(), EntryError> {
+        let bytes = basis.encode()?;
+        crate::LotDisposalBasis::decode(&bytes)?;
+        self.schema_minor = self.schema_minor.max(LOT_DISPOSAL_SCHEMA_MINOR);
+        match self
+            .extensions
+            .binary_search_by_key(&LOT_DISPOSAL_EXTENSION, |(tag, _)| *tag)
+        {
+            Ok(index) => self.extensions[index].1 = bytes,
+            Err(index) => self
+                .extensions
+                .insert(index, (LOT_DISPOSAL_EXTENSION, bytes)),
+        }
+        Ok(())
+    }
+
+    pub fn lot_disposal_basis(&self) -> Result<Option<crate::LotDisposalBasis>, EntryError> {
+        self.extensions
+            .iter()
+            .find(|(tag, _)| *tag == LOT_DISPOSAL_EXTENSION)
+            .map(|(_, bytes)| crate::LotDisposalBasis::decode(bytes).map_err(EntryError::from))
             .transpose()
     }
 
@@ -3449,6 +3499,51 @@ mod tests {
             why(with((OBLIGATION_MATURITY_EXTENSION, vec![1, 2, 3])))
                 .is_some_and(|w| w.contains("decode"))
         );
+    }
+
+    /// A disposal basis is a versioned posting contract, not an opaque tag.
+    #[test]
+    fn lot_disposal_basis_requires_its_minor_and_posting_class() {
+        let basis = crate::LotDisposalBasis {
+            account: VId(10),
+            quantity: fa_money::Amount::new(fa_money::UnitId(2), 3),
+            quantity_offset_account: VId(11),
+            cost_offset_account: VId(12),
+            specific_ids: Vec::new(),
+            known_at: fgdb_types::CommitSeq(7),
+            policy: EntryRef {
+                vid: VId(20),
+                entry_digest: [9; 32],
+            },
+            law: fa_money::LotLaw::Fifo,
+            regime: fa_money::AccountingRegime::UsGaap,
+            rounding_law: fa_money::RoundingLaw::HalfEven,
+        };
+        let mut p = proposal(two_legs());
+        let before = p.proposal_digest().unwrap();
+        p.set_lot_disposal_basis(&basis).unwrap();
+        assert_eq!(p.schema_minor, LOT_DISPOSAL_SCHEMA_MINOR);
+        assert_eq!(p.lot_disposal_basis().unwrap(), Some(basis));
+        assert_ne!(p.proposal_digest().unwrap(), before);
+        let sealed = p.clone().seal(Vec::new(), None).unwrap();
+        assert_eq!(Entry::decode(&sealed.encode().unwrap()).unwrap(), sealed);
+        p.schema_minor -= 1;
+        assert!(matches!(
+            p.validate(),
+            Err(EntryError::Invalid {
+                what: "extensions.lot_disposal",
+                ..
+            })
+        ));
+        p.schema_minor = LOT_DISPOSAL_SCHEMA_MINOR;
+        p.class = EntryClass::REVALUATION;
+        assert!(matches!(
+            p.validate(),
+            Err(EntryError::Invalid {
+                what: "extensions.lot_disposal",
+                ..
+            })
+        ));
     }
 
     /// Additive-minor law: an unknown extension tag is refused at this

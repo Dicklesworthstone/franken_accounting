@@ -85,6 +85,7 @@ symbols!(
         (RULE_NAME, "RuleName", 57),
         (REGISTER_CHECKPOINT, "RegisterCheckpoint", 58),
         (STATEMENT_DEFINITION, "StatementDefinition", 59),
+        (LOT_POLICY, "LotPolicy", 60),
     ]
 );
 

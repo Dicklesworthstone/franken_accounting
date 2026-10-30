@@ -299,6 +299,7 @@ pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, 
         || crate::revaluation::is_source_bound(proposal)
         || crate::carrying::is_source_bound(proposal)
         || crate::carrying::has_allocated_basis(proposal)
+        || crate::disposal::has_basis(proposal)
         || (proposal.class == EntryClass::REVERSAL
             && proposal.base_totals.as_ref().is_some_and(|total| {
                 proposal
@@ -1436,6 +1437,12 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
+    if crate::disposal::has_basis(&req.proposal) {
+        if let Some(txn) = member.txn {
+            txn.abort();
+        }
+        return Ok(Err(crate::disposal::unsupported_batch()));
+    }
     if crate::revaluation::is_source_bound(&req.proposal) {
         if let Some(txn) = member.txn {
             txn.abort();
@@ -1975,6 +1982,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // own Post.
     let scratch_case = matches!(admission, Admission::ScratchScenario(_))
         && crate::case::case_bound(proposal.class);
+    // A lot disposal observes the complete native population at its exact
+    // prefix. Only the native plan/commit path preserves that coordinate;
+    // compound operations need a separate aggregate derivation protocol.
+    if crate::disposal::has_basis(proposal) {
+        if let Err(refusal) = crate::disposal::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some()
+            || replacement_basis.is_some()
+            || !matches!(admission, Admission::Commit | Admission::Plan)
+        {
+            return Ok(Err(crate::disposal::unsupported_batch()));
+        }
+    }
     // Closing is an intrinsic, source-bound computation, not a generic
     // balanced posting class. Current Read/Close and whole-book scope are
     // required before its aggregate or routing map can be observed.
@@ -2773,6 +2794,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     if let Err(refusal) = crate::carrying::validate_post(db, ctx, book, proposal, txn.basis())? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::disposal::validate_post(&txn, db, ctx, book, proposal)? {
         txn.abort();
         return Ok(Err(refusal));
     }
@@ -4867,6 +4892,14 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
 /// additional supporting evidence may be cited without changing the quote.
 pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
     !original.legs.is_empty()
+        && original
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::LOT_DISPOSAL_EXTENSION)
+            == reversal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::LOT_DISPOSAL_EXTENSION)
         && original
             .extensions
             .iter()

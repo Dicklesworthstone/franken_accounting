@@ -69,6 +69,7 @@ mod certificate_store;
 pub mod consolidation;
 pub mod custom_statement;
 pub mod dimension;
+pub mod disposal;
 pub mod document_disclosure;
 pub mod draft_review;
 pub mod equity_certificate;
@@ -154,6 +155,10 @@ pub use certificate::{
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use consolidation::FunctionalConsolidation;
 pub use custom_statement::{CustomStatementReport, CustomStatementSelection};
+pub use disposal::{
+    LotDisposalPostRequest, LotPolicy, LotPolicyRecorded, LotPolicyRequest, PreparedLotDisposal,
+    StoredLotPolicy,
+};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use draft_review::{
     CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,

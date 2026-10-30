@@ -93,6 +93,18 @@ cite = "plan §7.2, §14.3; fa-ehd"
 
 # ---- Corrections into a Closed period --------------------------------------
 [[rule]]
+name = "schema-change-lot-policy"
+class = "SchemaControl"
+transition = "ChangeLotPolicy"
+preparer_op = "schema_change"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate"]
+cite = "plan §6.5, §14.3; fa-0hs4.9"
+
+[[rule]]
 name = "reversal-closed"
 class = "Reversal"
 state = "Closed"

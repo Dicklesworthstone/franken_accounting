@@ -37,7 +37,8 @@ use crate::{RegisterError, entries_at, open_items, resolve_known_at};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotReliefEdge {
     pub disposal_entry: VId,
-    pub qty_ordinal: u16,
+    /// Applying quantity leg, absent for a weighted-average cost-only slice.
+    pub qty_ordinal: Option<u16>,
     pub cost_ordinal: Option<u16>,
     pub quantity: Amount,
     pub cost: Amount,
@@ -172,7 +173,10 @@ impl LotsReport {
         let candidates: Vec<LotCandidate> = self
             .lots
             .iter()
-            .filter(|lot| lot.original_quantity.unit == qty_unit && lot.open_quantity.mantissa > 0)
+            .filter(|lot| {
+                lot.original_quantity.unit == qty_unit
+                    && (lot.open_quantity.mantissa > 0 || lot.open_cost.mantissa > 0)
+            })
             .map(|lot| LotCandidate {
                 entry_id: lot.entry.0,
                 qty_ordinal: lot.qty_ordinal,
@@ -367,7 +371,7 @@ pub fn fold_lots_from_open_items(
                 };
                 relieves.push(LotReliefEdge {
                     disposal_entry: app.entry,
-                    qty_ordinal: app.ordinal,
+                    qty_ordinal: Some(app.ordinal),
                     cost_ordinal,
                     quantity: Amount::new(qty_unit, app.amount),
                     cost: Amount::new(base_unit, cost_mantissa),
@@ -375,6 +379,31 @@ pub fn fold_lots_from_open_items(
                     live: app.live,
                 });
             }
+            // A pooled-cost relief can consume cost from a different layer
+            // than the quantity, including one whose quantity is exhausted.
+            // Preserve those applications in the lot's provenance instead of
+            // silently dropping them because no quantity application matches.
+            for ((disposal_entry, recorded_at, live), cost_apps) in cost_apps_by_entry {
+                for (cost_ordinal, cost_mantissa) in cost_apps {
+                    relieves.push(LotReliefEdge {
+                        disposal_entry,
+                        qty_ordinal: None,
+                        cost_ordinal: Some(cost_ordinal),
+                        quantity: Amount::new(qty_unit, 0),
+                        cost: Amount::new(base_unit, cost_mantissa),
+                        recorded_at,
+                        live,
+                    });
+                }
+            }
+            relieves.sort_by_key(|relief| {
+                (
+                    relief.recorded_at,
+                    relief.disposal_entry,
+                    relief.qty_ordinal,
+                    relief.cost_ordinal,
+                )
+            });
             lots.push(LotItem {
                 entry: entry_vid,
                 entry_digest,
@@ -404,3 +433,6 @@ pub fn fold_lots_from_open_items(
     });
     Ok(lots)
 }
+
+#[cfg(test)]
+mod tests;

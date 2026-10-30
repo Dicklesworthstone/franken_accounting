@@ -3207,6 +3207,61 @@ impl Book {
         Ok(Some((basis.law, rate)))
     }
 
+    /// Derive exact lot quantity and cost relief under the account's journaled
+    /// policy. The proposal uses the ordinary plan/commit protocol and keeps its
+    /// observed basis; later source changes require a new preparation.
+    pub fn prepare_lot_disposal(
+        &mut self,
+        capability: &fa_policy::Capability,
+        request: &crate::LotDisposalPostRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedLotDisposal> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_lot_disposal(&purposes, capability, request, template)
+        ))
+    }
+
+    /// Install or change an account's journaled lot law. Changes require the
+    /// policy's independent approvals over the exact reviewed proposal.
+    pub fn set_lot_policy(
+        &mut self,
+        request: crate::LotPolicyRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::LotPolicyRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.set_lot_policy(&purposes, request, capability)
+        ))
+    }
+
+    /// Publish an unchanged lot-policy review under the caller's authority.
+    pub fn set_lot_policy_proposal(
+        &mut self,
+        proposal: fa_model::EntryPayload,
+        approvals: Vec<fa_model::ApprovalRef>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::LotPolicyRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.set_lot_policy_proposal(&purposes, proposal, approvals, capability)
+        ))
+    }
+
+    /// Select the lot policy at an explicit recorded coordinate under current
+    /// read authority, retaining the immutable policy control's full identity.
+    pub fn lot_policy_at(
+        &mut self,
+        account: fgdb_types::VId,
+        known_at: Option<fgdb_types::CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Option<crate::StoredLotPolicy>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.lot_policy_at(&purposes, account, known_at, capability)
+        ))
+    }
+
     /// Derive a single foreign open item's exact remaining carrying basis,
     /// producing an ordinary proposal for the existing plan/commit protocol.
     pub fn prepare_fx_settlement(

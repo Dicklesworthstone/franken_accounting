@@ -27,6 +27,7 @@ mod consolidate;
 mod custom_statement;
 mod diff;
 mod dimension;
+mod disposal;
 mod document;
 mod engagement;
 pub mod entry;

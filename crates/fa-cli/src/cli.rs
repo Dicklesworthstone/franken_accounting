@@ -99,6 +99,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("defer", crate::typed::defer_cmd),
     ("batch", crate::typed::batch_cmd),
     ("post-reserve", crate::typed::post_reserve_cmd),
+    ("dispose", crate::disposal::dispose_cmd),
     ("void-reserve", crate::typed::void_reserve_cmd),
     ("replace", crate::typed::replace_cmd),
     ("commit", commit_cmd),
@@ -2332,6 +2333,7 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
     (matches!(
         verb,
         "post"
+            | "dispose"
             | "allocate"
             | "settle"
             | "reverse"
@@ -2528,6 +2530,7 @@ pub fn bound_command_admissible(
     let is_monetary_trunk_post = matches!(
         verb,
         "post"
+            | "dispose"
             | "commit"
             | "reverse"
             | "reclass"
@@ -4922,6 +4925,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some("lot-policy") => crate::disposal::policy_cmd(ctx, args),
         Some(action @ ("open" | "close" | "promote")) => chart_lifecycle(ctx, args, action),
         Some("templates") => {
             if let Some(extra) = args.positional.get(2) {
@@ -8117,6 +8121,7 @@ fn build_post_request_with_prior(
     let mut reversal_base_totals = None;
     let mut reversal_rate_evidence = Vec::new();
     let mut reversal_valuation_basis = None;
+    let mut reversal_lot_basis = None;
     let mut target_evidence = Vec::new();
     let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
         // A Reclassification names its target and moves part of its legs to
@@ -8357,6 +8362,12 @@ fn build_post_request_with_prior(
             .extensions
             .iter()
             .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION)
+            .cloned();
+        reversal_lot_basis = target
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::LOT_DISPOSAL_EXTENSION)
             .cloned();
         if let Some(totals) = &mut reversal_base_totals {
             std::mem::swap(&mut totals.debits, &mut totals.credits);
@@ -8701,6 +8712,11 @@ fn build_post_request_with_prior(
     };
     if let Some(extension) = reversal_valuation_basis {
         proposal.schema_minor = fa_model::entry::FX_ITEM_CARRYING_SCHEMA_MINOR;
+        proposal.extensions.push(extension);
+        proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    }
+    if let Some(extension) = reversal_lot_basis {
+        proposal.schema_minor = fa_model::entry::LOT_DISPOSAL_SCHEMA_MINOR;
         proposal.extensions.push(extension);
         proposal.extensions.sort_by_key(|(tag, _)| *tag);
     }
@@ -19697,7 +19713,11 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .map(|r| {
                             Ok(obj(vec![
                                 ("disposal_entry", s(format!("{:032x}", r.disposal_entry.0))),
-                                ("qty_ordinal", Json::Int(i128::from(r.qty_ordinal))),
+                                (
+                                    "qty_ordinal",
+                                    r.qty_ordinal
+                                        .map_or(Json::Null, |q| Json::Int(i128::from(q))),
+                                ),
                                 (
                                     "cost_ordinal",
                                     r.cost_ordinal

@@ -39,6 +39,8 @@ mod carrying_tests;
 mod chart_outcome_keys;
 #[path = "genesis/closing_carrying.rs"]
 mod closing_carrying_tests;
+#[path = "genesis/disposal.rs"]
+mod disposal_tests;
 #[path = "genesis/draft_authority.rs"]
 mod draft_authority_tests;
 #[path = "genesis/draft_correction.rs"]

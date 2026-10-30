@@ -550,3 +550,8 @@ name = "RegisterCheckpoint"
 [[label]]
 id = 59
 name = "StatementDefinition"
+
+# Current lot-policy pointer; rebuilt from immutable SchemaChange kind 21.
+[[label]]
+id = 60
+name = "LotPolicy"

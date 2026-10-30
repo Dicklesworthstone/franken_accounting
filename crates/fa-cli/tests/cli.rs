@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fa_cli::json::{self, Json};
 use fa_cli::verbs::registry;
 
+#[path = "cli/lot_disposal.rs"]
+mod lot_disposal;
 #[path = "cli/proportional_post.rs"]
 mod proportional_post;
 

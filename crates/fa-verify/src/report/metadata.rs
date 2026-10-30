@@ -754,6 +754,40 @@ impl Schema {
                 // version even though its rendered name/type remain unchanged.
                 account.created_at = recorded_at;
             }
+            21 => {
+                // Lot policy is a separate immutable declaration, not an
+                // account-row mutation. Validate its supported frame without
+                // claiming that this native balance fold proves lot admission.
+                if r.bytes(64, "lot_policy.format")? != b"fa:lot-policy:v1" {
+                    return Err(failed("schema_history", "unknown lot-policy format"));
+                }
+                let id = r.u128("lot_policy.account")?;
+                let law = r.u16("lot_policy.law")?;
+                let law_version = r.u16("lot_policy.law_version")?;
+                let regime = r.u8("lot_policy.regime")?;
+                let rounding = r.u16("lot_policy.rounding")?;
+                let rounding_version = r.u16("lot_policy.rounding_version")?;
+                if !(1..=4).contains(&law)
+                    || law_version != 1
+                    || regime > 2
+                    || (law == 2 && regime == 2)
+                    || !(1..=9).contains(&rounding)
+                    || rounding_version != 1
+                {
+                    return Err(failed("schema_history", "unsupported lot-policy laws"));
+                }
+                if !self.accounts.get(&id).is_some_and(|account| {
+                    account.is_leaf
+                        && account.account_type == 1
+                        && account.normal_balance == 0
+                        && account.unit_policy == -2
+                }) {
+                    return Err(failed(
+                        "account_metadata",
+                        "lot policy requires a debit Asset AnyUnit posting account",
+                    ));
+                }
+            }
             // Existing REA controls, role/closing/FX declarations,
             // dimension values (17), requirements (18) and closes (19), and
             // Canon rule versions (20) change neither the immutable account
@@ -1009,6 +1043,62 @@ mod account_hierarchy_tests {
         assert_eq!(schema.accounts[&opened].created_at, 8);
         assert_eq!(schema.parents[&opened], root);
         assert_eq!(schema.promoted_accounts, BTreeSet::from([existing]));
+    }
+
+    fn lot_policy(account: u128, law: u16, regime: u8) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.bytes(b"fa:lot-policy:v1")
+            .u128(account)
+            .u16(law)
+            .u16(1)
+            .u8(regime)
+            .u16(3)
+            .u16(1);
+        w.buf
+    }
+
+    #[test]
+    fn lot_policies_preserve_native_report_account_metadata() {
+        let book = [19; 16];
+        let id = crate::ads::account_vid(&book, "1400");
+        let mut chart = Writer::default();
+        chart
+            .count(1)
+            .bytes(b"1400")
+            .bytes(b"Inventory")
+            .u8(1)
+            .u8(0)
+            .u8(1)
+            .fixed(&(-2_i64).to_le_bytes())
+            .u8(0);
+        let mut schema = Schema::default();
+        schema.apply(1, &chart.buf, &book, 3).unwrap();
+        for (law, regime, sequence) in [(1, 0, 4), (4, 2, 5), (3, 1, 6)] {
+            schema
+                .apply(21, &lot_policy(id, law, regime), &book, sequence)
+                .unwrap();
+            let account = &schema.accounts[&id];
+            assert_eq!(account.created_at, 3, "policy does not rewrite the account");
+            assert_eq!(account.name, "Inventory");
+            assert_eq!(account.unit_policy, -2);
+        }
+        assert!(schema.apply(21, &lot_policy(id, 2, 2), &book, 7).is_err());
+        assert!(schema.apply(21, &lot_policy(id, 5, 0), &book, 7).is_err());
+        assert!(
+            schema
+                .apply(21, &lot_policy(id + 1, 1, 0), &book, 7)
+                .is_err()
+        );
+        let valid = lot_policy(id, 1, 0);
+        for end in 0..valid.len() {
+            assert!(
+                schema.apply(21, &valid[..end], &book, 7).is_err(),
+                "truncation {end}"
+            );
+        }
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(schema.apply(21, &trailing, &book, 7).is_err());
     }
 }
 

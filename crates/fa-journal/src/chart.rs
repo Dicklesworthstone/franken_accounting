@@ -12,6 +12,9 @@
 
 mod closing;
 mod fx;
+pub mod lots;
+
+pub use lots::{LotPolicy, LotPolicyRecorded, LotPolicyRequest, StoredLotPolicy};
 
 pub use closing::{
     ClosingRoutes, ClosingRoutesRecorded, ClosingRoutesRequest, MAX_CLOSING_ROUTES,
@@ -253,6 +256,7 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
     }
     let rows = db.vertices_at(known_at)?;
     let mut controls = Vec::new();
+    let mut lot_policies = Vec::new();
     for row in &rows {
         if !row.labels.contains(&label::ENTRY) {
             continue;
@@ -366,6 +370,22 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
             // A role classifies an account without changing the chart; the
             // role fold (account_role) checks it names an account.
             Some(ControlPayload::SchemaChange {
+                kind: lots::SCHEMA_CHANGE_LOT_POLICY,
+                canonical_bytes,
+            }) => {
+                let policy = LotPolicy::decode(canonical_bytes)
+                    .map_err(|error| corrupt(format!("lot policy: {error}")))?;
+                lot_policies.push(StoredLotPolicy {
+                    entry: fa_model::EntryRef {
+                        vid: row.vid,
+                        entry_digest: entry.entry_digest,
+                    },
+                    policy,
+                    recorded_at: row.created_at,
+                });
+                continue;
+            }
+            Some(ControlPayload::SchemaChange {
                 kind: crate::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
                 canonical_bytes,
             }) => {
@@ -418,6 +438,7 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
         };
         controls.push((row.created_at, row.vid, op));
     }
+    lots::verify_projection_records(book.book_id, &lot_policies, &rows)?;
     controls.sort_by_key(|(created_at, vid, _)| (*created_at, *vid));
     let chart = replay_controls(book.book_id, known_at, controls)?;
     let mut observed = BTreeSet::new();

@@ -29,6 +29,7 @@ pub mod chart;
 pub mod closing;
 pub mod custody;
 pub mod dimension;
+pub mod disposal;
 pub mod draft;
 pub mod engagement;
 pub mod entity;
@@ -103,6 +104,7 @@ pub use chart::{
     promote_to_summary,
 };
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
+pub use disposal::{LotDisposalRequest, PreparedLotDisposal, prepare_lot_disposal};
 pub use draft::{
     DraftBody, DraftClosure, DraftPlanned, DraftPreview, DraftPreviewMember, DraftPromoted,
     DraftRecorded, DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftRequest,
