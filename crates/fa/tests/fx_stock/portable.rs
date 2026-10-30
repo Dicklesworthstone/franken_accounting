@@ -438,3 +438,6 @@ fn functional_export_refuses_unvalued_foreign_history_even_outside_selected_date
 
 #[path = "portable/settlements.rs"]
 mod settlements;
+
+#[path = "portable/migration.rs"]
+mod migration;

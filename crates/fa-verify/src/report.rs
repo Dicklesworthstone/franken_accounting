@@ -1046,6 +1046,7 @@ fn verify_report_with_lots_input(
     let HistoricalInputs {
         visible_migrations,
         migration_activations,
+        migration_activation_sources,
         schema,
         dimension_history,
         infos,
@@ -1078,6 +1079,8 @@ fn verify_report_with_lots_input(
                     &legs,
                     &infos,
                     &resolved,
+                    &visible_migrations,
+                    &migration_activations,
                 )?;
                 (None, Some(report), output)
             } else {
@@ -1092,6 +1095,9 @@ fn verify_report_with_lots_input(
                     &legs,
                     &infos,
                     &releases,
+                    &visible_migrations,
+                    &migration_activations,
+                    &migration_activation_sources,
                 )?;
                 (Some(report), None, output)
             };
@@ -1985,6 +1991,7 @@ fn verify_report_with_lots_input(
 struct HistoricalInputs<'a> {
     visible_migrations: BTreeSet<u64>,
     migration_activations: BTreeMap<u64, u64>,
+    migration_activation_sources: BTreeMap<u64, usize>,
     schema: metadata::Schema,
     dimension_history: dimension::History,
     infos: BTreeMap<usize, metadata::EntryInfo<'a>>,
@@ -2026,9 +2033,17 @@ fn historical_inputs<'a>(
             "the authenticated entries at known-at do not reproduce the certificate's journal root",
         ));
     }
-    let (visible_migrations, migration_activations) =
-        crate::migration_balance::report_visibility_at(envelopes, records, bodies, cert.known_at)
-            .map_err(|e| failed("migration_visibility", e.to_string()))?;
+    let crate::migration_balance::ReportVisibility {
+        visible: visible_migrations,
+        activations: migration_activations,
+        activation_sources: migration_activation_sources,
+    } = crate::migration_balance::report_visibility_with_sources(
+        envelopes,
+        records,
+        bodies,
+        cert.known_at,
+    )
+    .map_err(|e| failed("migration_visibility", e.to_string()))?;
     let mut schema = metadata::Schema::default();
     let mut dimension_history = dimension::History::default();
     let mut infos = BTreeMap::new();
@@ -2085,6 +2100,7 @@ fn historical_inputs<'a>(
     Ok(HistoricalInputs {
         visible_migrations,
         migration_activations,
+        migration_activation_sources,
         schema,
         dimension_history,
         infos,

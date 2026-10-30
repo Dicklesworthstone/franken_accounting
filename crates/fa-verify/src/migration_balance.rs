@@ -480,15 +480,38 @@ pub(crate) fn report_visibility(
     report_visibility_at(envelopes, records, bodies, known_at).map(|(visible, _)| visible)
 }
 
+/// The lifecycle proof also identifies the exact Finalize leaf. Functional
+/// stock commitments bind that control's derived identity and payload digest,
+/// not merely its sequence (several runs can finalize in one publication).
+pub(crate) struct ReportVisibility {
+    pub visible: BTreeSet<u64>,
+    pub activations: BTreeMap<u64, u64>,
+    pub activation_sources: BTreeMap<u64, usize>,
+}
+
 /// Return both counting chunks and their authenticated activation sequence.
 /// Recorded-at remains the chunk's birth; an application can use it only once
 /// the run's Finalize is visible at that application's committed frontier.
+#[cfg(test)]
 pub(crate) fn report_visibility_at(
     envelopes: &[LeafEnvelope],
     records: &[(usize, &[u8])],
     bodies: &[(u64, &[u8])],
     known_at: u64,
 ) -> Result<(BTreeSet<u64>, BTreeMap<u64, u64>), VerifyError> {
+    let visibility = report_visibility_with_sources(envelopes, records, bodies, known_at)?;
+    Ok((visibility.visible, visibility.activations))
+}
+
+/// Derive contribution membership and its exact activation witnesses from the
+/// same independently authenticated lifecycle. No producer-supplied run state
+/// or sequence-to-control guess is accepted.
+pub(crate) fn report_visibility_with_sources(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    bodies: &[(u64, &[u8])],
+    known_at: u64,
+) -> Result<ReportVisibility, VerifyError> {
     let mut runs: BTreeMap<u128, Run> = BTreeMap::new();
     let mut needed = BTreeSet::new();
     let mut chunks = Vec::new();
@@ -574,6 +597,7 @@ pub(crate) fn report_visibility_at(
     }
     let mut visible = BTreeSet::new();
     let mut activated = BTreeMap::new();
+    let mut activation_sources = BTreeMap::new();
     for (index, run, day) in chunks {
         let state = runs.get(&run).ok_or_else(|| scope_error(index))?;
         if index <= state.open_index
@@ -592,9 +616,14 @@ pub(crate) fn report_visibility_at(
             visible.insert(index);
             let (terminal, _) = state.terminal.ok_or_else(|| scope_error(index))?;
             activated.insert(index, envelopes[terminal as usize].commit_seq);
+            activation_sources.insert(index, terminal as usize);
         }
     }
-    Ok((visible, activated))
+    Ok(ReportVisibility {
+        visible,
+        activations: activated,
+        activation_sources,
+    })
 }
 
 /// Select the body inputs needed at an earlier comparison frontier from an

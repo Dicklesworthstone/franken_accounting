@@ -4,8 +4,10 @@
 //! intake receipts. Book parameters are certificate/receipt-bound inputs, not
 //! a proof of genesis. This profile verifies SpotClose, PeriodAverage and
 //! source-bound SettlementCarryingBasis, including exact inherited reversals.
-//! Revaluation, closing transfers and migration activation require separate
-//! source proofs and remain unsupported.
+//! Migration contributions use independently authenticated run bodies and
+//! lifecycle controls; activation changes visibility and the watermark without
+//! changing a chunk's birth. Revaluation and closing-transfer laws remain
+//! unsupported until their separate source proofs can be replayed.
 
 mod arithmetic;
 mod valuation;
@@ -332,6 +334,7 @@ fn sources(
     records: &[(usize, &[u8])],
     legs: &[Vec<Leg>],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<(BookParameters, BTreeMap<usize, valuation::CheckedEntry>), ReportError> {
     if cert.time_selection.is_some() || cert.branch != [0; 16] {
         return Err(failed(
@@ -351,6 +354,22 @@ fn sources(
             "declared calendar disagrees with signed period controls or base is not a registered currency",
         ));
     }
+    // Finalize activates an already published chunk. Apply the native
+    // contribution-age rule before selecting stock, activity or statements.
+    for (&index, &activated_at) in migration_activations {
+        let envelope = envelopes
+            .get(index as usize)
+            .ok_or_else(|| failed("migration_visibility", "activated chunk is absent"))?;
+        if envelope.class != 12
+            || activated_at <= envelope.commit_seq
+            || activated_at > cert.known_at
+        {
+            return Err(failed(
+                "migration_visibility",
+                "visible migration chunk requires a later authenticated Finalize",
+            ));
+        }
+    }
     let checked = valuation::verify_history(
         cert.known_at,
         &spec,
@@ -361,6 +380,7 @@ fn sources(
         records,
         legs,
         infos,
+        migration_activations,
     )?;
     Ok((spec, checked))
 }
@@ -378,9 +398,20 @@ pub(super) fn replay_statement(
     legs: &[Vec<Leg>],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
     resolved: &BTreeSet<usize>,
+    visible_migrations: &BTreeSet<u64>,
+    migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<(VerifiedFunctionalStatement, Vec<u8>), ReportError> {
     let (spec, checked) = sources(
-        cert, registry, book_bytes, documents, schema, envelopes, records, legs, infos,
+        cert,
+        registry,
+        book_bytes,
+        documents,
+        schema,
+        envelopes,
+        records,
+        legs,
+        infos,
+        migration_activations,
     )?;
     // Preserve the authenticated entry selection and lineage while supplying
     // the statement fold only the independently reproduced functional amounts.
@@ -408,7 +439,7 @@ pub(super) fn replay_statement(
         envelopes,
         infos,
         &valued_legs,
-        &BTreeSet::new(),
+        visible_migrations,
         resolved,
     )?;
     let mut output = Writer::default();
@@ -444,6 +475,9 @@ pub(super) fn replay(
     legs: &[Vec<Leg>],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
     releases: &BTreeMap<usize, u64>,
+    visible_migrations: &BTreeSet<u64>,
+    migration_activations: &BTreeMap<u64, u64>,
+    migration_activation_sources: &BTreeMap<u64, usize>,
 ) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
     if matches!(&cert.selection, Selection::Periods(codes) | Selection::Activity(codes) if codes.len() != 1)
     {
@@ -453,7 +487,16 @@ pub(super) fn replay(
         ));
     }
     let (spec, checked) = sources(
-        cert, registry, book_bytes, documents, schema, envelopes, records, legs, infos,
+        cert,
+        registry,
+        book_bytes,
+        documents,
+        schema,
+        envelopes,
+        records,
+        legs,
+        infos,
+        migration_activations,
     )?;
     let (periods, through, activity) = schema.selection(&cert.selection)?;
     let mut indices: Vec<_> = infos.keys().copied().collect();
@@ -494,6 +537,9 @@ pub(super) fn replay(
             continue;
         }
         let envelope = &envelopes[index];
+        if envelope.class == 12 && !visible_migrations.contains(&(index as u64)) {
+            continue;
+        }
         let info = &infos[&index];
         let effective = envelope
             .effective_day
@@ -509,13 +555,41 @@ pub(super) fn replay(
         }
         let seq = envelope.commit_seq;
         let entry = &checked[&index];
-        watermark = Some(watermark.map_or(seq, |at| at.max(seq)));
+        let contribution_seq = migration_activations
+            .get(&(index as u64))
+            .copied()
+            .unwrap_or(seq);
+        watermark = Some(watermark.map_or(contribution_seq, |at| at.max(contribution_seq)));
         source
             .u64(seq)
             .u128(info.identity)
             .fixed(&envelope.record_digest)
-            .u64(seq)
-            .u8(0);
+            .u64(contribution_seq);
+        if envelope.class == 12 {
+            let activation = migration_activation_sources
+                .get(&(index as u64))
+                .copied()
+                .ok_or_else(|| failed("migration_visibility", "missing Finalize source"))?;
+            let control = envelopes
+                .get(activation)
+                .ok_or_else(|| failed("migration_visibility", "Finalize source is absent"))?;
+            let control_info = infos
+                .get(&activation)
+                .ok_or_else(|| failed("migration_visibility", "Finalize metadata is absent"))?;
+            if contribution_seq <= seq
+                || control.commit_seq != contribution_seq
+                || control.class != 22
+            {
+                return Err(failed("migration_visibility", "invalid activation witness"));
+            }
+            source
+                .u8(1)
+                .u64(contribution_seq)
+                .u128(control_info.identity)
+                .fixed(&control.record_digest);
+        } else {
+            source.u8(0);
+        }
         if envelope.class == 2 {
             if let Some(&release) = releases.get(&index) {
                 let witness = *release_sources

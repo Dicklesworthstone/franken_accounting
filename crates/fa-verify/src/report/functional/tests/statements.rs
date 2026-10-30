@@ -364,6 +364,17 @@ fn pack_statement(
     rates: &[RateFixture],
     output: &[u8],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    pack_statement_with_migrations(records, request, spec, rates, output, &[])
+}
+
+fn pack_statement_with_migrations(
+    records: &[Record],
+    request: &Request,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    bodies: &[(u64, &[u8])],
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let mut selector = Writer::default();
     selector.u8(3).bytes(&definition(request.activity));
     for periods in [&request.current, &request.comparative] {
@@ -372,7 +383,7 @@ fn pack_statement(
             selector.bytes(period.as_bytes());
         }
     }
-    pack_profile(
+    pack_profile_with_migrations(
         records,
         request.known_at,
         spec,
@@ -383,6 +394,8 @@ fn pack_statement(
             output_format: STATEMENT_OUTPUT_FORMAT,
             selector: &selector.buf,
         },
+        &registries(),
+        bodies,
     )
 }
 
@@ -606,4 +619,79 @@ fn functional_statement_parameters_require_a_recipient_pin_or_verified_receipt()
         .predicate,
         "supported_report"
     );
+}
+
+#[test]
+fn migrated_capital_reproduces_hand_calculated_statements_and_requires_later_activation() {
+    let (original, rates) = history();
+    let body = super::migration::body(0, false);
+    let run = super::migration::run();
+    let mut records = original[..3].to_vec();
+    records.push(super::migration::control(4, 0, run, &body));
+    records.push(entry_with_migration(
+        5,
+        12,
+        10,
+        b"capital",
+        &valued_pair("1000", "3000", 1000, 1100),
+        Some((1, &rates[0], None)),
+        None,
+        None,
+        Some(run),
+    ));
+    records.push(super::migration::control(6, 1, run, &body));
+    records.extend(original[4..].iter().cloned().map(|mut record| {
+        record.envelope.commit_seq += 2;
+        record
+    }));
+    let bodies = [(3, body.as_slice())];
+    for activity in [false, true] {
+        for (known_at, later_sale) in [(13, 0), (14, 9990)] {
+            let mut request = request(activity);
+            request.known_at = known_at;
+            // The independently written rows remain 1310/1100 assets and
+            // 210/0 income before the later 9990 backdate, exactly as for
+            // ordinary capital. Replacing its origin must not change value.
+            let expected = expected(&request, later_sale);
+            let output = output(&expected, &request);
+            let (bundle, signed, pin) = pack_statement_with_migrations(
+                &records,
+                &request,
+                &book(&[]),
+                &rates,
+                &output,
+                &bodies,
+            );
+            let verified = verify(&bundle, &signed, &pin).unwrap();
+            assert_eq!(verified.functional_statement, Some(expected));
+            assert_eq!(verified.output, output);
+            let (bundle, signed, pin) = pack_statement_with_migrations(
+                &records,
+                &request,
+                &book(&[]),
+                &rates,
+                &output,
+                &[],
+            );
+            assert!(verify(&bundle, &signed, &pin).is_err());
+            // Reseal the complete prefix and certificate after moving Finalize
+            // into the chunk's own publication. Membership and sequence order
+            // remain valid, but this cannot activate an already published item.
+            let mut same_publication = records.clone();
+            same_publication[5].envelope.commit_seq = 5;
+            same_publication[5].envelope.within_commit_ordinal = 1;
+            let (bundle, signed, pin) = pack_statement_with_migrations(
+                &same_publication,
+                &request,
+                &book(&[]),
+                &rates,
+                &output,
+                &bodies,
+            );
+            assert_eq!(
+                verify(&bundle, &signed, &pin).unwrap_err().predicate,
+                "migration_visibility"
+            );
+        }
+    }
 }

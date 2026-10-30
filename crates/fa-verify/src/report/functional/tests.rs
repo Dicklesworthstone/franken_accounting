@@ -1,5 +1,6 @@
 //! Independent amount vectors and hostile complete-bundle fixtures.
 
+mod migration;
 mod settlement;
 mod statements;
 
@@ -216,6 +217,21 @@ fn entry(
     reverses: Option<&Record>,
     resolves: Option<&Record>,
 ) -> Record {
+    entry_with_migration(seq, class, day, key, legs, claim, reverses, resolves, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn entry_with_migration(
+    seq: u64,
+    class: u16,
+    day: i32,
+    key: &[u8],
+    legs: &[TestLeg],
+    claim: Option<ValuationClaim<'_>>,
+    reverses: Option<&Record>,
+    resolves: Option<&Record>,
+    migration: Option<u128>,
+) -> Record {
     let mut w = prefix(class, day);
     w.count(legs.len());
     let mut native: BTreeMap<u32, (i128, i128)> = BTreeMap::new();
@@ -268,13 +284,15 @@ fn entry(
             w.u16(ordinal).u32(0).i128(amount);
         }
     }
-    w.bytes(key)
-        .u8(0)
-        .fixed(&[0; 32])
-        .u16(1)
-        .u128(PRINCIPAL)
-        .u8(0)
-        .count(usize::from(claim.is_some()));
+    w.bytes(key);
+    if let Some(run) = migration {
+        w.u8(2).u128(run).bytes(b"legacy");
+        erasable(&mut w);
+        w.u8(0).u8(0).u8(0).fixed(&[0; 32]);
+    } else {
+        w.u8(0).fixed(&[0; 32]).u16(1);
+    }
+    w.u128(PRINCIPAL).u8(0).count(usize::from(claim.is_some()));
     if let Some((_, rate, _)) = claim {
         w.fixed(&rate.oid).fixed(&rate.commitment).u8(3);
     }
@@ -385,6 +403,17 @@ fn replay_fixture(
     spec: &[u8],
     rates: &[RateFixture],
 ) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
+    replay_migration_fixture(records, selected, known_at, spec, rates, &[])
+}
+
+fn replay_migration_fixture(
+    records: &[Record],
+    selected: Selection,
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    bodies: &[(u64, &[u8])],
+) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
     let envelopes: Vec<_> = records
         .iter()
         .map(|record| record.envelope.clone())
@@ -441,6 +470,10 @@ fn replay_fixture(
         .map(|rate| (rate.oid, rate.document.as_slice()))
         .collect();
     documents.sort_by_key(|(oid, _)| *oid);
+    let visibility = crate::migration_balance::report_visibility_with_sources(
+        &envelopes, &raw, bodies, known_at,
+    )
+    .map_err(|error| failed("migration_visibility", error.to_string()))?;
     replay(
         &cert,
         &definitions(),
@@ -452,6 +485,9 @@ fn replay_fixture(
         &legs,
         &infos,
         &releases,
+        &visibility.visible,
+        &visibility.activations,
+        &visibility.activation_sources,
     )
 }
 fn basic() -> (Vec<Record>, RateFixture) {
@@ -865,25 +901,6 @@ struct CertificateProfile<'a> {
     selector: &'a [u8],
 }
 
-fn pack_profile(
-    records: &[Record],
-    known_at: u64,
-    spec: &[u8],
-    rates: &[RateFixture],
-    output: &[u8],
-    profile: CertificateProfile<'_>,
-) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
-    pack_profile_with_registries(
-        records,
-        known_at,
-        spec,
-        rates,
-        output,
-        profile,
-        &registries(),
-    )
-}
-
 fn pack_profile_with_registries(
     records: &[Record],
     known_at: u64,
@@ -892,6 +909,20 @@ fn pack_profile_with_registries(
     output: &[u8],
     profile: CertificateProfile<'_>,
     docs: &[(String, Vec<u8>)],
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    pack_profile_with_migrations(records, known_at, spec, rates, output, profile, docs, &[])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pack_profile_with_migrations(
+    records: &[Record],
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    output: &[u8],
+    profile: CertificateProfile<'_>,
+    docs: &[(String, Vec<u8>)],
+    bodies: &[(u64, &[u8])],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let mut last = None;
     let mut ordinal = 0u32;
@@ -967,7 +998,11 @@ fn pack_profile_with_registries(
     for record in records {
         w.u32(record.len as u32).bytes(&record.bytes);
     }
-    w.count(0).count(docs.len());
+    w.count(bodies.len());
+    for (index, body) in bodies {
+        w.u64(*index).bytes(body);
+    }
+    w.count(docs.len());
     for (name, bytes) in docs {
         w.bytes(name.as_bytes()).bytes(bytes);
     }

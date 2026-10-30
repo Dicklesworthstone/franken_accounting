@@ -427,6 +427,7 @@ pub(super) fn verify_history(
     records: &[(usize, &[u8])],
     legs: &[Vec<Leg>],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<BTreeMap<usize, CheckedEntry>, ReportError> {
     if documents.len() > MAX_RATES || !documents.windows(2).all(|pair| pair[0].0 < pair[1].0) {
         return Err(failed(
@@ -456,12 +457,6 @@ pub(super) fn verify_history(
             ));
         }
         let envelope = &envelopes[index];
-        if envelope.class == 12 && !legs[index].is_empty() {
-            return Err(failed(
-                "supported_report",
-                "functional migration activation proofs are not supported",
-            ));
-        }
         let entry = parsed_entry(
             &records[index].1[..records[index].0],
             &legs[index],
@@ -469,6 +464,12 @@ pub(super) fn verify_history(
             registry,
         )?;
         if let Some(claim) = &entry.base {
+            if envelope.class == 12 && claim.law != law_oid(1) {
+                return Err(failed(
+                    "functional_valuation",
+                    "Migration valuations require the registered SpotClose law",
+                ));
+            }
             if ![law_oid(1), law_oid(3), law_oid(4)].contains(&claim.law) {
                 return Err(failed(
                     "supported_report",
@@ -569,6 +570,10 @@ pub(super) fn verify_history(
             let original = &parsed[&target];
             if !infos[&target].matches_identity(*identity)
                 || envelopes[target].commit_seq > envelope.commit_seq
+                || envelopes[target].class == 12
+                    && migration_activations
+                        .get(&(target as u64))
+                        .is_none_or(|activated| *activated >= envelope.commit_seq)
                 || envelopes[target].book_id != envelope.book_id
                 || envelopes[target].branch_id != envelope.branch_id
                 || legs[target].is_empty()
@@ -642,7 +647,15 @@ pub(super) fn verify_history(
         complete.extend(path);
     }
     settlement::verify(
-        spec, registry, &rates, envelopes, infos, legs, &parsed, &parents,
+        spec,
+        registry,
+        &rates,
+        envelopes,
+        infos,
+        legs,
+        &parsed,
+        &parents,
+        migration_activations,
     )?;
     Ok(parsed
         .into_iter()

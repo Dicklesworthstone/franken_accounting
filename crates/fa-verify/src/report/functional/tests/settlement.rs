@@ -1333,3 +1333,90 @@ fn tagged_revaluation_cannot_hide_in_an_at_par_claim_without_declared_routes() {
         "supported_report"
     );
 }
+
+#[test]
+fn migrated_receivables_supply_carrying_value_only_after_finalization() {
+    let spot = rate_fixture(11, 10, 1, 10);
+    let settlement = rate_fixture(3, 2, 4, 20);
+    let body = super::migration::body(0, false);
+    let run = super::migration::run();
+    let mut source_legs = pair(100, 110);
+    source_legs[0].code = "1100";
+    source_legs[1].code = "4000";
+    let source = entry_with_migration(
+        5,
+        12,
+        10,
+        b"imported-invoice",
+        &source_legs,
+        Some((1, &spot, None)),
+        None,
+        None,
+        Some(run),
+    );
+    let mut records = settlement_schema();
+    records.extend([
+        intake(&spot, 3),
+        super::migration::control(4, 0, run, &body),
+        source.clone(),
+        super::migration::control(6, 1, run, &body),
+        intake(&settlement, 7),
+        payment(
+            8,
+            20,
+            b"settle-import",
+            &component(&source, 0, "1100", true, 100, 110, 150),
+            &settlement,
+        ),
+    ]);
+    let rates = [spot, settlement];
+    let bodies = [(3, body.as_slice())];
+    let (report, output) = replay_migration_fixture(
+        &records,
+        Selection::AsOf(30),
+        8,
+        &book(&[]),
+        &rates,
+        &bodies,
+    )
+    .unwrap();
+    // Full relief takes the retained 110, while 100 at 3/2 collects 150.
+    // The 40 gain is independently determined; no current-rate repricing of
+    // the imported carrying amount is allowed.
+    assert_eq!(totals(&report, "1100"), (110, 110));
+    assert_eq!(totals(&report, "1000"), (150, 0));
+    assert_eq!(totals(&report, "1900"), (110, 110));
+    assert_eq!(totals(&report, "7000"), (0, 40));
+    assert_eq!(totals(&report, "4000"), (0, 110));
+    assert_eq!(report.entries, 2);
+    assert_eq!(report.watermark, Some(8));
+    let verified = super::migration::verify_packed(&records, 8, &rates, &output, &bodies).unwrap();
+    assert_eq!(verified.functional_trial_balance, Some(report));
+    for mutation in 0..4 {
+        let mut altered = records.clone();
+        altered.remove(5);
+        let known_at = match mutation {
+            0 => 8,
+            1 => {
+                altered.insert(5, super::migration::control(6, 2, run, &body));
+                8
+            }
+            2 => {
+                let mut finalization = super::migration::control(8, 1, run, &body);
+                finalization.envelope.within_commit_ordinal = 1;
+                altered.push(finalization);
+                8
+            }
+            _ => {
+                altered.push(super::migration::control(9, 1, run, &body));
+                9
+            }
+        };
+        let error = super::migration::verify_packed(&altered, known_at, &rates, &output, &bodies)
+            .unwrap_err();
+        assert_eq!(
+            error.predicate, "functional_carrying",
+            "mutation {mutation}: {error}"
+        );
+    }
+}

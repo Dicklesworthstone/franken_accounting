@@ -187,8 +187,9 @@ pub fn assemble_with_registries(
 /// document cited at or before known-at. The facade must govern every Rate read.
 /// This profile supports sequence-selected trunk reports under SpotClose,
 /// PeriodAverage and source-bound SettlementCarryingBasis, including exact
-/// inherited reversals. Other valuation laws and migration-origin monetary
-/// entries require their own independent interpreter.
+/// inherited reversals. Migration visibility and activation are independently
+/// derived from the authenticated lifecycle and run bodies; imported values
+/// use base-unit identity or SpotClose. Other valuation laws remain unsupported.
 ///
 /// Major 3 preserves the complete-prefix layout and appends six registry frames,
 /// bytes(BookSpec), then list(fixed32 Rate OID, bytes(inline DocumentRecord)).
@@ -221,7 +222,6 @@ pub fn assemble_functional_with_registries(
         || registries
             .iter()
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
-        || !bodies.is_empty()
     {
         return Ok(Err(refused(
             "functional report requires its exact six-registry closure and supported native source",

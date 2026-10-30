@@ -57,16 +57,16 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                         "portable functional reports do not yet independently replay cumulative FX revaluation basis",
                     )));
                 }
-                if !proposal.legs.is_empty()
-                    && matches!(proposal.origin, EntryOrigin::Migration { .. })
-                {
-                    return Ok(Err(refused(
-                        "portable functional reports do not yet interpret migration-origin valuations",
-                    )));
-                }
                 let Some(base) = &proposal.base_totals else {
                     continue;
                 };
+                if matches!(proposal.origin, EntryOrigin::Migration { .. })
+                    && FxLawId::from_oid(&base.fx_law_oid) != Some(FxLawId::SpotClose)
+                {
+                    return Ok(Err(refused(
+                        "portable Migration valuations require the registered SpotClose law",
+                    )));
+                }
                 if !matches!(
                     FxLawId::from_oid(&base.fx_law_oid),
                     Some(

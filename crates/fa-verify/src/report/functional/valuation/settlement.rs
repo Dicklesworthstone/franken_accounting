@@ -32,6 +32,7 @@ struct History<'a> {
     envelopes: &'a [LeafEnvelope],
     legs: &'a [Vec<Leg>],
     parsed: &'a BTreeMap<usize, ParsedEntry>,
+    migration_activations: &'a BTreeMap<u64, u64>,
 }
 
 fn invalid(detail: &str) -> ReportError {
@@ -123,6 +124,11 @@ impl History<'_> {
             || source_envelope.book_id != envelope.book_id
             || source_envelope.branch_id != envelope.branch_id
             || source_envelope.commit_seq >= envelope.commit_seq
+            || source_envelope.class == 12
+                && self
+                    .migration_activations
+                    .get(&(target as u64))
+                    .is_none_or(|activated| *activated >= envelope.commit_seq)
             || !matches!(source_envelope.class, 1 | 3 | 5..=15)
             || reference.unit != leg.unit
             || reference.amount != leg.mantissa
@@ -347,6 +353,7 @@ pub(super) fn verify(
     legs: &[Vec<Leg>],
     parsed: &BTreeMap<usize, ParsedEntry>,
     parents: &BTreeMap<usize, usize>,
+    migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<(), ReportError> {
     if !parsed.values().any(|entry| {
         entry
@@ -363,6 +370,7 @@ pub(super) fn verify(
         envelopes,
         legs,
         parsed,
+        migration_activations,
     };
     let mut identities = BTreeMap::new();
     for (&index, info) in infos {
