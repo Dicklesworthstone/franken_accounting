@@ -3995,3 +3995,192 @@ param = 6
 value = "-100000000000"
 unit = "USD"
 precision = 6
+
+# Powers footnote 58 (printed p.122). The quote starts with the extraction's reading of the footnote marker.
+[[fact]]
+id = "RAP1"
+provenance = "sourced"
+source = "SRC-ENR-005"
+anchor_kind = "page"
+anchor = "p122:l46-47"
+quote_sha256 = "698f15544d2f97766992f58d545f6e879f3696a3f4f81a7d58caa1d47afce0a1"
+about_scope = "scheme:raptor-restructuring-2001Q1-2001Q2"
+granularity = "dated_aggregate"
+
+# Footnote 58's next sentence begins on p.122 l47 ("A letter agreement was") and continues on p.123; a page anchor holds one page, so this binds its p.123 part, which states the date.
+[[fact]]
+id = "RAP2"
+provenance = "sourced"
+source = "SRC-ENR-005"
+anchor_kind = "page"
+anchor = "p123:l44-45"
+quote_sha256 = "e58920e99368db482a30ae9c4c8691559fd7a2c6810041afc333fd7f84d3654c"
+about_scope = "scheme:raptor-restructuring-2001Q1-2001Q2"
+granularity = "dated_aggregate"
+
+[[fact]]
+id = "NFS1"
+provenance = "sourced"
+source = "SRC-ENR-005"
+anchor_kind = "page"
+anchor = "p125:l37-41"
+quote_sha256 = "8f9991c7d0fb30e93d7c84be3933176bc869f464e05388f8f124353040c2c8b7"
+about_scope = "entry:NFS1"
+granularity = "journal_entry"
+
+# The attribution to Raptors II and IV (Timberwolf and Bobcat) is the quote's own.
+[[fact]]
+id = "NFS2"
+provenance = "sourced"
+source = "SRC-ENR-005"
+anchor_kind = "page"
+anchor = "p125:l43-47"
+quote_sha256 = "fbf5e674c6678e36f0da35d6c74e4ee120d0707658fefffc5a0e6a7fd7593094"
+about_scope = "scheme:notes-for-stock-2001-03"
+granularity = "period_total"
+
+[[fact]]
+id = "NFS3"
+provenance = "sourced"
+source = "SRC-ENR-005"
+anchor_kind = "page"
+anchor = "p126:l28-32"
+quote_sha256 = "83a6df92028a2a75c8401ec8529f4ca9b09d985249baf1ddad167c4184f0646e"
+about_scope = "scheme:notes-for-stock"
+granularity = "period_total"
+cell = "equity.notes_receivable_correction@2001Q3"
+
+# E-N-01 quotes this sentence in place of an accounting standard number (plan §7.2).
+[[fact]]
+id = "NFS-PROPER"
+provenance = "sourced"
+source = "SRC-ENR-005"
+anchor_kind = "page"
+anchor = "p126:l12-16"
+quote_sha256 = "4f7570b74a8530b10ec49a464dae3927d6a8c8012289bf202d5e10c0065f7c4d"
+about_scope = "scheme:notes-for-stock"
+granularity = "period_total"
+
+[[fact]]
+id = "RAP-E"
+provenance = "interpretation"
+from = ["RAP1", "RAP2"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "The Raptor restructuring is encoded as one entry whose documents are those RAP1 and RAP2 date: transaction documents dated April 13, 2001, effective as of March 26, 2001, and a letter agreement executed March 30, 2001. Its legs and amount are not in the quotes, so E3 declares them."
+
+[[fact]]
+id = "NFS2e"
+provenance = "interpretation"
+from = ["NFS2"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "NFS2 states similar entries in March 2001 for notes totaling $828 million, without their count. One $828 million entry encodes them, booked as NFS1 is: an increase to notes receivable and to shareholders' equity. The count is E3's declared default."
+
+# NFS1 + NFS2 = the $1 billion correction NFS3 states (172 + 828 = 1,000 $M).
+[[fact]]
+id = "NFS-SUM"
+provenance = "derived"
+from = ["NFS1", "NFS2"]
+rule = "sum"
+params = []
+
+[[value]]
+fact = "RAP1"
+ordinal = 1
+literal = "April 13, 2001"
+rule = "date_literal"
+value = "2001-04-13"
+unit = ""
+
+[[value]]
+fact = "RAP1"
+ordinal = 2
+literal = "March 26, 2001"
+rule = "date_literal"
+value = "2001-03-26"
+unit = ""
+
+[[value]]
+fact = "RAP2"
+ordinal = 1
+literal = "March 30, 2001"
+rule = "date_literal"
+value = "2001-03-30"
+unit = ""
+
+[[value]]
+fact = "NFS1"
+ordinal = 1
+literal = "$172 million"
+rule = "scale"
+param = 6
+value = "17200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "NFS1"
+ordinal = 2
+literal = "April 2000"
+rule = "month_literal"
+value = "2000-04"
+unit = ""
+
+[[value]]
+fact = "NFS2"
+ordinal = 1
+literal = "$828 million"
+rule = "scale"
+param = 6
+value = "82800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "NFS2"
+ordinal = 2
+literal = "March 2001"
+rule = "month_literal"
+value = "2001-03"
+unit = ""
+
+[[value]]
+fact = "NFS3"
+ordinal = 1
+literal = "$1 billion"
+rule = "scale"
+param = 9
+value = "100000000000"
+unit = "USD"
+precision = 9
+
+[[value]]
+fact = "NFS3"
+ordinal = 2
+literal = "$172 million"
+rule = "scale"
+param = 6
+value = "17200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "NFS3"
+ordinal = 3
+literal = "$828 million"
+rule = "scale"
+param = 6
+value = "82800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "NFS-SUM"
+ordinal = 1
+literal = "100000000000"
+rule = "scale"
+param = 0
+value = "100000000000"
+unit = "USD"
+precision = 6

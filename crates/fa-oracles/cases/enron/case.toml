@@ -12,8 +12,11 @@
 # as-originally-reported read-backs (E-R-02, E-R-01). E2d's fourth slice adds the FY1999 10-K's
 # EX-27 cells, the earliest vintage of the FY1999 figures (its BONDS, a different concept from the
 # restatements' debt, in no basis), and the Raptor equity adjustment line's cells in both restating
-# vintages, E-T-03's published delta for when E3's native book exists. The case's reader is the
-# investigator (§12.3).
+# vintages, E-T-03's published delta for when E3's native book exists. E2b adds the special
+# committee's sentences E3 builds on: the Raptor restructuring documents' dates and the
+# notes-for-stock entries ($172 million in April 2000, $828 million in March 2001, and the $1
+# billion correction), each bound to its sentence by hash, with the interpretations that turn
+# their scheme-level wording into entries. The case's reader is the investigator (§12.3).
 id = "enron"
 letter = "E"
 title = "Enron, the 1997-2001 restatements and the special purpose entities"

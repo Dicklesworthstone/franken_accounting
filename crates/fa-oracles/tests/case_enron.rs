@@ -1036,3 +1036,149 @@ fn enron_e2d_bonds_excluded() {
         .any(|f| f == "EX27-BONDS-FY1999");
     assert!(!named);
 }
+
+/// Every value row of `fact`, in ordinal order.
+fn values_of<'c>(case: &'c Case, fact: &str) -> Vec<&'c str> {
+    let mut rows: Vec<_> = case.values.iter().filter(|v| v.fact == fact).collect();
+    rows.sort_by_key(|v| v.ordinal);
+    rows.into_iter().map(|v| v.value.as_str()).collect()
+}
+
+/// The planted copy is bound no more: K-BIND fails, naming `fact`.
+fn refused_by_k_bind(files: &Files, fact: &str) {
+    let planted = load_copy(files).expect("the planted copy loads");
+    let bind = report(&planted, "K-BIND");
+    assert_eq!(
+        bind.verdict,
+        Verdict::Fail,
+        "{}",
+        bind.render(Some("enron"))
+    );
+    assert!(
+        bind.failures.iter().any(|f| f.row == fact),
+        "{}",
+        bind.render(Some("enron"))
+    );
+}
+
+/// E2b's facts from the special committee's report (SRC-ENR-005, §7.2),
+/// each bound to its sentence by hash: the Raptor documents dated April 13,
+/// 2001 and effective as of March 26, 2001 (RAP1), the letter agreement of
+/// March 30, 2001 (RAP2), the Talon note of $172 million in April 2000
+/// (NFS1), the $828 million of notes in March 2001 (NFS2), and the $1
+/// billion correction ($172 million plus $828 million, NFS3), which NFS1 +
+/// NFS2 recompute exactly (NFS-SUM). Each sourced month lies in the quarter
+/// whose last day E3 declares as its effective date.
+#[test]
+fn enron_e2b_facts_load() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    assert_eq!(values_of(&case, "RAP1"), ["2001-04-13", "2001-03-26"]);
+    assert_eq!(values_of(&case, "RAP2"), ["2001-03-30"]);
+    assert_eq!(values_of(&case, "NFS1"), ["17200000000", "2000-04"]);
+    assert_eq!(values_of(&case, "NFS2"), ["82800000000", "2001-03"]);
+    assert_eq!(
+        values_of(&case, "NFS3"),
+        ["100000000000", "17200000000", "82800000000"]
+    );
+    assert_eq!(minor(&case, "NFS-SUM"), minor(&case, "NFS3"));
+    assert_ne!(report(&case, "K-DERIVE").verdict, Verdict::Fail);
+    assert_ne!(report(&case, "K-BIND").verdict, Verdict::Fail);
+    for (fact, month, quarter_first, quarter_last) in [
+        ("NFS1", "2000-04", "2000-04", "2000-06"),
+        ("NFS2", "2001-03", "2001-01", "2001-03"),
+    ] {
+        assert_eq!(values_of(&case, fact)[1], month);
+        assert!(quarter_first <= month && month <= quarter_last, "{fact}");
+    }
+    for interp in ["RAP-E", "NFS2e"] {
+        assert!(
+            case.facts
+                .iter()
+                .any(|f| f.id == interp && f.sourced().is_none()),
+            "{interp}"
+        );
+    }
+}
+
+/// The Talon note read at 10^3 (172,000.00) instead of the quote's
+/// "million" changes NFS1's values, so K-BIND's values_sha256 no longer
+/// matches the receipt verify wrote.
+#[test]
+fn enron_e2b_talon_wrong_scale_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"NFS1\"\nordinal = 1\n",
+        "param = 6\nvalue = \"17200000000\"",
+        "param = 3\nvalue = \"17200000\"",
+    );
+    refused_by_k_bind(&files, "NFS1");
+}
+
+/// NFS2 scoped to 2000Q2, though its own words say March 2001, fails
+/// K-BIND: values_sha256 hashes the scope with the values.
+#[test]
+fn enron_e2b_march2001_scope_2000q2_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"NFS2\"\n",
+        "about_scope = \"scheme:notes-for-stock-2001-03\"",
+        "about_scope = \"period:2000Q2\"",
+    );
+    refused_by_k_bind(&files, "NFS2");
+}
+
+/// NFS2's month edited to 2001-04 with its literal "March 2001" kept fails
+/// K-BIND: month_literal recomputes 2001-03, and values_sha256 disagrees.
+#[test]
+fn enron_e2b_month_value_edited_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"NFS2\"\nordinal = 2\n",
+        "value = \"2001-03\"",
+        "value = \"2001-04\"",
+    );
+    refused_by_k_bind(&files, "NFS2");
+}
+
+/// NFS-SUM declared as 1,001 $M fails K-DERIVE, naming it.
+#[test]
+fn enron_e2b_sum_wrong_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"NFS-SUM\"\n",
+        "literal = \"100000000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"100000000000\"",
+        "literal = \"100100000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"100100000000\"",
+    );
+    let planted = load_copy(&files).expect("the planted copy loads");
+    let derive = report(&planted, "K-DERIVE");
+    assert_eq!(derive.verdict, Verdict::Fail);
+    assert!(
+        derive.failures.iter().any(|f| f.row == "NFS-SUM"),
+        "{}",
+        derive.render(Some("enron"))
+    );
+}
+
+/// RAP1's document date moved to 2001-04-12 with its literal "April 13,
+/// 2001" kept fails K-BIND: date_literal recomputes 2001-04-13, and
+/// values_sha256 disagrees.
+#[test]
+fn enron_e2b_document_date_shifted_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"RAP1\"\nordinal = 1\n",
+        "value = \"2001-04-13\"",
+        "value = \"2001-04-12\"",
+    );
+    refused_by_k_bind(&files, "RAP1");
+}
