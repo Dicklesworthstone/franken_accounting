@@ -1,5 +1,5 @@
 use super::*;
-use crate::cases::embedded::{WORLDCOM, XBRL};
+use crate::cases::embedded::{LEHMAN, WORLDCOM, XBRL};
 
 fn load(case: &crate::cases::embedded::EmbeddedCase) -> Case {
     crate::cases::load(&case.case_files()).expect("the case loads")
@@ -254,4 +254,17 @@ fn amounts_are_grouped_by_thousands_without_arithmetic() {
     assert_eq!(grouped("12.00"), "12.00");
     assert_eq!(grouped("123"), "123");
     assert_eq!(grouped("1000"), "1,000");
+}
+
+/// A unitless figure stated to decimals is written at its stated places
+/// (p.889's 13.9x is the value 139 at precision -1); a monetary value keeps
+/// its unit's scale.
+#[test]
+fn unitless_ratio_is_written_at_its_stated_places() {
+    let case = load(&LEHMAN);
+    assert_eq!(values_of(&case, "V889-anl-adj-2008-05-31"), "13.9");
+    assert_eq!(
+        values_of(&case, "V889-d-2008-05-31"),
+        "27,179,000,000.00 USD"
+    );
 }

@@ -8,7 +8,11 @@
 //! Equity) reads every leg effective from the book's opening through the
 //! read's period end, a flow account (Revenue, Expense) the legs of the
 //! read's own periods; both at the sequence the fold path's read resolved,
-//! certified (`AS KNOWN AT`).
+//! certified (`AS KNOWN AT`). A scenario-diff read of an account is read
+//! twice: on the scenario's replay (`AT BRANCH 'scenario:<name>'`, read at
+//! the replay's head and never certified, as the profile requires of a
+//! branch read) and on trunk at the fork's sequence; their difference must
+//! equal the diff's.
 
 use crate::json::Json;
 
@@ -29,13 +33,41 @@ pub enum Selection {
 /// # Errors
 /// An account code or selector that would need quoting.
 pub fn statement(account: &str, selection: &Selection, known_at: i128) -> Result<String, String> {
-    let quoted = |s: &str| {
-        if s.is_empty() || s.contains(['\'', '\\']) {
-            Err(format!("`{s}` cannot be quoted in a profile statement"))
-        } else {
-            Ok(format!("'{s}'"))
-        }
-    };
+    Ok(format!(
+        "{} AS KNOWN AT {known_at}",
+        legs(account, selection)?
+    ))
+}
+
+/// The profile statement reading `account`'s legs by unit and side on the
+/// replay of scenario `scenario` (`AT BRANCH 'scenario:<name>'`): trunk at
+/// its fork plus its intents, read at the replay's head, uncertified.
+///
+/// # Errors
+/// An account code, selector or scenario name that would need quoting.
+pub fn branch_statement(
+    account: &str,
+    selection: &Selection,
+    scenario: &str,
+) -> Result<String, String> {
+    let branch = format!("scenario:{scenario}");
+    Ok(format!(
+        "{} AT BRANCH {}",
+        legs(account, selection)?,
+        quoted(&branch)?
+    ))
+}
+
+fn quoted(s: &str) -> Result<String, String> {
+    if s.is_empty() || s.contains(['\'', '\\']) {
+        Err(format!("`{s}` cannot be quoted in a profile statement"))
+    } else {
+        Ok(format!("'{s}'"))
+    }
+}
+
+/// The statement's match, aggregate and selector, before its coordinate.
+fn legs(account: &str, selection: &Selection) -> Result<String, String> {
     let selector = match selection {
         Selection::Stock { opening, end } => format!(
             "EFFECTIVE BETWEEN {} AND {}",
@@ -50,7 +82,7 @@ pub fn statement(account: &str, selection: &Selection, known_at: i128) -> Result
         }
     };
     Ok(format!(
-        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {{code: {}}}), (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side {selector} AS KNOWN AT {known_at}",
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {{code: {}}}), (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side {selector}",
         quoted(account)?
     ))
 }
@@ -110,6 +142,23 @@ mod tests {
             .as_array()
             .expect("an array")
             .to_vec()
+    }
+
+    /// A branch read names the scenario's replay and no sequence: the
+    /// profile reads a branch at its replay's head, uncertified.
+    #[test]
+    fn branch_statement_reads_the_scenario_replay_with_no_sequence() {
+        let stock = Selection::Stock {
+            opening: "2008-03-01".into(),
+            end: "2008-05-31".into(),
+        };
+        assert_eq!(
+            branch_statement("1030", &stock, "lehman-repo105").as_deref(),
+            Ok(
+                "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code: '1030'}), (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side EFFECTIVE BETWEEN '2008-03-01' AND '2008-05-31' AT BRANCH 'scenario:lehman-repo105'"
+            )
+        );
+        assert!(branch_statement("1030", &stock, "it's").is_err());
     }
 
     #[test]

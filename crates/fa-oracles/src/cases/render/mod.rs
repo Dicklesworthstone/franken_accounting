@@ -200,6 +200,17 @@ fn values_of(case: &Case, fact: &str) -> String {
                 (false, Some(scale), Ok(minor)) => {
                     format!("{} {}", grouped(&format_amount(minor, scale)), v.unit)
                 }
+                // A unitless figure stated to decimals (a ratio, 13.9 at
+                // precision -1) is written at its stated places.
+                (true, _, Ok(minor)) => match v
+                    .precision
+                    .filter(|p| *p < 0)
+                    .and_then(|p| p.checked_neg())
+                    .and_then(|p| u8::try_from(p).ok())
+                {
+                    Some(places) => grouped(&format_amount(minor, places)),
+                    None => v.value.clone(),
+                },
                 _ => v.value.clone(),
             }
         })

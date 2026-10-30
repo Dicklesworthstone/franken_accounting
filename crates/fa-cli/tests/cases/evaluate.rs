@@ -18,6 +18,7 @@ use fa_oracles::cases::contrib::{ContribVerdict, cross_check, named_inputs, witn
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
+use fa_oracles::cases::ratios;
 use fa_oracles::cases::reference::{CellSetting, LiveEntry, RefVerdict, ReferenceAdapter};
 use fa_oracles::cases::rel;
 use fa_oracles::cases::remedy::{self, Cells, Check};
@@ -250,6 +251,7 @@ pub fn rows(
                         (ExpectationType::P, None) => p_row(run, e, row),
                         (ExpectationType::T, t) => t_row(run, e, t, row),
                         (ExpectationType::R, t) => r_row(run, e, t, row),
+                        (ExpectationType::C, None) => c_row(run, e, row),
                         (ExpectationType::N, None) => {
                             let spec = specs.iter().find(|(id, _)| *id == e.id).map(|(_, s)| s);
                             n_row(run, e, spec, twins.get(&e.id), row)
@@ -1462,7 +1464,18 @@ fn contrib_verdict(
 /// value.
 fn r_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLine) -> Eval {
     row.projection.push(("kind".into(), "read_back".into()));
-    match read_against(run, e, t, &mut row, "posted") {
+    let mut verdict = read_against(run, e, t, &mut row, "posted");
+    // A scenario-diff read's certificate, replayed (§12.1): a failed
+    // replay fails the row.
+    if let Some((kind, check)) = run.read_checks.get(&super::reads::key(e, t)) {
+        let state = if check.is_ok() { "verified" } else { "failed" };
+        row.projection
+            .push(("outsider".into(), format!("{}:{state}", kind.name())));
+        if let (Ok(()), Err(why)) = (&verdict, check) {
+            verdict = Err((RowVerdict::Fail, format!("outsider {}: {why}", kind.name())));
+        }
+    }
+    match verdict {
         Ok(()) => row.verdict = RowVerdict::Pass,
         Err((verdict, why)) => {
             row.verdict = verdict;
@@ -1470,6 +1483,252 @@ fn r_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         }
     }
     (row, read_certificate(run, e, t), None)
+}
+
+/// A C row (§5.3; L3): the harness's own computation, never an FA
+/// operator. Its `numerator` over its optional `denominator` is computed in
+/// checked integers from the variant's certified T and R reads (each in its
+/// read account's natural sign) and sourced values, then decided against
+/// its published figure by the exact band test, within one display unit of
+/// its `display_unit` fact ([`ratios::within_display_band`]). A ratio's
+/// published figure is unitless and its terms share one unit; a sum's
+/// figure is in its terms' unit, with no denominator. A term whose read
+/// waits makes the row wait; a term that failed fails it. The row prints
+/// the computed value two places past the published figure (truncated),
+/// the figure and its display unit, and the interval of its
+/// `detection_limit` term the band accepts: a change of that term inside
+/// it is not detected.
+fn c_row(run: &BookRun<'_>, e: &Expectation, mut row: RowLine) -> Eval {
+    row.projection.push(("kind".into(), "band".into()));
+    match c_band(run, e, &mut row) {
+        Ok(()) => row.verdict = RowVerdict::Pass,
+        Err((verdict, why)) => {
+            row.verdict = verdict;
+            row.reason = Some(why);
+        }
+    }
+    (row, Vec::new(), None)
+}
+
+type Failed = (RowVerdict, String);
+
+/// The first `[[value]]` of `fact`: its value, unit and stated precision.
+fn stated(run: &BookRun<'_>, fact: &str) -> Result<(i128, String, i128), Failed> {
+    let v = run
+        .case
+        .values
+        .iter()
+        .find(|v| v.fact == fact && v.ordinal == 1)
+        .ok_or_else(|| {
+            (
+                RowVerdict::Fail,
+                format!("expected a [[value]] of {fact} observed none"),
+            )
+        })?;
+    let value = v.value.parse::<i128>().map_err(|_| {
+        (
+            RowVerdict::Fail,
+            format!("expected an integer value of {fact} observed `{}`", v.value),
+        )
+    })?;
+    Ok((value, v.unit.clone(), v.precision.unwrap_or(0)))
+}
+
+/// A C term's signed value and its unit: `fact:<id>`'s value, or the
+/// certified read `<expectation>/<target>` in its account's natural sign.
+fn c_term(run: &BookRun<'_>, term: &str) -> Result<(i128, String), Failed> {
+    let fail = |why: String| (RowVerdict::Fail, format!("term {term}: {why}"));
+    let (sign, r) = match term.split_at_checked(1) {
+        Some(("+", r)) => (1, r),
+        Some(("-", r)) => (-1, r),
+        _ => return Err(fail("expected a + or - sign".into())),
+    };
+    let (value, unit) = if let Some(fact) = r.strip_prefix("fact:") {
+        let (v, u, _) = stated(run, fact)?;
+        (v, u)
+    } else {
+        let (id, target) = r
+            .split_once('/')
+            .ok_or_else(|| fail("expected <expectation>/<target>".into()))?;
+        let e = run
+            .case
+            .expectations
+            .as_ref()
+            .and_then(|set| set.get(id))
+            .ok_or_else(|| fail(format!("expected a row {id} observed none")))?;
+        let t = run
+            .case
+            .expectations
+            .as_ref()
+            .and_then(|set| set.targets_of(id).find(|t| t.fact == target));
+        let read = run
+            .reads
+            .get(&super::reads::key(e, t))
+            .ok_or_else(|| fail(format!("expected a read of {r} observed none")))?;
+        let net = match &read.value {
+            Ok(v) => *v,
+            Err(why) if why.starts_with("needs:") => {
+                return Err((RowVerdict::Unrun, format!("term {term}: {why}")));
+            }
+            Err(why) => return Err(fail(why.clone())),
+        };
+        let field = |k| super::reads::field(e, t, k);
+        let natural = super::reads::natural_sign(
+            run.book,
+            field("read_verb").unwrap_or("-"),
+            field("read_target").unwrap_or("-"),
+        );
+        let key = if e.kind == ExpectationType::T {
+            "published"
+        } else {
+            "posted"
+        };
+        let unit = field(key)
+            .and_then(|f| run.value_of(f))
+            .map(|(_, u)| u)
+            .ok_or_else(|| {
+                fail(format!(
+                    "expected the unit of {r}'s {key} value observed none"
+                ))
+            })?;
+        let value = net
+            .checked_mul(natural)
+            .ok_or_else(|| fail("expected a value in range observed overflow".into()))?;
+        (value, unit)
+    };
+    let value = value
+        .checked_mul(sign)
+        .ok_or_else(|| fail("expected a value in range observed overflow".into()))?;
+    Ok((value, unit))
+}
+
+/// [`c_row`]'s computation and band test.
+fn c_band(run: &BookRun<'_>, e: &Expectation, row: &mut RowLine) -> Result<(), Failed> {
+    let f = &e.fields;
+    let fail = |why: String| (RowVerdict::Fail, why);
+    let overflow = || fail("expected a value in range observed overflow".into());
+    let (printed, unit, precision) = stated(run, f.str("published").unwrap_or("-"))?;
+    let (_, _, display_precision) = stated(run, f.str("display_unit").unwrap_or("-"))?;
+    let ratio = unit.is_empty();
+    // The published figure's decimal places: a unitless figure's stated
+    // precision, a monetary one's unit scale; one display unit at those
+    // places is 10^(display precision + places).
+    let places = if ratio {
+        precision.checked_neg().ok_or_else(overflow)?
+    } else {
+        i128::from(
+            super::reads::scale_of(&unit)
+                .ok_or_else(|| fail(format!("expected a registered unit observed `{unit}`")))?,
+        )
+    };
+    let places_u8 = u8::try_from(places).map_err(|_| {
+        fail(format!(
+            "expected a figure at 0 or more places observed {places}"
+        ))
+    })?;
+    let display = display_precision
+        .checked_add(places)
+        .and_then(|x| u32::try_from(x).ok())
+        .and_then(|x| 10i128.checked_pow(x))
+        .ok_or_else(|| {
+            fail("expected a display unit no finer than the figure observed one".into())
+        })?;
+    let terms = |key: &str| -> Result<Vec<(String, i128, String)>, Failed> {
+        f.strs(key)
+            .unwrap_or(&[])
+            .iter()
+            .map(|t| c_term(run, t).map(|(v, u)| (t.clone(), v, u)))
+            .collect()
+    };
+    let num = terms("numerator")?;
+    let den = terms("denominator")?;
+    let term_unit = num.first().map(|(_, _, u)| u.clone()).unwrap_or_default();
+    if let Some((t, _, u)) = num.iter().chain(&den).find(|(_, _, u)| *u != term_unit) {
+        return Err(fail(format!(
+            "expected every term in {term_unit} observed {t} in {u}"
+        )));
+    }
+    if ratio == den.is_empty() || (!ratio && term_unit != unit) {
+        return Err(fail(format!(
+            "expected a unitless figure over a denominator, or a figure in its terms' unit over none, observed `{unit}` over {} term(s) in {term_unit}",
+            den.len()
+        )));
+    }
+    let sum = |ts: &[(String, i128, String)]| {
+        ts.iter()
+            .try_fold(0i128, |a, (_, v, _)| a.checked_add(*v))
+            .ok_or_else(overflow)
+    };
+    let n = sum(&num)?;
+    let (d, scale) = if ratio {
+        (sum(&den)?, u32::from(places_u8))
+    } else {
+        (1, 0)
+    };
+    let band = ratios::within_display_band(n, d, printed, scale, display)
+        .map_err(|why| fail(format!("expected a band verdict observed {why:?}")))?;
+    // The computed value: a ratio two places past the figure, truncated; a
+    // sum exactly.
+    let (shown, shown_places) = if ratio {
+        let shown = scale
+            .checked_add(2)
+            .and_then(|x| 10i128.checked_pow(x))
+            .and_then(|p| n.checked_mul(p))
+            .and_then(|x| x.checked_div(d))
+            .ok_or_else(overflow)?;
+        (shown, places_u8.checked_add(2).ok_or_else(overflow)?)
+    } else {
+        (n, places_u8)
+    };
+    row.projection.extend([
+        (
+            "computed".into(),
+            format!("harness:{}", format_amount(shown, shown_places)),
+        ),
+        ("published".into(), format_amount(printed, places_u8)),
+        ("unit".into(), format_amount(display, places_u8)),
+    ]);
+    if let Some(limit) = f.str("detection_limit") {
+        let (t, v, u) = num
+            .iter()
+            .find(|(t, _, _)| t.get(1..) == Some(limit))
+            .ok_or_else(|| {
+                fail(format!(
+                    "expected {limit} among the numerator terms observed none"
+                ))
+            })?;
+        let rest = n.checked_sub(*v).ok_or_else(overflow)?;
+        let (lo, hi) = ratios::detection_interval(rest, d, printed, scale, display)
+            .map_err(|why| fail(format!("expected a detection interval observed {why:?}")))?;
+        // The interval of the term's own value, before its sign.
+        let (lo, hi) = if t.starts_with('-') {
+            (
+                hi.checked_neg().ok_or_else(overflow)?,
+                lo.checked_neg().ok_or_else(overflow)?,
+            )
+        } else {
+            (lo, hi)
+        };
+        let s = super::reads::scale_of(u).unwrap_or(0);
+        row.projection.push((
+            "detection".into(),
+            format!(
+                "{limit}:[{},{}]",
+                format_amount(lo, s),
+                format_amount(hi, s)
+            ),
+        ));
+    }
+    if band.within {
+        Ok(())
+    } else {
+        Err(fail(format!(
+            "expected the computed value within one display unit {} of {} observed {}",
+            format_amount(display, places_u8),
+            format_amount(printed, places_u8),
+            format_amount(shown, shown_places)
+        )))
+    }
 }
 
 /// The certificate a row's read retained, as a record witness.

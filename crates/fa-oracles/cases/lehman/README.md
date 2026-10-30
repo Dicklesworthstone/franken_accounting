@@ -2,9 +2,9 @@
 
 # Lehman Brothers Repo 105, fiscal 2007 to the second quarter of 2008
 
-Case `lehman` (letter L), version 1. Scope: the condensed consolidated statement of financial condition the Q2-2008 10-Q prints, at May 31, 2008 and at the November 30, 2007 comparative: every line, and the printed totals they foot to; and the quarter-end Repo 105/108 usage the examiner's report prints, recharacterized as a secured borrowing in a but-for scenario on the May 31, 2008 statement.
+Case `lehman` (letter L), version 1. Scope: the condensed consolidated statement of financial condition the Q2-2008 10-Q prints, at May 31, 2008 and at the November 30, 2007 comparative: every line, and the printed totals they foot to; and the quarter-end Repo 105/108 usage the examiner's report prints, recharacterized as a secured borrowing in a but-for scenario on the May 31, 2008 statement, and the examiner's adjusted net leverage that adds it, recomputed from those certified reads.
 
-Claimed rows: `L-R-01`, `L-R-02`, `L-T-01`, `L-T-02`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `L-C-01`, `L-R-01`, `L-R-02`, `L-T-01`, `L-T-02`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -87,6 +87,8 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `Q208.total_stockholders_equity.2007-11-30` | `SRC-LEH-002` | `Consolidated Statement of Financial Condition—(Continued)@p6\|Total stockholders’ equity\|Nov 30, 2007` | 22,490,000,000.00 USD | reported (reviewed; a review is not an audit) | statement_line |
 | `Q208.total_liabilities_and_equity.2007-11-30` | `SRC-LEH-002` | `Consolidated Statement of Financial Condition—(Continued)@p6\|Total liabilities and stockholders’ equity\|Nov 30, 2007` | 691,063,000,000.00 USD | reported (reviewed; a review is not an audit) | statement_line |
 | `V889-e-2008-05-31` | `SRC-LEH-001` | `Gross and Net Balance Sheet Ratios@p889\|(e) Repo 105/108 Usage\|May 31, 2008` | 50,383,000,000.00 USD | the examiner reported | dated_aggregate |
+| `V889-d-2008-05-31` | `SRC-LEH-001` | `Gross and Net Balance Sheet Ratios@p889\|(d) Tangible Equity Capital **\|May 31, 2008` | 27,179,000,000.00 USD | the examiner reported | dated_aggregate |
+| `V889-anl-adj-2008-05-31` | `SRC-LEH-001` | `Gross and Net Balance Sheet Ratios@p889\|Net Leverage Ratio ((b) + (e)) / (d)\|May 31, 2008` | 13.9 | the examiner reported | dated_aggregate |
 
 ### Readings of the record
 
@@ -251,8 +253,18 @@ Sources: `SRC-LEH-001` (the examiner reported).
 
 | Target | Cell | Read as | Verdict | Record | Observed |
 |---|---|---|---|---|---|
-| `V889-e-2008-05-31-inventory` | `default` | R | PASS | record-consistent | kind=read_back read=scenario-diff,1030,FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 |
-| `V889-e-2008-05-31-repos` | `default` | R | PASS | record-consistent | kind=read_back read=scenario-diff,2030,FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 |
+| `V889-e-2008-05-31-inventory` | `default` | R | PASS | record-consistent | kind=read_back read=scenario-diff,1030,FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 gql=ok outsider=replay:verified |
+| `V889-e-2008-05-31-repos` | `default` | R | PASS | record-consistent | kind=read_back read=scenario-diff,2030,FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 gql=ok outsider=replay:verified |
+
+### `L-C-01`: consistency check (C.band)
+
+On the book `statement`, each line below agrees with the published value within its stated display precision, from `V889-d-2008-05-31`, `V889-e-2008-05-31`, `Q208.total_assets.2008-05-31`, `Q208.segregated.2008-05-31`, `Q208.reverse_repos.2008-05-31`, `Q208.securities_borrowed.2008-05-31`, `Q208.intangibles.2008-05-31`.
+
+Sources: `SRC-LEH-002` (reported (reviewed; a review is not an audit)), `SRC-LEH-001` (the examiner reported).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `-` | `default` | C | PASS | record-consistent | kind=band computed=harness:13.913 published=13.9 unit=0.1 detection=L-R-02/V889-e-2008-05-31-inventory:[47296200000.00,52732000000.00] |
 
 ### `L-T-02`: exact tie-out (T.footing)
 

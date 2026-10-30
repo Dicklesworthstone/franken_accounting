@@ -5,7 +5,8 @@
 # establishes the row's assurance. Two interpretation facts read each date's lines as one
 # posted entry. From the examiner's report (SRC-LEH-001): p.889's (e), the Repo 105/108 usage at
 # May 31, 2008, which the Repo 105 scenario posts, and two interpretations that read its effect on
-# the two lines it moves (L-R-02).
+# the two lines it moves (L-R-02); and the same column's (d), tangible equity capital, and its
+# adjusted net leverage ((b) + (e)) / (d), printed 13.9x, which L-C-01 recomputes.
 
 [[fact]]
 id = "Q208-LEGEND"
@@ -748,6 +749,26 @@ about_scope = "scheme:lehman-examiner-p889"
 granularity = "dated_aggregate"
 
 [[fact]]
+id = "V889-d-2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-001"
+anchor_kind = "table_cell"
+anchor = "Gross and Net Balance Sheet Ratios@p889|(d) Tangible Equity Capital **|May 31, 2008"
+quote_sha256 = "373843c944804c7d8b72e6879382619fe25b8bc1ab868aa047c67b0e08f8fcee"
+about_scope = "scheme:lehman-examiner-p889"
+granularity = "dated_aggregate"
+
+[[fact]]
+id = "V889-anl-adj-2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-001"
+anchor_kind = "table_cell"
+anchor = "Gross and Net Balance Sheet Ratios@p889|Net Leverage Ratio ((b) + (e)) / (d)|May 31, 2008"
+quote_sha256 = "14a025d40596d97029a1bd22864a8ba632361539550cc4249188a0de8d61c9a9"
+about_scope = "scheme:lehman-examiner-p889"
+granularity = "dated_aggregate"
+
+[[fact]]
 id = "V889-e-2008-05-31-inventory"
 provenance = "interpretation"
 from = ["V889-e-2008-05-31"]
@@ -1412,3 +1433,23 @@ param = 6
 value = "5038300000000"
 unit = "USD"
 precision = 6
+
+[[value]]
+fact = "V889-d-2008-05-31"
+ordinal = 1
+literal = "27,179"
+rule = "scale"
+param = 6
+value = "2717900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "V889-anl-adj-2008-05-31"
+ordinal = 1
+literal = "13.9 x"
+rule = "scale"
+param = 0
+value = "139"
+unit = ""
+precision = -1

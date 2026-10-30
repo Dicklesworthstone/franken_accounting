@@ -5,15 +5,17 @@
 # posted lines the examiner's net-leverage arithmetic deducts. L-R-02 is the Repo 105 but-for: a
 # scenario on the May 31, 2008 book recharacterizes the quarter-end Repo 105/108 usage the
 # examiner's report prints (p.889's (e)) as a secured borrowing, and its certified diff moves total
-# assets and total liabilities by exactly (e). L-C-01, L-N-01/L-N-02 and L-D-01 are later slices.
+# assets and total liabilities by exactly (e). L-C-01 recomputes the examiner's adjusted net
+# leverage from those certified reads and agrees with its printed 13.9x within the 0.1x display
+# unit. L-N-01/L-N-02 and L-D-01 are later slices.
 # The case's reader is the litigation consultant's but-for (§12.3).
 id = "lehman"
 letter = "L"
 title = "Lehman Brothers Repo 105, fiscal 2007 to the second quarter of 2008"
 version = 1
 kind = "case"
-scope = "the condensed consolidated statement of financial condition the Q2-2008 10-Q prints, at May 31, 2008 and at the November 30, 2007 comparative: every line, and the printed totals they foot to; and the quarter-end Repo 105/108 usage the examiner's report prints, recharacterized as a secured borrowing in a but-for scenario on the May 31, 2008 statement"
-claims = ["L-R-01", "L-R-02", "L-T-01", "L-T-02"]
+scope = "the condensed consolidated statement of financial condition the Q2-2008 10-Q prints, at May 31, 2008 and at the November 30, 2007 comparative: every line, and the printed totals they foot to; and the quarter-end Repo 105/108 usage the examiner's report prints, recharacterized as a secured borrowing in a but-for scenario on the May 31, 2008 statement, and the examiner's adjusted net leverage that adds it, recomputed from those certified reads"
+claims = ["L-C-01", "L-R-01", "L-R-02", "L-T-01", "L-T-02"]
 capabilities = ["verb:post", "verb:scenario", "verb:statement"]
 pinned_commit = "d9abe4cbf"
 variants = ["statement", "statement-fy2007"]

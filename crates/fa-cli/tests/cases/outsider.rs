@@ -712,7 +712,8 @@ impl BookRun<'_> {
     /// replay`), whose output must hash to the digest fa-verify recomputed.
     /// The recomputations, summed, must equal B. A read
     /// with no value or no certificate, or a verb outside the table, has no
-    /// check: its T stays UNRUN.
+    /// check: its T stays UNRUN. An R scenario-diff read is checked too
+    /// (§12.1: a scenario row's outsider check is its certificate, replayed).
     pub(crate) fn outsider_reads(&mut self) {
         let case = self.case;
         let Some(set) = case.expectations.as_ref() else {
@@ -721,14 +722,24 @@ impl BookRun<'_> {
         let variant = self.book.stem.as_str();
         let mut wanted: Vec<(&Expectation, Option<&Target>)> = Vec::new();
         for e in set.expectations.iter().filter(|e| {
-            e.kind == ExpectationType::T && e.fields.str("book_variant") == Some(variant)
+            matches!(e.kind, ExpectationType::T | ExpectationType::R)
+                && e.fields.str("book_variant") == Some(variant)
         }) {
             let targets: Vec<&Target> = set.targets_of(&e.id).collect();
-            if targets.is_empty() {
-                wanted.push((e, None));
+            let reads: Vec<Option<&Target>> = if targets.is_empty() {
+                vec![None]
             } else {
-                wanted.extend(targets.into_iter().map(|t| (e, Some(t))));
-            }
+                targets.into_iter().map(Some).collect()
+            };
+            wanted.extend(
+                reads
+                    .into_iter()
+                    .filter(|t| {
+                        e.kind == ExpectationType::T
+                            || field(e, *t, "read_verb") == Some("scenario-diff")
+                    })
+                    .map(|t| (e, t)),
+            );
         }
         let mut anchor: Option<Result<String, String>> = None;
         for (e, t) in wanted {

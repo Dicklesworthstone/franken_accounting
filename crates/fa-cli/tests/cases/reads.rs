@@ -222,6 +222,8 @@ impl BookRun<'_> {
     /// a stock account's legs effective from the book's opening through the
     /// read's period end, a flow account's legs of the read's own periods.
     /// The rows, netted by [`gql::net`], must equal the fold path's value.
+    /// A scenario-diff read of an account is read on the scenario's branch
+    /// and on trunk at its fork ([`Self::gql_diff_read`]).
     pub(crate) fn gql_reads(&mut self) {
         let case = self.case;
         let Some(set) = case.expectations.as_ref() else {
@@ -241,6 +243,19 @@ impl BookRun<'_> {
             }
         }
         for (e, t) in wanted {
+            if field(e, t, "read_verb") == Some("scenario-diff") {
+                let reference = key(e, t);
+                let value = match self.reads.get(&reference) {
+                    Some(Read {
+                        value: Ok(value), ..
+                    }) => *value,
+                    _ => continue,
+                };
+                if let Some(verdict) = self.gql_diff_read(e, t, &reference, value) {
+                    self.gql.insert(reference, verdict);
+                }
+                continue;
+            }
             if field(e, t, "read_verb") != Some("balance") {
                 continue;
             }
@@ -266,6 +281,96 @@ impl BookRun<'_> {
         value: i128,
         known_at: i128,
     ) -> Result<(), String> {
+        let account = field(e, t, "read_target").unwrap_or("-");
+        let (unit, scale, selection) = self.gql_selection(e, t)?;
+        let statement = gql::statement(account, &selection, known_at)?;
+        let (net, call) = self.gql_net(reference, statement, true, &unit, scale)?;
+        if net == value {
+            Ok(())
+        } else {
+            self.lines.push(reproduce(&call));
+            Err(format!(
+                "expected the query's net {} observed {}",
+                format_amount(value, scale),
+                format_amount(net, scale)
+            ))
+        }
+    }
+
+    /// The second read path of a scenario-diff read of an account (§12.7):
+    /// the account's legs on the scenario's replay (`AT BRANCH`, read at
+    /// the replay's head and uncertified, as the profile requires of a
+    /// branch read) less its legs on trunk at the fork's sequence
+    /// (certified), in the account's natural sign, must equal the diff's
+    /// change. A read of a balance-sheet line has no such path.
+    fn gql_diff_read(
+        &mut self,
+        e: &Expectation,
+        t: Option<&Target>,
+        reference: &str,
+        value: i128,
+    ) -> Option<Result<(), String>> {
+        let account = field(e, t, "read_target").unwrap_or("-");
+        if !self.book.accounts.iter().any(|a| a.code == account) {
+            return None;
+        }
+        let scenario = field(e, t, "read_selector")
+            .and_then(|s| s.strip_prefix("scenario:"))?
+            .to_string();
+        let fork_at = self
+            .scenario_diffs
+            .iter()
+            .rev()
+            .find(|d| d.name == scenario)?
+            .call
+            .event("scenario_diff")
+            .and_then(|o| o.field("fork_at"))
+            .and_then(Json::as_int);
+        Some(self.gql_diff_check(e, t, reference, value, &scenario, fork_at))
+    }
+
+    /// [`Self::gql_diff_read`]'s two queries and their comparison.
+    fn gql_diff_check(
+        &mut self,
+        e: &Expectation,
+        t: Option<&Target>,
+        reference: &str,
+        value: i128,
+        scenario: &str,
+        fork_at: Option<i128>,
+    ) -> Result<(), String> {
+        let account = field(e, t, "read_target").unwrap_or("-");
+        let fork_at = fork_at.ok_or("expected the diff's fork_at observed none")?;
+        let (unit, scale, selection) = self.gql_selection(e, t)?;
+        let branch = gql::branch_statement(account, &selection, scenario)?;
+        let trunk = gql::statement(account, &selection, fork_at)?;
+        let (on_branch, branch_call) = self.gql_net(reference, branch, false, &unit, scale)?;
+        let (on_trunk, trunk_call) = self.gql_net(reference, trunk, true, &unit, scale)?;
+        let net = on_branch
+            .checked_sub(on_trunk)
+            .and_then(|d| d.checked_mul(natural_sign(self.book, "balance", account)))
+            .ok_or("the queries' difference overflows")?;
+        if net == value {
+            Ok(())
+        } else {
+            self.lines.push(reproduce(&branch_call));
+            self.lines.push(reproduce(&trunk_call));
+            Err(format!(
+                "expected the branch query less trunk's at {fork_at} to be {} observed {}",
+                format_amount(value, scale),
+                format_amount(net, scale)
+            ))
+        }
+    }
+
+    /// The unit, scale and leg selection of a row's second-path read: a
+    /// stock account's legs effective from the book's opening through the
+    /// read's period end, a flow account's legs of the read's own periods.
+    fn gql_selection(
+        &self,
+        e: &Expectation,
+        t: Option<&Target>,
+    ) -> Result<(String, u8, gql::Selection), String> {
         let account = field(e, t, "read_target").unwrap_or("-");
         let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
         let value_key = if e.kind == ExpectationType::T {
@@ -312,19 +417,28 @@ impl BookRun<'_> {
                 through: code(&last)?,
             }
         };
-        let statement = gql::statement(account, &selection, known_at)?;
-        let call = self.call(
-            self.head,
-            reference,
-            "query",
-            vec![
-                "query".to_string(),
-                statement,
-                "--certify".to_string(),
-                "--json".to_string(),
-            ],
-        );
-        self.certificate_kind("Query");
+        Ok((unit, scale, selection))
+    }
+
+    /// `fa query <statement> [--certify] --json`, its rows netted in `unit`,
+    /// and the call (for a `REPRODUCE` line on a mismatch).
+    fn gql_net(
+        &mut self,
+        reference: &str,
+        statement: String,
+        certify: bool,
+        unit: &str,
+        scale: u8,
+    ) -> Result<(i128, Call), String> {
+        let mut args = vec!["query".to_string(), statement];
+        if certify {
+            args.push("--certify".to_string());
+        }
+        args.push("--json".to_string());
+        let call = self.call(self.head, reference, "query", args);
+        if certify {
+            self.certificate_kind("Query");
+        }
         if call.exit != 0 {
             self.lines.push(reproduce(&call));
             return Err(format!(
@@ -335,16 +449,12 @@ impl BookRun<'_> {
             .trim_end()
             .to_string());
         }
-        let net = gql::net(&call.array_field("query_rows", "rows"), &unit, scale)?;
-        if net == value {
-            Ok(())
-        } else {
-            self.lines.push(reproduce(&call));
-            Err(format!(
-                "expected the query's net {} observed {}",
-                format_amount(value, scale),
-                format_amount(net, scale)
-            ))
+        match gql::net(&call.array_field("query_rows", "rows"), unit, scale) {
+            Ok(net) => Ok((net, call)),
+            Err(why) => {
+                self.lines.push(reproduce(&call));
+                Err(why)
+            }
         }
     }
 

@@ -154,8 +154,11 @@ fn xbrl() {
 /// L-T-02), and the posted lines the examiner's leverage arithmetic deducts
 /// read back (L-R-01). The Repo 105 scenario's certified diff moves exactly
 /// two accounts, financial instruments owned (1030) and securities sold
-/// under agreements to repurchase (2030), each by the examiner's (e)
-/// (L-R-02).
+/// under agreements to repurchase (2030), each by the examiner's (e), as
+/// the uncertified branch query less trunk's at the fork also reads, and
+/// its certificate replays (L-R-02). The harness's adjusted net leverage
+/// ((b) + (e)) / (d) from those certified reads agrees with the examiner's
+/// printed 13.9x within its 0.1x display unit (L-C-01).
 #[test]
 fn lehman() {
     let o = outcome("lehman");
@@ -168,10 +171,19 @@ fn lehman() {
     assert_eq!(count("PASS L-R-01 R statement "), 4, "{text}");
     for (target, account) in [("inventory", "1030"), ("repos", "2030")] {
         let prefix = format!(
-            "PASS L-R-02 R statement V889-e-2008-05-31-{target}/default kind=read_back read=scenario-diff,{account},FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030"
+            "PASS L-R-02 R statement V889-e-2008-05-31-{target}/default kind=read_back read=scenario-diff,{account},FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 gql=ok outsider=replay:verified"
         );
         assert_eq!(count(&prefix), 1, "{text}");
     }
+    // (b) + (e) = 378,157 and (d) = 27,179 ($M): 13.913x. The band accepts
+    // (e) from 47,296.2 to 52,732 ($M).
+    assert_eq!(
+        count(
+            "PASS L-C-01 C statement -/default kind=band computed=harness:13.913 published=13.9 unit=0.1 detection=L-R-02/V889-e-2008-05-31-inventory:[47296200000.00,52732000000.00]"
+        ),
+        1,
+        "{text}"
+    );
 }
 
 /// L-R-02 is no vacuous read (§8.3, L3): in a planted copy both legs of the
@@ -209,6 +221,38 @@ fn lehman_neg_scenario_e_plus_one_minor_unit() {
             "{text}"
         );
     }
+}
+
+/// L-C-01 is no vacuous band (§8.3, L3): in a planted copy the scenario's
+/// two legs carry 0.01 USD (each `synthetic`), so (e) falls outside the
+/// interval the band accepts, the harness computes the unadjusted 12.06x,
+/// and the row fails against the printed 13.9x.
+#[test]
+fn lehman_neg_c01_e_one_minor_unit() {
+    let o = run_planted(
+        "lehman",
+        &[
+            PlantedEdit {
+                file: "books/statement.toml",
+                old: "account = \"1030\"\nside = \"Dr\"\namount_literal = \"50383000000.00\"\namount_rule = \"value:V889-e-2008-05-31#1\"",
+                new: "account = \"1030\"\nside = \"Dr\"\namount_literal = \"0.01\"\namount_rule = \"synthetic\"",
+            },
+            PlantedEdit {
+                file: "books/statement.toml",
+                old: "account = \"2030\"\nside = \"Cr\"\namount_literal = \"50383000000.00\"\namount_rule = \"value:V889-e-2008-05-31#1\"",
+                new: "account = \"2030\"\nside = \"Cr\"\namount_literal = \"0.01\"\namount_rule = \"synthetic\"",
+            },
+        ],
+        HARNESS_VERBS,
+    )
+    .expect_err("a scenario whose (e) leaves the band fails the case");
+    let row = o.row("L-C-01").unwrap_or_default();
+    assert!(
+        row.starts_with("FAIL L-C-01 C statement -/default kind=band computed=harness:12.059 published=13.9 unit=0.1 ")
+            && row.contains("expected the computed value within one display unit 0.1 of 13.9 observed 12.059"),
+        "{}",
+        o.text()
+    );
 }
 
 /// L-R-02 claims everything the scenario moves (§8.3, L3): a planted copy

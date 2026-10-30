@@ -456,7 +456,7 @@ const EXP: &[(&str, Kind, &[ExpectationType])] = &[
     ("read_target", Kind::Str, &[E::T, E::R]),
     ("read_coordinate", Kind::Str, &[E::T, E::R]),
     ("read_selector", Kind::Str, &[E::T, E::R]),
-    ("published", Kind::Str, &[E::T]),
+    ("published", Kind::Str, &[E::T, E::C]),
     ("posted", Kind::Str, &[E::R]),
     ("vintages", Kind::Strs, &[E::T]),
     ("assurance", Kind::Str, &[E::T]),
@@ -466,6 +466,8 @@ const EXP: &[(&str, Kind, &[ExpectationType])] = &[
     ("per_row_test", Kind::Str, &[E::C]),
     ("band", Kind::Str, &[E::C]),
     ("detection_limit", Kind::Str, &[E::C]),
+    ("numerator", Kind::Strs, &[E::C]),
+    ("denominator", Kind::Strs, &[E::C]),
 ];
 
 const TARGET: &[(&str, Kind, &[ExpectationType])] = &[
@@ -1271,19 +1273,112 @@ impl<'a> Check<'a, '_> {
                     );
                 }
             }
-            E::C => {
-                self.require(
-                    f,
+            E::C => self.c_row(e, variant),
+        }
+    }
+
+    /// A C row (§5.3): the published figure it is compared with, the fact
+    /// stating its display unit, the closed per-row test, its band and
+    /// detection limit, and the computation, `numerator` over an optional
+    /// `denominator`. Each term is `+<ref>` or `-<ref>`, where `<ref>` is
+    /// `fact:<id>` (a fact's value) or `<expectation>/<target fact>` (a T
+    /// or R read of the same variant, `/-` for a row that reads on itself).
+    /// The detection limit names the numerator term whose accepted interval
+    /// the row prints.
+    fn c_row(&mut self, e: &Expectation, variant: &str) {
+        let f = &e.fields;
+        let row = e.id.as_str();
+        self.require(
+            f,
+            row,
+            &[
+                "display_unit",
+                "per_row_test",
+                "band",
+                "detection_limit",
+                "published",
+                "numerator",
+            ],
+            "a C row",
+        );
+        for key in ["display_unit", "published"] {
+            if let Some(d) = f.str(key)
+                && self.view.fact(d).is_none()
+            {
+                self.push(
+                    f.line,
                     row,
-                    &["display_unit", "per_row_test", "band", "detection_limit"],
-                    "a C row",
+                    LoadErrorKind::DanglingKey,
+                    format!("`{key} = \"{d}\"` names no fact"),
                 );
-                if let Some(d) = f.str("display_unit")
-                    && self.view.fact(d).is_none()
-                {
-                    self.push(f.line, row, LoadErrorKind::DanglingKey, format!("`display_unit = \"{d}\"` names no fact (the fact stating the display unit)"));
+            }
+        }
+        if let Some(t) = f.str("per_row_test")
+            && t != "within_one_display_unit"
+        {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownValue,
+                format!("`per_row_test = \"{t}\"` is within_one_display_unit"),
+            );
+        }
+        let mut numerator = Vec::new();
+        for key in ["numerator", "denominator"] {
+            for term in f.strs(key).unwrap_or(&[]) {
+                match self.c_term(term, variant) {
+                    Ok(r) if key == "numerator" => numerator.push(r),
+                    Ok(_) => {}
+                    Err(why) => self.push(
+                        f.line,
+                        row,
+                        LoadErrorKind::DanglingKey,
+                        format!("{key} term `{term}`: {why}"),
+                    ),
                 }
             }
+        }
+        if let Some(d) = f.str("detection_limit")
+            && !numerator.contains(&d)
+        {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::DanglingKey,
+                format!("`detection_limit = \"{d}\"` is not a numerator term's ref"),
+            );
+        }
+    }
+
+    /// A C term's ref, once it names a fact or a T or R read of `variant`.
+    fn c_term<'t>(&self, term: &'t str, variant: &str) -> Result<&'t str, String> {
+        let r = term
+            .strip_prefix('+')
+            .or_else(|| term.strip_prefix('-'))
+            .ok_or("a term opens with + or -")?;
+        if let Some(fact) = r.strip_prefix("fact:") {
+            return self
+                .view
+                .fact(fact)
+                .map(|_| r)
+                .ok_or_else(|| format!("no fact `{fact}`"));
+        }
+        let (id, target) = r
+            .split_once('/')
+            .ok_or("a ref is fact:<id> or <expectation>/<target fact>")?;
+        let e = self
+            .set
+            .get(id)
+            .filter(|e| matches!(e.kind, E::T | E::R))
+            .ok_or_else(|| format!("no T or R row `{id}`"))?;
+        if e.fields.str("book_variant") != Some(variant) {
+            return Err(format!("`{id}` reads another book variant"));
+        }
+        let read_here = target == "-" && e.reads_here();
+        if read_here || self.set.targets_of(id).any(|t| t.fact == target) {
+            Ok(r)
+        } else {
+            Err(format!("`{id}` has no read `{target}`"))
         }
     }
 

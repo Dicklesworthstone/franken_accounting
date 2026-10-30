@@ -8,6 +8,11 @@
 # instruments owned and securities sold under agreements to repurchase, each by exactly (e), so
 # total assets and total liabilities each move by (e). The scenario's own entry posts (e), so this
 # is a read-back (K-TAUT), never a T.
+# L-C-01 recomputes the examiner's adjusted net leverage ((b) + (e)) / (d) at May 31, 2008: (b) from
+# the certified balance-sheet read and the four deductions L-R-01 reads back, (e) from L-R-02's
+# certified scenario diff, and (d) as p.889 prints it (the book posts no junior subordinated
+# notes line). It agrees with the printed 13.9x only within its 0.1x display unit, so it is C,
+# never T.
 
 [[expectation]]
 id = "L-T-01"
@@ -132,6 +137,20 @@ read_target = "2030"
 read_coordinate = "FY2008Q2"
 read_selector = "scenario:lehman-repo105"
 posted = "V889-e-2008-05-31"
+
+[[expectation]]
+id = "L-C-01"
+type = "C"
+book_variant = "statement"
+statement_template = "C.band"
+basis = ["V889-anl-adj-2008-05-31", "V889-d-2008-05-31", "V889-e-2008-05-31", "Q208.total_assets.2008-05-31", "Q208.segregated.2008-05-31", "Q208.reverse_repos.2008-05-31", "Q208.securities_borrowed.2008-05-31", "Q208.intangibles.2008-05-31"]
+published = "V889-anl-adj-2008-05-31"
+display_unit = "V889-anl-adj-2008-05-31"
+per_row_test = "within_one_display_unit"
+band = "one 0.1x display unit: p.889 prints the ratio to one decimal"
+detection_limit = "L-R-02/V889-e-2008-05-31-inventory"
+numerator = ["+L-T-01/Q208.total_assets.2008-05-31", "-L-R-01/Q208.segregated.2008-05-31", "-L-R-01/Q208.reverse_repos.2008-05-31", "-L-R-01/Q208.securities_borrowed.2008-05-31", "-L-R-01/Q208.intangibles.2008-05-31", "+L-R-02/V889-e-2008-05-31-inventory"]
+denominator = ["+fact:V889-d-2008-05-31"]
 
 [[expectation]]
 id = "L-T-02"
