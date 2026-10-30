@@ -127,7 +127,7 @@ impl Harness {
         let receipt = self.upload(
             &cap(AGENT, Profile::Agent, &[Op::Post]),
             "ReceivingReport",
-            "text/csv; charset=utf-8",
+            "text/csv;charset=utf-8",
             format!(
                 "{RECEIVING_REPORT_HEADER}\n{},SKU-2,3\n{},SKU-1,3\n",
                 hex(po.oid),
@@ -226,7 +226,7 @@ fn retained_sources_match_without_writes_or_upgrading_agent_evidence() {
     let repeated = h.upload(
         &human_upload(),
         "ReceivingReport",
-        "text/csv; charset=utf-8",
+        "text/csv;charset=utf-8",
         format!(
             "{RECEIVING_REPORT_HEADER}\n{},SKU-2,3\n{},SKU-1,3\n",
             hex(request.purchase_order_oid),

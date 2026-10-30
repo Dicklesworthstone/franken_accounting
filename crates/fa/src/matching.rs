@@ -313,7 +313,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if document.kind != expected_kind
             || !matches!(
                 document.mime.as_str(),
-                "text/csv" | "text/csv; charset=utf-8"
+                "text/csv" | "text/csv;charset=utf-8"
             )
         {
             return Ok(Err(structure(format!(

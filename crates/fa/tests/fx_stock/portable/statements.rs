@@ -110,7 +110,12 @@ fn functional_statement_export_requires_authority_and_authenticated_original_rat
     }
     let pinned = fixture
         .book
-        .produce_report_bundle(PRINCIPAL, &producer(), Some(state), &certificate)
+        .produce_report_bundle(
+            PRINCIPAL,
+            &producer().known_at_most(pin),
+            Some(state),
+            &certificate,
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(pinned.code, "FA-REF-011");
