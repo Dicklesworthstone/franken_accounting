@@ -1355,8 +1355,29 @@ gate; none is marked WORKING solely because its module exists.
   required by `include_str!` in `embedded.rs`. This is a real source failure at
   the initial cut, not an RCH capacity refusal. A peer subsequently adds the
   tracked file in `ddce1668b`; that repair requires a fresh qualified execution.
-  The ongoing diagnostics and their terminal exits are recorded below when
-  available; no partly executed chain is a green gate.
+  The failed driver was terminated during the subsequent Clippy compilation
+  (outer exit 143); its per-step manifest retains format PASS and check FAIL
+  (remote exit 101). The remaining steps have no completed verdict. No partly
+  executed chain is a green gate.
+- The initial focused README/scoreboard build encountered the same missing
+  fixture and was canceled (exit 143). A second build includes the repair;
+  it was stopped after about 13 minutes while a foundation dependency was still
+  compiling (exit 143); neither test target executed. Its separate log is
+  `repaired-readme-scoreboard.log`. The standalone verifier test request was
+  refused for fleet capacity (exit 103, UNRUN); its retry was terminated before
+  producing execution output (exit 143, UNRUN). Neither refusal nor interruption
+  establishes a product regression or a passing test.
+- `scripts/docs_sync_check.sh` exits 0, including 12 selftest cases, README
+  command resolution and the 36-step documentation join. `git diff --check`
+  also exits 0. These checks do not replace compilation or workspace tests.
+- After the review, the exported graph has **463 issues: 139 open, 79 in
+  progress, 245 closed**, with 868 edges and no active cycles. JSONL/database
+  reconciliation preserved all pre-review issue IDs, author/text comment pairs
+  and dependencies; source-only records and relations were restored through
+  `br` before export. Export normalization also changed timestamp spelling and
+  internal comment ordering/IDs, so its raw diff is larger than the one new
+  feature and 11 intentionally commented owners. Snapshots and preservation
+  checks remain in the evidence directory. No issue was closed by this review.
 - Local Lean/lake, Java/TLC and external ledger executables are absent. The
   committed conformance matrices explicitly describe self round trips and
   project-authored expectations, not external-tool or published-schema validation.
@@ -1460,7 +1481,9 @@ dependencies and preservation of existing acceptance, and (5) graph/export and
 execution attribution. The new control feature carries its implementation and
 ordinary tests together: separate closures for types/implementation/tests would
 violate the suite's scope-splitting rule. Existing fa-0fl/fa-2ihd/fa-wwip provide
-the independent campaigns. No feature or performance requirement was removed.
+the independent campaigns. The final coverage/owner check and cycle scan found
+no further unowned goal within V01–V40 and no active cycle. No feature or
+performance requirement was removed.
 
 #### Current-cut refresh (2026-10-26, StormyJay)
 
