@@ -4,15 +4,25 @@
 # sentence (or table heading) that establishes its assurance. E2d's first slice adds every printed
 # line and total of the 2000-12-31 balance sheet in both vintages (the FY2000 10-K, audited, and the
 # Q3-2001 10-Q's restated column, unaudited), and E4's E-T-02 foots each on its own statement book
-# (E-T-02 on the 10-K's, read as reported in its issuance; E-T-05 on the 10-Q's). The case's reader
-# is the investigator (§12.3).
+# (E-T-02 on the 10-K's, read as reported in its issuance; E-T-05 on the 10-Q's). E2d/E4's second
+# slice bridges FY1999 net income, total assets and equity from the as-filed figures through each
+# restating vintage's adjustments: the 8-K's (E-T-04, read as reported in its issuance, superseded
+# eleven days later) and the 10-Q's (E-T-01), with their as-originally-reported read-backs (E-R-02,
+# E-R-01). The case's reader is the investigator (§12.3).
 id = "enron"
 letter = "E"
 title = "Enron, the 1997-2001 restatements and the special purpose entities"
 version = 1
 kind = "case"
 scope = "the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries), and the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it: every line, and the printed totals they foot to"
-claims = ["E-T-02", "E-T-05"]
-capabilities = ["verb:post", "verb:statement"]
+claims = ["E-R-01", "E-R-02", "E-T-01", "E-T-02", "E-T-04", "E-T-05"]
+capabilities = ["case_kind:Restatement", "verb:assert-balance", "verb:case", "verb:post", "verb:scenario", "verb:statement"]
 pinned_commit = "d0673641d"
-variants = ["statement-10k2000", "statement-10q2001q3"]
+variants = ["statement-10k2000", "statement-10q2001q3", "statement-bridge-8k-fy1999", "statement-bridge-10q-fy1999"]
+
+[[decision]]
+id = "E4-bridge-books"
+outcome = "one_book_per_restating_vintage"
+facts = ["8K-TA-B-FY1999", "N3-TA-B-FY1999"]
+sources = ["SRC-ENR-002", "SRC-ENR-003"]
+reason = "Each restating vintage restates the as-filed FY1999 figures and neither restates the other: the 8-K and the 10-Q each print their adjustments against the same as-reported column, and sources.toml has each restating SRC-ENR-008 and SRC-ENR-402 only. So each vintage's adjustments post through one Restatement case on its own FY1999 book, rather than a second case reversing the first on one book; the 8-K's book issues its restated statement citing the 8-K's stub so that E-T-04 reads it as reported in that issuance."

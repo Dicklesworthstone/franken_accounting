@@ -4,7 +4,7 @@
 
 Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries), and the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it: every line, and the printed totals they foot to.
 
-Claimed rows: `E-T-02`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `E-R-01`, `E-R-02`, `E-T-01`, `E-T-02`, `E-T-04`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -105,11 +105,39 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `BS10Q-TOTAL-ASSETS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Total Assets\|2000` | 64,926,000,000.00 USD | reported (unaudited) | statement_line |
 | `BS10Q-TOTAL-EQUITY` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Total\|2000` | 10,289,000,000.00 USD | reported (unaudited) | statement_line |
 | `BS10Q-TOTAL-LE` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Total Liabilities and Shareholders' Equity\|2000` | 64,926,000,000.00 USD | reported (unaudited) | statement_line |
+| `10K-NI-A-FY1999` | `SRC-ENR-008` | `CONSOLIDATED INCOME STATEMENT\|Net Income\|1999` | 893,000,000.00 USD | reported (audited) | statement_line |
+| `10K-TA-A-FY1999` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Total Assets\|1999` | 33,381,000,000.00 USD | reported (audited) | statement_line |
+| `10K-EQ-A-FY1999` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Total shareholders' equity\|1999` | 9,570,000,000.00 USD | reported (audited) | statement_line |
+| `8K-NI-D1-FY1999` | `SRC-ENR-002` | `TABLE 1\|Consolidation of JEDI and Chewco\|1999` | -153,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-NI-D2-FY1999` | `SRC-ENR-002` | `TABLE 1\|Consolidation of LJM1 subsidiary\|1999` | -95,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-NI-D4-FY1999` | `SRC-ENR-002` | `TABLE 1\|Prior year proposed audit\|1999` | -2,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-NI-B-FY1999` | `SRC-ENR-002` | `TABLE 1\|NET INCOME RESTATED\|1999` | 643,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-TA-D1-FY1999` | `SRC-ENR-002` | `TABLE 1\|Consolidation of JEDI and Chewco#3\|1999` | 187,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-TA-D2-FY1999` | `SRC-ENR-002` | `TABLE 1\|Consolidation of LJM1 subsidiary#3\|1999` | -222,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-TA-D4-FY1999` | `SRC-ENR-002` | `TABLE 1\|Prior year proposed audit#3\|1999` | -147,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-TA-B-FY1999` | `SRC-ENR-002` | `TABLE 1\|TOTAL ASSETS RESTATED\|1999` | 33,199,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-EQ-D1-FY1999` | `SRC-ENR-002` | `TABLE 1\|Consolidation of JEDI and Chewco#5\|1999` | -540,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-EQ-D2-FY1999` | `SRC-ENR-002` | `TABLE 1\|Consolidation of LJM1 subsidiary#4\|1999` | -166,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-EQ-D4-FY1999` | `SRC-ENR-002` | `TABLE 1\|Prior year proposed audit#5\|1999` | -128,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-EQ-B-FY1999` | `SRC-ENR-002` | `TABLE 1\|EQUITY RESTATED\|1999` | 8,736,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D1-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco\|1999` | -153,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D2-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary\|1999` | -95,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-D4-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit\|1999` | -10,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-NI-B-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Net Income Restated\|1999` | 635,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D1-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#2\|1999` | 181,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D2-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary#2\|1999` | -222,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-D4-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#2\|1999` | -68,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-TA-B-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|TOTAL ASSETS RESTATED\|1999` | 33,272,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D1-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of JEDI and Chewco#4\|1999` | -544,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D2-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary#4\|1999` | -166,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-D4-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#4\|1999` | -136,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-EQ-B-FY1999` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|EQUITY RESTATED\|1999` | 8,724,000,000.00 USD | reported (unaudited) | statement_line |
 
 ### Readings of the record
 
 - `BS10K-SFC`, an interpretation of `BS10K-CASH`, `BS10K-TRADE-RECEIVABLES`, `BS10K-OTHER-RECEIVABLES`, `BS10K-PRICE-RISK-ASSETS-CURRENT`, `BS10K-INVENTORIES`, `BS10K-DEPOSITS`, `BS10K-OTHER-CURRENT-ASSETS`, `BS10K-EQUITY-AFFILIATES`, `BS10K-PRICE-RISK-ASSETS-NONCURRENT`, `BS10K-GOODWILL`, `BS10K-OTHER-INVESTMENTS`, `BS10K-NATURAL-GAS-TRANSMISSION`, `BS10K-ELECTRIC-GENERATION`, `BS10K-FIBER-OPTIC`, `BS10K-CONSTRUCTION-IN-PROGRESS`, `BS10K-OTHER-PROPERTY`, `BS10K-ACCUMULATED-DEPRECIATION`, `BS10K-ACCOUNTS-PAYABLE`, `BS10K-PRICE-RISK-LIABILITIES-CURRENT`, `BS10K-SHORT-TERM-DEBT`, `BS10K-CUSTOMERS-DEPOSITS`, `BS10K-OTHER-CURRENT-LIABILITIES`, `BS10K-LONG-TERM-DEBT`, `BS10K-DEFERRED-INCOME-TAXES`, `BS10K-PRICE-RISK-LIABILITIES-NONCURRENT`, `BS10K-OTHER-DEFERRED-CREDITS`, `BS10K-MINORITY-INTERESTS`, `BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES`, `BS10K-SECOND-PREFERRED-STOCK`, `BS10K-JUNIOR-PREFERRED-STOCK`, `BS10K-COMMON-STOCK`, `BS10K-RETAINED-EARNINGS`, `BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME`, `BS10K-TREASURY-STOCK`, `BS10K-RESTRICTED-STOCK`, read by `case-author-1` and second reader `case-second-reader`: The 2000-12-31 consolidated balance sheet the FY2000 10-K prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed.
 - `BS10Q-SFC`, an interpretation of `BS10Q-CASH`, `BS10Q-TRADE-RECEIVABLES`, `BS10Q-OTHER-RECEIVABLES`, `BS10Q-PRICE-RISK-ASSETS-CURRENT`, `BS10Q-INVENTORIES`, `BS10Q-DEPOSITS`, `BS10Q-OTHER-CURRENT-ASSETS`, `BS10Q-EQUITY-AFFILIATES`, `BS10Q-PRICE-RISK-ASSETS-NONCURRENT`, `BS10Q-GOODWILL`, `BS10Q-OTHER-INVESTMENTS`, `BS10Q-NATURAL-GAS-TRANSMISSION`, `BS10Q-ELECTRIC-GENERATION`, `BS10Q-FIBER-OPTIC`, `BS10Q-CONSTRUCTION-IN-PROGRESS`, `BS10Q-OTHER-PROPERTY`, `BS10Q-ACCUMULATED-DEPRECIATION`, `BS10Q-ACCOUNTS-PAYABLE`, `BS10Q-PRICE-RISK-LIABILITIES-CURRENT`, `BS10Q-SHORT-TERM-DEBT`, `BS10Q-CUSTOMERS-DEPOSITS`, `BS10Q-OTHER-CURRENT-LIABILITIES`, `BS10Q-LONG-TERM-DEBT`, `BS10Q-DEFERRED-INCOME-TAXES`, `BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT`, `BS10Q-OTHER-DEFERRED-CREDITS`, `BS10Q-MINORITY-INTERESTS`, `BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES`, `BS10Q-SECOND-PREFERRED-STOCK`, `BS10Q-JUNIOR-PREFERRED-STOCK`, `BS10Q-COMMON-STOCK`, `BS10Q-RETAINED-EARNINGS`, `BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME`, `BS10Q-TREASURY-STOCK`, `BS10Q-RESTRICTED-STOCK`, read by `case-author-1` and second reader `case-second-reader`: The 2000-12-31 consolidated balance sheet the Q3-2001 10-Q prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed.
+- `ENR-BRIDGE-FY1999`, an interpretation of `10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`, read by `case-author-1` and second reader `case-second-reader`: A FY1999 bridge book holds three of the figures the restatements bridge, each on its own account: total assets on an asset account, equity on an equity account, and net income on a revenue account. Debt is not bridged here. A book needs balanced entries, so total assets and equity each post against one liability account that holds what the two leave (total assets less equity), and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. Each adjustment posts against the same balancing account as the figure it adjusts.
 
 ## How this book was built
 
@@ -241,6 +269,102 @@ Declared defaults (each an encoding choice the record does not fix):
 | `leg_split` | `statement_lines` | every printed line of the balance sheet posts to its own account in one entry; the lines balance on their own, so no remainder account is needed (plan §7.2, E-T-02) |
 | `effective_date` | `reporting_period_last_day` | a balance sheet is as of its date, the fiscal year's last day |
 
+### Book `statement-bridge-8k-fy1999` (statement)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-bridge-8k-fy1999`): not yet evaluated: filler_invariance.
+
+Opened 1999-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `FY1999` | 1999-01-01 | 1999-12-31 | 1999 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1000` | Asset | `10K-TA-A-FY1999` |
+| `2000` | Liability | `ENR-BRIDGE-FY1999` |
+| `3000` | Equity | `10K-EQ-A-FY1999` |
+| `3900` | Equity | `ENR-BRIDGE-FY1999` |
+| `4000` | Revenue | `10K-NI-A-FY1999` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+| `10K-TA-A-FY1999` | `10K-TA-A-FY1999` | Original | 1999-12-31 |
+| `10K-EQ-A-FY1999` | `10K-EQ-A-FY1999` | Original | 1999-12-31 |
+| `10K-NI-A-FY1999` | `10K-NI-A-FY1999` | Original | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-1` | `8K-TA-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-2` | `8K-TA-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-3` | `8K-TA-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-1` | `8K-EQ-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-2` | `8K-EQ-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-3` | `8K-EQ-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-1` | `8K-NI-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-2` | `8K-NI-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-3` | `8K-NI-D4-FY1999` | Restatement | 1999-12-31 |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-ENR-10K` | `SRC-ENR-008` | AgentUpload |
+| `DOC-ENR-8K` | `SRC-ENR-002` | AgentUpload |
+
+Declared defaults (each an encoding choice the record does not fix):
+
+| Attribute | Rule | Why |
+|---|---|---|
+| `evidence_attached` | `placeholder_reviewed` | the FY2000 10-K and the 8-K are cited through their stubs, reviewed by case-second-reader (plan §2.7) |
+| `leg_split` | `statement_remainder` | each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-FY1999), so every entry balances on the figure alone (plan §3.8) |
+| `effective_date` | `reporting_period_last_day` | a FY1999 figure is as of the fiscal year-end, the period's last day |
+| `case_determination_date` | `restating_filing_date` | the restating filing's date (the 8-K's filing date, 2001-11-08) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
+| `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
+
+### Book `statement-bridge-10q-fy1999` (statement)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-bridge-10q-fy1999`): not yet evaluated: filler_invariance.
+
+Opened 1999-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `FY1999` | 1999-01-01 | 1999-12-31 | 1999 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1000` | Asset | `10K-TA-A-FY1999` |
+| `2000` | Liability | `ENR-BRIDGE-FY1999` |
+| `3000` | Equity | `10K-EQ-A-FY1999` |
+| `3900` | Equity | `ENR-BRIDGE-FY1999` |
+| `4000` | Revenue | `10K-NI-A-FY1999` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+| `10K-TA-A-FY1999` | `10K-TA-A-FY1999` | Original | 1999-12-31 |
+| `10K-EQ-A-FY1999` | `10K-EQ-A-FY1999` | Original | 1999-12-31 |
+| `10K-NI-A-FY1999` | `10K-NI-A-FY1999` | Original | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-1` | `N3-TA-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-2` | `N3-TA-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-3` | `N3-TA-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-1` | `N3-EQ-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-2` | `N3-EQ-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-3` | `N3-EQ-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-1` | `N3-NI-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-2` | `N3-NI-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-3` | `N3-NI-D4-FY1999` | Restatement | 1999-12-31 |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-ENR-10K` | `SRC-ENR-008` | AgentUpload |
+| `DOC-ENR-10Q` | `SRC-ENR-003` | AgentUpload |
+
+Declared defaults (each an encoding choice the record does not fix):
+
+| Attribute | Rule | Why |
+|---|---|---|
+| `evidence_attached` | `placeholder_reviewed` | the FY2000 10-K and the 10-Q are cited through their stubs, reviewed by case-second-reader (plan §2.7) |
+| `leg_split` | `statement_remainder` | each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-FY1999), so every entry balances on the figure alone (plan §3.8) |
+| `effective_date` | `reporting_period_last_day` | a FY1999 figure is as of the fiscal year-end, the period's last day |
+| `case_determination_date` | `restating_filing_date` | the restating filing's date (the 10-Q's filing date, 2001-11-19) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
+| `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
+
 ## Findings, refusals, tie-outs and read-backs
 
 ### `E-T-02`: exact tie-out (T.footing)
@@ -266,4 +390,61 @@ Sources: `SRC-ENR-003` (reported (unaudited)).
 | `BS10Q-TOTAL-ASSETS` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,assets,FY2000,as-currently-stated value=64926000000.00 contrib=holds outsider=report:verified |
 | `BS10Q-TOTAL-EQUITY` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,total_equity,FY2000,as-currently-stated value=10289000000.00 contrib=holds outsider=report:verified |
 | `BS10Q-TOTAL-LE` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,liabilities_and_equity,FY2000,as-currently-stated value=64926000000.00 contrib=holds outsider=report:verified |
+
+### `E-T-04`: exact tie-out (T.bridge)
+
+On the book `statement-bridge-8k-fy1999`, franken_accounting's certified read of each line below equals the published B exactly at its declared precision, computed from separately sourced A and adjustments (`10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`, `8K-NI-D1-FY1999`, `8K-NI-D2-FY1999`, `8K-NI-D4-FY1999`, `8K-TA-D1-FY1999`, `8K-TA-D2-FY1999`, `8K-TA-D4-FY1999`, `8K-EQ-D1-FY1999`, `8K-EQ-D2-FY1999`, `8K-EQ-D4-FY1999`) that were posted: it reproduces the published bridge.
+
+Sources: `SRC-ENR-008` (reported (audited)), `SRC-ENR-002` (reported (unaudited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `8K-NI-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,4000,FY1999,as-reported-in=$C_ISSUE_FY1999_2 value=643000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `8K-TA-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY1999,as-reported-in=$C_ISSUE_FY1999_2 value=33199000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `8K-EQ-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY1999,as-reported-in=$C_ISSUE_FY1999_2 value=8736000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+
+### `E-R-02`: read-back (R.read_back)
+
+On the book `statement-bridge-8k-fy1999`, each read below returns the posted value it names (`10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`).
+
+Sources: `SRC-ENR-008` (reported (audited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `10K-NI-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,4000,FY1999,as-originally-reported value=893000000.00 gql=ok |
+| `10K-TA-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,FY1999,as-originally-reported value=33381000000.00 gql=ok |
+| `10K-EQ-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY1999,as-originally-reported value=9570000000.00 gql=ok |
+
+### `E-T-01`: exact tie-out (T.bridge)
+
+On the book `statement-bridge-10q-fy1999`, franken_accounting's certified read of each line below equals the published B exactly at its declared precision, computed from separately sourced A and adjustments (`10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`, `N3-NI-D1-FY1999`, `N3-NI-D2-FY1999`, `N3-NI-D4-FY1999`, `N3-TA-D1-FY1999`, `N3-TA-D2-FY1999`, `N3-TA-D4-FY1999`, `N3-EQ-D1-FY1999`, `N3-EQ-D2-FY1999`, `N3-EQ-D4-FY1999`) that were posted: it reproduces the published bridge.
+
+Sources: `SRC-ENR-008` (reported (audited)), `SRC-ENR-003` (reported (unaudited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `N3-NI-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,4000,FY1999,as-currently-stated value=635000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-TA-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,1000,FY1999,as-currently-stated value=33272000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+| `N3-EQ-B-FY1999` | `default` | T | PASS | record-consistent | kind=bridge read=balance,3000,FY1999,as-currently-stated value=8724000000.00 gql=ok assert=recorded twin=refused:FA-REF-140:exit=3 contrib=holds outsider=report:verified append_only=ok |
+
+### `E-R-01`: read-back (R.read_back)
+
+On the book `statement-bridge-10q-fy1999`, each read below returns the posted value it names (`10K-NI-A-FY1999`, `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`).
+
+Sources: `SRC-ENR-008` (reported (audited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `10K-NI-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,4000,FY1999,as-originally-reported value=893000000.00 gql=ok |
+| `10K-TA-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,FY1999,as-originally-reported value=33381000000.00 gql=ok |
+| `10K-EQ-A-FY1999` | `default` | R | PASS | record-consistent | kind=read_back read=balance,3000,FY1999,as-originally-reported value=9570000000.00 gql=ok |
+
+## Restatement cases
+
+The runner reads each restatement case back with `fa case show` after its history: its state, its kind and its determination day.
+
+| Row | Book | Verdict | Observed |
+|---|---|---|---|
+| `E-CASE-enr-10q-fy1999` | `statement-bridge-10q-fy1999` | PASS | kind=case_show read=case show,enr-10q-fy1999 state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1999:SupersededBy:later_entries=9 |
+| `E-CASE-enr-8k-fy1999` | `statement-bridge-8k-fy1999` | PASS | kind=case_show read=case show,enr-8k-fy1999 state=Closed case_kind=Restatement determined_on=2001-11-08 authority=DOC-ENR-8K disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1999:SupersededBy:later_entries=9 |
 

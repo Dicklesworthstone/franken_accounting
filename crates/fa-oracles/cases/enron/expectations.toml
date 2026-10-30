@@ -5,6 +5,13 @@
 # the FY2000 10-K's book (filer_audited), read as reported in its issuance because the 10-Q
 # restates those figures (K-VINTAGE), and E-T-05 on the Q3-2001 10-Q's restated column
 # (filer_unaudited), the latest vintage.
+#
+# E-T-04 and E-T-01 are the FY1999 bridges (§7.2): A, the FY2000 10-K's as-filed net income, total
+# assets and equity, plus each restating vintage's adjustments, equals that vintage's restated
+# figure, on one book per vintage (case.toml's decision E4-bridge-books). The 8-K's (E-T-04) is
+# superseded by the 10-Q eleven days later (same cells, other values), so it reads the 8-K's
+# issuance; the 10-Q's (E-T-01) is the latest vintage. E-R-02 and E-R-01 read each book as
+# originally reported: the as-filed figures. Debt and the other years are later slices.
 
 [[expectation]]
 id = "E-T-02"
@@ -84,3 +91,156 @@ read_target = "liabilities_and_equity"
 read_coordinate = "FY2000"
 read_selector = "currently_stated"
 published = "BS10Q-TOTAL-LE"
+
+[[expectation]]
+id = "E-T-04"
+type = "T"
+book_variant = "statement-bridge-8k-fy1999"
+statement_template = "T.bridge"
+basis = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999", "8K-NI-D1-FY1999", "8K-NI-D2-FY1999", "8K-NI-D4-FY1999", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999"]
+kind = "bridge"
+vintages = ["A:SRC-ENR-008", "D:SRC-ENR-002", "B:SRC-ENR-002"]
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-NI-B-FY1999"
+basis = ["10K-NI-A-FY1999", "8K-NI-D1-FY1999", "8K-NI-D2-FY1999", "8K-NI-D4-FY1999"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY1999"
+read_selector = "reported_in:FY1999#2"
+published = "8K-NI-B-FY1999"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-TA-B-FY1999"
+basis = ["10K-TA-A-FY1999", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1999"
+read_selector = "reported_in:FY1999#2"
+published = "8K-TA-B-FY1999"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-EQ-B-FY1999"
+basis = ["10K-EQ-A-FY1999", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1999"
+read_selector = "reported_in:FY1999#2"
+published = "8K-EQ-B-FY1999"
+
+[[expectation]]
+id = "E-R-02"
+type = "R"
+book_variant = "statement-bridge-8k-fy1999"
+statement_template = "R.read_back"
+basis = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999"]
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-NI-A-FY1999"
+basis = ["10K-NI-A-FY1999"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-NI-A-FY1999"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-TA-A-FY1999"
+basis = ["10K-TA-A-FY1999"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-TA-A-FY1999"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-EQ-A-FY1999"
+basis = ["10K-EQ-A-FY1999"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-EQ-A-FY1999"
+
+
+[[expectation]]
+id = "E-T-01"
+type = "T"
+book_variant = "statement-bridge-10q-fy1999"
+statement_template = "T.bridge"
+basis = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999", "N3-NI-D1-FY1999", "N3-NI-D2-FY1999", "N3-NI-D4-FY1999", "N3-TA-D1-FY1999", "N3-TA-D2-FY1999", "N3-TA-D4-FY1999", "N3-EQ-D1-FY1999", "N3-EQ-D2-FY1999", "N3-EQ-D4-FY1999"]
+kind = "bridge"
+vintages = ["A:SRC-ENR-008", "D:SRC-ENR-003", "B:SRC-ENR-003"]
+
+[[target]]
+expectation = "E-T-01"
+fact = "N3-NI-B-FY1999"
+basis = ["10K-NI-A-FY1999", "N3-NI-D1-FY1999", "N3-NI-D2-FY1999", "N3-NI-D4-FY1999"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY1999"
+read_selector = "currently_stated"
+published = "N3-NI-B-FY1999"
+
+[[target]]
+expectation = "E-T-01"
+fact = "N3-TA-B-FY1999"
+basis = ["10K-TA-A-FY1999", "N3-TA-D1-FY1999", "N3-TA-D2-FY1999", "N3-TA-D4-FY1999"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1999"
+read_selector = "currently_stated"
+published = "N3-TA-B-FY1999"
+
+[[target]]
+expectation = "E-T-01"
+fact = "N3-EQ-B-FY1999"
+basis = ["10K-EQ-A-FY1999", "N3-EQ-D1-FY1999", "N3-EQ-D2-FY1999", "N3-EQ-D4-FY1999"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1999"
+read_selector = "currently_stated"
+published = "N3-EQ-B-FY1999"
+
+[[expectation]]
+id = "E-R-01"
+type = "R"
+book_variant = "statement-bridge-10q-fy1999"
+statement_template = "R.read_back"
+basis = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999"]
+
+[[target]]
+expectation = "E-R-01"
+fact = "10K-NI-A-FY1999"
+basis = ["10K-NI-A-FY1999"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-NI-A-FY1999"
+
+[[target]]
+expectation = "E-R-01"
+fact = "10K-TA-A-FY1999"
+basis = ["10K-TA-A-FY1999"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-TA-A-FY1999"
+
+[[target]]
+expectation = "E-R-01"
+fact = "10K-EQ-A-FY1999"
+basis = ["10K-EQ-A-FY1999"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-EQ-A-FY1999"

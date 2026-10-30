@@ -151,8 +151,9 @@ pub const LEHMAN: EmbeddedCase = EmbeddedCase {
     ],
 };
 
-/// Enron (E1: the sources ledger and its assurance facts; E2d/E4's first
-/// slice: the 2000-12-31 balance-sheet footings; E2a-E4 add the rest).
+/// Enron (E1: the sources ledger and its assurance facts; E2d/E4: the
+/// 2000-12-31 balance-sheet footings and the FY1999 bridges; E2a-E4 add the
+/// rest).
 pub const ENRON: EmbeddedCase = EmbeddedCase {
     id: "enron",
     files: &[
@@ -174,6 +175,14 @@ pub const ENRON: EmbeddedCase = EmbeddedCase {
         (
             "books/statement-10q2001q3.toml",
             include_str!("../../cases/enron/books/statement-10q2001q3.toml"),
+        ),
+        (
+            "books/statement-bridge-8k-fy1999.toml",
+            include_str!("../../cases/enron/books/statement-bridge-8k-fy1999.toml"),
+        ),
+        (
+            "books/statement-bridge-10q-fy1999.toml",
+            include_str!("../../cases/enron/books/statement-bridge-10q-fy1999.toml"),
         ),
         (
             "expectations.toml",

@@ -38,5 +38,20 @@ label = "examiner-witness"
 kind = "harness"
 description = "witnesses the case's checkpoints (plan §12.7)"
 
+[[role]]
+label = "case-approver-2"
+kind = "harness"
+description = "the second approver of a restatement case"
+
+[[role]]
+label = "case-poster-1"
+kind = "harness"
+description = "opens, rehearses, posts, discloses and closes a restatement case"
+
+[[role]]
+label = "case-reconciler-1"
+kind = "harness"
+description = "asserts a restated balance as a RegisterEquals attestation"
+
 [deny]
 hashes = ["064c7c0b7e6ca3e20837eaed5d052ef4c631a23ba54d7389cae7587d84c3d0a3", "29943fc88011490c9da7268d38517a3c243d3c5337de6ef3734bff8bc6a453cf", "8175f90846aecf1c58183a24990b60005c9fcbc6b3e4ac2fbd060496918eb22e", "9bd8745bc17b0f8dd881cd999e8496cfba5f4405d7f7752c232dd2df5aa305b4", "b28489d7d5c8117f32911d349cd31ba7b22ef74104ece0457bec296ca39eff6d", "c49198a6842aa40fb5c0b1704b4eeb8626df9de318b9e2222432eb05306f2d55"]

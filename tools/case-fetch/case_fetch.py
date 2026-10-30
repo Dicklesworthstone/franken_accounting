@@ -1382,6 +1382,59 @@ def cells(line):
     return out
 
 
+def cell_spans(line):
+    """`cells`, each with its [start, end) character span in the line: a `$` cell is dropped,
+    and a lone closing parenthesis or percent sign is folded into the cell before it."""
+    pieces, pos = [], 0
+    for m in CELL_SPLIT.finditer(line):
+        pieces.append((pos, m.start()))
+        pos = m.end()
+    pieces.append((pos, len(line)))
+    out = []
+    for a, b in pieces:
+        raw = line[a:b]
+        c = raw.strip(" \u00a0\f")
+        if c in ("", "$"):
+            continue
+        start = a + len(raw) - len(raw.lstrip(" \u00a0\f"))
+        if c in (")", "%", ")%") and out:
+            out[-1] = (out[-1][0] + c, out[-1][1], start + len(c))
+            continue
+        out.append((c, start, start + len(c)))
+    return out
+
+
+def table_width(loc, header_line, limit):
+    """The most value cells any row of the table prints after its header line."""
+    width = 0
+    for j in range(header_line + 1, limit):
+        cs = cells(loc.lines[j])
+        if len(cs) >= 2 and is_values(cs[1:]):
+            width = max(width, len(cs) - 1)
+    return width
+
+
+def aligned(loc, header_line, col, row_line, idx, width):
+    """The index of a row's cell for the header's column `col`. Counting from the right holds
+    while a row prints as many values as the table's fullest row (`width`); a text filing's row
+    that leaves its last columns empty prints fewer, and the count shifts. For such a row only,
+    when the counted cell does not sit under the header's cell at all: the one cell that does
+    is the column's (the row and the header are spaced text, so their character columns
+    align), and with none or several the column has no value here (index 0, the label)."""
+    head = cell_spans(loc.lines[header_line])
+    row = cell_spans(loc.lines[row_line])
+    if len(row) - 1 >= width or col >= len(head) or not 1 <= idx < len(row):
+        return idx
+    hs, he = head[col][1], head[col][2]
+    under = [i for i, (_, a, b) in enumerate(row) if i >= 1 and a < he and b > hs]
+    counted = row[idx][1] < he and row[idx][2] > hs
+    if counted:
+        return idx
+    # The counted cell is another column's: the one cell under the header, or none (the row
+    # leaves this column empty).
+    return under[0] if len(under) == 1 else 0
+
+
 CELL_VALUE = re.compile(r"^\$?\(?\$?[0-9][0-9,]*(?:\.[0-9]+)?\)?%?$|^[—–-]+$")
 FDS_TAG = re.compile(r"^<[A-Z0-9&-]+>$")
 
@@ -1509,14 +1562,14 @@ def continued_cell(loc, t, row, column, limit, nth=1):
         cs = [normalize(c) for c in cells(loc.lines[j])]
         if header is None:
             if column in cs:
-                header = (cs, cs.index(column))
+                header = (cs, cs.index(column), j)
             continue
         if len(cs) != 1 or row_label(cs[0]) != row:
             continue
         seen += 1
         if seen < nth:
             continue
-        head, col = header
+        head, col, at = header
         from_right = len(head) - 1 - col
         base = indent(loc.lines[j])
         for k in range(j + 1, limit):
@@ -1525,7 +1578,8 @@ def continued_cell(loc, t, row, column, limit, nth=1):
                 return None
             vs = [normalize(c) for c in cells(line)]
             if len(vs) >= 2:
-                idx = len(vs) - 1 - from_right
+                idx = aligned(loc, at, col, k, len(vs) - 1 - from_right,
+                              table_width(loc, at, limit))
                 return (vs[idx], k + 1) if idx >= 1 else None
         return None
     return None
@@ -1647,16 +1701,17 @@ def table_cell(loc, anchor):
             cs = [normalize(c) for c in cells(loc.lines[j])]
             if header is None:
                 if column in cs:
-                    header = (cs, cs.index(column))
+                    header = (cs, cs.index(column), j)
                 continue
             if cs and row_label(cs[0]) == row and len(cs) > 1:
                 seen += 1
                 if seen < nth:
                     continue
             if cs and row_label(cs[0]) == row:
-                head, col = header
+                head, col, at = header
                 from_right = len(head) - 1 - col
-                idx = len(cs) - 1 - from_right
+                width = table_width(loc, at, limit)
+                idx = aligned(loc, at, col, j, len(cs) - 1 - from_right, width)
                 if idx >= 1:
                     hit = (cs[idx], j + 1)
                 break

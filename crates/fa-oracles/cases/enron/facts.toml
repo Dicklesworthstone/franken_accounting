@@ -11,6 +11,14 @@
 # by its occurrence (`#1`, `#2`), and a label the table repeats ("Other") by its own; a label printed
 # over several lines is anchored by its first line. Two interpretation facts read each vintage's
 # lines as one posted entry.
+#
+# E2d slice 2: FY1999's net income, total assets and equity as the FY2000 10-K reported them (A,
+# `10K-*-A-FY1999`), and the adjustments (D1 JEDI and Chewco, D2 LJM1, D4 prior-period audit
+# adjustments) and restated figures (B) the 8-K's Table 1 (`8K-*`) and the 10-Q's Note 3 (`N3-*`)
+# print for FY1999. Cell keys follow the bead: `<line>@<date or FY>` for A and B, and
+# `<line>.<adjustment>@<date or FY>` for D. A column that prints no amount (the Raptor adjustment,
+# a dash for FY1999) adds nothing to a bridge and has no fact. ENR-BRIDGE-FY1999 records the bridge
+# books' encoding.
 
 [[fact]]
 id = "ASSUR-ENR-002"
@@ -457,7 +465,7 @@ anchor = "CONSOLIDATED BALANCE SHEET#2|Total shareholders' equity|2000"
 quote_sha256 = "08a8f9380bbb12e39c3ad55a54180c7ced0bb3ed9934f54323ba055b085c7548"
 about_scope = "period:FY2000"
 granularity = "statement_line"
-cell = "total_shareholders_equity@2000-12-31"
+cell = "equity@2000-12-31"
 
 [[fact]]
 id = "BS10K-TOTAL-LE"
@@ -875,7 +883,7 @@ anchor = "CONSOLIDATED BALANCE SHEET#2|Total|2000"
 quote_sha256 = "4ab542181d393ff64042a3dd8b732cd0417d22b4d4be3442be35c9f38176b885"
 about_scope = "period:FY2000"
 granularity = "statement_line"
-cell = "total_shareholders_equity@2000-12-31"
+cell = "equity@2000-12-31"
 
 [[fact]]
 id = "BS10Q-TOTAL-LE"
@@ -1661,5 +1669,580 @@ literal = "$64,926"
 rule = "scale"
 param = 6
 value = "6492600000000"
+unit = "USD"
+precision = 6
+
+[[fact]]
+id = "10K-NI-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED INCOME STATEMENT|Net Income|1999"
+quote_sha256 = "64d94c866dffad6dab67498f5ed9cdf32a6e747e2c17e58d2535f549f7976cb0"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income@FY1999"
+
+[[fact]]
+id = "10K-TA-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Total Assets|1999"
+quote_sha256 = "ed6b79dac1f3ad02c77c58e8c29adb08e681ee29af1d2c6ad9abad1db3e0c4e0"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets@1999-12-31"
+
+[[fact]]
+id = "10K-EQ-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total shareholders' equity|1999"
+quote_sha256 = "e036da12e2f6b0ffb6b7368021131de089caa36ff4baf5061abd861e814c13e2"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity@1999-12-31"
+
+[[fact]]
+id = "8K-NI-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco|1999"
+quote_sha256 = "d0c35216d9d22b53e65991e6038480e36f5ecf4e7c1c70b64d38f3825136e268"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_jedi_and_chewco@FY1999"
+
+[[fact]]
+id = "8K-NI-D2-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary|1999"
+quote_sha256 = "387c5794a636b1fda8db1d44d8de91caeb0dc88c132a1ddc54219eb11bda405e"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_ljm1_subsidiary@FY1999"
+
+[[fact]]
+id = "8K-NI-D4-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit|1999"
+quote_sha256 = "0e77e68ba5473d98840c3212f4a8cb801226494f1162c8001a9f4ed7b00cbaa8"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income.prior_year_proposed_audit_adjustments_and_reclassifications@FY1999"
+
+[[fact]]
+id = "8K-NI-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|NET INCOME RESTATED|1999"
+quote_sha256 = "62e66f3e9936906923febd26f9d2536edf38936998c4e5d678b925d848aaa89d"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income@FY1999"
+
+[[fact]]
+id = "8K-TA-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|1999"
+quote_sha256 = "38b2d03f3256502b1e9db02b2d12aa27a46033ffe6d8c0ef0f2cf6b1530be9d8"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_jedi_and_chewco@1999-12-31"
+
+[[fact]]
+id = "8K-TA-D2-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary#3|1999"
+quote_sha256 = "b86dec666b578d53df6275e995aca3449ed415ecec9e25a77f0fea3ae84d73dc"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_ljm1_subsidiary@1999-12-31"
+
+[[fact]]
+id = "8K-TA-D4-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#3|1999"
+quote_sha256 = "6bebe5d371d3dd7922204adc6974ad4f068b5015df3962e09e0d111dd7c22423"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets.prior_year_proposed_audit_adjustments_and_reclassifications@1999-12-31"
+
+[[fact]]
+id = "8K-TA-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|1999"
+quote_sha256 = "0307daccc70ab3bcc9e2275c98b031d7f686f9bd29c94ce44051d505665e511f"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets@1999-12-31"
+
+[[fact]]
+id = "8K-EQ-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|1999"
+quote_sha256 = "f11836dd5237aad47feab8552a0b62d64131131f408705555df64c464caa3cc2"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.consolidation_of_jedi_and_chewco@1999-12-31"
+
+[[fact]]
+id = "8K-EQ-D2-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary#4|1999"
+quote_sha256 = "63f0edf9781ad285e1e52bcfc45e97b5d621870443c6b6f3edb2b45d6d65d29d"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.consolidation_of_ljm1_subsidiary@1999-12-31"
+
+[[fact]]
+id = "8K-EQ-D4-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#5|1999"
+quote_sha256 = "7396022d63a7897b7f65980e1c1d4cfff8797ca606eb9be6683e34754deefcce"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.prior_year_proposed_audit_adjustments_and_reclassifications@1999-12-31"
+
+[[fact]]
+id = "8K-EQ-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|EQUITY RESTATED|1999"
+quote_sha256 = "2e1b61769121bfe44ccbec9c9fbf6319da1df1e1ff600672c38d51919e25012a"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity@1999-12-31"
+
+[[fact]]
+id = "N3-NI-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco|1999"
+quote_sha256 = "d0c35216d9d22b53e65991e6038480e36f5ecf4e7c1c70b64d38f3825136e268"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_jedi_and_chewco@FY1999"
+
+[[fact]]
+id = "N3-NI-D2-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary|1999"
+quote_sha256 = "387c5794a636b1fda8db1d44d8de91caeb0dc88c132a1ddc54219eb11bda405e"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_ljm1_subsidiary@FY1999"
+
+[[fact]]
+id = "N3-NI-D4-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit|1999"
+quote_sha256 = "6c2d89f668f6f2c1b3b73d4349e3820694952f74ab6668a024bd68f0a6c20d1d"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income.prior_period_proposed_audit_adjustments_and_reclassifications@FY1999"
+
+[[fact]]
+id = "N3-NI-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Net Income Restated|1999"
+quote_sha256 = "2618182c3894875e16eeafa6c24e1fe926150ebc6403980c2cb1bbff192d296d"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income@FY1999"
+
+[[fact]]
+id = "N3-TA-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#2|1999"
+quote_sha256 = "580811fa95269f3ecd4f22d176e079d36093573680b6ef66fa341e687a15b5da"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_jedi_and_chewco@1999-12-31"
+
+[[fact]]
+id = "N3-TA-D2-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary#2|1999"
+quote_sha256 = "b86dec666b578d53df6275e995aca3449ed415ecec9e25a77f0fea3ae84d73dc"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_ljm1_subsidiary@1999-12-31"
+
+[[fact]]
+id = "N3-TA-D4-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#2|1999"
+quote_sha256 = "f5477277236a0e5414ec1ca8f4672f066abcf4ff234f27b7833e5717f0af0750"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets.prior_period_proposed_audit_adjustments_and_reclassifications@1999-12-31"
+
+[[fact]]
+id = "N3-TA-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|TOTAL ASSETS RESTATED|1999"
+quote_sha256 = "3dbb7dec103cf6f640f32e63867e47d18ad37b038b5fe3c4776e068d29009947"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets@1999-12-31"
+
+[[fact]]
+id = "N3-EQ-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of JEDI and Chewco#4|1999"
+quote_sha256 = "b8c2def04e3a4dda61e64b3760f3963a3b39aae8f7432c8c769f3ec2e3bf91ed"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.consolidation_of_jedi_and_chewco@1999-12-31"
+
+[[fact]]
+id = "N3-EQ-D2-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Consolidation of LJM1 subsidiary#4|1999"
+quote_sha256 = "63f0edf9781ad285e1e52bcfc45e97b5d621870443c6b6f3edb2b45d6d65d29d"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.consolidation_of_ljm1_subsidiary@1999-12-31"
+
+[[fact]]
+id = "N3-EQ-D4-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Prior period proposed audit#4|1999"
+quote_sha256 = "938e95f02918085ab9843984dbe2fba99d83c28cdcb221b429ee9274ea9ccd86"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.prior_period_proposed_audit_adjustments_and_reclassifications@1999-12-31"
+
+[[fact]]
+id = "N3-EQ-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|EQUITY RESTATED|1999"
+quote_sha256 = "b469a67100a312356d6d32de77a9c6b9f7594748eb6f7ccda4440b69bc7b8c90"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity@1999-12-31"
+
+[[fact]]
+id = "ENR-BRIDGE-FY1999"
+provenance = "interpretation"
+from = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "A FY1999 bridge book holds three of the figures the restatements bridge, each on its own account: total assets on an asset account, equity on an equity account, and net income on a revenue account. Debt is not bridged here. A book needs balanced entries, so total assets and equity each post against one liability account that holds what the two leave (total assets less equity), and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. Each adjustment posts against the same balancing account as the figure it adjusts."
+
+[[value]]
+fact = "10K-NI-A-FY1999"
+ordinal = 1
+literal = "893"
+rule = "scale"
+param = 6
+value = "89300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "10K-TA-A-FY1999"
+ordinal = 1
+literal = "$33,381"
+rule = "scale"
+param = 6
+value = "3338100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "10K-EQ-A-FY1999"
+ordinal = 1
+literal = "9,570"
+rule = "scale"
+param = 6
+value = "957000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D1-FY1999"
+ordinal = 1
+literal = "(153)"
+rule = "scale"
+param = 6
+value = "-15300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D2-FY1999"
+ordinal = 1
+literal = "(95)"
+rule = "scale"
+param = 6
+value = "-9500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D4-FY1999"
+ordinal = 1
+literal = "(2)"
+rule = "scale"
+param = 6
+value = "-200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-B-FY1999"
+ordinal = 1
+literal = "643"
+rule = "scale"
+param = 6
+value = "64300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D1-FY1999"
+ordinal = 1
+literal = "187"
+rule = "scale"
+param = 6
+value = "18700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D2-FY1999"
+ordinal = 1
+literal = "(222)"
+rule = "scale"
+param = 6
+value = "-22200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D4-FY1999"
+ordinal = 1
+literal = "(147)"
+rule = "scale"
+param = 6
+value = "-14700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-B-FY1999"
+ordinal = 1
+literal = "33,199"
+rule = "scale"
+param = 6
+value = "3319900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D1-FY1999"
+ordinal = 1
+literal = "(540)"
+rule = "scale"
+param = 6
+value = "-54000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D2-FY1999"
+ordinal = 1
+literal = "(166)"
+rule = "scale"
+param = 6
+value = "-16600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D4-FY1999"
+ordinal = 1
+literal = "(128)"
+rule = "scale"
+param = 6
+value = "-12800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-B-FY1999"
+ordinal = 1
+literal = "8,736"
+rule = "scale"
+param = 6
+value = "873600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-NI-D1-FY1999"
+ordinal = 1
+literal = "(153)"
+rule = "scale"
+param = 6
+value = "-15300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-NI-D2-FY1999"
+ordinal = 1
+literal = "(95)"
+rule = "scale"
+param = 6
+value = "-9500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-NI-D4-FY1999"
+ordinal = 1
+literal = "(10)"
+rule = "scale"
+param = 6
+value = "-1000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-NI-B-FY1999"
+ordinal = 1
+literal = "635"
+rule = "scale"
+param = 6
+value = "63500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-TA-D1-FY1999"
+ordinal = 1
+literal = "181"
+rule = "scale"
+param = 6
+value = "18100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-TA-D2-FY1999"
+ordinal = 1
+literal = "(222)"
+rule = "scale"
+param = 6
+value = "-22200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-TA-D4-FY1999"
+ordinal = 1
+literal = "(68)"
+rule = "scale"
+param = 6
+value = "-6800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-TA-B-FY1999"
+ordinal = 1
+literal = "$33,272"
+rule = "scale"
+param = 6
+value = "3327200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-EQ-D1-FY1999"
+ordinal = 1
+literal = "(544)"
+rule = "scale"
+param = 6
+value = "-54400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-EQ-D2-FY1999"
+ordinal = 1
+literal = "(166)"
+rule = "scale"
+param = 6
+value = "-16600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-EQ-D4-FY1999"
+ordinal = 1
+literal = "(136)"
+rule = "scale"
+param = 6
+value = "-13600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-EQ-B-FY1999"
+ordinal = 1
+literal = "$ 8,724"
+rule = "scale"
+param = 6
+value = "872400000000"
 unit = "USD"
 precision = 6

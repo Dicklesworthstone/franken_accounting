@@ -505,6 +505,28 @@ class TableCells(unittest.TestCase):
             self.cell(self.TEXT_BS, "CONSOLIDATED BALANCE SHEETS|Cash and cash equivalents|2000"),
             ["30.0"])
 
+    # A text filing's restatement table whose rows leave their last column empty.
+    RAGGED = ("                                   TABLE 1\n"
+              "                                         1998      1999      2000      2001\n"
+              "Net income as reported                    703       893       979      (618)\n"
+              "Total assets as reported               29,350    33,381    65,503\n"
+              "    Consolidation of JEDI and Chewco      160       187      (192)\n"
+              "    Prior year proposed audit\n"
+              "      adjustments and reclassifications   (87)     (147)     (364)\n")
+
+    def test_ragged_row_reads_the_column_under_its_header(self):
+        table = "TABLE 1"
+        # A full row is counted from the right; a row that prints fewer values than the table's
+        # fullest is read under its header, never shifted by the empty last column.
+        self.assertEqual(self.cell(self.RAGGED, f"{table}|Net income as reported|1999"), ["893"])
+        self.assertEqual(self.cell(self.RAGGED, f"{table}|Total assets as reported|1999"),
+                         ["33,381"])
+        self.assertEqual(self.cell(self.RAGGED, f"{table}|Consolidation of JEDI and Chewco|1999"),
+                         ["187"])
+        self.assertEqual(self.cell(self.RAGGED, f"{table}|Prior year proposed audit|1999"),
+                         ["(147)"])
+        self.assertEqual(self.cell(self.RAGGED, f"{table}|Total assets as reported|2001"), [])
+
     def test_datecol_layout_pairs_month_days_with_years(self):
         table = "Ratios Table"
         self.assertEqual(self.cell(self.DATECOL, f"{table}|(a) Total Assets|May 31, 2008"),
