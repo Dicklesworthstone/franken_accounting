@@ -112,6 +112,40 @@ fn worldcom() {
     assert!(o.rows_ok, "{text}");
 }
 
+/// A8b, W5 (§6.4 W-P-01(a)): the director plans F6a into a draft of his own
+/// and promotes it himself. On the cell the posting laws admit (the
+/// reviewed placeholder), the owner check refuses the promotion FA-REF-008
+/// (exit 7); with no evidence or an unreviewed placeholder the plan's own
+/// first refusal decides. The reference decides each cell the same way. The
+/// entry_approval cells wait on A0.
+#[test]
+fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-P-01")
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "PASS W-P-01 P native F6a/approval_encoding=draft_self_promotion,evidence_attached=none state=Open route=draft refusal=FA-REF-080 exit=3 ref=agree",
+            "PASS W-P-01 P native F6a/approval_encoding=draft_self_promotion,evidence_attached=placeholder_unreviewed state=Open route=draft refusal=FA-REF-086 exit=3 record_consistent=false ref=agree",
+            "PASS W-P-01 P native F6a/approval_encoding=draft_self_promotion,evidence_attached=placeholder_reviewed state=Open route=draft refusal=FA-REF-008 exit=7 ref=agree",
+            "UNRUN W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=none reason=A0: an approval attached at fa post or fa commit",
+            "UNRUN W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_unreviewed reason=A0: an approval attached at fa post or fa commit",
+            "UNRUN W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_reviewed reason=A0: an approval attached at fa post or fa commit",
+        ],
+        "{text}"
+    );
+}
+
 /// A8b (§6.4 W-D-02): F6 as legacy history on WorldCom's migration book.
 /// The run opens, stages F6a and F6b (each one-approval twin refused
 /// FA-REF-012) and finalizes; jet.self_approved sees neither chunk before

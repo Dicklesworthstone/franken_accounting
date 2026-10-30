@@ -123,3 +123,17 @@ parameters = []
 classes = ["approved_by_is_entered_by", "entered_by_only"]
 components = ["cite", "severity", "statistic"]
 code_justification = "crates/fa-lantern/src/jet.rs:361"
+
+# How a documented approval is encoded (A8b, §6.4 W-P-01): a draft promoted by its owner reaches
+# the draft-promote owner check, which refuses the owner before any member is replayed;
+# entry_approval needs A0 (fa post takes no --approval); migration_legacy_pair is the migration
+# book's encoding (W-D-02); none attaches no approval.
+[[rule]]
+id = "draft_promotion_owner"
+attribute = "approval_encoding"
+reader = "kernel:draft promote, owner check"
+class_rule = "enum"
+parameters = []
+classes = ["draft_self_promotion", "entry_approval", "migration_legacy_pair", "none"]
+components = ["refusal", "law_row"]
+code_justification = "crates/fa-journal/src/draft.rs:1496"

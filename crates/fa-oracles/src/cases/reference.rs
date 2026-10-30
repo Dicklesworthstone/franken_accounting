@@ -90,6 +90,9 @@ pub struct CellSetting {
     pub evidence: Option<String>,
     /// The cell's own idempotency key (A7c's `cell_key`).
     pub key: Option<String>,
+    /// The `approval_encoding` value: `draft_self_promotion` adds the
+    /// owner's own promotion after an admitted plan (A8b).
+    pub approval_encoding: Option<String>,
 }
 
 /// The adapter over one book variant.
@@ -487,13 +490,37 @@ impl<'c> ReferenceAdapter<'c> {
         }
         // 3. The evidence minimum over the cell's evidence.
         let (docs, citations, attestations) = self.evidence(intent, cell);
-        Ok(Ok(evidence::verdict(
+        if let Some(code) = evidence::verdict(
             &self.law,
             &reference.class,
             &docs,
             &citations,
             &attestations,
-        )))
+        ) {
+            return Ok(Ok(Some(code)));
+        }
+        // 4. A draft self-promotion: the plan admitted, and its owner then
+        //    promotes the draft himself, the one approval the draft-promote
+        //    rule reads (sod_policy.toml#draft-promote).
+        if cell.approval_encoding.as_deref() == Some("draft_self_promotion") {
+            let key = SodKey {
+                class: "DraftControl".into(),
+                state: None,
+                disposition: None,
+                transition: Some("Promote".into()),
+            };
+            let (_, req) = self.sod.requirement(&key);
+            let owner = principal_id(&intent.principal);
+            let promotion = Approval {
+                principal: owner,
+                profile: profile.to_string(),
+                op: req.approver_op.clone(),
+            };
+            if let Some((code, _)) = sod::verdict(req, 0, owner, profile, &[promotion]) {
+                return Ok(Ok(Some(code)));
+            }
+        }
+        Ok(Ok(None))
     }
 
     /// The documents, citations and attestations of `intent` under the
@@ -813,6 +840,7 @@ mod tests {
             period_state: state,
             evidence: evidence.map(Into::into),
             key: Some(key.into()),
+            approval_encoding: None,
         }
     }
 
@@ -853,6 +881,36 @@ mod tests {
         assert_eq!(a.first_refusal(f4(&case), &c), Ok(Ok(Some("FA-REF-080"))));
         let reviewed = cell(None, Some("placeholder_reviewed"), "wp02-reviewed");
         assert_eq!(a.first_refusal(f4(&case), &reviewed), Ok(Ok(None)));
+    }
+
+    /// W-P-01's cells (A8b): an admitted plan promoted by its own owner is
+    /// FA-REF-008 under the draft-promote rule; a plan the evidence minimum
+    /// refuses gives that refusal first.
+    #[test]
+    fn draft_self_promotion_cell_is_fa_ref_008_in_the_reference() {
+        let case = pilot_planted(&[]);
+        let a = ReferenceAdapter::new(&case, &case.books["native"]).expect("the adapter");
+        let draft = |evidence: &str, key: &str| CellSetting {
+            approval_encoding: Some("draft_self_promotion".into()),
+            ..cell(None, Some(evidence), key)
+        };
+        let reviewed = draft("placeholder_reviewed", "wp01-reviewed");
+        assert_eq!(
+            a.first_refusal(f4(&case), &reviewed),
+            Ok(Ok(Some("FA-REF-008")))
+        );
+        assert_eq!(
+            a.p_cell(f4(&case), &reviewed, Some("FA-REF-008")),
+            RefVerdict::Agree
+        );
+        // Without the encoding the same cell admits.
+        let plain = cell(None, Some("placeholder_reviewed"), "wp01-plain");
+        assert_eq!(a.first_refusal(f4(&case), &plain), Ok(Ok(None)));
+        let none = draft("none", "wp01-none");
+        assert_eq!(
+            a.first_refusal(f4(&case), &none),
+            Ok(Ok(Some("FA-REF-080")))
+        );
     }
 
     #[test]

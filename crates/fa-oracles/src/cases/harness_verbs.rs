@@ -35,6 +35,9 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("migrate", Some("open")),
     ("migrate", Some("stage")),
     ("migrate", Some("finalize")),
+    // A8b: a draft self-promotion P cell.
+    ("draft", Some("new")),
+    ("draft", Some("promote")),
     ("procedure", Some("run")),
     ("finding", Some("record")),
     ("finding", Some("list")),
