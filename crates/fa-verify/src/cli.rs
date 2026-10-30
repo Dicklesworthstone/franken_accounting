@@ -105,10 +105,11 @@ commands:
                [--units N,N,... | --base-unit N] independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 effective-date or due-date aging, reconciliation, account roll-forwards,
-                                                direct cash flows, changes in equity or lot schedules.
+                                                direct cash flows, changes in equity, lot schedules,
+                                                native/functional one-book consolidated group statements.
                                                 V1 statements require --units;
                                                 lot schedules require the recipient's --base-unit;
-                                                V2 registry bundles require --receipt or trusted --expect
+                                                V2/V3 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
                                                 proves through the certificate's cutoff,
@@ -1454,6 +1455,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "effective_date_aging"
                                 } else if report.due_date_aging.is_some() {
                                     "due_date_aging"
+                                } else if let Some(group) = &report.consolidation {
+                                    if group.base_unit.is_some() {
+                                        "functional_consolidation"
+                                    } else {
+                                        "consolidation"
+                                    }
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
                                 } else if report.statement_diff.is_some() {
@@ -1509,6 +1516,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     aging.items.len()
                                 } else if let Some(aging) = &report.due_date_aging {
                                     aging.items.len() + aging.unscheduled.len()
+                                } else if let Some(group) = &report.consolidation {
+                                    group.balance_sheet.lines.len()
+                                        + group.income_statement.lines.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
                                 } else if let Some(comparison) = &report.statement_diff {
@@ -1598,6 +1608,17 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
+                    if let Some(group) = &report.consolidation {
+                        checks.extend(consolidation_checks(group));
+                        checks.extend(statement_checks(
+                            &group.balance_sheet,
+                            report.unit_universe_source,
+                        ));
+                        checks.extend(statement_checks(
+                            &group.income_statement,
+                            report.unit_universe_source,
+                        ));
                     }
                     if let Some(comparison) = &report.statement_diff {
                         checks.extend(statement_diff_checks(
@@ -2612,6 +2633,126 @@ fn due_date_aging_checks(report: &crate::report::VerifiedDueDateAging) -> Vec<Ch
                 ],
             ));
         }
+    }
+    checks
+}
+
+fn consolidation_checks(report: &crate::report::VerifiedConsolidation) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "consolidation_basis",
+        "recomputation",
+        vec![
+            ("book", h(&report.book_id)),
+            ("branch", h(&report.branch_id)),
+            ("known_at", n(report.known_at)),
+            ("period", s(&report.period)),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "base_unit",
+                report
+                    .base_unit
+                    .map_or(Json::Null, |unit| n(u64::from(unit))),
+            ),
+            (
+                "valuation_basis",
+                s(if report.base_unit.is_some() {
+                    "retained-base-amounts"
+                } else {
+                    "native-units"
+                }),
+            ),
+            ("rounding_law", s(report.rounding_law)),
+            ("run_digest", h(&report.run_digest)),
+            ("book_parameters_source", s(report.book_parameters_source)),
+            (
+                "ownership_and_roles",
+                s("authenticated historical journal controls"),
+            ),
+            (
+                "method",
+                s("one-book cost investment elimination and direct noncontrolling interests"),
+            ),
+            ("genesis_registration", s("not_judged")),
+            ("registry_activation", s("not_judged")),
+            ("economic_truth", s("not_judged")),
+        ],
+    )];
+    for member in &report.members {
+        checks.push(Check::pass(
+            "consolidation_member",
+            "recomputation",
+            vec![
+                ("entity", s(&member.code)),
+                ("name", s(&member.name)),
+                ("parent", member.parent.as_ref().map_or(Json::Null, s)),
+                (
+                    "ownership_bps",
+                    member
+                        .ownership_bps
+                        .map_or(Json::Null, |value| n(u64::from(value))),
+                ),
+            ],
+        ));
+    }
+    for (column, eliminations) in [
+        ("stock", &report.eliminations),
+        ("income", &report.income_eliminations),
+    ] {
+        for elimination in eliminations {
+            checks.push(Check::pass(
+                "consolidation_elimination",
+                "recomputation",
+                vec![
+                    ("column", s(column)),
+                    ("code", s(&elimination.code)),
+                    ("description", s(&elimination.description)),
+                    ("unit", n(u64::from(elimination.unit_id))),
+                    ("legs", n(elimination.legs.len() as u64)),
+                ],
+            ));
+            for leg in &elimination.legs {
+                checks.push(Check::pass(
+                    "consolidation_elimination_leg",
+                    "recomputation",
+                    vec![
+                        ("column", s(column)),
+                        ("code", s(&elimination.code)),
+                        ("entity", h(&leg.entity_id)),
+                        ("account", s(format!("{:032x}", leg.account_id))),
+                        ("unit", n(u64::from(leg.unit_id))),
+                        ("debits", amount(leg.debits)),
+                        ("credits", amount(leg.credits)),
+                    ],
+                ));
+            }
+        }
+    }
+    for equity in &report.equity_reconciliations {
+        checks.push(Check::pass(
+            "consolidation_equity_reconciliation",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(equity.unit_id))),
+                ("parent_total_equity", amount(equity.parent_total_equity)),
+                (
+                    "subsidiaries_total_equity",
+                    amount(equity.subsidiaries_total_equity),
+                ),
+                ("equity_eliminations", amount(equity.equity_eliminations)),
+                (
+                    "noncontrolling_interest_equity",
+                    amount(equity.non_controlling_interest_equity),
+                ),
+                (
+                    "controlling_interest_equity",
+                    amount(equity.controlling_interest_equity),
+                ),
+                (
+                    "consolidated_total_equity",
+                    amount(equity.consolidated_total_equity),
+                ),
+            ],
+        ));
     }
     checks
 }

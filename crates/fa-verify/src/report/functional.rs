@@ -78,16 +78,17 @@ fn framed_hash(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     hash_parts(domain, &[&w.buf])
 }
 
-struct BookParameters {
-    book: [u8; 16],
-    base: u32,
-    calendar: String,
+pub(super) struct BookParameters {
+    pub(super) book: [u8; 16],
+    pub(super) base: u32,
+    pub(super) calendar: String,
     fiscal_calendar: calendar::Calendar,
     canonical: Vec<u8>,
-    entities: BTreeMap<u128, String>,
+    pub(super) entities: BTreeMap<u128, String>,
+    pub(super) entity_names: BTreeMap<String, String>,
 }
 impl BookParameters {
-    fn read(bytes: &[u8], expected_book: &[u8; 16]) -> Result<Self, ReportError> {
+    pub(super) fn read(bytes: &[u8], expected_book: &[u8; 16]) -> Result<Self, ReportError> {
         if bytes.len() > MAX_BOOK_BYTES {
             return Err(failed("bounded_input", "Book parameters exceed 1 MiB"));
         }
@@ -122,17 +123,19 @@ impl BookParameters {
             }
         }
         let mut entities = BTreeMap::new();
+        let mut entity_names = BTreeMap::new();
         if r.remaining() > 0 {
             let count = r.count(256, 12, "book.entities")?;
             for _ in 0..count {
                 let code = text(&mut r, 32, "entity.code")?;
-                text(&mut r, 256, "entity.name")?;
+                let name = text(&mut r, 256, "entity.name")?;
                 let functional_unit = r.u32("entity.functional_unit")?;
                 let digest = framed_hash(
                     b"fa:vid:dimension-value:v1",
                     &[&book, b"legal_entity", code.as_bytes()],
                 );
                 let identity = u128::from_le_bytes(digest[..16].try_into().expect("sixteen bytes"));
+                entity_names.insert(code.to_string(), name.to_string());
                 if code.is_empty()
                     || functional_unit != base
                     || entities.insert(identity, code.into()).is_some()
@@ -158,6 +161,7 @@ impl BookParameters {
             fiscal_calendar,
             canonical: bytes.to_vec(),
             entities,
+            entity_names,
         })
     }
 
@@ -339,6 +343,41 @@ fn sources(
         migration_activations,
     )?;
     Ok((spec, checked))
+}
+
+/// Validate every retained valuation before consolidation selects its stock
+/// and activity populations. Only independently reproduced amounts cross this
+/// boundary; ownership, entity attribution and elimination arithmetic are
+/// reconstructed separately by the consolidation verifier.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn consolidation_amounts(
+    cert: &Certificate<'_>,
+    registry: &registry::FunctionalRegistry,
+    book_bytes: &[u8],
+    documents: &[([u8; 32], &[u8])],
+    schema: &metadata::Schema,
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    legs: &[Vec<Leg>],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    migration_activations: &BTreeMap<u64, u64>,
+) -> Result<BTreeMap<usize, Vec<i128>>, ReportError> {
+    let (_, checked) = sources(
+        cert,
+        registry,
+        book_bytes,
+        documents,
+        schema,
+        envelopes,
+        records,
+        legs,
+        infos,
+        migration_activations,
+    )?;
+    Ok(checked
+        .into_iter()
+        .map(|(index, entry)| (index, entry.amounts))
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -933,6 +933,7 @@ impl Schema {
         }
         match selection {
             Selection::Statement(_)
+            | Selection::Consolidation(_)
             | Selection::OpenItems(_)
             | Selection::ExplainBalance { .. } => Err(failed(
                 "report_selector",

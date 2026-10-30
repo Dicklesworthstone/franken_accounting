@@ -719,8 +719,12 @@ pub(super) fn verify_functional(
     units(&docs[2])?;
     functional_laws(&docs[4])?;
     functional_rounding(&docs[5])?;
+    functional_definitions(&docs[2])
+}
+
+fn functional_definitions(doc: &Document) -> Result<FunctionalRegistry, ReportError> {
     let mut definitions = BTreeMap::new();
-    for row in rows(&docs[2], "unit")? {
+    for row in rows(doc, "unit")? {
         let id = u32::try_from(integer(row, "id")?).map_err(|_| invalid("invalid unit id"))?;
         let scale =
             u8::try_from(integer(row, "scale")?).map_err(|_| invalid("invalid decimal scale"))?;
@@ -734,7 +738,7 @@ pub(super) fn verify_functional(
     }
     Ok(FunctionalRegistry {
         units: definitions,
-        unit_table_digest: functional_unit_table_digest(&docs[2])?,
+        unit_table_digest: functional_unit_table_digest(doc)?,
     })
 }
 
@@ -797,4 +801,144 @@ fn functional_unit_table_digest(doc: &Document) -> Result<[u8; 32], ReportError>
     let mut framed = Writer::default();
     framed.bytes(&table.buf);
     Ok(hash_parts(b"fa:unit-table:v1", &[&framed.buf]))
+}
+
+/// Consolidation binds its own registry closure. Its account-role semantics
+/// cannot be borrowed from an ordinary statement or functional report closure.
+pub(super) struct ConsolidationRegistry {
+    pub units: Vec<u32>,
+    pub role_types: BTreeMap<String, Vec<u8>>,
+    pub functional: Option<FunctionalRegistry>,
+}
+
+fn consolidation_roles(doc: &Document) -> Result<BTreeMap<String, Vec<u8>>, ReportError> {
+    if doc.root.len() != 1 || doc.named_tables != 0 || doc.arrays.len() != 1 {
+        return Err(invalid("unsupported account-role registry vocabulary"));
+    }
+    let type_names = [
+        "Asset",
+        "Liability",
+        "Equity",
+        "Revenue",
+        "Expense",
+        "Memo",
+        "Statistical",
+        "OffBalance",
+    ];
+    let mut roles = BTreeMap::new();
+    for row in rows(doc, "role")? {
+        let name = string(row, "name")?;
+        if name.is_empty()
+            || row.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "name" | "account_types" | "meaning" | "consumers" | "verbs"
+                )
+            })
+            || string(row, "meaning")?.is_empty()
+        {
+            return Err(invalid("invalid account-role definition"));
+        }
+        text_array(row, "consumers")?;
+        if row.contains_key("verbs") {
+            text_array(row, "verbs")?;
+        }
+        let mut types = Vec::new();
+        for name in text_array(row, "account_types")? {
+            let tag = type_names
+                .iter()
+                .position(|expected| *expected == name)
+                .ok_or_else(|| invalid("account role names an unsupported account type"))?;
+            types.push((tag + 1) as u8);
+        }
+        types.sort_unstable();
+        if types.is_empty()
+            || !types.windows(2).all(|pair| pair[0] < pair[1])
+            || roles.insert(name.to_string(), types).is_some()
+        {
+            return Err(invalid(
+                "account roles and their permitted types must be unique",
+            ));
+        }
+    }
+    for (name, types) in [
+        ("intercompany", vec![1, 2]),
+        ("intercompany_activity", vec![4, 5]),
+        ("investment_in_subsidiary", vec![1]),
+        ("contributed_capital", vec![3]),
+        ("noncontrolling_interest", vec![3]),
+        ("noncontrolling_interest_income", vec![5]),
+    ] {
+        if roles.get(name) != Some(&types) {
+            return Err(invalid(format!(
+                "unsupported consolidation role semantics: {name}"
+            )));
+        }
+    }
+    Ok(roles)
+}
+
+pub(super) fn verify_consolidation(
+    inputs: &[(&str, &[u8])],
+    expected: &[u8; 32],
+    functional: bool,
+) -> Result<ConsolidationRegistry, ReportError> {
+    let names: &[&str] = if functional {
+        &[
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "account_roles",
+            "fx_laws",
+            "rounding_laws",
+        ]
+    } else {
+        &[
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "account_roles",
+            "rounding_laws",
+        ]
+    };
+    if inputs
+        .iter()
+        .map(|(name, _)| *name)
+        .ne(names.iter().copied())
+    {
+        return Err(invalid(
+            "consolidation requires its complete native or functional registry closure in certificate order",
+        ));
+    }
+    let mut transcript = Vec::new();
+    let mut docs = Vec::with_capacity(inputs.len());
+    for (name, bytes) in inputs {
+        docs.push(document(bytes)?);
+        transcript.extend_from_slice(name.as_bytes());
+        transcript.push(0);
+        transcript.extend_from_slice(&hash_parts(b"fa:registry-canonical-digest:v1", &[bytes]));
+    }
+    if hash_parts(b"fa:report-registry-closure:v2", &[&transcript]) != *expected {
+        return Err(invalid(
+            "consolidation registry inputs differ from the certificate's exact closure",
+        ));
+    }
+    account_types(&docs[0])?;
+    entry_classes(&docs[1])?;
+    let units = units(&docs[2])?;
+    let role_types = consolidation_roles(&docs[4])?;
+    functional_rounding(&docs[if functional { 6 } else { 5 }])?;
+    let functional = if functional {
+        functional_laws(&docs[5])?;
+        Some(functional_definitions(&docs[2])?)
+    } else {
+        None
+    };
+    Ok(ConsolidationRegistry {
+        units,
+        role_types,
+        functional,
+    })
 }

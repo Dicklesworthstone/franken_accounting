@@ -1,6 +1,7 @@
 //! Independent amount vectors and hostile complete-bundle fixtures.
 
 mod closing;
+mod consolidation;
 mod migration;
 mod revaluation;
 mod settlement;

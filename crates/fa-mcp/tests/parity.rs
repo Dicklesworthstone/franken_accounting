@@ -89,10 +89,10 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // §14.4 business-email-compromise vector; a Human operator does
             // it on the host, never a launch-bound session.
             || (e.verb == "party" && e.subcommand.as_deref() == Some("identifiers"))
-            // The reviewed closing map and intrinsic close need schema_change
-            // or close, outside both launch templates and issued-token ceilings.
-            || (e.verb == "close"
-                && matches!(e.subcommand.as_deref(), Some("map" | "year-end")))
+            // Closing-map changes need schema_change on the host. The year-end
+            // tool exposes reviewed preparation and draft retention; native
+            // publication still requires Close outside launch-profile ceilings.
+            || (e.verb == "close" && e.subcommand.as_deref() == Some("map"))
             // Releasing a bank claim requires explicit Human host confirmation.
             || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"))
             // fa-lzrn: a fetch runs the host's `fwc` connector subprocess with
@@ -489,9 +489,10 @@ fn the_gate_fails_on_planted_defects() {
 fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
     let (mcp, reg) = embedded();
     assert!(mcp.cluster("fa.close").unwrap().on_demand);
-    // routes, verify, the draft review (5082454) and the consolidation
-    // (fa-76hy) are the closing reads.
-    assert_eq!(mcp.tools_of("fa.close").count(), 4);
+    // Historical reads, draft rehearsal, consolidation and exact reviewed
+    // year-end preparation share this on-demand cluster. The latter does
+    // not grant native Close or independent Approve authority.
+    assert_eq!(mcp.tools_of("fa.close").count(), 5);
     assert_eq!(
         mcp.tool_for("close", Some("dry-run")).unwrap().wire_name(),
         "fa_close_dry_run"
@@ -574,14 +575,58 @@ fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
             operations
         );
     }
-    for subcommand in ["map", "year-end"] {
-        assert!(mcp.tool_for("close", Some(subcommand)).is_none());
-        assert!(mcp.excluded.iter().any(|excluded| {
-            excluded.verb == "close"
-                && excluded.subcommand.as_deref() == Some(subcommand)
-                && excluded.reason.contains("host-only")
-        }));
+    let year_end = mcp.tool_for("close", Some("year-end")).unwrap();
+    assert_eq!(year_end.wire_name(), "fa_close_year_end");
+    let review_args = json!({
+        "fiscal_year": "2026", "period": "FY2026-CLOSE", "key": "annual",
+        "review_only": true
+    });
+    let draft_args = json!({
+        "review": "abcd", "digest": "01".repeat(32), "draft": "reviewed-close"
+    });
+    for arguments in [&review_args, &draft_args] {
+        let call = year_end.invocation(&mcp, reg, arguments).unwrap();
+        let parsed = fa_cli::args::parse(&call.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["close", "year-end"]);
+        let ops = fa_cli::cli::bound_command_ops("close", &parsed).unwrap();
+        assert_eq!(
+            ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            ["read", "post"]
+        );
     }
+    // Omitting the explicit preparation/draft mode does not acquire Close:
+    // the same command is routed to the native authority row and refused
+    // by both launch profiles whose ceilings are checked below.
+    let native = year_end
+        .invocation(
+            &mcp,
+            reg,
+            &json!({"fiscal_year": "2026", "period": "FY2026-CLOSE", "key": "native"}),
+        )
+        .unwrap();
+    let parsed = fa_cli::args::parse(&native.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("close", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read", "post", "close"]
+    );
+    for forbidden in [
+        json!({"review_only": true, "grant": ["close"]}),
+        json!({"review_only": true, "yes": true}),
+        json!({"dry_run": true, "plan_out": "/host/plan"}),
+        json!({"review_out": "/host/review"}),
+    ] {
+        assert!(year_end.invocation(&mcp, reg, &forbidden).is_err());
+    }
+    assert!(mcp.tool_for("close", Some("map")).is_none());
+    assert!(mcp.excluded.iter().any(|excluded| {
+        excluded.verb == "close"
+            && excluded.subcommand.as_deref() == Some("map")
+            && excluded.reason.contains("host-only")
+    }));
     for profile in [
         fa_cli::authority::LaunchProfile::Agent,
         fa_cli::authority::LaunchProfile::Preparer,

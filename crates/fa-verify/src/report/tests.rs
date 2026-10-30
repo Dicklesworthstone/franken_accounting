@@ -204,7 +204,10 @@ fn bundle(
         .map(|r| leaf_hash(&r.envelope.encode()))
         .collect();
     let (codes, cutoff, activity) = match &selection {
-        Selection::Statement(_) | Selection::OpenItems(_) | Selection::ExplainBalance { .. } => {
+        Selection::Statement(_)
+        | Selection::Consolidation(_)
+        | Selection::OpenItems(_)
+        | Selection::ExplainBalance { .. } => {
             panic!("use the report-family fixture")
         }
         Selection::AsOf(day) => (
@@ -241,7 +244,10 @@ fn bundle(
         .fixed(&[0; 16])
         .u64(known_at);
     match selection {
-        Selection::Statement(_) | Selection::OpenItems(_) | Selection::ExplainBalance { .. } => {
+        Selection::Statement(_)
+        | Selection::Consolidation(_)
+        | Selection::OpenItems(_)
+        | Selection::ExplainBalance { .. } => {
             panic!("use the report-family fixture")
         }
         Selection::AsOf(day) => {

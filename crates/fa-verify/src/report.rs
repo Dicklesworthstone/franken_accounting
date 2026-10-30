@@ -55,10 +55,17 @@
 //! PeriodEndRevaluation laws with exact Rate bodies, signed intake receipts,
 //! six registries and explicit Book parameters. Recipient pins or production
 //! receipts authenticate those parameters; Book genesis is not proved.
+//! The same transport carries v6/v7 one-book consolidated group reports, with
+//! their distinct account-role and rounding registry closure. Historical
+//! ownership and role controls, entity stocks and period activity, intercompany
+//! eliminations, investment/capital eliminations, HalfEven NCI and both fixed
+//! financial statements are independently reconstructed. Cross-book currency
+//! translation and partially owned intermediate parents remain unsupported.
 
 mod aging;
 mod cash_flow;
 mod cash_flow_split;
+mod consolidation;
 mod dimension;
 mod due_date;
 mod due_date_reconciliation;
@@ -88,6 +95,10 @@ pub use cash_flow::{
 };
 pub use cash_flow_split::{
     CashFlowLegSplit, CashFlowPortion, CashFlowSplitDefinition, VerifiedSplitCashFlow,
+};
+pub use consolidation::{
+    ConsolidationElimination, ConsolidationEquity, ConsolidationLeg, ConsolidationMember,
+    VerifiedConsolidation,
 };
 pub use dimension::VerifiedDimensionSelection;
 pub use due_date::{
@@ -146,6 +157,8 @@ const INSTANT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v2";
 const OPEN_ITEMS_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v3";
 const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
 const FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v5";
+const CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v6";
+const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v7";
 const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
 const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v10";
@@ -247,6 +260,9 @@ pub struct VerifiedReport {
     pub functional_trial_balance: Option<VerifiedFunctionalTrialBalance>,
     /// Financial-statement rows computed from independently repriced base amounts.
     pub functional_statement: Option<VerifiedFunctionalStatement>,
+    /// Complete group statements, eliminations and noncontrolling interests,
+    /// reconstructed from authenticated historical ownership and account roles.
+    pub consolidation: Option<VerifiedConsolidation>,
     /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -262,6 +278,7 @@ enum Selection {
     AsOf(i32),
     Activity(Vec<String>),
     Statement(statement::Selection),
+    Consolidation(String),
     OpenItems(Option<u128>),
     ExplainBalance { account: u128, period: String },
 }
@@ -307,7 +324,10 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         r.fixed::<24>("certificate.format")?.to_vec()
     };
     let functional_statement = format.as_slice() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT;
-    let functional = functional_trial_balance || functional_statement;
+    let functional_consolidation = format.as_slice() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT;
+    let consolidation =
+        format.as_slice() == CONSOLIDATION_CERTIFICATE_FORMAT || functional_consolidation;
+    let functional = functional_trial_balance || functional_statement || functional_consolidation;
     let statement = format.as_slice() == STATEMENT_CERTIFICATE_FORMAT || functional_statement;
     let instant = format.as_slice() == INSTANT_CERTIFICATE_FORMAT;
     let dimension = format.as_slice() == DIMENSION_CERTIFICATE_FORMAT;
@@ -318,10 +338,11 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         && !dimension
         && !open_items
         && !functional
+        && !consolidation
     {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v8 dimension trial balance, or v10 functional trial balance",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, or v10 functional trial balance",
         ));
     }
     for (field, expected) in [
@@ -356,7 +377,19 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         selector
     };
-    let selection = if statement {
+    let selection = if consolidation {
+        if selector != if functional_consolidation { 5 } else { 4 } {
+            return Err(failed(
+                "supported_report",
+                "v6/v7 requires its native/functional consolidation selector",
+            ));
+        }
+        let period = text(&mut r, 128, "certificate.period")?.to_string();
+        if period.is_empty() {
+            return Err(failed("report_selector", "consolidation period is empty"));
+        }
+        Selection::Consolidation(period)
+    } else if statement {
         if selector != if functional_statement { 3 } else { 2 } {
             return Err(failed(
                 "supported_report",
@@ -401,6 +434,8 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         }
     };
     let expected_format = match &selection {
+        Selection::Consolidation(_) if functional => "fa:functional-consolidation:v1",
+        Selection::Consolidation(_) => "fa:consolidation:v1",
         Selection::ExplainBalance { .. } => "fa:balance-explanation:v1",
         Selection::OpenItems(_) => "fa:open-items:v1",
         Selection::Statement(_) if functional => "fa:functional-statement:v1",
@@ -443,7 +478,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
     let time_selection = if instant
-        || (statement || dimension || open_items || functional)
+        || (statement || consolidation || dimension || open_items || functional)
             && r.present("certificate.time_selection")?
     {
         Some(VerifiedInstantSelection::read(&mut r)?)
@@ -873,10 +908,11 @@ fn verify_report_with_lots_input(
         .or_else(|| summary.as_ref().map(|value| value.digest))
         .or_else(|| lots.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
-    if cert.functional != (major == 3) {
+    let is_consolidation = matches!(cert.selection, Selection::Consolidation(_));
+    if (cert.functional || is_consolidation) != (major == 3) {
         return Err(failed(
             "supported_report",
-            "functional v5/v10 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
+            "functional v5/v10 and consolidation v6/v7 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
         ));
     }
     let is_statement = matches!(cert.selection, Selection::Statement(_));
@@ -975,10 +1011,13 @@ fn verify_report_with_lots_input(
         ));
     }
     let mut functional_registry = None;
+    let mut consolidation_registry = None;
     let mut lot_units = None;
     let (units, supersession_reasons) = if major >= 2 {
         let n = r.count(
-            if major == 3 {
+            if is_consolidation && cert.functional {
+                7
+            } else if major == 3 {
                 6
             } else if is_explanation {
                 5
@@ -995,7 +1034,13 @@ fn verify_report_with_lots_input(
                 r.bytes(1024 * 1024, "registry.canonical")?,
             ));
         }
-        let (units, reasons) = if major == 3 {
+        let (units, reasons) = if is_consolidation {
+            let definitions =
+                registry::verify_consolidation(&inputs, &cert.registry_digest, cert.functional)?;
+            let units = definitions.units.clone();
+            consolidation_registry = Some(definitions);
+            (units, BTreeMap::new())
+        } else if major == 3 {
             let definitions = registry::verify_functional(&inputs, &cert.registry_digest)?;
             let units = definitions.units.keys().copied().collect();
             functional_registry = Some(definitions);
@@ -1032,6 +1077,12 @@ fn verify_report_with_lots_input(
             ));
         }
     }
+    if is_consolidation && !cert.functional && !functional_rates.is_empty() {
+        return Err(failed(
+            "supported_report",
+            "native consolidation does not consume Rate documents",
+        ));
+    }
     r.finish("report bundle")?;
     let digest = hash_parts(REPORT_BUNDLE_FORMAT, &[bundle]);
     let receipt = receipt
@@ -1060,6 +1111,94 @@ fn verify_report_with_lots_input(
         .as_ref()
         .map(|selection| dimension_history.select(selection))
         .transpose()?;
+    if let Selection::Consolidation(period) = &cert.selection {
+        if cert.time_selection.is_some() {
+            return Err(failed(
+                "supported_report",
+                "consolidation requires a sequence-selected trunk report",
+            ));
+        }
+        let definitions = consolidation_registry
+            .as_ref()
+            .ok_or_else(|| failed("registry_closure", "missing consolidation registries"))?;
+        let book = functional_book
+            .ok_or_else(|| failed("consolidation_book", "missing Book parameters"))?;
+        let amounts = if cert.functional {
+            Some(functional::consolidation_amounts(
+                &cert,
+                definitions.functional.as_ref().ok_or_else(|| {
+                    failed("registry_closure", "missing consolidation valuation laws")
+                })?,
+                book,
+                &functional_rates,
+                &schema,
+                envelopes,
+                &records,
+                &legs,
+                &infos,
+                &migration_activations,
+            )?)
+        } else {
+            None
+        };
+        let (report, output) = consolidation::replay(
+            &cert,
+            period,
+            &units,
+            &definitions.role_types,
+            book,
+            amounts.as_ref(),
+            &schema,
+            envelopes,
+            &records,
+            &legs,
+            &infos,
+            &visible_migrations,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "report_recomputation",
+                "consolidated balances, ownership, eliminations, noncontrolling interests or exact statement bytes differ from independent replay",
+            ));
+        }
+        let (_, through) = schema.bounds(std::slice::from_ref(period))?;
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            summary: None,
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: None,
+            effective_through: Some(through),
+            activity: false,
+            periods: vec![period.clone()],
+            rows: Vec::new(),
+            statement: None,
+            statement_diff: None,
+            dimension: None,
+            open_items: None,
+            lots: None,
+            explanation: None,
+            aging: None,
+            due_date_aging: None,
+            aging_reconciliation: None,
+            due_date_aging_reconciliation: None,
+            roll_forward: None,
+            cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
+            equity_roll_forward: None,
+            functional_trial_balance: None,
+            functional_statement: None,
+            consolidation: Some(report),
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
     if cert.functional {
         let definitions = functional_registry
             .as_ref()
@@ -1156,6 +1295,7 @@ fn verify_report_with_lots_input(
             equity_roll_forward: None,
             functional_trial_balance,
             functional_statement,
+            consolidation: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1259,6 +1399,7 @@ fn verify_report_with_lots_input(
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
+                consolidation: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1348,6 +1489,7 @@ fn verify_report_with_lots_input(
                     equity_roll_forward: None,
                     functional_trial_balance: None,
                     functional_statement: None,
+                    consolidation: None,
                     unit_universe_source: "authenticated-registry",
                     output,
                     checked_records: records.len(),
@@ -1384,6 +1526,7 @@ fn verify_report_with_lots_input(
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
+                consolidation: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1471,6 +1614,7 @@ fn verify_report_with_lots_input(
                     equity_roll_forward: None,
                     functional_trial_balance: None,
                     functional_statement: None,
+                    consolidation: None,
                     unit_universe_source: "authenticated-registry",
                     output,
                     checked_records: records.len(),
@@ -1507,6 +1651,7 @@ fn verify_report_with_lots_input(
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
+                consolidation: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1543,6 +1688,7 @@ fn verify_report_with_lots_input(
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
+            consolidation: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1600,6 +1746,7 @@ fn verify_report_with_lots_input(
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
+            consolidation: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1718,6 +1865,7 @@ fn verify_report_with_lots_input(
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
+            consolidation: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -1799,6 +1947,7 @@ fn verify_report_with_lots_input(
                 equity_roll_forward: Some(equity_roll_forward),
                 functional_trial_balance: None,
                 functional_statement: None,
+                consolidation: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1890,6 +2039,7 @@ fn verify_report_with_lots_input(
                 equity_roll_forward: None,
                 functional_trial_balance: None,
                 functional_statement: None,
+                consolidation: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -1926,6 +2076,7 @@ fn verify_report_with_lots_input(
             equity_roll_forward: None,
             functional_trial_balance: None,
             functional_statement: None,
+            consolidation: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1982,6 +2133,7 @@ fn verify_report_with_lots_input(
         equity_roll_forward: None,
         functional_trial_balance: None,
         functional_statement: None,
+        consolidation: None,
         unit_universe_source,
         output,
         checked_records: records.len(),

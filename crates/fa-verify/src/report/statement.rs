@@ -515,7 +515,7 @@ pub(super) fn replay(
     Ok((statement, output))
 }
 
-fn encode(
+pub(super) fn encode(
     statement: &VerifiedStatement,
     definition: &[u8],
     book: &[u8; 16],
