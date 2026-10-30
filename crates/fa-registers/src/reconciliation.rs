@@ -422,8 +422,47 @@ pub struct ThreeWayMatchResult {
     pub decision_card: DecisionCard,
 }
 
+/// Bind the exact selected document lines, not just the invoice identity.
+/// One document may contain several lines with the same numerical variance;
+/// neither its other lines nor another PO/receipt can reuse this decision.
+fn three_way_input_digest(
+    po: &PurchaseOrderLine,
+    receipt: &ReceivingReportLine,
+    invoice: &VendorInvoiceLine,
+) -> Result<[u8; 32], ReconciliationError> {
+    let mut w = Writer::new();
+    w.fixed(&po.po_oid.0)
+        .str(&po.vendor)
+        .str(&po.item_code)
+        .i128(po.quantity)
+        .u32(po.unit_price.unit.0)
+        .i128(po.unit_price.mantissa)
+        .fixed(&receipt.receipt_oid.0)
+        .fixed(&receipt.po_oid.0)
+        .str(&receipt.item_code)
+        .i128(receipt.quantity_received)
+        .fixed(&invoice.invoice_oid.0)
+        .fixed(&invoice.po_oid.0)
+        .str(&invoice.vendor)
+        .str(&invoice.item_code)
+        .i128(invoice.quantity_billed)
+        .u32(invoice.unit_price_billed.unit.0)
+        .i128(invoice.unit_price_billed.mantissa)
+        .u32(invoice.total_billed.unit.0)
+        .i128(invoice.total_billed.mantissa);
+    Ok(domain_digest(
+        b"fa:three-way-match-input:v1",
+        &[&w.finish()?],
+    ))
+}
+
 /// Execute deterministic three-way matching (`PO <-> Receipt <-> VendorInvoice`)
-/// with a replayable [`DecisionCard`].
+/// with a replayable [`DecisionCard`] bound to all three selected lines.
+///
+/// References, vendor and item identities must agree before numerical matching.
+/// These are exact source identifiers, not fuzzy matching features. The caller
+/// supplies the document lines; this helper does not authenticate document OIDs
+/// or prove that a selected line was extracted from a retained document.
 #[deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub fn match_three_way(
     po: &PurchaseOrderLine,
@@ -432,13 +471,38 @@ pub fn match_three_way(
     policy_epoch: Option<[u8; 32]>,
     enforced_policy_epoch: [u8; 32],
 ) -> Result<ThreeWayMatchResult, ReconciliationError> {
-    if po.unit_price.unit != invoice.unit_price_billed.unit
-        || po.unit_price.unit != invoice.total_billed.unit
-    {
-        return Err(ReconciliationError::UnitMismatch {
-            expected: po.unit_price.unit,
-            actual: invoice.total_billed.unit,
-        });
+    for (valid, field) in [
+        (!po.vendor.trim().is_empty(), "three-way PO vendor is empty"),
+        (
+            !po.item_code.trim().is_empty(),
+            "three-way PO item is empty",
+        ),
+        (receipt.po_oid == po.po_oid, "three-way receipt PO mismatch"),
+        (invoice.po_oid == po.po_oid, "three-way invoice PO mismatch"),
+        (
+            invoice.vendor == po.vendor,
+            "three-way invoice vendor mismatch",
+        ),
+        (
+            receipt.item_code == po.item_code,
+            "three-way receipt item mismatch",
+        ),
+        (
+            invoice.item_code == po.item_code,
+            "three-way invoice item mismatch",
+        ),
+    ] {
+        if !valid {
+            return Err(ReconciliationError::InvalidField(field));
+        }
+    }
+    for actual in [invoice.unit_price_billed.unit, invoice.total_billed.unit] {
+        if po.unit_price.unit != actual {
+            return Err(ReconciliationError::UnitMismatch {
+                expected: po.unit_price.unit,
+                actual,
+            });
+        }
     }
     let unit = po.unit_price.unit;
     let po_receipt_diff = po
@@ -522,7 +586,7 @@ pub fn match_three_way(
     let card = decide_bank_match(
         policy_epoch,
         enforced_policy_epoch,
-        invoice.invoice_oid.0,
+        three_way_input_digest(po, receipt, invoice)?,
         candidates,
         features,
         BenefitInterval {
@@ -966,6 +1030,152 @@ mod tests {
                 invoice_unit_price: 1_600,
             }
         );
+    }
+
+    fn three_way_sources() -> (PurchaseOrderLine, ReceivingReportLine, VendorInvoiceLine) {
+        let po = PurchaseOrderLine {
+            po_oid: Oid([1; 32]),
+            vendor: "Acme Supplies".into(),
+            item_code: "SKU-100".into(),
+            quantity: 10,
+            unit_price: Amount::new(UnitId(1), 1_500),
+        };
+        let receipt = ReceivingReportLine {
+            receipt_oid: Oid([2; 32]),
+            po_oid: po.po_oid,
+            item_code: po.item_code.clone(),
+            quantity_received: po.quantity,
+        };
+        let invoice = VendorInvoiceLine {
+            invoice_oid: Oid([3; 32]),
+            po_oid: po.po_oid,
+            vendor: po.vendor.clone(),
+            item_code: po.item_code.clone(),
+            quantity_billed: po.quantity,
+            unit_price_billed: po.unit_price,
+            total_billed: Amount::new(UnitId(1), 15_000),
+        };
+        (po, receipt, invoice)
+    }
+
+    #[test]
+    fn three_way_equal_numbers_cannot_match_unrelated_documents_or_items() {
+        let epoch = fixture_epoch();
+        for (mutation, expected) in [
+            (0, "three-way receipt PO mismatch"),
+            (1, "three-way invoice PO mismatch"),
+            (2, "three-way invoice vendor mismatch"),
+            (3, "three-way receipt item mismatch"),
+            (4, "three-way invoice item mismatch"),
+            (5, "three-way PO vendor is empty"),
+            (6, "three-way PO item is empty"),
+        ] {
+            let (mut po, mut receipt, mut invoice) = three_way_sources();
+            match mutation {
+                0 => receipt.po_oid = Oid([9; 32]),
+                1 => invoice.po_oid = Oid([9; 32]),
+                2 => invoice.vendor = "Other vendor".into(),
+                3 => receipt.item_code = "SKU-200".into(),
+                4 => invoice.item_code = "SKU-200".into(),
+                5 => {
+                    po.vendor = " ".into();
+                    invoice.vendor = po.vendor.clone();
+                }
+                6 => {
+                    po.item_code.clear();
+                    receipt.item_code.clear();
+                    invoice.item_code.clear();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                match_three_way(&po, &receipt, &invoice, Some(epoch), epoch),
+                Err(ReconciliationError::InvalidField(expected)),
+                "identity mutation {mutation}",
+            );
+        }
+    }
+
+    #[test]
+    fn three_way_decisions_bind_every_source_and_selected_line() {
+        let epoch = fixture_epoch();
+        let (po, receipt, invoice) = three_way_sources();
+        let original = match_three_way(&po, &receipt, &invoice, Some(epoch), epoch).unwrap();
+        assert_eq!(original.verdict, ThreeWayMatchVerdict::Matched);
+        assert_eq!(
+            original,
+            match_three_way(&po, &receipt, &invoice, Some(epoch), epoch).unwrap(),
+        );
+        for mutation in 0..9 {
+            let (mut po, mut receipt, mut invoice) = three_way_sources();
+            match mutation {
+                0 => {
+                    po.po_oid = Oid([9; 32]);
+                    receipt.po_oid = po.po_oid;
+                    invoice.po_oid = po.po_oid;
+                }
+                1 => receipt.receipt_oid = Oid([9; 32]),
+                2 => invoice.invoice_oid = Oid([9; 32]),
+                3 => {
+                    po.vendor = "Other vendor".into();
+                    invoice.vendor = po.vendor.clone();
+                }
+                4 => {
+                    po.item_code = "SKU-200".into();
+                    receipt.item_code = po.item_code.clone();
+                    invoice.item_code = po.item_code.clone();
+                }
+                5 => {
+                    po.quantity = 20;
+                    receipt.quantity_received = 20;
+                    invoice.quantity_billed = 20;
+                    invoice.total_billed.mantissa = 30_000;
+                }
+                6 => {
+                    po.unit_price.unit = UnitId(2);
+                    invoice.unit_price_billed.unit = UnitId(2);
+                    invoice.total_billed.unit = UnitId(2);
+                }
+                7 => {
+                    po.unit_price.mantissa = 2_000;
+                    invoice.unit_price_billed.mantissa = 2_000;
+                    invoice.total_billed.mantissa = 20_000;
+                }
+                8 => invoice.total_billed.mantissa = 14_999,
+                _ => unreachable!(),
+            }
+            let changed = match_three_way(&po, &receipt, &invoice, Some(epoch), epoch).unwrap();
+            // All these changes keep qty_diff and price_diff at zero. They
+            // must still change the replay input, including a changed receipt
+            // or a different line in the very same invoice document.
+            assert_eq!(
+                changed.decision_card.features,
+                original.decision_card.features
+            );
+            assert_ne!(changed.decision_card.state, original.decision_card.state);
+            changed.decision_card.verify_replay(epoch).unwrap();
+        }
+    }
+
+    #[test]
+    fn three_way_reports_the_unit_that_actually_disagrees() {
+        let epoch = fixture_epoch();
+        let (po, receipt, invoice) = three_way_sources();
+        for price_unit in [true, false] {
+            let mut invoice = invoice.clone();
+            if price_unit {
+                invoice.unit_price_billed.unit = UnitId(2);
+            } else {
+                invoice.total_billed.unit = UnitId(2);
+            }
+            assert_eq!(
+                match_three_way(&po, &receipt, &invoice, Some(epoch), epoch),
+                Err(ReconciliationError::UnitMismatch {
+                    expected: UnitId(1),
+                    actual: UnitId(2),
+                }),
+            );
+        }
     }
 
     #[test]
