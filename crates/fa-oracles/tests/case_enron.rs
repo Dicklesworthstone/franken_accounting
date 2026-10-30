@@ -16,6 +16,7 @@ use fa_oracles::cases::check::{CheckReport, Verdict, run_load_checks};
 use fa_oracles::cases::embedded::ENRON;
 use fa_oracles::cases::error::{LoadError, LoadErrorKind};
 use fa_oracles::cases::expect::ExpectationType;
+use fa_oracles::cases::fact::{self, Granularity};
 use fa_oracles::cases::source::{self, AnchorKind, Assurance, SourceStatus};
 use fa_oracles::cases::trace::fact_closure;
 use fa_oracles::cases::{Case, CaseFiles, load};
@@ -801,4 +802,237 @@ fn enron_e2d_cell_receipt_sentence_alignment_refused() {
             "expected `value`",
         ],
     );
+}
+
+/// E2d's sourced cells load and re-serialize to the committed file's
+/// canonical bytes; every table cell names its source, a `table_cell`
+/// anchor, `granularity = statement_line` and (but the EX-27 MULTIPLIER, a
+/// unitless scale factor) a `cell` key, and its source row carries an
+/// assurance and its assurance fact.
+#[test]
+fn enron_e2d_facts_load() {
+    let files = enron();
+    let case = load_copy(&files).expect("the committed case loads");
+    assert_eq!(
+        fact::to_document(&case.facts, &case.values).canonical_bytes(),
+        fa_registry::toml::parse(text(&files, "facts.toml"))
+            .expect("facts.toml parses")
+            .canonical_bytes()
+    );
+    let cells: Vec<_> = case
+        .facts
+        .iter()
+        .filter_map(|f| f.sourced().map(|s| (f, s)))
+        .filter(|(_, s)| s.anchor_kind == AnchorKind::TableCell)
+        .collect();
+    assert!(cells.len() > 150, "{}", cells.len());
+    for (f, s) in cells {
+        assert_eq!(s.granularity, Granularity::StatementLine, "{}", f.id);
+        assert_eq!(s.cell.is_none(), f.id == "EX27-MULT", "{}", f.id);
+        let row = case
+            .sources
+            .iter()
+            .find(|r| r.id == s.source)
+            .expect("its source row");
+        assert!(
+            row.assurance.is_some() && row.assurance_fact.is_some(),
+            "{}",
+            row.id
+        );
+    }
+}
+
+/// The FY1999 total-assets cell in its four vintages (§3.6, §10.4): the
+/// EX-27 (33,381), the FY2000 10-K's comparatives (33,381), the 8-K's
+/// restated (33,199) and Note 3's restated (33,272) all carry
+/// `total_assets@1999-12-31`, and their sources order SRC-ENR-402,
+/// SRC-ENR-008, SRC-ENR-002, SRC-ENR-003 by `filed_on`. The two restated
+/// vintages differ, the input K-VINTAGE uses to make E-T-04 read the 8-K's
+/// issuance. Each Raptor cell carries the same key in both vintages, and the
+/// EX-27's BONDS is `bonds@1999-12-31`, never debt.
+#[test]
+fn enron_e2d_cell_keys_pair_the_vintages() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    let cell = |id: &str| {
+        case.facts
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.sourced())
+            .and_then(|s| s.cell.clone())
+            .unwrap_or_else(|| panic!("a cell key on {id}"))
+    };
+    let source = |id: &str| {
+        case.facts
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.sourced())
+            .map(|s| s.source.clone())
+            .expect("a sourced fact")
+    };
+    let vintages = [
+        "EX27-TA-A-FY1999",
+        "10K-TA-A-FY1999",
+        "8K-TA-B-FY1999",
+        "N3-TA-B-FY1999",
+    ];
+    for id in vintages {
+        assert_eq!(cell(id), "total_assets@1999-12-31", "{id}");
+    }
+    let filed: Vec<String> = vintages
+        .iter()
+        .map(|id| {
+            let s = source(id);
+            case.sources
+                .iter()
+                .find(|r| r.id == s)
+                .and_then(|r| r.filed_on.clone())
+                .expect("filed_on")
+        })
+        .collect();
+    assert_eq!(
+        vintages.map(source),
+        ["SRC-ENR-402", "SRC-ENR-008", "SRC-ENR-002", "SRC-ENR-003"]
+    );
+    assert!(filed.windows(2).all(|w| w[0] < w[1]), "{filed:?}");
+    assert_eq!(
+        vintages.map(|id| minor(&case, id) / 100_000_000),
+        [33_381, 33_381, 33_199, 33_272]
+    );
+    for line in ["TA", "EQ"] {
+        for period in ["FY2000", "2001Q1", "2001Q2"] {
+            assert_eq!(
+                cell(&format!("8K-RAPTOR-{line}-{period}")),
+                cell(&format!("N3-RAPTOR-{line}-{period}")),
+                "{line} {period}"
+            );
+        }
+    }
+    assert_eq!(cell("EX27-BONDS-FY1999"), "bonds@1999-12-31");
+}
+
+/// The EX-27's three equity tags (PREFERRED 1,130, COMMON 6,637, OTHER-SE
+/// 1,803) sum to the as-filed equity, 9,570, the FY2000 10-K's FY1999
+/// comparative. A copy declaring the sum 9,571 fails K-DERIVE, naming it.
+#[test]
+fn enron_e2d_ex27_equity_sum() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    let tags: i128 = [
+        "EX27-EQ1-A-FY1999",
+        "EX27-EQ2-A-FY1999",
+        "EX27-EQ3-A-FY1999",
+    ]
+    .iter()
+    .map(|id| minor(&case, id))
+    .sum();
+    assert_eq!(tags, 957_000_000_000);
+    assert_eq!(minor(&case, "EX27-EQ-A-FY1999"), tags);
+    assert_eq!(minor(&case, "10K-EQ-A-FY1999"), tags);
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"EX27-EQ-A-FY1999\"\n",
+        "literal = \"957000000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"957000000000\"",
+        "literal = \"957100000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"957100000000\"",
+    );
+    let planted = load_copy(&files).expect("the planted copy loads");
+    let derive = report(&planted, "K-DERIVE");
+    assert_eq!(derive.verdict, Verdict::Fail);
+    assert!(
+        derive.failures.iter().any(|f| f.row == "EX27-EQ-A-FY1999"),
+        "{}",
+        derive.render(Some("enron"))
+    );
+}
+
+/// Every EX-27 amount is read at the schedule's MULTIPLIER: its `scale`
+/// param k satisfies 10^k = EX27-MULT (1,000,000). A copy reading
+/// TOTAL-ASSETS at 10^9 (its value a thousand times larger) fails this check
+/// and K-BIND, whose receipt bound the value at 10^6. No foundation check
+/// ties one fact's param to another fact, so the multiplier check is this
+/// test's own.
+#[test]
+fn enron_e2d_ex27_multiplier_wrong_refused() {
+    let at_multiplier = |case: &Case| -> Vec<String> {
+        let mult = minor(case, "EX27-MULT");
+        case.values
+            .iter()
+            .filter(|v| {
+                v.fact.starts_with("EX27-") && v.fact != "EX27-MULT" && v.fact != "EX27-EQ-A-FY1999"
+            })
+            .filter(|v| {
+                v.param
+                    .and_then(|k| u32::try_from(k).ok())
+                    .map(|k| 10_i128.pow(k))
+                    != Some(mult)
+            })
+            .map(|v| v.fact.clone())
+            .collect()
+    };
+    let case = load_copy(&enron()).expect("the committed case loads");
+    assert_eq!(minor(&case, "EX27-MULT"), 1_000_000);
+    assert!(at_multiplier(&case).is_empty());
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"EX27-TA-A-FY1999\"\n",
+        "param = 6\nvalue = \"3338100000000\"",
+        "param = 9\nvalue = \"3338100000000000\"",
+    );
+    let planted = load_copy(&files).expect("the planted copy loads");
+    assert_eq!(at_multiplier(&planted), ["EX27-TA-A-FY1999"]);
+    let bind = report(&planted, "K-BIND");
+    assert_eq!(bind.verdict, Verdict::Fail);
+    assert!(
+        bind.failures.iter().any(|f| f.row == "EX27-TA-A-FY1999"),
+        "{}",
+        bind.render(Some("enron"))
+    );
+}
+
+/// The Raptor equity adjustment line in both restating vintages (E-T-03's
+/// published delta): total assets and equity, -172 at 2000-12-31 and -1,000
+/// at each of the first two 2001 quarter-ends ($M), the 8-K's Table 1 and
+/// Note 3 agreeing cell for cell.
+#[test]
+fn enron_e2d_raptor_line_both_vintages() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    for line in ["TA", "EQ"] {
+        for (period, want) in [("FY2000", -172), ("2001Q1", -1_000), ("2001Q2", -1_000)] {
+            for vintage in ["8K", "N3"] {
+                assert_eq!(
+                    minor(&case, &format!("{vintage}-RAPTOR-{line}-{period}")),
+                    want * 100_000_000,
+                    "{vintage} {line} {period}"
+                );
+            }
+        }
+    }
+}
+
+/// The EX-27's BONDS (7,151) is the schedule's long-term bonds, not the
+/// restatements' debt (short-term and long-term, 8,152 as filed): it keys
+/// `bonds@1999-12-31` and no expectation's basis names it.
+#[test]
+fn enron_e2d_bonds_excluded() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    assert_eq!(minor(&case, "EX27-BONDS-FY1999"), 715_100_000_000);
+    assert_ne!(
+        minor(&case, "EX27-BONDS-FY1999"),
+        minor(&case, "10K-DEBT-A-FY1999")
+    );
+    let set = case.expectations.as_ref().expect("expectations");
+    let named = set
+        .expectations
+        .iter()
+        .flat_map(|e| e.fields.strs("basis").unwrap_or_default().iter())
+        .chain(
+            set.expectations
+                .iter()
+                .flat_map(|e| set.targets_of(&e.id))
+                .flat_map(|t| t.fields.strs("basis").unwrap_or_default().iter()),
+        )
+        .any(|f| f == "EX27-BONDS-FY1999");
+    assert!(!named);
 }

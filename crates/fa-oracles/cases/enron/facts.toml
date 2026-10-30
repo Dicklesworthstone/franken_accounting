@@ -3620,3 +3620,378 @@ param = 0
 value = "-33500000000"
 unit = "USD"
 precision = 6
+
+[[fact]]
+id = "EX27-MULT"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<MULTIPLIER>|<C>"
+quote_sha256 = "50891936fc76a98c62e59a25cac7b61eb512c3e7cc7ab95cc7bd75b9f554fc3b"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+
+[[fact]]
+id = "EX27-NI-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<NET-INCOME>|<C>"
+quote_sha256 = "64d94c866dffad6dab67498f5ed9cdf32a6e747e2c17e58d2535f549f7976cb0"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "net_income@FY1999"
+
+[[fact]]
+id = "EX27-TA-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<TOTAL-ASSETS>|<C>"
+quote_sha256 = "92a801a9b94b5b1ff596973e62c480f2a648564604c497803be5d338bf76c393"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "total_assets@1999-12-31"
+
+[[fact]]
+id = "EX27-EQ1-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<PREFERRED>|<C>"
+quote_sha256 = "186c17fca4589677d85a2a8f33111ebd6d7efb43f366f0dd525d539f62bb7ef1"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.preferred@1999-12-31"
+
+[[fact]]
+id = "EX27-EQ2-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<COMMON>|<C>"
+quote_sha256 = "26268ab7786fe8adda92cf534cc5f6d93bc8601828199e2d9d5bfbea38f37114"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.common@1999-12-31"
+
+[[fact]]
+id = "EX27-EQ3-A-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<OTHER-SE>|<C>"
+quote_sha256 = "0acea11fead7a39841729b870159be06f4ce705b384c3754eeb012b393b8053c"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "equity.other_se@1999-12-31"
+
+# Excluded from every basis: BONDS is the schedule's long-term bonds, a different concept from the restatements' 'Debt as reported' (short-term and long-term debt, 8,152); tag semantics decide coverage (plan §7.2).
+[[fact]]
+id = "EX27-BONDS-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-402"
+anchor_kind = "table_cell"
+anchor = "ARTICLE 5 FDS FOR 10-K|<BONDS>|<C>"
+quote_sha256 = "7fdadc742686fd02932ca8582130866e12af72f918e43dc5ad5c465d6d81b3eb"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "bonds@1999-12-31"
+
+[[fact]]
+id = "8K-RAPTOR-TA-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Raptor equity adjustment#3|2000"
+quote_sha256 = "f7ae3d7ad64eb0d72b16812b02f28784a60bfe651637f20f4d49beb20bd4d949"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets.raptor_equity_adjustment@2000-12-31"
+
+[[fact]]
+id = "8K-RAPTOR-TA-2001Q1"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Raptor equity adjustment#3|1ST QTR"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q1"
+granularity = "statement_line"
+cell = "total_assets.raptor_equity_adjustment@2001-03-31"
+
+[[fact]]
+id = "N3-RAPTOR-TA-2001Q1"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Raptor equity adjustment#2|1st Qtr"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q1"
+granularity = "statement_line"
+cell = "total_assets.raptor_equity_adjustment@2001-03-31"
+
+[[fact]]
+id = "8K-RAPTOR-TA-2001Q2"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Raptor equity adjustment#3|2ND QTR"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q2"
+granularity = "statement_line"
+cell = "total_assets.raptor_equity_adjustment@2001-06-30"
+
+[[fact]]
+id = "N3-RAPTOR-TA-2001Q2"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Raptor equity adjustment#2|2nd Qtr"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q2"
+granularity = "statement_line"
+cell = "total_assets.raptor_equity_adjustment@2001-06-30"
+
+[[fact]]
+id = "8K-RAPTOR-EQ-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Raptor equity adjustment#5|2000"
+quote_sha256 = "f7ae3d7ad64eb0d72b16812b02f28784a60bfe651637f20f4d49beb20bd4d949"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity.raptor_equity_adjustment@2000-12-31"
+
+[[fact]]
+id = "8K-RAPTOR-EQ-2001Q1"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Raptor equity adjustment#5|1ST QTR"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q1"
+granularity = "statement_line"
+cell = "equity.raptor_equity_adjustment@2001-03-31"
+
+[[fact]]
+id = "N3-RAPTOR-EQ-2001Q1"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Raptor equity adjustment#4|1st Qtr"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q1"
+granularity = "statement_line"
+cell = "equity.raptor_equity_adjustment@2001-03-31"
+
+[[fact]]
+id = "8K-RAPTOR-EQ-2001Q2"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Raptor equity adjustment#5|2ND QTR"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q2"
+granularity = "statement_line"
+cell = "equity.raptor_equity_adjustment@2001-06-30"
+
+[[fact]]
+id = "N3-RAPTOR-EQ-2001Q2"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "(Amounts are subject to change pending the results of the Special Committee|Raptor equity adjustment#4|2nd Qtr"
+quote_sha256 = "06f7482698e54801ce84d4cb4b6a19629c054473c43fd62bf11af53765b2e25e"
+about_scope = "period:2001Q2"
+granularity = "statement_line"
+cell = "equity.raptor_equity_adjustment@2001-06-30"
+
+# The schedule's three equity tags sum to the as-filed shareholders' equity (9,570).
+[[fact]]
+id = "EX27-EQ-A-FY1999"
+provenance = "derived"
+from = ["EX27-EQ1-A-FY1999", "EX27-EQ2-A-FY1999", "EX27-EQ3-A-FY1999"]
+rule = "sum"
+params = []
+
+[[value]]
+fact = "EX27-MULT"
+ordinal = 1
+literal = "1,000,000"
+rule = "scale"
+param = 0
+value = "1000000"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "EX27-NI-A-FY1999"
+ordinal = 1
+literal = "893"
+rule = "scale"
+param = 6
+value = "89300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "EX27-TA-A-FY1999"
+ordinal = 1
+literal = "33,381"
+rule = "scale"
+param = 6
+value = "3338100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "EX27-EQ1-A-FY1999"
+ordinal = 1
+literal = "1,130"
+rule = "scale"
+param = 6
+value = "113000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "EX27-EQ2-A-FY1999"
+ordinal = 1
+literal = "6,637"
+rule = "scale"
+param = 6
+value = "663700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "EX27-EQ3-A-FY1999"
+ordinal = 1
+literal = "1,803"
+rule = "scale"
+param = 6
+value = "180300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "EX27-BONDS-FY1999"
+ordinal = 1
+literal = "7,151"
+rule = "scale"
+param = 6
+value = "715100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "EX27-EQ-A-FY1999"
+ordinal = 1
+literal = "957000000000"
+rule = "scale"
+param = 0
+value = "957000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-RAPTOR-TA-FY2000"
+ordinal = 1
+literal = "(172)"
+rule = "scale"
+param = 6
+value = "-17200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-RAPTOR-TA-2001Q1"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-RAPTOR-TA-2001Q1"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-RAPTOR-TA-2001Q2"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-RAPTOR-TA-2001Q2"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-RAPTOR-EQ-FY2000"
+ordinal = 1
+literal = "(172)"
+rule = "scale"
+param = 6
+value = "-17200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-RAPTOR-EQ-2001Q1"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-RAPTOR-EQ-2001Q1"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-RAPTOR-EQ-2001Q2"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "N3-RAPTOR-EQ-2001Q2"
+ordinal = 1
+literal = "(1,000)"
+rule = "scale"
+param = 6
+value = "-100000000000"
+unit = "USD"
+precision = 6

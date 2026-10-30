@@ -176,6 +176,23 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `N3-EQ-D2-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Consolidation of LJM1 subsidiary#4\|2000` | 60,000,000.00 USD | reported (unaudited) | statement_line |
 | `N3-RAPTOR-EQ-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#4\|2000` | -172,000,000.00 USD | reported (unaudited) | statement_line |
 | `N3-EQ-D4-FY2000` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Prior period proposed audit#4\|2000` | -255,000,000.00 USD | reported (unaudited) | statement_line |
+| `EX27-MULT` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<MULTIPLIER>\|<C>` | 1000000 | reported (audited) | statement_line |
+| `EX27-NI-A-FY1999` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<NET-INCOME>\|<C>` | 893,000,000.00 USD | reported (audited) | statement_line |
+| `EX27-TA-A-FY1999` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<TOTAL-ASSETS>\|<C>` | 33,381,000,000.00 USD | reported (audited) | statement_line |
+| `EX27-EQ1-A-FY1999` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<PREFERRED>\|<C>` | 1,130,000,000.00 USD | reported (audited) | statement_line |
+| `EX27-EQ2-A-FY1999` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<COMMON>\|<C>` | 6,637,000,000.00 USD | reported (audited) | statement_line |
+| `EX27-EQ3-A-FY1999` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<OTHER-SE>\|<C>` | 1,803,000,000.00 USD | reported (audited) | statement_line |
+| `EX27-BONDS-FY1999` | `SRC-ENR-402` | `ARTICLE 5 FDS FOR 10-K\|<BONDS>\|<C>` | 7,151,000,000.00 USD | reported (audited) | statement_line |
+| `8K-RAPTOR-TA-FY2000` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#3\|2000` | -172,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-RAPTOR-TA-2001Q1` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#3\|1ST QTR` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-RAPTOR-TA-2001Q1` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#2\|1st Qtr` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-RAPTOR-TA-2001Q2` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#3\|2ND QTR` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-RAPTOR-TA-2001Q2` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#2\|2nd Qtr` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-RAPTOR-EQ-FY2000` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#5\|2000` | -172,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-RAPTOR-EQ-2001Q1` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#5\|1ST QTR` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-RAPTOR-EQ-2001Q1` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#4\|1st Qtr` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `8K-RAPTOR-EQ-2001Q2` | `SRC-ENR-002` | `TABLE 1\|Raptor equity adjustment#5\|2ND QTR` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `N3-RAPTOR-EQ-2001Q2` | `SRC-ENR-003` | `(Amounts are subject to change pending the results of the Special Committee\|Raptor equity adjustment#4\|2nd Qtr` | -1,000,000,000.00 USD | reported (unaudited) | statement_line |
 
 ### Readings of the record
 
@@ -209,6 +226,7 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 - `N3-EQ-D-FY2000`, derived by `sum` from `N3-EQ-D1-FY2000`, `N3-EQ-D2-FY2000`, `N3-RAPTOR-EQ-FY2000`, `N3-EQ-D4-FY2000`: -1,181,000,000.00 USD
 - `N3-EQ-D-CHG-FY2000`, derived by `difference` from `N3-EQ-D-FY2000`, `N3-EQ-D-FY1999`: -335,000,000.00 USD
 - `ENR-BRIDGE-10Q`, an interpretation of `10K-TA-A-FY1997`, `10K-DEBT-A-FY1997`, `10K-EQ-A-FY1997`, `10K-NI-A-FY1998`, read by `case-author-1` and second reader `case-second-reader`: The 10-Q bridge book holds four of the figures Note 3 bridges, each on its own account: total assets on an asset account, debt on a liability account, equity on an equity account, and net income on a revenue account. A book needs balanced entries, so total assets, debt and equity each post against one liability account that holds what they leave, and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. A stock figure posts in its first year, FY1997, and in each later year as its change from the year before, so the certified balance at each year-end is the printed figure; a stock line's adjustments post per printed column in FY1997, and in each later year as the change in the line's total adjustment, the sum of its printed columns. Net income is a flow: each year's figure and each of its adjustments post in that year. Each adjustment posts against the same balancing account as the figure it adjusts.
+- `EX27-EQ-A-FY1999`, derived by `sum` from `EX27-EQ1-A-FY1999`, `EX27-EQ2-A-FY1999`, `EX27-EQ3-A-FY1999`: 9,570,000,000.00 USD
 
 ## How this book was built
 
