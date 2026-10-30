@@ -53,7 +53,8 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     .iter()
                     .find(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
                 {
-                    let basis = fa_model::FxRevaluationBasis::decode(raw)?;
+                    let basis = fa_model::FxRevaluationBasis::decode(raw)
+                        .map_err(|e| fa_journal::KernelError::Model(e.into()))?;
                     if basis.item_allocation.is_some()
                         || proposal.class != fa_model::EntryClass::REVALUATION
                         || proposal.base_totals.as_ref().is_none_or(|base| {

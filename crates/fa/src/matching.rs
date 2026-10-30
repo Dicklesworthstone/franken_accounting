@@ -531,7 +531,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .is_some_and(|expected| expected != report.result_digest)
         {
             return Ok(Err(Refusal::new(
-                code::CERTIFICATE_INVALID,
+                crate::certificate::code::CERTIFICATE_INVALID,
                 exit::VERIFICATION,
                 "three-way replay differs from the independently retained result digest",
                 "FA-INV-11 (the same exact source selection reproduces the same advisory result)",
