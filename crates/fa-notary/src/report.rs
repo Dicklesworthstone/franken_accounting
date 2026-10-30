@@ -148,6 +148,7 @@ pub fn assemble_with_registries(
         || summary_certificate(certificate)
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
+        || lots_certificate(certificate)
         || due_date_aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
@@ -167,7 +168,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements, summary trial balances, open items, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -333,6 +334,40 @@ fn aging_certificate(certificate: &[u8]) -> bool {
 
 fn due_date_aging_certificate(certificate: &[u8]) -> bool {
     aging_certificate_with_format(certificate, b"fa:due-date-aging-certificate:v1")
+}
+
+/// Route a lot wrapper only when its native OpenItems source selects one
+/// account on trunk. The facade and independent verifier replay the complete
+/// certificate; this header check grants no accounting or currency authority.
+fn lots_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "lots format")? != b"fa:lots-certificate:v1" {
+            return Ok(false);
+        }
+        reader.u128("lots producer")?;
+        reader.fixed::<32>("lots capability")?;
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "lots source")?;
+        if !open_items_certificate(source) {
+            return Ok(false);
+        }
+        let mut native = Reader::new(source);
+        native.fixed::<{ b"fa:report-certificate:v3".len() }>("report format")?;
+        native.str(128, "report scope")?;
+        native.str(128, "report authority")?;
+        native.str(128, "report output format")?;
+        native.fixed::<16>("report book")?;
+        if native.fixed::<16>("report branch")? != [0; 16] {
+            return Ok(false);
+        }
+        native.u64("report known-at")?;
+        if native.u8("report selector")? != 1 || native.u8("selected account")? != 1 {
+            return Ok(false);
+        }
+        native.u128("lot account")?;
+        Ok(true)
+    };
+    header().unwrap_or(false)
 }
 
 /// Route a summary wrapper only when it carries a sequence-selected trunk
@@ -606,6 +641,7 @@ fn assemble_inner(
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)
                 || aging_certificate(certificate)
+                || lots_certificate(certificate)
                 || due_date_aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
@@ -618,7 +654,7 @@ fn assemble_inner(
         || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

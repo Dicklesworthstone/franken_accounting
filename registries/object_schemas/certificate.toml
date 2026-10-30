@@ -7,8 +7,8 @@ schema_version = 1
 name = "Certificate"
 owner = "fa::certificate::ReportCertificate"
 major = 1
-minor = 4
-format_domains = ["fa:report-certificate:v1", "fa:report-certificate:v2", "fa:report-certificate:v3", "fa:report-certificate:v4", "fa:post-plan:v1", "fa:due-date-aging-certificate:v1"]
+minor = 5
+format_domains = ["fa:report-certificate:v1", "fa:report-certificate:v2", "fa:report-certificate:v3", "fa:report-certificate:v4", "fa:post-plan:v1", "fa:due-date-aging-certificate:v1", "fa:lots-certificate:v1"]
 externally_verifiable = true
 
 fields = ["format_domain:bytes", "book_id:bytes16", "branch_id:bytes16", "known_at:system_selector", "resolved_sequence:u64", "effective_selection:tagged_selection", "native_inputs:list<native_result_certificate>", "journal_prefix:list<entry_digest_pair>", "registry_digests:registry_closure", "output_digest:bytes32", "output_bytes:bytes"]
@@ -30,3 +30,19 @@ fields = ["format_domain:bytes", "book_id:bytes16", "branch_id:bytes16", "known_
 # due date is inferred for an unscheduled item. Maximum encoded size: 64 MiB;
 # at most 128 strictly ascending finite bucket bounds. Decoding establishes
 # content integrity; full source replay establishes the accounting result.
+
+# Lots retain a sequence-selected, single-account native OpenItems source.
+# Outer wire: bytes(format), producer:u128, capability:bytes32, bytes(source),
+# base_unit:u32, opt(cutoff:i32), bytes(output), digest:bytes32. Digest domain:
+# fa:lots-certificate-digest:v1 over the framed outer body. Output domain:
+# fa:lots:v1; book/prefix/cutoff/account metadata and base unit precede every
+# acquisition's identity, digest, ordinals, date, recorded sequence, original,
+# relieved and open quantities/costs, and complete application/reversal lineage.
+# Cost-only relief has an absent quantity ordinal; zero remaining quantity never
+# removes a layer with retained cost. Maximum encoded size: 64 MiB; at most
+# 1 << 20 lots and aggregate reliefs. The initial profile requires a debit-normal
+# AnyUnit Asset posting leaf with dimensionless native-cost history and exactly
+# one quantity/cost pair per acquisition; every disposal credit is fully applied.
+# Offline recipients independently supply the expected base unit because this
+# four-registry journal closure does not authenticate genesis currency policy.
+# The claim is schedule/provenance reconstruction, not per-disposal law admission.

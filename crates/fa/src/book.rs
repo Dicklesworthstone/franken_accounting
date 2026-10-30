@@ -4850,6 +4850,24 @@ impl Book {
         )))
     }
 
+    /// Produce a portable lot schedule with a complete signed native prefix.
+    /// Offline verification requires the recipient's independently expected
+    /// base unit as well as the original account, prefix and cutoff. The bundle
+    /// proves acquisitions, relief provenance and remaining quantities/costs;
+    /// it makes no FIFO/LIFO, tax-treatment or disposal-admission claim.
+    pub fn produce_lots_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::LotsCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_lots_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce a portable contractual-maturity aging report. The complete
     /// signed prefix retains original terms and application history so an
     /// independent verifier can reconstruct scheduled and unscheduled amounts.
@@ -5426,6 +5444,57 @@ impl Book {
         expected: &crate::AgingRequest,
     ) -> Outcome<crate::DueDateAging> {
         with_store!(&self.store, core => core.replay_due_date_aging_for(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Certify a complete native-cost lot schedule at one retained prefix.
+    /// The initial certified profile admits one quantity/cost pair per acquisition.
+    pub fn certify_lots(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::LotsRequest,
+    ) -> Outcome<crate::CertifiedLots> {
+        with_store!(&self.store, core => core.certify_lots(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify from an exact retained OpenItems source without advancing its prefix.
+    pub fn certify_lots_from_source(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        source: &crate::ReportCertificate,
+        effective_through: Option<DateDay>,
+    ) -> Outcome<crate::CertifiedLots> {
+        with_store!(&self.store, core => core.certify_lots_from_source(
+            &self.purposes(), principal, capability, source, effective_through
+        ))
+    }
+
+    /// Replay a certified lot schedule against the book's historical base unit.
+    pub fn replay_lots(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::LotsCertificate,
+    ) -> Outcome<crate::LotsReport> {
+        with_store!(&self.store, core => core.replay_lots(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Replay against a recipient-selected account, fixed prefix and civil cutoff.
+    pub fn replay_lots_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::LotsCertificate,
+        expected: &crate::LotsRequest,
+    ) -> Outcome<crate::LotsReport> {
+        with_store!(&self.store, core => core.replay_lots_for(
             &self.purposes(), principal, capability, certificate, expected
         ))
     }

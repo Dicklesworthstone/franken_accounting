@@ -12,7 +12,7 @@
 //! (`fa-omi`). Reversing a disposal entry emits `UNSETTLES` (`live = false` on
 //! the application) and restores both `open_quantity` and `open_cost`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use fa_journal::UnitPolicy;
 use fa_journal::genesis::BookContext;
@@ -346,25 +346,19 @@ pub fn fold_lots_from_open_items(
                 )));
             }
             let qty_unit = UnitId(qty_leg.unit_id);
-            let mut cost_apps_by_entry: BTreeMap<(VId, CommitSeq, bool), Vec<(u16, i128)>> =
+            let mut cost_apps_by_entry: BTreeMap<(VId, CommitSeq, bool), VecDeque<(u16, i128)>> =
                 BTreeMap::new();
             for app in &cost_leg.applications {
                 cost_apps_by_entry
                     .entry((app.entry, app.recorded_at, app.live))
                     .or_default()
-                    .push((app.ordinal, app.amount));
+                    .push_back((app.ordinal, app.amount));
             }
             let mut relieves = Vec::with_capacity(qty_leg.applications.len());
             for app in &qty_leg.applications {
                 let cost_match = cost_apps_by_entry
                     .get_mut(&(app.entry, app.recorded_at, app.live))
-                    .and_then(|list| {
-                        if list.is_empty() {
-                            None
-                        } else {
-                            Some(list.remove(0))
-                        }
-                    });
+                    .and_then(VecDeque::pop_front);
                 let (cost_ordinal, cost_mantissa) = match cost_match {
                     Some((ord, amt)) => (Some(ord), amt),
                     None => (None, 0),

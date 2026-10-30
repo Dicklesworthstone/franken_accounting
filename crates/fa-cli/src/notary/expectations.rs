@@ -17,6 +17,7 @@ const MAX_EXPECTATION_BYTES: usize = 1024 * 1024;
 
 pub(super) enum Expected {
     AsSupplied,
+    Lots(fa::LotsRequest),
     CashFlow(RollForwardRequest, CashFlowDefinition),
     Indirect(IndirectCashFlowRequest),
     Equity(fa::EquityRollForwardRequest),
@@ -38,6 +39,7 @@ impl Expected {
     pub(super) fn borrowed(&self) -> fa::ReportArtifactExpectation<'_> {
         match self {
             Self::AsSupplied => fa::ReportArtifactExpectation::AsSupplied,
+            Self::Lots(request) => fa::ReportArtifactExpectation::Lots(request),
             Self::DueDateAging(request) => fa::ReportArtifactExpectation::DueDateAging(request),
             Self::CashFlow(request, definition) => fa::ReportArtifactExpectation::CashFlow {
                 request,
@@ -511,6 +513,18 @@ pub(super) fn parse(
         "due-date-aging-reconciliation" => Ok(Expected::DueDateReconciliation(
             reconciliation_request(&doc, book)?,
         )),
+        "lots" => {
+            exact_fields(&doc, &["kind", "account", "through", "known_at"])?;
+            let effective_through = match field(&doc, "through")? {
+                Json::Null => None,
+                _ => Some(day(&doc, "through")?),
+            };
+            Ok(Expected::Lots(fa::LotsRequest {
+                account: account(string(&doc, "account")?, book)?,
+                effective_through,
+                known_at: Some(fixed_prefix(&doc)?),
+            }))
+        }
         kind @ ("aging" | "due-date-aging") => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
             // An omitted account is the whole-book aging the producer chose by
@@ -606,6 +620,20 @@ fn scope_fields(request: &RollForwardRequest) -> Vec<(&'static str, Json)> {
                 .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
         ),
     ]
+}
+
+pub(crate) fn lots_expectation_json(request: &fa::LotsRequest) -> Json {
+    obj(vec![
+        ("kind", s("lots")),
+        ("account", s(format!("{:032x}", request.account.0))),
+        (
+            "through",
+            request
+                .effective_through
+                .map_or(Json::Null, |day| s(day.render())),
+        ),
+        ("known_at", known_at_json(request.known_at)),
+    ])
 }
 
 pub(crate) fn native_subledger_expectation_json(request: &fa::NativeSubledgerRequest) -> Json {
@@ -978,6 +1006,7 @@ fn aging_buckets(doc: &Json) -> Result<AgingBuckets, Fail> {
 /// Otherwise certification could publish a replay command the CLI must reject.
 pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) -> Result<(), Fail> {
     let doc = match expected {
+        fa::ReportArtifactExpectation::Lots(request) => lots_expectation_json(request),
         fa::ReportArtifactExpectation::DueDateAging(request) => {
             due_date_aging_expectation_json(request)
         }

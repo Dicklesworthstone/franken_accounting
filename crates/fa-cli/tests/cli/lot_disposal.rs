@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "lot_disposal/certified.rs"]
+mod certified;
+
 fn run(book: &Path, step: &str, args: &[&str]) -> (i32, String, String) {
     let (code, out, err) = fa(Some(book), args);
     let envelope = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);

@@ -463,6 +463,56 @@ pub(super) fn verify(
     ))
 }
 
+/// Authenticated unit kinds used by the native-cost lot schedule profile.
+pub(super) struct LotUnits {
+    pub currencies: BTreeSet<u32>,
+    pub quantities: BTreeSet<u32>,
+}
+
+/// Called only after verify() has authenticated the exact four-document
+/// registry closure. A kind label cannot override its registered balance law.
+pub(super) fn lot_units(inputs: &[(&str, &[u8])]) -> Result<LotUnits, ReportError> {
+    let bytes = inputs
+        .iter()
+        .find(|(name, _)| *name == "units")
+        .map(|(_, bytes)| *bytes)
+        .ok_or_else(|| invalid("lot report omits its unit registry"))?;
+    let doc = document(bytes)?;
+    units(&doc)?;
+    let mut currencies = BTreeSet::new();
+    let mut quantities = BTreeSet::new();
+    for row in rows(&doc, "unit")? {
+        let id = u32::try_from(integer(row, "id")?).map_err(|_| invalid("invalid lot unit id"))?;
+        let kind = string(row, "kind")?;
+        let balance = match row.get("balance_policy") {
+            None => "balanced",
+            Some(Value::Text(value)) => value.as_str(),
+            _ => return Err(invalid("unit balance policy must be text")),
+        };
+        let expected = if matches!(kind, "time" | "count") {
+            "single_sided"
+        } else {
+            "balanced"
+        };
+        if balance != expected {
+            return Err(invalid("unit kind and balance policy disagree"));
+        }
+        match kind {
+            "currency" => {
+                currencies.insert(id);
+            }
+            "commodity" | "share" => {
+                quantities.insert(id);
+            }
+            _ => {}
+        }
+    }
+    Ok(LotUnits {
+        currencies,
+        quantities,
+    })
+}
+
 /// Decimal scales and currency kinds are valuation inputs, not display labels.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FunctionalUnit {

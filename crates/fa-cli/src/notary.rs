@@ -11,7 +11,7 @@ pub(crate) use expectations::{
     aging_expectation_json, cash_flow_expectation_json, due_date_aging_expectation_json,
     due_date_reconciliation_bundle_expectation, due_date_reconciliation_expectation_json,
     equity_expectation_json, external_feed_expectation_json, indirect_cash_flow_bundle_expectation,
-    indirect_expectation_json, native_subledger_expectation_json,
+    indirect_expectation_json, lots_expectation_json, native_subledger_expectation_json,
     policy_cash_flow_expectation_json, portfolio_expectation_json,
     reconciliation_bundle_expectation, reconciliation_expectation_json,
     split_cash_flow_bundle_expectation, split_cash_flow_expectation_json,
@@ -1012,6 +1012,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let lots = if artifact.family() == ReportArtifactFamily::Lots {
+        let certificate = fa::LotsCertificate::decode(&bytes)?;
+        Some(match &expected {
+            expectations::Expected::Lots(request) => {
+                book.replay_lots_for(principal, &capability, &certificate, request)??
+            }
+            _ => book.replay_lots(principal, &capability, &certificate)??,
+        })
+    } else {
+        None
+    };
     let roll_forward = if !detail_view && artifact.family() == ReportArtifactFamily::RollForward {
         let certificate = fa::RollForwardCertificate::decode(&bytes)?;
         // --view roll-forward binds the lead schedule to the stated request.
@@ -1223,6 +1234,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Some(&digest),
         )?;
         true
+    } else if let Some(report) = lots {
+        crate::lots::render(&ctx.out, &book, &report, None, Some(&digest))?;
+        true
     } else if let Some((report, presentation)) = detail {
         crate::cli::render_general_ledger(&ctx.out, &report, presentation, Some(&digest));
         true
@@ -1273,6 +1287,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         || matches!(
             artifact.family(),
             ReportArtifactFamily::Summary
+                | ReportArtifactFamily::Lots
                 | ReportArtifactFamily::RollForward
                 | ReportArtifactFamily::EffectiveDateAging
                 | ReportArtifactFamily::DueDateAging

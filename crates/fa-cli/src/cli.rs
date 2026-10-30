@@ -18337,10 +18337,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             AGING_SOURCES_EXAMPLE,
         ));
     }
-    if certify && !matches!(sub, Some("detail" | "roll-forward" | "aging" | "cash-flow")) {
+    if certify
+        && !matches!(
+            sub,
+            Some("detail" | "roll-forward" | "aging" | "cash-flow" | "lots")
+        )
+    {
         return Err(usage(
-            "certification is available for gl detail, roll-forward, aging, and cash-flow",
-            "use gl detail|roll-forward|aging|cash-flow --certify",
+            "certification is available for gl detail, roll-forward, aging, cash-flow, and lots",
+            "use gl detail|roll-forward|aging|cash-flow|lots --certify",
         ));
     }
     if sub != Some("aging") && args.flag("--basis").is_some() {
@@ -19501,7 +19506,62 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if args.positional.len() != 2 {
                 return Err(usage(
                     "unexpected gl lots argument",
-                    "fa gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>] [--relieve <amount> --law FIFO|LIFO|SpecificId|WeightedAverage] --book <dir>",
+                    "fa gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>] [--certify | --certificate-out <new-file>] --book <dir>",
+                ));
+            }
+            for flag in ["--account", "--as-of", "--as-known-at"] {
+                if args.flag_all(flag).len() > 1 {
+                    return Err(usage(
+                        format!("{flag} may be supplied only once for a lot schedule"),
+                        "fa gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at <seq>] --book <dir>",
+                    ));
+                }
+            }
+            if let Some(flag) = [
+                "--unit",
+                "--from",
+                "--to",
+                "--label",
+                "--bucket",
+                "--policy",
+                "--income-period",
+            ]
+            .into_iter()
+            .find(|flag| args.flag(flag).is_some())
+            .or_else(|| {
+                ["--reconcile", "--all-posting", "--indirect"]
+                    .into_iter()
+                    .find(|flag| args.switch(flag))
+            }) {
+                return Err(usage(
+                    format!("{flag} does not select a lot schedule"),
+                    "gl lots selects one --account, optional --as-of cutoff, and --as-known-at prefix; it includes every supported native quantity and cost on that account",
+                ));
+            }
+            if certify
+                && args
+                    .flag("--as-known-at")
+                    .is_some_and(|value| value != "HEAD" && value.parse::<u64>().is_err())
+            {
+                return Err(usage(
+                    "lot certificates bind a recorded sequence; instant-resolution evidence is not part of this certificate format",
+                    "run gl lots at the instant without certification, then certify its resolved_seq with --as-known-at <sequence>",
+                ));
+            }
+            if certify
+                && [
+                    "--relieve",
+                    "--law",
+                    "--regime",
+                    "--rounding-law",
+                    "--target",
+                ]
+                .iter()
+                .any(|flag| args.flag(flag).is_some())
+            {
+                return Err(usage(
+                    "a certified lot schedule cannot include an advisory disposal plan",
+                    "use gl lots --certify for the schedule, or gl lots --relieve <amount> --law <law> for a separate disposal preview",
                 ));
             }
             let account_code = args.require(
@@ -19525,10 +19585,24 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             let (known_at, _) = known_at_flag(args, &book, out)?;
             book.prepare_report_history(who, &capability, known_at)??;
-            let report = book.lots(account, effective_through, known_at)?;
+            let (report, artifact, expected) = if certify {
+                let certified = book.certify_lots(
+                    who,
+                    &capability,
+                    &fa::LotsRequest {
+                        account,
+                        effective_through,
+                        known_at,
+                    },
+                )??;
+                let expected = certified.certificate.request()?;
+                let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                (certified.report, Some(artifact), Some(expected))
+            } else {
+                (book.lots(account, effective_through, known_at)?, None, None)
+            };
             out.known_at(report.known_at);
             let units = &book.context().units;
-            let base_unit_code = registered_unit_code(report.base_unit, units)?;
 
             let disposal_plan = if let Some(relieve_str) = args.flag("--relieve") {
                 let quantity = Amount::parse(relieve_str, units).map_err(|e| {
@@ -19703,85 +19777,32 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 None
             };
 
-            let lots: Vec<Json> = report
-                .lots
-                .iter()
-                .map(|lot| {
-                    let relieves: Vec<Json> = lot
-                        .relieves
-                        .iter()
-                        .map(|r| {
-                            Ok(obj(vec![
-                                ("disposal_entry", s(format!("{:032x}", r.disposal_entry.0))),
-                                (
-                                    "qty_ordinal",
-                                    r.qty_ordinal
-                                        .map_or(Json::Null, |q| Json::Int(i128::from(q))),
-                                ),
-                                (
-                                    "cost_ordinal",
-                                    r.cost_ordinal
-                                        .map_or(Json::Null, |c| Json::Int(i128::from(c))),
-                                ),
-                                ("quantity", s(render_amount(r.quantity, units)?)),
-                                ("cost", s(render_amount(r.cost, units)?)),
-                                ("recorded_at", Json::Int(i128::from(r.recorded_at.0))),
-                                ("live", Json::Bool(r.live)),
-                            ]))
-                        })
-                        .collect::<Result<_, Fail>>()?;
-                    Ok(obj(vec![
-                        ("entry", s(format!("{:032x}", lot.entry.0))),
-                        ("entry_digest", s(hex(&lot.entry_digest))),
-                        ("qty_ordinal", Json::Int(i128::from(lot.qty_ordinal))),
-                        ("cost_ordinal", Json::Int(i128::from(lot.cost_ordinal))),
-                        ("side", s(side_name(lot.side))),
-                        ("effective_date", s(lot.effective_date.render())),
-                        ("recorded_at", Json::Int(i128::from(lot.recorded_at.0))),
-                        (
-                            "original_quantity",
-                            s(render_amount(lot.original_quantity, units)?),
-                        ),
-                        (
-                            "relieved_quantity",
-                            s(render_amount(lot.relieved_quantity, units)?),
-                        ),
-                        ("open_quantity", s(render_amount(lot.open_quantity, units)?)),
-                        ("original_cost", s(render_amount(lot.original_cost, units)?)),
-                        ("relieved_cost", s(render_amount(lot.relieved_cost, units)?)),
-                        ("open_cost", s(render_amount(lot.open_cost, units)?)),
-                        ("relieves", Json::Arr(relieves)),
-                    ]))
-                })
-                .collect::<Result<_, Fail>>()?;
-
-            let human = format!(
-                "lots for {} ({}) at {}: {} lot(s)",
-                report.account_code,
-                report.account_name,
-                report.known_at.0,
-                report.lots.len()
-            );
-            out.event(
-                "lots",
-                vec![
-                    ("account", s(&report.account_code)),
-                    ("account_vid", s(format!("{:032x}", report.account.0))),
-                    ("name", s(&report.account_name)),
-                    ("base_unit", s(&base_unit_code)),
-                    ("known_at", Json::Int(i128::from(report.known_at.0))),
-                    (
-                        "effective_through",
-                        report
-                            .effective_through
-                            .map_or(Json::Null, |d| s(d.render())),
-                    ),
-                    ("count", Json::Int(report.lots.len() as i128)),
-                    ("lots", Json::Arr(lots)),
-                    ("disposal_plan", disposal_plan.unwrap_or(Json::Null)),
-                ],
-                &human,
-            );
+            let retained = match (&artifact, &expected) {
+                (Some(artifact), Some(expected)) => Some(notary::retain_report_artifact_for(
+                    &mut book,
+                    &ctx.files,
+                    args,
+                    artifact,
+                    &capability,
+                    fa::ReportArtifactExpectation::Lots(expected),
+                )?),
+                _ => None,
+            };
+            let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+            crate::lots::render(out, &book, &report, disposal_plan, digest.as_deref())?;
+            if let (Some(artifact), Some((bytes, retained)), Some(expected)) =
+                (artifact.as_ref(), retained, expected.as_ref())
+            {
+                notary::emit_report_artifact_for(
+                    out,
+                    args,
+                    artifact,
+                    "fa:lots:v1",
+                    &bytes,
+                    &retained,
+                    &notary::lots_expectation_json(expected),
+                );
+            }
             Ok(())
         }
         other => Err(unhandled("gl", other)),

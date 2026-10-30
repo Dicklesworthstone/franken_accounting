@@ -18,7 +18,7 @@
 //!                                                a document's public commitment from its bytes
 //!   bundle       <bundle> --key K... [--receipt R]
 //!                                                an evidence bundle, every predicate graded
-//!   report       <bundle> --key K... [--units N,N,...]
+//!   report       <bundle> --key K... [--units N,N,... | --base-unit N]
 //!                                                a native report; statement units come from the recipient
 //! ```
 //!
@@ -102,11 +102,12 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-               [--units N,N,...]               independently recompute native or dimension-filtered
+               [--units N,N,... | --base-unit N] independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 effective-date or due-date aging, reconciliation, account roll-forwards,
-                                                direct cash flows or changes in equity.
+                                                direct cash flows, changes in equity or lot schedules.
                                                 V1 statements require --units;
+                                                lot schedules require the recipient's --base-unit;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
@@ -135,6 +136,9 @@ options:
                  obtain the complete list independently. For V1 it is a report premise,
                  not proof of unit registration or labels. For V2 the list is optional;
                  if supplied it must exactly match the authenticated registry closure.
+  --base-unit N  required only for lot schedules: your expected numeric cost unit ID.
+                 This premise does not prove Book genesis or disposal-law admission.
+                 It cannot be combined with --units or used for another report family.
   --json         one JSON report on stdout (robot mode)
   --hex          read every input file as hexadecimal text
 
@@ -164,7 +168,7 @@ const COMMANDS: [&str; 12] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 16] = [
+const VALUE_FLAGS: [&str; 17] = [
     "--key",
     "--witness",
     "--quorum",
@@ -181,6 +185,7 @@ const VALUE_FLAGS: [&str; 16] = [
     "--expect",
     "--receipt",
     "--units",
+    "--base-unit",
 ];
 const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 
@@ -215,7 +220,14 @@ fn admitted(command: &str) -> &'static [&'static str] {
         ],
         "doc-commit" => &["--kind", "--expect"],
         "bundle" | "ads" | "saft" => &["--key", "--receipt"],
-        "report" => &["--key", "--receipt", "--checkpoint", "--expect", "--units"],
+        "report" => &[
+            "--key",
+            "--receipt",
+            "--checkpoint",
+            "--expect",
+            "--units",
+            "--base-unit",
+        ],
         _ => &[],
     }
 }
@@ -1349,6 +1361,24 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 })
                 .transpose()?;
             let units = args.one("--units").map(statement_units).transpose()?;
+            let base_unit = args.one("--base-unit").map(|raw| {
+                if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(usage(
+                        "`--base-unit` requires one decimal u32 unit identifier",
+                        "supply the cost base unit you independently expect for this lot schedule",
+                    ));
+                }
+                raw.parse::<u32>().map_err(|_| usage(
+                    "`--base-unit` exceeds the u32 unit identifier bound",
+                    "supply the cost base unit you independently expect for this lot schedule",
+                ))
+            }).transpose()?;
+            if units.is_some() && base_unit.is_some() {
+                return Err(usage(
+                    "`--base-unit` and `--units` select different report profiles",
+                    "use --base-unit for lots, or --units for a native financial statement",
+                ));
+            }
             let mut checks = Vec::new();
             let expected_checkpoint = if let Some(path) = args.one("--checkpoint") {
                 let bytes = load(read, path, args.hex)?;
@@ -1366,22 +1396,33 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .one("--receipt")
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
-            let verified = match units.as_deref() {
-                Some(units) => crate::report::verify_statement_report_expected(
+            let verified = if let Some(base_unit) = base_unit {
+                crate::report::verify_lots_report_expected(
                     &bytes,
                     &keys,
                     expected_checkpoint.as_ref(),
                     receipt.as_deref(),
-                    units,
+                    base_unit,
                     expected_digest.as_ref(),
-                ),
-                None => crate::report::verify_report_expected(
-                    &bytes,
-                    &keys,
-                    expected_checkpoint.as_ref(),
-                    receipt.as_deref(),
-                    expected_digest.as_ref(),
-                ),
+                )
+            } else {
+                match units.as_deref() {
+                    Some(units) => crate::report::verify_statement_report_expected(
+                        &bytes,
+                        &keys,
+                        expected_checkpoint.as_ref(),
+                        receipt.as_deref(),
+                        units,
+                        expected_digest.as_ref(),
+                    ),
+                    None => crate::report::verify_report_expected(
+                        &bytes,
+                        &keys,
+                        expected_checkpoint.as_ref(),
+                        receipt.as_deref(),
+                        expected_digest.as_ref(),
+                    ),
+                }
             };
             match verified {
                 Err(error) => checks.push(Check {
@@ -1439,6 +1480,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "roll_forward"
                                 } else if report.open_items.is_some() {
                                     "open_items"
+                                } else if report.lots.is_some() {
+                                    "lots"
                                 } else if report.summary.is_some() {
                                     if report.activity {
                                         "summary_activity"
@@ -1484,6 +1527,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     schedule.rows.len()
                                 } else if let Some(open_items) = &report.open_items {
                                     open_items.items.len()
+                                } else if let Some(lots) = &report.lots {
+                                    lots.lots.len()
                                 } else if let Some(statement) = &report.statement {
                                     statement.lines.len()
                                 } else if let Some(summary) = &report.summary {
@@ -1569,6 +1614,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(open_items) = &report.open_items {
                         checks.extend(open_items_checks(open_items));
+                    }
+                    if let Some(lots) = &report.lots {
+                        checks.extend(lots_checks(lots));
                     }
                     if let Some(explanation) = &report.explanation {
                         checks.extend(explanation_checks(explanation));
@@ -2173,6 +2221,115 @@ fn due_date_reconciliation_checks(
                 ("reconciled", Json::Bool(row.difference == 0)),
             ],
         ));
+    }
+    checks
+}
+
+fn lots_checks(report: &crate::report::VerifiedLots) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "lots_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("effective_through", day(report.effective_through)),
+            ("account", s(format!("{:032x}", report.account))),
+            ("account_code", s(&report.account_code)),
+            ("account_name", s(&report.account_name)),
+            ("base_unit", n(u64::from(report.base_unit))),
+            ("base_unit_source", s("recipient_expectation")),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            ("lots", n(report.lots.len() as u64)),
+            (
+                "reliefs",
+                n(report
+                    .lots
+                    .iter()
+                    .map(|lot| lot.relieves.len() as u64)
+                    .sum()),
+            ),
+            (
+                "selection",
+                s(
+                    "complete account history; effective cutoff before settlement and reversal netting",
+                ),
+            ),
+            (
+                "acquisition_pairing",
+                s("one native quantity debit and one base-cost debit per acquisition"),
+            ),
+            ("cost_flow_law_admission", s("not_judged")),
+            ("book_genesis", s("not_judged")),
+            (
+                "producer_authorization",
+                s("not_judged; saved capability bytes grant no current authority"),
+            ),
+        ],
+    )];
+    for lot in &report.lots {
+        checks.push(Check::pass(
+            "lot_row",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", lot.entry))),
+                ("entry_digest", h(&lot.entry_digest)),
+                ("quantity_ordinal", n(u64::from(lot.qty_ordinal))),
+                ("cost_ordinal", n(u64::from(lot.cost_ordinal))),
+                ("account", s(format!("{:032x}", lot.account))),
+                ("side", s(if lot.debit { "debit" } else { "credit" })),
+                ("effective_date", day(Some(lot.effective_date))),
+                ("recorded_at", n(lot.recorded_at)),
+                ("quantity_unit", n(u64::from(lot.original_quantity.unit))),
+                (
+                    "original_quantity",
+                    s(lot.original_quantity.mantissa.to_string()),
+                ),
+                (
+                    "relieved_quantity",
+                    s(lot.relieved_quantity.mantissa.to_string()),
+                ),
+                ("open_quantity", s(lot.open_quantity.mantissa.to_string())),
+                ("cost_unit", n(u64::from(lot.original_cost.unit))),
+                ("original_cost", s(lot.original_cost.mantissa.to_string())),
+                ("relieved_cost", s(lot.relieved_cost.mantissa.to_string())),
+                ("open_cost", s(lot.open_cost.mantissa.to_string())),
+                ("reliefs", n(lot.relieves.len() as u64)),
+            ],
+        ));
+        for relief in &lot.relieves {
+            checks.push(Check::pass(
+                "lot_relief",
+                "recomputation",
+                vec![
+                    ("acquisition_entry", s(format!("{:032x}", lot.entry))),
+                    (
+                        "disposal_entry",
+                        s(format!("{:032x}", relief.disposal_entry)),
+                    ),
+                    (
+                        "quantity_ordinal",
+                        relief
+                            .qty_ordinal
+                            .map_or(Json::Null, |ordinal| n(u64::from(ordinal))),
+                    ),
+                    (
+                        "cost_ordinal",
+                        relief
+                            .cost_ordinal
+                            .map_or(Json::Null, |ordinal| n(u64::from(ordinal))),
+                    ),
+                    ("quantity_unit", n(u64::from(relief.quantity.unit))),
+                    ("quantity", s(relief.quantity.mantissa.to_string())),
+                    ("cost_unit", n(u64::from(relief.cost.unit))),
+                    ("cost", s(relief.cost.mantissa.to_string())),
+                    ("recorded_at", n(relief.recorded_at)),
+                    ("live", Json::Bool(relief.live)),
+                ],
+            ));
+        }
     }
     checks
 }
@@ -4772,6 +4929,129 @@ mod tests {
         assert!(human.stdout.contains("statement_line (recomputation)"));
         assert!(human.stdout.contains("recipient-supplied"));
         assert!(human.stdout.contains(&i128::MIN.to_string()));
+    }
+
+    #[test]
+    fn lot_base_unit_syntax_and_conflicting_profiles_are_refused_before_io() {
+        let key = key_hex();
+        let no_read = |_: &str| -> std::io::Result<Vec<u8>> {
+            panic!("invalid lot base expectation must refuse before file I/O")
+        };
+        for value in ["", "-1", "+1", "1.0", "1,2", " 1", "4294967296"] {
+            let args = [
+                "report",
+                "missing",
+                "--key",
+                &key,
+                "--base-unit",
+                value,
+                "--json",
+            ]
+            .map(str::to_string);
+            assert_eq!(run(&args, &no_read).exit, EXIT_USAGE, "{value}");
+        }
+        for args in [
+            vec!["bundle", "missing", "--key", &key, "--base-unit", "0"],
+            vec![
+                "report",
+                "missing",
+                "--key",
+                &key,
+                "--base-unit",
+                "0",
+                "--units",
+                "0,1",
+            ],
+            vec![
+                "report",
+                "missing",
+                "--key",
+                &key,
+                "--base-unit",
+                "0",
+                "--base-unit",
+                "1",
+            ],
+        ] {
+            assert_eq!(
+                run(
+                    &args.into_iter().map(str::to_string).collect::<Vec<_>>(),
+                    &no_read
+                )
+                .exit,
+                EXIT_USAGE
+            );
+        }
+        let missing = |_: &str| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "fixture"));
+        for value in ["0", "4294967295"] {
+            let args =
+                ["report", "missing", "--key", &key, "--base-unit", value].map(str::to_string);
+            assert_eq!(run(&args, &missing).exit, EXIT_IO);
+        }
+    }
+
+    #[test]
+    fn lot_result_preserves_cost_only_relief_and_declares_the_base_premise() {
+        use crate::report::{VerifiedLot, VerifiedLotAmount, VerifiedLotRelief, VerifiedLots};
+        let amount = |unit, mantissa| VerifiedLotAmount { unit, mantissa };
+        let schedule = VerifiedLots {
+            book_id: [3; 16],
+            known_at: 20,
+            effective_through: Some(30),
+            account: 7,
+            account_code: "1400".into(),
+            account_name: "Inventory".into(),
+            base_unit: 0,
+            source_certificate_digest: [5; 32],
+            lots: vec![VerifiedLot {
+                entry: 11,
+                entry_digest: [9; 32],
+                qty_ordinal: 0,
+                cost_ordinal: 2,
+                account: 7,
+                debit: true,
+                effective_date: 10,
+                recorded_at: 3,
+                original_quantity: amount(10, 10),
+                relieved_quantity: amount(10, 10),
+                open_quantity: amount(10, 0),
+                original_cost: amount(0, 100),
+                relieved_cost: amount(0, 60),
+                open_cost: amount(0, 40),
+                relieves: vec![VerifiedLotRelief {
+                    disposal_entry: 12,
+                    qty_ordinal: None,
+                    cost_ordinal: Some(2),
+                    quantity: amount(10, 0),
+                    cost: amount(0, 40),
+                    recorded_at: 6,
+                    live: false,
+                }],
+            }],
+        };
+        let checks = lots_checks(&schedule);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            ["lots_parameters", "lot_row", "lot_relief"]
+        );
+        let output = report("report", true, &checks);
+        assert_eq!(output.exit, EXIT_VERIFIED);
+        for expected in [
+            "\"base_unit_source\":\"recipient_expectation\"",
+            "\"cost_flow_law_admission\":\"not_judged\"",
+            "\"quantity_ordinal\":null",
+            "\"quantity\":\"0\"",
+            "\"cost\":\"40\"",
+            "\"live\":false",
+            "\"open_quantity\":\"0\"",
+            "\"open_cost\":\"40\"",
+        ] {
+            assert!(
+                output.stdout.contains(expected),
+                "missing {expected}: {}",
+                output.stdout
+            );
+        }
     }
 
     /// A tampered artifact, an untrusted key, or a question the proof does

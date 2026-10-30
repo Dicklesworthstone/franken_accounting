@@ -84,6 +84,7 @@ pub mod indirect_cash_flow;
 pub mod intake;
 pub mod interop;
 pub mod ledger_diff;
+pub mod lots_certificate;
 pub mod outcome_recovery;
 pub mod plan_warnings;
 pub mod procedure_certificate;
@@ -280,6 +281,10 @@ pub use indirect_cash_flow::{
 };
 pub use intake::IntakeAction;
 pub use ledger_diff::{LedgerDiff, RecordedEntry, TrialBalanceChange};
+pub use lots_certificate::{
+    CertifiedLots, LOTS_CERTIFICATE_FORMAT, LOTS_OUTPUT_FORMAT, LotsCertificate, LotsRequest,
+    MAX_LOTS_CERTIFICATE_BYTES, MAX_LOTS_ROWS, lots_output_bytes,
+};
 pub use outcome_recovery::{OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild};
 pub use plan_warnings::{PlanWarning, PlanWarningKind, PlanWarnings};
 pub use procedure_certificate::{

@@ -889,6 +889,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let state = scope_args.state;
     let mut report_digest = None;
     let mut report_units = None;
+    let mut report_base_unit = None;
     let produced = if let Some(source) = report_source {
         let bytes = crate::notary::read_certificate_bytes(
             &book,
@@ -933,6 +934,11 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             fa::ReportArtifactFamily::EffectiveDateAging => {
                 let certificate = fa::AgingCertificate::decode(&bytes)?;
                 book.produce_aging_bundle(principal, &capability, state, &certificate)??
+            }
+            fa::ReportArtifactFamily::Lots => {
+                let certificate = fa::LotsCertificate::decode(&bytes)?;
+                report_base_unit = Some(certificate.base_unit().0);
+                book.produce_lots_bundle(principal, &capability, state, &certificate)??
             }
             fa::ReportArtifactFamily::Summary => {
                 let certificate = fa::SummaryCertificate::decode(&bytes)?;
@@ -1032,7 +1038,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, summary or functional trial-balance or statement report, native statement diff, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }
@@ -1110,6 +1116,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(digest) = report_digest {
         verify.push_str(&format!(" --expect {digest}"));
     }
+    if let Some(base_unit) = report_base_unit {
+        verify.push_str(&format!(" --base-unit {base_unit}"));
+    }
     if let Some(units) = &report_units {
         verify.push_str(&format!(
             " --units {}",
@@ -1122,6 +1131,8 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let unit_premise = if report_units.is_some() {
         "\nConfirm --units against the recipient's complete unit-ID list: the checkpoint authenticates the journal, not genesis unit-table membership or unit labels."
+    } else if report_base_unit.is_some() {
+        "\nConfirm --base-unit against the recipient's independently expected base currency: this bundle authenticates the lot schedule and relief provenance, but does not authenticate genesis currency policy or prove per-disposal lot-law admission."
     } else {
         ""
     };

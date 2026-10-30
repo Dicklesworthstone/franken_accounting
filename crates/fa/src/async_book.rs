@@ -126,6 +126,7 @@ enum ReportBundleCertificate<'a> {
     Summary(&'a crate::SummaryCertificate),
     StatementDiff(&'a crate::StatementDiffCertificate),
     Aging(&'a crate::AgingCertificate),
+    Lots(&'a crate::LotsCertificate),
     DueDateAging(&'a crate::DueDateAgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
     EquityRollForward(&'a crate::EquityRollForwardCertificate),
@@ -157,6 +158,7 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Summary(certificate) => certificate.source_certificate(),
             Self::StatementDiff(certificate) => certificate.sources().1,
             Self::Aging(certificate) => certificate.source(),
+            Self::Lots(certificate) => certificate.source(),
             Self::DueDateAging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
             Self::EquityRollForward(certificate) => {
@@ -4002,6 +4004,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export an authenticated native-cost lot schedule and relief lineage.
+    /// Offline recipients must independently supply the expected base unit.
+    /// The complete source prefix proves the selected account schedule, not
+    /// FIFO/LIFO selection, tax treatment or disposal admission.
+    pub async fn produce_lots_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::LotsCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Lots(certificate),
+        )
+        .await
+    }
+
     /// Export both historical native statements and their complete bridge over
     /// one signed journal prefix. The original four-registry closure must be
     /// identical on both sides. Replay checks the two recorded frontiers before
@@ -4350,6 +4374,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 if let Err(refusal) =
                     self.replay_effective_date_aging(cx, principal, capability, certificate)?
                 {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::Lots(certificate) => {
+                if let Err(refusal) = self.replay_lots(cx, principal, capability, certificate)? {
                     return Ok(Err(refusal));
                 }
                 None
@@ -4725,6 +4755,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .canonical_bytes()
                 .map_err(|error| KernelError::Model(error.into()))?,
             ReportBundleCertificate::Aging(certificate) => match certificate.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            ReportBundleCertificate::Lots(certificate) => match certificate.canonical_bytes() {
                 Ok(bytes) => bytes,
                 Err(refusal) => return Ok(Err(refusal)),
             },

@@ -65,6 +65,7 @@ mod equity;
 mod explain;
 mod functional;
 mod indirect_cash_flow;
+mod lots;
 mod metadata;
 mod open_items;
 mod reconciliation;
@@ -107,6 +108,7 @@ pub use indirect_cash_flow::{
     IndirectCashFlowDefinition, IndirectCashFlowUnit, VerifiedCashFlowBasis,
     VerifiedIndirectCashFlow,
 };
+pub use lots::{VerifiedLot, VerifiedLotAmount, VerifiedLotRelief, VerifiedLots};
 pub(crate) use metadata::{DeclaredAccount, declared_chart};
 pub use open_items::VerifiedOpenItemAccount as VerifiedReportAccount;
 pub use open_items::{
@@ -218,6 +220,9 @@ pub struct VerifiedReport {
     pub dimension: Option<VerifiedDimensionSelection>,
     /// Present for independently reconstructed native open-item reports.
     pub open_items: Option<VerifiedOpenItems>,
+    /// Complete native-cost lot schedule and every recorded relief application.
+    /// This does not assert independent admission under a disposal cost-flow law.
+    pub lots: Option<VerifiedLots>,
     /// Exact period cells, whole-period commitment, contributions and history.
     pub explanation: Option<VerifiedBalanceExplanation>,
     /// Present for independently reconstructed historical effective-date aging.
@@ -513,6 +518,30 @@ pub fn verify_report_expected(
     )
 }
 
+/// Verify a complete lot schedule with a recipient-selected cost base unit.
+/// The base is a report premise, not an authenticated Book-genesis assertion.
+/// Existing checkpoint, outer-certificate pin and receipt requirements remain
+/// unchanged. This entry point refuses every report family other than lots.
+pub fn verify_lots_report_expected(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected_base_unit: u32,
+    expected_certificate: Option<&[u8; 32]>,
+) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_lots_input(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+        None,
+        Some(expected_base_unit),
+        verify_checkpoint,
+    )
+}
+
 /// Recompute a v4 statement with a recipient-owned complete numeric unit list.
 /// For version-1 bundles the definition is a report parameter: this authenticates
 /// the underlying journal and arithmetic, not unit registration or definition
@@ -614,6 +643,29 @@ fn verify_report_with_inputs(
     recipient_units: Option<&[u32]>,
     authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
 ) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_lots_input(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+        recipient_units,
+        None,
+        authenticate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_report_with_lots_input(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected_certificate: Option<&[u8; 32]>,
+    recipient_units: Option<&[u32]>,
+    recipient_base_unit: Option<u32>,
+    authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
+) -> Result<VerifiedReport, ReportError> {
     if let Some(units) = recipient_units {
         validate_units(units)?;
     }
@@ -635,6 +687,21 @@ fn verify_report_with_inputs(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let lots = if lots::recognizes(certificate_bytes) {
+        Some(lots::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    match (&lots, recipient_base_unit) {
+        (Some(certificate), Some(base)) if certificate.base_unit == base => {}
+        (None, None) => {}
+        _ => {
+            return Err(failed(
+                "lots_base_unit",
+                "lot reports require the recipient's matching expected base unit; that premise is not applicable to another report family",
+            ));
+        }
+    }
     let summary = if summary::recognizes(certificate_bytes) {
         Some(summary::decode(certificate_bytes)?)
     } else {
@@ -722,8 +789,21 @@ fn verify_report_with_inputs(
         .or_else(|| roll_forward.as_ref().map(|value| value.source))
         .or_else(|| statement_diff.as_ref().map(|value| value.after))
         .or_else(|| summary.as_ref().map(|value| value.source))
+        .or_else(|| lots.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
     let cert = certificate(source)?;
+    if lots.is_some()
+        && (!matches!(cert.selection, Selection::OpenItems(Some(_)))
+            || cert.time_selection.is_some()
+            || cert.branch != [0; 16]
+            || cert.dimension.is_some()
+            || cert.functional)
+    {
+        return Err(failed(
+            "supported_report",
+            "lots require a sequence-selected trunk OpenItems source for one account",
+        ));
+    }
     if summary.is_some()
         && (cert.branch != [0; 16]
             || cert.time_selection.is_some()
@@ -790,6 +870,7 @@ fn verify_report_with_inputs(
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
         .or_else(|| statement_diff.as_ref().map(|value| value.digest))
         .or_else(|| summary.as_ref().map(|value| value.digest))
+        .or_else(|| lots.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     if cert.functional != (major == 3) {
         return Err(failed(
@@ -893,6 +974,7 @@ fn verify_report_with_inputs(
         ));
     }
     let mut functional_registry = None;
+    let mut lot_units = None;
     let (units, supersession_reasons) = if major >= 2 {
         let n = r.count(
             if major == 3 {
@@ -918,7 +1000,11 @@ fn verify_report_with_inputs(
             functional_registry = Some(definitions);
             (units, BTreeMap::new())
         } else {
-            registry::verify(&inputs, &cert.registry_digest, is_explanation)?
+            let verified = registry::verify(&inputs, &cert.registry_digest, is_explanation)?;
+            if lots.is_some() {
+                lot_units = Some(registry::lot_units(&inputs)?);
+            }
+            verified
         };
         if recipient_units.is_some_and(|expected| expected != units.as_slice()) {
             return Err(failed(
@@ -1050,6 +1136,7 @@ fn verify_report_with_inputs(
             statement_diff: None,
             dimension: None,
             open_items: None,
+            lots: None,
             explanation: None,
             aging: None,
             due_date_aging: None,
@@ -1086,6 +1173,90 @@ fn verify_report_with_inputs(
                 "report_recomputation",
                 "open-item amounts, complete application history, account metadata or canonical bytes differ from independent replay",
             ));
+        }
+        if let Some(request) = &lots {
+            // The authenticated source retains these exact bytes already.
+            drop(output);
+            let account = account_filter.ok_or_else(|| {
+                failed("lots_profile", "lot source requires one selected account")
+            })?;
+            let units_profile = lot_units
+                .as_ref()
+                .ok_or_else(|| failed("registry_closure", "lot unit definitions are absent"))?;
+            let digests = lots::check_history(
+                account,
+                request.base_unit,
+                units_profile,
+                envelopes,
+                &infos,
+                &legs,
+                &records,
+                &visible_migrations,
+            )?;
+            let snapshot = match request.effective_through {
+                Some(cutoff) => {
+                    // The complete source has passed. Release its item and
+                    // application vectors before allocating the date view.
+                    drop(open_items);
+                    open_items::replay_as_of(
+                        cert.known_at,
+                        *account_filter,
+                        cutoff,
+                        &units,
+                        &schema,
+                        envelopes,
+                        &infos,
+                        &legs,
+                        &records,
+                        &visible_migrations,
+                        &migration_activations,
+                    )?
+                }
+                None => open_items,
+            };
+            let (report, output) = lots::replay(
+                request,
+                cert.book,
+                cert.known_at,
+                cert.digest,
+                snapshot,
+                &digests,
+            )?;
+            return Ok(VerifiedReport {
+                scope: "recomputation",
+                summary: None,
+                bundle_digest: digest,
+                certificate_digest,
+                output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                checkpoint: signed,
+                known_at: cert.known_at,
+                time_selection: None,
+                effective_through: request.effective_through,
+                activity: false,
+                periods: Vec::new(),
+                rows: Vec::new(),
+                statement: None,
+                statement_diff: None,
+                dimension: None,
+                open_items: None,
+                lots: Some(report),
+                explanation: None,
+                aging: None,
+                due_date_aging: None,
+                aging_reconciliation: None,
+                due_date_aging_reconciliation: None,
+                roll_forward: None,
+                cash_flow: None,
+                split_cash_flow: None,
+                indirect_cash_flow: None,
+                equity_roll_forward: None,
+                functional_trial_balance: None,
+                functional_statement: None,
+                unit_universe_source: "authenticated-registry",
+                output,
+                checked_records: records.len(),
+                receipt,
+            });
         }
         if let Some(request) = &due_date {
             let historical = open_items::replay_as_of(
@@ -1157,6 +1328,7 @@ fn verify_report_with_inputs(
                     statement_diff: None,
                     dimension: None,
                     open_items: None,
+                    lots: None,
                     explanation: None,
                     aging: None,
                     due_date_aging: None,
@@ -1192,6 +1364,7 @@ fn verify_report_with_inputs(
                 statement_diff: None,
                 dimension: None,
                 open_items: None,
+                lots: None,
                 explanation: None,
                 aging: None,
                 due_date_aging: Some(report),
@@ -1278,6 +1451,7 @@ fn verify_report_with_inputs(
                     statement_diff: None,
                     dimension: None,
                     open_items: None,
+                    lots: None,
                     explanation: None,
                     aging: None,
                     due_date_aging: None,
@@ -1313,6 +1487,7 @@ fn verify_report_with_inputs(
                 statement_diff: None,
                 dimension: None,
                 open_items: None,
+                lots: None,
                 explanation: None,
                 aging: Some(aging),
                 due_date_aging: None,
@@ -1348,6 +1523,7 @@ fn verify_report_with_inputs(
             statement_diff: None,
             dimension: None,
             open_items: Some(open_items),
+            lots: None,
             explanation: None,
             aging: None,
             due_date_aging: None,
@@ -1404,6 +1580,7 @@ fn verify_report_with_inputs(
             statement_diff: None,
             dimension: None,
             open_items: None,
+            lots: None,
             explanation: Some(explanation),
             aging: None,
             due_date_aging: None,
@@ -1521,6 +1698,7 @@ fn verify_report_with_inputs(
             statement_diff,
             dimension: None,
             open_items: None,
+            lots: None,
             explanation: None,
             aging: None,
             due_date_aging: None,
@@ -1601,6 +1779,7 @@ fn verify_report_with_inputs(
                 statement_diff: None,
                 dimension: None,
                 open_items: None,
+                lots: None,
                 explanation: None,
                 aging: None,
                 due_date_aging: None,
@@ -1691,6 +1870,7 @@ fn verify_report_with_inputs(
                 statement_diff: None,
                 dimension: None,
                 open_items: None,
+                lots: None,
                 explanation: None,
                 aging: None,
                 due_date_aging: None,
@@ -1726,6 +1906,7 @@ fn verify_report_with_inputs(
             statement_diff: None,
             dimension: None,
             open_items: None,
+            lots: None,
             explanation: None,
             aging: None,
             due_date_aging: None,
@@ -1781,6 +1962,7 @@ fn verify_report_with_inputs(
         statement_diff: None,
         dimension,
         open_items: None,
+        lots: None,
         explanation: None,
         aging: None,
         due_date_aging: None,

@@ -154,7 +154,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// retained request/definition as replay, even when a digest is supplied.
     ///
     /// Supports native and summary reports, statement comparisons/traces,
-    /// roll-forwards (including their GL detail view), effective-date aging and
+    /// roll-forwards (including their GL detail view), native lot schedules, effective-date aging and
     /// its control reconciliations/portfolios, and direct, indirect, split and
     /// policy cash flow.
     /// Other families refuse until their distinct relevance law is implemented.
@@ -197,6 +197,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::PolicyCashFlow(c) => c.certificate.source_certificate().source_certificate(),
             Artifact::Aging(c) => {
                 return self.aging_artifact_status(cx, principal, capability, c);
+            }
+            Artifact::Lots(c) => {
+                return self.lots_artifact_status(cx, principal, capability, c);
             }
             Artifact::DueDateAging(c) => {
                 return self.due_date_aging_artifact_status(cx, principal, capability, c);
@@ -421,6 +424,61 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         Ok(unchanged(head, bytes == certificate.output()))
+    }
+
+    fn lots_artifact_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &crate::LotsCertificate,
+    ) -> Outcome<CertificateStatus> {
+        let mut request = match certificate.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let head = self.head(cx)?;
+        let (later_entries, cases) = match self.later_artifact_entries(
+            cx,
+            certificate.source().known_at,
+            head,
+            MetadataScope::Account(request.account),
+            |entry, entries| {
+                if request
+                    .effective_through
+                    .is_some_and(|cutoff| entry.proposal.effective_date > cutoff)
+                {
+                    return Ok(false);
+                }
+                crate::certificate::open_item_selected(entry, entries, Some(request.account))
+            },
+        )? {
+            Ok(entries) => entries,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !later_entries.is_empty() {
+            return Ok(Ok(CertificateStatus::SupersededBy {
+                checked_at: head,
+                later_entries,
+                cases,
+            }));
+        }
+        let original = match self.replay_lots(cx, principal, capability, certificate)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        request.known_at = Some(head);
+        let mut current = match crate::lots_certificate::fold(self, cx, &request)? {
+            Ok(report) => report,
+            Err(refusal) => {
+                return Ok(Err(invalid(format!(
+                    "the current selected lot schedule no longer evaluates: {}",
+                    refusal.message
+                ))));
+            }
+        };
+        current.known_at = original.known_at;
+        Ok(unchanged(head, original == current))
     }
 
     fn aging_artifact_status(
