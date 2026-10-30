@@ -22,6 +22,8 @@ mod report;
 mod roll_forward;
 #[path = "proofs/statement_diff.rs"]
 mod statement_diff;
+#[path = "proofs/summary.rs"]
+mod summary;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

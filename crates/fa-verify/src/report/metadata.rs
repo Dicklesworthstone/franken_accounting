@@ -470,22 +470,30 @@ struct Period {
 #[derive(Default)]
 pub(super) struct Schema {
     pub accounts: BTreeMap<u128, Account>,
+    /// Parent identities from chart and account-opening controls. Summary
+    /// replay validates the complete forest after all controls are applied.
+    pub(super) parents: BTreeMap<u128, u128>,
+    /// Former posting accounts may retain balances after promotion; their
+    /// authenticated lifecycle distinguishes those rows from accounts that
+    /// were declared as summaries.
+    pub(super) promoted_accounts: BTreeSet<u128>,
     calendar: Option<String>,
     periods: BTreeMap<String, Period>,
     native_control_accounts: BTreeSet<u128>,
     native_subledger_codes: BTreeSet<String>,
 }
 
-fn account(r: &mut Reader<'_>, recorded_at: u64) -> Result<Account, ReportError> {
+fn account(r: &mut Reader<'_>, recorded_at: u64) -> Result<(Account, Option<String>), ReportError> {
     let code = text(r, 64, "account.code")?.to_string();
     let name = text(r, MAX_RECORD_BYTES, "account.name")?.to_string();
     let account_type = r.u8("account.type")?;
     let normal = r.u8("account.normal")?;
     let is_leaf = r.present("account.posting")?;
     let policy = r.i64("account.unit_policy")?;
-    if r.present("account.parent")? {
-        text(r, 64, "account.parent")?;
-    }
+    let parent = r
+        .present("account.parent")?
+        .then(|| text(r, 64, "account.parent").map(str::to_string))
+        .transpose()?;
     if code.is_empty()
         || !(1..=8).contains(&account_type)
         || normal > 1
@@ -497,16 +505,19 @@ fn account(r: &mut Reader<'_>, recorded_at: u64) -> Result<Account, ReportError>
             "invalid registered account declaration",
         ));
     }
-    Ok(Account {
-        code,
-        name,
-        account_type,
-        normal_balance: normal,
-        is_leaf,
-        unit_policy: policy,
-        limit: None,
-        created_at: recorded_at,
-    })
+    Ok((
+        Account {
+            code,
+            name,
+            account_type,
+            normal_balance: normal,
+            is_leaf,
+            unit_policy: policy,
+            limit: None,
+            created_at: recorded_at,
+        },
+        parent,
+    ))
 }
 fn optional_limit(r: &mut Reader<'_>) -> Result<BalanceLimit, ReportError> {
     let lower = r
@@ -537,13 +548,22 @@ impl Schema {
         self.periods.values().any(|period| period.kind == 4)
     }
 
-    fn add(&mut self, account: Account, book: &[u8; 16]) -> Result<(), ReportError> {
+    fn add(
+        &mut self,
+        account: Account,
+        parent: Option<String>,
+        book: &[u8; 16],
+    ) -> Result<(), ReportError> {
         let id = crate::ads::account_vid(book, &account.code);
         if self.accounts.insert(id, account).is_some() {
             return Err(failed(
                 "account_metadata",
                 "an account code is declared more than once",
             ));
+        }
+        if let Some(parent) = parent {
+            self.parents
+                .insert(id, crate::ads::account_vid(book, &parent));
         }
         Ok(())
     }
@@ -560,9 +580,9 @@ impl Schema {
                 let n = r.count(MAX_ROWS, 20, "chart.accounts")?;
                 let mut codes = BTreeSet::new();
                 for _ in 0..n {
-                    let a = account(&mut r, recorded_at)?;
+                    let (a, parent) = account(&mut r, recorded_at)?;
                     codes.insert(a.code.clone());
-                    self.add(a, book)?;
+                    self.add(a, parent, book)?;
                 }
                 if r.remaining() != 0 {
                     let n = r.count(codes.len(), 6, "chart.limits")?;
@@ -599,7 +619,7 @@ impl Schema {
                 }
             }
             2 => {
-                let mut a = account(&mut r, recorded_at)?;
+                let (mut a, parent) = account(&mut r, recorded_at)?;
                 if r.present("account.limit")? {
                     let mut limit = optional_limit(&mut r)?;
                     let scope = r.u8("limit.scope")?;
@@ -613,7 +633,7 @@ impl Schema {
                 if r.present("account.closed")? && r.i32("account.closed")? <= opened {
                     return Err(failed("account_metadata", "empty account effectivity"));
                 }
-                self.add(a, book)?;
+                self.add(a, parent, book)?;
             }
             3 | 4 => {
                 let code = text(&mut r, 64, "account.code")?;
@@ -643,6 +663,7 @@ impl Schema {
                         ));
                     }
                     account.is_leaf = false;
+                    self.promoted_accounts.insert(id);
                 }
                 // Native property mutation retires the prior vertex version;
                 // both close and promotion advance its created_at sequence.
@@ -926,6 +947,70 @@ impl Schema {
     }
 }
 const MAX_ROWS: usize = 1 << 20;
+
+#[cfg(test)]
+mod account_hierarchy_tests {
+    use super::*;
+    use crate::codec::Writer;
+
+    fn declaration(code: &str, parent: Option<&str>, is_leaf: bool) -> Writer {
+        let mut w = Writer::default();
+        w.bytes(code.as_bytes())
+            .bytes(code.as_bytes())
+            .u8(1)
+            .u8(0)
+            .u8(u8::from(is_leaf))
+            .fixed(&(-1_i64).to_le_bytes())
+            .u8(u8::from(parent.is_some()));
+        if let Some(parent) = parent {
+            w.bytes(parent.as_bytes());
+        }
+        w
+    }
+
+    #[test]
+    fn chart_open_and_promotion_preserve_historical_hierarchy() {
+        let book = [7; 16];
+        let root = crate::ads::account_vid(&book, "100");
+        let existing = crate::ads::account_vid(&book, "110");
+        let opened = crate::ads::account_vid(&book, "120");
+        let mut schema = Schema::default();
+        let mut chart = Writer::default();
+        // Child-first declarations preserve the parent until the summary
+        // verifier checks the completed forest, without an ordering premise.
+        chart
+            .count(2)
+            .fixed(&declaration("110", Some("100"), true).buf)
+            .fixed(&declaration("100", None, false).buf);
+        schema.apply(1, &chart.buf, &book, 5).unwrap();
+        assert_eq!(schema.parents, BTreeMap::from([(existing, root)]));
+        assert!(schema.promoted_accounts.is_empty());
+
+        let mut open = declaration("120", Some("100"), true);
+        open.u8(0).i32(10).u8(0);
+        schema.apply(2, &open.buf, &book, 6).unwrap();
+        assert_eq!(
+            schema.parents,
+            BTreeMap::from([(existing, root), (opened, root)])
+        );
+
+        let mut promote = Writer::default();
+        promote.bytes(b"110").i32(11);
+        schema.apply(4, &promote.buf, &book, 7).unwrap();
+        assert!(!schema.accounts[&existing].is_leaf);
+        assert_eq!(schema.accounts[&existing].created_at, 7);
+        assert_eq!(schema.promoted_accounts, BTreeSet::from([existing]));
+        assert_eq!(schema.parents[&existing], root);
+
+        let mut close = Writer::default();
+        close.bytes(b"120").i32(12);
+        schema.apply(3, &close.buf, &book, 8).unwrap();
+        assert!(schema.accounts[&opened].is_leaf);
+        assert_eq!(schema.accounts[&opened].created_at, 8);
+        assert_eq!(schema.parents[&opened], root);
+        assert_eq!(schema.promoted_accounts, BTreeSet::from([existing]));
+    }
+}
 
 #[cfg(test)]
 mod indirect_period_tests {

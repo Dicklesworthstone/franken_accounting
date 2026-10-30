@@ -123,6 +123,7 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
 #[derive(Clone, Copy)]
 enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
+    Summary(&'a crate::SummaryCertificate),
     StatementDiff(&'a crate::StatementDiffCertificate),
     Aging(&'a crate::AgingCertificate),
     DueDateAging(&'a crate::DueDateAgingCertificate),
@@ -153,6 +154,7 @@ impl<'a> ReportBundleCertificate<'a> {
     fn source(self) -> &'a crate::ReportCertificate {
         match self {
             Self::Native(certificate) => certificate,
+            Self::Summary(certificate) => certificate.source_certificate(),
             Self::StatementDiff(certificate) => certificate.sources().1,
             Self::Aging(certificate) => certificate.source(),
             Self::DueDateAging(certificate) => certificate.source(),
@@ -3933,6 +3935,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export a summary trial balance with its complete native source and
+    /// historical chart. The outer certificate binds roots, membership,
+    /// uncovered leaves and exact output. Independent verification requires
+    /// the original four-registry closure and a complete signed prefix.
+    pub async fn produce_summary_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::SummaryCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Summary(certificate),
+        )
+        .await
+    }
+
     /// Export an effective-date aging schedule and its native OpenItems source
     /// over one signed complete prefix. The outer certificate binds the cutoff,
     /// bucket boundaries and exact historical output; it is never replaced by
@@ -4278,6 +4302,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         let replayed = match report {
+            ReportBundleCertificate::Summary(certificate) => {
+                if let Err(refusal) =
+                    self.replay_summary_trial_balance(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
             ReportBundleCertificate::StatementDiff(comparison) => {
                 if let Err(refusal) =
                     self.replay_statement_diff(cx, principal, capability, comparison)?
@@ -4450,7 +4482,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let requires_registry_closure = matches!(
             report,
-            ReportBundleCertificate::StatementDiff(_)
+            ReportBundleCertificate::Summary(_)
+                | ReportBundleCertificate::StatementDiff(_)
                 | ReportBundleCertificate::RollForward(_)
                 | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
@@ -4656,6 +4689,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let bytes = match report {
+            ReportBundleCertificate::Summary(certificate) => match certificate.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
             ReportBundleCertificate::StatementDiff(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,

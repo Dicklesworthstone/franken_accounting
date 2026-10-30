@@ -1,5 +1,5 @@
 //! Portable native and dimension-filtered trial balances, statements, open
-//! items, balance explanations, aging, roll-forwards and direct cash flow over
+//! items, summary accounts, balance explanations, aging, roll-forwards and direct cash flow over
 //! a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
@@ -40,7 +40,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, native statement-diff, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, native statement-diff, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -119,6 +119,9 @@ pub fn assemble(
 /// Native statement comparisons retain both original v4 sources and the exact
 /// outer bridge under their shared four-document closure. Each source is
 /// reconstructed at its own recorded frontier from the complete prefix.
+/// Summary trial balances retain their exact outer root selection and output
+/// over a native source and the same four-document closure; historical chart
+/// membership is reconstructed from the authenticated prefix.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -142,6 +145,7 @@ pub fn assemble_with_registries(
         &["account_types", "entry_classes", "units", "foundations"]
     };
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
+        || summary_certificate(certificate)
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
         || due_date_aging_certificate(certificate)
@@ -163,7 +167,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements, summary trial balances, open items, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -329,6 +333,36 @@ fn aging_certificate(certificate: &[u8]) -> bool {
 
 fn due_date_aging_certificate(certificate: &[u8]) -> bool {
     aging_certificate_with_format(certificate, b"fa:due-date-aging-certificate:v1")
+}
+
+/// Route a summary wrapper only when it carries a sequence-selected trunk
+/// native trial balance. This is format routing: producer replay and the
+/// independent verifier validate the full source, selector and exact output.
+fn summary_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "summary format")? != b"fa:summary-certificate:v1" {
+            return Ok(false);
+        }
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "summary source")?;
+        if !certificate_format(source, b"fa:report-certificate:v1") {
+            return Ok(false);
+        }
+        let mut native = Reader::new(source);
+        native.fixed::<{ b"fa:report-certificate:v1".len() }>("report format")?;
+        native.str(128, "report scope")?;
+        native.str(128, "report authority")?;
+        if native.str(128, "report output format")? != "fa:trial-balance:v1" {
+            return Ok(false);
+        }
+        native.fixed::<16>("report book")?;
+        if native.fixed::<16>("report branch")? != [0; 16] {
+            return Ok(false);
+        }
+        native.u64("report known-at")?;
+        Ok(matches!(native.u8("report selector")?, 0..=2))
+    };
+    header().unwrap_or(false)
 }
 
 fn aging_certificate_with_format(certificate: &[u8], format: &[u8]) -> bool {
@@ -568,6 +602,7 @@ fn assemble_inner(
             || certificate_format(certificate, b"fa:report-certificate:v8"))
         || major == 2
             && (certificate_format(certificate, b"fa:report-certificate:v4")
+                || summary_certificate(certificate)
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)
                 || aging_certificate(certificate)
@@ -583,7 +618,7 @@ fn assemble_inner(
         || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -726,6 +761,53 @@ mod format_tests {
             .bytes(&aging.finish().unwrap())
             .bytes(control);
         outer.finish().unwrap()
+    }
+
+    #[test]
+    fn summary_routing_requires_an_exact_sequence_native_trial_balance_source() {
+        let wrap = |format: &[u8], source: &[u8]| {
+            let mut writer = Writer::new();
+            writer.bytes(format).bytes(source);
+            writer.finish().unwrap()
+        };
+        let format = b"fa:summary-certificate:v1";
+        for selector in [0, 1, 2] {
+            assert!(summary_certificate(&wrap(
+                format,
+                &native_header(1, "fa:trial-balance:v1", selector),
+            )));
+        }
+        for source in [
+            native_header(1, "fa:trial-balance:v1", 3),
+            native_header(2, "fa:trial-balance:v1", 1),
+            native_header(10, "fa:functional-trial-balance:v1", 1),
+            native_header(1, "fa:statement:v1", 0),
+            native_header(4, "fa:statement:v1", 0),
+            Vec::new(),
+        ] {
+            assert!(!summary_certificate(&wrap(format, &source)));
+        }
+        let native = native_header(1, "fa:trial-balance:v1", 1);
+        for version in [2, 10] {
+            assert!(!summary_certificate(&wrap(
+                format!("fa:summary-certificate:v{version}").as_bytes(),
+                &native,
+            )));
+        }
+        let valid = wrap(format, &native);
+        assert!(!certificate_format(&valid, b"fa:report-certificate:v1"));
+        assert!(!summary_certificate(&valid[..valid.len() - 1]));
+        let mut fork = Writer::new();
+        fork.fixed(b"fa:report-certificate:v1")
+            .str("fa-fold-over-prefix")
+            .str("embedded-owner")
+            .str("fa:trial-balance:v1")
+            .fixed(&[3; 16])
+            .fixed(&[1; 16])
+            .u64(9)
+            .u8(1)
+            .i32(30);
+        assert!(!summary_certificate(&wrap(format, &fork.finish().unwrap())));
     }
 
     #[test]

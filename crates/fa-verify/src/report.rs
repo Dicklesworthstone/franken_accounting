@@ -36,6 +36,9 @@
 //! Native statement comparisons replay both historical statements before
 //! deriving every line delta and zero-balance chart mapping change. Both
 //! sources retain one exact shared registry closure and selected definition.
+//! Summary trial balances retain the complete native source and independently
+//! reconstruct selected subtrees, zero-activity leaf coverage, historical
+//! metadata and promoted-account balances under the outer certificate digest.
 //! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
@@ -69,6 +72,7 @@ mod registry;
 mod roll_forward;
 mod statement;
 mod statement_diff;
+mod summary;
 mod temporal;
 pub use aging::{
     VerifiedAgedOpenItem, VerifiedAging, VerifiedAgingAmounts, VerifiedAgingBand,
@@ -116,6 +120,7 @@ pub use roll_forward::{
 };
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use statement_diff::{StatementLineChange, StatementMappingChange, VerifiedStatementDiff};
+pub use summary::{SummaryScope, VerifiedSummaryGroup, VerifiedSummaryTrialBalance};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
 mod tests;
@@ -190,6 +195,9 @@ pub struct ReportRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedReport {
     pub scope: &'static str,
+    /// Selected summary groups and complete historical posting-leaf coverage.
+    /// `rows` still contains the entire native source, not only these groups.
+    pub summary: Option<VerifiedSummaryTrialBalance>,
     pub bundle_digest: [u8; 32],
     pub certificate_digest: [u8; 32],
     pub output_digest: [u8; 32],
@@ -627,6 +635,11 @@ fn verify_report_with_inputs(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let summary = if summary::recognizes(certificate_bytes) {
+        Some(summary::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     let statement_diff = if statement_diff::recognizes(certificate_bytes) {
         Some(statement_diff::decode(certificate_bytes)?)
     } else {
@@ -708,8 +721,24 @@ fn verify_report_with_inputs(
         .or_else(|| due_date.as_ref().map(|value| value.source))
         .or_else(|| roll_forward.as_ref().map(|value| value.source))
         .or_else(|| statement_diff.as_ref().map(|value| value.after))
+        .or_else(|| summary.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
     let cert = certificate(source)?;
+    if summary.is_some()
+        && (cert.branch != [0; 16]
+            || cert.time_selection.is_some()
+            || cert.dimension.is_some()
+            || cert.functional
+            || !matches!(
+                cert.selection,
+                Selection::Periods(_) | Selection::AsOf(_) | Selection::Activity(_)
+            ))
+    {
+        return Err(failed(
+            "supported_report",
+            "summary v1 requires a sequence-selected trunk native trial balance",
+        ));
+    }
     let before_statement = statement_diff
         .as_ref()
         .map(|comparison| certificate(comparison.before))
@@ -760,6 +789,7 @@ fn verify_report_with_inputs(
         .or_else(|| due_date.as_ref().map(|value| value.digest))
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
         .or_else(|| statement_diff.as_ref().map(|value| value.digest))
+        .or_else(|| summary.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     if cert.functional != (major == 3) {
         return Err(failed(
@@ -775,19 +805,24 @@ fn verify_report_with_inputs(
             && !is_open_items
             && !is_explanation
             && roll_forward.is_none()
+            && summary.is_none()
             && major == 2)
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a native statement, OpenItems, ExplainBalance, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, OpenItems, ExplainBalance, summary, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
-    if (is_open_items || is_explanation || roll_forward.is_some() || statement_diff.is_some())
+    if (is_open_items
+        || is_explanation
+        || roll_forward.is_some()
+        || statement_diff.is_some()
+        || summary.is_some())
         && major != 2
     {
         return Err(failed(
             "registry_closure",
-            "native v3 reports, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
+            "native v3 reports, summaries, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -1000,6 +1035,7 @@ fn verify_report_with_inputs(
         };
         return Ok(VerifiedReport {
             scope: "recomputation",
+            summary: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
             output_digest: cert.output_digest,
@@ -1106,6 +1142,7 @@ fn verify_report_with_inputs(
                 )?;
                 return Ok(VerifiedReport {
                     scope: "recomputation",
+                    summary: None,
                     bundle_digest: digest,
                     certificate_digest,
                     output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1140,6 +1177,7 @@ fn verify_report_with_inputs(
             }
             return Ok(VerifiedReport {
                 scope: "recomputation",
+                summary: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1225,6 +1263,7 @@ fn verify_report_with_inputs(
                 )?;
                 return Ok(VerifiedReport {
                     scope: "recomputation",
+                    summary: None,
                     bundle_digest: digest,
                     certificate_digest,
                     output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1259,6 +1298,7 @@ fn verify_report_with_inputs(
             }
             return Ok(VerifiedReport {
                 scope: "recomputation",
+                summary: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1293,6 +1333,7 @@ fn verify_report_with_inputs(
         }
         return Ok(VerifiedReport {
             scope: "recomputation",
+            summary: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
             output_digest: cert.output_digest,
@@ -1348,6 +1389,7 @@ fn verify_report_with_inputs(
         }
         return Ok(VerifiedReport {
             scope: "recomputation",
+            summary: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
             output_digest: cert.output_digest,
@@ -1464,6 +1506,7 @@ fn verify_report_with_inputs(
         };
         return Ok(VerifiedReport {
             scope: "recomputation",
+            summary: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest,
@@ -1543,6 +1586,7 @@ fn verify_report_with_inputs(
             )?;
             return Ok(VerifiedReport {
                 scope: "recomputation",
+                summary: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1632,6 +1676,7 @@ fn verify_report_with_inputs(
             };
             return Ok(VerifiedReport {
                 scope: "recomputation",
+                summary: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1666,6 +1711,7 @@ fn verify_report_with_inputs(
         }
         return Ok(VerifiedReport {
             scope: "recomputation",
+            summary: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -1698,11 +1744,32 @@ fn verify_report_with_inputs(
             receipt,
         });
     }
+    let (summary, output) = if let Some(certificate) = &summary {
+        let (report, output) = summary::replay(
+            certificate,
+            cert.book,
+            cert.known_at,
+            cert.digest,
+            &schema,
+            &rows,
+            &output,
+            &units,
+        )?;
+        (Some(report), output)
+    } else {
+        (None, output)
+    };
+    let unit_universe_source = if summary.is_some() {
+        "authenticated-registry"
+    } else {
+        "not-applicable"
+    };
     Ok(VerifiedReport {
         scope: "recomputation",
+        summary,
         bundle_digest: digest,
-        certificate_digest: cert.digest,
-        output_digest: cert.output_digest,
+        certificate_digest,
+        output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
         checkpoint: signed,
         known_at: cert.known_at,
         time_selection: cert.time_selection,
@@ -1726,7 +1793,7 @@ fn verify_report_with_inputs(
         equity_roll_forward: None,
         functional_trial_balance: None,
         functional_statement: None,
-        unit_universe_source: "not-applicable",
+        unit_universe_source,
         output,
         checked_records: records.len(),
         receipt,

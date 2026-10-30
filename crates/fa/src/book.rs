@@ -4717,6 +4717,25 @@ impl Book {
         )))
     }
 
+    /// Export a summary trial balance for independent offline replay. The
+    /// complete signed prefix and original registry closure authenticate its
+    /// historical chart, leaf drilldown, selected roots and uncovered coverage.
+    /// Requires current whole-book read/produce authority and returns `None`
+    /// when the requested checkpoint is unavailable. Recipient pins bind the
+    /// outer summary certificate, including its exact root selection.
+    pub fn produce_summary_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::SummaryCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_summary_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Export a native statement comparison for independent offline replay.
     /// Both historical statements, exact deltas and zero-balance chart mapping
     /// changes are bound by the original outer certificate. A complete signed

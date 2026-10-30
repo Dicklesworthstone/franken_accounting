@@ -442,6 +442,7 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
 mod explain;
 mod open_items;
 mod statements;
+mod summary;
 mod temporal;
 
 // Hand-written definition and expected output, without the producer evaluator

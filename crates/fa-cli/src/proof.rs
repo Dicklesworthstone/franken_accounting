@@ -934,6 +934,10 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let certificate = fa::AgingCertificate::decode(&bytes)?;
                 book.produce_aging_bundle(principal, &capability, state, &certificate)??
             }
+            fa::ReportArtifactFamily::Summary => {
+                let certificate = fa::SummaryCertificate::decode(&bytes)?;
+                book.produce_summary_bundle(principal, &capability, state, &certificate)??
+            }
             fa::ReportArtifactFamily::StatementDiff => {
                 let certificate = fa::StatementDiffCertificate::decode(&bytes)?;
                 book.produce_statement_diff_bundle(principal, &capability, state, &certificate)??
@@ -1028,7 +1032,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native or functional trial-balance or statement report, native statement diff, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }

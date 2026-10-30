@@ -103,7 +103,7 @@ commands:
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
-                                                trial balances, statements, open items, balance explanations,
+                                                trial balances, summary groups, statements, open items, balance explanations,
                                                 effective-date or due-date aging, reconciliation, account roll-forwards,
                                                 direct cash flows or changes in equity.
                                                 V1 statements require --units;
@@ -1439,6 +1439,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "roll_forward"
                                 } else if report.open_items.is_some() {
                                     "open_items"
+                                } else if report.summary.is_some() {
+                                    if report.activity {
+                                        "summary_activity"
+                                    } else {
+                                        "summary_stock"
+                                    }
                                 } else if report.activity {
                                     "activity"
                                 } else {
@@ -1480,6 +1486,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     open_items.items.len()
                                 } else if let Some(statement) = &report.statement {
                                     statement.lines.len()
+                                } else if let Some(summary) = &report.summary {
+                                    summary.groups.iter().map(|group| group.rows.len()).sum()
                                 } else {
                                     report.rows.len()
                                 } as u64),
@@ -1596,6 +1604,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(indirect) = &report.indirect_cash_flow {
                         checks.extend(indirect_cash_flow_checks(indirect));
+                    }
+                    if let Some(summary) = &report.summary {
+                        checks.extend(summary_checks(summary));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -1769,6 +1780,88 @@ fn account_check(name: &'static str, account: &crate::report::VerifiedReportAcco
             ("created_at", n(account.created_at)),
         ],
     )
+}
+
+fn summary_checks(report: &crate::report::VerifiedSummaryTrialBalance) -> Vec<Check> {
+    let (selection, roots) = match &report.scope {
+        crate::report::SummaryScope::AllRoots => ("all_roots", Json::Null),
+        crate::report::SummaryScope::Selected(roots) => (
+            "selected_roots",
+            Json::List(roots.iter().map(|id| s(format!("{id:032x}"))).collect()),
+        ),
+    };
+    let mut checks = vec![Check::pass(
+        "summary_coverage",
+        "recomputation",
+        vec![
+            ("selection", s(selection)),
+            ("selected_roots", roots),
+            ("complete", Json::Bool(report.is_complete())),
+            ("group_count", n(report.groups.len() as u64)),
+            (
+                "uncovered_leaf_count",
+                n(report.uncovered_leaves.len() as u64),
+            ),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            ("source_scope", s("complete native trial balance")),
+            (
+                "coverage",
+                s("all historical posting leaves, including zero activity"),
+            ),
+        ],
+    )];
+    for group in &report.groups {
+        let mut check = account_check("summary_group", &group.account);
+        check.detail.extend([
+            ("leaf_count", n(group.leaves.len() as u64)),
+            ("row_count", n(group.rows.len() as u64)),
+        ]);
+        checks.push(check);
+        for leaf in &group.leaves {
+            let mut check = account_check("summary_leaf", leaf);
+            check
+                .detail
+                .push(("root", s(format!("{:032x}", group.account.account))));
+            checks.push(check);
+        }
+        for row in &group.rows {
+            checks.push(Check::pass(
+                "summary_row",
+                "recomputation",
+                vec![
+                    ("account", s(format!("{:032x}", row.account))),
+                    ("code", s(&row.code)),
+                    ("unit", n(u64::from(row.unit))),
+                    ("debits", s(row.debits.to_string())),
+                    ("credits", s(row.credits.to_string())),
+                    ("debits_pending", s(row.debits_pending.to_string())),
+                    ("credits_pending", s(row.credits_pending.to_string())),
+                ],
+            ));
+        }
+    }
+    for leaf in &report.uncovered_leaves {
+        checks.push(account_check("summary_uncovered_leaf", leaf));
+    }
+    for (&unit, &(debits, credits)) in &report.unit_totals {
+        let (debits_pending, credits_pending) = report.pending_unit_totals[&unit];
+        checks.push(Check::pass(
+            "summary_unit_total",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(unit))),
+                ("debits", s(debits.to_string())),
+                ("credits", s(credits.to_string())),
+                ("debits_pending", s(debits_pending.to_string())),
+                ("credits_pending", s(credits_pending.to_string())),
+                ("selection", s("selected monetary source rows only")),
+            ],
+        ));
+    }
+    checks
 }
 
 fn explanation_checks(report: &crate::report::VerifiedBalanceExplanation) -> Vec<Check> {
