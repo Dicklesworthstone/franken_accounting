@@ -302,17 +302,21 @@ fn summary_status_attributes_group_membership_and_uncovered_leaf_changes() {
         SummaryScope::Selected(vec![h.id("2000")]),
         TrialBalanceSelection::AsOf(day(20)),
     );
-    let installed = h
+    // A leaf under an installed summary is opened, not installed: a chart
+    // install resolves parents within its own batch.
+    let opened = h
         .runtime
-        .block_on(h.book.install_chart(
+        .block_on(h.book.open_account(
             &cx,
-            &[AccountSpec {
+            &AccountSpec {
                 code: "2100".into(),
                 name: "Zero-activity leaf".into(),
                 is_leaf: true,
                 parent_code: Some(root.code.clone()),
                 ..root
-            }],
+            },
+            day(1),
+            None,
             PRINCIPAL,
             day(1),
             b"summary new descendant",
@@ -325,7 +329,7 @@ fn summary_status_attributes_group_membership_and_uncovered_leaf_changes() {
             status(&h, artifact),
             CertificateStatus::SupersededBy {
                 checked_at: h.head(),
-                later_entries: vec![installed.control_entry],
+                later_entries: vec![opened.control_entry],
                 cases: Vec::new(),
             },
             "a new leaf changes either selected membership or uncovered coverage"

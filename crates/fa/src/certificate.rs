@@ -3652,12 +3652,20 @@ mod tests {
         let mut branch = certificate.clone();
         branch.branch_id = Id128([2; 16]);
         assert!(offline_report_registries(&branch, &units).is_err());
+        // Every trunk native trial-balance selection is portable since the
+        // summary trial balances' outsider verification (fa-70h4), with the
+        // same registry closure as the as-of stock; off trunk none is.
         for selection in [
             TrialBalanceSelection::Periods(vec!["FY2026-P03".into()]),
             TrialBalanceSelection::Activity(vec!["FY2026-P03".into()]),
         ] {
             let mut other = certificate.clone();
             other.selection = ReportSelection::TrialBalance(selection);
+            assert_eq!(
+                offline_report_registries(&other, &units).unwrap(),
+                documents
+            );
+            other.branch_id = Id128([2; 16]);
             assert!(offline_report_registries(&other, &units).is_err());
         }
     }
