@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=1df3de8c33dc4e2ea63b4762d9d59f02383aa1c1
+tree=8d3037ffcc8fbe0a5ec7be78d7d499e4701a928d
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=vmi1227854
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=341
+log_dir=/data/tmp/claude-1000/-data-projects-franken-accounting/8e3ac165-4927-456b-b206-c15ea9610464/scratchpad/t0logs/land33-2-vmi1227854
+recorded_utc=2026-10-30T22:15:30Z
