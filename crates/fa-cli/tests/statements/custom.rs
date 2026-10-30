@@ -246,7 +246,9 @@ fn company_activation_refuses_single_approval_and_an_unmapped_chart() {
             "unmapped",
         ],
     );
-    assert_eq!(exit, 3, "{refused:?}");
+    // FA-REF-100 STRUCTURE exits usage, as refusal_catalog.toml registers it
+    // (d83f19076 aligned statement_definition's `invalid()` to it).
+    assert_eq!(exit, 2, "{refused:?}");
 }
 
 #[test]
