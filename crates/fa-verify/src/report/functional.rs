@@ -3,11 +3,12 @@
 //! Complete signed history supplies entries, chart, fiscal periods and Rate
 //! intake receipts. Book parameters are certificate/receipt-bound inputs, not
 //! a proof of genesis. This profile verifies SpotClose, PeriodAverage and
-//! source-bound SettlementCarryingBasis, including exact inherited reversals.
+//! source-bound SettlementCarryingBasis and aggregate PeriodEndRevaluation,
+//! including exact inherited reversals.
 //! Migration contributions use independently authenticated run bodies and
 //! lifecycle controls; activation changes visibility and the watermark without
-//! changing a chunk's birth. Revaluation and closing-transfer laws remain
-//! unsupported until their separate source proofs can be replayed.
+//! changing a chunk's birth. Item-allocated revaluation and closing-transfer
+//! laws remain unsupported until their separate source proofs can be replayed.
 
 mod arithmetic;
 mod valuation;

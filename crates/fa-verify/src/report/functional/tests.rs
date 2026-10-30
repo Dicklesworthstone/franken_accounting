@@ -1,6 +1,7 @@
 //! Independent amount vectors and hostile complete-bundle fixtures.
 
 mod migration;
+mod revaluation;
 mod settlement;
 mod statements;
 
@@ -811,24 +812,34 @@ fn rate_closure_rejects_missing_extra_tampered_and_late_or_missing_intake() {
     replay_fixture(&late, Selection::AsOf(20), 5, &book(&[]), &[rate]).unwrap();
 }
 #[test]
-fn unsupported_laws_and_wrong_date_do_not_become_trusted_base_amounts() {
+fn unsupported_laws_missing_revaluation_basis_and_wrong_date_are_refused() {
     let (mut records, rate) = basic();
-    records[3] = entry(
-        4,
-        1,
-        10,
-        b"unsupported",
-        &residual_legs(),
-        Some((2, &rate, Some((1, 1)))),
-        None,
-        None,
-    );
-    assert_eq!(
-        replay_fixture(&records, Selection::AsOf(0), 5, &book(&[]), &[rate])
-            .unwrap_err()
-            .predicate,
-        "supported_report"
-    );
+    // Aggregate law 2 is supported only with its retained cumulative basis;
+    // item-allocated law 9 still requires its own independent source proof.
+    for (law, predicate) in [(2, "functional_revaluation"), (9, "supported_report")] {
+        records[3] = entry(
+            4,
+            1,
+            10,
+            b"unproved-law",
+            &residual_legs(),
+            Some((law, &rate, Some((1, 1)))),
+            None,
+            None,
+        );
+        let error = replay_fixture(
+            &records,
+            Selection::AsOf(0),
+            5,
+            &book(&[]),
+            std::slice::from_ref(&rate),
+        )
+        .unwrap_err();
+        assert_eq!(error.predicate, predicate);
+        if law == 2 {
+            assert!(error.detail.contains("complete source-bound basis"));
+        }
+    }
     let wrong_date = rate_fixture(1, 3, 1, 11);
     let mut records = schema();
     records.push(intake(&wrong_date, 3));

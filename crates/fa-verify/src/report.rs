@@ -51,7 +51,8 @@
 //!
 //! Version 3 independently replays v10 functional trial balances and v5
 //! functional balance sheets and income statements under direct
-//! SpotClose/PeriodAverage laws with exact Rate bodies, signed intake receipts,
+//! SpotClose/PeriodAverage, source-bound settlement carrying and aggregate
+//! PeriodEndRevaluation laws with exact Rate bodies, signed intake receipts,
 //! six registries and explicit Book parameters. Recipient pins or production
 //! receipts authenticate those parameters; Book genesis is not proved.
 

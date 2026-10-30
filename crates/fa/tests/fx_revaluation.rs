@@ -528,6 +528,130 @@ fn retained_asset_and_liability_revaluation_posts_only_the_signed_cumulative_del
 }
 
 #[test]
+fn portable_functional_reports_recompute_revaluation_and_preserve_the_original_prefix() {
+    let mut f = Fixture::new();
+    f.post_source(b"portable-foreign-source", false, 10_000);
+    let first_rate = f.closing_rate(12);
+    let first = f.prepare("1200", first_rate.oid);
+    f.commit(&first, b"portable-first-revaluation");
+    let producer = cap(&["read", "produce"]);
+    let first_certificate = f
+        .book
+        .certify_functional_trial_balance(&producer, fa::TrialBalanceSelection::AsOf(day(31)), None)
+        .unwrap()
+        .unwrap()
+        .certificate;
+
+    let next_rate = f.closing_rate(13);
+    let second = f.prepare("1200", next_rate.oid);
+    assert_eq!(
+        second.delta().mantissa,
+        1_000,
+        "only the next carrying delta posts"
+    );
+    f.commit(&second, b"portable-second-revaluation");
+    let mut certificates = vec![(first_certificate, 12_000)];
+    certificates.push((
+        f.book
+            .certify_functional_trial_balance(
+                &producer,
+                fa::TrialBalanceSelection::AsOf(day(31)),
+                None,
+            )
+            .unwrap()
+            .unwrap()
+            .certificate,
+        13_000,
+    ));
+    for name in ["balance-sheet", "income-statement"] {
+        certificates.push((
+            f.book
+                .certify_functional_statement(
+                    PRINCIPAL,
+                    &producer,
+                    fa::StatementSelection {
+                        definition: fa::StatementDefinition::embedded(name).unwrap(),
+                        periods: vec![PERIOD.into()],
+                        comparative: Vec::new(),
+                    },
+                    None,
+                )
+                .unwrap()
+                .unwrap()
+                .certificate,
+            13_000,
+        ));
+    }
+    // The selected certificate, rather than current history, decides the
+    // original rate/source population even when the checkpoint is newer.
+    f.post_source(b"portable-later-backdate", false, 1_000);
+    let state = f
+        .book
+        .checkpoint(PRINCIPAL, &cap(&["read", "produce", "witness"]))
+        .unwrap()
+        .unwrap()
+        .checkpoint
+        .checkpoint
+        .body
+        .state_oid;
+    let head = f.book.head().unwrap();
+    for (certificate, expected) in certificates {
+        let produced = f
+            .book
+            .produce_report_bundle(PRINCIPAL, &producer, Some(state), &certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let repeated = f
+            .book
+            .produce_report_bundle(PRINCIPAL, &producer, Some(state), &certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(produced.bundle.bytes, repeated.bundle.bytes);
+        assert_eq!(produced.receipt, repeated.receipt);
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[f.book.checkpoint_public_key()],
+            None,
+            Some(&produced.receipt),
+            Some(&certificate.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output);
+        assert_eq!(verified.known_at, certificate.known_at.0);
+        if let Some(tb) = verified.functional_trial_balance {
+            let assets: i128 = tb
+                .cells
+                .iter()
+                .filter(|cell| [f.account("1200").0, f.account("1290").0].contains(&cell.account))
+                .map(|cell| cell.debits - cell.credits)
+                .sum();
+            assert_eq!(assets, expected);
+        } else {
+            let statement = verified.functional_statement.unwrap().statement;
+            let line = statement
+                .lines
+                .iter()
+                .find(|line| line.code == "assets")
+                .or_else(|| {
+                    statement
+                        .lines
+                        .iter()
+                        .find(|line| line.code == "net_income")
+                })
+                .unwrap();
+            assert_eq!(line.amounts, vec![expected]);
+        }
+    }
+    assert_eq!(
+        f.book.head().unwrap(),
+        head,
+        "portable production is read-only"
+    );
+}
+
+#[test]
 fn later_foreign_exposure_invalidates_both_saved_review_and_saved_plan() {
     let mut f = Fixture::new();
     f.post_source(b"reviewed-exposure", false, 10_000);

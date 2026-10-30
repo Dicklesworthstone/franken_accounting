@@ -1098,7 +1098,7 @@ mod tests {
             supersession: Vec::new(),
             supersession_reasons: Vec::new(),
             rule_version_oid: None,
-            has_fx_revaluation_basis: false,
+            fx_revaluation_basis: None,
             obligation_maturity: None,
             case_member: Some(case),
             prior_period_adjustment: Some(prior),

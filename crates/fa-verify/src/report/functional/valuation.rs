@@ -1,5 +1,6 @@
 //! Rate closure, custody visibility and independent direct/carrying calculations.
 
+mod revaluation;
 mod settlement;
 
 use super::super::{ReportError, failed, metadata, registry, text};
@@ -81,6 +82,7 @@ struct Rate {
     denominator: u128,
     date: i32,
     purpose: u8,
+    canonical_mime: bool,
 }
 fn gcd(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
@@ -107,7 +109,8 @@ fn rate(
             "Rate document version, book or kind differs",
         ));
     }
-    text(&mut r, 1024, "document.mime")?;
+    let canonical_mime =
+        text(&mut r, 1024, "document.mime")? == "application/vnd.franken.fx-rate.v1";
     let size = r.u64("document.size")?;
     let commitment = r.fixed("document.commitment")?;
     r.u8("document.grade")?;
@@ -153,7 +156,7 @@ fn rate(
         || denominator == 0
         || gcd(numerator, denominator) != 1
         || rounding != 3
-        || !matches!(purpose, 1 | 3 | 4)
+        || !matches!(purpose, 1..=4)
         || source.trim().is_empty()
     {
         return Err(failed(
@@ -170,6 +173,7 @@ fn rate(
         denominator,
         date,
         purpose,
+        canonical_mime,
     })
 }
 
@@ -450,10 +454,13 @@ pub(super) fn verify_history(
     let mut settlement_use: BTreeMap<[u8; 32], u64> = BTreeMap::new();
     let mut by_digest = BTreeMap::new();
     for (&index, info) in infos {
-        if info.has_fx_revaluation_basis {
+        if info.fx_revaluation_basis.is_some()
+            && base_totals(&records[index].1[..records[index].0])?
+                .is_none_or(|base| base.law != law_oid(2))
+        {
             return Err(failed(
                 "supported_report",
-                "cumulative FX revaluation basis requires independent source replay before a functional claim can verify",
+                "source-bound revaluation requires the registered aggregate PeriodEndRevaluation law",
             ));
         }
         let envelope = &envelopes[index];
@@ -470,10 +477,10 @@ pub(super) fn verify_history(
                     "Migration valuations require the registered SpotClose law",
                 ));
             }
-            if ![law_oid(1), law_oid(3), law_oid(4)].contains(&claim.law) {
+            if ![law_oid(1), law_oid(2), law_oid(3), law_oid(4)].contains(&claim.law) {
                 return Err(failed(
                     "supported_report",
-                    "functional replay supports SpotClose, PeriodAverage and source-bound SettlementCarryingBasis v1; closing, translation and revaluation laws require their own source proofs",
+                    "functional replay supports SpotClose, aggregate PeriodEndRevaluation, PeriodAverage and source-bound SettlementCarryingBasis v1; closing, translation and item-allocation laws require their own source proofs",
                 ));
             }
             if claim.rates.is_empty() {
@@ -617,7 +624,7 @@ pub(super) fn verify_history(
         } else if entry
             .base
             .as_ref()
-            .is_some_and(|claim| claim.law != law_oid(4))
+            .is_some_and(|claim| claim.law != law_oid(4) && claim.law != law_oid(2))
         {
             let (_, period_end) = schema.bounds(std::slice::from_ref(&period))?;
             compute(
@@ -646,6 +653,17 @@ pub(super) fn verify_history(
         }
         complete.extend(path);
     }
+    revaluation::verify(
+        spec,
+        registry,
+        &rates,
+        envelopes,
+        records,
+        infos,
+        legs,
+        &parsed,
+        migration_activations,
+    )?;
     settlement::verify(
         spec,
         registry,

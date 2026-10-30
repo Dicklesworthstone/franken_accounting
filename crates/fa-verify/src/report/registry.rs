@@ -583,6 +583,14 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             .as_slice(),
         ),
         (
+            2,
+            "period_end_revaluation",
+            "PeriodEndRevaluation",
+            "PeriodClose",
+            "period_end_date",
+            ["Revaluation", "Reversal"].as_slice(),
+        ),
+        (
             3,
             "period_average",
             "PeriodAverage",
@@ -611,7 +619,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             || string(row, "rate_purpose")? != purpose
             || string(row, "date_selector")? != date
             || string(row, "rounding_law")? != "HalfEven"
-            || string(row, "residual_mode")? != "designated_leg"
+            || string(row, "residual_mode")? != if id == 2 { "none" } else { "designated_leg" }
             || string(row, "status")? != "live"
             || text_array(row, "admitted_classes")?
                 .iter()

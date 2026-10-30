@@ -538,7 +538,14 @@ fn statements_do_not_hide_unsupported_or_false_valuations_outside_the_selected_c
     request.known_at = 14;
     request.current = vec!["P1".into()];
     let output = output(&expected(&request, 0), &request);
-    for law in [2, 4, 8] {
+    // A supported law with missing source proof is still rejected throughout
+    // the authenticated history, including outside the selected columns.
+    for (law, predicate) in [
+        (2, "functional_revaluation"),
+        (4, "supported_report"),
+        (8, "supported_report"),
+        (9, "supported_report"),
+    ] {
         records.push(entry(
             14,
             1,
@@ -550,10 +557,11 @@ fn statements_do_not_hide_unsupported_or_false_valuations_outside_the_selected_c
             None,
         ));
         let (bundle, signed, pin) = pack_statement(&records, &request, &book(&[]), &rates, &output);
-        assert_eq!(
-            verify(&bundle, &signed, &pin).unwrap_err().predicate,
-            "supported_report"
-        );
+        let error = verify(&bundle, &signed, &pin).unwrap_err();
+        assert_eq!(error.predicate, predicate);
+        if law == 2 {
+            assert!(error.detail.contains("complete source-bound basis"));
+        }
         records.pop();
     }
     records.push(entry(
@@ -693,5 +701,71 @@ fn migrated_capital_reproduces_hand_calculated_statements_and_requires_later_act
                 "migration_visibility"
             );
         }
+    }
+}
+
+#[test]
+fn aggregate_revaluation_reproduces_hand_calculated_balance_sheet_and_income() {
+    let (records, rates) = super::revaluation::history();
+    for activity in [false, true] {
+        let request = Request {
+            activity,
+            current: vec!["P1".into()],
+            comparative: Vec::new(),
+            known_at: 8,
+        };
+        let mut expected = expected(&request, 0);
+        expected.statement.columns = vec![StatementColumn {
+            label: "current".into(),
+            periods: vec!["P1".into()],
+            effective_from: activity.then_some(0),
+            effective_through: 30,
+        }];
+        // EUR100 capital carried at110, then repriced to120: no new native
+        // units, base valuation +10, unrealized income10 and total equity120.
+        for line in &mut expected.statement.lines {
+            line.amounts = vec![match line.code.as_str() {
+                "assets" | "total_equity" | "liabilities_and_equity" => 120,
+                "equity" => 110,
+                "revenue" | "net_income" | "unclosed_revenue" | "unclosed_earnings" => 10,
+                "liabilities" | "expense" | "unclosed_expense" | "balance_check" => 0,
+                other => panic!("unexpected fixed definition line {other}"),
+            }];
+        }
+        expected.statement.mappings = super::revaluation::chart()
+            .into_iter()
+            .filter(|(_, kind, _)| !activity || *kind == 4)
+            .map(|(code, kind, _)| StatementMapping {
+                account: id(code),
+                code: code.into(),
+                name: code.into(),
+                account_type: kind,
+                is_leaf: true,
+                line_code: match (activity, kind) {
+                    (true, 4) => "revenue",
+                    (_, 1) => "assets",
+                    (_, 3) => "equity",
+                    (_, 4) => "unclosed_revenue",
+                    _ => unreachable!(),
+                }
+                .into(),
+            })
+            .collect();
+        let bytes = output(&expected, &request);
+        let (bundle, signed, pin) = pack_statement(&records, &request, &book(&[]), &rates, &bytes);
+        let verified = verify(&bundle, &signed, &pin).unwrap();
+        assert_eq!(verified.functional_statement, Some(expected.clone()));
+        expected.statement.lines[0].amounts[0] += 1;
+        let (bundle, signed, pin) = pack_statement(
+            &records,
+            &request,
+            &book(&[]),
+            &rates,
+            &output(&expected, &request),
+        );
+        assert!(
+            verify(&bundle, &signed, &pin).is_err(),
+            "a self-consistently resealed false line still fails independent recomputation"
+        );
     }
 }

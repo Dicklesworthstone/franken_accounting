@@ -24,9 +24,9 @@ pub(super) struct EntryInfo<'a> {
     /// Literal Rule-origin version, authenticated by the entry payload. This
     /// identifies a movement bucket; it does not prove execution of the rule.
     pub rule_version_oid: Option<[u8; 32]>,
-    /// Authenticated presence only; functional source replay must refuse this
-    /// basis until its cumulative revaluation law is independently supported.
-    pub has_fx_revaluation_basis: bool,
+    /// Immutable cumulative FX basis; functional replay independently checks
+    /// its source population, routes and original observation.
+    pub fx_revaluation_basis: Option<&'a [u8]>,
     /// Immutable extension 33 bytes. Due-date reports independently decode
     /// and validate these against the authenticated monetary legs.
     pub obligation_maturity: Option<&'a [u8]>,
@@ -99,7 +99,8 @@ pub(super) fn entry_info<'a>(
     let mut r = proposal_after_legs(proposal)?;
     let mut schema = None;
     let mut time_tick = None;
-    if r.present("entry.control")? {
+    let has_control = r.present("entry.control")?;
+    if has_control {
         let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
         let tag = probe.u8("control.tag")?;
         if tag == 1 {
@@ -165,6 +166,12 @@ pub(super) fn entry_info<'a>(
     }
     let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
     let origin = probe.u8("origin.tag")?;
+    let post_intent = if origin == 0 {
+        probe.fixed::<32>("origin.intent_oid")?;
+        probe.u16("origin.intent_kind")? == 1
+    } else {
+        false
+    };
     let rule_version_oid = if origin == 1 {
         Some(probe.fixed("origin.rule_version_oid")?)
     } else {
@@ -245,7 +252,8 @@ pub(super) fn entry_info<'a>(
         supersession.push((target, digest, kind));
     }
     let mut resolution = None;
-    if r.present("entry.pending")? {
+    let has_pending = r.present("entry.pending")?;
+    if has_pending {
         if time_tick.is_some() {
             return Err(failed("time_history", "TimeTick carries a pending block"));
         }
@@ -279,7 +287,7 @@ pub(super) fn entry_info<'a>(
         }
     }
     let mut recurring = None;
-    let mut has_fx_revaluation_basis = false;
+    let mut fx_revaluation_basis = None;
     let mut obligation_maturity = None;
     let mut case_member = None;
     let mut prior_period_adjustment = None;
@@ -296,7 +304,21 @@ pub(super) fn entry_info<'a>(
                 ));
             }
             previous = Some(tag);
-            has_fx_revaluation_basis |= tag == 16;
+            if tag == 16 {
+                if envelope.class != 10
+                    || n != 1
+                    || !post_intent
+                    || has_control
+                    || has_pending
+                    || !supersession.is_empty()
+                {
+                    return Err(failed(
+                        "supported_report",
+                        "source-bound revaluation requires its sole intrinsic PostEntry extension without lifecycle effects",
+                    ));
+                }
+                fx_revaluation_basis = Some(bytes);
+            }
             if tag == 33 {
                 obligation_maturity = Some(bytes);
             }
@@ -389,7 +411,7 @@ pub(super) fn entry_info<'a>(
         supersession,
         supersession_reasons,
         rule_version_oid,
-        has_fx_revaluation_basis,
+        fx_revaluation_basis,
         obligation_maturity,
         case_member,
         prior_period_adjustment,
@@ -466,10 +488,14 @@ struct Period {
     start: i32,
     end: i32,
     kind: u8,
+    state: u8,
 }
 #[derive(Default)]
 pub(super) struct Schema {
     pub accounts: BTreeMap<u128, Account>,
+    /// Open, close and promotion dates from the same authenticated account
+    /// declarations, retained for source-bound computation commitments.
+    pub account_effectivity: BTreeMap<u128, [Option<i32>; 3]>,
     /// Parent identities from chart and account-opening controls. Summary
     /// replay validates the complete forest after all controls are applied.
     pub(super) parents: BTreeMap<u128, u128>,
@@ -630,9 +656,17 @@ impl Schema {
                     a.limit = Some(limit);
                 }
                 let opened = r.i32("account.opened")?;
-                if r.present("account.closed")? && r.i32("account.closed")? <= opened {
+                let closed = r
+                    .present("account.closed")?
+                    .then(|| r.i32("account.closed"))
+                    .transpose()?;
+                if closed.is_some_and(|closed| closed <= opened) {
                     return Err(failed("account_metadata", "empty account effectivity"));
                 }
+                self.account_effectivity.insert(
+                    crate::ads::account_vid(book, &a.code),
+                    [Some(opened), closed, None],
+                );
                 self.add(a, parent, book)?;
             }
             3 | 4 => {
@@ -646,8 +680,9 @@ impl Schema {
                         "account lifecycle precedes declaration",
                     ));
                 }
-                r.i32("account.lifecycle_date")?;
+                let day = r.i32("account.lifecycle_date")?;
                 let id = crate::ads::account_vid(book, code);
+                self.account_effectivity.entry(id).or_default()[usize::from(kind - 2)] = Some(day);
                 if kind == 4 {
                     let account = self
                         .accounts
@@ -704,7 +739,15 @@ impl Schema {
                         || !matches!(state, 0 | 4)
                         || self
                             .periods
-                            .insert(code, Period { start, end, kind })
+                            .insert(
+                                code,
+                                Period {
+                                    start,
+                                    end,
+                                    kind,
+                                    state,
+                                },
+                            )
                             .is_some()
                     {
                         return Err(failed(
@@ -801,6 +844,43 @@ impl Schema {
             }
         }
         r.finish("schema body")?;
+        Ok(())
+    }
+
+    /// A computation's historical period, before any later control can
+    /// change its observation. This is a state fold, not an authority proof.
+    pub(super) fn period_state(&self, code: &str) -> Option<(i32, i32, u8, u8)> {
+        self.periods
+            .get(code)
+            .map(|p| (p.start, p.end, p.kind, p.state))
+    }
+
+    pub(super) fn transition_period(
+        &mut self,
+        calendar: &str,
+        code: &str,
+        from: u8,
+        to: u8,
+    ) -> Result<(), ReportError> {
+        if !self.calendar_matches(calendar) {
+            return Err(failed("period_metadata", "transition changes calendar"));
+        }
+        let period = self
+            .periods
+            .get_mut(code)
+            .ok_or_else(|| failed("period_metadata", "transition precedes period declaration"))?;
+        if period.state != from
+            || !matches!(
+                (from, to),
+                (0, 1) | (1, 2 | 3) | (2, 1 | 3) | (3, 1 | 2 | 4) | (4, 1 | 2)
+            )
+        {
+            return Err(failed(
+                "period_metadata",
+                "invalid historical period transition",
+            ));
+        }
+        period.state = to;
         Ok(())
     }
     pub fn selection(
@@ -1110,7 +1190,17 @@ mod indirect_period_tests {
         Schema {
             periods: spans
                 .iter()
-                .map(|&(name, start, end, kind)| (name.to_owned(), Period { start, end, kind }))
+                .map(|&(name, start, end, kind)| {
+                    (
+                        name.to_owned(),
+                        Period {
+                            start,
+                            end,
+                            kind,
+                            state: 0,
+                        },
+                    )
+                })
                 .collect(),
             ..Schema::default()
         }

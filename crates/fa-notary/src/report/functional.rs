@@ -48,18 +48,38 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
         match record {
             Record::Entry(entry) => {
                 let proposal = &entry.proposal;
-                if proposal
+                if let Some((_, raw)) = proposal
                     .extensions
                     .iter()
-                    .any(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
+                    .find(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
                 {
-                    return Ok(Err(refused(
-                        "portable functional reports do not yet independently replay cumulative FX revaluation basis",
-                    )));
+                    let basis = fa_model::FxRevaluationBasis::decode(raw)?;
+                    if basis.item_allocation.is_some()
+                        || proposal.class != fa_model::EntryClass::REVALUATION
+                        || proposal.base_totals.as_ref().is_none_or(|base| {
+                            FxLawId::from_oid(&base.fx_law_oid)
+                                != Some(FxLawId::PeriodEndRevaluation)
+                        })
+                    {
+                        return Ok(Err(refused(
+                            "portable functional revaluation supports only source-bound aggregate PeriodEndRevaluation v1",
+                        )));
+                    }
                 }
                 let Some(base) = &proposal.base_totals else {
                     continue;
                 };
+                if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::PeriodEndRevaluation)
+                    && proposal.class != fa_model::EntryClass::REVERSAL
+                    && !proposal
+                        .extensions
+                        .iter()
+                        .any(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
+                {
+                    return Ok(Err(refused(
+                        "portable PeriodEndRevaluation requires its retained cumulative source basis",
+                    )));
+                }
                 if matches!(proposal.origin, EntryOrigin::Migration { .. })
                     && FxLawId::from_oid(&base.fx_law_oid) != Some(FxLawId::SpotClose)
                 {
@@ -71,12 +91,13 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     FxLawId::from_oid(&base.fx_law_oid),
                     Some(
                         FxLawId::SpotClose
+                            | FxLawId::PeriodEndRevaluation
                             | FxLawId::PeriodAverage
                             | FxLawId::SettlementCarryingBasis
                     )
                 ) {
                     return Ok(Err(refused(
-                        "portable functional reports support SpotClose, PeriodAverage, source-bound SettlementCarryingBasis and their exact inherited reversals",
+                        "portable functional reports support SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis and their exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {
