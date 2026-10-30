@@ -15,7 +15,7 @@ pub struct EmbeddedCase {
 }
 
 /// Every committed case.
-pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL, LEHMAN];
+pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL, LEHMAN, ENRON];
 
 /// The harness self-test (A7a; A8a completes it).
 pub const SELFTEST: EmbeddedCase = EmbeddedCase {
@@ -148,6 +148,26 @@ pub const LEHMAN: EmbeddedCase = EmbeddedCase {
             include_str!("../../cases/lehman/expectations.toml"),
         ),
         ("README.md", include_str!("../../cases/lehman/README.md")),
+    ],
+};
+
+/// Enron (E1: the sources ledger and its assurance facts; E2a-E4 add the
+/// facts, books and claims).
+pub const ENRON: EmbeddedCase = EmbeddedCase {
+    id: "enron",
+    files: &[
+        ("case.toml", include_str!("../../cases/enron/case.toml")),
+        (
+            "sources.toml",
+            include_str!("../../cases/enron/sources.toml"),
+        ),
+        ("facts.toml", include_str!("../../cases/enron/facts.toml")),
+        (
+            "receipts.toml",
+            include_str!("../../cases/enron/receipts.toml"),
+        ),
+        ("roles.toml", include_str!("../../cases/enron/roles.toml")),
+        ("README.md", include_str!("../../cases/enron/README.md")),
     ],
 };
 

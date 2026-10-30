@@ -1,0 +1,137 @@
+# Enron sources ledger (plan §4.1, §7.1; §15 E1). Hand-authored. Facts may cite only `OK` rows.
+# Retrieval is archive-first until owner decision 1 grants a sec.gov contact (`FA_SEC_CONTACT`):
+# an EDGAR filing is an Internet Archive capture, `original_hash_compared = false`. The indictment
+# is a justice.gov document outside that gate, fetched from its own URL. `case_fetch.py fetch enron`
+# re-downloads each OK row and must reproduce its `sha256`.
+#
+# The plan's research (§7.1) records that the 2001-2003 EDGAR full-index captures show no 10-K/A,
+# so no audited restated statements exist: the restated figures are the 8-K's (unaudited) and the
+# Q3-2001 10-Q's (not reviewed).
+
+[[source]]
+id = "SRC-ENR-001"
+title = "Superseding indictment, United States v. two former Enron officers, Cr. No. H-04-25 (S.D. Tex.)"
+publisher = "U.S. Department of Justice (Enron Task Force)"
+original_url = "https://www.justice.gov/archive/dag/cftf/chargingdocs/skillingindictment.pdf"
+archive_url = ""
+retrieval_route = "original"
+original_hash_compared = true
+retrieved_utc = "2026-10-30T10:39:15Z"
+sha256 = "7d626cd687f18cd99d152322461255bb78465f08a08ccf4e6864dff12c0fcf2a"
+format = "pdf"
+extraction = ["case_fetch.py extract", "pdftotext 26.01.0 -layout", "8561329fc4f6b823052c488545353279403e55fc4028395aa1dfea3c2bee88bb"]
+redistribution_basis = "government-work"
+assertion_status = "charge"
+anchor_scheme = ["paragraph", "page"]
+status = "OK"
+filed_on = "2004-02-18"
+restates = []
+notes = "The superseding indictment returned on February 18, 2004, the date beside A TRUE BILL on its signature page. The bytes fetched from justice.gov (10,091,650) equal the plan's recorded SHA-256, so original_hash_compared = true. 57 pages with an OCR text layer (Acrobat Capture 3.0): the extraction carries the OCR's errors, and a fact is bound by its hash in this extraction, never retyped. Anchors: a numbered paragraph by its paragraph number, else a page; the extraction's page labels coincide with the PDF page numbers."
+
+[[source]]
+id = "SRC-ENR-002"
+title = "Enron Corp., Current Report on Form 8-K, date of report November 8, 2001 (restatement of 1997 through the second quarter of 2001)"
+publisher = "Enron Corp. (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/1024401/000095012901503835/0000950129-01-503835.txt"
+archive_url = "http://web.archive.org/web/20170511064714id_/https://www.sec.gov/Archives/edgar/data/1024401/000095012901503835/0000950129-01-503835.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T10:39:17Z"
+sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+assurance = "unaudited"
+assurance_fact = "ASSUR-ENR-002"
+anchor_scheme = ["table_cell", "line"]
+status = "OK"
+filed_on = "2001-11-08"
+restates = ["SRC-ENR-008", "SRC-ENR-402"]
+notes = "Accession 0000950129-01-503835, filed 2001-11-08 (FILED AS OF DATE in its submission header). The full submission (the 8-K and its EX-99.1), 58,002 bytes as captured 2017-05-11. Table 1 (the restatements of 1997 through the second quarter of 2001, in millions) is headed UNAUDITED; ASSUR-ENR-002 binds that heading block (the table's title, unit line and UNAUDITED, extraction lines 234-236), because the bare word recurs in the filing and cannot be bound alone. It restates the as-filed figures of SRC-ENR-008 and SRC-ENR-402."
+
+[[source]]
+id = "SRC-ENR-003"
+title = "Enron Corp., Form 10-Q for the quarter ended September 30, 2001"
+publisher = "Enron Corp. (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/1024401/000095012901504218/h92492e10-q.txt"
+archive_url = "http://web.archive.org/web/20160315160005id_/http://www.sec.gov:80/Archives/edgar/data/1024401/000095012901504218/h92492e10-q.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T10:39:19Z"
+sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+assurance = "unaudited"
+assurance_fact = "ASSUR-ENR-003"
+anchor_scheme = ["table_cell", "line"]
+status = "OK"
+filed_on = "2001-11-19"
+restates = ["SRC-ENR-008", "SRC-ENR-402"]
+notes = "Accession 0000950129-01-504218, filed 2001-11-19 per its archived EDGAR filing index (capture of 2016-03-15). The captured document is the 10-Q alone (h92492e10-q.txt, 298,937 bytes), with no submission header. The condensed consolidated balance sheet on printed pp.5-6 prints the restated December 31, 2000 column (Restated, See Note 3) with every line: 35 lines (17 assets, 11 liabilities, 7 shareholders' equity) and the totals Total Current Assets 30,027, Total Investments and Other Assets 23,166, Net Property, Plant and Equipment 11,733 (gross 15,449), Total Assets 64,926, Total Current Liabilities 28,741, Total Deferred Credits and Other Liabilities 13,890, the shareholders' equity Total 10,289 and Total Liabilities and Shareholders' Equity 64,926. No total liabilities line is printed. The column foots (checked at authoring). ASSUR-ENR-003 is the sentence stating that the statements have not been reviewed by an independent public accountant."
+
+[[source]]
+id = "SRC-ENR-005"
+title = "Report of Investigation by the Special Investigative Committee of the Board of Directors of Enron Corp."
+publisher = "Special Investigative Committee of the Board of Directors of Enron Corp. (Exhibit 99.2 to Enron's 8-K, accession 0000909518-02-000089)"
+original_url = "https://www.sec.gov/Archives/edgar/data/1024401/000090951802000089/"
+archive_url = "http://web.archive.org/web/20100612174132id_/http://picker.uchicago.edu/Enron/PowersReport(2-2-02).pdf"
+retrieval_route = "third_party_copy"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T10:39:21Z"
+sha256 = "c2236c873bd08a81d90e6fccd3224de9e7b0e4f96369d4998f38c33d3d0ddf04"
+format = "pdf"
+extraction = ["case_fetch.py extract", "pdftotext 26.01.0 -layout", "a982e66f64bf79c6721299d6fb4e9a83a5a9053024467d0915d9f929878c1b92"]
+redistribution_basis = "company-commissioned/edgar-exhibit"
+assertion_status = "investigative_finding"
+anchor_scheme = ["page"]
+status = "OK"
+filed_on = "2002-02-07"
+restates = []
+notes = "The report is dated February 1, 2002 (its cover) and was filed as Exhibit 99.2 to Enron's 8-K of 2002-02-07 (accession 0000909518-02-000089). No capture of the EDGAR exhibit was found, so it is retrieved from the university mirror the plan names (picker.uchicago.edu; Internet Archive capture of 2010-06-12): 10,055,571 bytes, whose SHA-256 equals the plan's recorded one. The mirror is a retrieval route, never a second source. Anchors use printed pages: in the body the extraction labels PDF page n as printed page n - 6 (the plan's PDF p.13 is p.7, PDF pp.125-126 are pp.119-120, PDF pp.128-129 are pp.122-123); the front matter is numbered in roman numerals."
+
+[[source]]
+id = "SRC-ENR-008"
+title = "Enron Corp., Annual Report on Form 10-K for the fiscal year ended December 31, 2000"
+publisher = "Enron Corp. (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/1024401/000102440101500010/0001024401-01-500010.txt"
+archive_url = "http://web.archive.org/web/20160109075314id_/http://www.sec.gov:80/Archives/edgar/data/1024401/000102440101500010/0001024401-01-500010.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T10:39:23Z"
+sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+assurance_fact = "ASSUR-ENR-008"
+anchor_scheme = ["table_cell", "line"]
+status = "OK"
+filed_on = "2001-04-02"
+restates = ["SRC-ENR-402"]
+notes = "Accession 0001024401-01-500010, filed 2001-04-02 (FILED AS OF DATE in its submission header). The full submission (the 10-K and its exhibits), 712,171 bytes as captured 2016-01-09. The audited consolidated balance sheet prints every December 31, 2000 line: 35 lines (17 assets, 11 liabilities, 7 shareholders' equity) and the totals Total current assets 30,381, Total investments and other assets 23,379, Property, plant and equipment, net 11,743 (gross 15,459), Total Assets 65,503, Total current liabilities 28,406, Total deferred credits and other liabilities 13,759, Total shareholders' equity 11,470 and Total Liabilities and Shareholders' Equity 65,503. No total liabilities line is printed. The column foots (checked at authoring). ASSUR-ENR-008 is the auditors' opinion sentence covering the balance sheets at December 31, 2000 and 1999 and the three years ended December 31, 2000. It restates SRC-ENR-402: the notes state that certain reclassifications have been made to the consolidated financial statements for prior years to conform with the current presentation, and the December 31, 1999 column regroups lines of the FY1999 10-K's balance sheet with the same totals (deposits and customers' deposits split out of other)."
+
+[[source]]
+id = "SRC-ENR-402"
+title = "Enron Corp., Annual Report on Form 10-K for the fiscal year ended December 31, 1999, with its Financial Data Schedule (EX-27)"
+publisher = "Enron Corp. (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/1024401/0001024401-00-000002.txt"
+archive_url = "http://web.archive.org/web/20170304100837id_/https://www.sec.gov/Archives/edgar/data/1024401/0001024401-00-000002.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T10:39:25Z"
+sha256 = "79712897680446c518182c56755b3f67341368dbeb492027ac08ae3f2b30ed00"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "79712897680446c518182c56755b3f67341368dbeb492027ac08ae3f2b30ed00"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+assurance_fact = "ASSUR-ENR-402"
+anchor_scheme = ["table_cell", "line"]
+status = "OK"
+filed_on = "2000-03-30"
+restates = []
+notes = "Accession 0001024401-00-000002, filed 2000-03-30 (FILED AS OF DATE in its submission header). The full submission (the 10-K, its exhibits and the EX-27 Financial Data Schedule), 644,352 bytes as captured 2017-03-04. ASSUR-ENR-402 is the auditors' opinion sentence covering the balance sheets at December 31, 1999 and 1998 and the three years ended December 31, 1999; the EX-27 schedule states no assurance of its own and is cited at the row's status as a schedule of the audited statements."

@@ -1,0 +1,17 @@
+# Enron roles (plan §2.8). Every label is a harness role. The indictment and the committee's report
+# name people: the deny list holds the `fa:case-name-token:v1` hashes of the name tokens of the two
+# defendants and of people the report names, never the names (K-NAMES), so no rendered or journaled
+# text can carry them. E2a-E2c add their tokens before citing those sources.
+
+[[role]]
+label = "case-author-1"
+kind = "harness"
+description = "authors the case's interpretations"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "independently reads every interpretation and reviews the citation stubs"
+
+[deny]
+hashes = ["064c7c0b7e6ca3e20837eaed5d052ef4c631a23ba54d7389cae7587d84c3d0a3", "29943fc88011490c9da7268d38517a3c243d3c5337de6ef3734bff8bc6a453cf", "8175f90846aecf1c58183a24990b60005c9fcbc6b3e4ac2fbd060496918eb22e", "9bd8745bc17b0f8dd881cd999e8496cfba5f4405d7f7752c232dd2df5aa305b4", "b28489d7d5c8117f32911d349cd31ba7b22ef74104ece0457bec296ca39eff6d", "c49198a6842aa40fb5c0b1704b4eeb8626df9de318b9e2222432eb05306f2d55"]
