@@ -82,8 +82,8 @@ pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
     ],
 };
 
-/// The XBRL-era restatements (X3's slice 1: SunPower's 10-K/A
-/// income-statement book; X1-X7 add the rest).
+/// The XBRL-era restatements (X3's slices 1 and 2: SunPower's 10-K/A
+/// income-statement and balance-sheet books; X1-X7 add the rest).
 pub const XBRL: EmbeddedCase = EmbeddedCase {
     id: "xbrl",
     files: &[
@@ -101,6 +101,14 @@ pub const XBRL: EmbeddedCase = EmbeddedCase {
         (
             "books/statement-sunpower-is.toml",
             include_str!("../../cases/xbrl/books/statement-sunpower-is.toml"),
+        ),
+        (
+            "books/statement-sunpower.toml",
+            include_str!("../../cases/xbrl/books/statement-sunpower.toml"),
+        ),
+        (
+            "books/statement-sunpower-fy2021.toml",
+            include_str!("../../cases/xbrl/books/statement-sunpower-fy2021.toml"),
         ),
         (
             "expectations.toml",

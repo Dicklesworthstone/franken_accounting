@@ -181,3 +181,207 @@ read_target = "4108"
 read_coordinate = "FY2022Q4"
 read_selector = "originally_reported"
 posted = "spwr.NetIncomeLoss.c-441"
+
+# X3 slice 2: SunPower's fiscal year-end balance sheets, one book per year-end (the kernel
+# attests one period's cell, so each year-end's stock sits in its book's one period). X-T-05
+# (2023-01-01) and X-T-06 (2022-01-02) are X-T-01's balance-sheet half: the restated
+# Liabilities, StockholdersEquity and MinorityInterest leaves, the Assets leaf they post
+# against (a cross-check of the separately tagged Assets B), and the statement's
+# liabilities_and_equity and equity lines. MinorityInterest, which the 10-K/A does not adjust,
+# is no bridge (its one posting would carry B); it is read back and feeds the totals.
+# Year-end figures are inside the audit opinion, so
+# the source's filer_audited stands. X-R-03 and X-R-04 read each posted leaf as originally
+# reported.
+
+[[expectation]]
+id = "X-T-05"
+type = "T"
+book_variant = "statement-sunpower"
+statement_template = "T.bridge"
+basis = ["spwr.Liabilities.c-113", "spwr.Liabilities.c-114", "spwr.StockholdersEquity.c-113", "spwr.StockholdersEquity.c-114", "spwr.MinorityInterest.c-113", "spwr.MinorityInterest.c-114"]
+kind = "bridge"
+vintages = ["A:SRC-SPWR-10KA-2022", "D:SRC-SPWR-10KA-2022", "B:SRC-SPWR-10KA-2022"]
+
+[[expectation]]
+id = "X-R-03"
+type = "R"
+book_variant = "statement-sunpower"
+statement_template = "R.read_back"
+basis = ["spwr.Liabilities.c-113", "spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+
+[[target]]
+expectation = "X-T-05"
+fact = "spwr.Liabilities.c-4"
+basis = ["spwr.Liabilities.c-113"]
+read_verb = "balance"
+read_target = "2000"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.Liabilities.c-4"
+
+[[target]]
+expectation = "X-T-05"
+fact = "spwr.StockholdersEquity.c-4"
+basis = ["spwr.StockholdersEquity.c-113"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquity.c-4"
+
+[[target]]
+expectation = "X-T-05"
+fact = "spwr.Assets.c-4"
+basis = ["spwr.Liabilities.c-113", "spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.Assets.c-4"
+
+[[target]]
+expectation = "X-T-05"
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+basis = ["spwr.Liabilities.c-113", "spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+read_verb = "balance-sheet"
+read_target = "liabilities_and_equity"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+
+[[target]]
+expectation = "X-T-05"
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+basis = ["spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+read_verb = "balance-sheet"
+read_target = "equity"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+
+[[target]]
+expectation = "X-R-03"
+fact = "spwr.Liabilities.c-113"
+basis = ["spwr.Liabilities.c-113"]
+read_verb = "balance"
+read_target = "2000"
+read_coordinate = "FY2022"
+read_selector = "originally_reported"
+posted = "spwr.Liabilities.c-113"
+
+[[target]]
+expectation = "X-R-03"
+fact = "spwr.StockholdersEquity.c-113"
+basis = ["spwr.StockholdersEquity.c-113"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY2022"
+read_selector = "originally_reported"
+posted = "spwr.StockholdersEquity.c-113"
+
+[[target]]
+expectation = "X-R-03"
+fact = "spwr.MinorityInterest.c-113"
+basis = ["spwr.MinorityInterest.c-113"]
+read_verb = "balance"
+read_target = "3100"
+read_coordinate = "FY2022"
+read_selector = "originally_reported"
+posted = "spwr.MinorityInterest.c-113"
+
+
+[[expectation]]
+id = "X-T-06"
+type = "T"
+book_variant = "statement-sunpower-fy2021"
+statement_template = "T.bridge"
+basis = ["spwr.Liabilities.c-115", "spwr.Liabilities.c-116", "spwr.StockholdersEquity.c-115", "spwr.StockholdersEquity.c-116", "spwr.MinorityInterest.c-115", "spwr.MinorityInterest.c-116"]
+kind = "bridge"
+vintages = ["A:SRC-SPWR-10KA-2022", "D:SRC-SPWR-10KA-2022", "B:SRC-SPWR-10KA-2022"]
+
+[[expectation]]
+id = "X-R-04"
+type = "R"
+book_variant = "statement-sunpower-fy2021"
+statement_template = "R.read_back"
+basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+
+[[target]]
+expectation = "X-T-06"
+fact = "spwr.Liabilities.c-5"
+basis = ["spwr.Liabilities.c-115"]
+read_verb = "balance"
+read_target = "2000"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.Liabilities.c-5"
+
+[[target]]
+expectation = "X-T-06"
+fact = "spwr.StockholdersEquity.c-5"
+basis = ["spwr.StockholdersEquity.c-115"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquity.c-5"
+
+[[target]]
+expectation = "X-T-06"
+fact = "spwr.Assets.c-5"
+basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.Assets.c-5"
+
+[[target]]
+expectation = "X-T-06"
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+read_verb = "balance-sheet"
+read_target = "liabilities_and_equity"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+
+[[target]]
+expectation = "X-T-06"
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+basis = ["spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+read_verb = "balance-sheet"
+read_target = "equity"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+
+[[target]]
+expectation = "X-R-04"
+fact = "spwr.Liabilities.c-115"
+basis = ["spwr.Liabilities.c-115"]
+read_verb = "balance"
+read_target = "2000"
+read_coordinate = "FY2021"
+read_selector = "originally_reported"
+posted = "spwr.Liabilities.c-115"
+
+[[target]]
+expectation = "X-R-04"
+fact = "spwr.StockholdersEquity.c-115"
+basis = ["spwr.StockholdersEquity.c-115"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY2021"
+read_selector = "originally_reported"
+posted = "spwr.StockholdersEquity.c-115"
+
+[[target]]
+expectation = "X-R-04"
+fact = "spwr.MinorityInterest.c-115"
+basis = ["spwr.MinorityInterest.c-115"]
+read_verb = "balance"
+read_target = "3100"
+read_coordinate = "FY2021"
+read_selector = "originally_reported"
+posted = "spwr.MinorityInterest.c-115"

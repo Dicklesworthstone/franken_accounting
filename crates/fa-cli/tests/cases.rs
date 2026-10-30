@@ -119,6 +119,15 @@ fn worldcom() {
 /// the concept's credit sign, equals the tagged as-restated figure
 /// (X-T-01, kernel-attested, its contributions exactly that quarter's A and
 /// delta), and reads back as originally reported (X-R-01).
+///
+/// X3 slice 2: the balance sheets at the fiscal 2022 and 2021 year-ends,
+/// one book each, whose tagged totals partition exactly. Liabilities,
+/// stockholders' equity and the noncontrolling interest post against the
+/// Assets leaf and restate the same way. Each leaf, the Assets leaf and the
+/// statement's liabilities-and-equity and equity lines equal their tagged
+/// as-restated figures (X-T-05, X-T-06), and each posted leaf reads back
+/// (X-R-03, X-R-04). The noncontrolling interest has no adjustment, so it is
+/// read back, never bridged (its one posting would carry B).
 #[test]
 fn xbrl() {
     let o = outcome("xbrl");
@@ -128,6 +137,13 @@ fn xbrl() {
     let count = |prefix: &str| o.lines.iter().filter(|l| l.starts_with(prefix)).count();
     assert_eq!(count("PASS X-T-01 T "), 8, "{text}");
     assert_eq!(count("PASS X-R-01 R "), 8, "{text}");
+    for (t, r, book) in [
+        ("X-T-05", "X-R-03", "statement-sunpower"),
+        ("X-T-06", "X-R-04", "statement-sunpower-fy2021"),
+    ] {
+        assert_eq!(count(&format!("PASS {t} T {book} ")), 5, "{t}\n{text}");
+        assert_eq!(count(&format!("PASS {r} R {book} ")), 3, "{r}\n{text}");
+    }
 }
 
 /// A8b, W5 (§6.4 W-P-01(a)): the director plans F6a into a draft of his own

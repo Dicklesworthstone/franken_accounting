@@ -1601,13 +1601,17 @@ def bind_xbrl(text, fact, values, scales, b):
         return
     inst = Instance(text)
     found = inst.find(parts[0], parts[1])
-    if len(found) != 1:
-        b.problems.append(f"{parts[0]} in context {parts[1]} occurs {len(found)} times")
+    # An instance may state one fact several times (once per table that shows it). Duplicates
+    # that agree in value, unit and decimals are that one fact; any disagreement is a FAIL.
+    stated = {(normalize(f["value"]), f["unit"], f["decimals"]) for f in found}
+    if len(stated) != 1:
+        b.problems.append(f"{parts[0]} in context {parts[1]} occurs {len(found)} times"
+                          + (f" with {len(stated)} different values" if len(stated) > 1 else ""))
         if not found:
             return
     f = found[0]
     value = normalize(f["value"])
-    b.found_once = len(found) == 1
+    b.found_once = len(stated) == 1
     if sha256_hex(value.encode("utf-8")) == fact.get("quote_sha256"):
         b.quote, b.aligned = value, True
     else:

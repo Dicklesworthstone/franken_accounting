@@ -273,6 +273,255 @@ about_scope = "scheme:spwr-fq-2022-10-2023-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2022Q4"
 
+# Balance-sheet facts (X3 slice 2): SunPower's fiscal year-ends 2022-01-02 and 2023-01-01.
+# Liabilities, StockholdersEquity and MinorityInterest as previously reported, adjusted and
+# restated; Assets, LiabilitiesAndStockholdersEquity and the equity total including the
+# noncontrolling interest as restated. The B facts are stated more than once in the instance
+# (once per table); duplicates that agree are one fact, and case-fetch binds them as one.
+# about_scope is a scheme of the year-end's month.
+
+[[fact]]
+id = "spwr.Liabilities.c-113"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Liabilities|c-113"
+quote_sha256 = "09f3cc84691af1c25dea8ffaeed65d2b15f344f3f54888adbb7b4184a3245069"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "Liabilities:ScenarioPreviouslyReportedMember@2023-01-01"
+
+[[fact]]
+id = "spwr.Liabilities.c-114"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Liabilities|c-114"
+quote_sha256 = "bd32e15da4ac20ff1c26d20cd971b0d1b6dd9a18377607247bd1401e4110f6a4"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "Liabilities:RestatementAdjustmentMember@2023-01-01"
+
+[[fact]]
+id = "spwr.Liabilities.c-4"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Liabilities|c-4"
+quote_sha256 = "7326d7eece53f1d6b734c458d596fa10c4708b483cb3eeb0045c8d153d016123"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "Liabilities@2023-01-01"
+
+[[fact]]
+id = "spwr.StockholdersEquity.c-113"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquity|c-113"
+quote_sha256 = "18873b4c36ed78839b89fd1680ec1ec7d8da6850587372721b1703d75db7c6ef"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquity:ScenarioPreviouslyReportedMember@2023-01-01"
+
+[[fact]]
+id = "spwr.StockholdersEquity.c-114"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquity|c-114"
+quote_sha256 = "37973c1ce46c4c37aba99088692603988cfa4ae0d56653ba5d03fe6163b44a4f"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquity:RestatementAdjustmentMember@2023-01-01"
+
+[[fact]]
+id = "spwr.StockholdersEquity.c-4"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquity|c-4"
+quote_sha256 = "05b250b1d6f23c9500aa1cf2bb1995f2c20ecc84cedf61100df8e1e86a955717"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquity@2023-01-01"
+
+[[fact]]
+id = "spwr.MinorityInterest.c-113"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:MinorityInterest|c-113"
+quote_sha256 = "764afb48d9f46dc31ec31dbee6cd443ed12b6f0ca784329b9740a90ede8656c1"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "MinorityInterest:ScenarioPreviouslyReportedMember@2023-01-01"
+
+[[fact]]
+id = "spwr.MinorityInterest.c-114"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:MinorityInterest|c-114"
+quote_sha256 = "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "MinorityInterest:RestatementAdjustmentMember@2023-01-01"
+
+[[fact]]
+id = "spwr.Assets.c-4"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Assets|c-4"
+quote_sha256 = "307d2c67f43076f2cdc275f5932b4149a5f544ceb4f20d848521fb342f253a3b"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "Assets@2023-01-01"
+
+[[fact]]
+id = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:LiabilitiesAndStockholdersEquity|c-4"
+quote_sha256 = "307d2c67f43076f2cdc275f5932b4149a5f544ceb4f20d848521fb342f253a3b"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "LiabilitiesAndStockholdersEquity@2023-01-01"
+
+[[fact]]
+id = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest|c-4"
+quote_sha256 = "35972e2953982ea86f3c87149978e0857ae0dfa6a1aaed81a392bba66a56b3b1"
+about_scope = "scheme:spwr-fye-2023-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest@2023-01-01"
+
+[[fact]]
+id = "spwr.Liabilities.c-115"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Liabilities|c-115"
+quote_sha256 = "db2b072213194f49e1c94953133920c51185ab5fd865f42df21c010a68f1dbc9"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "Liabilities:ScenarioPreviouslyReportedMember@2022-01-02"
+
+[[fact]]
+id = "spwr.Liabilities.c-116"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Liabilities|c-116"
+quote_sha256 = "e3defa3582c59d4ff249e34942e6ef411646c8a41710a81d840902390c5f72a9"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "Liabilities:RestatementAdjustmentMember@2022-01-02"
+
+[[fact]]
+id = "spwr.Liabilities.c-5"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Liabilities|c-5"
+quote_sha256 = "db2884df5dfb8b05054b729dadb50b5908a4e651d93215cd22529b3455e25f20"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "Liabilities@2022-01-02"
+
+[[fact]]
+id = "spwr.StockholdersEquity.c-115"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquity|c-115"
+quote_sha256 = "f40e4589fbbb39d285e5f44f99401d34bb41bd1d34329ede629d862676982acc"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquity:ScenarioPreviouslyReportedMember@2022-01-02"
+
+[[fact]]
+id = "spwr.StockholdersEquity.c-116"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquity|c-116"
+quote_sha256 = "f3097dcba74edefd2261f23396a185d49f6142e662d2a4e33ff1843a09a2a742"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquity:RestatementAdjustmentMember@2022-01-02"
+
+[[fact]]
+id = "spwr.StockholdersEquity.c-5"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquity|c-5"
+quote_sha256 = "661245665322e3a95c87ec834250d18a074020490c4b6e45fc7166a5aedb02b3"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquity@2022-01-02"
+
+[[fact]]
+id = "spwr.MinorityInterest.c-115"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:MinorityInterest|c-115"
+quote_sha256 = "09f0fbc00e6910709ca19ac14404b0b08b554258b44e6f042a6a1d03eb0a4dde"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "MinorityInterest:ScenarioPreviouslyReportedMember@2022-01-02"
+
+[[fact]]
+id = "spwr.MinorityInterest.c-116"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:MinorityInterest|c-116"
+quote_sha256 = "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "MinorityInterest:RestatementAdjustmentMember@2022-01-02"
+
+[[fact]]
+id = "spwr.Assets.c-5"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Assets|c-5"
+quote_sha256 = "805280f342ec18baeca00c8649edeb8563e0f9af677a7d041987dfdb336d8150"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "Assets@2022-01-02"
+
+[[fact]]
+id = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:LiabilitiesAndStockholdersEquity|c-5"
+quote_sha256 = "805280f342ec18baeca00c8649edeb8563e0f9af677a7d041987dfdb336d8150"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "LiabilitiesAndStockholdersEquity@2022-01-02"
+
+[[fact]]
+id = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest|c-5"
+quote_sha256 = "8fb60581929025a9bf089b4c734ea192383c01eb552a9daeb39a9dd5cbd667f0"
+about_scope = "scheme:spwr-fye-2022-01"
+granularity = "xbrl_fact"
+cell = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest@2022-01-02"
+
 [[value]]
 fact = "spwr.NetIncomeLoss.c-462"
 ordinal = 1
@@ -510,5 +759,225 @@ literal = "3425000"
 rule = "scale"
 param = 0
 value = "342500000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Liabilities.c-113"
+ordinal = 1
+literal = "1204353000"
+rule = "scale"
+param = 0
+value = "120435300000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Liabilities.c-114"
+ordinal = 1
+literal = "3228000"
+rule = "scale"
+param = 0
+value = "322800000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Liabilities.c-4"
+ordinal = 1
+literal = "1207581000"
+rule = "scale"
+param = 0
+value = "120758100000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquity.c-113"
+ordinal = 1
+literal = "574851000"
+rule = "scale"
+param = 0
+value = "57485100000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquity.c-114"
+ordinal = 1
+literal = "-19609000"
+rule = "scale"
+param = 0
+value = "-1960900000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquity.c-4"
+ordinal = 1
+literal = "555242000"
+rule = "scale"
+param = 0
+value = "55524200000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.MinorityInterest.c-113"
+ordinal = 1
+literal = "803000"
+rule = "scale"
+param = 0
+value = "80300000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.MinorityInterest.c-114"
+ordinal = 1
+literal = "0"
+rule = "scale"
+param = 0
+value = "0"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Assets.c-4"
+ordinal = 1
+literal = "1763626000"
+rule = "scale"
+param = 0
+value = "176362600000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+ordinal = 1
+literal = "1763626000"
+rule = "scale"
+param = 0
+value = "176362600000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+ordinal = 1
+literal = "556045000"
+rule = "scale"
+param = 0
+value = "55604500000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Liabilities.c-115"
+ordinal = 1
+literal = "1164782000"
+rule = "scale"
+param = 0
+value = "116478200000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Liabilities.c-116"
+ordinal = 1
+literal = "10933000"
+rule = "scale"
+param = 0
+value = "1093300000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Liabilities.c-5"
+ordinal = 1
+literal = "1175715000"
+rule = "scale"
+param = 0
+value = "117571500000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquity.c-115"
+ordinal = 1
+literal = "388389000"
+rule = "scale"
+param = 0
+value = "38838900000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquity.c-116"
+ordinal = 1
+literal = "-6421000"
+rule = "scale"
+param = 0
+value = "-642100000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquity.c-5"
+ordinal = 1
+literal = "381968000"
+rule = "scale"
+param = 0
+value = "38196800000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.MinorityInterest.c-115"
+ordinal = 1
+literal = "1635000"
+rule = "scale"
+param = 0
+value = "163500000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.MinorityInterest.c-116"
+ordinal = 1
+literal = "0"
+rule = "scale"
+param = 0
+value = "0"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.Assets.c-5"
+ordinal = 1
+literal = "1559318000"
+rule = "scale"
+param = 0
+value = "155931800000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+ordinal = 1
+literal = "1559318000"
+rule = "scale"
+param = 0
+value = "155931800000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+ordinal = 1
+literal = "383603000"
+rule = "scale"
+param = 0
+value = "38360300000"
 unit = "USD"
 precision = 3

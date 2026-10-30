@@ -576,6 +576,41 @@ class XbrlFacts(unittest.TestCase):
             self.assertIn(f">{row[8]}<", lines[n - 1])
         self.assertIn("srt:RestatementAxis=srt:RestatementAdjustmentMember", rows[1][7])
 
+    DUPLICATED = (
+        '<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"'
+        ' xmlns:us-gaap="http://fasb.org/us-gaap/2022">\n'
+        '<xbrli:context id="c-1"><xbrli:period><xbrli:instant>2022-12-31</xbrli:instant>'
+        '</xbrli:period></xbrli:context>\n'
+        '<xbrli:unit id="usd"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>\n'
+        '<us-gaap:Assets contextRef="c-1" unitRef="usd" decimals="-3">1616334000</us-gaap:Assets>\n'
+        '<us-gaap:Assets contextRef="c-1" unitRef="usd" decimals="-3">1616334000</us-gaap:Assets>\n'
+        '<us-gaap:Liabilities contextRef="c-1" unitRef="usd" decimals="-3">900000000</us-gaap:Liabilities>\n'
+        '<us-gaap:Liabilities contextRef="c-1" unitRef="usd" decimals="-5">900100000</us-gaap:Liabilities>\n'
+        '</xbrli:xbrl>\n')
+
+    def bind_duplicated(self, concept, literal):
+        fact = {"anchor": f"{concept}|c-1", "anchor_kind": "xbrl",
+                "quote_sha256": cf.sha256_hex(literal.encode("utf-8")),
+                "cell": f"{concept.split(':')[1]}@2022-12-31"}
+        values = [{"ordinal": 1, "literal": literal, "rule": "scale", "param": 0,
+                   "value": str(int(literal) * 100), "unit": "USD", "precision": 3}]
+        b = cf.Binding(fact)
+        b.member_ok = True
+        cf.bind_xbrl(self.DUPLICATED, fact, values, {"USD": 2}, b)
+        return b
+
+    def test_duplicates_that_agree_are_one_fact(self):
+        b = self.bind_duplicated("us-gaap:Assets", "1616334000")
+        self.assertEqual(b.problems, [])
+        self.assertIs(b.found_once, True)
+        self.assertIs(b.aligned, True)
+
+    def test_duplicates_that_disagree_fail(self):
+        b = self.bind_duplicated("us-gaap:Liabilities", "900000000")
+        self.assertIs(b.found_once, False)
+        self.assertIn("us-gaap:Liabilities in context c-1 occurs 2 times with 2 different values",
+                      b.problems)
+
 
 class DecodeContent(unittest.TestCase):
     def test_identity_gzip_and_deflate_decode_and_anything_else_refuses(self):

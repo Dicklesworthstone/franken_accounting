@@ -3,6 +3,230 @@
 
 [[receipt]]
 source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Assets.c-4"
+anchor = "us-gaap:Assets|c-4"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "307d2c67f43076f2cdc275f5932b4149a5f544ceb4f20d848521fb342f253a3b"
+values_sha256 = "640b1d68ee25c06babe4326f1580310f1de41e135d845039286447e17f0a7efe"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Assets.c-5"
+anchor = "us-gaap:Assets|c-5"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "805280f342ec18baeca00c8649edeb8563e0f9af677a7d041987dfdb336d8150"
+values_sha256 = "24daf9643be9c55c24b69e2651cf55ecb8fe2e3a59ff323eb86a808f534bdde5"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Liabilities.c-113"
+anchor = "us-gaap:Liabilities|c-113"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "09f3cc84691af1c25dea8ffaeed65d2b15f344f3f54888adbb7b4184a3245069"
+values_sha256 = "749c66ef4ef332357764d05a88ed32ac2d4288e26e56bbb8b8186fe0c7d9b7ad"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Liabilities.c-114"
+anchor = "us-gaap:Liabilities|c-114"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "bd32e15da4ac20ff1c26d20cd971b0d1b6dd9a18377607247bd1401e4110f6a4"
+values_sha256 = "729007143112d6933c364a9b06baa63ea17214ed55b47bc53ce5cba5da724eed"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Liabilities.c-115"
+anchor = "us-gaap:Liabilities|c-115"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "db2b072213194f49e1c94953133920c51185ab5fd865f42df21c010a68f1dbc9"
+values_sha256 = "124d8fe42b347303fa9f6971af2ffea53167cdf716df302e60196bff41978111"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Liabilities.c-116"
+anchor = "us-gaap:Liabilities|c-116"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "e3defa3582c59d4ff249e34942e6ef411646c8a41710a81d840902390c5f72a9"
+values_sha256 = "c614b9f6a529e2aea6e799069a12623348935c259c76d4b046442672f69512f3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Liabilities.c-4"
+anchor = "us-gaap:Liabilities|c-4"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "7326d7eece53f1d6b734c458d596fa10c4708b483cb3eeb0045c8d153d016123"
+values_sha256 = "47a93f6744168f5017079136fcd21ac4aac5cd2fba435f8eb65b391fc1a18fc8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.Liabilities.c-5"
+anchor = "us-gaap:Liabilities|c-5"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "db2884df5dfb8b05054b729dadb50b5908a4e651d93215cd22529b3455e25f20"
+values_sha256 = "0f9517816e3e18f962b0bd90530b9c8dd9a0a26fd3d34abbe377cdb600689e39"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+anchor = "us-gaap:LiabilitiesAndStockholdersEquity|c-4"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "307d2c67f43076f2cdc275f5932b4149a5f544ceb4f20d848521fb342f253a3b"
+values_sha256 = "640b1d68ee25c06babe4326f1580310f1de41e135d845039286447e17f0a7efe"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+anchor = "us-gaap:LiabilitiesAndStockholdersEquity|c-5"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "805280f342ec18baeca00c8649edeb8563e0f9af677a7d041987dfdb336d8150"
+values_sha256 = "24daf9643be9c55c24b69e2651cf55ecb8fe2e3a59ff323eb86a808f534bdde5"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.MinorityInterest.c-113"
+anchor = "us-gaap:MinorityInterest|c-113"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "764afb48d9f46dc31ec31dbee6cd443ed12b6f0ca784329b9740a90ede8656c1"
+values_sha256 = "b6ab66557ebeabcfe88b11ae21170d2ce78bee8faf3390322d2db4de40d33659"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.MinorityInterest.c-114"
+anchor = "us-gaap:MinorityInterest|c-114"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+values_sha256 = "5f8c5142881637a977006536a19e09f7ef218e8012b10fe214bb5f9a5b5f072d"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.MinorityInterest.c-115"
+anchor = "us-gaap:MinorityInterest|c-115"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "09f0fbc00e6910709ca19ac14404b0b08b554258b44e6f042a6a1d03eb0a4dde"
+values_sha256 = "2b95b1bfa8d6764e05cf2c794302ee53b2bfb669bfe9be48eb63f7a1f9042bc9"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.MinorityInterest.c-116"
+anchor = "us-gaap:MinorityInterest|c-116"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+values_sha256 = "8cb4c1d2d7135368f4bf5b7c9e45888ea3a353f3ad3da071d3cc9e7edde6b446"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
 fact = "spwr.NetIncomeLoss.c-441"
 anchor = "us-gaap:NetIncomeLoss|c-441"
 verified_utc = "2026-10-30T04:23:49Z"
@@ -378,6 +602,134 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
 quote_sha256 = "bf6ea0d5077cb55acd9b308eb1243c06e2602f2e3030638d8536e0b61f5f664d"
 values_sha256 = "05edb646c6974d17fd07ca5f57df9baee7a5e30f92bcd669a29abc8b51e7332c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquity.c-113"
+anchor = "us-gaap:StockholdersEquity|c-113"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "18873b4c36ed78839b89fd1680ec1ec7d8da6850587372721b1703d75db7c6ef"
+values_sha256 = "a2d0a8fc6f0c1fe30611fd7044a1c535cd1330920bd880cd7a2c74a2a703f298"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquity.c-114"
+anchor = "us-gaap:StockholdersEquity|c-114"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "37973c1ce46c4c37aba99088692603988cfa4ae0d56653ba5d03fe6163b44a4f"
+values_sha256 = "22a422771301eaeee038069889dffe668180ccfaffd20b808bc1d9a49f9031cb"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquity.c-115"
+anchor = "us-gaap:StockholdersEquity|c-115"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "f40e4589fbbb39d285e5f44f99401d34bb41bd1d34329ede629d862676982acc"
+values_sha256 = "800ad14440019aadd93ecbea4ad0f35c2eec65fc9acd9182171080de36cbb397"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquity.c-116"
+anchor = "us-gaap:StockholdersEquity|c-116"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "f3097dcba74edefd2261f23396a185d49f6142e662d2a4e33ff1843a09a2a742"
+values_sha256 = "52e999d789b8da3f7b595214d18575d4004a681a0dbf5f65224924addbff45c8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquity.c-4"
+anchor = "us-gaap:StockholdersEquity|c-4"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "05b250b1d6f23c9500aa1cf2bb1995f2c20ecc84cedf61100df8e1e86a955717"
+values_sha256 = "29cb3158fe473ffb271086ef79604f29db2965f43a143ea69739a1b1d209d069"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquity.c-5"
+anchor = "us-gaap:StockholdersEquity|c-5"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "661245665322e3a95c87ec834250d18a074020490c4b6e45fc7166a5aedb02b3"
+values_sha256 = "c65ff9ea5c83edff31321e864d687a186227942a2b31f09d22939e284a107b88"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+anchor = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest|c-4"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "35972e2953982ea86f3c87149978e0857ae0dfa6a1aaed81a392bba66a56b3b1"
+values_sha256 = "9351abb134eb606e39330f3ffd8f69f2dacf1f575fbd6449839bda76d01f5036"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-10KA-2022"
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+anchor = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest|c-5"
+verified_utc = "2026-10-30T04:23:49Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+quote_sha256 = "8fb60581929025a9bf089b4c734ea192383c01eb552a9daeb39a9dd5cbd667f0"
+values_sha256 = "39c726b8670726a3620de65fdbf6197201a5600b4766e6f9541664001ef3a30f"
 alignment = "value"
 quote_found_once = true
 aligned = true
