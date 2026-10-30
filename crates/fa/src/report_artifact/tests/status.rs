@@ -71,6 +71,568 @@ fn add_accounts(h: &mut Harness, accounts: &[(&str, AccountType)]) {
         .unwrap();
 }
 
+fn summary(h: &Harness, scope: SummaryScope, selection: TrialBalanceSelection) -> ReportArtifact {
+    let certified = h
+        .book
+        .certify_summary_trial_balance(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &SummaryRequest {
+                selection,
+                scope,
+                known_at: Some(h.head()),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    ReportArtifact::try_from(&certified.certificate).unwrap()
+}
+
+#[test]
+fn summary_status_tracks_its_cutoff_and_emitted_source_for_partial_roots() {
+    let mut h = Harness::new(100);
+    add_accounts(
+        &mut h,
+        &[("5000", AccountType::ASSET), ("4000", AccountType::REVENUE)],
+    );
+    let artifacts = [
+        SummaryScope::AllRoots,
+        SummaryScope::Selected(vec![h.id("1000")]),
+        SummaryScope::Selected(Vec::new()),
+    ]
+    .map(|scope| summary(&h, scope, TrialBalanceSelection::AsOf(day(20))));
+    for artifact in &artifacts {
+        assert_eq!(
+            status(&h, artifact),
+            CertificateStatus::Current {
+                checked_at: h.head()
+            }
+        );
+    }
+    h.post_at(b"summary after cutoff", 23, day(21), "5000", "4000");
+    for artifact in &artifacts {
+        assert_eq!(
+            status(&h, artifact),
+            CertificateStatus::Current {
+                checked_at: h.head()
+            }
+        );
+    }
+    let later = h.post_at(b"summary backdated source", 37, day(20), "5000", "4000");
+    let head = h.head();
+    for artifact in &artifacts {
+        // A partial summary retains the complete leaf source as emitted
+        // drilldown. Its unselected source rows are not merely extra inputs.
+        assert_eq!(
+            status(&h, artifact),
+            CertificateStatus::SupersededBy {
+                checked_at: head,
+                later_entries: vec![later],
+                cases: Vec::new(),
+            }
+        );
+        let replayed = h
+            .book
+            .replay_report_artifact(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed.output, artifact.output());
+    }
+    assert_eq!(h.head(), head, "freshness and replay publish nothing");
+}
+
+#[test]
+fn summary_status_distinguishes_opening_stock_from_selected_period_activity() {
+    let mut h = Harness::new(101);
+    let period = vec!["FY2026-P02".into()];
+    let stock = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::Periods(period.clone()),
+    );
+    let activity = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::Activity(period),
+    );
+    let opening = h.post_at(b"summary prior month", 19, day(31), "1000", "3000");
+    assert_eq!(
+        status(&h, &stock),
+        CertificateStatus::SupersededBy {
+            checked_at: h.head(),
+            later_entries: vec![opening],
+            cases: Vec::new(),
+        }
+    );
+    assert_eq!(
+        status(&h, &activity),
+        CertificateStatus::Current {
+            checked_at: h.head()
+        }
+    );
+}
+
+#[test]
+fn summary_status_attributes_only_period_births_emitted_by_its_selector() {
+    let mut h = Harness::new(106);
+    let as_of = summary(
+        &h,
+        SummaryScope::Selected(vec![h.id("1000")]),
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    let period = vec!["FY2026-P01".into()];
+    let stock = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::Periods(period.clone()),
+    );
+    let activity = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::Activity(period),
+    );
+    let cx = h.cx();
+    for year in [2027, 2025] {
+        h.runtime
+            .block_on(
+                h.book
+                    .create_periods(&cx, year, PRINCIPAL, &cap(&["schema_change"])),
+            )
+            .unwrap()
+            .unwrap();
+        let head = h.head();
+        for (is_as_of, artifact) in [(true, &as_of), (false, &stock), (false, &activity)] {
+            assert_eq!(
+                status(&h, artifact),
+                if is_as_of && year == 2025 {
+                    CertificateStatus::SupersededBy {
+                        checked_at: head,
+                        later_entries: vec![fa_journal::period_creation::creation_vid(
+                            h.book.context(),
+                            year,
+                        )],
+                        cases: Vec::new(),
+                    }
+                } else {
+                    CertificateStatus::Current { checked_at: head }
+                },
+                "only the AsOf report emits the newly created prior-year periods"
+            );
+        }
+        assert_eq!(h.head(), head, "period-birth attribution publishes nothing");
+    }
+    let head = h.head();
+    for artifact in [&as_of, &stock, &activity] {
+        let replayed = h
+            .book
+            .replay_report_artifact(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed.output, artifact.output());
+    }
+    assert_eq!(h.head(), head, "historical replay publishes nothing");
+}
+
+#[test]
+fn summary_status_attributes_group_membership_and_uncovered_leaf_changes() {
+    let mut h = Harness::new(102);
+    let all = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    let partial = summary(
+        &h,
+        SummaryScope::Selected(vec![h.id("1000")]),
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    let root = AccountSpec {
+        code: "2000".into(),
+        name: "Unposted summary".into(),
+        account_type: AccountType::ASSET.0,
+        normal_balance: 0,
+        is_leaf: false,
+        unit_policy: UnitPolicy::AnyCurrency,
+        parent_code: None,
+        limit: None,
+    };
+    let cx = h.cx();
+    let installed = h
+        .runtime
+        .block_on(h.book.install_chart(
+            &cx,
+            std::slice::from_ref(&root),
+            PRINCIPAL,
+            day(1),
+            b"summary empty root",
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        status(&h, &all),
+        CertificateStatus::SupersededBy {
+            checked_at: h.head(),
+            later_entries: vec![installed.control_entry],
+            cases: Vec::new(),
+        }
+    );
+    assert_eq!(
+        status(&h, &partial),
+        CertificateStatus::Current {
+            checked_at: h.head()
+        },
+        "an unselected empty summary changes no emitted field"
+    );
+    let selected = summary(
+        &h,
+        SummaryScope::Selected(vec![h.id("2000")]),
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    let installed = h
+        .runtime
+        .block_on(h.book.install_chart(
+            &cx,
+            &[AccountSpec {
+                code: "2100".into(),
+                name: "Zero-activity leaf".into(),
+                is_leaf: true,
+                parent_code: Some(root.code.clone()),
+                ..root
+            }],
+            PRINCIPAL,
+            day(1),
+            b"summary new descendant",
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+    for artifact in [&partial, &selected] {
+        assert_eq!(
+            status(&h, artifact),
+            CertificateStatus::SupersededBy {
+                checked_at: h.head(),
+                later_entries: vec![installed.control_entry],
+                cases: Vec::new(),
+            },
+            "a new leaf changes either selected membership or uncovered coverage"
+        );
+    }
+}
+
+#[test]
+fn summary_status_tracks_pending_holds_and_later_effective_releases() {
+    let mut h = Harness::new(103);
+    let ordinary = h.post_at(b"summary hold template", 13, day(12), "1000", "3000");
+    let cx = h.cx();
+    let mut proposal = h
+        .book
+        .read_entry(&cx, ordinary)
+        .unwrap()
+        .unwrap()
+        .0
+        .proposal;
+    proposal.class = EntryClass::PENDING;
+    proposal.idempotency_key = b"summary pending hold".to_vec();
+    proposal.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    let before = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    let target = h
+        .runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal: proposal.clone(),
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap()
+        .entry_ref();
+    assert_eq!(
+        status(&h, &before),
+        CertificateStatus::SupersededBy {
+            checked_at: h.head(),
+            later_entries: vec![target.vid],
+            cases: Vec::new(),
+        }
+    );
+    let with_hold = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    proposal.class = EntryClass::RESOLUTION;
+    proposal.effective_date = day(25);
+    proposal.idempotency_key = b"summary pending release".to_vec();
+    proposal.legs.clear();
+    proposal.unit_totals.clear();
+    proposal.control = Some(fa_model::ControlPayload::ReservationRelease);
+    proposal.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: Some(target),
+        disposition: Some(fa_model::Disposition::Voids),
+    });
+    let released = h
+        .runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap()
+        .entry_ref()
+        .vid;
+    assert_eq!(
+        status(&h, &with_hold),
+        CertificateStatus::SupersededBy {
+            checked_at: h.head(),
+            later_entries: vec![released],
+            cases: Vec::new(),
+        },
+        "the release changes a selected hold even after the effective cutoff"
+    );
+}
+
+#[test]
+fn summary_status_checks_current_authority_before_tampered_artifact_bytes() {
+    let mut h = Harness::new(104);
+    let artifact = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    let original = artifact.canonical_bytes().unwrap();
+    let mut damaged = original.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    h.post_at(b"summary later activity", 7, day(15), "1000", "3000");
+    let cx = h.cx();
+    assert_eq!(
+        h.book
+            .report_artifact_status(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &damaged,
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION,
+        "later activity must not hide original artifact corruption"
+    );
+    let reader = cap(&["read"]);
+    h.runtime
+        .block_on(h.book.revoke_capability(
+            &cx,
+            cap(&["issue_capability"]),
+            reader.commitment().unwrap(),
+            day(1),
+            b"summary reader revocation",
+            "Revoke summary reader",
+        ))
+        .unwrap()
+        .unwrap();
+    let head = h.head();
+    for bytes in [&original, &damaged] {
+        let refused = h
+            .book
+            .report_artifact_status(
+                &cx,
+                PRINCIPAL,
+                &reader,
+                bytes,
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-023");
+        assert_eq!(refused.exit, exit::SAFETY);
+    }
+    assert_eq!(h.head(), head);
+}
+
+#[test]
+fn summary_status_refuses_current_chart_corruption_despite_later_postings() {
+    use fa_model::symbols::{property, relation};
+    use fgdb::{WriteBatch, WriteMismatchPolicy};
+
+    let mut h = Harness::new(105);
+    let artifact = summary(
+        &h,
+        SummaryScope::AllRoots,
+        TrialBalanceSelection::AsOf(day(20)),
+    );
+    h.post_at(
+        b"summary legitimate later entry",
+        7,
+        day(15),
+        "1000",
+        "3000",
+    );
+    let cx = h.cx();
+    let account = h.id("1000");
+    let row = cx
+        .query()
+        .with_restriction(|| h.book.db.vertex(account))
+        .unwrap()
+        .unwrap();
+    let previous = fa_journal::rows::prop(&row, property::NAME).cloned();
+    let mut damage = WriteBatch::new(relation::CHILD_OF);
+    damage.compare_and_set_vertex_property(
+        account,
+        property::NAME,
+        previous,
+        fa_journal::rows::scalar_text("account.name", "Unjournaled rename").unwrap(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    h.runtime
+        .block_on(h.book.db.write(&cx.commit(), damage))
+        .unwrap();
+    let head = h.head();
+    assert!(!matches!(
+        h.book.report_artifact_status(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read"]),
+            &artifact.canonical_bytes().unwrap(),
+            Some(artifact.digest()),
+            ReportArtifactExpectation::AsSupplied,
+        ),
+        Ok(Ok(_))
+    ));
+    assert_eq!(h.head(), head);
+}
+
+#[test]
+fn summary_status_refuses_current_book_or_unit_context_corruption() {
+    use fa_model::symbols::{property, relation};
+    use fgdb::{WriteBatch, WriteMismatchPolicy};
+    use fgdb_types::CanonicalScalar;
+
+    for corrupt_unit in [false, true] {
+        for later_post in [false, true] {
+            let mut h = Harness::new(107 + 2 * u8::from(corrupt_unit) + u8::from(later_post));
+            let artifact = summary(
+                &h,
+                SummaryScope::AllRoots,
+                TrialBalanceSelection::AsOf(day(20)),
+            );
+            if later_post {
+                h.post_at(
+                    b"summary later context contribution",
+                    7,
+                    day(15),
+                    "1000",
+                    "3000",
+                );
+            }
+            let (target, key, corruption) = if corrupt_unit {
+                let unit = h.book.context().units.get(h.unit).unwrap();
+                (
+                    fa_model::unit_vid(
+                        h.book.context().book_id,
+                        &format!("{}@v{}", unit.code, unit.version),
+                    ),
+                    property::SCALE,
+                    CanonicalScalar::Int(i64::from(unit.scale) + 1),
+                )
+            } else {
+                let mut digest =
+                    fa_model::unit::unit_table_digest(&h.book.context().units).unwrap();
+                digest[0] ^= 1;
+                (
+                    fa_journal::rows::book_root(),
+                    property::UNIT_TABLE_DIGEST,
+                    fa_journal::rows::scalar_bytes("book.unit_table_digest", digest.to_vec())
+                        .unwrap(),
+                )
+            };
+            let cx = h.cx();
+            let row = cx
+                .query()
+                .with_restriction(|| h.book.db.vertex(target))
+                .unwrap()
+                .unwrap();
+            let previous = fa_journal::rows::prop(&row, key).cloned();
+            let mut damage = WriteBatch::new(relation::IN_BOOK);
+            damage.compare_and_set_vertex_property(
+                target,
+                key,
+                previous,
+                corruption,
+                WriteMismatchPolicy::AbortWrite,
+            );
+            h.runtime
+                .block_on(h.book.db.write(&cx.commit(), damage))
+                .unwrap();
+            let head = h.head();
+            let bytes = artifact.canonical_bytes().unwrap();
+            let replayed = h
+                .book
+                .replay_report_artifact(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read"]),
+                    &bytes,
+                    Some(artifact.digest()),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(replayed.output, artifact.output());
+            let refused = h
+                .book
+                .report_artifact_status(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read"]),
+                    &bytes,
+                    Some(artifact.digest()),
+                    ReportArtifactExpectation::AsSupplied,
+                )
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refused.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert_eq!(
+                refused.exit,
+                exit::VERIFICATION,
+                "corrupt_unit={corrupt_unit}, later_post={later_post}: {refused:?}"
+            );
+            assert_eq!(h.head(), head, "failed freshness checks publish nothing");
+        }
+    }
+}
+
 #[test]
 fn aging_families_track_their_own_accounts_and_inclusive_cutoff() {
     use crate::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};

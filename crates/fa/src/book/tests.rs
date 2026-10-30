@@ -7496,6 +7496,94 @@ fn retained_roll_forward_status_tracks_migration_activation_without_writing() {
 }
 
 #[test]
+fn retained_summary_status_tracks_migration_activation_without_rewriting_history() {
+    use crate::{
+        CertificateStatus, ReportArtifact, ReportArtifactExpectation, SummaryRequest, SummaryScope,
+        TrialBalanceSelection,
+    };
+    use fa_journal::migration::kind;
+    let capability = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
+    for outcome in [kind::ABANDON, kind::FINALIZE] {
+        let (mut book, _usd, evidence, body) = certificate_migration_fixture(false);
+        let certify = |book: &Book| {
+            let certified = book
+                .certify_summary_trial_balance(
+                    VId(1),
+                    &capability,
+                    &SummaryRequest {
+                        selection: TrialBalanceSelection::AsOf(body.opening_date),
+                        scope: SummaryScope::AllRoots,
+                        known_at: Some(book.head().unwrap()),
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            ReportArtifact::try_from(&certified.certificate).unwrap()
+        };
+        let status = |book: &Book, artifact: &ReportArtifact| {
+            book.report_artifact_status(
+                VId(1),
+                &capability,
+                &artifact.canonical_bytes().unwrap(),
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let before_run = certify(&book);
+        let run = certificate_open_run(&mut book, evidence, &body);
+        let chunk =
+            certificate_stage_chunk(&mut book, evidence, &body, "FY2026-OPEN", body.opening_date);
+        let staged = certify(&book);
+        for artifact in [&before_run, &staged] {
+            assert_eq!(
+                status(&book, artifact),
+                CertificateStatus::Current {
+                    checked_at: book.head().unwrap()
+                },
+                "staged migration entries do not contribute to the summary source"
+            );
+        }
+        let control = certificate_transition_run(&mut book, run, outcome);
+        let head = book.head().unwrap();
+        for (artifact, causes) in [
+            (&before_run, vec![chunk, control]),
+            (&staged, vec![control]),
+        ] {
+            assert_eq!(
+                status(&book, artifact),
+                if outcome == kind::FINALIZE {
+                    CertificateStatus::SupersededBy {
+                        checked_at: head,
+                        later_entries: causes,
+                        cases: Vec::new(),
+                    }
+                } else {
+                    CertificateStatus::Current { checked_at: head }
+                },
+                "finalization activates older staged entries; abandonment never does"
+            );
+            let replayed = book
+                .replay_report_artifact(
+                    VId(1),
+                    &capability,
+                    &artifact.canonical_bytes().unwrap(),
+                    Some(artifact.digest()),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(replayed.output, artifact.output());
+        }
+        assert_eq!(
+            book.head().unwrap(),
+            head,
+            "status and replay never publish"
+        );
+    }
+}
+
+#[test]
 fn retained_aging_status_tracks_migration_activation_without_rewriting_history() {
     use crate::{
         AgingBuckets, AgingRequest, CertificateStatus, ReportArtifact, ReportArtifactExpectation,
