@@ -521,6 +521,8 @@ pub(super) struct FunctionalUnit {
 }
 pub(super) struct FunctionalRegistry {
     pub units: BTreeMap<u32, FunctionalUnit>,
+    /// Complete immutable unit definitions used by carrying-close sources.
+    pub unit_table_digest: [u8; 32],
 }
 fn text_array(row: &Table, key: &str) -> Result<Vec<String>, ReportError> {
     let Some(Value::Array(values)) = row.get(key) else {
@@ -606,6 +608,14 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             "settlement_and_settled_item_dates",
             ["Original", "Adjusting", "Reversal", "Resolution"].as_slice(),
         ),
+        (
+            8,
+            "year_end_close_carrying",
+            "YearEndCloseCarrying",
+            "None",
+            "fiscal_year_source_prefix",
+            ["Closing", "Reversal"].as_slice(),
+        ),
     ] {
         let row = laws
             .iter()
@@ -618,8 +628,13 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             || string(row, "name")? != name
             || string(row, "rate_purpose")? != purpose
             || string(row, "date_selector")? != date
-            || string(row, "rounding_law")? != "HalfEven"
-            || string(row, "residual_mode")? != if id == 2 { "none" } else { "designated_leg" }
+            || string(row, "rounding_law")? != if id == 8 { "None" } else { "HalfEven" }
+            || string(row, "residual_mode")?
+                != if matches!(id, 2 | 8) {
+                    "none"
+                } else {
+                    "designated_leg"
+                }
             || string(row, "status")? != "live"
             || text_array(row, "admitted_classes")?
                 .iter()
@@ -717,5 +732,69 @@ pub(super) fn verify_functional(
             },
         );
     }
-    Ok(FunctionalRegistry { units: definitions })
+    Ok(FunctionalRegistry {
+        units: definitions,
+        unit_table_digest: functional_unit_table_digest(&docs[2])?,
+    })
+}
+
+// Independently reproduce the FAU v1 immutable definitions and the complete
+// ordered table commitment. A retained carrying close cannot substitute a
+// registry that merely shares the currency identifiers and decimal scales.
+fn functional_unit_table_digest(doc: &Document) -> Result<[u8; 32], ReportError> {
+    use crate::codec::Writer;
+
+    let rows = rows(doc, "unit")?;
+    let mut table = Writer::default();
+    table.count(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let id = u32::try_from(integer(row, "id")?)
+            .map_err(|_| invalid("invalid unit-table identity"))?;
+        let version = u16::try_from(integer(row, "version")?)
+            .map_err(|_| invalid("unit version exceeds immutable definition bounds"))?;
+        let scale = u8::try_from(integer(row, "scale")?)
+            .map_err(|_| invalid("invalid unit-table scale"))?;
+        let rounding = u16::try_from(integer(row, "rounding_default")?)
+            .map_err(|_| invalid("invalid unit default rounding law"))?;
+        if usize::try_from(id).ok() != Some(index) || !(1..=9).contains(&rounding) {
+            return Err(invalid(
+                "unit-table identities must be dense and default rounding registered",
+            ));
+        }
+        let kind = match string(row, "kind")? {
+            "currency" => 1,
+            "commodity" => 2,
+            "share" => 3,
+            "time" => 4,
+            "count" => 5,
+            _ => return Err(invalid("unsupported immutable unit kind")),
+        };
+        let mut definition = Writer::default();
+        definition
+            .fixed(b"FAU\0")
+            .u16(1)
+            .u16(0)
+            .u32(id)
+            .bytes(string(row, "code")?.as_bytes())
+            .u16(version)
+            .u8(scale)
+            .u8(kind);
+        if kind == 1 {
+            let iso = u16::try_from(integer(row, "iso4217")?)
+                .map_err(|_| invalid("currency ISO code exceeds immutable definition bounds"))?;
+            definition.u8(1).u16(iso);
+        } else {
+            if row.contains_key("iso4217") {
+                return Err(invalid(
+                    "a noncurrency unit cannot carry an ISO currency code",
+                ));
+            }
+            definition.u8(0);
+        }
+        definition.u16(rounding);
+        table.bytes(&definition.buf);
+    }
+    let mut framed = Writer::default();
+    framed.bytes(&table.buf);
+    Ok(hash_parts(b"fa:unit-table:v1", &[&framed.buf]))
 }

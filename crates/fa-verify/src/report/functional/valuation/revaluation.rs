@@ -179,7 +179,12 @@ fn route_accounts<'a>(
     Ok(accounts)
 }
 
-fn bind_account(w: &mut Writer, id: u128, account: &metadata::Account, schema: &metadata::Schema) {
+pub(super) fn bind_account(
+    w: &mut Writer,
+    id: u128,
+    account: &metadata::Account,
+    schema: &metadata::Schema,
+) {
     w.u128(id)
         .bytes(account.code.as_bytes())
         .bytes(account.name.as_bytes())

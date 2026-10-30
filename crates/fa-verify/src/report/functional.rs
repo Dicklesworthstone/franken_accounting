@@ -7,10 +7,12 @@
 //! including exact inherited reversals.
 //! Migration contributions use independently authenticated run bodies and
 //! lifecycle controls; activation changes visibility and the watermark without
-//! changing a chunk's birth. Item-allocated revaluation and closing-transfer
+//! changing a chunk's birth. Source-bound native/carrying year-end closes are
+//! independently reconstructed. Item-allocated revaluation and translation
 //! laws remain unsupported until their separate source proofs can be replayed.
 
 mod arithmetic;
+mod calendar;
 mod valuation;
 
 use super::{
@@ -80,6 +82,8 @@ struct BookParameters {
     book: [u8; 16],
     base: u32,
     calendar: String,
+    fiscal_calendar: calendar::Calendar,
+    canonical: Vec<u8>,
     entities: BTreeMap<u128, String>,
 }
 impl BookParameters {
@@ -107,58 +111,7 @@ impl BookParameters {
         if calendar.is_empty() {
             return Err(failed("functional_book", "Book calendar is empty"));
         }
-        r.u8("calendar.adjustment_periods")?;
-        match r.u8("calendar.kind")? {
-            0 => {
-                if !(1..=12).contains(&r.u8("calendar.year_start_month")?) {
-                    return Err(failed("functional_book", "invalid monthly calendar"));
-                }
-            }
-            kind @ (1 | 2) => {
-                if kind == 1 && r.u8("calendar.pattern")? > 2 {
-                    return Err(failed("functional_book", "invalid week pattern"));
-                }
-                if r.u8("calendar.rule")? > 1
-                    || r.u8("calendar.weekday")? > 6
-                    || !(1..=12).contains(&r.u8("calendar.month")?)
-                {
-                    return Err(failed("functional_book", "invalid weekly calendar"));
-                }
-            }
-            3 => {
-                let count = r.count(4096, 8, "calendar.years")?;
-                let mut last_year = None;
-                for _ in 0..count {
-                    let year = r.i32("calendar.year")?;
-                    if last_year.is_some_and(|last| last >= year) {
-                        return Err(failed(
-                            "functional_book",
-                            "custom calendar years are unordered",
-                        ));
-                    }
-                    last_year = Some(year);
-                    let bounds = r.count(4096, 4, "calendar.bounds")?;
-                    if bounds < 2 {
-                        return Err(failed("functional_book", "custom calendar has no period"));
-                    }
-                    let mut last = None;
-                    for _ in 0..bounds {
-                        let day = r.i32("calendar.bound")?;
-                        if last.is_some_and(|last| last >= day) {
-                            return Err(failed(
-                                "functional_book",
-                                "custom calendar bounds are unordered",
-                            ));
-                        }
-                        last = Some(day);
-                    }
-                }
-                if count == 0 {
-                    return Err(failed("functional_book", "custom calendar has no year"));
-                }
-            }
-            _ => return Err(failed("functional_book", "unsupported calendar kind")),
-        }
+        let fiscal_calendar = calendar::Calendar::read(&mut r)?;
         if r.remaining() > 0 {
             let zone = r.u8("book.time_zone")?;
             if zone > 1 || zone == 0 && r.remaining() == 0 {
@@ -202,6 +155,8 @@ impl BookParameters {
             book,
             base,
             calendar,
+            fiscal_calendar,
+            canonical: bytes.to_vec(),
             entities,
         })
     }

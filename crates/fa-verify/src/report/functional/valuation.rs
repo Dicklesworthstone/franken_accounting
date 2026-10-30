@@ -1,5 +1,6 @@
 //! Rate closure, custody visibility and independent direct/carrying calculations.
 
+mod closing;
 mod revaluation;
 mod settlement;
 
@@ -262,7 +263,9 @@ fn parsed_entry(
                 if unit == spec.base
                     && (amount > 0
                         || amount == 0
-                            && base.as_ref().is_some_and(|claim| claim.law == law_oid(4))
+                            && base.as_ref().is_some_and(|claim| {
+                                [law_oid(4), law_oid(8)].contains(&claim.law)
+                            })
                             && leg.unit != spec.base)
                     && (leg.unit != spec.base || amount == leg.mantissa) =>
             {
@@ -271,7 +274,7 @@ fn parsed_entry(
             _ => {
                 return Err(failed(
                     "functional_valuation",
-                    "foreign legs require a complete claim; only carrying relief may be zero and base-unit legs stay at par",
+                    "foreign legs require a complete claim; only carrying relief/closing may be zero and base-unit legs stay at par",
                 ));
             }
         };
@@ -477,13 +480,13 @@ pub(super) fn verify_history(
                     "Migration valuations require the registered SpotClose law",
                 ));
             }
-            if ![law_oid(1), law_oid(2), law_oid(3), law_oid(4)].contains(&claim.law) {
+            if ![law_oid(1), law_oid(2), law_oid(3), law_oid(4), law_oid(8)].contains(&claim.law) {
                 return Err(failed(
                     "supported_report",
-                    "functional replay supports SpotClose, aggregate PeriodEndRevaluation, PeriodAverage and source-bound SettlementCarryingBasis v1; closing, translation and item-allocation laws require their own source proofs",
+                    "functional replay supports SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis v1 and YearEndCloseCarrying; translation and item-allocation laws require their own source proofs",
                 ));
             }
-            if claim.rates.is_empty() {
+            if claim.rates.is_empty() && claim.law != law_oid(8) {
                 return Err(failed("functional_rates", "FX claim has no Rate evidence"));
             }
             for oid in &claim.rates {
@@ -624,7 +627,7 @@ pub(super) fn verify_history(
         } else if entry
             .base
             .as_ref()
-            .is_some_and(|claim| claim.law != law_oid(4) && claim.law != law_oid(2))
+            .is_some_and(|claim| ![law_oid(4), law_oid(2), law_oid(8)].contains(&claim.law))
         {
             let (_, period_end) = schema.bounds(std::slice::from_ref(&period))?;
             compute(
@@ -673,6 +676,16 @@ pub(super) fn verify_history(
         legs,
         &parsed,
         &parents,
+        migration_activations,
+    )?;
+    closing::verify(
+        spec,
+        registry,
+        envelopes,
+        records,
+        infos,
+        legs,
+        &parsed,
         migration_activations,
     )?;
     Ok(parsed

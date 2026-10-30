@@ -477,6 +477,41 @@ fn carrying_close_facade_preserves_zero_native_loss_and_historical_functional_ce
     let bytes = certified.certificate.canonical_bytes().unwrap();
     let retained = fa::ReportCertificate::decode(&bytes).unwrap();
 
+    // Export the real producer's full native closure, not a reconstructed
+    // verifier fixture. All three report families must admit the intrinsic
+    // carrying law, including a zero native balance with a functional loss.
+    let producer = cap(&["read", "produce"]);
+    let portable_certificates = [
+        ("income-statement", certified.certificate.clone()),
+        (
+            "trial-balance",
+            book.certify_functional_trial_balance(
+                &producer,
+                fa::TrialBalanceSelection::AsOf(DateDay::from_ymd(2026, 12, 31).unwrap()),
+                None,
+            )
+            .unwrap()
+            .unwrap()
+            .certificate,
+        ),
+        (
+            "balance-sheet",
+            book.certify_functional_statement(
+                PRINCIPAL,
+                &producer,
+                fa::StatementSelection {
+                    definition: fa::StatementDefinition::embedded("balance-sheet").unwrap(),
+                    periods: vec!["FY2026-CLOSE".into()],
+                    comparative: Vec::new(),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap()
+            .certificate,
+        ),
+    ];
+
     carrying_post(&mut book, b"later-valued-sale", false, 1_000, 13, evidence);
     let bounded = reader.clone().known_at_most(closed_at);
     let historical = book
@@ -515,4 +550,67 @@ fn carrying_close_facade_preserves_zero_native_loss_and_historical_functional_ce
         book.replay_report(&retained).unwrap().unwrap(),
         fa::ReportOutput::FunctionalStatement(Box::new(certified.statement))
     );
+
+    // A checkpoint newer than the source and its backdated activity must
+    // still prove the certificate's original closed prefix exactly.
+    let state = book
+        .checkpoint(PRINCIPAL, &cap(&["read", "produce", "witness"]))
+        .unwrap()
+        .unwrap()
+        .checkpoint
+        .checkpoint
+        .body
+        .state_oid;
+    let head = book.head().unwrap();
+    for (kind, certificate) in portable_certificates {
+        let produced = book
+            .produce_report_bundle(PRINCIPAL, &producer, Some(state), &certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let repeated = book
+            .produce_report_bundle(PRINCIPAL, &producer, Some(state), &certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(produced.bundle.bytes, repeated.bundle.bytes);
+        assert_eq!(produced.receipt, repeated.receipt);
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[book.checkpoint_public_key()],
+            None,
+            Some(&produced.receipt),
+            Some(&certificate.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output);
+        assert_eq!(verified.known_at, certificate.known_at.0);
+        if let Some(tb) = verified.functional_trial_balance {
+            assert_eq!(kind, "trial-balance");
+            for (code, expected) in [("1000", -1_000), ("3000", 1_000), ("4000", 0)] {
+                let account = account_vid(book_id, code).0;
+                let actual: i128 = tb
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.account == account)
+                    .map(|cell| cell.debits - cell.credits)
+                    .sum();
+                assert_eq!(actual, expected, "{kind}: {code}");
+            }
+        } else {
+            let line_code = if kind == "balance-sheet" {
+                "assets"
+            } else {
+                "net_income"
+            };
+            let statement = verified.functional_statement.unwrap().statement;
+            let line = statement
+                .lines
+                .iter()
+                .find(|line| line.code == line_code)
+                .unwrap();
+            assert_eq!(line.amounts, vec![-1_000], "{kind}: {line_code}");
+        }
+    }
+    assert_eq!(book.head().unwrap(), head, "portable export is read-only");
 }

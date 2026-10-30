@@ -27,6 +27,7 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         supersession_reasons: target.map(|_| 1).into_iter().collect(),
         rule_version_oid: None,
         fx_revaluation_basis: None,
+        year_end_close_basis: None,
         obligation_maturity: None,
         case_member: None,
         prior_period_adjustment: None,

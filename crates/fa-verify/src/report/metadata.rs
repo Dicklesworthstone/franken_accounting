@@ -29,6 +29,9 @@ pub(super) struct EntryInfo<'a> {
     /// Immutable cumulative FX basis; functional replay independently checks
     /// its source population, routes and original observation.
     pub fx_revaluation_basis: Option<&'a [u8]>,
+    /// Intrinsic native/carrying YearEndClose source basis, independently
+    /// reproduced when functional replay relies on source-bound closing.
+    pub year_end_close_basis: Option<&'a [u8]>,
     /// Immutable extension 33 bytes. Due-date reports independently decode
     /// and validate these against the authenticated monetary legs.
     pub obligation_maturity: Option<&'a [u8]>,
@@ -290,6 +293,7 @@ pub(super) fn entry_info<'a>(
     }
     let mut recurring = None;
     let mut fx_revaluation_basis = None;
+    let mut year_end_close_basis = None;
     let mut obligation_maturity = None;
     let mut case_member = None;
     let mut prior_period_adjustment = None;
@@ -306,6 +310,21 @@ pub(super) fn entry_info<'a>(
                 ));
             }
             previous = Some(tag);
+            if tag == 12 {
+                if envelope.class != 8
+                    || n != 1
+                    || !post_intent
+                    || has_control
+                    || has_pending
+                    || !supersession.is_empty()
+                {
+                    return Err(failed(
+                        "supported_report",
+                        "source-bound Closing requires its sole intrinsic PostEntry extension without lifecycle effects",
+                    ));
+                }
+                year_end_close_basis = Some(bytes);
+            }
             if tag == 16 {
                 if envelope.class != 10
                     || n != 1
@@ -417,6 +436,7 @@ pub(super) fn entry_info<'a>(
         supersession_reasons,
         rule_version_oid,
         fx_revaluation_basis,
+        year_end_close_basis,
         obligation_maturity,
         case_member,
         prior_period_adjustment,
@@ -490,6 +510,7 @@ pub(super) struct BalanceLimit {
 }
 #[derive(Clone, Debug)]
 struct Period {
+    fiscal_year: i32,
     start: i32,
     end: i32,
     kind: u8,
@@ -725,7 +746,7 @@ impl Schema {
                 }
                 self.calendar = Some(calendar.into());
                 let year = r.i32("period.year")?;
-                let n = r.count(19, 4 + 4 + 2 + 1 + 4 + 4 + 1, "period.definitions")?;
+                let n = r.count(59, 4 + 4 + 2 + 1 + 4 + 4 + 1, "period.definitions")?;
                 if n == 0 {
                     return Err(failed("period_metadata", "empty period declaration"));
                 }
@@ -747,6 +768,7 @@ impl Schema {
                             .insert(
                                 code,
                                 Period {
+                                    fiscal_year: fy,
                                     start,
                                     end,
                                     kind,
@@ -862,6 +884,10 @@ impl Schema {
         self.periods
             .get(code)
             .map(|p| (p.start, p.end, p.kind, p.state))
+    }
+
+    pub(super) fn period_fiscal_year(&self, code: &str) -> Option<i32> {
+        self.periods.get(code).map(|period| period.fiscal_year)
     }
 
     pub(super) fn transition_period(
@@ -1203,6 +1229,7 @@ mod indirect_period_tests {
                     (
                         name.to_owned(),
                         Period {
+                            fiscal_year: 2026,
                             start,
                             end,
                             kind,

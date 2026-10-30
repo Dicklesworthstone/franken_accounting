@@ -543,7 +543,7 @@ fn statements_do_not_hide_unsupported_or_false_valuations_outside_the_selected_c
     for (law, predicate) in [
         (2, "functional_revaluation"),
         (4, "supported_report"),
-        (8, "supported_report"),
+        (8, "functional_closing"),
         (9, "supported_report"),
     ] {
         records.push(entry(
@@ -579,6 +579,75 @@ fn statements_do_not_hide_unsupported_or_false_valuations_outside_the_selected_c
         verify(&bundle, &signed, &pin).unwrap_err().predicate,
         "functional_valuation"
     );
+}
+
+#[test]
+fn source_bound_carrying_close_reproduces_independent_balance_sheet_and_income() {
+    let (records, rates) = super::closing::history();
+    for activity in [false, true] {
+        let request = Request {
+            activity,
+            current: vec![if activity { "P1" } else { "FY1970-CLOSE" }.into()],
+            comparative: Vec::new(),
+            known_at: 9,
+        };
+        let mut expected = expected(&request, 0);
+        expected.statement.columns = vec![StatementColumn {
+            label: "current".into(),
+            periods: request.current.clone(),
+            effective_from: activity.then_some(0),
+            effective_through: if activity { 30 } else { 364 },
+        }];
+        for line in &mut expected.statement.lines {
+            line.amounts = vec![match line.code.as_str() {
+                "assets"
+                | "equity"
+                | "total_equity"
+                | "liabilities_and_equity"
+                | "revenue"
+                | "net_income" => -10,
+                _ => 0,
+            }];
+        }
+        expected.statement.mappings = super::closing::chart()
+            .into_iter()
+            .filter(|(_, kind)| !activity || matches!(kind, 4 | 5))
+            .map(|(code, kind)| StatementMapping {
+                account: id(code),
+                code: code.into(),
+                name: code.into(),
+                account_type: kind,
+                is_leaf: true,
+                line_code: match (activity, kind) {
+                    (true, 4) => "revenue",
+                    (true, 5) => "expense",
+                    (_, 1) => "assets",
+                    (_, 3) => "equity",
+                    (_, 4) => "unclosed_revenue",
+                    (_, 5) => "unclosed_expense",
+                    _ => unreachable!(),
+                }
+                .into(),
+            })
+            .collect();
+        let bytes = output(&expected, &request);
+        let (bundle, signed, pin) = pack_statement(&records, &request, &book(&[]), &rates, &bytes);
+        let verified = verify(&bundle, &signed, &pin).unwrap();
+        assert_eq!(verified.functional_statement, Some(expected.clone()));
+        assert_eq!(verified.output, bytes);
+        expected.statement.lines[0].amounts[0] += 1;
+        let (bundle, signed, pin) = pack_statement(
+            &records,
+            &request,
+            &book(&[]),
+            &rates,
+            &output(&expected, &request),
+        );
+        assert!(
+            verify(&bundle, &signed, &pin).is_err(),
+            "a resealed false statement remains false"
+        );
+    }
 }
 
 #[test]

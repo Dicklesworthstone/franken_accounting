@@ -36,6 +36,8 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
     }
     let mut needed: BTreeMap<Oid, ([u8; 32], CommitSeq)> = BTreeMap::new();
     let mut receipts = BTreeMap::new();
+    let mut source_bound_closing = false;
+    let mut unbound_closing = false;
     for leaf in &journal.leaves {
         if leaf.envelope.commit_seq > known_at {
             continue;
@@ -48,6 +50,40 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
         match record {
             Record::Entry(entry) => {
                 let proposal = &entry.proposal;
+                let closing = proposal
+                    .extensions
+                    .iter()
+                    .find(|(tag, _)| *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION);
+                if proposal.class == fa_model::EntryClass::CLOSING && closing.is_none() {
+                    unbound_closing = true;
+                }
+                if let Some((_, raw)) = closing {
+                    source_bound_closing = true;
+                    let basis = fa_model::YearEndCloseBasis::decode(raw)
+                        .map_err(|error| fa_journal::KernelError::Model(error.into()))?;
+                    if proposal.class != fa_model::EntryClass::CLOSING
+                        || proposal.extensions.len() != 1
+                        || !matches!(proposal.origin, EntryOrigin::Intent { intent_kind: 1, .. })
+                        || proposal.control.is_some()
+                        || proposal.pending.is_some()
+                        || !proposal.supersession.is_empty()
+                        || proposal.legs.iter().any(|leg| !leg.settles.is_empty())
+                        || basis.version == 1
+                            && (proposal.base_totals.is_some()
+                                || proposal.legs.iter().any(|leg| leg.base_amount.is_some()))
+                        || basis.version == 2
+                            && proposal.base_totals.as_ref().is_none_or(|base| {
+                                FxLawId::from_oid(&base.fx_law_oid)
+                                    != Some(FxLawId::YearEndCloseCarrying)
+                                    || !base.rate_doc_oids.is_empty()
+                                    || base.residual.is_some()
+                            })
+                    {
+                        return Ok(Err(refused(
+                            "portable Closing requires its intrinsic native v1 or retained-carrying v2 source basis without new rates or residuals",
+                        )));
+                    }
+                }
                 if let Some((_, raw)) = proposal
                     .extensions
                     .iter()
@@ -81,6 +117,16 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                         "portable PeriodEndRevaluation requires its retained cumulative source basis",
                     )));
                 }
+                if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::YearEndCloseCarrying) {
+                    source_bound_closing = true;
+                    if proposal.class != fa_model::EntryClass::REVERSAL
+                        && (proposal.class != fa_model::EntryClass::CLOSING || closing.is_none())
+                    {
+                        return Ok(Err(refused(
+                            "portable YearEndCloseCarrying requires its retained intrinsic Closing basis",
+                        )));
+                    }
+                }
                 if matches!(proposal.origin, EntryOrigin::Migration { .. })
                     && FxLawId::from_oid(&base.fx_law_oid) != Some(FxLawId::SpotClose)
                 {
@@ -95,10 +141,11 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                             | FxLawId::PeriodEndRevaluation
                             | FxLawId::PeriodAverage
                             | FxLawId::SettlementCarryingBasis
+                            | FxLawId::YearEndCloseCarrying
                     )
                 ) {
                     return Ok(Err(refused(
-                        "portable functional reports support SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis and their exact inherited reversals",
+                        "portable functional reports support SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis, YearEndCloseCarrying and exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {
@@ -154,6 +201,11 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
             }
             _ => {}
         }
+    }
+    if source_bound_closing && unbound_closing {
+        return Ok(Err(refused(
+            "portable source-bound closing requires complete retained provenance for every preceding Closing, including native v1 closes",
+        )));
     }
     let mut authenticated = BTreeMap::new();
     for (oid, (commitment, first_use)) in needed {
