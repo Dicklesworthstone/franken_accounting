@@ -20,6 +20,10 @@
 //! - Under `YearEndCloseCarrying`, closing transfers exact recorded native and
 //!   functional balances to equity. Its saved source prefix supplies the
 //!   carrying amounts; it introduces no rate or conversion residual.
+//! - `TranslationCurrentRate` and `RemeasurementTemporal` remain readable in
+//!   retained history, but their caller-input calculators do not establish a
+//!   native posting basis. Fresh claims are refused until the kernel can
+//!   reproduce their complete source populations and cumulative adjustments.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -727,6 +731,34 @@ pub(crate) struct FxClaim {
     pub rate_doc_oids: Vec<Oid>,
 }
 
+/// Admit a new FX effect after exact recorded-outcome recognition. A
+/// registered law and balanced base amounts do not prove a translation or
+/// remeasurement of the journal's complete source population. Keep this
+/// restriction outside structural decoding and historical verification.
+///
+/// An exact Reversal introduces no new valuation: the posting pipeline
+/// independently witnesses its ancestry and preserves the original claim.
+pub(crate) fn admit_fresh_claim(proposal: &EntryPayload, claim: &FxClaim) -> Result<(), Refusal> {
+    if proposal.class != EntryClass::REVERSAL
+        && matches!(
+            claim.law,
+            FxLawId::TranslationCurrentRate | FxLawId::RemeasurementTemporal
+        )
+    {
+        return Err(Refusal::new(
+            code::CLASS_NOT_IMPLEMENTED,
+            exit::REFUSAL,
+            format!(
+                "{} has no source-bound native posting law; caller-supplied balanced adjustments cannot establish its translation or remeasurement",
+                claim.law.name(),
+            ),
+            "plan §12.4 (journal-derived translation, remeasurement and cumulative adjustments)",
+            "retain the read-only calculation; native posting requires a kernel-derived translation or remeasurement basis, not a different entry class or a caller-supplied revaluation extension",
+        ));
+    }
+    Ok(())
+}
+
 /// Step 1d of `prepare_post`: structural and entity-level balance checks on
 /// `proposal.base_totals` and `leg.base_amount` before beginning a transaction.
 pub(crate) fn admit_structure(
@@ -1292,7 +1324,10 @@ fn verify_claim(
             }
         }
         FxLawId::TranslationCurrentRate | FxLawId::RemeasurementTemporal => {
-            let bt = proposal.base_totals.as_ref().expect("checked in admit");
+            // Only retained claims and their exact inherited reversals reach
+            // this structural check. A reversal keeps the source date and
+            // quote; it never requests a new translation on its own date.
+            let bt = valuation.base_totals.as_ref().expect("checked in admit");
             if bt.residual.is_some() {
                 return Ok(Err(fx_structure(format!(
                     "{} entries carry no base_totals.residual",
@@ -1300,14 +1335,14 @@ fn verify_claim(
                 ))));
             }
             if !rate_docs.iter().any(|d| {
-                d.purpose == FxRatePurpose::PeriodClose && d.as_of == proposal.effective_date
+                d.purpose == FxRatePurpose::PeriodClose && d.as_of == valuation.effective_date
             }) {
                 return Ok(Err(fx_structure(format!(
                     "{} requires a PeriodClose rate document with as_of == entry effective_date",
                     claim.law.name()
                 ))));
             }
-            if proposal
+            if valuation
                 .legs
                 .iter()
                 .any(|l| l.amount.unit != spec.base_unit || l.base_amount != Some(l.amount))
@@ -1554,6 +1589,8 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
             claim.law,
             FxLawId::SpotClose
                 | FxLawId::PeriodAverage
+                | FxLawId::TranslationCurrentRate
+                | FxLawId::RemeasurementTemporal
                 | FxLawId::SettlementCarryingBasis
                 | FxLawId::SettlementAllocatedCarrying
                 | FxLawId::YearEndCloseCarrying

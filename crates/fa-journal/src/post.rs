@@ -2732,6 +2732,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
 
+    // Historical outcomes remain immutable, but a fresh FX claim must have
+    // an executable native law. A registered name and balanced amounts alone
+    // cannot admit caller-typed translation or remeasurement adjustments.
+    if let Some(claim) = &fx_claim
+        && let Err(refusal) = crate::fx::admit_fresh_claim(proposal, claim)
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
     let external_review = if let Some(basis) = &external_subledger {
         match crate::external_subledger::witness(&txn, db, book, basis)? {
             Ok(review) => Some(review),
@@ -3437,6 +3447,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 claim.law,
                 crate::fx::FxLawId::SpotClose
                     | crate::fx::FxLawId::PeriodAverage
+                    | crate::fx::FxLawId::TranslationCurrentRate
+                    | crate::fx::FxLawId::RemeasurementTemporal
                     | crate::fx::FxLawId::SettlementCarryingBasis
                     | crate::fx::FxLawId::SettlementAllocatedCarrying
                     | crate::fx::FxLawId::YearEndCloseCarrying

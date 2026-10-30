@@ -7,6 +7,9 @@ use fa_money::RoundingLaw;
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fgdb_types::CommitSeq;
 
+#[path = "fx_law/admission.rs"]
+mod admission;
+
 fn valued_source() -> (Harness, Document, EntryRef) {
     let mut h = harness();
     let foreign = h.book.units.lookup("EUR").unwrap();
