@@ -963,4 +963,5 @@ fn current_whole_book_authority_precedes_source_access_and_historical_route_read
     assert_eq!(f.book.head().unwrap(), revoked);
 }
 
+#[path = "fx_revaluation/drafts.rs"]
 mod drafts;
