@@ -45,7 +45,8 @@ Usage:
                                         [--canonical-worktree DIR] [--max-batch N]
                                         [--check-claims] [--no-push] [--tier0-only] [REF...]
   bash scripts/merge_train.sh update-readme --commit SHA --status PASS|RED|UNRUN [--date YYYY-MM-DD] [--file PATH]
-  bash scripts/merge_train.sh dry-run   [--canonical-worktree DIR]
+                                        (PASS needs SHA's full-scope PASS note in refs/notes/fa-verdict)
+  bash scripts/merge_train.sh dry-run  [--canonical-worktree DIR]
   bash scripts/merge_train.sh audit     --since REV [--remote NAME|URL] [--main BRANCH]
                                         [--work DIR] [--author-pattern ERE] [--strict]
 USAGE
@@ -155,7 +156,7 @@ path = pathlib.Path(sys.argv[1])
 short_sha, dt, status = sys.argv[2:5]
 text = path.read_text(encoding="utf-8")
 replacement = f"Verified at {short_sha} ({dt}): {status}"
-pattern = re.compile(r"Verified at [0-9a-fA-F]{7,40} \([0-9]{4}-[0-9]{2}-[0-9]{2}\): (?:PASS|RED|UNRUN)")
+pattern = re.compile(r"Verified at [0-9a-fA-F]{7,40} \([0-9]{4}-[0-9]{2}-[0-9]{2}\): (?:PASS \(partial scope\)|PASS|RED|UNRUN)")
 if pattern.search(text):
     new_text = pattern.sub(replacement, text, count=1)
 else:
@@ -164,9 +165,28 @@ path.write_text(new_text, encoding="utf-8")
 PY
 }
 
+# The README's "Verified at" line says PASS only for a full-scope verdict:
+# the canonical step set with executed tests, as local_proof_verify.sh
+# --for-close judges it. A train PASS over fewer steps names its scope
+# (fa-ygj2).
+readme_pass_status() {
+  local clone="$1" proof="$2"
+  if bash "$clone/scripts/local_proof_verify.sh" --repository "$clone" --for-close "$proof" >/dev/null 2>&1; then
+    printf 'PASS\n'
+  else
+    printf 'PASS (partial scope)\n'
+  fi
+}
+
 if [ "$command" = "update-readme" ]; then
   [ -n "$readme_commit" ] || die "update-readme requires --commit SHA"
   case "$readme_status" in PASS|RED|UNRUN) ;; *) die "update-readme requires --status PASS|RED|UNRUN" ;; esac
+  if [ "$readme_status" = PASS ]; then
+    verify_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+      || die "update-readme --status PASS reads refs/notes/fa-verdict: run it inside the repository"
+    bash "$verify_root/scripts/local_proof_verify.sh" --repository "$verify_root" --for-close --note "$readme_commit" >&2 \
+      || die "update-readme --status PASS needs a full-scope PASS note for ${readme_commit:0:12} (local_proof_verify.sh --for-close --note); write RED or UNRUN instead (fa-ygj2)"
+  fi
   maintain_readme_verified_line "$readme_file" "$readme_commit" "$readme_status" "${readme_date:-$(date -u +%Y-%m-%d)}"
   say "updated $readme_file: Verified at ${readme_commit:0:12} (${readme_date:-$(date -u +%Y-%m-%d)}): $readme_status"
   exit 0
@@ -516,6 +536,7 @@ tier0_in_cand() {
 # gate_tree_in_cand <cand_dir> <label_tag> -> sets GATE_LAST_VERDICT (PASS|RED|UNRUN|VOID), GATE_LAST_FAIL_LINE
 GATE_LAST_VERDICT=""
 GATE_LAST_FAIL_LINE=""
+GATE_LAST_PROOF=""
 GATE_COUNT=0
 
 gate_tree_in_cand() {
@@ -548,6 +569,7 @@ gate_tree_in_cand() {
   cand_sha="$(git -C "$cand" rev-parse HEAD)"
   local proof="$work/proofs/$stamp-${tag}-${GATE_COUNT}-${cand_sha:0:12}"
   local log="$work/proofs/$stamp-${tag}-${GATE_COUNT}-${cand_sha:0:12}.train.log"
+  GATE_LAST_PROOF="$proof"
   : "${RCH_CARGO_WRAPPER_BYPASS:=1}"
   : "${CARGO_TARGET_DIR:=$work/target}"
   : "${RCH_WORKER:=${FA_GATE_PRIMARY_WORKER:-hz2}}"
@@ -721,7 +743,7 @@ run_batch_train() {
         publish_note "$cand" "$sha" "$(note_body pass "main=$main_sha" "ref=$ref" "batch_tip=$tip_sha" "tree=$tip_tree")"
       done
       publish_note "$cand" "$tip_sha" "$(note_body pass "main=$main_sha" "batch_size=$count" "tree=$tip_tree")"
-      maintain_readme_verified_line "$root/README.md" "$tip_sha" "PASS"
+      maintain_readme_verified_line "$root/README.md" "$tip_sha" "$(readme_pass_status "$cand" "$GATE_LAST_PROOF")"
       say "PROMOTED-BATCH: $count candidate(s) (${stacked_refs[*]}) -> $main_branch ${tip_sha:0:12} (gates=$GATE_COUNT)"
       return "$EX_NOTHING"
     fi
@@ -921,7 +943,7 @@ run_train() {
     fi
     say "PROMOTED: $main_branch ${main_sha:0:12} -> ${cand_sha:0:12}"
     publish_note "$cand" "$cand_sha" "$(note_body pass "${base_kv[@]}")"
-    maintain_readme_verified_line "$root/README.md" "$cand_sha" "PASS"
+    maintain_readme_verified_line "$root/README.md" "$cand_sha" "$(readme_pass_status "$cand" "$proof")"
     return "$EX_NOTHING"
   fi
 

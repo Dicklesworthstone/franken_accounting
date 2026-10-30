@@ -75,6 +75,7 @@ TIER0
 
 cat > scripts/check.sh <<'CHECK'
 #!/usr/bin/env bash
+# CANONICAL_STEPS: test-list, test
 set -eu
 printf 'run\n' >> "${FAKE_CHECK_COUNTER:-/dev/null}"
 tree_hash="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
@@ -195,6 +196,18 @@ PY
 rc="$(train dry-run --canonical-worktree "$canonical_gate")"
 grep -Fxq "expected_warmth=true" "$base/last.out" || fail "scenario 2: expected warm after canonical gate init"
 gate_pass "2 good staging -> PROMOTED with refs/notes/fa-verdict validated by local_proof_verify.sh and JSON transcript"
+
+# 2b. update-readme writes PASS only from a full-scope PASS note (fa-ygj2).
+readme_before="$(cat "$op/README.md")"
+rc="$(train update-readme --commit "$initial_main" --status PASS)"
+[ "$rc" != 0 ] || fail "2b: update-readme wrote PASS for a commit with no verdict note"
+[ "$(cat "$op/README.md")" = "$readme_before" ] || fail "2b: a refused PASS changed the README"
+git -C "$op" fetch -q origin main "+refs/notes/fa-verdict:refs/notes/fa-verdict"
+rc="$(train update-readme --commit "$promoted" --status PASS --date 2026-10-21)"
+[ "$rc" = 0 ] || fail "2b: update-readme refused the full-scope PASS note ($(cat "$base/last.out"))"
+grep -Fq "Verified at ${promoted:0:12} (2026-10-21): PASS" "$op/README.md" \
+  || fail "2b: update-readme did not write the full-scope PASS ($(cat "$op/README.md"))"
+gate_pass "2b update-readme refuses PASS without a full-scope note and writes it from one"
 
 # 3. A red staging commit is refused; main does not move; refs/notes/fa-verdict records RED.
 cd "$dev" || fail "cannot cd into $dev"
@@ -340,6 +353,27 @@ red_candidate_leaves_main_and_publishes_red_note() {
 }
 
 red_candidate_leaves_main_and_publishes_red_note
+
+# 9. A PASS over fewer steps than check.sh declares is promoted, but the
+#    README names its scope and update-readme will not call it PASS (fa-ygj2).
+cd "$dev" || fail "cannot cd into $dev"
+git fetch -q origin
+git checkout -q -B staging origin/main
+sed -i 's/^# CANONICAL_STEPS: test-list, test$/# CANONICAL_STEPS: fmt, test-list, test/' scripts/check.sh
+grep -qx '# CANONICAL_STEPS: fmt, test-list, test' scripts/check.sh || fail "scenario 9: fixture header not rewritten"
+git commit -q -am "gate: declare a step this check does not run"
+git push -q origin staging
+rc="$(train run --canonical-worktree "$canonical_gate")"
+[ "$rc" = 0 ] || fail "scenario 9: exit $rc ($(cat "$base/last.out"))"
+grep -q '^merge-train: PROMOTED' "$base/last.out" || fail "scenario 9: no PROMOTED line"
+partial="$(remote_main)"
+grep -Fq "Verified at ${partial:0:12} " "$op/README.md" || fail "scenario 9: README not updated for $partial"
+grep -Eq "Verified at ${partial:0:12} \([0-9]{4}-[0-9]{2}-[0-9]{2}\): PASS \(partial scope\)" "$op/README.md" \
+  || fail "scenario 9: a partial-scope PASS was written as a full PASS ($(cat "$op/README.md"))"
+git -C "$op" fetch -q origin main "+refs/notes/fa-verdict:refs/notes/fa-verdict"
+rc="$(train update-readme --commit "$partial" --status PASS)"
+[ "$rc" != 0 ] || fail "scenario 9: update-readme wrote PASS from a partial-scope note"
+gate_pass "9 partial-scope PASS -> promoted, README says PASS (partial scope), update-readme refuses PASS"
 
 cd "$source_root" || fail "cannot cd back to $source_root"
 gate_verdict
