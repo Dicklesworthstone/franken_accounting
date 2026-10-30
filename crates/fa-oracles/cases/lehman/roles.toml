@@ -1,6 +1,7 @@
-# Lehman Brothers roles (plan §2.8). The statement of financial condition names no individual, so
-# every label in this slice is a harness role and the deny list is empty (K-NAMES). The Valukas
-# report names people; L1's later rows add their hashed tokens here before citing it.
+# Lehman Brothers roles (plan §2.8). Every label is a harness role. The examiner's report
+# (SRC-LEH-001) names people: the deny list holds the `fa:case-name-token:v1` hashes of the
+# examiner's name tokens and of the name p.889 prints beside the cited table, never the names
+# (K-NAMES), so no rendered or journaled text can carry them.
 
 [[role]]
 label = "case-author-1"
@@ -38,4 +39,4 @@ kind = "harness"
 description = "witnesses the case's checkpoints (plan §12.7)"
 
 [deny]
-hashes = []
+hashes = ["9c1fb25567db17bcb6e877ded9175858fd05f5179a1112d8444c22b797dce4f4", "e2b845c45750e1318296f64c6681c2a8f9acdf3eb544bbbe05f33790d14de6f9", "ec3fe834fa62b938626835a27cbb864613efff8b5424adda018bf50166f5d543"]

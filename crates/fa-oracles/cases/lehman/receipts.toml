@@ -1040,3 +1040,19 @@ aligned = true
 values_in_quote = true
 scope_ok = true
 original_hash_compared = false
+
+[[receipt]]
+source = "SRC-LEH-001"
+fact = "V889-e-2008-05-31"
+anchor = "Gross and Net Balance Sheet Ratios@p889|(e) Repo 105/108 Usage|May 31, 2008"
+verified_utc = "2026-10-30T09:00:24Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "b8e08d4ebc1228cab977d7f8a124e7cbba6400f5ac55f34f032e94f8fe69b6cb"
+quote_sha256 = "e002b0b6bace28900796c4868e11501c92685588a8c44cf2fad49845320051c3"
+values_sha256 = "6db1ffc90a40603d8986812d1681677da484138dd497525aa250b8483b754931"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

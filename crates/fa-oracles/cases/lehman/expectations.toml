@@ -3,7 +3,11 @@
 # printed line of the 10-Q's condensed consolidated statement of financial condition is posted
 # to its own account, and franken_accounting's certified balance-sheet lines must equal the
 # printed totals, which are never posted. L-R-01 reads back the posted lines the examiner's
-# net-leverage arithmetic deducts (Valukas p.889), as posted from the 10-Q.
+# net-leverage arithmetic deducts (the examiner's report, p.889), as posted from the 10-Q. L-R-02
+# reads the certified diff of the Repo 105 scenario: it moves exactly two accounts, financial
+# instruments owned and securities sold under agreements to repurchase, each by exactly (e), so
+# total assets and total liabilities each move by (e). The scenario's own entry posts (e), so this
+# is a read-back (K-TAUT), never a T.
 
 [[expectation]]
 id = "L-T-01"
@@ -101,6 +105,33 @@ read_coordinate = "FY2008Q2"
 read_selector = "currently_stated"
 posted = "Q208.intangibles.2008-05-31"
 
+
+[[expectation]]
+id = "L-R-02"
+type = "R"
+book_variant = "statement"
+statement_template = "R.read_back"
+basis = ["V889-e-2008-05-31"]
+
+[[target]]
+expectation = "L-R-02"
+fact = "V889-e-2008-05-31-inventory"
+basis = ["V889-e-2008-05-31"]
+read_verb = "scenario-diff"
+read_target = "1030"
+read_coordinate = "FY2008Q2"
+read_selector = "scenario:lehman-repo105"
+posted = "V889-e-2008-05-31"
+
+[[target]]
+expectation = "L-R-02"
+fact = "V889-e-2008-05-31-repos"
+basis = ["V889-e-2008-05-31"]
+read_verb = "scenario-diff"
+read_target = "2030"
+read_coordinate = "FY2008Q2"
+read_selector = "scenario:lehman-repo105"
+posted = "V889-e-2008-05-31"
 
 [[expectation]]
 id = "L-T-02"

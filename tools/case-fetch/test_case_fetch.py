@@ -433,6 +433,33 @@ class TableCells(unittest.TestCase):
         self.assertEqual(self.cell(self.PERCELL, f"{table}|Cash|Dec 31, 2008"), [])
         self.assertEqual(self.cell(self.PERCELL, f"{table}|Commitments|May 31, 2008"), [])
 
+    # A `pdftotext -layout` table: month-days over years, two of them a single space apart, a
+    # label split by a wide gap, and ratio cells.
+    DATECOL = ("                     Ratios Table\n\n"
+               "                              At the Quarter Ended\n"
+               "                       May 31       Feb 29,  Nov 30, Aug 31,\n"
+               "  $ in Millions         2008         2008      2007      2007\n"
+               "  (a) Total Assets    639,432      786,035   691,063   659,216\n"
+               "      Less:\n"
+               "      Segregated cash    (13,031)   (16,569)   (12,743)  (10,579)\n"
+               "  Leverage Ratio     (a) / (c)   24.3 x   31.7 x   30.7 x   30.3 x\n")
+
+    def test_datecol_layout_pairs_month_days_with_years(self):
+        table = "Ratios Table"
+        self.assertEqual(self.cell(self.DATECOL, f"{table}|(a) Total Assets|May 31, 2008"),
+                         ["639,432"])
+        # Month-days a single space apart are still separate columns.
+        self.assertEqual(self.cell(self.DATECOL, f"{table}|(a) Total Assets|Aug 31, 2007"),
+                         ["659,216"])
+        self.assertEqual(self.cell(self.DATECOL, f"{table}|Segregated cash|Nov 30, 2007"),
+                         ["(12,743)"])
+        # A label split by a wide gap is one label; a ratio cell is a value.
+        self.assertEqual(self.cell(self.DATECOL,
+                                   f"{table}|Leverage Ratio (a) / (c)|Feb 29, 2008"), ["31.7 x"])
+        # No such column, or a row with no values, resolves nothing.
+        self.assertEqual(self.cell(self.DATECOL, f"{table}|(a) Total Assets|May 31, 2009"), [])
+        self.assertEqual(self.cell(self.DATECOL, f"{table}|Less:|May 31, 2008"), [])
+
     def test_leader_dots_and_fds_tags(self):
         self.assertEqual(self.cell(self.LEADERS, "SELECTED DATA|Total assets|2000"), ["$98,903"])
         fds = "FINANCIAL DATA SCHEDULE DEC. 31, 1999"

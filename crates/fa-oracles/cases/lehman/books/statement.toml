@@ -1,7 +1,9 @@
 # Lehman's condensed consolidated statement of financial condition at 2008-05-31, as the Q2-2008
 # 10-Q prints it (plan §8.3, L-T-01). One period, the fiscal quarter the date ends. Every printed
 # line posts to its own account in one entry; the printed totals are read from the balance
-# sheet and never posted.
+# sheet and never posted. Before the quarter closes, a scenario forks and recharacterizes the
+# quarter-end Repo 105/108 usage the examiner's report prints as a secured borrowing; its diff is
+# certified (L-R-02).
 
 [book]
 variant = "statement"
@@ -277,6 +279,12 @@ stub_of = "SRC-LEH-002"
 grade = "AgentUpload"
 reviewed_by = "case-second-reader"
 
+[[document]]
+id = "DOC-EXAM3"
+stub_of = "SRC-LEH-001"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
 [[intent]]
 id = "Q208.sfc.2008-05-31"
 fact = "Q208.sfc.2008-05-31"
@@ -539,6 +547,36 @@ amount_literal = "4922000000.00"
 amount_rule = "value:Q208.treasury_stock.2008-05-31#1"
 unit = "USD"
 
+# The Repo 105 but-for (plan §8.3, L-R-02): planned into the scenario, never posted to trunk.
+[[intent]]
+id = "V889-e-2008-05-31"
+fact = "V889-e-2008-05-31"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2008-05-31"
+memo = "quarter-end Repo 105/108 usage recharacterized as a secured borrowing (the examiner's adjustment, a but-for scenario)"
+evidence = "DOC-EXAM3"
+idempotency_key = "leh-repo105-2008-05-31"
+scenario = "lehman-repo105"
+
+[[leg]]
+intent = "V889-e-2008-05-31"
+ordinal = 0
+account = "1030"
+side = "Dr"
+amount_literal = "50383000000.00"
+amount_rule = "value:V889-e-2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "V889-e-2008-05-31"
+ordinal = 1
+account = "2030"
+side = "Cr"
+amount_literal = "50383000000.00"
+amount_rule = "value:V889-e-2008-05-31#1"
+unit = "USD"
+
 [[branch_class]]
 id = "bc-evidence"
 attribute = "evidence_attached"
@@ -548,7 +586,7 @@ values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
 [[default]]
 attribute = "evidence_attached"
 rule = "placeholder_reviewed"
-rationale = "the 10-Q is cited through its stub, reviewed by case-second-reader (plan §2.7)"
+rationale = "the 10-Q and the examiner's report are cited through their stubs, reviewed by case-second-reader (plan §2.7)"
 
 [[default]]
 attribute = "leg_split"
@@ -559,6 +597,16 @@ rationale = "every printed line of the statement posts to its own account in one
 attribute = "effective_date"
 rule = "reporting_period_last_day"
 rationale = "a statement of financial condition is as of its date, the fiscal quarter's last day"
+
+[[default]]
+attribute = "entry_class"
+rule = "Original"
+rationale = "the but-for books the quarter-end Repo 105/108 transactions as the ordinary repos the examiner's adjusted ratios treat them as: an ordinary entry posts under Original (plan §2.6 rule 2, §8.3)"
+
+[[default]]
+attribute = "entry_decomposition"
+rule = "secured_borrowing_two_legs"
+rationale = "had the transactions been accounted for as ordinary repos, a secured borrowing, the securities would have stayed on the balance sheet and the cash received would have been a repurchase liability: one entry, Dr financial instruments and other inventory positions owned (e), Cr securities sold under agreements to repurchase (e). The table adds (e) gross, so the documented Repo 105 entry's haircut and derivative legs are not posted (plan §8.3)"
 
 [[step]]
 seq = 1
@@ -573,12 +621,30 @@ ref = "Q208.sfc.2008-05-31"
 
 [[step]]
 seq = 3
+kind = "scenario_fork"
+ref = "lehman-repo105"
+principal = "case-filer-1"
+
+[[step]]
+seq = 4
+kind = "scenario_run"
+ref = "lehman-repo105"
+principal = "case-filer-1"
+
+[[step]]
+seq = 5
+kind = "scenario_diff"
+ref = "lehman-repo105"
+principal = "examiner-1"
+
+[[step]]
+seq = 6
 kind = "period_close"
 ref = "FY2008Q2"
 principal = "case-closer-1"
 
 [[step]]
-seq = 4
+seq = 7
 kind = "period_lock"
 ref = "FY2008Q2"
 principal = "case-closer-1"

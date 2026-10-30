@@ -321,8 +321,8 @@ pub struct BookRun<'c> {
     pub issuances: BTreeMap<String, Vec<String>>,
     /// Each opened `[[case]]`'s runs, by its id (A7b).
     pub cases: BTreeMap<String, super::lifecycle::CaseRun>,
-    /// Each certified scenario diff: the scenario and its certificate file.
-    pub scenario_diffs: Vec<(String, String)>,
+    /// Each certified scenario diff, in step order.
+    pub scenario_diffs: Vec<super::lifecycle::ScenarioDiffRun>,
     /// Intent id -> the entry vid `fa scenario run` planned it as (A11b).
     pub planned_entries: BTreeMap<String, String>,
     /// Attestation vid -> the `assert_balance` step ref that recorded it.

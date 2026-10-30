@@ -34,6 +34,16 @@ use fa_oracles::json::Json;
 
 use super::run::{BookRun, Call, reproduce, s};
 
+/// A certified scenario diff (a `scenario_diff` step): the scenario, the
+/// file its certificate was written to, and the call, whose `scenario_diff`
+/// event carries the diff's changed rows and whose `report_certificate`
+/// event the retained certificate a `scenario-diff` read cites.
+pub struct ScenarioDiffRun {
+    pub name: String,
+    pub certificate: String,
+    pub call: Call,
+}
+
 impl BookRun<'_> {
     /// An `issue` step (§3.3 step 4).
     pub(crate) fn issue(&mut self, step: &StepDef) {
@@ -400,8 +410,9 @@ impl<'c> BookRun<'c> {
     }
 
     /// A `scenario_run` step: every intent planned into the scenario, in
-    /// file order, run into it in its own principal's hand, a Restatement
-    /// with the restate grant (§3.3 step 5).
+    /// file order, run into it in its own principal's hand citing its
+    /// evidence document, a Restatement with the restate grant (§3.3 step
+    /// 5).
     pub(crate) fn scenario_run(&mut self, step: &StepDef) {
         let book = self.book;
         for it in self.planned_into(&step.reference) {
@@ -428,6 +439,17 @@ impl<'c> BookRun<'c> {
             ];
             if it.class == "Restatement" {
                 args.extend([s("--grant"), s("restate")]);
+            }
+            // The entry cites the intent's evidence, as a posted one does.
+            if let Some(e) = it.evidence.as_deref() {
+                let Some(oid) = self.documents.get(e).cloned() else {
+                    self.fail(format!(
+                        "expected evidence {e} of {} to be added observed none",
+                        it.id
+                    ));
+                    return;
+                };
+                args.extend([s("--evidence"), oid]);
             }
             args.push(s("--json"));
             let call = self.call(step.seq, &it.id, "scenario", args);
@@ -489,7 +511,11 @@ impl<'c> BookRun<'c> {
             ));
             return;
         }
-        self.scenario_diffs.push((name, certificate));
+        self.scenario_diffs.push(ScenarioDiffRun {
+            name,
+            certificate,
+            call,
+        });
     }
 
     /// A `case_rehearse` step: `fa case rehearse <case> --certificate` with
@@ -498,7 +524,11 @@ impl<'c> BookRun<'c> {
         let Some((case, n)) = self.case_number(step) else {
             return;
         };
-        let Some((scenario, certificate)) = self.scenario_diffs.last().cloned() else {
+        let Some((scenario, certificate)) = self
+            .scenario_diffs
+            .last()
+            .map(|d| (d.name.clone(), d.certificate.clone()))
+        else {
             self.fail(format!(
                 "expected a scenario_diff before case_rehearse (step {}) observed none",
                 step.seq

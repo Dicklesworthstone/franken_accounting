@@ -17,16 +17,18 @@
 //! - `replay`: certificates `fa bundle produce` does not take, replayed byte
 //!   for byte with `fa replay C:<oid>`, whose output must hash to the digest
 //!   the certificate recorded: the consolidation report (`fa consolidate
-//!   --certify`). fa-verify has no consolidation recomputation, so this is a
-//!   replay in the book, never an offline outsider verification.
+//!   --certify`) and the scenario diff (`fa scenario diff --certificate-out`).
+//!   fa-verify recomputes neither, so this is a replay in the book, never an
+//!   offline outsider verification.
 
 /// The read verbs the runner reads (A7b).
-pub const READ_VERBS: [&str; 5] = [
+pub const READ_VERBS: [&str; 6] = [
     "balance",
     "balance-sheet",
     "income-statement",
     "tb",
     "consolidate",
+    "scenario-diff",
 ];
 
 /// An outsider route.
@@ -68,7 +70,7 @@ pub fn outsider_kind(verb: &str) -> Option<(OutsiderKind, Option<Recomputed>)> {
         "balance-sheet" | "income-statement" => {
             Some((OutsiderKind::Report, Some(Recomputed::StatementLine)))
         }
-        "consolidate" => Some((OutsiderKind::Replay, None)),
+        "consolidate" | "scenario-diff" => Some((OutsiderKind::Replay, None)),
         _ => None,
     }
 }
@@ -91,6 +93,7 @@ mod tests {
                 Some(("report", Some(Recomputed::StatementLine))),
                 Some(("report", Some(Recomputed::StatementLine))),
                 Some(("report", Some(Recomputed::TrialBalanceRow))),
+                Some(("replay", None)),
                 Some(("replay", None)),
             ]
         );

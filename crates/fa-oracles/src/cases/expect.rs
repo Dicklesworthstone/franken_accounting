@@ -1635,18 +1635,49 @@ impl<'a> Check<'a, '_> {
         }
     }
 
-    /// `read_selector`: empty, originally_reported, currently_stated, or
+    /// `read_selector`: empty, originally_reported, currently_stated,
     /// `reported_in:<period label>[#<n>]`, the n-th `issue` step of that
-    /// period in step order.
+    /// period in step order, or `scenario:<name>`, the scenario a
+    /// `scenario-diff` read reads the certified diff of (a `scenario_diff`
+    /// step of the variant names it). A `scenario-diff` read names its
+    /// scenario, and only it does.
     fn selector(&mut self, f: &Fields, row: &str, variant: &str) {
-        let Some(sel) = f.str("read_selector").filter(|s| !s.is_empty()) else {
+        let sel = f.str("read_selector").filter(|s| !s.is_empty());
+        let scenario = sel.and_then(|s| s.strip_prefix("scenario:"));
+        let diff_read = f.str("read_verb") == Some("scenario-diff");
+        if diff_read != scenario.is_some() {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownValue,
+                "a `scenario-diff` read names its scenario (`read_selector = \"scenario:<name>\"`), and no other read does".into(),
+            );
+            return;
+        }
+        let Some(sel) = sel else {
             return;
         };
+        if let Some(name) = scenario {
+            let diffed = self.view.books.get(variant).is_none_or(|book| {
+                book.steps
+                    .iter()
+                    .any(|s| s.step_kind() == Some(StepKind::ScenarioDiff) && s.reference == name)
+            });
+            if !diffed {
+                self.push(
+                    f.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    format!("`{sel}`: `{variant}` has no scenario_diff step for `{name}`"),
+                );
+            }
+            return;
+        }
         if matches!(sel, "originally_reported" | "currently_stated") {
             return;
         }
         let Some(rest) = sel.strip_prefix("reported_in:") else {
-            self.push(f.line, row, LoadErrorKind::UnknownValue, format!("`read_selector = \"{sel}\"` is originally_reported, currently_stated or reported_in:<period>[#<n>]"));
+            self.push(f.line, row, LoadErrorKind::UnknownValue, format!("`read_selector = \"{sel}\"` is originally_reported, currently_stated, reported_in:<period>[#<n>] or scenario:<name>"));
             return;
         };
         let (label, n) = match rest.split_once('#') {

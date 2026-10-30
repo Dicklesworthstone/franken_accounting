@@ -152,7 +152,10 @@ fn xbrl() {
 /// balance-sheet lines (assets, liabilities, total equity, liabilities and
 /// equity) foot to the printed totals, which are never posted (L-T-01,
 /// L-T-02), and the posted lines the examiner's leverage arithmetic deducts
-/// read back (L-R-01).
+/// read back (L-R-01). The Repo 105 scenario's certified diff moves exactly
+/// two accounts, financial instruments owned (1030) and securities sold
+/// under agreements to repurchase (2030), each by the examiner's (e)
+/// (L-R-02).
 #[test]
 fn lehman() {
     let o = outcome("lehman");
@@ -163,6 +166,79 @@ fn lehman() {
     assert_eq!(count("PASS L-T-01 T statement "), 4, "{text}");
     assert_eq!(count("PASS L-T-02 T statement-fy2007 "), 4, "{text}");
     assert_eq!(count("PASS L-R-01 R statement "), 4, "{text}");
+    for (target, account) in [("inventory", "1030"), ("repos", "2030")] {
+        let prefix = format!(
+            "PASS L-R-02 R statement V889-e-2008-05-31-{target}/default kind=read_back read=scenario-diff,{account},FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030"
+        );
+        assert_eq!(count(&prefix), 1, "{text}");
+    }
+}
+
+/// L-R-02 is no vacuous read (§8.3, L3): in a planted copy both legs of the
+/// Repo 105 scenario's entry carry (e) plus one cent (each re-pointed to
+/// `synthetic`, since its `value:` rule would refuse the copy at load), so
+/// the certified diff moves both accounts by 50,383,000,000.01 and both
+/// reads fail against the posted (e).
+#[test]
+fn lehman_neg_scenario_e_plus_one_minor_unit() {
+    let o = run_planted(
+        "lehman",
+        &[
+            PlantedEdit {
+                file: "books/statement.toml",
+                old: "account = \"1030\"\nside = \"Dr\"\namount_literal = \"50383000000.00\"\namount_rule = \"value:V889-e-2008-05-31#1\"",
+                new: "account = \"1030\"\nside = \"Dr\"\namount_literal = \"50383000000.01\"\namount_rule = \"synthetic\"",
+            },
+            PlantedEdit {
+                file: "books/statement.toml",
+                old: "account = \"2030\"\nside = \"Cr\"\namount_literal = \"50383000000.00\"\namount_rule = \"value:V889-e-2008-05-31#1\"",
+                new: "account = \"2030\"\nside = \"Cr\"\namount_literal = \"50383000000.01\"\namount_rule = \"synthetic\"",
+            },
+        ],
+        HARNESS_VERBS,
+    )
+    .expect_err("a scenario that moves the lines by e plus one cent fails the case");
+    let text = o.text();
+    for (target, account) in [("inventory", "1030"), ("repos", "2030")] {
+        let prefix = format!(
+            "FAIL L-R-02 R statement V889-e-2008-05-31-{target}/default kind=read_back read=scenario-diff,{account},FY2008Q2,scenario=lehman-repo105 value=50383000000.01 rows=1030,2030 "
+        );
+        assert!(
+            o.lines.iter().any(|l| l.starts_with(&prefix)
+                && l.contains("expected value=50383000000.00 observed value=50383000000.01")),
+            "{text}"
+        );
+    }
+}
+
+/// L-R-02 claims everything the scenario moves (§8.3, L3): a planted copy
+/// plans a second, balanced entry into the scenario, cash debited and
+/// reverse repos credited 100.00. Total assets do not move, but the diff
+/// now changes two accounts no L-R-02 read covers, so both reads fail
+/// naming the first of them.
+#[test]
+fn lehman_neg_extra_scenario_intent() {
+    let o = run_planted(
+        "lehman",
+        &[PlantedEdit {
+            file: "books/statement.toml",
+            old: "[[branch_class]]\nid = \"bc-evidence\"",
+            new: "[[intent]]\nid = \"neg-extra\"\nfact = \"synthetic\"\nclass = \"Original\"\nprincipal = \"case-filer-1\"\neffective_date = \"2008-05-31\"\nevidence = \"DOC-EXAM3\"\nidempotency_key = \"leh-neg-extra\"\nscenario = \"lehman-repo105\"\n\n[[leg]]\nintent = \"neg-extra\"\nordinal = 0\naccount = \"1010\"\nside = \"Dr\"\namount_literal = \"100.00\"\namount_rule = \"synthetic\"\nunit = \"USD\"\n\n[[leg]]\nintent = \"neg-extra\"\nordinal = 1\naccount = \"1040\"\nside = \"Cr\"\namount_literal = \"100.00\"\namount_rule = \"synthetic\"\nunit = \"USD\"\n\n[[branch_class]]\nid = \"bc-evidence\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a scenario that moves accounts L-R-02 does not read fails the case");
+    let text = o.text();
+    for (target, account) in [("inventory", "1030"), ("repos", "2030")] {
+        let prefix = format!(
+            "FAIL L-R-02 R statement V889-e-2008-05-31-{target}/default kind=read_back read=scenario-diff,{account},FY2008Q2,scenario=lehman-repo105 "
+        );
+        assert!(
+            o.lines.iter().any(|l| l.starts_with(&prefix)
+                && l.contains("expected the diff to change only 1030,2030 observed 1010 changed")),
+            "{text}"
+        );
+    }
 }
 
 /// A14 (§12.3): every committed case's README is the renderer's output of

@@ -14,8 +14,12 @@
 //! or `income-statement` read is `fa statement <verb> --for <code>
 //! --certify --json` (its value the current column of the line whose code
 //! is the read's target); a `tb` read is `fa tb --period <code> --certify
-//! --json` (its value the target account's net). Each reads through the
-//! row's selector: `--as-originally-reported`,
+//! --json` (its value the target account's net). A `scenario-diff` read
+//! is the diff the history's `scenario_diff` step certified for the
+//! scenario its `scenario:<name>` selector names, read on the account or
+//! balance-sheet line its target names; a diff that changes an account
+//! none of the row's reads covers fails it. Each other read reads through
+//! the row's selector: `--as-originally-reported`,
 //! `--as-currently-stated`, or `--as-reported-in C:<oid>` for
 //! `reported_in:<period>[#<n>]`, the certificate the period's n-th `issue`
 //! step issued. Its value is the cell's net (debits minus credits) in the
@@ -29,7 +33,7 @@
 //! refuse `FA-REF-140` (§5.3, §3.7 item 4).
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::{BookVariant, StepDef};
@@ -76,6 +80,9 @@ pub struct Read {
     /// The output digest its report certificate recorded (statement, tb and
     /// consolidate reads), for a replay outsider route (A12).
     pub output_digest: Option<String>,
+    /// A scenario-diff read: the accounts its diff changed, in the diff's
+    /// row order, so a row shows what else the scenario moved.
+    pub changed: Option<Vec<String>>,
 }
 
 /// One account's explanations over a read's fold (`BookRun::explain`).
@@ -376,6 +383,7 @@ impl BookRun<'_> {
             trace: None,
             known_at: None,
             output_digest: None,
+            changed: None,
         };
         if !READ_VERBS.contains(&verb) {
             return fail(token, format!("needs:A7b ({verb} reads)"));
@@ -399,6 +407,18 @@ impl BookRun<'_> {
             Ok(flags) => flags,
             Err(why) => return fail(token, why),
         };
+        match (verb, selector.and_then(|s| s.strip_prefix("scenario:"))) {
+            ("scenario-diff", Some(scenario)) => {
+                return self.read_scenario_diff(token, scenario, e, target, &code, &unit);
+            }
+            ("scenario-diff", None) | (_, Some(_)) => {
+                return fail(
+                    token,
+                    "expected a scenario-diff read through scenario:<name> and no other read through it observed otherwise".into(),
+                );
+            }
+            _ => {}
+        }
         if verb == "balance" {
             return self.read_balance(e, t, token, &unit, &flags);
         }
@@ -527,7 +547,106 @@ impl BookRun<'_> {
             trace,
             known_at: None,
             output_digest: call.str_field("report_certificate", "output_digest"),
+            changed: None,
         }
+    }
+
+    /// A `scenario-diff` read: the diff of the scenario its selector names,
+    /// as the history's last `scenario_diff` step of it certified it (that
+    /// call's `scenario_diff` event), read through `target`'s terms
+    /// ([`Self::diff_terms`]) over the accounts the row's reads cover
+    /// ([`Self::diff_coverage`]). Its certificate is the diff's retained
+    /// one (the replay route, A12).
+    fn read_scenario_diff(
+        &self,
+        token: String,
+        scenario: &str,
+        e: &Expectation,
+        target: &str,
+        code: &str,
+        unit: &str,
+    ) -> Read {
+        let diff = self
+            .scenario_diffs
+            .iter()
+            .rev()
+            .find(|d| d.name == scenario);
+        let value = match diff {
+            None => Err(format!(
+                "expected a certified diff of scenario {scenario} observed none"
+            )),
+            Some(d) => self.diff_coverage(e).and_then(|covered| {
+                let terms = self.diff_terms(target)?;
+                diff_value(&d.call, &terms, &covered, code, unit)
+            }),
+        };
+        let certificate = diff.and_then(|d| d.call.str_field("report_certificate", "oid"));
+        Read {
+            token,
+            value,
+            certificates: certificate.clone().into_iter().collect(),
+            certificate,
+            contributions: None,
+            exercised: None,
+            trace: None,
+            known_at: None,
+            output_digest: diff
+                .and_then(|d| d.call.str_field("report_certificate", "output_digest")),
+            changed: diff.map(|d| {
+                d.call
+                    .array_field("scenario_diff", "rows")
+                    .iter()
+                    .filter_map(|r| r.get("code").and_then(Json::as_str).map(str::to_string))
+                    .collect()
+            }),
+        }
+    }
+
+    /// The sign a scenario-diff read applies to each account's delta
+    /// (debit-positive): an account of the chart is read alone in its
+    /// natural sign ([`natural_sign`]); a balance-sheet line reads every
+    /// account of a type it folds, with the sign its terms give that type
+    /// ([`contrib::line_terms`]), so a credit line reads an increase as
+    /// positive.
+    fn diff_terms(&self, target: &str) -> Result<BTreeMap<String, i128>, String> {
+        if self.book.accounts.iter().any(|a| a.code == target) {
+            return Ok([(
+                target.to_string(),
+                natural_sign(self.book, "balance", target),
+            )]
+            .into());
+        }
+        let definition =
+            contrib::definition("balance-sheet").ok_or("expected a balance-sheet definition")?;
+        let types = contrib::line_terms(definition, target)?;
+        Ok(self
+            .book
+            .accounts
+            .iter()
+            .filter_map(|a| {
+                types
+                    .get(a.account_type.as_str())
+                    .map(|sign| (a.code.clone(), *sign))
+            })
+            .collect())
+    }
+
+    /// The accounts a row's scenario-diff reads cover, over all of its
+    /// reads. The row states what its scenario moves, so a diff that
+    /// changes any other account fails each of its reads.
+    fn diff_coverage(&self, e: &Expectation) -> Result<BTreeSet<String>, String> {
+        let targets: Vec<&str> = match self.case.expectations.as_ref() {
+            Some(set) if set.targets_of(&e.id).next().is_some() => set
+                .targets_of(&e.id)
+                .filter_map(|t| field(e, Some(t), "read_target"))
+                .collect(),
+            _ => field(e, None, "read_target").into_iter().collect(),
+        };
+        let mut covered = BTreeSet::new();
+        for target in targets {
+            covered.extend(self.diff_terms(target)?.into_keys());
+        }
+        Ok(covered)
     }
 
     /// `fa statement trace --definition <verb> --for <code> --before
@@ -776,6 +895,7 @@ impl BookRun<'_> {
                 trace: None,
                 known_at: explained.known_at,
                 output_digest: None,
+                changed: None,
             },
             Err(why) => Read {
                 token,
@@ -787,6 +907,7 @@ impl BookRun<'_> {
                 trace: None,
                 known_at: None,
                 output_digest: None,
+                changed: None,
             },
         }
     }
@@ -846,6 +967,11 @@ impl BookRun<'_> {
             "originally_reported" => return flag("as-originally-reported"),
             "currently_stated" => return flag("as-currently-stated"),
             _ => {}
+        }
+        // A scenario-diff read's scenario: no flag, the diff is read as the
+        // history certified it.
+        if let Some(name) = selector.strip_prefix("scenario:") {
+            return (Some(format!("scenario={name}")), Ok(Vec::new()));
         }
         let Some(rest) = selector.strip_prefix("reported_in:") else {
             return (
@@ -992,4 +1118,61 @@ impl BookRun<'_> {
             },
         );
     }
+}
+
+/// A certified scenario diff's change through `terms` in `unit` over period
+/// `code` ([`BookRun::read_scenario_diff`]): each changed row's delta in the
+/// unit (the scenario's net less trunk's) times its account's sign. The
+/// period is one of the diff's; a changed row with a pending change, or on
+/// an account the row's reads do not cover, is no read.
+fn diff_value(
+    call: &Call,
+    terms: &BTreeMap<String, i128>,
+    covered: &BTreeSet<String>,
+    code: &str,
+    unit: &str,
+) -> Result<i128, String> {
+    let periods: Vec<String> = call
+        .array_field("scenario_diff", "periods")
+        .iter()
+        .filter_map(|p| p.as_str().map(str::to_string))
+        .collect();
+    if !periods.iter().any(|p| p == code) {
+        return Err(format!(
+            "expected period {code} among the diff's periods observed [{}]",
+            periods.join(",")
+        ));
+    }
+    let scale = scale_of(unit).ok_or_else(|| format!("unit `{unit}` is not registered"))?;
+    let suffix = format!(" {unit}");
+    let amount = |row: &Json, key: &str| -> Result<Option<i128>, String> {
+        let text = row.get(key).and_then(Json::as_str).unwrap_or_default();
+        text.strip_suffix(suffix.as_str())
+            .map(|a| parse_amount(a, scale).map_err(|e| format!("{key} `{text}`: {e:?}")))
+            .transpose()
+    };
+    let mut sum: i128 = 0;
+    for row in call.array_field("scenario_diff", "rows") {
+        let account = row.get("code").and_then(Json::as_str).unwrap_or("-");
+        if !covered.contains(account) {
+            return Err(format!(
+                "expected the diff to change only {} observed {account} changed",
+                covered.iter().cloned().collect::<Vec<_>>().join(",")
+            ));
+        }
+        let Some(delta) = amount(&row, "delta")? else {
+            continue;
+        };
+        if amount(&row, "pending_delta")?.is_some_and(|p| p != 0) {
+            return Err(format!(
+                "expected no pending change on {account} observed one"
+            ));
+        }
+        let sign = terms.get(account).copied().unwrap_or(0);
+        sum = delta
+            .checked_mul(sign)
+            .and_then(|d| sum.checked_add(d))
+            .ok_or_else(|| "expected the diff's change in range observed overflow".to_string())?;
+    }
+    Ok(sum)
 }

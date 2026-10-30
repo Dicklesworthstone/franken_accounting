@@ -3,8 +3,9 @@
 # (`FA_SEC_CONTACT`): an Internet Archive capture, `original_hash_compared = false`.
 # `case_fetch.py fetch lehman` re-downloads each OK row and must reproduce its `sha256`.
 #
-# This slice lands the Q2-2008 10-Q (SRC-LEH-002). The Valukas examiner report (SRC-LEH-001) and
-# its Appendix 17 (SRC-LEH-003), the Q1-2008 10-Q and the BLOCKED FY2007 10-Qs are L1's later rows.
+# Rows: the Q2-2008 10-Q (SRC-LEH-002) and Volume 3 of the examiner's report (SRC-LEH-001), whose
+# p.889 table prints the quarter-end Repo 105/108 usage. Its Appendix 17 (SRC-LEH-003), the Q1-2008
+# 10-Q and the BLOCKED FY2007 10-Qs are L1's later rows.
 
 [[source]]
 id = "SRC-LEH-002"
@@ -27,3 +28,23 @@ status = "OK"
 filed_on = "2008-07-10"
 restates = []
 notes = "Accession 0001104659-08-045115, the 10-Q for the fiscal quarter ended May 31, 2008; Filing Date 2008-07-10 on its EDGAR filing index (Internet Archive capture of 2013-08-05). 4,390,268 bytes as captured 2012-01-28. The condensed consolidated statement of financial condition is printed on pp.5-6, marked (Unaudited); the independent accountants' review report (p.53) states the review of the statement as of May 31, 2008 (Q208-LEGEND, the row's assurance) and, in its next sentences, that the statement as of November 30, 2007 was previously audited. A row has one assurance, so the November 30, 2007 comparative column is cited at the row's reviewed status here, never assumed audited."
+
+[[source]]
+id = "SRC-LEH-001"
+title = "Report of the Examiner, In re Lehman Brothers Holdings Inc., Case No. 08-13555 (Bankr. S.D.N.Y.), Volume 3"
+publisher = "The examiner appointed in In re Lehman Brothers Holdings Inc. (U.S. Bankruptcy Court, S.D.N.Y.)"
+original_url = "http://jenner.com/lehman/VOLUME%203.pdf"
+archive_url = "http://web.archive.org/web/20120723231103id_/http://jenner.com/lehman/VOLUME%203.pdf"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T09:00:24Z"
+sha256 = "5913466996ce64ae959ad2b3ab3be66b4f857c3aa0b3db4b96617d07846fd249"
+format = "pdf"
+extraction = ["case_fetch.py extract", "pdftotext 26.01.0 -layout", "b8e08d4ebc1228cab977d7f8a124e7cbba6400f5ac55f34f032e94f8fe69b6cb"]
+redistribution_basis = "public-record/court"
+assertion_status = "investigative_finding"
+anchor_scheme = ["page", "table_cell"]
+status = "OK"
+filed_on = "2010-03-11"
+restates = []
+notes = "Volume 3 of the examiner's report, dated March 11, 2010 on its cover (filed_on). 2,590,569 bytes as captured 2012-07-23; the PDF records a modification on 2010-04-13, so the capture is that revision. p.889 prints the table Gross and Net Balance Sheet Ratios at seven quarter ends: total assets, the deductions and net assets, equity and tangible equity, (e) Repo 105/108 usage, and the leverage ratios with and without (e). Its sources line attributes the asset and equity data to the 10-K and 10-Q filings and the Repo 105/108 usage to internal documents, so (e) rests on this report alone: the 10-Q (SRC-LEH-002) never mentions Repo 105."

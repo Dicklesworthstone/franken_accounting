@@ -624,6 +624,44 @@ fn reported_in_selector_with_no_such_issue_step_is_refused() {
     );
 }
 
+#[test]
+fn scenario_diff_read_names_a_diffed_scenario_and_only_it_takes_one() {
+    let r = |verb: &str, selector: &str| {
+        let selector = if selector.is_empty() {
+            String::new()
+        } else {
+            format!("read_selector = \"{selector}\"\n")
+        };
+        format!(
+            "[[expectation]]\nid = \"W-R-09\"\ntype = \"R\"\nbook_variant = \"native\"\nstatement_template = \"R.read_back\"\nbasis = [\"F4\"]\nread_verb = \"{verb}\"\nread_target = \"assets\"\nread_coordinate = \"2001Q2\"\n{selector}posted = \"F4\"\n"
+        )
+    };
+    loads(
+        &appended(&r("scenario-diff", "scenario:restate")),
+        "the native book certifies the diff of `restate`",
+    );
+    let errs = load(&appended(&r("scenario-diff", "scenario:other"))).expect_err("refused");
+    refused(
+        &errs,
+        "expectations.toml",
+        LoadErrorKind::DanglingKey,
+        "has no scenario_diff step for `other`",
+    );
+    for (verb, selector) in [
+        ("scenario-diff", ""),
+        ("scenario-diff", "currently_stated"),
+        ("balance-sheet", "scenario:restate"),
+    ] {
+        let errs = load(&appended(&r(verb, selector))).expect_err("refused");
+        refused(
+            &errs,
+            "expectations.toml",
+            LoadErrorKind::UnknownValue,
+            "a `scenario-diff` read names its scenario",
+        );
+    }
+}
+
 fn with_assert(reference: &str, extra_expectations: &str) -> Files {
     let step = format!(
         "\n[[step]]\nseq = 72\nkind = \"assert_balance\"\nref = \"{reference}\"\nprincipal = \"examiner-1\"\nevidence = \"DOC-406\"\n"

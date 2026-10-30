@@ -3,7 +3,9 @@
 # November 30, 2007 comparative (in millions; `scale` param 6), each bound by its table cell
 # (`<table>@p<printed page>|<row label>|<column>`), and the review report's sentence that
 # establishes the row's assurance. Two interpretation facts read each date's lines as one
-# posted entry.
+# posted entry. From the examiner's report (SRC-LEH-001): p.889's (e), the Repo 105/108 usage at
+# May 31, 2008, which the Repo 105 scenario posts, and two interpretations that read its effect on
+# the two lines it moves (L-R-02).
 
 [[fact]]
 id = "Q208-LEGEND"
@@ -735,6 +737,32 @@ reader = "case-author-1"
 second_reader = "case-second-reader"
 rationale = "The 10-Q's condensed consolidated statement of financial condition at 2007-11-30, posted as one entry: each printed line on its own account, assets debited, liabilities and equity credited, a parenthesized equity line (a loss or treasury stock) debited. The printed totals are never posted. The printed lines balance on their own (total assets equals total liabilities and stockholders' equity), so no remainder account is needed."
 
+[[fact]]
+id = "V889-e-2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-001"
+anchor_kind = "table_cell"
+anchor = "Gross and Net Balance Sheet Ratios@p889|(e) Repo 105/108 Usage|May 31, 2008"
+quote_sha256 = "e002b0b6bace28900796c4868e11501c92685588a8c44cf2fad49845320051c3"
+about_scope = "scheme:lehman-examiner-p889"
+granularity = "dated_aggregate"
+
+[[fact]]
+id = "V889-e-2008-05-31-inventory"
+provenance = "interpretation"
+from = ["V889-e-2008-05-31"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "Recharacterized as a secured borrowing, the Repo 105/108 securities stay on the balance sheet: financial instruments and other inventory positions owned, and so total assets, rise by exactly (e), the adjustment the table's ((a) + (e)) / (c) leverage ratio makes to total assets."
+
+[[fact]]
+id = "V889-e-2008-05-31-repos"
+provenance = "interpretation"
+from = ["V889-e-2008-05-31"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "Recharacterized as a secured borrowing, the cash received is a repurchase liability: securities sold under agreements to repurchase, and so total liabilities, rise by exactly (e), and stockholders' equity is unchanged (the table divides by the same (c) and (d) with and without (e))."
+
 [[value]]
 fact = "Q208.cash.2008-05-31"
 ordinal = 1
@@ -1372,5 +1400,15 @@ literal = "691,063"
 rule = "scale"
 param = 6
 value = "69106300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "V889-e-2008-05-31"
+ordinal = 1
+literal = "50,383"
+rule = "scale"
+param = 6
+value = "5038300000000"
 unit = "USD"
 precision = 6

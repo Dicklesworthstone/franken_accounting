@@ -1057,6 +1057,15 @@ fn read_against(
     let scale = super::reads::scale_of(&unit).unwrap_or(0);
     row.projection
         .push(("value".into(), format_amount(observed, scale)));
+    // A scenario-diff read shows every account its diff changed.
+    if let Some(changed) = &read.changed {
+        let rows = if changed.is_empty() {
+            "-".to_string()
+        } else {
+            changed.join(",")
+        };
+        row.projection.push(("rows".into(), rows));
+    }
     // A11b: an as-originally-reported read of a line no delta moved does
     // not exercise its selector. The row says so and keeps its verdict.
     if read.exercised == Some(false) {
@@ -1075,17 +1084,20 @@ fn read_against(
     }
     // Exact equality at the published value's declared precision (§5.3).
     // Equal to the minor unit is equal at any coarser precision; an unequal
-    // value stated to a coarser precision needs its rounding rule to decide.
+    // published value stated to a coarser precision needs its rounding rule
+    // to decide. A posted value is the book's own exact amount, so a
+    // read-back that differs from it fails at any precision.
     if observed == want {
         return Ok(());
     }
-    if run
-        .case
-        .values
-        .iter()
-        .find(|v| v.fact == fact && v.ordinal == 1)
-        .and_then(|v| v.precision)
-        .is_some_and(|p| p > 0)
+    if value_key == "published"
+        && run
+            .case
+            .values
+            .iter()
+            .find(|v| v.fact == fact && v.ordinal == 1)
+            .and_then(|v| v.precision)
+            .is_some_and(|p| p > 0)
     {
         return Err((
             RowVerdict::Unrun,

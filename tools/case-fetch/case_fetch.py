@@ -1489,6 +1489,45 @@ def percell_cell(loc, t, row, column, limit):
     return None
 
 
+MONTH_DAY = re.compile(r"\b([A-Z][a-z]{2})\.? ([0-9]{1,2}),?")
+RATIO_VALUE = re.compile(r"^[0-9][0-9,]*(?:\.[0-9]+)? ?x$")
+
+
+def datecol_cell(loc, t, row, column, limit):
+    """A `pdftotext -layout` table whose column headers are a line of month-days over a line
+    of years (`May 31   Feb 29,   Nov 30, Aug 31,` above `2008   2008   2007   2007`; the
+    month-days may stand a single space apart). The columns are `<Mon> <DD>, <YYYY>`, the
+    n-th month-day paired with the n-th year. A row is one line: its label is its leading
+    cells that are not values (so `Leverage Ratio     (a) / (c)` is one label), and its
+    values, one per column, may be ratios (`24.3 x`)."""
+    def value(c):
+        return bool(CELL_VALUE.match(c) or RATIO_VALUE.match(c))
+
+    for j in range(t + 1, limit):
+        years = YEAR.findall(loc.lines[j])
+        if len(years) < 2:
+            continue
+        above = next((loc.lines[i] for i in range(j - 1, t, -1) if not blank(loc.lines[i])), "")
+        days = [f"{m.group(1)} {m.group(2)}" for m in MONTH_DAY.finditer(above)]
+        if len(days) != len(years):
+            continue
+        heads = [f"{d}, {y}" for d, y in zip(days, years)]
+        if column not in heads:
+            return None
+        col = heads.index(column)
+        for k in range(j + 1, limit):
+            cs = [normalize(c) for c in cells(loc.lines[k])]
+            n = next((i for i, c in enumerate(cs) if value(c)), len(cs))
+            if n == 0 or row_label(" ".join(cs[:n])) != row:
+                continue
+            vals = cs[n:]
+            if len(vals) == len(heads) and all(value(v) for v in vals):
+                return vals[col], k + 1
+            return None
+        return None
+    return None
+
+
 def tagged_cell(loc, t, row, limit):
     """A financial data schedule (EX-27): `<TAG>  value` lines, one value each."""
     for j in range(t + 1, limit):
@@ -1549,6 +1588,8 @@ def table_cell(loc, anchor):
             hit = stacked_cell(loc, t, row, column, limit)
         if hit is None:
             hit = percell_cell(loc, t, row, column, limit)
+        if hit is None:
+            hit = datecol_cell(loc, t, row, column, limit)
         if hit:
             found.append(hit)
     return found

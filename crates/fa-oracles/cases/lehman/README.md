@@ -2,9 +2,9 @@
 
 # Lehman Brothers Repo 105, fiscal 2007 to the second quarter of 2008
 
-Case `lehman` (letter L), version 1. Scope: the condensed consolidated statement of financial condition the Q2-2008 10-Q prints, at May 31, 2008 and at the November 30, 2007 comparative: every line, and the printed totals they foot to.
+Case `lehman` (letter L), version 1. Scope: the condensed consolidated statement of financial condition the Q2-2008 10-Q prints, at May 31, 2008 and at the November 30, 2007 comparative: every line, and the printed totals they foot to; and the quarter-end Repo 105/108 usage the examiner's report prints, recharacterized as a secured borrowing in a but-for scenario on the May 31, 2008 statement.
 
-Claimed rows: `L-R-01`, `L-T-01`, `L-T-02`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `L-R-01`, `L-R-02`, `L-T-01`, `L-T-02`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -13,6 +13,7 @@ Claimed rows: `L-R-01`, `L-T-01`, `L-T-02`. A claimed row that stops passing fai
 | Source | Title | Publisher | Status | Filed | Retrieved |
 |---|---|---|---|---|---|
 | `SRC-LEH-002` | Lehman Brothers Holdings Inc., Form 10-Q for the quarter ended May 31, 2008 | Lehman Brothers Holdings Inc. (EDGAR) | reported (reviewed; a review is not an audit) | 2008-07-10 | archive_capture |
+| `SRC-LEH-001` | Report of the Examiner, In re Lehman Brothers Holdings Inc., Case No. 08-13555 (Bankr. S.D.N.Y.), Volume 3 | The examiner appointed in In re Lehman Brothers Holdings Inc. (U.S. Bankruptcy Court, S.D.N.Y.) | the examiner reported | 2010-03-11 | archive_capture |
 
 ### Sourced facts
 
@@ -85,11 +86,14 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `Q208.total_liabilities.2007-11-30` | `SRC-LEH-002` | `Consolidated Statement of Financial Condition—(Continued)@p6\|Total liabilities\|Nov 30, 2007` | 668,573,000,000.00 USD | reported (reviewed; a review is not an audit) | statement_line |
 | `Q208.total_stockholders_equity.2007-11-30` | `SRC-LEH-002` | `Consolidated Statement of Financial Condition—(Continued)@p6\|Total stockholders’ equity\|Nov 30, 2007` | 22,490,000,000.00 USD | reported (reviewed; a review is not an audit) | statement_line |
 | `Q208.total_liabilities_and_equity.2007-11-30` | `SRC-LEH-002` | `Consolidated Statement of Financial Condition—(Continued)@p6\|Total liabilities and stockholders’ equity\|Nov 30, 2007` | 691,063,000,000.00 USD | reported (reviewed; a review is not an audit) | statement_line |
+| `V889-e-2008-05-31` | `SRC-LEH-001` | `Gross and Net Balance Sheet Ratios@p889\|(e) Repo 105/108 Usage\|May 31, 2008` | 50,383,000,000.00 USD | the examiner reported | dated_aggregate |
 
 ### Readings of the record
 
 - `Q208.sfc.2008-05-31`, an interpretation of `Q208.cash.2008-05-31`, `Q208.segregated.2008-05-31`, `Q208.inventory_owned.2008-05-31`, `Q208.reverse_repos.2008-05-31`, `Q208.securities_borrowed.2008-05-31`, `Q208.receivable_brokers.2008-05-31`, `Q208.receivable_customers.2008-05-31`, `Q208.receivable_others.2008-05-31`, `Q208.property.2008-05-31`, `Q208.other_assets.2008-05-31`, `Q208.intangibles.2008-05-31`, `Q208.short_term_borrowings.2008-05-31`, `Q208.inventory_sold.2008-05-31`, `Q208.repos.2008-05-31`, `Q208.securities_loaned.2008-05-31`, `Q208.other_secured_borrowings.2008-05-31`, `Q208.payable_brokers.2008-05-31`, `Q208.payable_customers.2008-05-31`, `Q208.accrued.2008-05-31`, `Q208.deposits.2008-05-31`, `Q208.long_term_borrowings.2008-05-31`, `Q208.preferred_stock.2008-05-31`, `Q208.common_stock.2008-05-31`, `Q208.paid_in_capital.2008-05-31`, `Q208.aoci.2008-05-31`, `Q208.retained_earnings.2008-05-31`, `Q208.other_equity.2008-05-31`, `Q208.treasury_stock.2008-05-31`, read by `case-author-1` and second reader `case-second-reader`: The 10-Q's condensed consolidated statement of financial condition at 2008-05-31, posted as one entry: each printed line on its own account, assets debited, liabilities and equity credited, a parenthesized equity line (a loss or treasury stock) debited. The printed totals are never posted. The printed lines balance on their own (total assets equals total liabilities and stockholders' equity), so no remainder account is needed.
 - `Q208.sfc.2007-11-30`, an interpretation of `Q208.cash.2007-11-30`, `Q208.segregated.2007-11-30`, `Q208.inventory_owned.2007-11-30`, `Q208.reverse_repos.2007-11-30`, `Q208.securities_borrowed.2007-11-30`, `Q208.receivable_brokers.2007-11-30`, `Q208.receivable_customers.2007-11-30`, `Q208.receivable_others.2007-11-30`, `Q208.property.2007-11-30`, `Q208.other_assets.2007-11-30`, `Q208.intangibles.2007-11-30`, `Q208.short_term_borrowings.2007-11-30`, `Q208.inventory_sold.2007-11-30`, `Q208.repos.2007-11-30`, `Q208.securities_loaned.2007-11-30`, `Q208.other_secured_borrowings.2007-11-30`, `Q208.payable_brokers.2007-11-30`, `Q208.payable_customers.2007-11-30`, `Q208.accrued.2007-11-30`, `Q208.deposits.2007-11-30`, `Q208.long_term_borrowings.2007-11-30`, `Q208.preferred_stock.2007-11-30`, `Q208.common_stock.2007-11-30`, `Q208.paid_in_capital.2007-11-30`, `Q208.aoci.2007-11-30`, `Q208.retained_earnings.2007-11-30`, `Q208.other_equity.2007-11-30`, `Q208.treasury_stock.2007-11-30`, read by `case-author-1` and second reader `case-second-reader`: The 10-Q's condensed consolidated statement of financial condition at 2007-11-30, posted as one entry: each printed line on its own account, assets debited, liabilities and equity credited, a parenthesized equity line (a loss or treasury stock) debited. The printed totals are never posted. The printed lines balance on their own (total assets equals total liabilities and stockholders' equity), so no remainder account is needed.
+- `V889-e-2008-05-31-inventory`, an interpretation of `V889-e-2008-05-31`, read by `case-author-1` and second reader `case-second-reader`: Recharacterized as a secured borrowing, the Repo 105/108 securities stay on the balance sheet: financial instruments and other inventory positions owned, and so total assets, rise by exactly (e), the adjustment the table's ((a) + (e)) / (c) leverage ratio makes to total assets.
+- `V889-e-2008-05-31-repos`, an interpretation of `V889-e-2008-05-31`, read by `case-author-1` and second reader `case-second-reader`: Recharacterized as a secured borrowing, the cash received is a repurchase liability: securities sold under agreements to repurchase, and so total liabilities, rise by exactly (e), and stockholders' equity is unchanged (the table divides by the same (c) and (d) with and without (e)).
 
 ## How this book was built
 
@@ -137,18 +141,22 @@ Opened 2008-03-01 in USD, on the `custom` calendar.
 | Intent | Fact | Class | Effective |
 |---|---|---|---|
 | `Q208.sfc.2008-05-31` | `Q208.sfc.2008-05-31` | Original | 2008-05-31 |
+| `V889-e-2008-05-31` | `V889-e-2008-05-31` | Original | 2008-05-31 |
 
 | Document | Stands for | Grade |
 |---|---|---|
 | `DOC-Q208` | `SRC-LEH-002` | AgentUpload |
+| `DOC-EXAM3` | `SRC-LEH-001` | AgentUpload |
 
 Declared defaults (each an encoding choice the record does not fix):
 
 | Attribute | Rule | Why |
 |---|---|---|
-| `evidence_attached` | `placeholder_reviewed` | the 10-Q is cited through its stub, reviewed by case-second-reader (plan §2.7) |
+| `evidence_attached` | `placeholder_reviewed` | the 10-Q and the examiner's report are cited through their stubs, reviewed by case-second-reader (plan §2.7) |
 | `leg_split` | `statement_lines` | every printed line of the statement posts to its own account in one entry; the lines balance on their own, so no remainder account is needed (plan §8.3, L-T-01) |
 | `effective_date` | `reporting_period_last_day` | a statement of financial condition is as of its date, the fiscal quarter's last day |
+| `entry_class` | `Original` | the but-for books the quarter-end Repo 105/108 transactions as the ordinary repos the examiner's adjusted ratios treat them as: an ordinary entry posts under Original (plan §2.6 rule 2, §8.3) |
+| `entry_decomposition` | `secured_borrowing_two_legs` | had the transactions been accounted for as ordinary repos, a secured borrowing, the securities would have stayed on the balance sheet and the cash received would have been a repurchase liability: one entry, Dr financial instruments and other inventory positions owned (e), Cr securities sold under agreements to repurchase (e). The table adds (e) gross, so the documented Repo 105 entry's haircut and derivative legs are not posted (plan §8.3) |
 
 ### Book `statement-fy2007` (statement)
 
@@ -234,6 +242,17 @@ Sources: `SRC-LEH-002` (reported (reviewed; a review is not an audit)).
 | `Q208.reverse_repos.2008-05-31` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1040,FY2008Q2,as-currently-stated value=169684000000.00 gql=ok |
 | `Q208.securities_borrowed.2008-05-31` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1050,FY2008Q2,as-currently-stated value=124842000000.00 gql=ok |
 | `Q208.intangibles.2008-05-31` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1110,FY2008Q2,as-currently-stated value=4101000000.00 gql=ok |
+
+### `L-R-02`: read-back (R.read_back)
+
+On the book `statement`, each read below returns the posted value it names (`V889-e-2008-05-31`).
+
+Sources: `SRC-LEH-001` (the examiner reported).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `V889-e-2008-05-31-inventory` | `default` | R | PASS | record-consistent | kind=read_back read=scenario-diff,1030,FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 |
+| `V889-e-2008-05-31-repos` | `default` | R | PASS | record-consistent | kind=read_back read=scenario-diff,2030,FY2008Q2,scenario=lehman-repo105 value=50383000000.00 rows=1030,2030 |
 
 ### `L-T-02`: exact tie-out (T.footing)
 
