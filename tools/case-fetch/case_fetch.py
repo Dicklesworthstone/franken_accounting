@@ -1438,6 +1438,57 @@ def stacked_cell(loc, t, row, column, limit):
     return None
 
 
+YEAR = re.compile(r"\b(?:19|20)[0-9]{2}\b")
+
+
+def percell_cell(loc, t, row, column, limit):
+    """EDGAR's one-cell-per-line layout (a 2008-era table whose cells hold block elements, so
+    the strip ends a line at each): every header, label and value is a line of its own, a `$`
+    and a closing `)` included. The column headers are the run of year-bearing lines that
+    holds `column`; a row's values are the value lines after its label, one per column. Before
+    the first value only a note is skipped: a line that opens with `(` or `$`
+    (`(includes $43,031 in 2008 ...)`), the rest of a parenthesis it left open, or any line under
+    a label ending in `:` (`Common stock, $0.10 par value:` and its share counts). Any other
+    line is the next row, so a row with no values resolves nothing."""
+    lines = [(j, normalize(loc.lines[j])) for j in range(t + 1, limit) if not blank(loc.lines[j])]
+
+    def header(s):
+        return bool(YEAR.search(s)) and not CELL_VALUE.match(s)
+
+    at = next((k for k, (_, s) in enumerate(lines) if s == column and header(s)), None)
+    if at is None:
+        return None
+    lo, hi = at, at
+    while lo > 0 and header(lines[lo - 1][1]):
+        lo -= 1
+    while hi + 1 < len(lines) and header(lines[hi + 1][1]):
+        hi += 1
+    width, col = hi - lo + 1, at - lo
+    for k in range(hi + 1, len(lines)):
+        if row_label(lines[k][1]) != row:
+            continue
+        vals, depth = [], 0
+        for j, s in lines[k + 1:]:
+            if s == "$":
+                continue
+            if s in (")", ")%") and vals:
+                vals[-1] = (vals[-1][0] + s, vals[-1][1])
+                continue
+            if CELL_VALUE.match(s):
+                if len(vals) == width:
+                    break
+                vals.append((s, j))
+                continue
+            note = depth > 0 or s.startswith(("(", "$")) or lines[k][1].endswith(":")
+            if vals or not note:
+                break
+            depth = max(0, depth + s.count("(") - s.count(")"))
+        if len(vals) == width:
+            return vals[col][0], vals[col][1] + 1
+        return None
+    return None
+
+
 def tagged_cell(loc, t, row, limit):
     """A financial data schedule (EX-27): `<TAG>  value` lines, one value each."""
     for j in range(t + 1, limit):
@@ -1450,9 +1501,10 @@ def tagged_cell(loc, t, row, limit):
 def table_cell(loc, anchor):
     """The cells the `table|row|column` anchor names (one per matching table). The table part
     may end in `@p<page>`, the printed page its title is on, when the title repeats (a filing
-    that prints a table twice). Three layouts: a header line and rows with their values on one
-    line (row labels may carry leader dots); EDGAR's stacked layout (`stacked_cell`); and an
-    EX-27 schedule, whose rows are `<TAG>` lines."""
+    that prints a table twice). Four layouts: a header line and rows with their values on one
+    line (row labels may carry leader dots); EDGAR's stacked layout (`stacked_cell`); EDGAR's
+    one-cell-per-line layout (`percell_cell`); and an EX-27 schedule, whose rows are `<TAG>`
+    lines."""
     parts = anchor.split("|")
     if len(parts) != 3:
         return f"anchor `{anchor}` is not `<table>|<row>|<column>`"
@@ -1495,6 +1547,8 @@ def table_cell(loc, anchor):
                 break
         if hit is None:
             hit = stacked_cell(loc, t, row, column, limit)
+        if hit is None:
+            hit = percell_cell(loc, t, row, column, limit)
         if hit:
             found.append(hit)
     return found

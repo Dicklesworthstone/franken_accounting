@@ -1,0 +1,585 @@
+# Lehman's condensed consolidated statement of financial condition at 2008-05-31, as the Q2-2008
+# 10-Q prints it (plan §8.3, L-T-01). One period, the fiscal quarter the date ends. Every printed
+# line posts to its own account in one entry; the printed totals are read from the balance
+# sheet and never posted.
+
+[book]
+variant = "statement"
+opening_date = "2008-03-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "FY2008Q2"
+start = "2008-03-01"
+end = "2008-05-31"
+fiscal_year = 2008
+kind = "Normal"
+
+[[principal]]
+label = "case-filer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[principal]]
+label = "examiner-witness"
+profile = "Human"
+grants = ["read", "witness"]
+
+[[account]]
+code = "1010"
+name_fact = "Q208.cash.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1020"
+name_fact = "Q208.segregated.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1030"
+name_fact = "Q208.inventory_owned.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1040"
+name_fact = "Q208.reverse_repos.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1050"
+name_fact = "Q208.securities_borrowed.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1060"
+name_fact = "Q208.receivable_brokers.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1070"
+name_fact = "Q208.receivable_customers.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1080"
+name_fact = "Q208.receivable_others.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1090"
+name_fact = "Q208.property.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1100"
+name_fact = "Q208.other_assets.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1110"
+name_fact = "Q208.intangibles.2008-05-31"
+type = "Asset"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2010"
+name_fact = "Q208.short_term_borrowings.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2020"
+name_fact = "Q208.inventory_sold.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2030"
+name_fact = "Q208.repos.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2040"
+name_fact = "Q208.securities_loaned.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2050"
+name_fact = "Q208.other_secured_borrowings.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2060"
+name_fact = "Q208.payable_brokers.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2070"
+name_fact = "Q208.payable_customers.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2080"
+name_fact = "Q208.accrued.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2090"
+name_fact = "Q208.deposits.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2100"
+name_fact = "Q208.long_term_borrowings.2008-05-31"
+type = "Liability"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3010"
+name_fact = "Q208.preferred_stock.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3020"
+name_fact = "Q208.common_stock.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3030"
+name_fact = "Q208.paid_in_capital.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3040"
+name_fact = "Q208.aoci.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3050"
+name_fact = "Q208.retained_earnings.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3060"
+name_fact = "Q208.other_equity.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3070"
+name_fact = "Q208.treasury_stock.2008-05-31"
+type = "Equity"
+role = ""
+opened = "2008-02-29"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-Q208"
+stub_of = "SRC-LEH-002"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "Q208.sfc.2008-05-31"
+fact = "Q208.sfc.2008-05-31"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2008-05-31"
+memo = "condensed consolidated statement of financial condition at 2008-05-31, as the 10-Q prints it"
+evidence = "DOC-Q208"
+idempotency_key = "leh-sfc-2008-05-31"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 0
+account = "1010"
+side = "Dr"
+amount_literal = "6513000000.00"
+amount_rule = "value:Q208.cash.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 1
+account = "1020"
+side = "Dr"
+amount_literal = "13031000000.00"
+amount_rule = "value:Q208.segregated.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 2
+account = "1030"
+side = "Dr"
+amount_literal = "269409000000.00"
+amount_rule = "value:Q208.inventory_owned.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 3
+account = "1040"
+side = "Dr"
+amount_literal = "169684000000.00"
+amount_rule = "value:Q208.reverse_repos.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 4
+account = "1050"
+side = "Dr"
+amount_literal = "124842000000.00"
+amount_rule = "value:Q208.securities_borrowed.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 5
+account = "1060"
+side = "Dr"
+amount_literal = "16701000000.00"
+amount_rule = "value:Q208.receivable_brokers.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 6
+account = "1070"
+side = "Dr"
+amount_literal = "20784000000.00"
+amount_rule = "value:Q208.receivable_customers.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 7
+account = "1080"
+side = "Dr"
+amount_literal = "4236000000.00"
+amount_rule = "value:Q208.receivable_others.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 8
+account = "1090"
+side = "Dr"
+amount_literal = "4278000000.00"
+amount_rule = "value:Q208.property.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 9
+account = "1100"
+side = "Dr"
+amount_literal = "5853000000.00"
+amount_rule = "value:Q208.other_assets.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 10
+account = "1110"
+side = "Dr"
+amount_literal = "4101000000.00"
+amount_rule = "value:Q208.intangibles.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 11
+account = "2010"
+side = "Cr"
+amount_literal = "35302000000.00"
+amount_rule = "value:Q208.short_term_borrowings.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 12
+account = "2020"
+side = "Cr"
+amount_literal = "141507000000.00"
+amount_rule = "value:Q208.inventory_sold.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 13
+account = "2030"
+side = "Cr"
+amount_literal = "127846000000.00"
+amount_rule = "value:Q208.repos.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 14
+account = "2040"
+side = "Cr"
+amount_literal = "55420000000.00"
+amount_rule = "value:Q208.securities_loaned.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 15
+account = "2050"
+side = "Cr"
+amount_literal = "24656000000.00"
+amount_rule = "value:Q208.other_secured_borrowings.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 16
+account = "2060"
+side = "Cr"
+amount_literal = "3835000000.00"
+amount_rule = "value:Q208.payable_brokers.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 17
+account = "2070"
+side = "Cr"
+amount_literal = "57251000000.00"
+amount_rule = "value:Q208.payable_customers.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 18
+account = "2080"
+side = "Cr"
+amount_literal = "9802000000.00"
+amount_rule = "value:Q208.accrued.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 19
+account = "2090"
+side = "Cr"
+amount_literal = "29355000000.00"
+amount_rule = "value:Q208.deposits.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 20
+account = "2100"
+side = "Cr"
+amount_literal = "128182000000.00"
+amount_rule = "value:Q208.long_term_borrowings.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 21
+account = "3010"
+side = "Cr"
+amount_literal = "6993000000.00"
+amount_rule = "value:Q208.preferred_stock.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 22
+account = "3020"
+side = "Cr"
+amount_literal = "61000000.00"
+amount_rule = "value:Q208.common_stock.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 23
+account = "3030"
+side = "Cr"
+amount_literal = "11268000000.00"
+amount_rule = "value:Q208.paid_in_capital.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 24
+account = "3040"
+side = "Dr"
+amount_literal = "359000000.00"
+amount_rule = "value:Q208.aoci.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 25
+account = "3050"
+side = "Cr"
+amount_literal = "16901000000.00"
+amount_rule = "value:Q208.retained_earnings.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 26
+account = "3060"
+side = "Dr"
+amount_literal = "3666000000.00"
+amount_rule = "value:Q208.other_equity.2008-05-31#1"
+unit = "USD"
+
+[[leg]]
+intent = "Q208.sfc.2008-05-31"
+ordinal = 27
+account = "3070"
+side = "Dr"
+amount_literal = "4922000000.00"
+amount_rule = "value:Q208.treasury_stock.2008-05-31#1"
+unit = "USD"
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the 10-Q is cited through its stub, reviewed by case-second-reader (plan §2.7)"
+
+[[default]]
+attribute = "leg_split"
+rule = "statement_lines"
+rationale = "every printed line of the statement posts to its own account in one entry; the lines balance on their own, so no remainder account is needed (plan §8.3, L-T-01)"
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "a statement of financial condition is as of its date, the fiscal quarter's last day"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "FY2008Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "intent"
+ref = "Q208.sfc.2008-05-31"
+
+[[step]]
+seq = 3
+kind = "period_close"
+ref = "FY2008Q2"
+principal = "case-closer-1"
+
+[[step]]
+seq = 4
+kind = "period_lock"
+ref = "FY2008Q2"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]

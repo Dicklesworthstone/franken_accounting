@@ -1,0 +1,152 @@
+# Lehman Brothers expectations (plan §8.3; §15 L2). L-T-01 (May 31, 2008, on `statement`) and
+# L-T-02 (the November 30, 2007 comparative, on `statement-fy2007`) are statement footings: every
+# printed line of the 10-Q's condensed consolidated statement of financial condition is posted
+# to its own account, and franken_accounting's certified balance-sheet lines must equal the
+# printed totals, which are never posted. L-R-01 reads back the posted lines the examiner's
+# net-leverage arithmetic deducts (Valukas p.889), as posted from the 10-Q.
+
+[[expectation]]
+id = "L-T-01"
+type = "T"
+book_variant = "statement"
+statement_template = "T.footing"
+basis = ["Q208.sfc.2008-05-31"]
+kind = "footing"
+vintages = ["exhibit:SRC-LEH-002"]
+
+[[target]]
+expectation = "L-T-01"
+fact = "Q208.total_assets.2008-05-31"
+basis = ["Q208.sfc.2008-05-31"]
+read_verb = "balance-sheet"
+read_target = "assets"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+published = "Q208.total_assets.2008-05-31"
+
+[[target]]
+expectation = "L-T-01"
+fact = "Q208.total_liabilities.2008-05-31"
+basis = ["Q208.sfc.2008-05-31"]
+read_verb = "balance-sheet"
+read_target = "liabilities"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+published = "Q208.total_liabilities.2008-05-31"
+
+[[target]]
+expectation = "L-T-01"
+fact = "Q208.total_stockholders_equity.2008-05-31"
+basis = ["Q208.sfc.2008-05-31"]
+read_verb = "balance-sheet"
+read_target = "total_equity"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+published = "Q208.total_stockholders_equity.2008-05-31"
+
+[[target]]
+expectation = "L-T-01"
+fact = "Q208.total_liabilities_and_equity.2008-05-31"
+basis = ["Q208.sfc.2008-05-31"]
+read_verb = "balance-sheet"
+read_target = "liabilities_and_equity"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+published = "Q208.total_liabilities_and_equity.2008-05-31"
+
+[[expectation]]
+id = "L-R-01"
+type = "R"
+book_variant = "statement"
+statement_template = "R.read_back"
+basis = ["Q208.segregated.2008-05-31", "Q208.reverse_repos.2008-05-31", "Q208.securities_borrowed.2008-05-31", "Q208.intangibles.2008-05-31"]
+
+[[target]]
+expectation = "L-R-01"
+fact = "Q208.segregated.2008-05-31"
+basis = ["Q208.segregated.2008-05-31"]
+read_verb = "balance"
+read_target = "1020"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+posted = "Q208.segregated.2008-05-31"
+
+[[target]]
+expectation = "L-R-01"
+fact = "Q208.reverse_repos.2008-05-31"
+basis = ["Q208.reverse_repos.2008-05-31"]
+read_verb = "balance"
+read_target = "1040"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+posted = "Q208.reverse_repos.2008-05-31"
+
+[[target]]
+expectation = "L-R-01"
+fact = "Q208.securities_borrowed.2008-05-31"
+basis = ["Q208.securities_borrowed.2008-05-31"]
+read_verb = "balance"
+read_target = "1050"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+posted = "Q208.securities_borrowed.2008-05-31"
+
+[[target]]
+expectation = "L-R-01"
+fact = "Q208.intangibles.2008-05-31"
+basis = ["Q208.intangibles.2008-05-31"]
+read_verb = "balance"
+read_target = "1110"
+read_coordinate = "FY2008Q2"
+read_selector = "currently_stated"
+posted = "Q208.intangibles.2008-05-31"
+
+
+[[expectation]]
+id = "L-T-02"
+type = "T"
+book_variant = "statement-fy2007"
+statement_template = "T.footing"
+basis = ["Q208.sfc.2007-11-30"]
+kind = "footing"
+vintages = ["exhibit:SRC-LEH-002"]
+
+[[target]]
+expectation = "L-T-02"
+fact = "Q208.total_assets.2007-11-30"
+basis = ["Q208.sfc.2007-11-30"]
+read_verb = "balance-sheet"
+read_target = "assets"
+read_coordinate = "FY2007Q4"
+read_selector = "currently_stated"
+published = "Q208.total_assets.2007-11-30"
+
+[[target]]
+expectation = "L-T-02"
+fact = "Q208.total_liabilities.2007-11-30"
+basis = ["Q208.sfc.2007-11-30"]
+read_verb = "balance-sheet"
+read_target = "liabilities"
+read_coordinate = "FY2007Q4"
+read_selector = "currently_stated"
+published = "Q208.total_liabilities.2007-11-30"
+
+[[target]]
+expectation = "L-T-02"
+fact = "Q208.total_stockholders_equity.2007-11-30"
+basis = ["Q208.sfc.2007-11-30"]
+read_verb = "balance-sheet"
+read_target = "total_equity"
+read_coordinate = "FY2007Q4"
+read_selector = "currently_stated"
+published = "Q208.total_stockholders_equity.2007-11-30"
+
+[[target]]
+expectation = "L-T-02"
+fact = "Q208.total_liabilities_and_equity.2007-11-30"
+basis = ["Q208.sfc.2007-11-30"]
+read_verb = "balance-sheet"
+read_target = "liabilities_and_equity"
+read_coordinate = "FY2007Q4"
+read_selector = "currently_stated"
+published = "Q208.total_liabilities_and_equity.2007-11-30"

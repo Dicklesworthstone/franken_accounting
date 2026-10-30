@@ -1,0 +1,29 @@
+# Lehman Brothers sources ledger (plan §4.1, §8.1; §15 L1). Hand-authored. Facts may cite only
+# `OK` rows. Retrieval is archive-first until owner decision 1 grants a sec.gov contact
+# (`FA_SEC_CONTACT`): an Internet Archive capture, `original_hash_compared = false`.
+# `case_fetch.py fetch lehman` re-downloads each OK row and must reproduce its `sha256`.
+#
+# This slice lands the Q2-2008 10-Q (SRC-LEH-002). The Valukas examiner report (SRC-LEH-001) and
+# its Appendix 17 (SRC-LEH-003), the Q1-2008 10-Q and the BLOCKED FY2007 10-Qs are L1's later rows.
+
+[[source]]
+id = "SRC-LEH-002"
+title = "Lehman Brothers Holdings Inc., Form 10-Q for the quarter ended May 31, 2008"
+publisher = "Lehman Brothers Holdings Inc. (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/806085/000110465908045115/a08-18147_110q.htm"
+archive_url = "http://web.archive.org/web/20120128110617id_/http://sec.gov/Archives/edgar/data/806085/000110465908045115/a08-18147_110q.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T08:04:07Z"
+sha256 = "45c3dc6d4b57f8c93e6ae0b288ce77f8a92e13f55d4bd4c7137d03e37f8372cf"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "4bf2b47ae44f52c8616cf2ad706bdbbf78f8d11bfb97ca238862c6cc40031bd7"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_reviewed"
+assurance = "reviewed"
+assurance_fact = "Q208-LEGEND"
+anchor_scheme = ["page", "table_cell"]
+status = "OK"
+filed_on = "2008-07-10"
+restates = []
+notes = "Accession 0001104659-08-045115, the 10-Q for the fiscal quarter ended May 31, 2008; Filing Date 2008-07-10 on its EDGAR filing index (Internet Archive capture of 2013-08-05). 4,390,268 bytes as captured 2012-01-28. The condensed consolidated statement of financial condition is printed on pp.5-6, marked (Unaudited); the independent accountants' review report (p.53) states the review of the statement as of May 31, 2008 (Q208-LEGEND, the row's assurance) and, in its next sentences, that the statement as of November 30, 2007 was previously audited. A row has one assurance, so the November 30, 2007 comparative column is cited at the row's reviewed status here, never assumed audited."

@@ -15,7 +15,7 @@ pub struct EmbeddedCase {
 }
 
 /// Every committed case.
-pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL];
+pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL, LEHMAN];
 
 /// The harness self-test (A7a; A8a completes it).
 pub const SELFTEST: EmbeddedCase = EmbeddedCase {
@@ -116,6 +116,38 @@ pub const XBRL: EmbeddedCase = EmbeddedCase {
             include_str!("../../cases/xbrl/expectations.toml"),
         ),
         ("README.md", include_str!("../../cases/xbrl/README.md")),
+    ],
+};
+
+/// Lehman Repo 105 (L2's slice 1: the Q2-2008 10-Q's statement footings;
+/// L1-L4 add the Valukas sources, the scenario and the rest).
+pub const LEHMAN: EmbeddedCase = EmbeddedCase {
+    id: "lehman",
+    files: &[
+        ("case.toml", include_str!("../../cases/lehman/case.toml")),
+        (
+            "sources.toml",
+            include_str!("../../cases/lehman/sources.toml"),
+        ),
+        ("facts.toml", include_str!("../../cases/lehman/facts.toml")),
+        (
+            "receipts.toml",
+            include_str!("../../cases/lehman/receipts.toml"),
+        ),
+        ("roles.toml", include_str!("../../cases/lehman/roles.toml")),
+        (
+            "books/statement.toml",
+            include_str!("../../cases/lehman/books/statement.toml"),
+        ),
+        (
+            "books/statement-fy2007.toml",
+            include_str!("../../cases/lehman/books/statement-fy2007.toml"),
+        ),
+        (
+            "expectations.toml",
+            include_str!("../../cases/lehman/expectations.toml"),
+        ),
+        ("README.md", include_str!("../../cases/lehman/README.md")),
     ],
 };
 

@@ -1,0 +1,1376 @@
+# Lehman Brothers facts (plan §8.2; §15 L1, L2): the Q2-2008 10-Q's condensed consolidated
+# statement of financial condition, every printed line and total at May 31, 2008 and at the
+# November 30, 2007 comparative (in millions; `scale` param 6), each bound by its table cell
+# (`<table>@p<printed page>|<row label>|<column>`), and the review report's sentence that
+# establishes the row's assurance. Two interpretation facts read each date's lines as one
+# posted entry.
+
+[[fact]]
+id = "Q208-LEGEND"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "page"
+anchor = "p53:l9-9"
+quote_sha256 = "e95188cd25381720ac0308afe50fe32a2d3e17cca09277c9d03ea7ecf569086f"
+about_scope = "scheme:lehman-review-2008-05"
+granularity = "statement_line"
+
+[[fact]]
+id = "Q208.cash.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Cash and cash equivalents|May 31, 2008"
+quote_sha256 = "4179487a6d96005a9f55afabf70f9b89b27753109e1644c322a90d9a05c4daf6"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "cash@2008-05-31"
+
+[[fact]]
+id = "Q208.segregated.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Cash and securities segregated and on deposit for regulatory and other purposes|May 31, 2008"
+quote_sha256 = "2232f4a865eacc15655aa92089de4e78335f6a06279a2e5cf5ce951d53791c41"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "segregated@2008-05-31"
+
+[[fact]]
+id = "Q208.inventory_owned.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Financial instruments and other inventory positions owned|May 31, 2008"
+quote_sha256 = "6c036be997e63568e4641a42bca1749bce14ce01d2177ff89df50fab7d3916b7"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "inventory_owned@2008-05-31"
+
+[[fact]]
+id = "Q208.reverse_repos.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Securities purchased under agreements to resell|May 31, 2008"
+quote_sha256 = "c12941c5c38216f8bbdbd9487591f8d053da4009d3bd3ceb5902f8deee3a5975"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "reverse_repos@2008-05-31"
+
+[[fact]]
+id = "Q208.securities_borrowed.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Securities borrowed|May 31, 2008"
+quote_sha256 = "ebda05d4e53d7a675d20ec14d9864f3693e20141106348c3f64a943df501849e"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "securities_borrowed@2008-05-31"
+
+[[fact]]
+id = "Q208.receivable_brokers.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Brokers, dealers and clearing organizations|May 31, 2008"
+quote_sha256 = "ff41fa68e2075e16348b609e7c5a23425b7c68876dfe06f8b7bb44bf64fc85fc"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "receivable_brokers@2008-05-31"
+
+[[fact]]
+id = "Q208.receivable_customers.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Customers|May 31, 2008"
+quote_sha256 = "30cf3277689f3fae42ea9abf13ef9d6513ec6d873738e2ecdd45b9ebb2743d4c"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "receivable_customers@2008-05-31"
+
+[[fact]]
+id = "Q208.receivable_others.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Others|May 31, 2008"
+quote_sha256 = "658617d33d5aac984af5d3c6d71dbabe98654ac78e3fbf73d6da94d251783870"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "receivable_others@2008-05-31"
+
+[[fact]]
+id = "Q208.property.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Property, equipment and leasehold improvements|May 31, 2008"
+quote_sha256 = "32479cced8123e1aac8dbf0c208681a1cd487407d718c9114cffa75d2d2c2fc4"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "property@2008-05-31"
+
+[[fact]]
+id = "Q208.other_assets.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Other assets|May 31, 2008"
+quote_sha256 = "652f08a06a9a8a9ddedc0b89fef323bfcaf3509d06c7caf05828aeeb40b7d1fe"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "other_assets@2008-05-31"
+
+[[fact]]
+id = "Q208.intangibles.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Identifiable intangible assets and goodwill|May 31, 2008"
+quote_sha256 = "e2d8a3e1144d9661306961013270f5dec43870909749c5d8f1cceb8c62b933b2"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "intangibles@2008-05-31"
+
+[[fact]]
+id = "Q208.short_term_borrowings.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Short-term borrowings and current portion of long-term borrowings|May 31, 2008"
+quote_sha256 = "17100a35cf9508d389292eb2095e5bf8417f8d947bdab9bb14ae9b61dc957d42"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "short_term_borrowings@2008-05-31"
+
+[[fact]]
+id = "Q208.inventory_sold.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Financial instruments and other inventory positions sold but not yet purchased|May 31, 2008"
+quote_sha256 = "661a610cd5bd7781afe29f4b1d746055ea729abe4cd696a441c86261b6dcbd0c"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "inventory_sold@2008-05-31"
+
+[[fact]]
+id = "Q208.repos.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Securities sold under agreements to repurchase|May 31, 2008"
+quote_sha256 = "ac9b3dd40e6ca16cac707718560d35c8a4c80186f4f7443f90234888efa26212"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "repos@2008-05-31"
+
+[[fact]]
+id = "Q208.securities_loaned.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Securities loaned|May 31, 2008"
+quote_sha256 = "a96863c2a0719f6c148f7e4b77642df28b4e92679793303f397a0bf80d915862"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "securities_loaned@2008-05-31"
+
+[[fact]]
+id = "Q208.other_secured_borrowings.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Other secured borrowings|May 31, 2008"
+quote_sha256 = "1be15765b99359f42bcb2086fe707db86ed24a4c8f6ea73a0d1d68a99740bfde"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "other_secured_borrowings@2008-05-31"
+
+[[fact]]
+id = "Q208.payable_brokers.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Brokers, dealers and clearing organizations|May 31, 2008"
+quote_sha256 = "c3d893fdacbeb8381cb0220b3b6d56df4ab163f43a5da58f6d1020113d848f79"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "payable_brokers@2008-05-31"
+
+[[fact]]
+id = "Q208.payable_customers.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Customers|May 31, 2008"
+quote_sha256 = "ea698ccb79e54fcdf7de8d3107f0ef3b245b93ec09e97f1ed43e1e38e3b4ad81"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "payable_customers@2008-05-31"
+
+[[fact]]
+id = "Q208.accrued.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Accrued liabilities and other payables|May 31, 2008"
+quote_sha256 = "849d7c74bd6c2ad39fc82ceec1e33514ccce4d4d09c313c9a4bef1efcf2a781b"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "accrued@2008-05-31"
+
+[[fact]]
+id = "Q208.deposits.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Deposit liabilities at banks|May 31, 2008"
+quote_sha256 = "a266e4713572294d016afabc9ef481aa5869ac7776570bbdcda9c98e2df17282"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "deposits@2008-05-31"
+
+[[fact]]
+id = "Q208.long_term_borrowings.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Long-term borrowings|May 31, 2008"
+quote_sha256 = "73a2c86343fa97ffa1f950069f2cda3e90d852e2d81a6ea52a5ffacf0c854819"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "long_term_borrowings@2008-05-31"
+
+[[fact]]
+id = "Q208.preferred_stock.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Preferred stock|May 31, 2008"
+quote_sha256 = "015145bc5cb501bdb3d968107c57dd4ed400184bb0c0fa9c85cc4320d8cd2e53"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "preferred_stock@2008-05-31"
+
+[[fact]]
+id = "Q208.common_stock.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Common stock, $0.10 par value:|May 31, 2008"
+quote_sha256 = "d029fa3a95e174a19934857f535eb9427d967218a36ea014b70ad704bc6c8d1c"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "common_stock@2008-05-31"
+
+[[fact]]
+id = "Q208.paid_in_capital.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Additional paid-in capital|May 31, 2008"
+quote_sha256 = "5d2d45eeed410192cb8d168495b34f802248ac1af0a26abfc0bd0d8666470949"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "paid_in_capital@2008-05-31"
+
+[[fact]]
+id = "Q208.aoci.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Accumulated other comprehensive loss, net of tax|May 31, 2008"
+quote_sha256 = "a635b2a5675a63117a2761fa0437bdf26403d216f7d11608125ed284814644a2"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "aoci@2008-05-31"
+
+[[fact]]
+id = "Q208.retained_earnings.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Retained earnings|May 31, 2008"
+quote_sha256 = "a5e826a0dff15d213696f2e7405a5fd077559e5ceac4830096982d964d5e1fcb"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "retained_earnings@2008-05-31"
+
+[[fact]]
+id = "Q208.other_equity.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Other stockholders’ equity, net|May 31, 2008"
+quote_sha256 = "23983b3631d3ff443de9d4101adcae5a1db56b89997a41a8227174ddbc098e79"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "other_equity@2008-05-31"
+
+[[fact]]
+id = "Q208.treasury_stock.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Common stock in treasury, at cost|May 31, 2008"
+quote_sha256 = "3ee4a1a04f71f50f8e2b0b920fb7f875de97decca39498f1acf65fa55b6ecdb6"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "treasury_stock@2008-05-31"
+
+[[fact]]
+id = "Q208.total_assets.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Total assets|May 31, 2008"
+quote_sha256 = "8b1005343bfb9b9c7dedb17bd7322c85b3df565e3e65f5c638626ce1988d7ed4"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "total_assets@2008-05-31"
+
+[[fact]]
+id = "Q208.total_liabilities.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Total liabilities|May 31, 2008"
+quote_sha256 = "390e06d4909482155e97bf70332032876ac2c3503cc5b5ad3732e1862924833e"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "total_liabilities@2008-05-31"
+
+[[fact]]
+id = "Q208.total_stockholders_equity.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Total stockholders’ equity|May 31, 2008"
+quote_sha256 = "e19cc55385cb3a192b77fdcfad82640d3ab2fd4f5c8d6c0f3bb3e999fd01322f"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "total_stockholders_equity@2008-05-31"
+
+[[fact]]
+id = "Q208.total_liabilities_and_equity.2008-05-31"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Total liabilities and stockholders’ equity|May 31, 2008"
+quote_sha256 = "8b1005343bfb9b9c7dedb17bd7322c85b3df565e3e65f5c638626ce1988d7ed4"
+about_scope = "scheme:lehman-sfc-2008-05"
+granularity = "statement_line"
+cell = "total_liabilities_and_equity@2008-05-31"
+
+[[fact]]
+id = "Q208.cash.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Cash and cash equivalents|Nov 30, 2007"
+quote_sha256 = "99ab068923e585e514b78800b7033787c5dcf0f5a35390c691ba2e72c3432ed4"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "cash@2007-11-30"
+
+[[fact]]
+id = "Q208.segregated.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Cash and securities segregated and on deposit for regulatory and other purposes|Nov 30, 2007"
+quote_sha256 = "eedd9e197c8238c5fefb89299bf36bf8e36a809fdf469f2e26d300dfb820a6b2"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "segregated@2007-11-30"
+
+[[fact]]
+id = "Q208.inventory_owned.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Financial instruments and other inventory positions owned|Nov 30, 2007"
+quote_sha256 = "7c3c41c8851910b782ec5d15214931339e771f5a989497aa484c69186676d668"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "inventory_owned@2007-11-30"
+
+[[fact]]
+id = "Q208.reverse_repos.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Securities purchased under agreements to resell|Nov 30, 2007"
+quote_sha256 = "750c7e945eb5ce14319493df38d711205e841125305e6c6a56632b1e1d34dc9f"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "reverse_repos@2007-11-30"
+
+[[fact]]
+id = "Q208.securities_borrowed.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Securities borrowed|Nov 30, 2007"
+quote_sha256 = "ba8fca0e97d18a0f410eb77dd88d21be822d56ee59083a5cf4903ff64da913b4"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "securities_borrowed@2007-11-30"
+
+[[fact]]
+id = "Q208.receivable_brokers.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Brokers, dealers and clearing organizations|Nov 30, 2007"
+quote_sha256 = "919c8ade3c436ae2c91cf50a7ce93ce6be4031b509e17b7a05d4278f7a923b74"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "receivable_brokers@2007-11-30"
+
+[[fact]]
+id = "Q208.receivable_customers.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Customers|Nov 30, 2007"
+quote_sha256 = "414d248bd0626cdb8acdc15326321883acc2a243fe2fc814f57c68d1b9397ed6"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "receivable_customers@2007-11-30"
+
+[[fact]]
+id = "Q208.receivable_others.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Others|Nov 30, 2007"
+quote_sha256 = "158a80df52f494c1ddc4a0d5da76cec939e50ddcbda7eeb8228518b2838b2ff8"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "receivable_others@2007-11-30"
+
+[[fact]]
+id = "Q208.property.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Property, equipment and leasehold improvements|Nov 30, 2007"
+quote_sha256 = "556ed4e3818325c6c3a2bf5540af36ddd205d5f4e349fc0d5515daafca33a8a1"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "property@2007-11-30"
+
+[[fact]]
+id = "Q208.other_assets.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Other assets|Nov 30, 2007"
+quote_sha256 = "e102f8bcd2800a766fe4c6e823913cc65f1653b990f725b0d6564f47b407859e"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "other_assets@2007-11-30"
+
+[[fact]]
+id = "Q208.intangibles.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Identifiable intangible assets and goodwill|Nov 30, 2007"
+quote_sha256 = "a498caa9f628a9a8a9e5e8916ecb25917a24621a2b114387047695f34babfaf4"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "intangibles@2007-11-30"
+
+[[fact]]
+id = "Q208.short_term_borrowings.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Short-term borrowings and current portion of long-term borrowings|Nov 30, 2007"
+quote_sha256 = "6e438753c64d62be855301be21981e56aed2c3e48c12a8892a92208926e4ea47"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "short_term_borrowings@2007-11-30"
+
+[[fact]]
+id = "Q208.inventory_sold.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Financial instruments and other inventory positions sold but not yet purchased|Nov 30, 2007"
+quote_sha256 = "94c56d4cd2394499e311cd53c729b5314014546efebdf1045229ca35cbd3241d"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "inventory_sold@2007-11-30"
+
+[[fact]]
+id = "Q208.repos.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Securities sold under agreements to repurchase|Nov 30, 2007"
+quote_sha256 = "75d0fdeae7762f85ee08cdf853b4a930260666514ffb35c583853d36f10d729d"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "repos@2007-11-30"
+
+[[fact]]
+id = "Q208.securities_loaned.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Securities loaned|Nov 30, 2007"
+quote_sha256 = "fa1285d8c1fd48e692df59c49933b3a4a2807bb2623e721e78e70955f47aeee3"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "securities_loaned@2007-11-30"
+
+[[fact]]
+id = "Q208.other_secured_borrowings.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Other secured borrowings|Nov 30, 2007"
+quote_sha256 = "98b1fae31ab0be889c7d980924491804d7ce887ac806ab5e1bbe7a679fdd9f41"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "other_secured_borrowings@2007-11-30"
+
+[[fact]]
+id = "Q208.payable_brokers.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Brokers, dealers and clearing organizations|Nov 30, 2007"
+quote_sha256 = "39c098313a91f7c1ccb55e1b59062190873dd06c77495ec9f659ac1c5c643a2a"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "payable_brokers@2007-11-30"
+
+[[fact]]
+id = "Q208.payable_customers.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Customers|Nov 30, 2007"
+quote_sha256 = "c5fa0720530ba1a609a6ae1d371a1e264005f5b55281482b720d7e881a5b5496"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "payable_customers@2007-11-30"
+
+[[fact]]
+id = "Q208.accrued.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Accrued liabilities and other payables|Nov 30, 2007"
+quote_sha256 = "772ce0e44ce33384ac643f4c3a271f8560bf07e8c4240ba4fbd75737ec598954"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "accrued@2007-11-30"
+
+[[fact]]
+id = "Q208.deposits.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Deposit liabilities at banks|Nov 30, 2007"
+quote_sha256 = "a32b91b977f710234cc30cd31c1529c53c85d469e7626183ef36a0e33f512570"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "deposits@2007-11-30"
+
+[[fact]]
+id = "Q208.long_term_borrowings.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Long-term borrowings|Nov 30, 2007"
+quote_sha256 = "5a47ebfb7fef46e014eb4dcc9a1504fab084998fa9b44796004a75e18e58c3bd"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "long_term_borrowings@2007-11-30"
+
+[[fact]]
+id = "Q208.preferred_stock.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Preferred stock|Nov 30, 2007"
+quote_sha256 = "9f512b272d3413699ed62fed1af4298e1eb1266092a95570d6b2067c46e8d2fe"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "preferred_stock@2007-11-30"
+
+[[fact]]
+id = "Q208.common_stock.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Common stock, $0.10 par value:|Nov 30, 2007"
+quote_sha256 = "d029fa3a95e174a19934857f535eb9427d967218a36ea014b70ad704bc6c8d1c"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "common_stock@2007-11-30"
+
+[[fact]]
+id = "Q208.paid_in_capital.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Additional paid-in capital|Nov 30, 2007"
+quote_sha256 = "31bbac7000bd1e33b47aad999f3b85bc0c44dc248253e8d70e17bc35e2fc38cd"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "paid_in_capital@2007-11-30"
+
+[[fact]]
+id = "Q208.aoci.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Accumulated other comprehensive loss, net of tax|Nov 30, 2007"
+quote_sha256 = "d5bb18146d286ebc3559a2b0d1816232cec25f380b18887f1df38f9af0a8fc72"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "aoci@2007-11-30"
+
+[[fact]]
+id = "Q208.retained_earnings.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Retained earnings|Nov 30, 2007"
+quote_sha256 = "776efa354452c3e4d303ce800cf213c7faf39ba48d6939e63e2a650f89d4ee03"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "retained_earnings@2007-11-30"
+
+[[fact]]
+id = "Q208.other_equity.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Other stockholders’ equity, net|Nov 30, 2007"
+quote_sha256 = "7e7b0d684c4dff8ae32b0c6fbdb256d051e9f4a17dd96aa7206025d3bddcccf5"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "other_equity@2007-11-30"
+
+[[fact]]
+id = "Q208.treasury_stock.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Common stock in treasury, at cost|Nov 30, 2007"
+quote_sha256 = "5ed24dfb027524d8409581ea63f786f915da970b3d9da64ec83ee52d0ca70841"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "treasury_stock@2007-11-30"
+
+[[fact]]
+id = "Q208.total_assets.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition@p5|Total assets|Nov 30, 2007"
+quote_sha256 = "12d422f8e2d08b4ae38f08400f1cd97c6fa07c279d9c874f7c39376e0dcc60b2"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "total_assets@2007-11-30"
+
+[[fact]]
+id = "Q208.total_liabilities.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Total liabilities|Nov 30, 2007"
+quote_sha256 = "9ee4a89918ef814efb9c3a70bf795c854e255d24074cf605f3a697120e68a812"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "total_liabilities@2007-11-30"
+
+[[fact]]
+id = "Q208.total_stockholders_equity.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Total stockholders’ equity|Nov 30, 2007"
+quote_sha256 = "60f92032d482a8ff06f86e0ec3abf2ed94e2d9aff1c8fc11662503bda6e7c9a0"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "total_stockholders_equity@2007-11-30"
+
+[[fact]]
+id = "Q208.total_liabilities_and_equity.2007-11-30"
+provenance = "sourced"
+source = "SRC-LEH-002"
+anchor_kind = "table_cell"
+anchor = "Consolidated Statement of Financial Condition—(Continued)@p6|Total liabilities and stockholders’ equity|Nov 30, 2007"
+quote_sha256 = "12d422f8e2d08b4ae38f08400f1cd97c6fa07c279d9c874f7c39376e0dcc60b2"
+about_scope = "scheme:lehman-sfc-2007-11"
+granularity = "statement_line"
+cell = "total_liabilities_and_equity@2007-11-30"
+
+[[fact]]
+id = "Q208.sfc.2008-05-31"
+provenance = "interpretation"
+from = ["Q208.cash.2008-05-31", "Q208.segregated.2008-05-31", "Q208.inventory_owned.2008-05-31", "Q208.reverse_repos.2008-05-31", "Q208.securities_borrowed.2008-05-31", "Q208.receivable_brokers.2008-05-31", "Q208.receivable_customers.2008-05-31", "Q208.receivable_others.2008-05-31", "Q208.property.2008-05-31", "Q208.other_assets.2008-05-31", "Q208.intangibles.2008-05-31", "Q208.short_term_borrowings.2008-05-31", "Q208.inventory_sold.2008-05-31", "Q208.repos.2008-05-31", "Q208.securities_loaned.2008-05-31", "Q208.other_secured_borrowings.2008-05-31", "Q208.payable_brokers.2008-05-31", "Q208.payable_customers.2008-05-31", "Q208.accrued.2008-05-31", "Q208.deposits.2008-05-31", "Q208.long_term_borrowings.2008-05-31", "Q208.preferred_stock.2008-05-31", "Q208.common_stock.2008-05-31", "Q208.paid_in_capital.2008-05-31", "Q208.aoci.2008-05-31", "Q208.retained_earnings.2008-05-31", "Q208.other_equity.2008-05-31", "Q208.treasury_stock.2008-05-31"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "The 10-Q's condensed consolidated statement of financial condition at 2008-05-31, posted as one entry: each printed line on its own account, assets debited, liabilities and equity credited, a parenthesized equity line (a loss or treasury stock) debited. The printed totals are never posted. The printed lines balance on their own (total assets equals total liabilities and stockholders' equity), so no remainder account is needed."
+
+[[fact]]
+id = "Q208.sfc.2007-11-30"
+provenance = "interpretation"
+from = ["Q208.cash.2007-11-30", "Q208.segregated.2007-11-30", "Q208.inventory_owned.2007-11-30", "Q208.reverse_repos.2007-11-30", "Q208.securities_borrowed.2007-11-30", "Q208.receivable_brokers.2007-11-30", "Q208.receivable_customers.2007-11-30", "Q208.receivable_others.2007-11-30", "Q208.property.2007-11-30", "Q208.other_assets.2007-11-30", "Q208.intangibles.2007-11-30", "Q208.short_term_borrowings.2007-11-30", "Q208.inventory_sold.2007-11-30", "Q208.repos.2007-11-30", "Q208.securities_loaned.2007-11-30", "Q208.other_secured_borrowings.2007-11-30", "Q208.payable_brokers.2007-11-30", "Q208.payable_customers.2007-11-30", "Q208.accrued.2007-11-30", "Q208.deposits.2007-11-30", "Q208.long_term_borrowings.2007-11-30", "Q208.preferred_stock.2007-11-30", "Q208.common_stock.2007-11-30", "Q208.paid_in_capital.2007-11-30", "Q208.aoci.2007-11-30", "Q208.retained_earnings.2007-11-30", "Q208.other_equity.2007-11-30", "Q208.treasury_stock.2007-11-30"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "The 10-Q's condensed consolidated statement of financial condition at 2007-11-30, posted as one entry: each printed line on its own account, assets debited, liabilities and equity credited, a parenthesized equity line (a loss or treasury stock) debited. The printed totals are never posted. The printed lines balance on their own (total assets equals total liabilities and stockholders' equity), so no remainder account is needed."
+
+[[value]]
+fact = "Q208.cash.2008-05-31"
+ordinal = 1
+literal = "6,513"
+rule = "scale"
+param = 6
+value = "651300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.segregated.2008-05-31"
+ordinal = 1
+literal = "13,031"
+rule = "scale"
+param = 6
+value = "1303100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.inventory_owned.2008-05-31"
+ordinal = 1
+literal = "269,409"
+rule = "scale"
+param = 6
+value = "26940900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.reverse_repos.2008-05-31"
+ordinal = 1
+literal = "169,684"
+rule = "scale"
+param = 6
+value = "16968400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.securities_borrowed.2008-05-31"
+ordinal = 1
+literal = "124,842"
+rule = "scale"
+param = 6
+value = "12484200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.receivable_brokers.2008-05-31"
+ordinal = 1
+literal = "16,701"
+rule = "scale"
+param = 6
+value = "1670100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.receivable_customers.2008-05-31"
+ordinal = 1
+literal = "20,784"
+rule = "scale"
+param = 6
+value = "2078400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.receivable_others.2008-05-31"
+ordinal = 1
+literal = "4,236"
+rule = "scale"
+param = 6
+value = "423600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.property.2008-05-31"
+ordinal = 1
+literal = "4,278"
+rule = "scale"
+param = 6
+value = "427800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.other_assets.2008-05-31"
+ordinal = 1
+literal = "5,853"
+rule = "scale"
+param = 6
+value = "585300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.intangibles.2008-05-31"
+ordinal = 1
+literal = "4,101"
+rule = "scale"
+param = 6
+value = "410100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.short_term_borrowings.2008-05-31"
+ordinal = 1
+literal = "35,302"
+rule = "scale"
+param = 6
+value = "3530200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.inventory_sold.2008-05-31"
+ordinal = 1
+literal = "141,507"
+rule = "scale"
+param = 6
+value = "14150700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.repos.2008-05-31"
+ordinal = 1
+literal = "127,846"
+rule = "scale"
+param = 6
+value = "12784600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.securities_loaned.2008-05-31"
+ordinal = 1
+literal = "55,420"
+rule = "scale"
+param = 6
+value = "5542000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.other_secured_borrowings.2008-05-31"
+ordinal = 1
+literal = "24,656"
+rule = "scale"
+param = 6
+value = "2465600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.payable_brokers.2008-05-31"
+ordinal = 1
+literal = "3,835"
+rule = "scale"
+param = 6
+value = "383500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.payable_customers.2008-05-31"
+ordinal = 1
+literal = "57,251"
+rule = "scale"
+param = 6
+value = "5725100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.accrued.2008-05-31"
+ordinal = 1
+literal = "9,802"
+rule = "scale"
+param = 6
+value = "980200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.deposits.2008-05-31"
+ordinal = 1
+literal = "29,355"
+rule = "scale"
+param = 6
+value = "2935500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.long_term_borrowings.2008-05-31"
+ordinal = 1
+literal = "128,182"
+rule = "scale"
+param = 6
+value = "12818200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.preferred_stock.2008-05-31"
+ordinal = 1
+literal = "6,993"
+rule = "scale"
+param = 6
+value = "699300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.common_stock.2008-05-31"
+ordinal = 1
+literal = "61"
+rule = "scale"
+param = 6
+value = "6100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.paid_in_capital.2008-05-31"
+ordinal = 1
+literal = "11,268"
+rule = "scale"
+param = 6
+value = "1126800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.aoci.2008-05-31"
+ordinal = 1
+literal = "(359)"
+rule = "scale"
+param = 6
+value = "-35900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.retained_earnings.2008-05-31"
+ordinal = 1
+literal = "16,901"
+rule = "scale"
+param = 6
+value = "1690100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.other_equity.2008-05-31"
+ordinal = 1
+literal = "(3,666)"
+rule = "scale"
+param = 6
+value = "-366600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.treasury_stock.2008-05-31"
+ordinal = 1
+literal = "(4,922)"
+rule = "scale"
+param = 6
+value = "-492200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_assets.2008-05-31"
+ordinal = 1
+literal = "639,432"
+rule = "scale"
+param = 6
+value = "63943200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_liabilities.2008-05-31"
+ordinal = 1
+literal = "613,156"
+rule = "scale"
+param = 6
+value = "61315600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_stockholders_equity.2008-05-31"
+ordinal = 1
+literal = "26,276"
+rule = "scale"
+param = 6
+value = "2627600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_liabilities_and_equity.2008-05-31"
+ordinal = 1
+literal = "639,432"
+rule = "scale"
+param = 6
+value = "63943200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.cash.2007-11-30"
+ordinal = 1
+literal = "7,286"
+rule = "scale"
+param = 6
+value = "728600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.segregated.2007-11-30"
+ordinal = 1
+literal = "12,743"
+rule = "scale"
+param = 6
+value = "1274300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.inventory_owned.2007-11-30"
+ordinal = 1
+literal = "313,129"
+rule = "scale"
+param = 6
+value = "31312900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.reverse_repos.2007-11-30"
+ordinal = 1
+literal = "162,635"
+rule = "scale"
+param = 6
+value = "16263500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.securities_borrowed.2007-11-30"
+ordinal = 1
+literal = "138,599"
+rule = "scale"
+param = 6
+value = "13859900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.receivable_brokers.2007-11-30"
+ordinal = 1
+literal = "11,005"
+rule = "scale"
+param = 6
+value = "1100500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.receivable_customers.2007-11-30"
+ordinal = 1
+literal = "29,622"
+rule = "scale"
+param = 6
+value = "2962200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.receivable_others.2007-11-30"
+ordinal = 1
+literal = "2,650"
+rule = "scale"
+param = 6
+value = "265000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.property.2007-11-30"
+ordinal = 1
+literal = "3,861"
+rule = "scale"
+param = 6
+value = "386100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.other_assets.2007-11-30"
+ordinal = 1
+literal = "5,406"
+rule = "scale"
+param = 6
+value = "540600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.intangibles.2007-11-30"
+ordinal = 1
+literal = "4,127"
+rule = "scale"
+param = 6
+value = "412700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.short_term_borrowings.2007-11-30"
+ordinal = 1
+literal = "28,066"
+rule = "scale"
+param = 6
+value = "2806600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.inventory_sold.2007-11-30"
+ordinal = 1
+literal = "149,617"
+rule = "scale"
+param = 6
+value = "14961700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.repos.2007-11-30"
+ordinal = 1
+literal = "181,732"
+rule = "scale"
+param = 6
+value = "18173200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.securities_loaned.2007-11-30"
+ordinal = 1
+literal = "53,307"
+rule = "scale"
+param = 6
+value = "5330700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.other_secured_borrowings.2007-11-30"
+ordinal = 1
+literal = "22,992"
+rule = "scale"
+param = 6
+value = "2299200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.payable_brokers.2007-11-30"
+ordinal = 1
+literal = "3,101"
+rule = "scale"
+param = 6
+value = "310100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.payable_customers.2007-11-30"
+ordinal = 1
+literal = "61,206"
+rule = "scale"
+param = 6
+value = "6120600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.accrued.2007-11-30"
+ordinal = 1
+literal = "16,039"
+rule = "scale"
+param = 6
+value = "1603900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.deposits.2007-11-30"
+ordinal = 1
+literal = "29,363"
+rule = "scale"
+param = 6
+value = "2936300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.long_term_borrowings.2007-11-30"
+ordinal = 1
+literal = "123,150"
+rule = "scale"
+param = 6
+value = "12315000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.preferred_stock.2007-11-30"
+ordinal = 1
+literal = "1,095"
+rule = "scale"
+param = 6
+value = "109500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.common_stock.2007-11-30"
+ordinal = 1
+literal = "61"
+rule = "scale"
+param = 6
+value = "6100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.paid_in_capital.2007-11-30"
+ordinal = 1
+literal = "9,733"
+rule = "scale"
+param = 6
+value = "973300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.aoci.2007-11-30"
+ordinal = 1
+literal = "(310)"
+rule = "scale"
+param = 6
+value = "-31000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.retained_earnings.2007-11-30"
+ordinal = 1
+literal = "19,698"
+rule = "scale"
+param = 6
+value = "1969800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.other_equity.2007-11-30"
+ordinal = 1
+literal = "(2,263)"
+rule = "scale"
+param = 6
+value = "-226300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.treasury_stock.2007-11-30"
+ordinal = 1
+literal = "(5,524)"
+rule = "scale"
+param = 6
+value = "-552400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_assets.2007-11-30"
+ordinal = 1
+literal = "691,063"
+rule = "scale"
+param = 6
+value = "69106300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_liabilities.2007-11-30"
+ordinal = 1
+literal = "668,573"
+rule = "scale"
+param = 6
+value = "66857300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_stockholders_equity.2007-11-30"
+ordinal = 1
+literal = "22,490"
+rule = "scale"
+param = 6
+value = "2249000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "Q208.total_liabilities_and_equity.2007-11-30"
+ordinal = 1
+literal = "691,063"
+rule = "scale"
+param = 6
+value = "69106300000000"
+unit = "USD"
+precision = 6

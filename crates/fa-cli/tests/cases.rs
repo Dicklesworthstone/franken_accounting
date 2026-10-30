@@ -146,6 +146,25 @@ fn xbrl() {
     }
 }
 
+/// L2 slice 1 (§8.3): the Q2-2008 10-Q's condensed consolidated statement of
+/// financial condition, every printed line posted to its own account at May
+/// 31, 2008 and at the November 30, 2007 comparative. The certified
+/// balance-sheet lines (assets, liabilities, total equity, liabilities and
+/// equity) foot to the printed totals, which are never posted (L-T-01,
+/// L-T-02), and the posted lines the examiner's leverage arithmetic deducts
+/// read back (L-R-01).
+#[test]
+fn lehman() {
+    let o = outcome("lehman");
+    let text = o.text();
+    println!("{text}");
+    assert!(o.rows_ok, "{text}");
+    let count = |prefix: &str| o.lines.iter().filter(|l| l.starts_with(prefix)).count();
+    assert_eq!(count("PASS L-T-01 T statement "), 4, "{text}");
+    assert_eq!(count("PASS L-T-02 T statement-fy2007 "), 4, "{text}");
+    assert_eq!(count("PASS L-R-01 R statement "), 4, "{text}");
+}
+
 /// A14 (§12.3): every committed case's README is the renderer's output of
 /// its data files and this binary's run of the case, so the README cannot
 /// drift from the evidence: a re-render must equal the committed bytes. A

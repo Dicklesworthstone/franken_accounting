@@ -409,6 +409,30 @@ class TableCells(unittest.TestCase):
         self.assertEqual(self.cell(self.YEARS, "As of December 31,|Total assets|1999"), ["85,280"])
         self.assertEqual(self.cell(self.YEARS, "As of December 31,|Total assets|2002"), ["26,536"])
 
+    # A 2008-era EDGAR statement whose cells hold block elements: one cell per line, `$` and a
+    # closing `)` on lines of their own, a descriptive line under a label.
+    PERCELL = ("LEHMAN-STYLE HOLDINGS\n\nStatement of Financial Condition\n\nAt\n\nIn millions\n\n"
+               "May 31, 2008\n\nNov 30, 2007\n\nAssets\n\nCash\n\n$\n\n6,513\n\n$\n\n7,286\n\n"
+               "Inventory owned\n(includes $43,031 in 2008 pledged as collateral)\n\n269,409\n\n"
+               "313,129\n\nAccumulated loss\n\n(359\n\n)\n\n(310\n\n)\n\nCommitments\n\n"
+               "Total assets\n\n$\n\n639,432\n\n$\n\n691,063\n")
+
+    def test_percell_layout_reads_one_cell_per_line(self):
+        table = "Statement of Financial Condition"
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Cash|May 31, 2008"), ["6,513"])
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Cash|Nov 30, 2007"), ["7,286"])
+        # A descriptive line between a label and its values is skipped.
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Inventory owned|Nov 30, 2007"),
+                         ["313,129"])
+        # A value split from its closing parenthesis is one cell.
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Accumulated loss|May 31, 2008"),
+                         ["(359)"])
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Total assets|Nov 30, 2007"),
+                         ["691,063"])
+        # No column of that name, or a row with too few values, resolves nothing.
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Cash|Dec 31, 2008"), [])
+        self.assertEqual(self.cell(self.PERCELL, f"{table}|Commitments|May 31, 2008"), [])
+
     def test_leader_dots_and_fds_tags(self):
         self.assertEqual(self.cell(self.LEADERS, "SELECTED DATA|Total assets|2000"), ["$98,903"])
         fds = "FINANCIAL DATA SCHEDULE DEC. 31, 1999"
