@@ -21,6 +21,7 @@ pub mod csv_gl;
 pub mod fwc;
 pub mod legacy;
 pub mod load_file;
+pub mod matching;
 pub mod part370;
 pub mod saft;
 pub mod tigerbeetle;

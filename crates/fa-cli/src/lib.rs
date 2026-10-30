@@ -43,6 +43,7 @@ pub mod json;
 mod laws;
 pub mod lease;
 mod lots;
+mod matching;
 mod migration_import;
 pub(crate) mod notary;
 mod obligation;

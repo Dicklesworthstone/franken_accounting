@@ -85,6 +85,7 @@ pub mod intake;
 pub mod interop;
 pub mod ledger_diff;
 pub mod lots_certificate;
+pub mod matching;
 pub mod outcome_recovery;
 pub mod plan_warnings;
 pub mod procedure_certificate;

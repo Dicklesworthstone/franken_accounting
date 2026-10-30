@@ -10474,6 +10474,166 @@ fn explain_balance_lists_every_leg_re_adds_to_the_cell_and_replays_its_history()
     Ok(())
 }
 
+/// Three original CSV sources whose item identities, quantities and prices
+/// agree. Intake returns their actual retained OIDs, including the reference
+/// the receiving report and invoice must carry back to the purchase order.
+fn retained_purchase_sources(dir: &Path, book: &Path) -> [String; 3] {
+    let add = |name: &str, kind: &str, body: &str| {
+        let path = write(dir, name, body);
+        let (code, out, err) = fa(
+            Some(book),
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                kind,
+                "--mime",
+                "text/csv",
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        assert_eq!(code, 0, "{kind}: {out}\n{err}");
+        text(&doc(&out), "oid").to_string()
+    };
+    let purchase_order = add(
+        "matching-purchase-order.csv",
+        "PurchaseOrder",
+        "vendor,item_code,quantity,unit_price,currency\nSupplier,SKU-1,4,2.50,USD\n",
+    );
+    let receipt = add(
+        "matching-receiving-report.csv",
+        "ReceivingReport",
+        &format!("purchase_order_oid,item_code,quantity_received\n{purchase_order},SKU-1,4\n"),
+    );
+    let invoice = add(
+        "matching-invoice.csv",
+        "Invoice",
+        &format!(
+            "purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency\n{purchase_order},Supplier,SKU-1,4,2.50,10.00,USD\n"
+        ),
+    );
+    [purchase_order, receipt, invoice]
+}
+
+#[test]
+fn three_way_matching_records_bound_access_before_delivery_and_preserves_replay()
+-> std::io::Result<()> {
+    use fa_cli::authority::{LaunchAuthority, LaunchProfile};
+    use fa_cli::cli::Files;
+    use fa_cli::entry::fa_with_authority;
+
+    let dir = tmp("matching-bound-access")?;
+    let book = dir.join("book");
+    let owner = |args: &[&str]| {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}: {out}\n{err}");
+        out
+    };
+    owner(&[
+        "book",
+        "create",
+        "--name",
+        "Bound purchase matching",
+        "--json",
+    ]);
+    let [purchase_order, receipt, invoice] = retained_purchase_sources(&dir, &book);
+    let before = field(&owner(&["book", "info", "--json"]), "known_at")
+        .expect("book frontier")
+        .parse::<i128>()
+        .unwrap();
+    let authority = LaunchAuthority::new(
+        book.clone(),
+        None,
+        "purchase-agent",
+        LaunchProfile::Agent,
+        &["read", "reconcile"],
+    )
+    .unwrap();
+    let invoke = |args: &[String]| {
+        let (code, captured) = fa_with_authority(args, Files::default(), &authority, true);
+        assert_eq!(code, 0, "{args:?}: {captured:?}");
+        let argv: Vec<_> = args.iter().map(String::as_str).collect();
+        assert_eq!(
+            check_robot_output(&argv, i32::from(code), &captured.stdout),
+            vec!["three_way_match"]
+        );
+        let event = json::parse(captured.stdout.trim()).unwrap();
+        assert_eq!(event.get("authority"), Some(&authority.envelope_json()));
+        event
+    };
+    let args: Vec<String> = [
+        "match",
+        "three-way",
+        "--purchase-order",
+        &purchase_order,
+        "--receiving-report",
+        &receipt,
+        "--invoice-document",
+        &invoice,
+        "--item",
+        "SKU-1",
+        "--json",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let matched = invoke(&args);
+    let result = matched.get("data").unwrap();
+    assert_eq!(text(result, "verdict"), "matched");
+    assert_eq!(text(result, "invoice_total"), "10.00 USD");
+    let log = doc(&owner(&[
+        "access",
+        "log",
+        "--since",
+        &before.to_string(),
+        "--json",
+    ]));
+    let events = arr(&log, "events");
+    assert_eq!(events.len(), 1, "{log:?}");
+    let access = &events[0];
+    assert_eq!(text(access, "command"), "match three-way");
+    assert_eq!(text(access, "principal_name"), "purchase-agent");
+    assert_eq!(int(access, "observed_at"), Some(before));
+    assert_eq!(int(access, "recorded_at"), Some(before + 1));
+    assert_eq!(int(result, "known_at"), int(access, "recorded_at"));
+    assert_eq!(
+        arr(access, "ops"),
+        &[Json::Str("read".into()), Json::Str("reconcile".into())]
+    );
+
+    // Each protected delivery is recorded again, but the source/result stay
+    // pinned to the first answer's numeric prefix and independent digest.
+    let replay: Vec<_> = arr(result, "replay_argv")
+        .iter()
+        .skip(1)
+        .map(|arg| arg.as_str().unwrap().to_string())
+        .collect();
+    let replayed = invoke(&replay);
+    assert_eq!(replayed.get("data"), Some(result));
+    let log = doc(&owner(&[
+        "access",
+        "log",
+        "--since",
+        &before.to_string(),
+        "--json",
+    ]));
+    let events = arr(&log, "events");
+    assert_eq!(events.len(), 2, "{log:?}");
+    assert_eq!(text(&events[1], "command"), "match three-way");
+    assert_eq!(int(&events[1], "recorded_at"), Some(before + 2));
+    assert_ne!(text(&events[0], "vid"), text(&events[1], "vid"));
+    let after = owner(&["book", "info", "--json"]);
+    assert_eq!(
+        field(&after, "known_at").unwrap().parse::<i128>().unwrap(),
+        before + 2,
+        "only the two access receipts advanced the book"
+    );
+    Ok(())
+}
+
 #[test]
 fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let reg = registry().expect("verbs.toml");
@@ -13493,6 +13653,35 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         "FY2026-P03",
         "--functional",
     ]);
+
+    // Source matching must emit its registered event through real document
+    // intake and comparison, not by inserting a fabricated coverage name.
+    let matching_book = dir.join("matching-events-book");
+    let mut run_matching = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&matching_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_matching(&["book", "create", "--name", "Purchase matching events"]);
+    let [purchase_order, receipt, invoice] = retained_purchase_sources(&dir, &matching_book);
+    let matched = doc(&run_matching(&[
+        "match",
+        "three-way",
+        "--purchase-order",
+        &purchase_order,
+        "--receiving-report",
+        &receipt,
+        "--invoice-document",
+        &invoice,
+        "--item",
+        "SKU-1",
+    ]));
+    assert_eq!(text(&matched, "verdict"), "matched");
+    assert_eq!(text(&matched, "invoice_total"), "10.00 USD");
+    assert_eq!(matched.get("confirmed"), Some(&Json::Bool(false)));
 
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg

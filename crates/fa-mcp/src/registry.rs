@@ -3267,6 +3267,61 @@ mod tests {
     }
 
     #[test]
+    fn three_way_matching_forwards_only_retained_source_selection_and_pinned_replay() {
+        let (mcp, reg) = embedded();
+        let matching = mcp
+            .tool_by_wire("fa_match_three_way")
+            .expect("three-way matching");
+        let schema = matching.input_schema(&mcp, reg);
+        for field in [
+            "purchase_order",
+            "receiving_report",
+            "invoice_document",
+            "item",
+        ] {
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(field))
+            );
+        }
+        let arguments = json!({
+            "purchase_order": format!("D:{}", "ab".repeat(32)),
+            "receiving_report": format!("D:{}", "bc".repeat(32)),
+            "invoice_document": format!("D:{}", "cd".repeat(32)),
+            "item": "SKU-1",
+            "as_known_at": "17",
+            "expect_digest": "ef".repeat(32),
+        });
+        let invocation = matching
+            .invocation(&mcp, reg, &arguments)
+            .expect("retained matching replay");
+        assert!(invocation.stdin.is_none());
+        let parsed = fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+            .expect("matching command");
+        assert_eq!(parsed.positional, vec!["match", "three-way"]);
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            parsed.flag("--expect-digest"),
+            Some("ef".repeat(32).as_str())
+        );
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("match", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"])
+        );
+        for field in ["file", "grant", "amount", "base_amount", "confirm"] {
+            let mut unsupported = arguments.clone();
+            unsupported[field] = json!("untrusted override");
+            assert!(
+                matching.invocation(&mcp, reg, &unsupported).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
     fn bank_csv_layout_is_inline_only_even_when_statement_files_are_enabled() {
         let (mcp, reg) = embedded();
         let import = mcp.tool_by_wire("fa_bank_import").expect("bank import");

@@ -3436,6 +3436,21 @@ impl Book {
         )))
     }
 
+    /// Compare one item in three retained CSV documents under current source
+    /// disclosure and reconcile authority. The result is advisory and its
+    /// digest can be replayed at the returned historical prefix; no payment,
+    /// match confirmation or certificate is published.
+    pub fn match_three_way(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::matching::ThreeWayMatchRequest,
+    ) -> Outcome<crate::matching::ThreeWayMatchReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.match_three_way(
+            &purposes, capability, request,
+        )))
+    }
+
     /// Confirm one exact retained bank-line proposal. Its immutable receipt
     /// binds the actual cash-leg ordinal and the current confirming principal.
     pub fn confirm_bank_statement_match(

@@ -578,6 +578,21 @@ complexity_witness = "O(input bytes + lines) parse, canonical projection and bou
 notes = "No monetary entries or match decisions. Re-reading reparses retained source and verifies complete projected bytes. Source custody uses the actual intake profile; derived evidence is conservatively self-sourced. DERIVED_FROM adds no publication or shared mutable object. The two-line all-fresh inline fixture writes 9 vertices and 13 edges in one publication; exact retries write nothing. External blobs are durable before graph publication; the two-barrier floor describes the inline fixture. Existing derived documents retain their original lineage. Explicit predecessor links also stage one immutable BankStatementLink keyed by book/account/current statement OID with exactly four DERIVED_FROM edges to the current/prior ImportRuns and current/prior manifest Documents in the same publication. The two-line all-fresh linked fixture writes 10 vertices and 17 edges in one publication; unlinked remains 9 vertices and 13 edges. Its absent/equal point witness prevents conflicting linked imports without a shared mutable hot object. Linked retries return the original receipt. Continuity replay costs O(total retained source bytes + lines + predecessor links), bounded by 4096 links; the 16 MiB input bound applies to each source. Every predecessor receipt and source document remains witnessed from validation through publication."
 
 [[operation_class]]
+id = "three_way_document_match"
+name = "Retained-source purchase order, receiving report and invoice matching"
+substrate_class = "Authorized historical document and custody reads; deterministic exact comparison"
+substrate_transactions = "0 for matching; launch-bound access delivery uses its separately registered AccessEvent path"
+today_posture = "Reads three complete retained sources at one known-at prefix and returns an advisory result with a digest-bound native replay request"
+today_transactions = 0
+barrier_count = 0
+today_barrier_count = 0
+derived_objects = "0 persisted objects; one bounded in-memory selected-line report and canonical decision card"
+hot_object_exceptions = []
+external_authorities = "none; uploaded source assertions retain their original intake grades"
+complexity_witness = "For B total source bytes and R source rows, strict parsing and unique-item checks cost O(B + R log R), bounded per source by evidence_policy.max_document_bytes and max_import_documents data rows. Native document/custody verification and current authority checks are additional read costs; a cold historical read may hydrate the retained native prefix. The selected result has constant row count and bounded identifier/card size."
+notes = "Current Read and Reconcile whole-book authority precedes protected observation. Every row of every source is parsed, not only the selected item. Duplicate item identifiers, malformed unselected rows and incompatible document kinds refuse. OIDs, canonical document commitments, source birth/custody metadata, selected row ordinals, parser profile, known-at and exact decision are result inputs. Native historical replay rechecks current authority and an independently retained result digest. No fuzzy match, monetary posting, confirmation, approval or offline recomputation certificate is claimed."
+
+[[operation_class]]
 id = "bank_match_confirmation"
 name = "Immutable exact bank-line to cash-leg confirmation"
 substrate_class = "Current admission, native source verification and one witnessed confirmation transaction"

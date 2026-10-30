@@ -833,7 +833,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native accounting extensions.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 34] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 35] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -863,6 +863,7 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 34] = [
     "ceiling_bearing_post",
     "bulk_migration",
     "bank_statement_import",
+    "three_way_document_match",
     "bank_match_confirmation",
     "bank_match_unmatch",
     "bank_statement_reconciliation",
@@ -2889,7 +2890,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 34);
+        assert_eq!(op_costs.classes.len(), 35);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -3087,6 +3088,14 @@ mod tests {
             "1 for a new statement; 0 for an exact retry"
         );
         assert!(bank.hot_object_exceptions.is_empty());
+
+        let matching = op_costs
+            .class("three_way_document_match")
+            .expect("retained source matching has its own read cost contract");
+        assert_eq!(matching.today_transactions, 0);
+        assert_eq!(matching.barrier_count, 0);
+        assert_eq!(matching.today_barrier_count, 0);
+        assert!(matching.hot_object_exceptions.is_empty());
 
         for id in [
             "closing_routes_record",

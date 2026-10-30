@@ -1656,7 +1656,7 @@ fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
     bank_csv_records_with(csv, ',', 12, usize::MAX, "bank_csv_v1")
 }
 
-fn bank_csv_records_with(
+pub(crate) fn bank_csv_records_with(
     csv: &str,
     delimiter: char,
     max_columns: usize,

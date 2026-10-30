@@ -146,6 +146,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("finding", crate::finding::finding_cmd),
     ("fx", crate::fx::fx_cmd),
     ("bank", crate::bank::bank_cmd),
+    ("match", crate::matching::match_cmd),
     ("export", crate::export::export_cmd),
     ("verify", verify_cmd),
     ("registers", registers_cmd),
@@ -1876,6 +1877,7 @@ fn access_record(
         && operations.contains(&fa_policy::Op::Read);
     let reconciliation_read = operations.contains(&fa_policy::Op::Read)
         && (verb == "procedure"
+            || verb == "match"
             || (verb == "bank"
                 && matches!(
                     args.positional.get(1).map(String::as_str),
