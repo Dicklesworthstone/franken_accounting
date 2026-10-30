@@ -24841,7 +24841,7 @@ mod tests {
 
     #[test]
     fn retained_closing_draft_append_needs_no_publication_tick() {
-        let reg = registry().unwrap();
+        let reg = verbs::registry().expect("verbs.toml");
         for (flags, needs_tick) in [
             (
                 vec!["--review", "aa", "--digest", "bb", "--draft", "annual"],

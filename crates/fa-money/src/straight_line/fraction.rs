@@ -32,8 +32,8 @@ mod tests {
         let bytes = basis.to_le_bytes();
         let mut words = [0_u32; 5];
         let mut carry = 0_u64;
-        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-            let digit = u32::from_le_bytes(chunk.try_into().unwrap());
+        for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+            let digit = u32::from_le_bytes(*chunk);
             let product = u64::from(digit)
                 .checked_mul(u64::from(elapsed))
                 .unwrap()

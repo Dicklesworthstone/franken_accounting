@@ -3,6 +3,7 @@
 
 use super::*;
 use fa_journal::closing::{YearEndCloseRequest, prepare_year_end_close_for_draft};
+use fa_journal::refusal::code;
 
 fn request() -> YearEndCloseRequest {
     YearEndCloseRequest {

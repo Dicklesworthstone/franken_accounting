@@ -1526,18 +1526,18 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         }
     }
     for link in &proposal.supersession {
-        if let Some(row) = txn.vertex(db, link.target.vid)? {
-            if row.labels.contains(&label::ENTRY) {
-                let target = Entry::decode(&bytes(
-                    &row,
-                    property::FA_PAYLOAD,
-                    "asset correction target",
-                )?)?;
-                if has_basis(&target.proposal) && proposal.class != EntryClass::REVERSAL {
-                    return Ok(Err(invalid(
-                        "scheduled asset charges support exact reversal only; estimates and replacement corrections require a separate lifecycle protocol",
-                    )));
-                }
+        if let Some(row) = txn.vertex(db, link.target.vid)?
+            && row.labels.contains(&label::ENTRY)
+        {
+            let target = Entry::decode(&bytes(
+                &row,
+                property::FA_PAYLOAD,
+                "asset correction target",
+            )?)?;
+            if has_basis(&target.proposal) && proposal.class != EntryClass::REVERSAL {
+                return Ok(Err(invalid(
+                    "scheduled asset charges support exact reversal only; estimates and replacement corrections require a separate lifecycle protocol",
+                )));
             }
         }
         let mut source = link.target.vid;
