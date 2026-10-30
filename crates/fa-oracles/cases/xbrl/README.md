@@ -13,6 +13,7 @@ Claimed rows: `X-CASE-spwr-bs2021-restatement`, `X-CASE-spwr-bs2022-restatement`
 | Source | Title | Publisher | Status | Filed | Retrieved |
 |---|---|---|---|---|---|
 | `SRC-SPWR-10KA-2022` | SunPower Corporation, Form 10-K/A for the fiscal year ended January 1, 2023: XBRL instance document | SunPower Corporation (EDGAR) | reported (audited) | 2023-12-18 | archive_capture |
+| `SRC-SPWR-8K-ITEM402` | SunPower Corporation, Form 8-K of October 24, 2023 (Items 4.02, 5.02 and 9.01): Non-Reliance on Previously Issued Financial Statements | SunPower Corporation (EDGAR) | reported (unaudited) | 2023-10-24 | archive_capture |
 
 ### Sourced facts
 
@@ -68,6 +69,7 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5` | `SRC-SPWR-10KA-2022` | `us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest\|c-5` | 383,603,000.00 USD | reported (audited) | xbrl_fact |
 | `spwr.dei.AuditorName` | `SRC-SPWR-10KA-2022` | `dei:AuditorName\|c-1` | - | reported (audited) | xbrl_fact |
 | `spwr.QuarterlyFinancialInformationTextBlock.c-1` | `SRC-SPWR-10KA-2022` | `us-gaap:QuarterlyFinancialInformationTextBlock\|c-1` | - | reported (audited) | xbrl_fact |
+| `spwr8k.determined_on` | `SRC-SPWR-8K-ITEM402` | `l66-66` | 2023-10-19 | reported (unaudited) | period_total |
 
 ### Readings of the record
 
@@ -125,6 +127,7 @@ Opened 2021-01-04 in USD, on the `custom` calendar.
 
 | Document | Stands for | Grade |
 |---|---|---|
+| `DOC-8K-402` | `SRC-SPWR-8K-ITEM402` | AgentUpload |
 | `DOC-10KA` | `SRC-SPWR-10KA-2022` | AgentUpload |
 
 Declared defaults (each an encoding choice the record does not fix):
@@ -134,7 +137,6 @@ Declared defaults (each an encoding choice the record does not fix):
 | `evidence_attached` | `placeholder_reviewed` | the 10-K/A is cited through its stub, reviewed by case-second-reader (plan §2.7) |
 | `leg_split` | `statement_remainder` | the filing states net income (loss) as one line with no split of the other side: each figure posts against the one is-offset account of type Equity (plan §3.8, §15 X3) |
 | `effective_date` | `reporting_period_last_day` | an income-statement figure is the activity of its fiscal quarter, dated the quarter's last day |
-| `case_determination_date` | `restating_filing_date` | the 10-K/A's filing date is public, fixed and never precedes the restated figures (plan §2.6); X7 replaces it with the Item 4.02 8-K's determination date |
 | `reason` | `WrongAmount` | the 10-K/A corrects amounts previously reported, and the book holds no account-level cause; never Fraud (K-REASON) |
 
 ### Book `statement-sunpower` (statement)
@@ -164,6 +166,7 @@ Opened 2022-01-03 in USD, on the `custom` calendar.
 
 | Document | Stands for | Grade |
 |---|---|---|
+| `DOC-8K-402` | `SRC-SPWR-8K-ITEM402` | AgentUpload |
 | `DOC-10KA` | `SRC-SPWR-10KA-2022` | AgentUpload |
 
 Declared defaults (each an encoding choice the record does not fix):
@@ -173,7 +176,6 @@ Declared defaults (each an encoding choice the record does not fix):
 | `evidence_attached` | `placeholder_reviewed` | the 10-K/A is cited through its stub, reviewed by case-second-reader (plan §2.7) |
 | `leg_split` | `statement_remainder` | the tagged totals partition exactly (Assets = Liabilities + StockholdersEquity + MinorityInterest), so each liability or equity figure posts against the Assets leaf and no remainder account is needed (plan §3.8, §15 X3) |
 | `effective_date` | `reporting_period_last_day` | a balance-sheet figure is as of its fiscal year-end, the period's last day |
-| `case_determination_date` | `restating_filing_date` | the 10-K/A's filing date is public, fixed and never precedes the restated figures (plan §2.6); X7 replaces it with the Item 4.02 8-K's determination date |
 | `reason` | `WrongAmount` | the 10-K/A corrects amounts previously reported, and the book holds no account-level cause; never Fraud (K-REASON) |
 
 ### Book `statement-sunpower-fy2021` (statement)
@@ -203,6 +205,7 @@ Opened 2021-01-04 in USD, on the `custom` calendar.
 
 | Document | Stands for | Grade |
 |---|---|---|
+| `DOC-8K-402` | `SRC-SPWR-8K-ITEM402` | AgentUpload |
 | `DOC-10KA` | `SRC-SPWR-10KA-2022` | AgentUpload |
 
 Declared defaults (each an encoding choice the record does not fix):
@@ -212,7 +215,6 @@ Declared defaults (each an encoding choice the record does not fix):
 | `evidence_attached` | `placeholder_reviewed` | the 10-K/A is cited through its stub, reviewed by case-second-reader (plan §2.7) |
 | `leg_split` | `statement_remainder` | the tagged totals partition exactly (Assets = Liabilities + StockholdersEquity + MinorityInterest), so each liability or equity figure posts against the Assets leaf and no remainder account is needed (plan §3.8, §15 X3) |
 | `effective_date` | `reporting_period_last_day` | a balance-sheet figure is as of its fiscal year-end, the period's last day |
-| `case_determination_date` | `restating_filing_date` | the 10-K/A's filing date is public, fixed and never precedes the restated figures (plan §2.6); X7 replaces it with the Item 4.02 8-K's determination date |
 | `reason` | `WrongAmount` | the 10-K/A corrects amounts previously reported, and the book holds no account-level cause; never Fraud (K-REASON) |
 
 ## Findings, refusals, tie-outs and read-backs
@@ -339,7 +341,7 @@ The runner reads each restatement case back with `fa case show` after its histor
 
 | Row | Book | Verdict | Observed |
 |---|---|---|---|
-| `X-CASE-spwr-bs2021-restatement` | `statement-sunpower-fy2021` | PASS | kind=case_show read=case show,spwr-bs2021-restatement state=Closed case_kind=Restatement determined_on=2023-12-18 authority=DOC-10KA disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
-| `X-CASE-spwr-bs2022-restatement` | `statement-sunpower` | PASS | kind=case_show read=case show,spwr-bs2022-restatement state=Closed case_kind=Restatement determined_on=2023-12-18 authority=DOC-10KA disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
-| `X-CASE-spwr-is-restatement` | `statement-sunpower-is` | PASS | kind=case_show read=case show,spwr-is-restatement state=Closed case_kind=Restatement determined_on=2023-12-18 authority=DOC-10KA disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
+| `X-CASE-spwr-bs2021-restatement` | `statement-sunpower-fy2021` | PASS | kind=case_show read=case show,spwr-bs2021-restatement state=Closed case_kind=Restatement determined_on=2023-10-19 authority=DOC-8K-402 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
+| `X-CASE-spwr-bs2022-restatement` | `statement-sunpower` | PASS | kind=case_show read=case show,spwr-bs2022-restatement state=Closed case_kind=Restatement determined_on=2023-10-19 authority=DOC-8K-402 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
+| `X-CASE-spwr-is-restatement` | `statement-sunpower-is` | PASS | kind=case_show read=case show,spwr-is-restatement state=Closed case_kind=Restatement determined_on=2023-10-19 authority=DOC-8K-402 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
 

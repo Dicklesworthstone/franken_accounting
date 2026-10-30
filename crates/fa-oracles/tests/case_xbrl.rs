@@ -192,3 +192,50 @@ fn value_off_by_one_unit_fails_match() {
         "expected us-gaap:Assets at 2023-01-01 = 165400000 observed 165400001 (minor units at scale 2)"
     );
 }
+
+/// X7 (§10.1, §2.6): SunPower's Item 4.02 8-K states the day its Audit
+/// Committee determined that the fiscal 2022 10-K and the first two 2023
+/// 10-Qs should no longer be relied upon, 2023-10-19, and every SunPower
+/// Restatement case is determined on that sourced fact, the 8-K's stub its
+/// authority. The 8-K was filed 2023-10-24 (and its document is named for
+/// 2023-10-18), so the determination day is the sentence's, not the filing
+/// date. The fact binds through its receipt (K-BIND).
+#[test]
+fn x7_cases_are_determined_on_the_audit_committees_day() {
+    use fa_oracles::cases::check::{Verdict, run_load_checks};
+    use fa_oracles::cases::embedded::XBRL;
+
+    let case = fa_oracles::cases::load(&XBRL.case_files()).expect("the xbrl case loads");
+    let day: Vec<&str> = case
+        .values
+        .iter()
+        .filter(|v| v.fact == "spwr8k.determined_on")
+        .map(|v| v.value.as_str())
+        .collect();
+    assert_eq!(day, ["2023-10-19"]);
+    let source = case
+        .sources
+        .iter()
+        .find(|s| s.id == "SRC-SPWR-8K-ITEM402")
+        .expect("the 8-K's row");
+    assert_eq!(source.filed_on.as_deref(), Some("2023-10-24"));
+    let mut cases = 0;
+    for book in case.books.values() {
+        for c in &book.cases {
+            cases += 1;
+            assert_eq!(c.determined_on, "spwr8k.determined_on", "{}", c.id);
+            let authority = book
+                .documents
+                .iter()
+                .find(|d| d.id == c.authority)
+                .expect("the authority's document");
+            assert_eq!(authority.stub_of, "SRC-SPWR-8K-ITEM402", "{}", c.id);
+        }
+    }
+    assert_eq!(cases, 3);
+    let bind = run_load_checks(&case)
+        .into_iter()
+        .find(|r| r.check == "K-BIND")
+        .expect("K-BIND ran");
+    assert_ne!(bind.verdict, Verdict::Fail, "{}", bind.render(Some("xbrl")));
+}

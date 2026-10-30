@@ -1063,3 +1063,23 @@ param = 0
 value = "38360300000"
 unit = "USD"
 precision = 3
+
+# The Audit Committee's non-reliance determination (Item 4.02(a)(1)): the date every SunPower
+# Restatement case is determined on.
+[[fact]]
+id = "spwr8k.determined_on"
+provenance = "sourced"
+source = "SRC-SPWR-8K-ITEM402"
+anchor_kind = "line"
+anchor = "l66-66"
+quote_sha256 = "5bcc567cd21b4d35e55ebf4068613032685411efc210742e4856196e77c89d83"
+about_scope = "scheme:spwr-non-reliance-2023Q1-2023Q4"
+granularity = "period_total"
+
+[[value]]
+fact = "spwr8k.determined_on"
+ordinal = 1
+literal = "October 19, 2023"
+rule = "date_literal"
+value = "2023-10-19"
+unit = ""

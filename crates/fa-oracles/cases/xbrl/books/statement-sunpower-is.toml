@@ -192,6 +192,12 @@ opened = "2021-01-03"
 role_map_rule = "role_map"
 
 [[document]]
+id = "DOC-8K-402"
+stub_of = "SRC-SPWR-8K-ITEM402"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
 id = "DOC-10KA"
 stub_of = "SRC-SPWR-10KA-2022"
 grade = "AgentUpload"
@@ -673,8 +679,8 @@ unit = "USD"
 id = "spwr-is-restatement"
 kind = "Restatement"
 periods = ["FY2021Q1", "FY2021Q2", "FY2021Q3", "FY2021Q4", "FY2022Q1", "FY2022Q2", "FY2022Q3", "FY2022Q4"]
-determined_on = "default"
-authority = "DOC-10KA"
+determined_on = "spwr8k.determined_on"
+authority = "DOC-8K-402"
 disclosure = "DOC-10KA"
 approvers = ["case-approver-1", "case-approver-2"]
 poster = "case-poster-1"
@@ -699,11 +705,6 @@ rationale = "the filing states net income (loss) as one line with no split of th
 attribute = "effective_date"
 rule = "reporting_period_last_day"
 rationale = "an income-statement figure is the activity of its fiscal quarter, dated the quarter's last day"
-
-[[default]]
-attribute = "case_determination_date"
-rule = "restating_filing_date"
-rationale = "the 10-K/A's filing date is public, fixed and never precedes the restated figures (plan §2.6); X7 replaces it with the Item 4.02 8-K's determination date"
 
 [[default]]
 attribute = "reason"

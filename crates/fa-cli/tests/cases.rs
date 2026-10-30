@@ -136,6 +136,10 @@ fn worldcom() {
 /// the year-end exactly (X-T-02, X-T-07). Each read's witness explains the
 /// line the writer binds the QName to, and no outsider route applies to an
 /// export read.
+///
+/// X7: every SunPower Restatement case is determined on the day the Item
+/// 4.02 8-K states (2023-10-19, the Audit Committee's non-reliance
+/// determination), its authority the 8-K's stub.
 #[test]
 fn xbrl() {
     let o = outcome("xbrl");
@@ -157,6 +161,17 @@ fn xbrl() {
             .filter(|l| l.starts_with(&format!("PASS {round_trip} T {book} ")))
             .collect();
         assert_eq!(exported.len(), 4, "{round_trip}\n{text}");
+        let case_row: Vec<&String> = o
+            .lines
+            .iter()
+            .filter(|l| l.starts_with("PASS X-CASE-") && l.contains(&format!(" R {book} ")))
+            .collect();
+        assert_eq!(case_row.len(), 1, "{book}\n{text}");
+        assert!(
+            case_row[0].contains(" determined_on=2023-10-19 authority=DOC-8K-402 "),
+            "{}",
+            case_row[0]
+        );
         for line in exported {
             assert!(
                 line.contains(" kind=round_trip read=export-xbrl,us-gaap:")

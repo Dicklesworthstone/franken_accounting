@@ -768,3 +768,19 @@ aligned = true
 values_in_quote = true
 scope_ok = true
 original_hash_compared = false
+
+[[receipt]]
+source = "SRC-SPWR-8K-ITEM402"
+fact = "spwr8k.determined_on"
+anchor = "l66-66"
+verified_utc = "2026-10-30T19:51:02Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "8da93f1d3be2a951f58bef386d1b9dd0bd6f1a3808247995807526e01ce27a74"
+quote_sha256 = "5bcc567cd21b4d35e55ebf4068613032685411efc210742e4856196e77c89d83"
+values_sha256 = "b311cc3a41b018faa561e624e08846be38114f00bfd314504c0ed205e88616c6"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

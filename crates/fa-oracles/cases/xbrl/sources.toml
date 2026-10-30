@@ -24,3 +24,23 @@ status = "OK"
 filed_on = "2023-12-18"
 restates = []
 notes = "Accession 0000867773-23-000117, the 10-K/A (dei:AmendmentFlag true) that restates SunPower's fiscal 2022 and 2021 statements; Filing Date 2023-12-18 on its EDGAR filing index (Internet Archive capture of 2023-12-19). This is the instance EDGAR extracts from the inline XBRL document spwr-20230101.htm, 5,332,240 bytes as captured 2023-12-24. Its quarterly figures are the filing's selected unaudited quarterly financial data, so a quarterly line states filer_unaudited; the instance tags the auditor of the annual statements (dei:AuditorName, the row's assurance fact) and introduces the quarterly data as unaudited (us-gaap:QuarterlyFinancialInformationTextBlock, each quarterly fact's assurance). The originally filed fiscal 2022 10-K, which this filing restates, is not yet a row either, so restates is empty until it is."
+
+[[source]]
+id = "SRC-SPWR-8K-ITEM402"
+title = "SunPower Corporation, Form 8-K of October 24, 2023 (Items 4.02, 5.02 and 9.01): Non-Reliance on Previously Issued Financial Statements"
+publisher = "SunPower Corporation (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/867773/000086777323000089/spwr-20231018.htm"
+archive_url = "http://web.archive.org/web/20231030104739id_/https://www.sec.gov/Archives/edgar/data/867773/000086777323000089/spwr-20231018.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T19:51:02Z"
+sha256 = "4d9eb8b74760525f3b86b9d7513e7fba2802b4bdaa117fa73629ef37f6210a99"
+format = "htm"
+extraction = ["case_fetch.py extract", "case-fetch-strip-v1", "8da93f1d3be2a951f58bef386d1b9dd0bd6f1a3808247995807526e01ce27a74"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_unaudited"
+anchor_scheme = ["line"]
+status = "OK"
+filed_on = "2023-10-24"
+restates = []
+notes = "Accession 0000867773-23-000089, the Item 4.02 8-K filed 2023-10-24 per its EDGAR filing index; the document is the inline XBRL 8-K spwr-20231018.htm, 39,236 bytes as captured 2023-10-30 (the capture replays EDGAR's gzip Content-Encoding; the sha256 is of the document). Its Item 4.02 sentence states the day the Audit Committee determined that the fiscal 2022 10-K and the first two 2023 10-Qs should no longer be relied upon, 2023-10-19, which is neither the filing date nor the date in the document's name. It is the filer's own unaudited statement of a determination, with no audit or review report of its own, so it carries no assurance sentence."
