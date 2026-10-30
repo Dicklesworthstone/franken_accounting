@@ -58,13 +58,13 @@
 
 > **Gate rule:** Gate met only when every row is `works`.
 
-- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **35**, `refused`: **2**, `absent`: **18**)
+- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **36**, `refused`: **2**, `absent`: **17**)
 
 | Gate | Works | Lawful Refusal | Absent | Total | Gate Status |
 |---|---:|---:|---:|---:|---|
 | `G0` | 13 | 0 | 0 | 13 | **MET** |
 | `Genesis` | 9 | 2 | 0 | 11 | **UNMET** |
-| `G1` | 4 | 0 | 3 | 7 | **UNMET** |
+| `G1` | 5 | 0 | 2 | 7 | **UNMET** |
 | `G2` | 6 | 0 | 4 | 10 | **UNMET** |
 | `G3` | 3 | 0 | 5 | 8 | **UNMET** |
 | `G4` | 0 | 0 | 6 | 6 | **UNMET** |
@@ -97,7 +97,7 @@
 | `GEN-09` | `Genesis` | `cli` | `cli` | `—` | `refused` | `3` | `error` (`FA-REF-001`) | `fa-lm7` | an unbalanced proposal is refused with exit `3` and the per-unit imbalance |
 | `GEN-10` | `Genesis` | `cli` | `cli` | `—` | `refused` | `7` | `error` (`FA-REF-010`) | `fa-lm7` | a post into a `Closed` period is refused with exit `7` and the matrix cell |
 | `GEN-11` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | `fa replay` reproduces the trial balance bytes |
-| `G1-01` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | Genesis slice green under lab and live |
+| `G1-01` | `G1` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-04` | `works` | `0` | `lab_campaign_ok` | `—` | Genesis slice green under lab and live |
 | `G1-02` | `G1` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the Genesis clause set (FA-INV-01, 02, 03.core, 04, 05.minimum, 06, 07.core, 09, 10.core, 11.core, 14.leaf-and-consistency, 15.core, 16) live with checkers and the remaining clauses registered dormant with their activating workstream named |
 | `G1-03` | `G1` | `differential` | `differential` | `—` | `works` | `0` | `differential_ok` | `—` | registers verified by fold on every fixture |
 | `G1-04` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-nl7` | idempotency and batches under crash |

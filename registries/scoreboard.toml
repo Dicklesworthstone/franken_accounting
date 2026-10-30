@@ -727,11 +727,11 @@ gate = "G1"
 criterion = "Genesis slice green under lab and live"
 evidence_class = "lab-campaign"
 probe_kind = "lab-campaign"
+artifact = "FA-ART-LAB-04"
 argv = ["g1_genesis_lab_and_live"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-0fl"
+expected = "works"
+expected_exit = 0
+expected_event = "lab_campaign_ok"
 
 [[gate_criterion]]
 id = "G1-02"
