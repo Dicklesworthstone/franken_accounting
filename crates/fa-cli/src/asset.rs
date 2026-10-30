@@ -15,15 +15,15 @@ use fgdb_types::VId;
 use crate::args::Args;
 use crate::cli::{
     Ctx, Fail, Files, Out, check_post_planning_options, emit_post_plan, emit_posted, hex,
-    known_at_read_flag, parse_digest, parse_vid, read_review_bytes, render_amount, usage,
-    write_review_file,
+    known_at_read_flag, parse_digest, parse_vid, plan_intent_into_draft, read_review_bytes,
+    render_amount, usage, write_review_file,
 };
 use crate::json::{Json, obj, s};
 
 const SCHEDULE_USAGE: &str = "fa schedule asset create NAME --kind depreciation|amortization --acquisition VID --leg N --first-period FY2026-P01 --periods 36 --salvage '0 USD' --expense 6100 --accumulated 1590 --rounding-law HalfEven --date YYYY-MM-DD --key KEY [--review-only]; or schedule asset show NAME | list | register [--as-known-at SEQ]";
 const REGISTER_BASIS: &str =
     "all schedule effects recorded through known_at; no effective-date cutoff";
-const CHARGE_USAGE: &str = "fa depreciate|amortize --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --dry-run [--plan-out FILE]]; resume with --review <file|hex|-> --digest <review_digest> [--approval VID]";
+const CHARGE_USAGE: &str = "fa depreciate|amortize --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --dry-run [--plan-out FILE]]; resume with --review <file|hex|-> --digest <review_digest> [--approval VID] [--draft NAME]";
 const SCHEDULE_INPUTS: &[&str] = &[
     "--kind",
     "--acquisition",
@@ -603,9 +603,25 @@ fn charge(ctx: &mut Ctx<'_>, args: &Args, kind: AssetCostKind) -> Result<(), Fai
         "--review-out",
         "--approval",
         "--plan-out",
+        "--draft",
     ]);
     options(args, &flags, &["--review-only", "--dry-run"])?;
     let review_only = review_mode(args)?;
+    let draft = args.flag("--draft");
+    if draft.is_some()
+        && (args.flag("--review").is_none()
+            || review_only
+            || args.switch("--dry-run")
+            || args.flag("--plan-out").is_some())
+    {
+        return Err(usage(
+            "--draft retains an unchanged reviewed asset charge, without a native plan or publication",
+            "fa depreciate|amortize --review <file|hex|-> --digest <review_digest> --draft <owned-draft>",
+        ));
+    }
+    if draft.is_some() {
+        let _ = required(args, "--draft")?;
+    }
     let capability = ctx.capability(args, &["read", "post"])?;
     let principal = ctx.principal(args);
     let bound = ctx.authority().is_some();
@@ -752,6 +768,9 @@ fn charge(ctx: &mut Ctx<'_>, args: &Args, kind: AssetCostKind) -> Result<(), Fai
         approvals(args, intent.proposal())?,
     )
     .map_err(|error| usage(format!("asset approvals: {error}"), CHARGE_USAGE))?;
+    if let Some(name) = draft {
+        return plan_intent_into_draft(&ctx.out, &mut book, capability, name, intent);
+    }
     if args.switch("--dry-run") {
         let plan = book.plan(intent, &capability)??;
         return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);

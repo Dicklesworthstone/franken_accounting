@@ -104,6 +104,43 @@ fn head(book: &Path) -> i128 {
     integer(info.get("coordinate").unwrap(), "known_at")
 }
 
+fn asset_agent(f: &Fixture, grants: &[&str], args: &[&str]) -> (u8, Json) {
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "asset-agent",
+        fa_cli::authority::LaunchProfile::Agent,
+        grants,
+    )
+    .expect("fixed asset Agent authority");
+    let mut argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    argv.push("--json".into());
+    let (status, output) = fa_cli::entry::fa_with_authority(
+        &argv,
+        fa_cli::cli::Files {
+            cwd: None,
+            stdin: fa_cli::cli::Stdin::Missing,
+        },
+        &authority,
+        true,
+    );
+    let lines: Vec<_> = output.stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "args={args:?}: {output:?}");
+    fa_cli::verbs::registry()
+        .expect("registry")
+        .check_line(lines[0])
+        .expect("registered asset Agent result");
+    let event = json::parse(lines[0]).expect("robot line");
+    assert_eq!(event.get("authority"), Some(&authority.envelope_json()));
+    (status, event)
+}
+
+fn agent_ok(f: &Fixture, args: &[&str]) -> Json {
+    let (status, event) = asset_agent(f, &["read", "post"], args);
+    assert_eq!(status, 0, "args={args:?}: {}", event.render());
+    event
+}
+
 struct Fixture {
     dir: PathBuf,
     book: PathBuf,
@@ -474,6 +511,219 @@ fn assert_charge(
         "the invoice survives review and plan transport"
     );
     intent
+}
+
+#[test]
+fn agent_asset_reviews_promote_independent_depreciation_and_amortization_atomically() {
+    const DRAFT: &str = "asset-cost-january";
+    let mut f = Fixture::new();
+    f.schedule("press", "depreciation", "0.00 USD");
+    let second_source = f.post_source("license-acquisition", "1500", "1000", "100.00");
+    f.acquisition = text(data(&second_source), "vid").into();
+    f.schedule("license", "amortization", "10.00 USD");
+    agent_ok(&f, &["draft", "new", DRAFT]);
+    let original = ok(
+        &f.book,
+        "read balances before draft",
+        &["tb", "--period", FIRST],
+    );
+    let mut reviews = Vec::new();
+    let mut planned_entries = Vec::new();
+    for (verb, schedule, key, delta) in [
+        ("depreciate", "press", "draft-press-january", "33.33 USD"),
+        ("amortize", "license", "draft-license-january", "30.00 USD"),
+    ] {
+        let mut request = f.charge_args(verb, schedule, FIRST, key);
+        request.push("--review-only");
+        let review = agent_ok(&f, &request);
+        assert_eq!(text(&review, "event"), "asset_charge_review");
+        assert_eq!(text(data(&review), "delta"), delta);
+        let append = [
+            verb,
+            "--review",
+            text(data(&review), "bytes"),
+            "--digest",
+            text(data(&review), "review_digest"),
+            "--draft",
+            DRAFT,
+        ];
+        let planned = agent_ok(&f, &append);
+        assert_eq!(text(&planned, "event"), "draft_planned");
+        assert_eq!(
+            text(data(&planned), "proposal_digest"),
+            text(data(&review), "proposal_digest"),
+        );
+        let after_append = head(&f.book);
+        let retry = agent_ok(&f, &append);
+        assert_eq!(
+            data(&retry).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
+        assert_eq!(
+            text(data(&retry), "control_entry"),
+            text(data(&planned), "control_entry"),
+        );
+        assert_eq!(head(&f.book), after_append);
+        planned_entries.push(text(data(&planned), "entry").to_string());
+        reviews.push(review);
+    }
+    let current = ok(
+        &f.book,
+        "draft preserves trunk balances",
+        &["tb", "--period", FIRST],
+    );
+    assert_eq!(rows(data(&current), "rows"), rows(data(&original), "rows"));
+    {
+        let keys = BookKeys::load(&f.book.join("book.keys")).unwrap();
+        let book = Book::open_dir(&f.book, keys, Entropy::production()).unwrap();
+        let draft = book.draft(DRAFT).unwrap().unwrap();
+        assert_eq!(draft.intents.len(), 2);
+        for (retained, review) in draft.intents.iter().zip(&reviews) {
+            assert_eq!(
+                hex(&retained.intent.canonical_bytes().unwrap()),
+                text(data(review), "bytes"),
+                "the complete sealed review survives restart",
+            );
+            assert!(!retained.capability.holds(fa::Op::Approve));
+        }
+    }
+    let before = head(&f.book);
+    call(
+        &f.book,
+        "a Human with the planner's identity cannot self-promote",
+        &["draft", "promote", DRAFT, "--as", "asset-agent", "--yes"],
+        7,
+    );
+    assert_eq!(head(&f.book), before);
+    let promote = [
+        "draft",
+        "promote",
+        DRAFT,
+        "--as",
+        "asset-controller",
+        "--yes",
+    ];
+    let promoted = ok(
+        &f.book,
+        "promote independent source-bound charges",
+        &promote,
+    );
+    assert_eq!(text(&promoted, "event"), "draft_promoted");
+    assert_eq!(rows(data(&promoted), "entries").len(), 2);
+    for ((entry, expected), review) in rows(data(&promoted), "entries")
+        .iter()
+        .zip(&planned_entries)
+        .zip(&reviews)
+    {
+        assert_eq!(entry.as_str(), Some(expected.as_str()));
+        let retained = PostIntent::decode(&decode_hex(text(data(review), "bytes"))).unwrap();
+        assert_eq!(f.entry(expected).proposal, *retained.proposal());
+    }
+    let after = head(&f.book);
+    let retry = ok(&f.book, "retry the exact promotion", &promote);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&f.book), after);
+}
+
+#[test]
+fn asset_drafts_refuse_stale_sources_and_cannot_bypass_authority_or_review_modes() {
+    const DRAFT: &str = "reviewed-asset-charge";
+    let f = Fixture::new();
+    f.schedule("press", "depreciation", "0.00 USD");
+    agent_ok(&f, &["draft", "new", DRAFT]);
+    let mut request = f.charge_args("depreciate", "press", FIRST, "agent-press");
+    request.push("--review-only");
+    let review = agent_ok(&f, &request);
+    let append = [
+        "depreciate",
+        "--review",
+        text(data(&review), "bytes"),
+        "--digest",
+        text(data(&review), "review_digest"),
+        "--draft",
+        DRAFT,
+    ];
+    let before = head(&f.book);
+    for grants in [&["read"][..], &["post"][..]] {
+        let (status, refused) = asset_agent(&f, grants, &append);
+        assert_eq!(status, 7, "{}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), code::CAPABILITY);
+        assert_eq!(head(&f.book), before);
+    }
+    for extra in [
+        vec!["--dry-run"],
+        vec!["--review-only"],
+        vec!["--plan-out", "unwritten.plan"],
+        vec!["--plan", "unread.plan"],
+        vec!["--schedule", "press"],
+        vec!["--key", "unreviewed-key"],
+    ] {
+        let mut args = append.to_vec();
+        args.extend(extra);
+        let (status, refused) = asset_agent(&f, &["read", "post"], &args);
+        assert_ne!(status, 0, "{}", refused.render());
+        assert_eq!(head(&f.book), before);
+    }
+    let mut fresh_draft = request.clone();
+    fresh_draft.extend(["--draft", DRAFT]);
+    assert_ne!(asset_agent(&f, &["read", "post"], &fresh_draft).0, 0);
+    let native = &append[..5];
+    let (status, refused) = asset_agent(&f, &["read", "post"], native);
+    assert_eq!(status, 7, "an Agent cannot publish: {}", refused.render());
+    assert_eq!(head(&f.book), before);
+    let mut wrong_digest = append;
+    wrong_digest[4] = ZERO_DIGEST;
+    assert_ne!(asset_agent(&f, &["read", "post"], &wrong_digest).0, 0);
+    let mut host_review = append;
+    host_review[2] = "/outside-launch-root/asset.review";
+    assert_ne!(asset_agent(&f, &["read", "post"], &host_review).0, 0);
+    assert_eq!(head(&f.book), before);
+    let planned = agent_ok(&f, &append);
+    assert_eq!(text(&planned, "event"), "draft_planned");
+
+    // The approved source amount changed after review: the complete draft must
+    // refuse without posting its retained, now obsolete recognition a second time.
+    let competing = f.review("depreciate", "press", FIRST, "controller-press");
+    f.post_review("depreciate", &competing);
+    let before = head(&f.book);
+    let original = ok(
+        &f.book,
+        "read competed balances",
+        &["tb", "--period", FIRST],
+    );
+    let refused = call(
+        &f.book,
+        "refuse stale asset draft promotion",
+        &[
+            "draft",
+            "promote",
+            DRAFT,
+            "--as",
+            "asset-controller",
+            "--yes",
+        ],
+        6,
+    );
+    assert_eq!(text(data(&refused), "refusal_id"), code::PLAN_INVALIDATED);
+    assert_eq!(head(&f.book), before);
+    let unchanged = ok(
+        &f.book,
+        "stale promotion leaves balances unchanged",
+        &["tb", "--period", FIRST],
+    );
+    assert_eq!(
+        rows(data(&unchanged), "rows"),
+        rows(data(&original), "rows")
+    );
+    let draft = ok(
+        &f.book,
+        "stale draft remains reviewable",
+        &["draft", "show", DRAFT],
+    );
+    assert_eq!(text(data(&draft).get("draft").unwrap(), "state"), "open");
 }
 
 #[test]

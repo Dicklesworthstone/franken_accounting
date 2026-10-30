@@ -7100,11 +7100,11 @@ name = "depreciate"
 summary = "Derive and post cumulative straight-line depreciation from an immutable acquisition-bound schedule and live recognized charges."
 writes = true
 subcommands = []
-flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--review-out", "--plan-out"]
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--review-out", "--plan-out", "--draft"]
 switches = ["--dry-run", "--review-only"]
-events = ["asset_charge_review", "asset_charge_noop", "plan", "posted", "recorded"]
+events = ["asset_charge_review", "asset_charge_noop", "plan", "posted", "recorded", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["depreciate --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --review-out FILE | --dry-run [--plan-out FILE]]", "The kernel derives cost from the acquisition and computes cumulative rounded depreciable cost through the selected monthly period, less live prior charges. It never accepts a caller-supplied expense. Salvage and finite useful life bound recognition. Coverage may advance or repeat, but never move backward, including after reversals. Zero delta emits asset_charge_noop without publication.", "depreciate --review <file|hex|-> --digest <review_digest> [--approval VID]... [--dry-run [--plan-out FILE]]. Preserve exact review bytes across approvals. The kernel rechecks the full source basis and guards races; exact recorded retries return the original result. Commit saved native plans through fa commit --plan FILE --grant read. Reviews do not grant posting authority."]
+usage = ["depreciate --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --review-out FILE | --dry-run [--plan-out FILE]]", "The kernel derives cost from the acquisition and computes cumulative rounded depreciable cost through the selected monthly period, less live prior charges. It never accepts a caller-supplied expense. Salvage and finite useful life bound recognition. Coverage may advance or repeat, but never move backward, including after reversals. Zero delta emits asset_charge_noop without publication.", "depreciate --review <file|hex|-> --digest <review_digest> [--approval VID]... [--dry-run [--plan-out FILE]]. Preserve exact review bytes across approvals. The kernel rechecks the full source basis and guards races; exact recorded retries return the original result. Commit saved native plans through fa commit --plan FILE --grant read. Reviews do not grant posting authority.", "depreciate --review <file|hex|-> --digest <review_digest> --draft NAME [--approval VID]... retains the unchanged charge in an owned draft under read/post authority. Prepare the review first; selector overrides, review output and native planning modes cannot be combined with --draft. A draft may contain depreciation and amortization charges for distinct immutable schedules from distinct acquisition entries, including shared expense/accumulated accounts. Charges from one acquisition, repeated schedules, reversals and mixed ordinary postings refuse. An independent Human holding approve promotes the whole draft on the host; current source, period, evidence and planner authority are rechecked atomically."]
 example = "fa depreciate --schedule machine-1 --period FY2026-P03 --key machine-1-mar --evidence D:<oid> --dry-run --json"
 
 [[verb]]
@@ -7112,11 +7112,11 @@ name = "amortize"
 summary = "Derive and post cumulative straight-line amortization from an immutable acquisition-bound schedule and live recognized charges."
 writes = true
 subcommands = []
-flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--review-out", "--plan-out"]
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--review-out", "--plan-out", "--draft"]
 switches = ["--dry-run", "--review-only"]
-events = ["asset_charge_review", "asset_charge_noop", "plan", "posted", "recorded"]
+events = ["asset_charge_review", "asset_charge_noop", "plan", "posted", "recorded", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["amortize --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --review-out FILE | --dry-run [--plan-out FILE]]", "Uses the same exact cumulative law and safeguards as depreciate, with a schedule explicitly declared as Amortization. Only finite straight-line native base-currency schedules are supported; indefinite-life impairment, estimates and disposal are separate workflows.", "amortize --review <file|hex|-> --digest <review_digest> [--approval VID]... [--dry-run [--plan-out FILE]]. Commit a retained native plan using fa commit --plan FILE --grant read. Reversals reduce net recognized cost; a fresh key may recognize the missing amount at the same or later covered period, while exact retries retain the original outcome."]
+usage = ["amortize --schedule NAME --period FY2026-P01 --key KEY --evidence D:<oid> [--review-only | --review-out FILE | --dry-run [--plan-out FILE]]", "Uses the same exact cumulative law and safeguards as depreciate, with a schedule explicitly declared as Amortization. Only finite straight-line native base-currency schedules are supported; indefinite-life impairment, estimates and disposal are separate workflows.", "amortize --review <file|hex|-> --digest <review_digest> [--approval VID]... [--dry-run [--plan-out FILE]]. Commit a retained native plan using fa commit --plan FILE --grant read. Reversals reduce net recognized cost; a fresh key may recognize the missing amount at the same or later covered period, while exact retries retain the original outcome.", "amortize --review <file|hex|-> --digest <review_digest> --draft NAME [--approval VID]... retains exact review bytes for independent Human promotion, using the same source and authority checks as depreciation drafts. Combine only charges on distinct immutable schedules from distinct acquisition entries. Shared expense/accumulated accounts are supported; repeated schedules, shared acquisition entries, reversals and mixed ordinary postings refuse. Agent preparation and draft append never post the charges to trunk."]
 example = "fa amortize --schedule license-1 --period FY2026-P03 --key license-1-mar --evidence D:<oid> --review-only --json"
 
 [[shape]]
@@ -7182,10 +7182,10 @@ name = "depreciate"
 verb = "depreciate"
 subcommands = []
 positionals = []
-flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest"]
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--draft"]
 switches = ["--review-only", "--dry-run"]
 required = []
-dont = ["Declare the asset schedule first. Choose the cumulative through-period and an idempotency key; the kernel derives the amount. Review or rehearse using the fixed launch principal with current read/post authority. Agent trunk restrictions remain enforced.", "Restore only complete inline review hex and its independently retained digest. No host paths are read. A stale basis refuses; an exact recorded retry returns the original outcome. Ordinary reversals reduce live recognition but never reset the greatest covered period."]
+dont = ["Declare the asset schedule first. Choose the cumulative through-period and an idempotency key; the kernel derives the amount. Review or rehearse using the fixed launch principal with current read/post authority. Agent trunk restrictions remain enforced.", "Retain a review with review_only:true, then restore its complete inline hex in review, its review_digest in digest, and an owned draft name in draft. Do not combine draft with fresh selectors, review_only or dry_run. Multiple depreciation/amortization charges may share one draft only for distinct immutable schedules from distinct acquisition entries. The draft preserves exact source-bound bytes; independent Human promotion on the host rechecks every member atomically.", "No host paths are read. A stale basis refuses; an exact recorded retry returns the original outcome. Ordinary reversals reduce live recognition but never reset the greatest covered period."]
 mistakes = ["Supplying an arbitrary expense, selecting a period before earlier covered periods, or using an amortization schedule."]
 
 [[mcp.tool]]
@@ -7194,10 +7194,10 @@ name = "amortize"
 verb = "amortize"
 subcommands = []
 positionals = []
-flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest"]
+flags = ["--schedule", "--period", "--key", "--description", "--evidence", "--approval", "--review", "--digest", "--draft"]
 switches = ["--review-only", "--dry-run"]
 required = []
-dont = ["Use an immutable Amortization schedule with finite useful life. The kernel derives cumulative expense less live prior charges; preserve exact review or plan bytes for uncertain acknowledgments.", "Only inline review hex is accepted over MCP. Reviews do not confer authority or exempt current period, evidence or approval laws. Indefinite-life impairment, disposal, multi-entity or FX asset valuation are not in this profile."]
+dont = ["Use an immutable Amortization schedule with finite useful life. The kernel derives cumulative expense less live prior charges; preserve exact review or plan bytes for uncertain acknowledgments.", "After review_only:true, restore review hex and digest with draft naming an owned draft. Prepare first; selector overrides and native planning modes refuse with draft. Distinct schedules from distinct acquisition entries may share a depreciation/amortization draft; the complete source basis is rechecked on independent Human promotion on the host.", "Only inline review hex is accepted over MCP. Reviews do not confer authority or exempt current period, evidence or approval laws. Indefinite-life impairment, disposal, multi-entity or FX asset valuation are not in this profile."]
 mistakes = ["Using a depreciation schedule, overriding native amounts, or expecting automatic execution."]
 
 [[bound]]

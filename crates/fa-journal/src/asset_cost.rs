@@ -191,8 +191,42 @@ fn changed(detail: impl core::fmt::Display) -> Refusal {
 
 pub(crate) fn unsupported_batch() -> Refusal {
     invalid(
-        "asset charges and their reversals require their own native plan/commit; compound, draft and case protocols are not implemented for these schedules",
+        "batch only Adjusting asset charges with distinct immutable acquisitions and schedules; mixed effects, charge reversals and case/scenario protocols require separate native publications",
     )
+}
+
+pub(crate) fn dependent_batch() -> Refusal {
+    invalid(
+        "atomic asset charges require distinct schedule and acquisition entry identities; prepare charges sharing an acquisition in separate publications",
+    )
+}
+
+/// Resolve only immutable source identities after the batch factory admits
+/// every planner's current whole-book Read/Post authority. Each posting still
+/// independently validates the complete historical and current financial
+/// state; this lookup supplies no amount, authority or freshness exception.
+pub(crate) fn batch_source<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    proposal: &EntryPayload,
+) -> Outcome<(VId, VId)> {
+    let basis = match proposal.asset_charge_basis() {
+        Ok(Some(basis)) => basis,
+        Ok(None) => return Ok(Err(unsupported_batch())),
+        Err(error) => return Ok(Err(invalid(error))),
+    };
+    let Some(row) = db.vertex(basis.schedule.vid)? else {
+        return Ok(Err(invalid("the charge schedule is absent")));
+    };
+    let Some(schedule) = declared(&row, book.book_id)? else {
+        return Ok(Err(invalid(
+            "the charge does not name an immutable asset schedule",
+        )));
+    };
+    if schedule.entry != basis.schedule {
+        return Ok(Err(invalid("the charge schedule digest differs")));
+    }
+    Ok(Ok((schedule.entry.vid, schedule.spec.acquisition.vid)))
 }
 
 pub(crate) fn has_basis(proposal: &EntryPayload) -> bool {

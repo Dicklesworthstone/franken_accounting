@@ -6650,9 +6650,22 @@ fn plan_document_into_draft(
             "check the entry intent",
         )
     })?;
+    plan_intent_into_draft(out, &mut book, req.capability, name, intent)
+}
+
+/// Append one exact intent and expose the kernel's retained ordered preview.
+/// Source-derived commands use this after authenticating their complete review
+/// bytes, so the surface never reconstructs or changes the reviewed proposal.
+pub(crate) fn plan_intent_into_draft(
+    out: &Out,
+    book: &mut Book,
+    capability: Capability,
+    name: &str,
+    intent: PostIntent,
+) -> Result<(), Fail> {
     let entry = batch_plan::proposal_vid(intent.proposal())?;
-    let planned = book.plan_into_draft(req.capability, name, intent)??;
-    out.at_book(&book)?;
+    let planned = book.plan_into_draft(capability, name, intent)??;
+    out.at_book(book)?;
     let (plan_digest, proposal_digest, balancing) = match &planned.plan {
         Some(preview) => {
             let member = preview.members().last().ok_or_else(|| {

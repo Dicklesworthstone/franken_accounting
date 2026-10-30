@@ -1066,6 +1066,11 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         {
             return Ok(Err(refusal));
         }
+        if crate::asset_cost::has_basis(intent.proposal())
+            && let Err(refusal) = crate::asset_cost::authorize(db, book, capability)?
+        {
+            return Ok(Err(refusal));
+        }
     }
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
@@ -1260,6 +1265,11 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             "a draft plans intents for this book's trunk",
             "plan the intent with this book's id and the trunk branch",
         )));
+    }
+    if crate::asset_cost::has_basis(p)
+        && let Err(refusal) = crate::asset_cost::authorize(db, book, &req.capability)?
+    {
+        return Ok(Err(refusal));
     }
     // A Closing may enter only its own dedicated singleton draft. The
     // complete ordered preview proves that exception before any Plan record.
@@ -1584,6 +1594,13 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         let planned = &view.intents[0];
         if let Err(refusal) =
             crate::closing::authorize_draft_preparation(db, book, &planned.capability)?
+        {
+            return Ok(Err(refusal));
+        }
+    }
+    for planned in &view.intents {
+        if crate::asset_cost::has_basis(planned.intent.proposal())
+            && let Err(refusal) = crate::asset_cost::authorize(db, book, &planned.capability)?
         {
             return Ok(Err(refusal));
         }

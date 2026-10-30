@@ -811,6 +811,79 @@ fn fx_revaluation_previews_are_typed_and_do_not_supply_host_paths_or_commit_conf
 }
 
 #[test]
+fn asset_charge_tools_retain_inline_reviews_in_drafts_under_read_post_authority() {
+    let (mcp, reg) = embedded();
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        std::path::PathBuf::from("/unused-asset-book"),
+        None,
+        "asset-agent",
+        fa_cli::authority::LaunchProfile::Agent,
+        &["read", "post"],
+    )
+    .unwrap();
+    for verb in ["depreciate", "amortize"] {
+        let tool = mcp.tool_for(verb, None).expect("existing asset tool");
+        assert_eq!(tool.wire_name(), format!("fa_schedule_{verb}"));
+        let schema = tool.input_schema(&mcp, reg);
+        for property in ["review", "digest", "draft"] {
+            assert_eq!(schema["properties"][property]["type"], json!("string"));
+        }
+        let arguments = json!({
+            "review": "ab".repeat(80),
+            "digest": "cd".repeat(32),
+            "draft": "period-end-assets",
+        });
+        let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+        assert!(invocation.stdin.is_none());
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec![verb]);
+        assert_eq!(parsed.flag("--draft"), Some("period-end-assets"));
+        assert!(!parsed.switch("--yes"));
+        assert_eq!(
+            fa_cli::cli::bound_command_admissible(reg, verb, &parsed, &authority)
+                .unwrap()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>(),
+            ["read", "post"],
+        );
+        let translated = mcp
+            .command_to_call(
+                reg,
+                &format!(
+                    "fa {verb} --review {} --digest {} --draft period-end-assets --json",
+                    "ab".repeat(80),
+                    "cd".repeat(32),
+                ),
+            )
+            .expect("the exact retained review route is discoverable");
+        assert_eq!(translated.tool, tool.wire_name());
+        assert_eq!(translated.arguments, arguments);
+        for forbidden in ["yes", "grant", "principal", "review_out", "plan_out"] {
+            assert!(schema["properties"].get(forbidden).is_none());
+            let mut supplied = arguments.clone();
+            supplied[forbidden] = JsonValue::Null;
+            assert!(tool.invocation(&mcp, reg, &supplied).is_err());
+        }
+        let mut wrong_type = arguments.clone();
+        wrong_type["draft"] = json!(true);
+        assert!(tool.invocation(&mcp, reg, &wrong_type).is_err());
+        for grants in [&["read"][..], &["post"][..]] {
+            let missing = fa_cli::authority::LaunchAuthority::new(
+                std::path::PathBuf::from("/unused-asset-book"),
+                None,
+                "asset-agent",
+                fa_cli::authority::LaunchProfile::Agent,
+                grants,
+            )
+            .unwrap();
+            assert!(fa_cli::cli::bound_command_admissible(reg, verb, &parsed, &missing).is_err());
+        }
+    }
+}
+
+#[test]
 fn bank_history_preserves_existing_tools_and_keeps_unmatch_host_only() {
     let (mcp, reg) = embedded();
     assert!(mcp.cluster("fa.bank").unwrap().on_demand);

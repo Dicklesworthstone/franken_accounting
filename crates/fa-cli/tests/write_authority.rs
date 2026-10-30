@@ -593,6 +593,32 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &[
+                "depreciate",
+                "--review",
+                ZERO_DIGEST,
+                "--digest",
+                ZERO_DIGEST,
+                "--draft",
+                "reviewed-assets",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
+            &[
+                "amortize",
+                "--review",
+                ZERO_DIGEST,
+                "--digest",
+                ZERO_DIGEST,
+                "--draft",
+                "reviewed-assets",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
             &["approve", "--proposal", ZERO_DIGEST],
             &[Op::Approve],
             Reaches,

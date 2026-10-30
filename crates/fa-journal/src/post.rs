@@ -402,6 +402,8 @@ impl PreparedPost {
         planning: bool,
         carrying: Option<crate::batch::IndependentCarryingBatch>,
         disposal: Option<crate::batch::IndependentDisposalBatch>,
+        asset_charge: Option<crate::batch::IndependentAssetChargeBatch>,
+        closing: Option<crate::batch::SingletonClosingDraft>,
         admission: Admission,
     ) -> Result<(WriteTxn, BatchMember, crate::batch::TemplateByteTracker), KernelError> {
         let aggregate = match requires_aggregate_basis(&self.request.proposal) {
@@ -415,6 +417,10 @@ impl PreparedPost {
             carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
         let independent_disposal =
             disposal.is_some() && crate::disposal::has_basis(&self.request.proposal);
+        let independent_asset_charge =
+            asset_charge.is_some() && crate::asset_cost::has_basis(&self.request.proposal);
+        let singleton_closing =
+            closing.is_some() && self.request.proposal.class == EntryClass::CLOSING;
         // The posting pipeline has already witnessed the exact side-swap
         // and staged its recorded UNSETTLES effects. Legacy carrying undos
         // therefore compose through those transactional application mirrors;
@@ -442,6 +448,8 @@ impl PreparedPost {
             || (aggregate
                 && !independent_carrying
                 && !independent_disposal
+                && !independent_asset_charge
+                && !singleton_closing
                 && !recorded_carrying_undo
                 && !case_adjustment)
         {
@@ -1452,7 +1460,7 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    if crate::asset_cost::has_basis(&req.proposal) {
+    if crate::asset_cost::has_basis(&req.proposal) && member.asset_charge.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
         }
@@ -1921,9 +1929,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    let (carried, carrying_batch, disposal_batch, closing_draft) = match member {
-        Some(member) => (member.txn, member.carrying, member.disposal, member.closing),
-        None => (None, None, None, None),
+    let (carried, carrying_batch, disposal_batch, asset_charge_batch, closing_draft) = match member
+    {
+        Some(member) => (
+            member.txn,
+            member.carrying,
+            member.disposal,
+            member.asset_charge,
+            member.closing,
+        ),
+        None => (None, None, None, None, None),
     };
     let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -2007,9 +2022,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::asset_cost::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some()
+        if (carried.is_some() && asset_charge_batch.is_none())
             || replacement_basis.is_some()
-            || !matches!(admission, Admission::Commit | Admission::Plan)
+            || !(matches!(admission, Admission::Commit | Admission::Plan)
+                || (matches!(
+                    admission,
+                    Admission::VerifiedBatch(_)
+                        | Admission::PlanDraft(_)
+                        | Admission::Promote(_)
+                        | Admission::ScratchDraft(_)
+                ) && asset_charge_batch.is_some()))
         {
             return Ok(Err(crate::asset_cost::unsupported_batch()));
         }

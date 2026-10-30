@@ -9,6 +9,9 @@ use fa_journal::asset_cost::{
 use fa_model::PeriodRef;
 use fa_money::RoundingLaw;
 
+#[path = "asset_cost/batches.rs"]
+mod batches;
+
 struct Fixture {
     h: Harness,
     acquisition: EntryRef,

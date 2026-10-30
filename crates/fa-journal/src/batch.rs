@@ -64,6 +64,12 @@ pub(crate) struct IndependentCarryingBatch(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IndependentDisposalBatch(());
 
+/// Every charge names a different immutable acquisition and schedule. No
+/// member changes another member's recognized-cost state or source guard.
+/// Only this module constructs the proof after admitting every planner.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IndependentAssetChargeBatch(());
+
 /// Only this module proves that the complete draft consists of one intrinsic
 /// Closing. The planner keeps its own authority; promotion additionally
 /// requires the draft factory's explicit Close-authorized promoter token.
@@ -74,6 +80,7 @@ pub(crate) struct MemberPreparation {
     pub(crate) txn: Option<WriteTxn>,
     pub(crate) carrying: Option<IndependentCarryingBatch>,
     pub(crate) disposal: Option<IndependentDisposalBatch>,
+    pub(crate) asset_charge: Option<IndependentAssetChargeBatch>,
     pub(crate) closing: Option<SingletonClosingDraft>,
 }
 
@@ -255,6 +262,72 @@ fn independent_disposal_batch(
         }
     }
     Ok(Some(IndependentDisposalBatch(())))
+}
+
+/// Schedule amounts depend on their own immutable acquisition and charge
+/// history, not a GL account balance. Shared expense/accumulated accounts are
+/// therefore safe; shared acquisition entries are not, because their source
+/// guard records the last schedule or charge for that complete acquisition.
+fn independent_asset_charge_batch<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+) -> Outcome<Option<IndependentAssetChargeBatch>> {
+    if !batch
+        .members()
+        .iter()
+        .any(|member| crate::asset_cost::has_basis(member.proposal()))
+    {
+        return Ok(Ok(None));
+    }
+    if !matches!(
+        admission,
+        Admission::Commit
+            | Admission::Plan
+            | Admission::PlanDraft(_)
+            | Admission::VerifiedBatch(_)
+            | Admission::Promote(_)
+            | Admission::ScratchDraft(_)
+    ) || batch.members().iter().any(|member| {
+        member.proposal().class != EntryClass::ADJUSTING
+            || !crate::asset_cost::has_basis(member.proposal())
+    }) {
+        return Ok(Err(crate::asset_cost::unsupported_batch()));
+    }
+    // Source independence requires reading immutable schedules. Admit all
+    // actual member capabilities first, including Agent trunk confinement,
+    // whole-book Read/Post, expiry and revocation, before that observation.
+    for (index, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &member_request(intent, capability),
+            admission,
+        )? {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+        if let Err(refusal) = crate::asset_cost::authorize(db, book, capability)? {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+    }
+    let mut schedules = BTreeSet::new();
+    let mut acquisitions = BTreeSet::new();
+    for (index, intent) in batch.members().iter().enumerate() {
+        let (schedule, acquisition) =
+            match crate::asset_cost::batch_source(db, book, intent.proposal())? {
+                Ok(source) => source,
+                Err(refusal) => return Ok(Err(member_refusal(index, refusal))),
+            };
+        if !schedules.insert(schedule) || !acquisitions.insert(acquisition) {
+            return Ok(Err(member_refusal(
+                index,
+                crate::asset_cost::dependent_batch(),
+            )));
+        }
+    }
+    Ok(Ok(Some(IndependentAssetChargeBatch(()))))
 }
 
 /// The immutable body of a batch's IntentOutcome: the request it records
@@ -848,6 +921,11 @@ fn judge_retry<V: Vfs + Clone>(
         Ok(disposal) => disposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let asset_charge =
+        match independent_asset_charge_batch(db, book, capabilities, batch, admission)? {
+            Ok(proof) => proof,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
     // A single-entry claim at this common key is a conflict. Read only its
     // VID-only metadata here: a batch capability need not reach that entry.
     let lookup = db.begin(&ctx.txn())?;
@@ -872,6 +950,7 @@ fn judge_retry<V: Vfs + Clone>(
                 txn: None,
                 carrying,
                 disposal,
+                asset_charge,
                 closing,
             },
             None,
@@ -970,6 +1049,11 @@ pub(crate) fn authorize_members<V: Vfs + Clone>(
         // plan retry too, before per-member posting preparation is reached.
         if crate::disposal::has_basis(intent.proposal())
             && let Err(refusal) = crate::disposal::authorize(db, book, capability)?
+        {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+        if crate::asset_cost::has_basis(intent.proposal())
+            && let Err(refusal) = crate::asset_cost::authorize(db, book, capability)?
         {
             return Ok(Err(member_refusal(index, refusal)));
         }
@@ -1172,6 +1256,11 @@ fn stage_batch_with<V: Vfs + Clone>(
         Ok(disposal) => disposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let asset_charge =
+        match independent_asset_charge_batch(db, book, capabilities, batch, admission)? {
+            Ok(proof) => proof,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
     let mut txn: Option<WriteTxn> = None;
     let mut tracker = TemplateByteTracker::default();
     // Every member stages into one transaction, so the reconciliation
@@ -1193,6 +1282,7 @@ fn stage_batch_with<V: Vfs + Clone>(
                 txn: txn.take(),
                 carrying,
                 disposal,
+                asset_charge,
                 closing,
             },
             Some(std::mem::take(&mut tracker)),
@@ -1241,8 +1331,14 @@ fn stage_batch_with<V: Vfs + Clone>(
         }
         security_policy_epoch = Some(epoch);
         resolved.push(prepared.entry().clone());
-        let (staged, member, next_tracker) =
-            prepared.into_member(planning, carrying, disposal, admission)?;
+        let (staged, member, next_tracker) = prepared.into_member(
+            planning,
+            carrying,
+            disposal,
+            asset_charge,
+            closing,
+            admission,
+        )?;
         tracker = next_tracker;
         let current_bytes = tracker.total_bytes();
         if current_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
