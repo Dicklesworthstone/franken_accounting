@@ -2784,3 +2784,35 @@ aligned = true
 values_in_quote = true
 scope_ok = true
 original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-001"
+fact = "RR1"
+anchor = "p37:l6-14"
+verified_utc = "2026-10-30T10:39:15Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "8561329fc4f6b823052c488545353279403e55fc4028395aa1dfea3c2bee88bb"
+quote_sha256 = "a9142893fbbc17100df953754753b2263158190f426bc72586053dd12b467c24"
+values_sha256 = "e13c9a3e07efc6952f2dae3f2cd4ad966b146bdc34caa4dd0edf48575108f112"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = true
+
+[[receipt]]
+source = "SRC-ENR-001"
+fact = "RR2"
+anchor = "p13:l9-16"
+verified_utc = "2026-10-30T10:39:15Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "8561329fc4f6b823052c488545353279403e55fc4028395aa1dfea3c2bee88bb"
+quote_sha256 = "b1e1089a7db131e708a1695607ea286a8933ca792979c93a49c4a1bcce20c449"
+values_sha256 = "8bb26d5156ab7e2a70ac5edd549a85bf66294eb4e471c06e7453ead4700fc0bc"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = true

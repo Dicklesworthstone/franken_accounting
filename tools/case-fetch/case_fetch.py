@@ -688,13 +688,15 @@ def date_of(month, day, year):
         raise RuleError(str(e)) from e
 
 
-DATE_MDY = re.compile(r"\b([A-Za-z]{3,9}\.?) (\d{1,2}),? (\d{4})\b")
-DATE_DMY = re.compile(r"\b(\d{1,2}) ([A-Za-z]{3,9}\.?),? (\d{4})\b")
+# A comma before the year may have lost its space in the extraction ("May 12,2000"): the
+# derivation table's rules split words on commas as on spaces, and these read it the same.
+DATE_MDY = re.compile(r"\b([A-Za-z]{3,9}\.?) (\d{1,2})(?:, ?| )(\d{4})\b")
+DATE_DMY = re.compile(r"\b(\d{1,2}) ([A-Za-z]{3,9}\.?)(?:, ?| )(\d{4})\b")
 RANGE_SAME_MONTH = re.compile(
-    r"\b([A-Za-z]{3,9}\.?) (\d{1,2}) ?(?:and|through|to|-|\u2013) ?(\d{1,2}),? (\d{4})\b")
+    r"\b([A-Za-z]{3,9}\.?) (\d{1,2}) ?(?:and|through|to|-|\u2013) ?(\d{1,2})(?:, ?| )(\d{4})\b")
 RANGE_TWO_DATES = re.compile(
-    r"\b([A-Za-z]{3,9}\.?) (\d{1,2}),? (\d{4}) ?(?:and|through|to|-|\u2013) ?"
-    r"([A-Za-z]{3,9}\.?) (\d{1,2}),? (\d{4})\b")
+    r"\b([A-Za-z]{3,9}\.?) (\d{1,2})(?:, ?| )(\d{4}) ?(?:and|through|to|-|\u2013) ?"
+    r"([A-Za-z]{3,9}\.?) (\d{1,2})(?:, ?| )(\d{4})\b")
 MONTH_YEAR = re.compile(r"\b([A-Za-z]{3,9}\.?),? (\d{4})\b")
 
 

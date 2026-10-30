@@ -492,6 +492,21 @@ fn month_literal_with_an_unknown_month_is_refused() {
     ));
 }
 
+/// A text extraction can drop the space after a comma ("19,2000"): words
+/// split on commas as on spaces, so the reading is the same (case_fetch's
+/// rules read it alike).
+#[test]
+fn a_comma_without_its_space_reads_the_same() {
+    assert_eq!(
+        eval("date_range_literal", &[], &["July 17 and 19,2000"]),
+        Ok("2000-07-17..2000-07-19".into())
+    );
+    assert_eq!(
+        eval("date_literal", &[], &["On or about May 12,2000"]),
+        Ok("2000-05-12".into())
+    );
+}
+
 #[test]
 fn year_less_date_range_is_refused() {
     assert!(matches!(

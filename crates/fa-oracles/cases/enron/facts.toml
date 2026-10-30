@@ -4393,3 +4393,54 @@ param = 0
 value = "4378000000000"
 unit = "USD"
 precision = 6
+
+# E2a, the reserve-release override strand (plan §7.2): the indictment charges it (assertion
+# status `charge`). RR1 is the overt act that dates the entries, to a window after the second
+# quarter ended; RR2 states their amount only as "millions of dollars". Both quotes name
+# entries with no count, so their scope is the scheme, and E3's intent cites the
+# interpretation RR1e. The amount is synthetic (RR-AMT): no amount-reading procedure carries a
+# claim on these entries.
+
+# Overt act o. of ¶66, p.37.
+[[fact]]
+id = "RR1"
+provenance = "sourced"
+source = "SRC-ENR-001"
+anchor_kind = "page"
+anchor = "p37:l6-14"
+quote_sha256 = "a9142893fbbc17100df953754753b2263158190f426bc72586053dd12b467c24"
+about_scope = "scheme:reserve-release-2000Q2-2000Q3"
+granularity = "dated_aggregate"
+
+# ¶26, p.13.
+[[fact]]
+id = "RR2"
+provenance = "sourced"
+source = "SRC-ENR-001"
+anchor_kind = "page"
+anchor = "p13:l9-16"
+quote_sha256 = "b1e1089a7db131e708a1695607ea286a8933ca792979c93a49c4a1bcce20c449"
+about_scope = "scheme:reserve-release-2000Q2-2000Q3"
+granularity = "period_total"
+
+[[fact]]
+id = "RR1e"
+provenance = "interpretation"
+from = ["RR1"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "RR1 charges that entries, with no count, were made on or about and between July 17 and 19, 2000, after the second quarter ended, releasing funds from a reserve account so that Enron reported a better second-quarter earnings per share. One encoded entry stands for the charged entries (E3's declared default count of one), booked on one day of the window (E3's branch over its three days), into the quarter whose result the release improved. The weaker reading, several entries of unknown split, changes no E-P-01 cell: each cell's premises are the entry's class, period state, grants and evidence, never its amount or count."
+
+[[fact]]
+id = "RR-AMT"
+provenance = "synthetic"
+reason = "the indictment states the amount only as millions of dollars (p.13)"
+discipline = "no amount-reading procedure carries a claim on this entry"
+
+[[value]]
+fact = "RR1"
+ordinal = 1
+literal = "July 17 and 19,2000"
+rule = "date_range_literal"
+value = "2000-07-17..2000-07-19"
+unit = ""

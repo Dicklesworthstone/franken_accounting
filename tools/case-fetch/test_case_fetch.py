@@ -618,6 +618,10 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.rule("date_range_literal",
                                    "on or about and between July 17 and 19, 2000"),
                          "2000-07-17..2000-07-19")
+        # The extraction's spacing ("19,2000", "May 12,2000"), as the derivation table reads it.
+        self.assertEqual(self.rule("date_range_literal", "July 17 and 19,2000"),
+                         "2000-07-17..2000-07-19")
+        self.assertEqual(self.rule("date_literal", "On or about May 12,2000"), "2000-05-12")
         self.assertEqual(self.rule("month_literal", "In September 2001"), "2001-09")
         self.assertEqual(self.rule("month_day_literal", "Friday, April 20"), "--04-20 Friday")
         self.assertEqual(self.rule("month_day_literal", "On August 22"), "--08-22")

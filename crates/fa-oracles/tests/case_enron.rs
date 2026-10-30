@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_oracles::cases::amount::parse_amount;
 use fa_oracles::cases::book::LegDef;
 use fa_oracles::cases::check::{CheckReport, Verdict, run_load_checks};
+use fa_oracles::cases::date::Day;
+use fa_oracles::cases::derive;
 use fa_oracles::cases::embedded::ENRON;
 use fa_oracles::cases::error::{LoadError, LoadErrorKind};
 use fa_oracles::cases::expect::ExpectationType;
@@ -1295,5 +1297,151 @@ fn enron_e4_remainder_check_arithmetic() {
         let d = minor(&case, &format!("REM-D-{p}"));
         let b = minor(&case, &format!("REM-B-{p}"));
         assert_eq!(a.checked_add(d), Some(b), "{p}: {a} + {d}");
+    }
+}
+
+/// E2a (plan §7.2): RR1 carries the indictment's window as one
+/// `date_range_literal` value, the three days July 17-19, 2000, each after
+/// the second quarter's last day; RR2, the sentence that gives the amount
+/// only as "millions of dollars", carries no value; RR1e is the two-reader
+/// interpretation E3's intent cites; the amount is the synthetic RR-AMT,
+/// and no sourced or derived fact of the strand carries one.
+#[test]
+fn enron_e2a_facts_load() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    assert_ne!(report(&case, "K-BIND").verdict, Verdict::Fail);
+    let window: Vec<_> = case.values.iter().filter(|v| v.fact == "RR1").collect();
+    assert_eq!(window.len(), 1, "RR1 has one value, the window");
+    assert_eq!(window[0].literal, "July 17 and 19,2000");
+    assert_eq!(window[0].value, "2000-07-17..2000-07-19");
+    let (first, last) = window[0].value.split_once("..").expect("a closed range");
+    let (first, last) = (
+        Day::parse(first).expect("a day"),
+        Day::parse(last).expect("a day"),
+    );
+    let quarter_end = Day::parse("2000-06-30").expect("a day");
+    let mut days = Vec::new();
+    let mut d = first;
+    while d <= last {
+        assert!(d > quarter_end, "{d} falls after the second quarter ended");
+        days.push(d.to_string());
+        d = d.add_days(1);
+    }
+    assert_eq!(days, ["2000-07-17", "2000-07-18", "2000-07-19"]);
+    assert!(values_of(&case, "RR2").is_empty(), "RR2 states no number");
+    for (id, sourced) in [
+        ("RR1", true),
+        ("RR2", true),
+        ("RR1e", false),
+        ("RR-AMT", false),
+    ] {
+        let f = case.facts.iter().find(|f| f.id == id).expect("the fact");
+        assert_eq!(f.sourced().is_some(), sourced, "{id}");
+    }
+    assert!(matches!(
+        case.facts
+            .iter()
+            .find(|f| f.id == "RR-AMT")
+            .map(|f| &f.provenance),
+        Some(fact::Provenance::Synthetic(_))
+    ));
+    for id in ["RR1", "RR2", "RR1e"] {
+        assert!(
+            case.values
+                .iter()
+                .all(|v| v.fact != id || v.unit.is_empty()),
+            "{id} carries no amount"
+        );
+    }
+}
+
+/// An amount added to RR2 changes its values, so K-BIND's values_sha256 no
+/// longer matches the receipt verify wrote (at authoring, verify fails
+/// because no number is literal in "millions of dollars").
+#[test]
+fn enron_e2a_sourced_amount_refused() {
+    let mut files = enron();
+    let t = files
+        .iter_mut()
+        .find(|(p, _)| *p == "facts.toml")
+        .map(|(_, t)| t)
+        .expect("facts.toml");
+    t.push_str(
+        "\n[[value]]\nfact = \"RR2\"\nordinal = 1\nliteral = \"1,000,000\"\nrule = \"scale\"\nparam = 0\nvalue = \"100000000\"\nunit = \"USD\"\nprecision = 0\n",
+    );
+    refused_by_k_bind(&files, "RR2");
+}
+
+/// RR1 rescoped to the quarter its July dates fall in: the receipt bound the
+/// scheme scope, and values_sha256 hashes the scope with the values.
+#[test]
+fn enron_e2a_scope_2000q3_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"RR1\"\n",
+        "about_scope = \"scheme:reserve-release-2000Q2-2000Q3\"",
+        "about_scope = \"period:2000Q3\"",
+    );
+    refused_by_k_bind(&files, "RR1");
+}
+
+/// One chosen day of the window instead of the window: the value is not
+/// the one verify bound (and "July 18, 2000" is not literal in the quote).
+#[test]
+fn enron_e2a_chosen_day_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"RR1\"\nordinal = 1\n",
+        "literal = \"July 17 and 19,2000\"\nrule = \"date_range_literal\"\nvalue = \"2000-07-17..2000-07-19\"",
+        "literal = \"July 18, 2000\"\nrule = \"date_literal\"\nvalue = \"2000-07-18\"",
+    );
+    refused_by_k_bind(&files, "RR1");
+}
+
+/// The literal kept and the range narrowed by a day: the rule recomputes
+/// the three-day window from the literal, and values_sha256 disagrees.
+#[test]
+fn enron_e2a_range_narrowed_refused() {
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"RR1\"\nordinal = 1\n",
+        "value = \"2000-07-17..2000-07-19\"",
+        "value = \"2000-07-17..2000-07-18\"",
+    );
+    refused_by_k_bind(&files, "RR1");
+}
+
+/// The range rule through A2's engine: the plan's literal and the
+/// extraction's ("19,2000", no space after the comma) read the same three
+/// days; a reversed range and a range without its year are refused, never
+/// guessed.
+#[test]
+fn enron_e2a_range_rule_example() {
+    let rules = derive::Rules::embedded().expect("the derivation table loads");
+    let eval = |literal: &str| {
+        rules.evaluate(
+            "date_range_literal",
+            &derive::Params::new(),
+            &[literal.to_string()],
+        )
+    };
+    for literal in [
+        "on or about and between July 17 and 19, 2000",
+        "July 17 and 19,2000",
+    ] {
+        assert_eq!(
+            eval(literal).as_deref(),
+            Ok("2000-07-17..2000-07-19"),
+            "{literal}"
+        );
+    }
+    for planted in ["between July 19 and 17, 2000", "between July 17 and 19"] {
+        assert!(eval(planted).is_err(), "{planted}");
     }
 }
