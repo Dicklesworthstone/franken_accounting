@@ -104,4 +104,24 @@
     <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_NetIncomeLoss" xlink:to="loc_TL_Revenues" weight="1" order="10"/>
     <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_NetIncomeLoss" xlink:to="loc_TL_OperatingExpenses" weight="-1" order="20"/>
   </link:calculationLink>
+  <!-- 4. Corrected type-level equity attribution. Keep role 3 unchanged for
+       verification of previously emitted, versioned type-level exports. -->
+  <link:calculationLink xlink:type="extended" xlink:role="http://frankenaccounting.org/role/TypeLevelStatementsEquityV2">
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Liabilities" xlink:label="loc_EQ_Liabilities"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquity" xlink:label="loc_EQ_ParentEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_MinorityInterest" xlink:label="loc_EQ_MinorityInterest"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" xlink:label="loc_EQ_TotalEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesAndStockholdersEquity" xlink:label="loc_EQ_LiabilitiesAndEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Revenues" xlink:label="loc_EQ_Revenues"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_OperatingExpenses" xlink:label="loc_EQ_OperatingExpenses"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_NetIncomeLoss" xlink:label="loc_EQ_NetIncomeLoss"/>
+
+    <!-- Total equity = parent equity (including unclosed earnings) + NCI. -->
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_TotalEquity" xlink:to="loc_EQ_ParentEquity" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_TotalEquity" xlink:to="loc_EQ_MinorityInterest" weight="1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_LiabilitiesAndEquity" xlink:to="loc_EQ_Liabilities" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_LiabilitiesAndEquity" xlink:to="loc_EQ_TotalEquity" weight="1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_NetIncomeLoss" xlink:to="loc_EQ_Revenues" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_NetIncomeLoss" xlink:to="loc_EQ_OperatingExpenses" weight="-1" order="20"/>
+  </link:calculationLink>
 </link:linkbase>

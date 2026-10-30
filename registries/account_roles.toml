@@ -104,7 +104,7 @@ name = "noncontrolling_interest"
 account_types = ["Equity"]
 meaning = "The group's noncontrolling (minority) interest in partly owned subsidiaries: consolidation credits it with the minority's share of a subsidiary's contributed capital and post-acquisition equity."
 consumers = []
-verbs = ["consolidate"]
+verbs = ["consolidate", "export", "verify"]
 
 [[role]]
 name = "noncontrolling_interest_income"

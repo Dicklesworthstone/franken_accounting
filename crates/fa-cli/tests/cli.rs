@@ -3777,6 +3777,169 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
     Ok(())
 }
 
+/// XBRL equity follows journaled roles at the export's own prefix, including
+/// after a later role removal. A self-consistent replacement role declaration
+/// in the delivered XML cannot override the book's history.
+#[test]
+fn xbrl_equity_uses_historical_roles_and_rejects_resealed_attribution() -> std::io::Result<()> {
+    use fa_formats::xbrl::{
+        read_xbrl_instance_xml, verify_format_journal_xbrl_xml, write_xbrl_instance_xml,
+    };
+
+    let dir = tmp("xbrl-equity-roles")?;
+    let book = dir.join("book");
+    let run = |args: &[&str], expected: i32| {
+        let (code, out, err) = fa(Some(&book), args);
+        eprintln!("argv={args:?} exit={code}\nstdout={out}\nstderr={err}");
+        assert_eq!(code, expected, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    run(&["book", "create", "--name", "Equity roles", "--json"], 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Parent capital","type":"Equity","unit":"USD"},{"code":"3100","name":"Other equity","type":"Equity","unit":"USD","roles":["noncontrolling_interest"]},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    run(&["chart", "import", &chart, "--json"], 0);
+    run(&["period", "create", "--fiscal-year", "2026", "--json"], 0);
+    run(&["period", "open", "FY2026-P03", "--json"], 0);
+    let evidence = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "capital.json",
+        r#"{"effective_date":"2026-03-20","description":"capital and unclosed sales","idempotency_key":"capital","legs":[{"side":"debit","account":"1000","amount":"1050.00 USD"},{"side":"credit","account":"3000","amount":"600.00 USD"},{"side":"credit","account":"3100","amount":"400.00 USD"},{"side":"credit","account":"4000","amount":"50.00 USD"}]}"#,
+    );
+    run(
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
+        0,
+    );
+    let path = dir.join("classified.xbrl").display().to_string();
+    run(
+        &[
+            "export",
+            "xbrl",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            &path,
+            "--json",
+        ],
+        0,
+    );
+    let xml = std::fs::read_to_string(&path)?;
+    let (coordinate, _) = verify_format_journal_xbrl_xml(&xml).unwrap();
+    let value = |xml: &str, concept: &str| {
+        read_xbrl_instance_xml(xml)
+            .unwrap()
+            .facts
+            .into_iter()
+            .find(|fact| fact.concept == concept)
+            .map(|fact| fact.mantissa)
+    };
+    assert_eq!(value(&xml, "us-gaap:StockholdersEquity"), Some(65_000));
+    assert_eq!(value(&xml, "us-gaap:MinorityInterest"), Some(40_000));
+    assert_eq!(
+        value(
+            &xml,
+            "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+        ),
+        Some(105_000)
+    );
+    run(&["verify", "export", "xbrl", &path, "--json"], 0);
+
+    run(
+        &[
+            "chart",
+            "role",
+            "3100",
+            "noncontrolling_interest",
+            "--remove",
+            "--json",
+        ],
+        0,
+    );
+    run(&["verify", "export", "xbrl", &path, "--json"], 0);
+    let current = dir.join("unclassified.xbrl").display().to_string();
+    run(
+        &[
+            "export",
+            "xbrl",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            &current,
+            "--json",
+        ],
+        0,
+    );
+    let current_xml = std::fs::read_to_string(&current)?;
+    assert_eq!(
+        value(&current_xml, "us-gaap:StockholdersEquity"),
+        Some(105_000)
+    );
+    assert_eq!(value(&current_xml, "us-gaap:MinorityInterest"), None);
+    let old = dir.join("old-coordinate.xbrl").display().to_string();
+    run(
+        &[
+            "export",
+            "xbrl",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &coordinate.known_at_seq.to_string(),
+            "--out",
+            &old,
+            "--json",
+        ],
+        0,
+    );
+    assert_eq!(std::fs::read_to_string(old)?, xml);
+
+    // Move the claimed minority role to parent-capital account 3000, repair
+    // the attribution digest, and alter both facts so every calculation still
+    // foots. Only independent historical role reconstruction exposes it.
+    let mut altered = read_xbrl_instance_xml(&xml).unwrap();
+    for fact in &mut altered.facts {
+        match fact.concept.as_str() {
+            "us-gaap:StockholdersEquity" => fact.mantissa = 45_000,
+            "us-gaap:MinorityInterest" => fact.mantissa = 60_000,
+            _ => {}
+        }
+    }
+    let digest = |accounts: &[u8]| {
+        fa_model::domain_digest(
+            b"fa:xbrl-equity-attribution:v1",
+            &[&coordinate.certificate_digest, accounts],
+        )
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+    };
+    let comment = xml
+        .lines()
+        .find(|line| line.starts_with("<!-- fa:xbrl-coordinate "))
+        .unwrap();
+    let comment = comment
+        .replace(
+            "noncontrolling_accounts=\"33313030\"",
+            "noncontrolling_accounts=\"33303030\"",
+        )
+        .replace(&digest(b"33313030"), &digest(b"33303030"));
+    let altered_xml =
+        write_xbrl_instance_xml(&altered).replacen('\n', &format!("\n{comment}\n"), 1);
+    assert!(verify_format_journal_xbrl_xml(&altered_xml).is_ok());
+    let tampered = write(&dir, "resealed-attribution.xbrl", &altered_xml);
+    run(&["verify", "export", "xbrl", &tampered, "--json"], 8);
+    Ok(())
+}
+
 /// Plan §7.4 `AS ORIGINALLY REPORTED`: a period's reads pin to its first
 /// Lock (no StatementIssuance is journaled yet), never its first Close and
 /// never HEAD. A period with no Lock refuses (FA-REF-161) rather than

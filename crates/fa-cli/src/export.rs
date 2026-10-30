@@ -296,7 +296,12 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if chunks == 1 { "it" } else { "them" },
         ));
     }
-    let files = render_files(format, &journal)?;
+    let equity = if format == "xbrl" {
+        Some(xbrl_equity_attribution(&book, &journal, &capability)?)
+    } else {
+        None
+    };
+    let files = render_files(format, &journal, equity.as_ref())?;
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()
         .map_err(|e| Fail::Internal(e.into()))?
@@ -456,6 +461,7 @@ const ADS_FILES: [&str; 4] = [
 fn render_files(
     format: &str,
     journal: &fa_formats::FormatJournal,
+    equity: Option<&fa_formats::xbrl::XbrlEquityAttribution>,
 ) -> Result<Vec<ExportFile>, Fail> {
     let written = |e: fa_formats::FormatError| Fail::Internal(format!("{format} writer: {e}"));
     Ok(match format {
@@ -499,12 +505,56 @@ fn render_files(
         }],
         "xbrl" => vec![ExportFile {
             name: "instance.xbrl",
-            content: fa_formats::xbrl::write_format_journal_xbrl_xml(journal).map_err(written)?,
+            content: match equity {
+                Some(attribution) => fa_formats::xbrl::write_format_journal_xbrl_xml_with_equity(
+                    journal,
+                    attribution,
+                ),
+                None => fa_formats::xbrl::write_legacy_format_journal_xbrl_xml(journal),
+            }
+            .map_err(written)?,
         }],
         _ => vec![ExportFile {
             name: "journal.hledger",
             content: fa_formats::beancount::write_hledger(journal),
         }],
+    })
+}
+
+/// Role classification is journaled and historical. Read it under the same
+/// capability and fixed sequence as the export; neither account labels nor
+/// role declarations in a delivered XBRL instance are evidence of the role.
+fn xbrl_equity_attribution(
+    book: &fa::Book,
+    journal: &fa_formats::FormatJournal,
+    capability: &fa_policy::Capability,
+) -> Result<fa_formats::xbrl::XbrlEquityAttribution, Fail> {
+    let at = fgdb_types::CommitSeq(journal.coordinate.known_at_seq);
+    let (observed, roles) = book.account_roles(Some(at), capability)??;
+    if observed != at {
+        return Err(Fail::Internal(
+            "XBRL roles and journal have different known-at coordinates".into(),
+        ));
+    }
+    let minority = roles.accounts_with("noncontrolling_interest");
+    let noncontrolling_accounts = journal
+        .accounts
+        .iter()
+        .filter(|account| {
+            minority.contains(&fa_model::account_vid(
+                book.context().book_id,
+                &account.code,
+            ))
+        })
+        .map(|account| account.code.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if noncontrolling_accounts.len() != minority.len() {
+        return Err(Fail::Internal(
+            "an XBRL equity role names an account absent from the historical chart".into(),
+        ));
+    }
+    Ok(fa_formats::xbrl::XbrlEquityAttribution {
+        noncontrolling_accounts,
     })
 }
 
@@ -1001,7 +1051,18 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         }
         None => {}
     }
-    let expected = render_files(format, &journal)?;
+    // Legacy exports retain their original mapping. Current exports are
+    // re-rendered from the book's own role history, never the delivered list.
+    let equity = if format == "xbrl"
+        && fa_formats::xbrl::read_xbrl_equity_attribution(first)
+            .map_err(unread)?
+            .is_some()
+    {
+        Some(xbrl_equity_attribution(&book, &journal, &capability)?)
+    } else {
+        None
+    };
+    let expected = render_files(format, &journal, equity.as_ref())?;
     for (file, found) in expected.iter().zip(&contents) {
         if file.content != *found {
             let line = file
