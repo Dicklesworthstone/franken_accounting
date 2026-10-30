@@ -94,6 +94,78 @@ read_coordinate = "2000Q4"
 read_selector = "originally_reported"
 posted = "W-ST-ta2000-prev"
 
+# W7: the native Restatement case R1's certified 2002Q1 income-statement diff moves expenses by
+# the "$818 million adjustment" of p.116 l.5, from the two entries l.3 names (F12, $718 million;
+# F13, $100 million). The published figure is l.5's: l.3's own "$818 million" sits in the fact
+# whose ordinals 2 and 3 are F12's and F13's posted amounts, so K-TAUT would re-type a read of it.
+[[expectation]]
+id = "W-T-03"
+type = "T"
+book_variant = "native"
+statement_template = "T.delta"
+basis = ["F12", "F13"]
+kind = "delta"
+vintages = ["D:SRC-WC-001"]
+
+[[target]]
+expectation = "W-T-03"
+fact = "F12F13-p116b"
+basis = ["F12", "F13"]
+read_verb = "case-diff"
+read_target = "expense"
+read_coordinate = "2002Q1"
+read_selector = "case:R1"
+published = "F12F13-p116b"
+
+# W7: the case's diff of each earlier quarter moves expenses by that quarter's one restated
+# entry, read back against the value its legs were posted from.
+[[expectation]]
+id = "W-R-02"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["F1", "F4", "F9", "F10"]
+
+[[target]]
+expectation = "W-R-02"
+fact = "F1"
+basis = ["F1"]
+read_verb = "case-diff"
+read_target = "expense"
+read_coordinate = "2001Q1"
+read_selector = "case:R1"
+posted = "F1-p106a"
+
+[[target]]
+expectation = "W-R-02"
+fact = "F4"
+basis = ["F4"]
+read_verb = "case-diff"
+read_target = "expense"
+read_coordinate = "2001Q2"
+read_selector = "case:R1"
+posted = "F4-p26"
+
+[[target]]
+expectation = "W-R-02"
+fact = "F9"
+basis = ["F9"]
+read_verb = "case-diff"
+read_target = "expense"
+read_coordinate = "2001Q3"
+read_selector = "case:R1"
+posted = "F9"
+
+[[target]]
+expectation = "W-R-02"
+fact = "F10"
+basis = ["F10"]
+read_verb = "case-diff"
+read_target = "expense"
+read_coordinate = "2001Q4"
+read_selector = "case:R1"
+posted = "F10-p114#2"
+
 [[target]]
 expectation = "W-D-01"
 fact = "F4"

@@ -165,13 +165,18 @@ pub fn key(e: &Expectation, t: Option<&Target>) -> String {
 }
 
 impl BookRun<'_> {
-    /// The unit and scale of a fact's first `[[value]]`.
+    /// The value and unit of a fact's first `[[value]]`, or, for
+    /// `<fact>#<n>` (an R row's `posted`), of its `[[value]]` of ordinal n.
     pub(crate) fn value_of(&self, fact: &str) -> Option<(i128, String)> {
+        let (fact, ordinal) = match fact.split_once('#') {
+            Some((fact, n)) => (fact, n.parse().ok()?),
+            None => (fact, 1),
+        };
         let v = self
             .case
             .values
             .iter()
-            .find(|v| v.fact == fact && v.ordinal == 1)?;
+            .find(|v| v.fact == fact && v.ordinal == ordinal)?;
         Some((v.value.parse().ok()?, v.unit.clone()))
     }
 
@@ -1132,14 +1137,17 @@ impl BookRun<'_> {
         }
     }
 
-    /// A `case-diff` read (E-T-03, plan §8.3): the posted case's certified
-    /// statement diff, `fa case diff <case> --statements --certify`, run once
-    /// per case. The read takes the balance sheet of its period and the
-    /// `delta` of its line in its unit. Each diff is followed by the
-    /// `report_certificate` of its retained statement-diff certificate,
-    /// which the outsider replays. The contributing-entry witness explains
-    /// the line's accounts through the read's period and keeps the legs of
-    /// the entries the case posted: a diff across the Post moves by exactly
+    /// A `case-diff` read (E-T-03, W-T-03, plan §8.3): the posted case's
+    /// certified statement diff, `fa case diff <case> --statements
+    /// --certify`, run once per case. The read takes the one statement of
+    /// its period whose lines carry its target (the balance sheet or the
+    /// income statement) and the `delta` of that line in its unit. Each
+    /// diff is followed by the `report_certificate` of its retained
+    /// statement-diff certificate, which the outsider replays. The
+    /// contributing-entry witness explains the line's accounts over that
+    /// statement's fold of the period (through it for the balance sheet,
+    /// within it for the income statement) and keeps the legs of the
+    /// entries the case posted: a diff across the Post moves by exactly
     /// those.
     fn read_case_diff(
         &mut self,
@@ -1192,9 +1200,11 @@ impl BookRun<'_> {
                 );
             }
         };
-        // The balance sheet of the read's period, and the certificate that
-        // follows it.
-        let mut found = None;
+        // The statement of the read's period whose lines carry the target
+        // (a balance-sheet or an income-statement line), and the
+        // certificate that follows it. A line two statements carry is no
+        // read.
+        let mut found = Vec::new();
         for (i, o) in call.observations.iter().enumerate() {
             let periods: Vec<&str> = o
                 .field("columns")
@@ -1204,27 +1214,36 @@ impl BookRun<'_> {
                 .and_then(Json::as_array)
                 .map(|p| p.iter().filter_map(Json::as_str).collect())
                 .unwrap_or_default();
-            if o.event == "statement_diff"
-                && o.field("name").and_then(Json::as_str) == Some("balance-sheet")
-                && periods == [code]
-            {
+            let carries = o
+                .field("lines")
+                .and_then(Json::as_array)
+                .unwrap_or_default()
+                .iter()
+                .any(|l| l.get("code").and_then(Json::as_str) == Some(target));
+            if o.event == "statement_diff" && periods == [code] && carries {
                 let certificate = call.observations[i + 1..]
                     .iter()
                     .find(|n| n.event == "report_certificate");
-                found = Some((o, certificate));
-                break;
+                found.push((o, certificate));
             }
         }
-        let Some((diff, certificate)) = found else {
+        let [(diff, certificate)] = found.as_slice() else {
             return read(
                 Err(format!(
-                    "expected a balance-sheet statement_diff of {coordinate} from case {case} observed none"
+                    "expected one statement_diff of {coordinate} from case {case} with line {target} observed {}",
+                    found.len()
                 )),
                 None,
                 None,
                 None,
             );
         };
+        let (diff, certificate) = (*diff, *certificate);
+        let statement = diff
+            .field("name")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
         let oid = certificate
             .and_then(|c| c.field("oid"))
             .and_then(Json::as_str)
@@ -1260,10 +1279,11 @@ impl BookRun<'_> {
         if value.is_err() {
             return read(value, oid, digest, None);
         }
-        // The witness: the line's legs through the period, the case's own.
+        // The witness: the line's legs over the statement's fold of the
+        // period, the case's own.
         let posted = self.case_posted_vids(case);
         let contributions = self
-            .line_contributions(&reference, "balance-sheet", target, coordinate, unit, &[])
+            .line_contributions(&reference, &statement, target, coordinate, unit, &[])
             .map(|legs| {
                 legs.into_iter()
                     .filter(|leg| posted.contains(&leg.entry))

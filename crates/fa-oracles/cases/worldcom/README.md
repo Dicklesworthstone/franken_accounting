@@ -4,7 +4,7 @@
 
 Case `worldcom` (letter W), version 1. Scope: the documented line-cost capitalization entries of 2001 and 1Q02; the pilot posts F2, F4, F9 and F12 on the native book, and the statement book posts the restating filing's FY2000 total-assets bridge.
 
-Claimed rows: `W-CASE-R1`, `W-CASE-wc-statement-restatement`, `W-P-01`, `W-P-01-CF-01`, `W-P-02`, `W-P-03`, `W-R-01`, `W-T-02`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `W-CASE-R1`, `W-CASE-wc-statement-restatement`, `W-P-01`, `W-P-01-CF-01`, `W-P-02`, `W-P-03`, `W-R-01`, `W-R-02`, `W-T-02`, `W-T-03`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -181,9 +181,12 @@ Opened 2001-01-01 in USD, on the `custom` calendar.
 | `F6b` | `F6` | Allocation | 2001-09-30 |
 | `F7a` | `F7` | Original | 2001-09-30 |
 | `F7b` | `F7` | Original | 2001-09-30 |
+| `delta-F1` | `derived:negate` | Restatement | 2001-03-31 |
 | `delta-F4` | `derived:negate` | Restatement | 2001-06-30 |
 | `delta-F9` | `derived:negate` | Restatement | 2001-09-30 |
+| `delta-F10` | `derived:negate` | Restatement | 2001-12-31 |
 | `delta-F12` | `derived:negate` | Restatement | 2002-03-31 |
+| `delta-F13` | `derived:negate` | Restatement | 2002-03-31 |
 
 | Document | Stands for | Grade |
 |---|---|---|
@@ -385,6 +388,29 @@ Sources: `SRC-WC-406` (reported (selected data; not derived from audited stateme
 | Target | Cell | Read as | Verdict | Record | Observed |
 |---|---|---|---|---|---|
 | `-` | `default` | R | PASS | record-consistent | kind=read_back read=balance,1000,2000Q4,as-originally-reported value=98727000000.00 gql=ok |
+
+### `W-T-03`: exact tie-out (T.delta)
+
+On the book `native`, the certified change below equals the published adjustment exactly, from the posted adjustments `F12`, `F13`.
+
+Sources: `SRC-WC-001` (the committee found).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `F12F13-p116b` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,expense,2002Q1,case=R1 value=818000000.00 contrib=holds outsider=replay:verified append_only=ok |
+
+### `W-R-02`: read-back (R.read_back)
+
+On the book `native`, each read below returns the posted value it names (`F1`, `F4`, `F9`, `F10`).
+
+Sources: `SRC-WC-001` (the committee found).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `F1` | `default` | R | PASS | record-consistent | kind=read_back read=case-diff,expense,2001Q1,case=R1 value=771000000.00 |
+| `F4` | `default` | R | PASS | record-consistent | kind=read_back read=case-diff,expense,2001Q2,case=R1 value=560000000.00 |
+| `F9` | `default` | R | PASS | record-consistent | kind=read_back read=case-diff,expense,2001Q3,case=R1 value=742725000.00 |
+| `F10` | `default` | R | PASS | record-consistent | kind=read_back read=case-diff,expense,2001Q4,case=R1 value=941000000.00 |
 
 ### `W-D-02`: detection (D.detection)
 

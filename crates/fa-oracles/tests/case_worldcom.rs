@@ -8,6 +8,8 @@
 //! interpretation), so the negatives the plan states on F4's p.26 rows plant
 //! on F9's, the slice's exact-dollar entry.
 
+use std::collections::BTreeMap;
+
 use fa_oracles::cases::check::{CheckFailure, Verdict, run_load_checks};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::WORLDCOM;
@@ -805,4 +807,122 @@ fn wc_restates_naming_an_unknown_source_fails() {
         line,
         &["SRC-WC-499"],
     );
+}
+
+/// A value's canonical integer: `<fact>#<n>` names its value of ordinal n,
+/// a bare fact its first.
+fn value_minor(case: &Case, fact: &str) -> i128 {
+    let (fact, ordinal) = fact
+        .split_once('#')
+        .map_or((fact, 1), |(f, n)| (f, n.parse().expect("an ordinal")));
+    case.values
+        .iter()
+        .find(|v| v.fact == fact && v.ordinal == ordinal)
+        .expect("a value of the fact at that ordinal")
+        .value
+        .parse()
+        .expect("an integer value")
+}
+
+/// W7 (plan §6.3, §6.4): the native Restatement case R1, recomputed from
+/// the book, moves expenses by exactly what W-T-03 publishes and W-R-02
+/// reads back. Each Δ negates its target, so it debits the line-cost
+/// accounts the target credited, and a quarter's expense delta is the sum
+/// of its Δs' Expense debits: 2002Q1 is F12's $718 million plus F13's
+/// $100 million, p.116 l.5's "$818 million adjustment"; 2001Q1-Q4 are F1,
+/// F4, F9 and F10. Every Δ's quarter is among R1's declared periods, which
+/// `fa case rehearse` requires the diff to cover.
+#[test]
+fn w7_case_deltas_recompute_from_the_book() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    let book = &case.books["native"];
+    let quarter = |day: &str| {
+        book.periods
+            .iter()
+            .find(|p| p.start.as_str() <= day && day <= p.end.as_str())
+            .map(|p| p.code.clone())
+            .expect("a quarter holding the day")
+    };
+    let expense: Vec<&str> = book
+        .accounts
+        .iter()
+        .filter(|a| a.account_type == "Expense")
+        .map(|a| a.code.as_str())
+        .collect();
+    let r1 = book.cases.iter().find(|c| c.id == "R1").expect("R1");
+    let mut deltas: BTreeMap<String, i128> = BTreeMap::new();
+    let restated: Vec<_> = book
+        .intents
+        .iter()
+        .filter(|i| i.scenario.as_deref() == Some("restate"))
+        .collect();
+    assert_eq!(restated.len(), 6, "a Δ for F1, F4, F9, F10, F12 and F13");
+    for delta in restated {
+        assert_eq!(delta.fact, "derived:negate", "{}", delta.id);
+        let target = delta.target.as_deref().expect("a Δ names its target");
+        let q = quarter(&delta.effective_date);
+        assert!(
+            r1.periods.contains(&q),
+            "{} falls in {q}, outside R1's periods {:?}",
+            delta.id,
+            r1.periods
+        );
+        assert!(
+            book.intents.iter().any(|i| i.id == target),
+            "{} names {target}",
+            delta.id
+        );
+        for leg in book
+            .legs
+            .iter()
+            .filter(|l| l.intent == delta.id && expense.contains(&l.account.as_str()))
+        {
+            let (whole, cents) = leg.amount_literal.split_once('.').expect("cents");
+            assert_eq!(cents.len(), 2, "{}", leg.amount_literal);
+            let minor: i128 = format!("{whole}{cents}").parse().expect("an amount");
+            let signed = if leg.side == "Dr" {
+                minor
+            } else {
+                minor.checked_neg().expect("in range")
+            };
+            let cell = deltas.entry(q.clone()).or_default();
+            *cell = cell.checked_add(signed).expect("in range");
+        }
+    }
+    let set = case.expectations.as_ref().expect("expectations");
+    let mut read: BTreeMap<String, i128> = BTreeMap::new();
+    for (row, key) in [("W-T-03", "published"), ("W-R-02", "posted")] {
+        for t in set.targets_of(row) {
+            let coordinate = t.fields.str("read_coordinate").expect("a coordinate");
+            let fact = t.fields.str(key).expect("the row's value");
+            read.insert(coordinate.to_string(), value_minor(&case, fact));
+        }
+    }
+    assert_eq!(deltas, read);
+    assert_eq!(deltas["2002Q1"], 81_800_000_000, "$818 million in cents");
+}
+
+/// An R row's `posted = "<fact>#<n>"` names that fact's value of ordinal n
+/// (W-R-02's F10 target reads p.114's second value, $941 million). A fact
+/// the case does not have, or an ordinal that is not a positive integer,
+/// is refused at load, naming the row's value.
+#[test]
+fn w7_posted_ordinal_names_a_fact_and_a_positive_ordinal() {
+    for bad in ["F10-p114#0", "F10-p114#two", "F10-p999#2"] {
+        let mut files = worldcom();
+        edit_row(
+            &mut files,
+            "expectations.toml",
+            "posted = \"F10-p114#2\"",
+            "posted = \"F10-p114#2\"",
+            &format!("posted = \"{bad}\""),
+        );
+        let errors = load_copy(&files).expect_err(bad);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == LoadErrorKind::DanglingKey && e.detail.contains(bad)),
+            "{bad}: {errors:#?}"
+        );
+    }
 }

@@ -586,6 +586,22 @@ memo = "the asset clearing account to the eleventh item"
 evidence = "DOC-PH-F7"
 idempotency_key = "wc-F7b"
 
+# The Restatement case R1 (plan §6.3, W7): one `derived:negate` Δ per documented line-cost
+# entry, F1, F4, F9, F10, F12 and F13, each in its target's quarter. F12's and F13's (2002Q1)
+# are W-T-03's inputs; the other four are W-R-02's read-backs.
+[[intent]]
+id = "delta-F1"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2001-03-31"
+evidence = "DOC-406"
+idempotency_key = "wc-delta-F1"
+target = "F1"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
 [[intent]]
 id = "delta-F4"
 fact = "derived:negate"
@@ -613,6 +629,19 @@ reason = "WrongAccount"
 scenario = "restate"
 
 [[intent]]
+id = "delta-F10"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2001-12-31"
+evidence = "DOC-406"
+idempotency_key = "wc-delta-F10"
+target = "F10"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
+[[intent]]
 id = "delta-F12"
 fact = "derived:negate"
 class = "Restatement"
@@ -625,10 +654,23 @@ target_kind = "restates"
 reason = "WrongAccount"
 scenario = "restate"
 
+[[intent]]
+id = "delta-F13"
+fact = "derived:negate"
+class = "Restatement"
+principal = "case-poster-1"
+effective_date = "2002-03-31"
+evidence = "DOC-406"
+idempotency_key = "wc-delta-F13"
+target = "F13"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
 [[case]]
 id = "R1"
 kind = "Restatement"
-periods = ["2001Q2", "2001Q3", "2002Q1"]
+periods = ["2001Q1", "2001Q2", "2001Q3", "2001Q4", "2002Q1"]
 determined_on = "default"
 authority = "DOC-406"
 disclosure = "DOC-406"
@@ -1015,6 +1057,78 @@ ordinal = 1
 account = "6100"
 side = "Dr"
 amount_literal = "718000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F1"
+ordinal = 0
+account = "1400"
+side = "Cr"
+amount_literal = "629000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F1"
+ordinal = 1
+account = "1500"
+side = "Cr"
+amount_literal = "142000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F1"
+ordinal = 2
+account = "6100"
+side = "Dr"
+amount_literal = "771000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F10"
+ordinal = 0
+account = "1530"
+side = "Cr"
+amount_literal = "470500000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F10"
+ordinal = 1
+account = "1531"
+side = "Cr"
+amount_literal = "470500000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F10"
+ordinal = 2
+account = "6100"
+side = "Dr"
+amount_literal = "941000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F13"
+ordinal = 0
+account = "1520"
+side = "Cr"
+amount_literal = "100000000.00"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F13"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "100000000.00"
 amount_rule = "derived:negate"
 unit = "USD"
 

@@ -1258,21 +1258,7 @@ impl<'a> Check<'a, '_> {
             E::N => self.n_row(f, row, variant),
             E::Cf => self.cf_row(e),
             E::T => self.t_row(e, variant),
-            E::R => {
-                self.reads(e);
-                if let Some(p) = f.str("posted")
-                    && !self.view.fact_or_intent(variant, p)
-                {
-                    self.push(
-                        f.line,
-                        row,
-                        LoadErrorKind::DanglingKey,
-                        format!(
-                            "`posted = \"{p}\"` is neither a fact nor an intent of `{variant}`"
-                        ),
-                    );
-                }
-            }
+            E::R => self.reads(e),
             E::C => self.c_row(e, variant),
         }
     }
@@ -1704,6 +1690,7 @@ impl<'a> Check<'a, '_> {
                 &format!("a single-read {} row", e.kind.as_str()),
             );
             self.selector(&e.fields, row, e.fields.str("book_variant").unwrap_or(""));
+            self.posted(&e.fields, row, e.fields.str("book_variant").unwrap_or(""));
         } else if on_targets {
             for t in &targets {
                 let missing: Vec<&str> = required
@@ -1724,9 +1711,39 @@ impl<'a> Check<'a, '_> {
                     &t.fact,
                     e.fields.str("book_variant").unwrap_or(""),
                 );
+                self.posted(
+                    &t.fields,
+                    &t.fact,
+                    e.fields.str("book_variant").unwrap_or(""),
+                );
             }
         } else {
             self.push(e.fields.line, row, LoadErrorKind::MissingField, format!("a {} row names its read (`read_verb`, `read_target`, `read_coordinate`, `{value_key}`)", e.kind.as_str()));
+        }
+    }
+
+    /// An R read's `posted`, on its row or on each target: a fact, an intent
+    /// of the variant, or `<fact>#<n>`, that fact's value of ordinal n
+    /// (n ≥ 1).
+    fn posted(&mut self, f: &Fields, row: &str, variant: &str) {
+        let Some(p) = f.str("posted") else {
+            return;
+        };
+        let known = match p.split_once('#') {
+            Some((fact, n)) => {
+                self.view.fact(fact).is_some() && n.parse::<u32>().is_ok_and(|n| n >= 1)
+            }
+            None => self.view.fact_or_intent(variant, p),
+        };
+        if !known {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::DanglingKey,
+                format!(
+                    "`posted = \"{p}\"` is neither a fact, a fact's `<fact>#<ordinal>` nor an intent of `{variant}`"
+                ),
+            );
         }
     }
 
