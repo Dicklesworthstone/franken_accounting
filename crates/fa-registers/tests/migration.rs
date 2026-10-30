@@ -3635,6 +3635,144 @@ fn full_detail_counts_detail_by_date_and_ties_the_opening_to_the_chain() {
     );
 }
 
+#[test]
+fn carried_capacity_excludes_full_detail_already_summarized_by_the_opening() {
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
+    let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
+    create_year(&mut k, &mut oracle, 2025);
+    let balances = usd_lines(&[("1000", 400), ("3000", -400)]);
+    let spec = full_detail(
+        "capacity-prior-years",
+        balances.clone(),
+        (1..=12)
+            .map(|month| (format!("FY2025-P{month:02}"), balances.clone()))
+            .collect(),
+        Vec::new(),
+        false,
+    );
+    let run = kernel_open(&mut k, &spec, "capacity-open-prior", &["post", "migrate"])
+        .unwrap()
+        .run;
+    let reference_run = oracle
+        .open_run(&spec, b"capacity-open-prior", &ops)
+        .unwrap();
+    let chunks = [
+        period_chunk(
+            "capacity-prior-open",
+            Some(OPENING),
+            opening_date(),
+            vec![leg(dr, "1000", 400), leg(cr, "3000", 400)],
+        ),
+        period_chunk(
+            "capacity-prior-detail",
+            Some("FY2025-P01"),
+            DateDay::from_ymd(2025, 1, 15).unwrap(),
+            vec![leg(dr, "1000", 400), leg(cr, "3000", 400)],
+        ),
+    ];
+    stage_all(
+        &mut k,
+        &mut oracle,
+        (run, reference_run),
+        &chunks,
+        "capacity history",
+    );
+    finalize_both(
+        &mut k,
+        &mut oracle,
+        (run, reference_run),
+        2,
+        "capacity-finalize-prior",
+    );
+
+    // Only the Opening chunk consumes capacity. Counting retained historical
+    // detail a second time would force a literal fallback (or falsely refuse)
+    // this exactly representable post at i128::MAX.
+    let at_cap = trunk_intent(
+        "capacity-full-detail-boundary",
+        vec![
+            leg(dr, "1000", i128::MAX - 400),
+            leg(cr, "2000", i128::MAX - 400),
+        ],
+    );
+    let request = PostRequest {
+        proposal: chunk_payload(&k, run, &at_cap, Shape::NoRun, None),
+        approvals: Vec::new(),
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let mut history = CarriedHistory::default();
+    let ctx = k.ctx();
+    k.runtime
+        .block_on(post_carrying(
+            &mut k.db,
+            &ctx,
+            &k.book,
+            request,
+            &mut history,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(oracle.post(&at_cap), Verdict::Posted { .. }));
+    let capacity = history.capacity().unwrap();
+    assert!(capacity.admitted_from_summary());
+    assert_eq!(capacity.migration_runs_read(), 1);
+    assert!(
+        fold_period_at(&k.db, &k.book, "FY2025-P01", None)
+            .unwrap()
+            .cells
+            .is_empty()
+    );
+    assert_fold(
+        &k,
+        &oracle,
+        OPENING,
+        k.db.frontier().unwrap(),
+        oracle.known(),
+        0,
+    );
+    assert_fold(
+        &k,
+        &oracle,
+        P01,
+        k.db.frontier().unwrap(),
+        oracle.known(),
+        1,
+    );
+
+    let over = trunk_intent(
+        "capacity-full-detail-over",
+        vec![leg(dr, "1000", 1), leg(cr, "2000", 1)],
+    );
+    let payload = chunk_payload(&k, run, &over, Shape::NoRun, None);
+    let frontier = k.db.frontier().unwrap();
+    let literal = kernel_post(&mut k, payload.clone(), &["post"], false).unwrap_err();
+    let request = PostRequest {
+        proposal: payload,
+        approvals: Vec::new(),
+        capability: capability(&["post"]),
+        plan_certificate: None,
+    };
+    let carried = k
+        .runtime
+        .block_on(post_carrying(
+            &mut k.db,
+            &ctx,
+            &k.book,
+            request,
+            &mut history,
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        (carried.code, &carried.message),
+        (literal.code, &literal.message)
+    );
+    assert_eq!(verdict_code(&oracle.post(&over)), Err("FA-REF-198"));
+    assert_eq!(k.db.frontier().unwrap(), frontier);
+}
+
 /// Plan §8.6 FullDetail sole source (ruling 3675), kernel against oracle: a
 /// book going live April 1 imports its whole history from inception
 /// (January 1); there is no Opening chunk, no opening lines and no

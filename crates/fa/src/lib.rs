@@ -301,8 +301,8 @@ pub use query::{
     QueryCertificate, QueryCertificateStatus, QueryRows, profile_refusal,
 };
 pub use recurring::{
-    RecurringBatch, RecurringBlocked, RecurringPlan, RecurringRecorded, RecurringSpec,
-    RecurringView,
+    RecurringBatch, RecurringBlocked, RecurringHistory, RecurringPlan, RecurringReadWork,
+    RecurringRecorded, RecurringSpec, RecurringView,
 };
 pub use report_artifact::{
     MAX_REPORT_ARTIFACT_BYTES, ReplayedReportArtifact, ReportArtifact, ReportArtifactExpectation,

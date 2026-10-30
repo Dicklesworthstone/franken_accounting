@@ -3949,6 +3949,22 @@ impl Book {
         with_store!(&mut self.store, core => core.sweep_recurring(&purposes, capability, max_batch).await)
     }
 
+    /// The same recurring sweep with a daemon-owned verified lifecycle prefix.
+    /// The kernel binds reuse to the native commit marker and rechecks current
+    /// authority; a relevant change forces the authoritative full fold.
+    pub async fn sweep_recurring_with_history(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+        history: &mut Option<crate::RecurringHistory>,
+    ) -> Outcome<Option<crate::RecurringBatch>> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep_recurring_with_history(
+            &purposes, capability, max_batch, history,
+        ).await)
+    }
+
     /// Drain expiry batches and then reversal batches under the latest
     /// tick. Each batch commits separately; a refusal stops further work.
     pub async fn sweep(

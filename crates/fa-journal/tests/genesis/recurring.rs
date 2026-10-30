@@ -62,13 +62,30 @@ fn sweep(h: &mut Harness, max_batch: usize) -> Option<RecurringBatch> {
         .unwrap()
 }
 
+fn sweep_with_history(
+    h: &mut Harness,
+    max_batch: usize,
+    history: &mut Option<RecurringHistory>,
+) -> fa_journal::refusal::Outcome<Option<RecurringBatch>> {
+    let system = fa_journal::rows::system_principal(h.book.book_id);
+    let req = SweepRequest {
+        principal_ref: system,
+        capability: Capability::new(system, Profile::System, &[Op::Post], system).unwrap(),
+        max_batch,
+    };
+    let ctx = h.ctx();
+    h.runtime.block_on(sweep_recurring_batch_with_history(
+        &mut h.db, &ctx, &h.book, &req, history,
+    ))
+}
+
 fn tick_on(h: &mut Harness, date: &str) {
     let day = DateDay::parse(date).unwrap();
     let ns = u64::try_from(day.0)
         .unwrap()
         .checked_mul(86_400_000_000_000)
         .unwrap();
-    h.tick(ns, b"recurring-tick", 91);
+    h.tick(ns, date.as_bytes(), 91);
 }
 
 fn cancel(h: &mut Harness, name: &str) -> RecurringRecorded {
@@ -365,4 +382,255 @@ fn completed_finite_schedule_does_not_evaluate_an_invalid_or_unrepresentable_lat
         assert_eq!(view[0].next_date, None);
         assert_eq!(view[0].blocked, None);
     }
+}
+
+#[test]
+fn recurring_history_carries_ordinary_posts_and_ticks_without_scanning_the_prior_book() {
+    let mut tail_work = Vec::new();
+    for prior_posts in [1, 33] {
+        let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+        for index in 0..prior_posts {
+            let proposal = h.proposal(
+                h.rent_legs(100),
+                format!("prior-{index}").as_bytes(),
+                EntryClass::ORIGINAL,
+            );
+            h.post(h.request(proposal, &["post"])).unwrap();
+        }
+        tick_on(&mut h, "2026-03-15");
+        let mut history = None;
+        assert_eq!(
+            sweep_with_history(&mut h, 1, &mut history)
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        let cold = history.as_ref().unwrap().read_work();
+        assert_eq!(cold.snapshot_scans, 1);
+        assert!(cold.entries_decoded >= prior_posts);
+        let head = h.db.frontier().unwrap();
+        assert_eq!(
+            sweep_with_history(&mut h, 1, &mut history)
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            history.as_ref().unwrap().read_work(),
+            RecurringReadWork::default()
+        );
+        assert_eq!(history.as_ref().unwrap().verified_at(), head);
+        let proposal = h.proposal(h.rent_legs(200), b"new-ordinary", EntryClass::ORIGINAL);
+        h.post(h.request(proposal, &["post"])).unwrap();
+        tick_on(&mut h, "2026-03-16");
+        let head = h.db.frontier().unwrap();
+        assert_eq!(
+            sweep_with_history(&mut h, 1, &mut history)
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(history.as_ref().unwrap().verified_at(), head);
+        let carried = history.as_ref().unwrap().read_work();
+        assert_eq!((carried.snapshot_scans, carried.snapshot_rows), (0, 0));
+        assert_eq!(carried.entries_decoded, 2);
+        assert!(carried.delta_rows > 0);
+        tail_work.push(carried);
+        // Dropping process state requires a fresh authoritative reconstruction.
+        history = None;
+        assert_eq!(
+            sweep_with_history(&mut h, 1, &mut history)
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 1);
+    }
+    assert_eq!(
+        tail_work[0], tail_work[1],
+        "the same tail is independent of prior book size"
+    );
+}
+
+#[test]
+fn recurring_history_refolds_creation_occurrence_and_cancellation() {
+    let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    h.transition(
+        &h.april.clone(),
+        PeriodTransition::Open,
+        b"recurring-history-april",
+    )
+    .unwrap();
+    tick_on(&mut h, "2026-03-14");
+    let mut history = None;
+    assert_eq!(
+        sweep_with_history(&mut h, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    let definition = spec(&h, "cached-rent", "2026-03-15", "2026-04-15");
+    let created = approved(&mut h, definition, &capability());
+    tick_on(&mut h, "2026-03-15");
+    let due = sweep_with_history(&mut h, 1, &mut history)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(due.posted.len(), 1);
+    assert_eq!(
+        due.posted[0].vid,
+        recurring_occurrence_vid(created.schedule, 0)
+    );
+    assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 1);
+    assert_eq!(
+        sweep_with_history(&mut h, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 1);
+    // Once the occurrence is verified, another idle cycle carries the prefix.
+    assert_eq!(
+        sweep_with_history(&mut h, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 0);
+    cancel(&mut h, "cached-rent");
+    tick_on(&mut h, "2026-04-15");
+    let head = h.db.frontier().unwrap();
+    assert_eq!(
+        sweep_with_history(&mut h, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 1);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(
+        h.db.vertex(recurring_occurrence_vid(created.schedule, 1))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        verify_recurring(&h.db, &h.ctx(), &h.book)
+            .unwrap()
+            .is_green()
+    );
+}
+
+#[test]
+fn recurring_history_cannot_carry_authority_past_creator_revocation() {
+    let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    let cap = capability();
+    let definition = spec(&h, "revoked-cache", "2026-03-31", "2026-03-31");
+    approved(&mut h, definition, &cap);
+    tick_on(&mut h, "2026-03-15");
+    let mut history = None;
+    assert_eq!(
+        sweep_with_history(&mut h, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    h.revoke(&cap, 99);
+    tick_on(&mut h, "2026-03-31");
+    let head = h.db.frontier().unwrap();
+    let batch = sweep_with_history(&mut h, 1, &mut history)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(batch.posted.is_empty());
+    assert_eq!(batch.blocked.len(), 1);
+    assert!(batch.blocked[0].refusal.message.contains("revoked"));
+    assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 0);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn recurring_history_keeps_the_literal_fold_verdict_after_projection_or_prior_entry_damage() {
+    for damage_schedule in [true, false] {
+        let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+        let proposal = h.proposal(h.rent_legs(200), b"prior-entry", EntryClass::ORIGINAL);
+        let prior = h.post(h.request(proposal, &["post"])).unwrap().entry_ref();
+        let definition = spec(&h, "damage-cache", "2026-03-31", "2026-03-31");
+        let created = approved(&mut h, definition, &capability());
+        tick_on(&mut h, "2026-03-15");
+        let mut history = None;
+        assert_eq!(
+            sweep_with_history(&mut h, 1, &mut history)
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        if damage_schedule {
+            damage.set_vertex_property(
+                created.schedule,
+                property::ORDINAL,
+                Some(CanonicalScalar::Int(1)),
+            );
+        } else {
+            damage.set_vertex_property(
+                prior.vid,
+                property::FA_PAYLOAD,
+                Some(CanonicalScalar::Int(0)),
+            );
+        }
+        h.write_raw(damage);
+        let head = h.db.frontier().unwrap();
+        let carried_error = sweep_with_history(&mut h, 1, &mut history).unwrap_err();
+        let literal_error = sweep_with_history(&mut h, 1, &mut None).unwrap_err();
+        assert_eq!(carried_error.to_string(), literal_error.to_string());
+        assert!(
+            history.is_none(),
+            "failed reconstruction cannot leave a reusable prefix"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+}
+
+#[test]
+fn recurring_history_from_a_different_native_prefix_is_rebuilt() {
+    let mut producer = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    let definition = spec(&producer, "first-book", "2026-03-31", "2026-03-31");
+    approved(&mut producer, definition, &capability());
+    tick_on(&mut producer, "2026-03-15");
+    let mut history = None;
+    assert_eq!(
+        sweep_with_history(&mut producer, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+
+    // Same book id and same commit count, but a different schedule history.
+    let mut consumer = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    let definition = spec(&consumer, "second-book", "2026-03-31", "2026-03-31");
+    let created = approved(&mut consumer, definition, &capability());
+    tick_on(&mut consumer, "2026-03-15");
+    assert_eq!(consumer.book.book_id, producer.book.book_id);
+    assert_eq!(
+        consumer.db.frontier().unwrap(),
+        history.as_ref().unwrap().verified_at()
+    );
+    assert_eq!(
+        sweep_with_history(&mut consumer, 1, &mut history)
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    assert_eq!(history.as_ref().unwrap().read_work().snapshot_scans, 1);
+    tick_on(&mut consumer, "2026-03-31");
+    let due = sweep_with_history(&mut consumer, 1, &mut history)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(due.posted.len(), 1);
+    assert_eq!(
+        due.posted[0].vid,
+        recurring_occurrence_vid(created.schedule, 0)
+    );
 }

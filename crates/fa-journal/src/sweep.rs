@@ -2311,6 +2311,7 @@ fn stage_sweep_index_write(
     mut schedules: Vec<crate::schedule::Schedule>,
     prev_hold_pages: usize,
     prev_schedule_pages: usize,
+    checked_previous: Option<&SweepIndexState>,
     expected_root_payload: Option<CanonicalScalar>,
 ) -> Result<(SweepIndexState, WriteBatch), KernelError> {
     holds.sort_by_key(|h| (h.deadline_ns, h.recorded_at, h.hold.vid));
@@ -2325,13 +2326,21 @@ fn stage_sweep_index_write(
         let digest = sweep_page_digest(book_id, SWEEP_EXPIRY, page, &page_bytes);
         let min_key = i128::from(chunk.first().map_or(0, |h| h.deadline_ns));
         let max_key = i128::from(chunk.last().map_or(0, |h| h.deadline_ns));
-        hold_pages.push(SweepIndexPageMeta {
+        let meta = SweepIndexPageMeta {
             page,
             min_key,
             max_key,
             count: chunk.len() as u32,
             digest,
-        });
+        };
+        // Reuse only pages whose stored bytes were checked at this writer
+        // basis. A rebuild deliberately passes None: a matching root digest
+        // alone cannot establish that a damaged page needs no repair.
+        let unchanged = checked_previous.and_then(|s| s.hold_pages.get(idx)) == Some(&meta);
+        hold_pages.push(meta);
+        if unchanged {
+            continue;
+        }
         let pvid = sweep_index_page_vid(SWEEP_EXPIRY, page);
         batch.ensure_vertex(pvid, vec![label::REGISTER_STATE], Vec::new());
         batch.set_vertex_label(pvid, label::REGISTER_STATE, true);
@@ -2368,13 +2377,18 @@ fn stage_sweep_index_write(
         let digest = sweep_page_digest(book_id, crate::schedule::SWEEP_REVERSAL, page, &page_bytes);
         let min_key = i128::from(chunk.first().map_or(0, |s| s.reverse_on.0));
         let max_key = i128::from(chunk.last().map_or(0, |s| s.reverse_on.0));
-        schedule_pages.push(SweepIndexPageMeta {
+        let meta = SweepIndexPageMeta {
             page,
             min_key,
             max_key,
             count: chunk.len() as u32,
             digest,
-        });
+        };
+        let unchanged = checked_previous.and_then(|s| s.schedule_pages.get(idx)) == Some(&meta);
+        schedule_pages.push(meta);
+        if unchanged {
+            continue;
+        }
         let pvid = sweep_index_page_vid(crate::schedule::SWEEP_REVERSAL, page);
         batch.ensure_vertex(pvid, vec![label::REGISTER_STATE], Vec::new());
         batch.set_vertex_label(pvid, label::REGISTER_STATE, true);
@@ -2461,6 +2475,7 @@ pub async fn rebuild_sweep_index<V: asupersync::fs::Vfs + Clone>(
         schedules,
         prev_holds,
         prev_schedules,
+        None,
         expected_payload,
     )?;
     db.write(&ctx.commit(), batch).await?;
@@ -2471,71 +2486,65 @@ pub async fn rebuild_sweep_index<V: asupersync::fs::Vfs + Clone>(
 /// the current frontier, skipping unrelated `Original` entries via their
 /// `CLASS` mirror without decoding their payloads (plan §5.4, §7.6,
 /// FA-CFG-02). Falls back to [`rebuild_sweep_index`] when no valid state
-/// exists or the delta cursor has been retired.
+/// exists or the delta cursor has been retired. All existing page payloads
+/// are checked before reuse, but only changed pages are republished. A tick
+/// or unrelated posting therefore advances the root without allocating and
+/// normalizing redundant writes for the entire pending-work backlog.
 pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
 ) -> Result<SweepIndexState, KernelError> {
     let basis = db.frontier()?;
-    let (
-        from,
-        mut holds_map,
-        mut schedules_map,
-        initial_tick,
-        prev_holds,
-        prev_schedules,
-        expected,
-    ) = match load_servable_sweep_index(db)? {
-        Some((state, payload)) if state.book_id == book.book_id => {
-            if state.through == basis {
-                return Ok(state);
-            }
-            let mut hmap = BTreeMap::new();
-            for meta in &state.hold_pages {
-                let Some(page_holds) = read_hold_page_checked(db, book.book_id, meta)? else {
-                    return rebuild_sweep_index(db, ctx, book).await;
-                };
-                for h in page_holds {
-                    hmap.insert(h.hold.vid, h);
+    let (from, mut holds_map, mut schedules_map, initial_tick, previous, expected) =
+        match load_servable_sweep_index(db)? {
+            Some((state, payload)) if state.book_id == book.book_id => {
+                if state.through == basis {
+                    return Ok(state);
                 }
-            }
-            let mut smap = BTreeMap::new();
-            for meta in &state.schedule_pages {
-                let Some(page_schedules) = read_schedule_page_checked(db, book.book_id, meta)?
-                else {
-                    return rebuild_sweep_index(db, ctx, book).await;
-                };
-                for s in page_schedules {
-                    smap.insert(s.target.vid, s);
+                let mut hmap = BTreeMap::new();
+                for meta in &state.hold_pages {
+                    let Some(page_holds) = read_hold_page_checked(db, book.book_id, meta)? else {
+                        return rebuild_sweep_index(db, ctx, book).await;
+                    };
+                    for h in page_holds {
+                        hmap.insert(h.hold.vid, h);
+                    }
                 }
+                let mut smap = BTreeMap::new();
+                for meta in &state.schedule_pages {
+                    let Some(page_schedules) = read_schedule_page_checked(db, book.book_id, meta)?
+                    else {
+                        return rebuild_sweep_index(db, ctx, book).await;
+                    };
+                    for s in page_schedules {
+                        smap.insert(s.target.vid, s);
+                    }
+                }
+                (
+                    state.through,
+                    hmap,
+                    smap,
+                    state.latest_corroborated_tick,
+                    Some(state),
+                    Some(payload),
+                )
             }
-            (
-                state.through,
-                hmap,
-                smap,
-                state.latest_corroborated_tick,
-                state.hold_pages.len(),
-                state.schedule_pages.len(),
-                Some(payload),
-            )
-        }
-        _ => {
-            let existing = db.vertex(sweep_index_vid())?;
-            if existing.is_some() {
-                return rebuild_sweep_index(db, ctx, book).await;
+            _ => {
+                let existing = db.vertex(sweep_index_vid())?;
+                if existing.is_some() {
+                    return rebuild_sweep_index(db, ctx, book).await;
+                }
+                (
+                    CommitSeq::ORIGIN,
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                    None,
+                    None,
+                    None,
+                )
             }
-            (
-                CommitSeq::ORIGIN,
-                BTreeMap::new(),
-                BTreeMap::new(),
-                None,
-                0,
-                0,
-                None,
-            )
-        }
-    };
+        };
 
     if let Err(err) = db.ensure_delta_window(&ctx.commit(), from).await {
         return match err {
@@ -2575,8 +2584,9 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
         tail.latest_corroborated_tick,
         holds_map.into_values().collect(),
         schedules_map.into_values().collect(),
-        prev_holds,
-        prev_schedules,
+        previous.as_ref().map_or(0, |s| s.hold_pages.len()),
+        previous.as_ref().map_or(0, |s| s.schedule_pages.len()),
+        previous.as_ref(),
         expected,
     )?;
     db.write(&ctx.commit(), batch).await?;
@@ -3175,6 +3185,260 @@ mod tests {
         }
     }
 
+    /// Count the actual native writes made by an index publication, rather
+    /// than an estimate derived from the page metadata it intended to write.
+    fn index_vertices_written_since(db: &Database<fgdb::MemVfs>, from: CommitSeq) -> BTreeSet<VId> {
+        use fgdb_delta_types::ElementId;
+        let mut written = BTreeSet::new();
+        for batch in db.delta_since(from).expect("retained index publication") {
+            for coordinate in batch.coordinate_entries() {
+                for row in &coordinate.rows {
+                    match row {
+                        DeltaRow::CreateVertex { vid, .. }
+                        | DeltaRow::DeleteVertex { vid, .. }
+                        | DeltaRow::LabelMembership { vid, .. }
+                        | DeltaRow::Property {
+                            elem: ElementId::Vertex(vid),
+                            ..
+                        } => {
+                            written.insert(*vid);
+                        }
+                        other => panic!("unexpected index publication row: {other:?}"),
+                    }
+                }
+            }
+        }
+        written
+    }
+
+    fn staged_index_write_sizes(env: &SweepTestEnv, previous: &SweepIndexState) -> (usize, usize) {
+        // Reuse has the same checked-page precondition as the production
+        // advance. Compare actual pending WriteBatch rows BEFORE the native
+        // engine removes no-op writes, not just the normalized journal delta.
+        for meta in &previous.hold_pages {
+            assert!(
+                read_hold_page_checked(&env.db, env.book.book_id, meta)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        for meta in &previous.schedule_pages {
+            assert!(
+                read_schedule_page_checked(&env.db, env.book.book_id, meta)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let basis = env.db.frontier().unwrap();
+        let (tick, holds, schedules) = refold_sweep_index_at(&env.db, basis).unwrap();
+        let root = env.db.vertex(sweep_index_vid()).unwrap().unwrap();
+        let expected = prop(&root, property::FA_PAYLOAD).cloned();
+        let (rewritten, full) = stage_sweep_index_write(
+            env.book.book_id,
+            basis,
+            tick,
+            holds.clone(),
+            schedules.clone(),
+            previous.hold_pages.len(),
+            previous.schedule_pages.len(),
+            None,
+            expected.clone(),
+        )
+        .unwrap();
+        let (reused, changed) = stage_sweep_index_write(
+            env.book.book_id,
+            basis,
+            tick,
+            holds,
+            schedules,
+            previous.hold_pages.len(),
+            previous.schedule_pages.len(),
+            Some(previous),
+            expected,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten, reused,
+            "publication selects identical index contents"
+        );
+        (full.len(), changed.len())
+    }
+
+    #[test]
+    fn sweep_index_publishes_only_changed_pages_and_retires_empty_tail_pages() {
+        let t0 = 1_773_532_800_000_000_000_u64;
+        let mut env = SweepTestEnv::new();
+        env.record_tick_at(t0, b"tick-0");
+        let template = env.post_timed_hold(60_000_000_000, b"hold-0");
+        for i in 1..=SWEEP_INDEX_PAGE_SIZE {
+            env.post_timed_hold(60_000_000_000 + i as u64, format!("hold-{i}").as_bytes());
+        }
+
+        // A lawful scheduled adjustment exercises reuse of the other page
+        // family in the same index. Its reversal date is still in the future.
+        let row = env.db.vertex(template.vid).unwrap().unwrap();
+        let mut proposal = decode_entry(&row).unwrap().proposal;
+        proposal.class = EntryClass::ADJUSTING;
+        proposal.pending = None;
+        proposal.idempotency_key = b"scheduled-adjustment".to_vec();
+        let proposal =
+            crate::schedule::with_auto_reverse(proposal, DateDay::from_ymd(2026, 4, 1).unwrap());
+        let request = crate::post::PostRequest {
+            capability: Capability::embedded(proposal.principal_ref, &["post"]).unwrap(),
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+        };
+        let ctx = env.ctx();
+        env.runtime
+            .block_on(crate::post::post(&mut env.db, &ctx, &env.book, request))
+            .unwrap()
+            .unwrap();
+        let initial = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .unwrap();
+        assert_eq!(initial.hold_pages.len(), 2);
+        assert_eq!(initial.schedule_pages.len(), 1);
+
+        env.record_tick_at(t0 + 1, b"tick-1");
+        let (full, changed) = staged_index_write_sizes(&env, &initial);
+        assert_eq!(
+            changed, 5,
+            "only the root's five native operations are staged"
+        );
+        assert!(
+            full > changed,
+            "reusing pages must avoid real pre-normalization work"
+        );
+        let before = env.db.frontier().unwrap();
+        let after_tick = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .unwrap();
+        assert_eq!(after_tick.through, before);
+        assert_eq!(after_tick.hold_pages, initial.hold_pages);
+        assert_eq!(after_tick.schedule_pages, initial.schedule_pages);
+        assert_eq!(
+            index_vertices_written_since(&env.db, before),
+            BTreeSet::from([sweep_index_vid()]),
+            "a tick advances only the root, not every pending-work page"
+        );
+
+        // Appending after the existing deadlines changes only the last hold
+        // page; the full first page and the reversal page remain untouched.
+        env.post_timed_hold(120_000_000_000, b"last-hold");
+        let (full, changed) = staged_index_write_sizes(&env, &after_tick);
+        assert_eq!(
+            changed, 10,
+            "only the root and changed tail page are staged"
+        );
+        assert!(full > changed);
+        let before = env.db.frontier().unwrap();
+        let appended = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .unwrap();
+        assert_eq!(appended.hold_pages[0], initial.hold_pages[0]);
+        assert_eq!(
+            index_vertices_written_since(&env.db, before),
+            BTreeSet::from([sweep_index_vid(), sweep_index_page_vid(SWEEP_EXPIRY, 1)])
+        );
+        assert!(verify_sweep_index(&env.db, &env.book).unwrap().is_green());
+
+        env.record_tick_at(t0 + 180_000_000_000, b"tick-due");
+        let system = crate::rows::system_principal(env.book.book_id);
+        let request = SweepRequest {
+            principal_ref: system,
+            capability: Capability::new(system, Profile::System, &[Op::Post], VId(7)).unwrap(),
+            max_batch: 128,
+        };
+        let key = env.book.seal_key.clone();
+        let mut describe = |s: &str| {
+            Ok(Erasable::seal(
+                &s.to_owned(),
+                None,
+                &key,
+                [0x22; 32],
+                [0x33; 24],
+            ))
+        };
+        let expired = env
+            .runtime
+            .block_on(sweep_batch(
+                &mut env.db,
+                &ctx,
+                &env.book,
+                &request,
+                &mut describe,
+            ))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(expired.expired.len(), SWEEP_INDEX_PAGE_SIZE + 2);
+        let (full, changed) = staged_index_write_sizes(&env, &appended);
+        assert!(
+            full > changed,
+            "retirement still avoids rewriting the surviving schedule page"
+        );
+        let before = env.db.frontier().unwrap();
+        let empty = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .unwrap();
+        assert!(empty.hold_pages.is_empty());
+        assert_eq!(empty.schedule_pages, initial.schedule_pages);
+        assert_eq!(
+            index_vertices_written_since(&env.db, before),
+            BTreeSet::from([
+                sweep_index_vid(),
+                sweep_index_page_vid(SWEEP_EXPIRY, 0),
+                sweep_index_page_vid(SWEEP_EXPIRY, 1),
+            ]),
+            "removed hold pages are retired while unchanged schedules survive"
+        );
+        assert!(verify_sweep_index(&env.db, &env.book).unwrap().is_green());
+    }
+
+    #[test]
+    fn sweep_index_repairs_corrupt_bytes_even_when_page_metadata_is_unchanged() {
+        let mut env = SweepTestEnv::new();
+        env.record_tick_at(1_773_532_800_000_000_000, b"tick-0");
+        env.post_timed_hold(60_000_000_000, b"hold");
+        let ctx = env.ctx();
+        let initial = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .unwrap();
+        let page = sweep_index_page_vid(SWEEP_EXPIRY, 0);
+        let row = env.db.vertex(page).unwrap().unwrap();
+        let mut payload = bytes(&row, property::FA_PAYLOAD, "page").unwrap();
+        let last = payload.len() - 1;
+        payload[last] ^= 1;
+        let mut tamper = WriteBatch::new(relation::IN_BOOK);
+        tamper.set_vertex_property(
+            page,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("tampered page", payload).unwrap()),
+        );
+        env.runtime
+            .block_on(env.db.write(&ctx.commit(), tamper))
+            .unwrap();
+        assert!(!verify_sweep_index(&env.db, &env.book).unwrap().is_green());
+        let before = env.db.frontier().unwrap();
+        let repaired = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .unwrap();
+        assert_eq!(repaired.hold_pages, initial.hold_pages);
+        assert_eq!(
+            index_vertices_written_since(&env.db, before),
+            BTreeSet::from([sweep_index_vid(), page]),
+            "equal expected digests cannot justify retaining corrupted bytes"
+        );
+        assert!(verify_sweep_index(&env.db, &env.book).unwrap().is_green());
+    }
+
     #[test]
     fn cycle_reads_are_independent_of_unrelated_history() {
         let t0 = 1_773_532_800_000_000_000_u64;
@@ -3328,6 +3592,7 @@ mod tests {
             Vec::new(),
             1,
             0,
+            None,
             expected_root,
         )
         .expect("stage missing hold");
@@ -3368,6 +3633,7 @@ mod tests {
             Vec::new(),
             1,
             0,
+            None,
             expected_root,
         )
         .expect("stage forged hold");

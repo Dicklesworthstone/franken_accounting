@@ -8,8 +8,8 @@ use fgdb_types::context::PurposeContexts;
 use crate::{AsyncBook, Outcome};
 
 pub use fa_journal::recurring::{
-    RecurringBatch, RecurringBlocked, RecurringPlan, RecurringRecorded, RecurringSpec,
-    RecurringView,
+    RecurringBatch, RecurringBlocked, RecurringHistory, RecurringPlan, RecurringReadWork,
+    RecurringRecorded, RecurringSpec, RecurringView,
 };
 pub use fa_time::business::{
     AdjustedOccurrence, BusinessCalendar, BusinessDayConvention, BusinessDayError,

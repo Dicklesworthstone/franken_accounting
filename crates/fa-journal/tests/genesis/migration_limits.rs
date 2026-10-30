@@ -3,7 +3,7 @@ use fa_journal::limit::{LimitCell, LimitScope, cell_vid};
 use fa_journal::migration::{self, RunBody, RunControlRequest, RunControlled, RunMode, RunState};
 
 fn limited(scope: LimitScope) -> Harness {
-    let mut h = harness_configured(
+    lock_opening(harness_configured(
         Vec::new(),
         None,
         Some(BalanceLimit {
@@ -11,7 +11,10 @@ fn limited(scope: LimitScope) -> Harness {
             upper: Some(1_000),
             scope,
         }),
-    );
+    ))
+}
+
+fn lock_opening(mut h: Harness) -> Harness {
     // This fixture has no opening_date, so its Opening period is born
     // Future. Migration requires the real, dual-controlled Locked state.
     let period = opening(&h);
@@ -411,4 +414,190 @@ fn activation_refuses_a_gross_ceiling_even_when_every_chunk_and_the_net_tie_out_
             .state,
         RunState::Open
     );
+}
+
+fn post_carried(
+    h: &mut Harness,
+    proposal: EntryPayload,
+    history: &mut CarriedHistory,
+) -> Result<Posted, Refusal> {
+    let request = h.request(proposal, &["post"]);
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(post_carrying(&mut h.db, &ctx, &h.book, request, history))
+        .expect("carried migration capacity admission")
+}
+
+#[test]
+fn carried_capacity_tracks_finalize_without_permanently_disabling_the_summary() {
+    let mut h = lock_opening(harness());
+    let amount = i128::MAX - 2;
+    let run = open(
+        &mut h,
+        "carried-finalize",
+        &[("1000", amount), ("4000", -amount)],
+    );
+    let imported = chunk(&h, run, cash_legs(&h, amount), b"carried-import");
+    stage(&mut h, imported).unwrap();
+
+    let mut history = CarriedHistory::default();
+    let before = h.proposal(cash_legs(&h, 1), b"before-finalize", EntryClass::ORIGINAL);
+    post_carried(&mut h, before, &mut history).unwrap();
+    let summarized = history.capacity().unwrap();
+    assert!(summarized.admitted_from_summary());
+    assert_eq!(summarized.migration_runs_read(), 1);
+
+    let finalize = control(&mut h, run, migration::kind::FINALIZE, b"activate-carried");
+    transition(&mut h, finalize).unwrap();
+    let at_cap = h.proposal(cash_legs(&h, 1), b"at-imported-cap", EntryClass::ORIGINAL);
+    post_carried(&mut h, at_cap, &mut history).unwrap();
+    let summarized = history.capacity().unwrap();
+    assert!(summarized.summarized() && summarized.admitted_from_summary());
+    assert_eq!(summarized.migration_runs_read(), 1);
+    assert_eq!(summarized.carried_rows(), None, "Finalize rebuilds once");
+
+    let over = h.proposal(cash_legs(&h, 1), b"over-imported-cap", EntryClass::ORIGINAL);
+    let frontier = h.db.frontier().unwrap();
+    let literal = h.post(h.request(over.clone(), &["post"])).unwrap_err();
+    let carried = post_carried(&mut h, over, &mut history).unwrap_err();
+    assert_eq!(
+        (carried.code, carried.exit, &carried.message),
+        (literal.code, literal.exit, &literal.message),
+    );
+    assert_eq!(carried.code, "FA-REF-198");
+    assert_eq!(h.db.frontier().unwrap(), frontier);
+    assert!(!history.capacity().unwrap().admitted_from_summary());
+    assert!(history.capacity().unwrap().carried_rows().is_some());
+
+    let opposite = h.proposal(
+        cash_legs(&h, -1),
+        b"imported-opposite",
+        EntryClass::ORIGINAL,
+    );
+    post_carried(&mut h, opposite, &mut history).unwrap();
+    assert!(history.capacity().unwrap().admitted_from_summary());
+    assert_eq!(history.capacity().unwrap().migration_runs_read(), 1);
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn carried_capacity_excludes_open_and_abandoned_chunks() {
+    let mut h = lock_opening(harness());
+    let run = open(
+        &mut h,
+        "carried-abandon",
+        &[("1000", i128::MAX), ("4000", -i128::MAX)],
+    );
+    let imported = chunk(&h, run, cash_legs(&h, i128::MAX), b"abandoned-cap");
+    stage(&mut h, imported).unwrap();
+
+    let mut history = CarriedHistory::default();
+    let before = h.proposal(cash_legs(&h, 2), b"while-import-open", EntryClass::ORIGINAL);
+    post_carried(&mut h, before, &mut history).unwrap();
+    assert!(history.capacity().unwrap().admitted_from_summary());
+    let abandon = control(&mut h, run, migration::kind::ABANDON, b"abandon-carried");
+    transition(&mut h, abandon).unwrap();
+    let after = h.proposal(cash_legs(&h, 2), b"after-abandon", EntryClass::ORIGINAL);
+    post_carried(&mut h, after, &mut history).unwrap();
+    assert!(history.capacity().unwrap().admitted_from_summary());
+    assert_eq!(history.capacity().unwrap().migration_runs_read(), 1);
+    assert_eq!(history.capacity().unwrap().carried_rows(), None);
+
+    let again = h.proposal(
+        cash_legs(&h, 2),
+        b"after-abandon-again",
+        EntryClass::ORIGINAL,
+    );
+    post_carried(&mut h, again, &mut history).unwrap();
+    assert!(history.capacity().unwrap().admitted_from_summary());
+    assert!(history.capacity().unwrap().carried_rows().is_some());
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn carried_migration_capacity_work_counts_runs_not_imported_chunks() {
+    let mut work = Vec::new();
+    for count in [1, 8, 16] {
+        let mut h = lock_opening(harness());
+        let run = open(&mut h, "carried-size", &[("1000", count), ("4000", -count)]);
+        for index in 0..count {
+            let imported = chunk(
+                &h,
+                run,
+                cash_legs(&h, 1),
+                format!("sized-chunk-{index}").as_bytes(),
+            );
+            stage(&mut h, imported).unwrap();
+        }
+        let finalize = control(&mut h, run, migration::kind::FINALIZE, b"activate-sized");
+        transition(&mut h, finalize).unwrap();
+        let mut history = CarriedHistory::default();
+        for key in [b"sized-first".as_slice(), b"sized-next".as_slice()] {
+            let proposal = h.proposal(cash_legs(&h, 1), key, EntryClass::ORIGINAL);
+            post_carried(&mut h, proposal, &mut history).unwrap();
+            assert!(history.capacity().unwrap().admitted_from_summary());
+        }
+        let summary = history.capacity().unwrap();
+        assert_eq!(summary.migration_runs_read(), 1, "chunks={count}");
+        work.push(summary.carried_rows().expect("only the next post's suffix"));
+
+        let unrelated = h.proposal(
+            vec![
+                LegPayload::simple(Side::Debit, h.rent, Amount::new(h.usd, 1)),
+                LegPayload::simple(Side::Credit, h.receivable, Amount::new(h.usd, 1)),
+            ],
+            b"unrelated-to-import",
+            EntryClass::ORIGINAL,
+        );
+        post_carried(&mut h, unrelated, &mut history).unwrap();
+        let summary = history.capacity().unwrap();
+        assert!(summary.admitted_from_summary());
+        assert_eq!(summary.migration_runs_read(), 0, "unrelated accounts");
+    }
+    assert!(work[0] > 0);
+    assert!(work.iter().all(|rows| *rows == work[0]), "{work:?}");
+}
+
+#[test]
+fn carried_migration_capacity_does_not_trust_a_corrupt_run_body() {
+    let mut h = lock_opening(harness());
+    let run = open(&mut h, "carried-corrupt", &[("1000", 10), ("4000", -10)]);
+    let imported = chunk(&h, run, cash_legs(&h, 10), b"corrupt-import");
+    stage(&mut h, imported).unwrap();
+    let finalize = control(&mut h, run, migration::kind::FINALIZE, b"activate-corrupt");
+    transition(&mut h, finalize).unwrap();
+    let mut history = CarriedHistory::default();
+    let initial = h.proposal(cash_legs(&h, 1), b"before-corrupt", EntryClass::ORIGINAL);
+    post_carried(&mut h, initial, &mut history).unwrap();
+    assert!(history.capacity().unwrap().admitted_from_summary());
+
+    let ctx = h.ctx();
+    let mut mutation = fgdb::WriteBatch::new(relation::IN_BOOK);
+    mutation.set_vertex_property(
+        run,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(vec![0]).unwrap()),
+    );
+    h.runtime
+        .block_on(h.db.write(&ctx.commit(), mutation))
+        .unwrap();
+    let frontier = h.db.frontier().unwrap();
+    let proposal = h.proposal(cash_legs(&h, 1), b"after-corrupt", EntryClass::ORIGINAL);
+    let request = h.request(proposal, &["post"]);
+    let literal = h
+        .runtime
+        .block_on(post(&mut h.db, &ctx, &h.book, request.clone()));
+    let carried = h.runtime.block_on(post_carrying(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        request,
+        &mut history,
+    ));
+    assert_eq!(
+        carried.unwrap_err().to_string(),
+        literal.unwrap_err().to_string()
+    );
+    assert_eq!(h.db.frontier().unwrap(), frontier);
+    assert!(!history.capacity().unwrap().admitted_from_summary());
 }

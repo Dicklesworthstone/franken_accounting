@@ -532,8 +532,9 @@ impl TimedBook for IndexFails<'_> {
         cx: &Cx,
         cap: &Capability,
         max: usize,
+        history: &mut Option<fa::RecurringHistory>,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
-        TimedBook::sweep_recurring(&mut *self.0, cx, cap, max).await
+        TimedBook::sweep_recurring(&mut *self.0, cx, cap, max, history).await
     }
 
     async fn advance_sweep_index(
@@ -805,6 +806,15 @@ fn daemon_cycles_mint_approved_recurring_occurrences_exactly_once() {
             (0, 0),
             "{again:?}"
         );
+        assert_eq!(
+            work.recurring_history
+                .as_ref()
+                .unwrap()
+                .read_work()
+                .snapshot_scans,
+            1,
+            "the newly committed occurrence must be verified before carrying its ordinal"
+        );
         // One month later on both clocks, so the observation is corroborated
         // progress, not a jump.
         let month = day_ns(DateDay::from_ymd(2026, 4, 20).unwrap()) - march;
@@ -823,6 +833,15 @@ fn daemon_cycles_mint_approved_recurring_occurrences_exactly_once() {
             (1, 0),
             "{april:?}"
         );
+        assert_eq!(
+            work.recurring_history
+                .as_ref()
+                .unwrap()
+                .read_work()
+                .snapshot_scans,
+            0,
+            "the verified March prefix carries across the next timer tick"
+        );
         let schedules = fixture
             .book
             .recurring_schedules(&cx, &poster)
@@ -836,6 +855,86 @@ fn daemon_cycles_mint_approved_recurring_occurrences_exactly_once() {
                 .verify_projections(&cx, None)
                 .unwrap()
                 .is_green()
+        );
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
+#[test]
+fn daemon_recurring_discovery_carries_ordinary_posts_and_restarts_from_the_journal() {
+    lab(79, |root| async move {
+        let mut fixture = fixture(&root, 79).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let book_id = fixture.book.context().book_id;
+        let mut work = TimedWork::bootstrap_for_book(&root, book_id, POLICY).unwrap();
+        work.run_observation(&root, &mut fixture.book, Ok(observation(&root, 1_000)))
+            .await
+            .unwrap();
+        advance(&root, 10).await;
+        work.run_observation(&root, &mut fixture.book, Ok(observation(&root, 1_010)))
+            .await
+            .unwrap();
+        assert_eq!(
+            work.recurring_history
+                .as_ref()
+                .unwrap()
+                .read_work()
+                .snapshot_scans,
+            1
+        );
+        fixture
+            .book
+            .post(&cx, fixture.request.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        advance(&root, 10).await;
+        let cycle = work
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, 1_020)))
+            .await
+            .unwrap();
+        assert!(cycle.corroborated);
+        assert_eq!(cycle.recurring, 0);
+        let carried = work.recurring_history.as_ref().unwrap().read_work();
+        assert_eq!((carried.snapshot_scans, carried.snapshot_rows), (0, 0));
+        assert_eq!(
+            carried.entries_decoded, 2,
+            "only the new post and tick are decoded"
+        );
+        advance(&root, 10).await;
+        work.run_observation(&root, &mut fixture.book, Ok(observation(&root, 1_030)))
+            .await
+            .unwrap();
+        assert_eq!(
+            work.recurring_history
+                .as_ref()
+                .unwrap()
+                .read_work()
+                .snapshot_scans,
+            0
+        );
+
+        let mut restarted = TimedWork::bootstrap_for_book(&root, book_id, POLICY).unwrap();
+        assert!(restarted.recurring_history.is_none());
+        advance(&root, 10).await;
+        restarted
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, 1_040)))
+            .await
+            .unwrap();
+        advance(&root, 10).await;
+        restarted
+            .run_observation(&root, &mut fixture.book, Ok(observation(&root, 1_050)))
+            .await
+            .unwrap();
+        assert_eq!(
+            restarted
+                .recurring_history
+                .as_ref()
+                .unwrap()
+                .read_work()
+                .snapshot_scans,
+            1
         );
     })
     .unwrap()

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_model::symbols::{label, property};
 use fa_model::{Entry, EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload};
 use fa_money::{Side, UnitId};
-use fgdb::{Database, WriteTxn, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteTxn, WriteTxnError};
 use fgdb_delta_types::{DeltaRow, ElementId};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, MarkerRef, VId};
@@ -271,10 +271,10 @@ pub struct CapacityHistory {
     /// The Chronicle marker of the commit at `at`: the summary is only ever
     /// carried forward on the database whose prefix it describes.
     marker: Option<MarkerRef>,
-    /// `None` once the book holds something the summary cannot stand for: a
-    /// migration chunk (its visibility is a run-state read, a transaction
-    /// witness), an entry that does not decode or whose leg is invalid, a
-    /// column past the maximum, or a change to a committed entry.
+    /// `None` once the book holds something the summary cannot stand for: an
+    /// entry that does not decode or whose leg is invalid, a column past the
+    /// maximum, or a change to a committed entry. Migration visibility is
+    /// summarized at this prefix and witnessed again for affected accounts.
     cells: Option<Cells>,
     /// The delta rows examined to carry this summary forward, or `None` when
     /// it was summarized from the whole book.
@@ -320,12 +320,20 @@ impl CapacityHistory {
     pub fn resolution_targets_read(&self) -> usize {
         self.admission.targets_read
     }
+
+    /// Migration runs point-witnessed for affected accounts by the last
+    /// carried admission. This counts runs, never their imported chunks.
+    #[must_use]
+    pub fn migration_runs_read(&self) -> usize {
+        self.admission.migration_runs_read
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 struct SummaryAdmission {
     fits: bool,
     targets_read: usize,
+    migration_runs_read: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -336,9 +344,47 @@ struct Cells {
     columns: BTreeMap<(VId, UnitId, bool), [i128; 4]>,
     /// Pending entries a committed Resolution released.
     released: BTreeSet<VId>,
+    /// Both visible and hidden migration chunks depend on their run's body
+    /// and state. Retain that exact row once per run, and index the accounts
+    /// it can affect so ordinary admissions witness only relevant runs.
+    migration_runs: BTreeMap<VId, VertexRow>,
+    migration_accounts: BTreeMap<VId, BTreeSet<VId>>,
 }
 
 impl Cells {
+    /// Apply the literal scan's migration predicate while retaining its
+    /// dependencies even for staged, abandoned, or opening-summarized detail.
+    /// A later Finalize or a changed run body invalidates these cells before
+    /// they can be used at the new prefix.
+    fn visible<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        entry: &Entry,
+        at: CommitSeq,
+        visibility: &mut BTreeMap<VId, crate::migration::RunVisibility>,
+    ) -> Result<bool, KernelError> {
+        if let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin {
+            if entry.proposal.class != EntryClass::MIGRATION {
+                return Err(KernelError::Corrupt(
+                    "non-Migration entry claims migration provenance".into(),
+                ));
+            }
+            if !self.migration_runs.contains_key(run_ref) {
+                let row = db
+                    .vertex_at(*run_ref, at)?
+                    .ok_or_else(|| KernelError::Corrupt("migration run is missing".into()))?;
+                self.migration_runs.insert(*run_ref, row);
+            }
+            for leg in &entry.proposal.legs {
+                self.migration_accounts
+                    .entry(leg.account_ref)
+                    .or_default()
+                    .insert(*run_ref);
+            }
+        }
+        crate::migration::visible_at(db, entry, at, visibility)
+    }
+
     /// Add (or remove) `entry`'s legs; `false` when the summary can no
     /// longer stand for the scan.
     fn fold(&mut self, entry: &Entry, remove: bool) -> bool {
@@ -380,9 +426,6 @@ impl Cells {
     ) -> Result<bool, KernelError> {
         let mut released = BTreeSet::new();
         for (_, entry) in entries {
-            if matches!(entry.proposal.origin, EntryOrigin::Migration { .. }) {
-                return Ok(false);
-            }
             if entry.proposal.class == EntryClass::RESOLUTION {
                 let Some(target) = entry
                     .proposal
@@ -469,15 +512,24 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
         maximum: maximum()?,
         columns: BTreeMap::new(),
         released: BTreeSet::new(),
+        migration_runs: BTreeMap::new(),
+        migration_accounts: BTreeMap::new(),
     };
     let mut entries = Vec::new();
+    let mut visibility = BTreeMap::new();
     for row in db.vertices_at(at)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
         ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
         match entry_at(db, book_id, row.vid, at)? {
-            Ok(Some(entry)) => entries.push((row.vid, entry)),
+            Ok(Some(entry)) => match cells.visible(db, &entry, at, &mut visibility) {
+                Ok(true) => entries.push((row.vid, entry)),
+                Ok(false) => {}
+                // A bad unrelated run must not introduce a new verdict:
+                // let the account-scoped literal admission decide it.
+                Err(_) => return Ok(unusable),
+            },
             Ok(None) => {}
             Err(()) => return Ok(unusable),
         }
@@ -523,6 +575,7 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
     };
     let mut born = Vec::new();
     let mut usable = true;
+    let mut migration_changed = false;
     let mut through = history.at.0;
     let mut examined = 0u64;
     for batch in db.delta_since(history.at)? {
@@ -549,6 +602,20 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
                         elem: ElementId::Edge(_),
                         ..
                     } => {}
+                    DeltaRow::Property {
+                        elem: ElementId::Vertex(vid),
+                        ..
+                    }
+                    | DeltaRow::LabelMembership { vid, .. }
+                    | DeltaRow::DeleteVertex { vid, .. }
+                        if cells.migration_runs.contains_key(vid) =>
+                    {
+                        // Finalize makes prior chunks visible without new
+                        // Entry births. Rebuild once at this prefix instead
+                        // of poisoning every later ordinary admission.
+                        // Any other run mutation takes the same exact path.
+                        migration_changed = true;
+                    }
                     DeltaRow::LabelMembership { label: flipped, .. }
                         if *flipped == label::ENTRY =>
                     {
@@ -577,11 +644,22 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
     if through != at.0 {
         return Ok(None);
     }
+    if usable && migration_changed {
+        return Ok(None);
+    }
     if usable {
         let mut entries = Vec::new();
+        let mut visibility = BTreeMap::new();
         for vid in born {
             match entry_at(db, cells.book_id, vid, at)? {
-                Ok(Some(entry)) => entries.push((vid, entry)),
+                Ok(Some(entry)) => match cells.visible(db, &entry, at, &mut visibility) {
+                    Ok(true) => entries.push((vid, entry)),
+                    Ok(false) => {}
+                    Err(_) => {
+                        usable = false;
+                        break;
+                    }
+                },
                 Ok(None) => {}
                 Err(()) => {
                     usable = false;
@@ -605,8 +683,9 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Whether the summarized columns plus the staged and proposed legs fit, for
-/// the affected accounts. `true` only where the scan would also admit: no
-/// migration chunk, every leg valid, every final column within the maximum.
+/// the affected accounts. `true` only where the scan would also admit: every
+/// migration run retains its summarized visibility, every leg is valid, and
+/// every final column is within the maximum.
 /// Resolutions remove their original Pending vectors before any additions,
 /// including new holds in the same atomic batch. Only columns touched by
 /// these effects are copied from the summary; unrelated history is not read.
@@ -631,6 +710,34 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
     match crate::genesis::read_book_spec_at(db, txn.basis())? {
         Some(spec) if spec.base_unit == cells.base => {}
         _ => return Ok(admission),
+    }
+    let runs: BTreeSet<_> = accounts
+        .iter()
+        .filter_map(|account| cells.migration_accounts.get(account))
+        .flatten()
+        .copied()
+        .collect();
+    for run in runs {
+        admission.migration_runs_read = admission.migration_runs_read.saturating_add(1);
+        let Some(expected) = cells.migration_runs.get(&run) else {
+            return Ok(admission);
+        };
+        let Some(current) = txn.vertex(db, run)? else {
+            return Ok(admission);
+        };
+        // These are the same full-row and state point witnesses that
+        // visible_in retains in the literal path. A staged transition or
+        // changed body must be judged by that path, never stale totals.
+        let state = txn.vertex_property(db, run, property::STATE)?;
+        if current.labels != expected.labels
+            || current.props != expected.props
+            || current.created_at != expected.created_at
+            || current.birth_ordinal != expected.birth_ordinal
+            || current.retired_at != expected.retired_at
+            || state.as_ref() != crate::rows::prop(expected, property::STATE)
+        {
+            return Ok(admission);
+        }
     }
     // The literal scan overlays staged identities in a map. Preserve that
     // set rather than charging a repeated staged identity more than once.
