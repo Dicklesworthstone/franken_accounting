@@ -1283,6 +1283,19 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
 
 type Memberships = BTreeMap<VId, Vec<(fgdb_types::EId, VId)>>;
 
+/// Current-projection scans performed during register verification. These
+/// counters advance at the actual substrate calls and count the returned
+/// rows, including non-register vertices and non-membership edges.
+/// Historical journal folds, checkpoint loads and point reads are separate
+/// work; this is not a count of all work done by verification.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProjectionReadWork {
+    pub vertex_scans: usize,
+    pub vertices_read: usize,
+    pub edge_scans: usize,
+    pub edges_read: usize,
+}
+
 /// What verifying several periods reads of the book, each read once
 /// (fa-rbs3). A `&Database` cannot change, so every answer is the one a
 /// fresh read gives: a journal prefix is read and decoded once, and every
@@ -1297,6 +1310,7 @@ pub(crate) struct Reads<'a, V: asupersync::fs::Vfs + Clone> {
     vertices: Option<Vec<VertexRow>>,
     memberships: Option<Memberships>,
     entry_rows: BTreeMap<CommitSeq, BTreeMap<VId, VertexRow>>,
+    projection_work: ProjectionReadWork,
 }
 
 impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
@@ -1309,6 +1323,7 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
             vertices: None,
             memberships: None,
             entry_rows: BTreeMap::new(),
+            projection_work: ProjectionReadWork::default(),
         }
     }
 
@@ -1337,13 +1352,33 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
         }
     }
 
-    /// The current vertices and the edges' period memberships.
-    fn scans(&mut self) -> Result<(&[VertexRow], &Memberships), RegisterError> {
+    /// The current vertices, shared by maintenance-state and cell checks.
+    fn current_vertices(&mut self) -> Result<&[VertexRow], RegisterError> {
         if self.vertices.is_none() {
-            self.vertices = Some(self.db.vertices()?);
+            self.projection_work.vertex_scans = self.projection_work.vertex_scans.saturating_add(1);
+            let rows = self.db.vertices()?;
+            self.projection_work.vertices_read = self
+                .projection_work
+                .vertices_read
+                .saturating_add(rows.len());
+            self.vertices = Some(rows);
         }
+        self.vertices
+            .as_deref()
+            .ok_or_else(|| KernelError::Corrupt("the current vertices were not read".into()).into())
+    }
+
+    /// The current vertices and the edges' period memberships. Edges remain
+    /// lazy so a broken header or cell digest retains its existing refusal
+    /// without introducing a read of unrelated edge history first.
+    fn scans(&mut self) -> Result<(&[VertexRow], &Memberships), RegisterError> {
+        self.current_vertices()?;
         if self.memberships.is_none() {
-            self.memberships = Some(period_memberships(&self.db.edges()?));
+            self.projection_work.edge_scans = self.projection_work.edge_scans.saturating_add(1);
+            let edges = self.db.edges()?;
+            self.projection_work.edges_read =
+                self.projection_work.edges_read.saturating_add(edges.len());
+            self.memberships = Some(period_memberships(&edges));
         }
         match (&self.vertices, &self.memberships) {
             (Some(rows), Some(memberships)) => Ok((rows, memberships)),
@@ -1483,6 +1518,19 @@ pub fn verify_periods_with_context<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     periods: &[&str],
 ) -> Vec<Result<Verification, RegisterError>> {
+    verify_periods_with_context_counted(db, cx, book, periods).0
+}
+
+/// [`verify_periods_with_context`] with the current-projection scan work
+/// performed by its maintenance-state and cell verification. Results and
+/// first-error behavior are identical; counters also cover work completed
+/// before an error. No register or journal object is changed.
+pub fn verify_periods_with_context_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[&str],
+) -> (Vec<Result<Verification, RegisterError>>, ProjectionReadWork) {
     let mut reads = Reads::new(db, book, periods);
     let mut results = Vec::with_capacity(periods.len());
     for period in periods {
@@ -1493,7 +1541,7 @@ pub fn verify_periods_with_context<V: asupersync::fs::Vfs + Clone>(
             break;
         }
     }
-    results
+    (results, reads.projection_work)
 }
 
 fn verify_period_with_context_in<V: asupersync::fs::Vfs + Clone>(
@@ -1558,17 +1606,8 @@ fn verify_period_with_context_in<V: asupersync::fs::Vfs + Clone>(
     Ok(result)
 }
 
-fn verify_projection<V: asupersync::fs::Vfs + Clone>(
-    db: &Database<V>,
-    book: &BookContext,
-    fold: &Fold,
-) -> Result<Verification, RegisterError> {
-    let rows = db.vertices()?;
-    verify_projection_in(db, book, fold, &rows, &period_memberships(&db.edges()?))
-}
-
-/// [`verify_projection`] against `rows`, the book's current vertices, and
-/// `memberships`, its period memberships ([`period_memberships`]).
+/// Verify the fold's stored projection against `rows`, the book's current
+/// vertices, and `memberships`, its period memberships ([`period_memberships`]).
 fn verify_projection_in<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,

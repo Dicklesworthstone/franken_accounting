@@ -25,7 +25,7 @@ use fa_registers::{
     fold_period, fold_period_at, fold_periods_at, materialize, materialize_periods,
     period_activity, period_activity_excluding_classes, rebuild, rebuild_periods,
     rebuild_reads_are_shared, register_vid, trial_balance, trial_balance_at, verify_period,
-    verify_period_with_context, verify_periods_with_context,
+    verify_period_with_context, verify_periods_with_context, verify_periods_with_context_counted,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -1640,6 +1640,13 @@ fn verifying_periods_together_equals_verifying_each_alone() {
         .map(Result::unwrap)
         .collect();
     assert_eq!(together, alone);
+    let (counted, work) = verify_periods_with_context_counted(&h.db, &query, &h.book, &periods);
+    assert_eq!(
+        counted.into_iter().map(Result::unwrap).collect::<Vec<_>>(),
+        alone
+    );
+    assert_eq!(work.vertex_scans, 1, "{work:?}");
+    assert_eq!(work.edge_scans, 1, "{work:?}");
     // A period the book does not declare ends the results with the error
     // verifying it alone gives; the periods after it are not verified.
     let stopped =
@@ -1653,6 +1660,81 @@ fn verifying_periods_together_equals_verifying_each_alone() {
             verify_period_with_context(&h.db, &query, &h.book, "FY2099-P01").unwrap_err()
         )
     );
+}
+
+#[test]
+fn verifying_many_initialized_periods_scans_the_current_projection_once() {
+    let mut h = harness();
+    let april = h.open_april();
+    h.post_rent(1_000, b"shared-scan-march");
+    let mut entry = h.proposal(
+        h.expense_legs(300),
+        b"shared-scan-april",
+        EntryClass::ORIGINAL,
+    );
+    entry.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    h.commit(entry);
+    let periods: Vec<_> = h
+        .book
+        .calendar
+        .periods_for_year(2026)
+        .unwrap()
+        .into_iter()
+        .filter(|period| period.kind == PeriodKind::Normal)
+        .map(|period| period.code)
+        .collect();
+    assert_eq!(periods.len(), 12);
+    assert!(periods.contains(&h.march) && periods.contains(&april));
+    let selected: Vec<_> = periods.iter().map(String::as_str).collect();
+    let ctx = h.ctx();
+    let query = ctx.query();
+    // Initialize every header, including empty periods. Otherwise absent
+    // headers would skip load(), concealing a per-initialized-period scan.
+    for result in h
+        .runtime
+        .block_on(rebuild_periods(&mut h.db, &ctx, &h.book, &selected))
+    {
+        assert!(result.expect("initialize maintenance state").wrote);
+    }
+    let expected_vertices = h.db.vertices().unwrap().len();
+    let expected_edges = h.db.edges().unwrap().len();
+    let mut independent = Vec::new();
+    let mut independent_work = fa_registers::ProjectionReadWork::default();
+    for period in &selected {
+        let (results, work) =
+            verify_periods_with_context_counted(&h.db, &query, &h.book, &[*period]);
+        independent.extend(results.into_iter().map(Result::unwrap));
+        independent_work.vertex_scans += work.vertex_scans;
+        independent_work.vertices_read += work.vertices_read;
+        independent_work.edge_scans += work.edge_scans;
+        independent_work.edges_read += work.edges_read;
+    }
+    assert!(
+        independent
+            .iter()
+            .all(|result| { result.is_green() && result.cache_status == CacheStatus::Verified })
+    );
+    assert_eq!(independent_work.vertex_scans, selected.len());
+    assert_eq!(independent_work.edge_scans, selected.len());
+    for count in [1, 4, selected.len()] {
+        let (results, work) =
+            verify_periods_with_context_counted(&h.db, &query, &h.book, &selected[..count]);
+        let actual: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+        assert_eq!(actual, independent[..count]);
+        assert_eq!(work.vertex_scans, 1, "periods={count}: {work:?}");
+        assert_eq!(work.edge_scans, 1, "periods={count}: {work:?}");
+        assert_eq!(work.vertices_read, expected_vertices);
+        assert_eq!(work.edges_read, expected_edges);
+        eprintln!("register verification periods={count}: {work:?}");
+    }
+    assert_eq!(
+        independent_work.vertices_read,
+        expected_vertices * selected.len()
+    );
+    assert_eq!(independent_work.edges_read, expected_edges * selected.len());
+    let (empty, work) = verify_periods_with_context_counted(&h.db, &query, &h.book, &[]);
+    assert!(empty.is_empty());
+    assert_eq!(work, fa_registers::ProjectionReadWork::default());
 }
 
 /// A book whose March cache is stale, whose April cache has one rewritten
