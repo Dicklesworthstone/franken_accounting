@@ -175,11 +175,11 @@ fn day() -> DateDay {
     DateDay::from_ymd(2026, 1, 1).unwrap()
 }
 
-fn post(book: &mut Book, n: u32) {
-    post_cash_movement(book, n, "USD", 100, Side::Debit);
+fn post(book: &mut Book, n: u32) -> VId {
+    post_cash_movement(book, n, "USD", 100, Side::Debit)
 }
 
-fn post_cash_movement(book: &mut Book, n: u32, unit: &str, amount: i128, side: Side) {
+fn post_cash_movement(book: &mut Book, n: u32, unit: &str, amount: i128, side: Side) -> VId {
     let document = Document {
         book_id: BOOK_ID,
         kind: 1,
@@ -240,7 +240,9 @@ fn post_cash_movement(book: &mut Book, n: u32, unit: &str, amount: i128, side: S
         capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
     })
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .entry_ref()
+    .vid
 }
 
 fn parse_events(stdout: &str) -> Vec<Json> {
@@ -488,19 +490,26 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
         originals.push((event_name, events, bytes, locator, file));
     }
     let mut book = f.open();
-    post(&mut book, 64);
+    let later_entry = post(&mut book, 64);
     let later = book.head().unwrap();
     drop(book);
     for (event_name, original, bytes, locator, file) in originals {
         if event_name == "summary_trial_balance" {
             let status = f.ok(&["certificate", "status", &locator]);
             let status = data(&status, "certificate_status");
-            assert_eq!(text(status, "status"), "Changed", "64 later postings");
+            assert_eq!(
+                text(status, "status"),
+                "SupersededBy",
+                "the new posting must be attributed after all 64 original postings"
+            );
             assert_eq!(
                 status.get("checked_at"),
                 Some(&Json::Int(i128::from(later.0)))
             );
-            assert_eq!(status.get("later_entries"), Some(&Json::Arr(Vec::new())));
+            assert_eq!(
+                status.get("later_entries"),
+                Some(&Json::Arr(vec![s(format!("{:032x}", later_entry.0))]))
+            );
             let (exit, refused) = f.run(&["certificate", "status", &locator, "--expect", "{}"]);
             assert_eq!(
                 exit, 2,
@@ -542,6 +551,110 @@ fn summary_aging_and_roll_forward_certify_retain_and_replay_the_original_report(
         assert_eq!(book.head().unwrap(), later, "replay never publishes");
     }
     assert_eq!(f.head(), later);
+}
+
+#[test]
+fn summary_status_attributes_coverage_changes_through_direct_and_held_book_surfaces() {
+    let f = Fixture::new();
+    let original = f.ok(&[
+        "tb",
+        "--period",
+        PERIOD,
+        "--summary",
+        "--root",
+        "1000",
+        "--certify",
+    ]);
+    let locator = format!("C:{}", text(data(&original, "report_certificate"), "oid"));
+    let before = f.head();
+    let status = f.ok(&["certificate", "status", &locator]);
+    assert_eq!(
+        text(data(&status, "certificate_status"), "status"),
+        "Current"
+    );
+    assert_eq!(f.head(), before, "status must not publish");
+
+    // An unselected empty summary does not change this selected-root report.
+    // A new uncovered leaf does change its completeness, even without a post.
+    let mut book = f.open();
+    let authority = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let unrelated = book
+        .install_chart(
+            &[AccountSpec {
+                code: "90".into(),
+                name: "Unselected empty group".into(),
+                account_type: AccountType::ASSET.0,
+                normal_balance: 0,
+                is_leaf: false,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            }],
+            PRINCIPAL,
+            day(),
+            b"unrelated-summary",
+            &authority,
+        )
+        .unwrap()
+        .unwrap();
+    drop(book);
+    let status = f.ok(&["certificate", "status", &locator]);
+    assert_eq!(
+        text(data(&status, "certificate_status"), "status"),
+        "Current"
+    );
+    assert_eq!(f.head(), unrelated.recorded_at);
+
+    let mut book = f.open();
+    let changed = book
+        .install_chart(
+            &[AccountSpec {
+                code: "2000".into(),
+                name: "New uncovered cash account".into(),
+                account_type: AccountType::ASSET.0,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            }],
+            PRINCIPAL,
+            day(),
+            b"uncovered-leaf",
+            &authority,
+        )
+        .unwrap()
+        .unwrap();
+    drop(book);
+    let direct = f.ok(&["certificate", "status", &locator]);
+    let status = data(&direct, "certificate_status");
+    assert_eq!(text(status, "status"), "SupersededBy");
+    assert_eq!(
+        status.get("later_entries"),
+        Some(&Json::Arr(vec![s(format!(
+            "{:032x}",
+            changed.control_entry.0
+        ))]))
+    );
+    assert_eq!(
+        status.get("checked_at"),
+        Some(&Json::Int(i128::from(changed.recorded_at.0)))
+    );
+    let replayed = f.ok(&["replay", &locator]);
+    assert_eq!(
+        data(&replayed, "summary_trial_balance"),
+        data(&original, "summary_trial_balance"),
+        "the superseded artifact still replays its original membership and amounts"
+    );
+    let mut book = f.open();
+    let via_held = held(
+        &mut book,
+        &f.dir,
+        &["certificate", "status", &locator],
+        Stdin::Forwarded(Vec::new()),
+    );
+    assert_eq!(data(&via_held, "certificate_status"), status);
+    assert_eq!(book.head().unwrap(), changed.recorded_at);
 }
 
 #[test]

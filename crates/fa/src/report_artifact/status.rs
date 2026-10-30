@@ -16,19 +16,20 @@ use super::*;
 use crate::aging::portfolio::{AgingAccountScope, AgingPortfolio};
 use crate::{
     CashFlowBasis, CertificateStatus, CertificateSupersedingCase, GeneralLedger, IndirectCashFlow,
-    ReportOutput, ReportSelection,
+    ReportOutput, ReportSelection, SummaryRequest, SummaryScope, TrialBalanceSelection,
 };
 
 /// Only metadata actually emitted by the selected report can supersede it.
 /// Portfolio coverage includes unselected leaves; an indirect report includes
 /// every monetary leaf in its cash, income or non-cash source headers.
 #[derive(Clone, Copy)]
-enum MetadataScope {
+enum MetadataScope<'a> {
     None,
     Account(VId),
     PostingLeaves,
     MonetaryLeaves,
     EquityLeaves,
+    Summary(&'a SummaryScope),
 }
 
 fn stock_selected(
@@ -139,6 +140,10 @@ fn same_indirect(original: &IndirectCashFlow, current: &IndirectCashFlow) -> boo
 enum AccountMetadata {
     Complete(fa_journal::rows::AccountRow),
     Presentation(fa_statements::Account),
+    SummaryGroup {
+        root: fa_journal::rows::AccountRow,
+        leaves: Vec<fa_journal::rows::AccountRow>,
+    },
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
@@ -148,9 +153,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// nothing. Recipient-dependent families require the same independently
     /// retained request/definition as replay, even when a digest is supplied.
     ///
-    /// Supports native reports, statement comparisons/traces, roll-forwards
-    /// (including their GL detail view), effective-date aging and its control
-    /// reconciliations/portfolios, and direct, indirect, split and policy cash flow.
+    /// Supports native and summary reports, statement comparisons/traces,
+    /// roll-forwards (including their GL detail view), effective-date aging and
+    /// its control reconciliations/portfolios, and direct, indirect, split and
+    /// policy cash flow.
     /// Other families refuse until their distinct relevance law is implemented.
     /// In particular, a historical draft rehearsal is never declared Current
     /// from its trunk trial-balance certificate alone; its full replay uses the
@@ -181,6 +187,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let source = match &artifact.inner {
             Artifact::Native(_) | Artifact::StatementDiff(_) | Artifact::StatementTrace(_) => {
                 return self.certificate_status(cx, artifact.source_certificate());
+            }
+            Artifact::Summary(c) => {
+                return self.summary_artifact_status(cx, principal, capability, c);
             }
             Artifact::RollForward(c) => c.as_ref(),
             Artifact::CashFlow(c) => c.source_certificate(),
@@ -230,6 +239,113 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         };
         self.roll_forward_artifact_status(cx, principal, capability, source)
+    }
+
+    fn summary_artifact_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &SummaryCertificate,
+    ) -> Outcome<CertificateStatus> {
+        let original =
+            match self.replay_summary_trial_balance(cx, principal, capability, certificate)? {
+                Ok(report) => report,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let source = certificate.source_certificate();
+        let ReportSelection::TrialBalance(selection) = &source.selection else {
+            return Ok(Err(invalid("summary source is not a trial balance")));
+        };
+        let head = self.head(cx)?;
+        // Replay establishes the original context. Freshness also needs the
+        // current Book/Unit mirrors to agree with the context used to rerun
+        // the report, even if a legitimate later entry will supersede it.
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(crate::certificate::context_at(db, book, head).map_err(|error| {
+                invalid(format!(
+                    "the current summary context no longer matches the certified context: {error}"
+                ))
+            }))
+        })? {
+            return Ok(Err(refusal));
+        }
+        let mut current = match self.summary_trial_balance(
+            cx,
+            principal,
+            capability,
+            &SummaryRequest {
+                selection: selection.clone(),
+                scope: certificate.scope().clone(),
+                known_at: Some(head),
+            },
+        )? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(invalid(refusal.message))),
+        };
+        let source_report = ReportOutput::TrialBalance(original.source.clone());
+        let (later_entries, cases) = match self.later_artifact_entries(
+            cx,
+            certificate.known_at(),
+            head,
+            MetadataScope::Summary(certificate.scope()),
+            |entry, entries| {
+                if let (
+                    TrialBalanceSelection::AsOf(through),
+                    EntryClass::SCHEMA_CONTROL,
+                    Some(ControlPayload::SchemaChange {
+                        kind: fa_journal::period_creation::SCHEMA_CHANGE_CREATE_PERIODS,
+                        canonical_bytes,
+                    }),
+                ) = (selection, entry.proposal.class, &entry.proposal.control)
+                    && matches!(
+                        entry.proposal.origin,
+                        EntryOrigin::Control {
+                            control_kind: fa_model::ControlKind::PERIOD_CREATION,
+                            ..
+                        }
+                    )
+                {
+                    // The chart read above checked this journaled declaration's
+                    // canonical body, identity and mirrors against the calendar.
+                    // AsOf emits every available period beginning by its cutoff;
+                    // explicit stock/activity period lists remain pinned.
+                    let created =
+                        fa_journal::period_creation::PeriodCreation::decode(canonical_bytes)?;
+                    return Ok(created
+                        .periods
+                        .iter()
+                        .any(|(period, _)| period.start <= *through));
+                }
+                // The v1 summary emits its complete leaf source and whole-book
+                // totals as drilldown, even when its presentation selects only
+                // some roots. Contributions to that emitted source matter;
+                // unrelated native-input metadata does not. Reuse the stock,
+                // activity, pending and effective-date law of that exact source.
+                crate::certificate::selected(
+                    self.context(),
+                    &source.selection,
+                    &source_report,
+                    entry,
+                    entries,
+                )
+            },
+        )? {
+            Ok(entries) => entries,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !later_entries.is_empty() {
+            return Ok(Ok(CertificateStatus::SupersededBy {
+                checked_at: head,
+                later_entries,
+                cases,
+            }));
+        }
+        // A new known-at is expected, but changed coverage, metadata, gross
+        // amounts or historical membership without an attributable immutable
+        // publication is not a fresh report.
+        current.source.known_at = original.source.known_at;
+        Ok(unchanged(head, original == current))
     }
 
     fn equity_artifact_status(
@@ -673,7 +789,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         known_at: CommitSeq,
         head: CommitSeq,
-        metadata_scope: MetadataScope,
+        metadata_scope: MetadataScope<'_>,
         selected: impl Fn(&Entry, &BTreeMap<VId, Entry>) -> Result<bool, BookError>,
     ) -> Outcome<(Vec<VId>, Vec<CertificateSupersedingCase>)> {
         self.query(cx, |db, book| {
@@ -696,6 +812,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 let chart = fa_journal::chart::read_at(db, book, at)?;
                 let mut projected = Vec::new();
+                if let MetadataScope::Summary(scope) = metadata_scope {
+                    let roots = match scope {
+                        SummaryScope::AllRoots => chart
+                            .accounts()
+                            .keys()
+                            .filter(|vid| !chart.parents().contains_key(vid))
+                            .copied()
+                            .collect(),
+                        SummaryScope::Selected(roots) => roots.clone(),
+                    };
+                    let mut covered = BTreeSet::new();
+                    for root in roots {
+                        query.checkpoint().map_err(BookError::Context)?;
+                        let leaves = chart.leaves_under(root)?;
+                        covered.extend(leaves.iter().copied());
+                        projected.push(AccountMetadata::SummaryGroup {
+                            root: chart.accounts()[&root].clone(),
+                            leaves: leaves
+                                .iter()
+                                .map(|leaf| chart.accounts()[leaf].clone())
+                                .collect(),
+                        });
+                    }
+                    // Coverage is output, including zero-activity unselected
+                    // leaves. An unselected empty summary is not output and
+                    // must not supersede a partial presentation by itself.
+                    for account in chart.accounts().values() {
+                        query.checkpoint().map_err(BookError::Context)?;
+                        if account.is_leaf && !covered.contains(&account.vid) {
+                            projected.push(AccountMetadata::Complete(account.clone()));
+                        }
+                    }
+                    return Ok(projected);
+                }
                 for account in chart.accounts().values() {
                     query.checkpoint().map_err(BookError::Context)?;
                     let include = match metadata_scope {
@@ -708,6 +858,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         MetadataScope::EquityLeaves => {
                             account.is_leaf && (3..=5).contains(&account.account_type)
                         }
+                        MetadataScope::Summary(_) => unreachable!("handled summary metadata"),
                     };
                     if include {
                         projected.push(

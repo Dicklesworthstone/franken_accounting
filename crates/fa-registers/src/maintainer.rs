@@ -239,6 +239,18 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<Option<(CommitSeq, Fold, CanonicalScalar)>, RegisterError> {
+    load_in(&mut crate::Reads::new(db, book, &[period]), period)
+}
+
+/// Load and validate a maintenance state using the same current projection
+/// reads as the rest of its verification. In particular, verifying a book
+/// must not rescan all vertices and edges for every period's header before
+/// reaching the shared journal-fold and projection checks.
+fn load_in<V: asupersync::fs::Vfs + Clone>(
+    reads: &mut crate::Reads<'_, V>,
+    period: &str,
+) -> Result<Option<(CommitSeq, Fold, CanonicalScalar)>, RegisterError> {
+    let (db, book) = (reads.db, reads.book);
     let Some(state) = state_row_at(db, book, period, db.frontier()?)? else {
         return Ok(None);
     };
@@ -265,7 +277,7 @@ fn load<V: asupersync::fs::Vfs + Clone>(
         }
         Err(error) => return Err(error),
     }
-    for row in crate::stored_registers_in(db, book, &fold, &db.vertices()?)?.values() {
+    for row in crate::stored_registers_in(db, book, &fold, reads.current_vertices()?)?.values() {
         let account: [u8; 16] = bytes(row, property::ACCOUNT_REF, "register.account")?
             .try_into()
             .map_err(|_| drift("register account identity"))?;
@@ -302,8 +314,13 @@ fn load<V: asupersync::fs::Vfs + Clone>(
         fold.posted_legs_digest,
         &fold.pending_holds,
     )? != fold.fold_digest
-        || !crate::verify_projection(db, book, &fold)?.is_green()
     {
+        return Err(drift(
+            "stored cells disagree with maintenance digest or metadata",
+        ));
+    }
+    let (rows, memberships) = reads.scans()?;
+    if !crate::verify_projection_in(db, book, &fold, rows, memberships)?.is_green() {
         return Err(drift(
             "stored cells disagree with maintenance digest or metadata",
         ));
@@ -321,7 +338,7 @@ pub(crate) fn verify_state_in<V: asupersync::fs::Vfs + Clone>(
     reads: &mut crate::Reads<'_, V>,
     period: &str,
 ) -> Result<(Option<CommitSeq>, Option<String>), RegisterError> {
-    match load(reads.db, reads.book, period) {
+    match load_in(reads, period) {
         Ok(None) => Ok((None, None)),
         Ok(Some((through, fold, _))) => {
             let truth = reads.fold_at(period, through)?;

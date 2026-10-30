@@ -22,8 +22,8 @@ use std::io::Read;
 use crate::json::{Json, obj, s};
 use fa::certificate::{AUTHORITY, MAX_CERTIFICATE_BYTES, REPLAY_SCOPE};
 use fa::{
-    Book, CertificateStatus, ReportArtifact, ReportArtifactFamily, ReportCertificate, ReportOutput,
-    ReportSelection, RetainedCertificate, TrialBalanceSelection,
+    Book, CertificateStatus, ReportArtifact, ReportArtifactExpectation, ReportArtifactFamily,
+    ReportCertificate, ReportOutput, ReportSelection, RetainedCertificate, TrialBalanceSelection,
 };
 use fa_policy::{Capability, Op};
 use fgdb_types::VId;
@@ -1385,10 +1385,10 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     // Status is meaningful only after the WHOLE artifact verifies. For a
     // comparison or trace, relevance starts at its final statement frontier;
     // a scenario diff is superseded only by Plan records its scenario gained
-    // after the certified prefix (its trunk is fixed at the fork). A summary
-    // trial balance is Changed when its selector no longer reproduces it at
-    // HEAD; that law compares the report, so it names no later entries. A
-    // query is Changed when its statement answers differently at HEAD.
+    // after the certified prefix (its trunk is fixed at the fork). Summary
+    // trial balances also account for their retained chart membership and
+    // coverage, so a schema control can supersede one without moving money.
+    // A query is Changed when its statement answers differently at HEAD.
     let status = match artifact.family() {
         ReportArtifactFamily::Summary => {
             if args.flag("--expect").is_some() {
@@ -1397,15 +1397,13 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                     "fa certificate status C:<summary-certificate> --json",
                 ));
             }
-            let certificate = fa::SummaryCertificate::decode(&bytes)?;
-            match book.summary_certificate_status(principal, &capability, &certificate)?? {
-                fa::SummaryCertificateStatus::Current { checked_at } => {
-                    ("Current", checked_at, Vec::new(), Vec::new())
-                }
-                fa::SummaryCertificateStatus::Changed { checked_at, .. } => {
-                    ("Changed", checked_at, Vec::new(), Vec::new())
-                }
-            }
+            entry_status(book.report_artifact_status(
+                principal,
+                &capability,
+                &bytes,
+                Some(artifact.digest()),
+                ReportArtifactExpectation::AsSupplied,
+            )??)
         }
         ReportArtifactFamily::Query => {
             if args.flag("--expect").is_some() {
