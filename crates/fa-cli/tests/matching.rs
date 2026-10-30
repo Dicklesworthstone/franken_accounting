@@ -196,7 +196,9 @@ fn three_way_matching_replays_retained_sources_without_posting_or_upgrading_evid
     let card_hex = text(result, "decision_card");
     let card_bytes: Vec<u8> = card_hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     let card = fa_policy::DecisionCard::decode(&card_bytes).expect("canonical decision card");
