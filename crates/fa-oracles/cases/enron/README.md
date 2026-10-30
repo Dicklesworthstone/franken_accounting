@@ -236,6 +236,18 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 - `RAP-E`, an interpretation of `RAP1`, `RAP2`, read by `case-author-1` and second reader `case-second-reader`: The Raptor restructuring is encoded as one entry whose documents are those RAP1 and RAP2 date: transaction documents dated April 13, 2001, effective as of March 26, 2001, and a letter agreement executed March 30, 2001. Its legs and amount are not in the quotes, so E3 declares them.
 - `NFS2e`, an interpretation of `NFS2`, read by `case-author-1` and second reader `case-second-reader`: NFS2 states similar entries in March 2001 for notes totaling $828 million, without their count. One $828 million entry encodes them, booked as NFS1 is: an increase to notes receivable and to shareholders' equity. The count is E3's declared default.
 - `NFS-SUM`, derived by `sum` from `NFS1`, `NFS2`: 1,000,000,000.00 USD
+- `REM-A-FY1997`, derived by `remainder` from `10K-TA-A-FY1997`, `10K-DEBT-A-FY1997`, `10K-EQ-A-FY1997`: 10,680,000,000.00 USD
+- `REM-D-FY1997`, derived by `remainder` from `N3-TA-D-FY1997`, `N3-DEBT-D1-FY1997`, `N3-EQ-D-FY1997`: -30,000,000.00 USD
+- `REM-B-FY1997`, derived by `remainder` from `N3-TA-B-FY1997`, `N3-DEBT-B-FY1997`, `N3-EQ-B-FY1997`: 10,650,000,000.00 USD
+- `REM-A-FY1998`, derived by `remainder` from `10K-TA-A-FY1998`, `10K-DEBT-A-FY1998`, `10K-EQ-A-FY1998`: 14,945,000,000.00 USD
+- `REM-D-FY1998`, derived by `remainder` from `N3-TA-D-FY1998`, `N3-DEBT-D1-FY1998`, `N3-EQ-D-FY1998`: -21,000,000.00 USD
+- `REM-B-FY1998`, derived by `remainder` from `N3-TA-B-FY1998`, `N3-DEBT-B-FY1998`, `N3-EQ-B-FY1998`: 14,924,000,000.00 USD
+- `REM-A-FY1999`, derived by `remainder` from `10K-TA-A-FY1999`, `10K-DEBT-A-FY1999`, `10K-EQ-A-FY1999`: 15,659,000,000.00 USD
+- `REM-D-FY1999`, derived by `remainder` from `N3-TA-D-FY1999`, `N3-DEBT-D1-FY1999`, `N3-EQ-D-FY1999`: 52,000,000.00 USD
+- `REM-B-FY1999`, derived by `remainder` from `N3-TA-B-FY1999`, `N3-DEBT-B-FY1999`, `N3-EQ-B-FY1999`: 15,711,000,000.00 USD
+- `REM-A-FY2000`, derived by `remainder` from `BS10K-TOTAL-ASSETS`, `10K-DEBT-A-FY2000`, `BS10K-TOTAL-EQUITY`: 43,804,000,000.00 USD
+- `REM-D-FY2000`, derived by `remainder` from `N3-TA-D-FY2000`, `N3-DEBT-D1-FY2000`, `N3-EQ-D-FY2000`: -24,000,000.00 USD
+- `REM-B-FY2000`, derived by `remainder` from `BS10Q-TOTAL-ASSETS`, `N3-DEBT-B-FY2000`, `BS10Q-TOTAL-EQUITY`: 43,780,000,000.00 USD
 
 ## How this book was built
 

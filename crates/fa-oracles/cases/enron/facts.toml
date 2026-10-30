@@ -4184,3 +4184,212 @@ param = 0
 value = "100000000000"
 unit = "USD"
 precision = 6
+
+# The bridge remainders (plan §3.8, §7.2): total assets less debt less equity, per year, on each
+# side of the 10-Q bridge. REM-A takes as-filed values, REM-D Note 3's adjustments (each line's
+# per-year total), REM-B Note 3's restated values. No posting reads REM-B: it is the check
+# REM-A + REM-D = REM-B, so a remainder never carries a restated figure (K-TAUT).
+
+[[fact]]
+id = "REM-A-FY1997"
+provenance = "derived"
+from = ["10K-TA-A-FY1997", "10K-DEBT-A-FY1997", "10K-EQ-A-FY1997"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-D-FY1997"
+provenance = "derived"
+from = ["N3-TA-D-FY1997", "N3-DEBT-D1-FY1997", "N3-EQ-D-FY1997"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-B-FY1997"
+provenance = "derived"
+from = ["N3-TA-B-FY1997", "N3-DEBT-B-FY1997", "N3-EQ-B-FY1997"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-A-FY1998"
+provenance = "derived"
+from = ["10K-TA-A-FY1998", "10K-DEBT-A-FY1998", "10K-EQ-A-FY1998"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-D-FY1998"
+provenance = "derived"
+from = ["N3-TA-D-FY1998", "N3-DEBT-D1-FY1998", "N3-EQ-D-FY1998"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-B-FY1998"
+provenance = "derived"
+from = ["N3-TA-B-FY1998", "N3-DEBT-B-FY1998", "N3-EQ-B-FY1998"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-A-FY1999"
+provenance = "derived"
+from = ["10K-TA-A-FY1999", "10K-DEBT-A-FY1999", "10K-EQ-A-FY1999"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-D-FY1999"
+provenance = "derived"
+from = ["N3-TA-D-FY1999", "N3-DEBT-D1-FY1999", "N3-EQ-D-FY1999"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-B-FY1999"
+provenance = "derived"
+from = ["N3-TA-B-FY1999", "N3-DEBT-B-FY1999", "N3-EQ-B-FY1999"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-A-FY2000"
+provenance = "derived"
+from = ["BS10K-TOTAL-ASSETS", "10K-DEBT-A-FY2000", "BS10K-TOTAL-EQUITY"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-D-FY2000"
+provenance = "derived"
+from = ["N3-TA-D-FY2000", "N3-DEBT-D1-FY2000", "N3-EQ-D-FY2000"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[fact]]
+id = "REM-B-FY2000"
+provenance = "derived"
+from = ["BS10Q-TOTAL-ASSETS", "N3-DEBT-B-FY2000", "BS10Q-TOTAL-EQUITY"]
+rule = "remainder"
+params = ["line=bridge_remainder", "of_total=total_assets"]
+
+[[value]]
+fact = "REM-A-FY1997"
+ordinal = 1
+literal = "1068000000000"
+rule = "scale"
+param = 0
+value = "1068000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-D-FY1997"
+ordinal = 1
+literal = "-3000000000"
+rule = "scale"
+param = 0
+value = "-3000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-B-FY1997"
+ordinal = 1
+literal = "1065000000000"
+rule = "scale"
+param = 0
+value = "1065000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-A-FY1998"
+ordinal = 1
+literal = "1494500000000"
+rule = "scale"
+param = 0
+value = "1494500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-D-FY1998"
+ordinal = 1
+literal = "-2100000000"
+rule = "scale"
+param = 0
+value = "-2100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-B-FY1998"
+ordinal = 1
+literal = "1492400000000"
+rule = "scale"
+param = 0
+value = "1492400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-A-FY1999"
+ordinal = 1
+literal = "1565900000000"
+rule = "scale"
+param = 0
+value = "1565900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-D-FY1999"
+ordinal = 1
+literal = "5200000000"
+rule = "scale"
+param = 0
+value = "5200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-B-FY1999"
+ordinal = 1
+literal = "1571100000000"
+rule = "scale"
+param = 0
+value = "1571100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-A-FY2000"
+ordinal = 1
+literal = "4380400000000"
+rule = "scale"
+param = 0
+value = "4380400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-D-FY2000"
+ordinal = 1
+literal = "-2400000000"
+rule = "scale"
+param = 0
+value = "-2400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "REM-B-FY2000"
+ordinal = 1
+literal = "4378000000000"
+rule = "scale"
+param = 0
+value = "4378000000000"
+unit = "USD"
+precision = 6

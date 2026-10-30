@@ -1184,3 +1184,116 @@ fn enron_e2b_document_date_shifted_refused() {
     );
     refused_by_k_bind(&files, "RAP1");
 }
+
+const REM_PERIODS: [&str; 4] = ["FY1997", "FY1998", "FY1999", "FY2000"];
+
+/// E2d's remainders recompute from their declared inputs (K-DERIVE), and
+/// the restated one is total assets less debt less equity of Note 3's
+/// restated figures: 10,650 / 14,924 / 15,711 / 43,780 ($M, FY1997-FY2000).
+/// A copy declaring REM-B-FY2000 as 43,781 fails K-DERIVE, naming it.
+#[test]
+fn enron_e2d_remainders() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    assert_ne!(report(&case, "K-DERIVE").verdict, Verdict::Fail);
+    let restated: Vec<i128> = REM_PERIODS
+        .iter()
+        .map(|p| minor(&case, &format!("REM-B-{p}")) / 100_000_000)
+        .collect();
+    assert_eq!(restated, [10_650, 14_924, 15_711, 43_780]);
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "fact = \"REM-B-FY2000\"\n",
+        "literal = \"4378000000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"4378000000000\"",
+        "literal = \"4378100000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"4378100000000\"",
+    );
+    let planted = load_copy(&files).expect("the planted copy loads");
+    let derive = report(&planted, "K-DERIVE");
+    assert_eq!(derive.verdict, Verdict::Fail);
+    assert!(
+        derive.failures.iter().any(|f| f.row == "REM-B-FY2000"),
+        "{}",
+        derive.render(Some("enron"))
+    );
+}
+
+/// The derived facts a remainder reads, through derived sums to sourced
+/// cells.
+fn sourced_inputs(case: &Case, fact: &str) -> Vec<String> {
+    let Some(f) = case.facts.iter().find(|f| f.id == fact) else {
+        return Vec::new();
+    };
+    match &f.provenance {
+        fact::Provenance::Derived(d) => d
+            .from
+            .iter()
+            .flat_map(|i| sourced_inputs(case, i))
+            .collect(),
+        fact::Provenance::Sourced(_) => vec![fact.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// REM-A reads as-filed cells only, REM-D published adjustments only, and
+/// REM-B restated cells only (§3.8): no remainder that feeds a posting
+/// derives from a restated figure. A copy whose REM-A-FY1999 reads
+/// N3-TA-B-FY1999 instead of the as-filed total no longer recomputes
+/// (restated FY1999 assets are $109 million lower), and K-DERIVE names it.
+#[test]
+fn enron_e2d_remainder_inputs_are_a_or_delta() {
+    let roles_of = |case: &Case, rem: &str| -> Vec<(String, &'static str)> {
+        sourced_inputs(case, rem)
+            .into_iter()
+            .map(|f| {
+                let r = match role(&f) {
+                    "A" => "A",
+                    "D" => "D",
+                    _ => "B",
+                };
+                (f, r)
+            })
+            .collect()
+    };
+    let case = load_copy(&enron()).expect("the committed case loads");
+    for p in REM_PERIODS {
+        for (side, want) in [("A", "A"), ("D", "D")] {
+            let rem = format!("REM-{side}-{p}");
+            let inputs = roles_of(&case, &rem);
+            assert!(!inputs.is_empty(), "{rem}");
+            for (f, r) in inputs {
+                assert_eq!(r, want, "{rem} reads {f}");
+            }
+        }
+    }
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "facts.toml",
+        "id = \"REM-A-FY1999\"\n",
+        "from = [\"10K-TA-A-FY1999\",",
+        "from = [\"N3-TA-B-FY1999\",",
+    );
+    let planted = load_copy(&files).expect("the planted copy loads");
+    let derive = report(&planted, "K-DERIVE");
+    assert_eq!(derive.verdict, Verdict::Fail);
+    assert!(
+        derive.failures.iter().any(|f| f.row == "REM-A-FY1999"),
+        "{}",
+        derive.render(Some("enron"))
+    );
+}
+
+/// The consistency check E4 logs (§7.2): for each year the as-filed
+/// remainder plus Note 3's remainder adjustment is the restated remainder,
+/// in exact integers over the facts.
+#[test]
+fn enron_e4_remainder_check_arithmetic() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    for p in REM_PERIODS {
+        let a = minor(&case, &format!("REM-A-{p}"));
+        let d = minor(&case, &format!("REM-D-{p}"));
+        let b = minor(&case, &format!("REM-B-{p}"));
+        assert_eq!(a.checked_add(d), Some(b), "{p}: {a} + {d}");
+    }
+}
