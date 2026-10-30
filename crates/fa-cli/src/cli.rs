@@ -7630,20 +7630,31 @@ fn post_batch_document(
     }
     let mut incoming = batch_plan::PriorEntries::new();
     for (i, member) in members.iter().enumerate() {
-        let built = build_post_request_with_prior(
-            out,
-            &mut book,
-            args,
-            None,
-            member,
-            who,
-            capability.clone(),
-            &earlier,
-        )
-        .map_err(|f| batch_member_fail(i, f))?;
-        classes.push(built.class_name);
-        let intent = PostIntent::new(built.request.proposal, built.request.approvals)
-            .map_err(|e| usage(format!("batch member {i}: {e}"), "check the member intent"))?;
+        let intent = match crate::disposal::batch_review(member, book.context().book_id, who)
+            .map_err(|f| batch_member_fail(i, f))?
+        {
+            Some(intent) => {
+                classes.push("Original".to_string());
+                intent
+            }
+            None => {
+                let built = build_post_request_with_prior(
+                    out,
+                    &mut book,
+                    args,
+                    None,
+                    member,
+                    who,
+                    capability.clone(),
+                    &earlier,
+                )
+                .map_err(|f| batch_member_fail(i, f))?;
+                classes.push(built.class_name);
+                PostIntent::new(built.request.proposal, built.request.approvals).map_err(|e| {
+                    usage(format!("batch member {i}: {e}"), "check the member intent")
+                })?
+            }
+        };
         if draft.is_some() {
             batch_plan::remember(&mut incoming, &intent).map_err(|f| batch_member_fail(i, f))?;
             let vid = batch_plan::proposal_vid(intent.proposal())?;
@@ -10556,7 +10567,7 @@ const MAX_REVIEW_BYTES: usize = {
     }
 };
 
-fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
+pub(crate) fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> {
     let trimmed = text.trim();
     if trimmed.is_empty()
         || !trimmed.len().is_multiple_of(2)

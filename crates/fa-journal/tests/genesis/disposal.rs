@@ -9,6 +9,8 @@ use fa_journal::disposal::{LotDisposalRequest, PreparedLotDisposal, prepare_lot_
 use fa_money::{AccountingRegime, LotLaw, RoundingLaw};
 use fa_reference::lots::{RefLot, RefRounding, relieve_lots_oracle};
 
+mod batches;
+
 struct Fixture {
     h: Harness,
     inventory: VId,

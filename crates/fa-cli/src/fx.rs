@@ -24,8 +24,9 @@ const ACTIVITY_USAGE: &str = "fa tb --functional --activity --period FY2026-P03 
 const STOCK_USAGE: &str = "fa tb --functional (--period FY2026-P03 | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]; add --activity with one --period for period movement";
 const INTENT_USAGE: &str = r#""fx":{"law":"SpotClose","rates":["D:<retained Rate document oid>"]}; current SpotClose and PeriodAverage laws require HalfEven. SpotClose as_of equals effective_date; PeriodAverage as_of is the posting period's last included day. Base amounts are calculated from retained evidence"#;
 
-/// Embedded owners acquire the read operation needed to resolve selected Rate
-/// bytes. Ctx::capability never adds these implied operations to a bound token.
+/// Embedded owners acquire the read operation needed to resolve retained source
+/// bytes, including the source history named by a disposal review.
+/// Ctx::capability never adds these implied operations to a bound token.
 pub(crate) fn posting_ops(doc: &Json) -> &'static [&'static str] {
     if needs_source_read(doc) {
         &["read", "post"]
@@ -37,6 +38,7 @@ pub(crate) fn posting_ops(doc: &Json) -> &'static [&'static str] {
 fn needs_source_read(doc: &Json) -> bool {
     doc.get("fx").is_some()
         || doc.get("external_subledger").is_some()
+        || crate::disposal::is_batch_review(doc)
         || doc
             .get("intents")
             .and_then(Json::as_arr)

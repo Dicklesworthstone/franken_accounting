@@ -401,3 +401,394 @@ fn manual_cost_plugs_and_unapproved_policy_changes_fail_without_posting() -> std
     );
     Ok(())
 }
+
+fn disposal_review(book: &Path, evidence: &str, account: &str, key: &str) -> Json {
+    doc(&ok(
+        book,
+        "retain disposal for batch",
+        &[
+            "dispose",
+            "--account",
+            account,
+            "--quantity",
+            "5.000000 SHARE",
+            "--quantity-offset",
+            "1499",
+            "--cost-offset",
+            "5100",
+            "--date",
+            "2026-03-15",
+            "--key",
+            key,
+            "--evidence",
+            evidence,
+            "--review-only",
+            "--json",
+        ],
+    ))
+}
+
+fn review_member(review: &Json) -> Json {
+    json::obj(vec![
+        ("review", json::s(text(review, "bytes"))),
+        ("review_digest", json::s(text(review, "review_digest"))),
+    ])
+}
+
+fn retained_disposal(review: &Json) -> fa::PostIntent {
+    let bytes = text(review, "bytes")
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect::<Vec<_>>();
+    fa::PostIntent::decode(&bytes).unwrap()
+}
+
+fn intent_member(intent: &fa::PostIntent) -> Json {
+    let bytes: String = intent
+        .canonical_bytes()
+        .unwrap()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    json::obj(vec![
+        ("review", json::s(bytes)),
+        ("review_digest", json::s(hex_of(&intent.digest().unwrap()))),
+    ])
+}
+
+fn batch_file(dir: &Path, key: &str, members: Vec<Json>) -> String {
+    write(
+        dir,
+        &format!("{key}.json"),
+        &json::obj(vec![
+            ("idempotency_key", json::s(key)),
+            ("intents", Json::Arr(members)),
+        ])
+        .render(),
+    )
+}
+
+fn batch_fixture() -> std::io::Result<(PathBuf, PathBuf, String, Json, Json)> {
+    let (dir, book, evidence) = setup("FIFO")?;
+    let chart = write(
+        &dir,
+        "second-inventory.json",
+        r#"{"accounts":[{"code":"1401","name":"Second inventory","type":"Asset","unit":"any"}]}"#,
+    );
+    ok(
+        &book,
+        "second inventory account",
+        &[
+            "chart",
+            "import",
+            &chart,
+            "--key",
+            "second-inventory-chart",
+            "--json",
+        ],
+    );
+    ok(
+        &book,
+        "second inventory policy",
+        &[
+            "chart",
+            "lot-policy",
+            "set",
+            "--account",
+            "1401",
+            "--law",
+            "FIFO",
+            "--regime",
+            "US-GAAP",
+            "--date",
+            "2026-03-01",
+            "--key",
+            "second-inventory-policy",
+            "--json",
+        ],
+    );
+    let acquisition = write(
+        &dir,
+        "second-inventory-acquisition.json",
+        r#"{
+        "effective_date":"2026-03-05","idempotency_key":"second-inventory-acquisition","legs":[
+            {"side":"debit","account":"1401","amount":"10.000000 SHARE"},
+            {"side":"credit","account":"1499","amount":"10.000000 SHARE"},
+            {"side":"debit","account":"1401","amount":"50.00 USD"},
+            {"side":"credit","account":"1000","amount":"50.00 USD"}
+        ]}"#,
+    );
+    ok(
+        &book,
+        "second inventory acquisition",
+        &[
+            "post",
+            "--intent",
+            &acquisition,
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
+    );
+    let before = frontier(&book);
+    let first = disposal_review(&book, &evidence, "1400", "batch-first-disposal");
+    let second = disposal_review(&book, &evidence, "1401", "batch-second-disposal");
+    assert_eq!(first.get("known_at"), second.get("known_at"));
+    assert_eq!(
+        frontier(&book),
+        before,
+        "retaining both proposals must not publish"
+    );
+    Ok((dir, book, evidence, first, second))
+}
+
+fn remaining_lots(book: &Path, account: &str) -> Vec<(String, String)> {
+    let lots = doc(&ok(
+        book,
+        "remaining lots",
+        &["gl", "lots", "--account", account, "--json"],
+    ));
+    let mut remaining = arr(&lots, "lots")
+        .iter()
+        .map(|lot| {
+            (
+                text(lot, "open_quantity").to_string(),
+                text(lot, "open_cost").to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    remaining.sort();
+    remaining
+}
+
+#[test]
+fn inline_disposal_reviews_plan_commit_and_retry_one_atomic_batch() -> std::io::Result<()> {
+    let (dir, book, evidence, first, second) = batch_fixture()?;
+    let before = frontier(&book);
+    let batch = batch_file(
+        &dir,
+        "two-inventories",
+        vec![review_member(&first), review_member(&second)],
+    );
+    let plan = dir.join("two-inventories.plan").display().to_string();
+    let preview = ok(
+        &book,
+        "plan both reviewed disposals",
+        &[
+            "batch",
+            "--intent",
+            &batch,
+            "--dry-run",
+            "--plan-out",
+            &plan,
+            "--json",
+        ],
+    );
+    assert_eq!(field(&preview, "event"), Some("batch_plan"));
+    assert_eq!(frontier(&book), before);
+    let committed = ok(
+        &book,
+        "commit both reviewed disposals",
+        &["commit", "--plan", &plan, "--grant", "read", "--json"],
+    );
+    assert_eq!(field(&committed, "event"), Some("batch_plan_committed"));
+    assert_eq!(
+        doc(&committed).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    let after = frontier(&book);
+    let Json::Int(before_seq) = before else {
+        panic!("integer frontier");
+    };
+    assert_eq!(
+        after,
+        Json::Int(before_seq + 1),
+        "both entries share one publication"
+    );
+    assert_eq!(
+        remaining_lots(&book, "1400"),
+        vec![
+            ("10.000000 SHARE".into(), "20.00 USD".into()),
+            ("5.000000 SHARE".into(), "50.00 USD".into()),
+        ]
+    );
+    assert_eq!(
+        remaining_lots(&book, "1401"),
+        vec![("5.000000 SHARE".into(), "25.00 USD".into())]
+    );
+    let repeated = ok(
+        &book,
+        "retry unchanged review batch",
+        &["batch", "--intent", &batch, "--json"],
+    );
+    assert_eq!(field(&repeated, "event"), Some("batch_posted"));
+    assert_eq!(
+        doc(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(arr(&doc(&repeated), "members").len(), 2);
+    assert_eq!(frontier(&book), after);
+
+    let fresh_first = disposal_review(&book, &evidence, "1400", "stale-batch-first");
+    let fresh_second = disposal_review(&book, &evidence, "1401", "stale-batch-second");
+    let stale = batch_file(
+        &dir,
+        "stale-batch",
+        vec![review_member(&fresh_first), review_member(&fresh_second)],
+    );
+    let unrelated = write(
+        &dir,
+        "between-review-and-post.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"between-review-and-post","legs":[{"side":"debit","account":"5100","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    ok(
+        &book,
+        "intervening ordinary entry",
+        &[
+            "post",
+            "--intent",
+            &unrelated,
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
+    );
+    let changed = frontier(&book);
+    let (code, out, err) = run(
+        &book,
+        "refuse stale inline reviews",
+        &["batch", "--intent", &stale, "--json"],
+    );
+    assert_eq!(code, 6, "{out}\n{err}");
+    assert_eq!(frontier(&book), changed);
+    let retry = ok(
+        &book,
+        "retry recorded batch after later activity",
+        &["batch", "--intent", &batch, "--json"],
+    );
+    assert_eq!(doc(&retry).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(frontier(&book), changed);
+    Ok(())
+}
+
+#[test]
+fn inline_disposal_batches_refuse_changed_reviews_and_later_poison_atomically()
+-> std::io::Result<()> {
+    let (dir, book, _evidence, first, second) = batch_fixture()?;
+    let before = frontier(&book);
+    let before_first = remaining_lots(&book, "1400");
+    let before_second = remaining_lots(&book, "1401");
+    let valid = retained_disposal(&second);
+    let mut refusals = Vec::new();
+    let wrong_digest = format!(
+        "{}{}",
+        if text(&second, "review_digest").starts_with('0') {
+            "1"
+        } else {
+            "0"
+        },
+        &text(&second, "review_digest")[1..]
+    );
+    refusals.push((
+        "wrong-digest",
+        json::obj(vec![
+            ("review", json::s(text(&second, "bytes"))),
+            ("review_digest", json::s(wrong_digest)),
+        ]),
+        2,
+    ));
+    let path = write(&dir, "must-not-read.review", text(&second, "bytes"));
+    for (name, review) in [("nested-host-path", path.as_str()), ("nested-stdin", "-")] {
+        refusals.push((
+            name,
+            json::obj(vec![
+                ("review", json::s(review)),
+                ("review_digest", json::s(text(&second, "review_digest"))),
+            ]),
+            2,
+        ));
+    }
+    refusals.push((
+        "extra-member-field",
+        json::obj(vec![
+            ("review", json::s(text(&second, "bytes"))),
+            ("review_digest", json::s(text(&second, "review_digest"))),
+            ("idempotency_key", json::s("replace-sealed-key")),
+        ]),
+        2,
+    ));
+    for name in [
+        "wrong-book",
+        "wrong-principal",
+        "wrong-branch",
+        "wrong-class",
+        "missing-basis",
+    ] {
+        let mut proposal = valid.proposal().clone();
+        match name {
+            "wrong-book" => proposal.book_id.0[0] ^= 1,
+            "wrong-principal" => proposal.principal_ref.0 ^= 1,
+            "wrong-branch" => proposal.branch_id.0[0] ^= 1,
+            "wrong-class" => proposal.class = fa_model::EntryClass::ADJUSTING,
+            "missing-basis" => proposal.extensions.clear(),
+            _ => unreachable!(),
+        }
+        let intent = fa::PostIntent::new(proposal, vec![]).unwrap();
+        refusals.push((name, intent_member(&intent), 2));
+    }
+    let with_approval = fa::PostIntent::new(
+        valid.proposal().clone(),
+        vec![fa_model::ApprovalRef {
+            approval_vid: fgdb_types::VId(1),
+            approved_digest: valid.proposal().proposal_digest().unwrap(),
+        }],
+    )
+    .unwrap();
+    refusals.push(("unexpected-approval", intent_member(&with_approval), 2));
+    // This member passes the transport checks with canonical bytes and a new
+    // matching digest. Only the independent kernel derivation can reject it,
+    // after the first member has already been staged in the transaction.
+    let mut poisoned = valid.proposal().clone();
+    assert_eq!(poisoned.legs.len(), 4);
+    poisoned.legs[2].amount.mantissa += 1;
+    poisoned.legs[3].amount.mantissa += 1;
+    poisoned.unit_totals = fa_model::EntryPayload::fold_unit_totals(&poisoned.legs).unwrap();
+    let poisoned = fa::PostIntent::new(poisoned, vec![]).unwrap();
+    refusals.push(("later-cost-plug", intent_member(&poisoned), 3));
+    for (name, member, expected_exit) in refusals {
+        let path = batch_file(&dir, name, vec![review_member(&first), member]);
+        let (code, out, err) = run(&book, name, &["batch", "--intent", &path, "--json"]);
+        assert_eq!(code, expected_exit, "{name}: {out}\n{err}");
+        assert!(
+            text(&doc(&out), "message").contains("member 1"),
+            "{name}: {out}"
+        );
+        assert_eq!(
+            frontier(&book),
+            before,
+            "{name} published part of the batch"
+        );
+        assert_eq!(remaining_lots(&book, "1400"), before_first, "{name}");
+        assert_eq!(remaining_lots(&book, "1401"), before_second, "{name}");
+    }
+    let valid_batch = batch_file(
+        &dir,
+        "after-refusals",
+        vec![review_member(&first), review_member(&second)],
+    );
+    let posted = ok(
+        &book,
+        "commit untouched reviews after every refusal",
+        &["batch", "--intent", &valid_batch, "--json"],
+    );
+    assert_eq!(
+        doc(&posted).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(
+        remaining_lots(&book, "1401"),
+        vec![("5.000000 SHARE".into(), "25.00 USD".into())]
+    );
+    Ok(())
+}

@@ -58,9 +58,16 @@ pub(crate) struct VerifiedBatchPlan(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IndependentCarryingBatch(());
 
+/// Each lot fold reads only its governed account. This token proves that
+/// every member's effects leave every other member's source unchanged.
+/// The complete committed prefix remains guarded through publication.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IndependentDisposalBatch(());
+
 pub(crate) struct MemberPreparation {
     pub(crate) txn: Option<WriteTxn>,
     pub(crate) carrying: Option<IndependentCarryingBatch>,
+    pub(crate) disposal: Option<IndependentDisposalBatch>,
 }
 
 fn independent_carrying_batch(
@@ -131,6 +138,82 @@ fn independent_carrying_batch(
         }
     }
     Ok(Some(IndependentCarryingBatch(())))
+}
+
+/// A committed-prefix lot derivation composes only if no earlier member
+/// can change its account's acquisitions, applications or policy. Native
+/// Original disposals cannot change policy or reversal liveness; distinct
+/// source accounts and disjoint source/offset effects establish the rest.
+/// Shared offsets outside this source set still use ordinary staged witnesses.
+fn independent_disposal_batch(
+    batch: &PostBatch,
+    admission: Admission,
+) -> Result<Option<IndependentDisposalBatch>, Refusal> {
+    if !batch
+        .members()
+        .iter()
+        .any(|member| crate::disposal::has_basis(member.proposal()))
+    {
+        return Ok(None);
+    }
+    if !matches!(
+        admission,
+        Admission::Commit | Admission::Plan | Admission::VerifiedBatch(_)
+    ) || batch.members().iter().any(|member| {
+        member.proposal().class != EntryClass::ORIGINAL
+            || !crate::disposal::has_basis(member.proposal())
+    }) {
+        return Err(crate::disposal::unsupported_batch());
+    }
+    let invalid = |index, message: String| {
+        member_refusal(
+            index,
+            Refusal::new(
+                code::SETTLE_SHAPE,
+                exit::REFUSAL,
+                message,
+                "plan §5.8–5.10 / §6.5 (independent lot sources at one committed prefix)",
+                "batch only disposals of distinct lot accounts whose offsets do not touch another member's lot account; prepare dependent relief after the earlier publication",
+            ),
+        )
+    };
+    let mut sources = BTreeSet::new();
+    let mut bases = Vec::with_capacity(batch.members().len());
+    for (index, member) in batch.members().iter().enumerate() {
+        let basis = member
+            .proposal()
+            .lot_disposal_basis()
+            .map_err(|error| invalid(index, error.to_string()))?
+            .ok_or_else(|| invalid(index, "a disposal member has no lot basis".into()))?;
+        // Account identity, not a supplied policy digest or a quantity unit,
+        // is the dependency: FIFO and pooled cost can span multiple layers.
+        if !sources.insert(basis.account) {
+            return Err(invalid(
+                index,
+                "atomic lot disposals require distinct governed source accounts".into(),
+            ));
+        }
+        bases.push(basis);
+    }
+    for (index, (member, basis)) in batch.members().iter().zip(&bases).enumerate() {
+        let touches_another_source =
+            |account: VId| account != basis.account && sources.contains(&account);
+        if touches_another_source(basis.quantity_offset_account)
+            || touches_another_source(basis.cost_offset_account)
+            || member
+                .proposal()
+                .legs
+                .iter()
+                .any(|leg| touches_another_source(leg.account_ref))
+        {
+            return Err(invalid(
+                index,
+                "a lot disposal's effects or offsets touch another batch member's source account"
+                    .into(),
+            ));
+        }
+    }
+    Ok(Some(IndependentDisposalBatch(())))
 }
 
 /// The immutable body of a batch's IntentOutcome: the request it records
@@ -716,6 +799,10 @@ fn judge_retry<V: Vfs + Clone>(
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let disposal = match independent_disposal_batch(batch, admission) {
+        Ok(disposal) => disposal,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     // A single-entry claim at this common key is a conflict. Read only its
     // VID-only metadata here: a batch capability need not reach that entry.
     let lookup = db.begin(&ctx.txn())?;
@@ -739,6 +826,7 @@ fn judge_retry<V: Vfs + Clone>(
             MemberPreparation {
                 txn: None,
                 carrying,
+                disposal,
             },
             None,
             &mut reconciliation,
@@ -830,6 +918,13 @@ pub(crate) fn authorize_members<V: Vfs + Clone>(
             &member_request(intent, capability),
             admission,
         )? {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+        // The complete source is observed during history hydration and exact
+        // plan retry too, before per-member posting preparation is reached.
+        if crate::disposal::has_basis(intent.proposal())
+            && let Err(refusal) = crate::disposal::authorize(db, book, capability)?
+        {
             return Ok(Err(member_refusal(index, refusal)));
         }
     }
@@ -1022,6 +1117,10 @@ fn stage_batch_with<V: Vfs + Clone>(
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let disposal = match independent_disposal_batch(batch, admission) {
+        Ok(disposal) => disposal,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let mut txn: Option<WriteTxn> = None;
     let mut tracker = TemplateByteTracker::default();
     // Every member stages into one transaction, so the reconciliation
@@ -1042,6 +1141,7 @@ fn stage_batch_with<V: Vfs + Clone>(
             MemberPreparation {
                 txn: txn.take(),
                 carrying,
+                disposal,
             },
             Some(std::mem::take(&mut tracker)),
             reconciliation,
@@ -1089,7 +1189,8 @@ fn stage_batch_with<V: Vfs + Clone>(
         }
         security_policy_epoch = Some(epoch);
         resolved.push(prepared.entry().clone());
-        let (staged, member, next_tracker) = prepared.into_member(planning, carrying, admission)?;
+        let (staged, member, next_tracker) =
+            prepared.into_member(planning, carrying, disposal, admission)?;
         tracker = next_tracker;
         let current_bytes = tracker.total_bytes();
         if current_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
@@ -1181,12 +1282,13 @@ fn stage_batch_with<V: Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
-    let aggregate = resolved
-        .iter()
-        .try_fold(carrying.is_some(), |aggregate, entry| {
+    let aggregate = resolved.iter().try_fold(
+        carrying.is_some() || disposal.is_some(),
+        |aggregate, entry| {
             crate::post::requires_aggregate_basis(&entry.proposal)
                 .map(|required| aggregate || required)
-        })?;
+        },
+    )?;
     Ok(Ok(BatchStage::Staged(Box::new(StagedBatch {
         txn,
         outcome: ovid,
@@ -1347,17 +1449,7 @@ fn authorize_plan_batch<V: Vfs + Clone>(
     if let Err(denial) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
         return Ok(Err(policy::refusal(&denial)));
     }
-    for (index, intent) in batch.members().iter().enumerate() {
-        if let Err(refusal) = crate::post::authorize_request(
-            db,
-            book,
-            &member_request(intent, capability),
-            admission,
-        )? {
-            return Ok(Err(member_refusal(index, refusal)));
-        }
-    }
-    Ok(Ok(()))
+    authorize_members(db, book, capability, batch, admission)
 }
 
 fn plan_retention(

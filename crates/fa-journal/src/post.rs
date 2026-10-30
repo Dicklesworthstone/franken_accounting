@@ -400,6 +400,7 @@ impl PreparedPost {
         self,
         planning: bool,
         carrying: Option<crate::batch::IndependentCarryingBatch>,
+        disposal: Option<crate::batch::IndependentDisposalBatch>,
         admission: Admission,
     ) -> Result<(WriteTxn, BatchMember, crate::batch::TemplateByteTracker), KernelError> {
         let aggregate = match requires_aggregate_basis(&self.request.proposal) {
@@ -411,6 +412,8 @@ impl PreparedPost {
         };
         let independent_carrying =
             carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
+        let independent_disposal =
+            disposal.is_some() && crate::disposal::has_basis(&self.request.proposal);
         // The posting pipeline has already witnessed the exact side-swap
         // and staged its recorded UNSETTLES effects. Legacy carrying undos
         // therefore compose through those transactional application mirrors;
@@ -435,7 +438,11 @@ impl PreparedPost {
             && self.request.proposal.class == EntryClass::PRIOR_PERIOD_ADJUSTMENT;
         if self.planning != planning
             || self.paired_reversal.is_some()
-            || (aggregate && !independent_carrying && !recorded_carrying_undo && !case_adjustment)
+            || (aggregate
+                && !independent_carrying
+                && !independent_disposal
+                && !recorded_carrying_undo
+                && !case_adjustment)
         {
             self.txn.abort();
             return Err(KernelError::Corrupt(
@@ -1437,7 +1444,7 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    if crate::disposal::has_basis(&req.proposal) {
+    if crate::disposal::has_basis(&req.proposal) && member.disposal.is_none() {
         if let Some(txn) = member.txn {
             txn.abort();
         }
@@ -1900,9 +1907,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    let (carried, carrying_batch) = match member {
-        Some(member) => (member.txn, member.carrying),
-        None => (None, None),
+    let (carried, carrying_batch, disposal_batch) = match member {
+        Some(member) => (member.txn, member.carrying, member.disposal),
+        None => (None, None, None),
     };
     let planning = matches!(admission, Admission::Plan);
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -1983,15 +1990,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let scratch_case = matches!(admission, Admission::ScratchScenario(_))
         && crate::case::case_bound(proposal.class);
     // A lot disposal observes the complete native population at its exact
-    // prefix. Only the native plan/commit path preserves that coordinate;
-    // compound operations need a separate aggregate derivation protocol.
+    // prefix. A native batch may share that prefix only when its complete
+    // member set proves that no member can alter another member's lot source.
+    // Drafts, cases and scenarios have no disposal aggregate protocol.
     if crate::disposal::has_basis(proposal) {
         if let Err(refusal) = crate::disposal::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some()
+        if (carried.is_some() && disposal_batch.is_none())
             || replacement_basis.is_some()
-            || !matches!(admission, Admission::Commit | Admission::Plan)
+            || !(matches!(admission, Admission::Commit | Admission::Plan)
+                || (matches!(admission, Admission::VerifiedBatch(_)) && disposal_batch.is_some()))
         {
             return Ok(Err(crate::disposal::unsupported_batch()));
         }

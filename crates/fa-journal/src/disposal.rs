@@ -80,9 +80,9 @@ pub(crate) fn unsupported_batch() -> Refusal {
     Refusal::new(
         code::CLASS_NOT_IMPLEMENTED,
         exit::REFUSAL,
-        "source-bound lot disposals require their own native PostPlan and cannot join a batch, draft, case, or counterfactual scenario",
-        "plan §5.10 / §6.5 (the complete lot population is an aggregate dependency)",
-        "prepare and commit one `fa dispose` plan at the current native prefix",
+        "this compound operation cannot combine source-bound lot disposals",
+        "plan §5.8–5.10 / §6.5 (the complete lot population is an aggregate dependency)",
+        "use native plans or an atomic batch of disposals from distinct lot accounts whose offsets do not touch another member's source; mixed batches, drafts, cases and counterfactual scenarios remain unsupported",
     )
 }
 

@@ -13,14 +13,117 @@ use fa_time::DateDay;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, Files, Out, check_post_planning_options, emit_post_plan, emit_posted, hex,
-    known_at_read_flag, parse_digest, parse_vid, read_review_bytes, render_amount, usage,
-    write_review_file,
+    Ctx, Fail, Files, Out, check_post_planning_options, decode_hex_bytes, emit_post_plan,
+    emit_posted, hex, known_at_read_flag, parse_digest, parse_vid, read_review_bytes,
+    render_amount, usage, write_review_file,
 };
 use crate::json::{Json, obj, s};
 
 const DISPOSE_USAGE: &str = "fa dispose --account 1400 --quantity \"3 SHARE\" --quantity-offset 1490 --cost-offset 5100 --date YYYY-MM-DD --key disposal-1 --evidence D:<oid> [--dry-run | --review-only | --review-out <new-file>]";
 const POLICY_USAGE: &str = "fa chart lot-policy set --account 1400 --law FIFO|LIFO|SpecificId|WeightedAverage --regime US-GAAP|US-TAX|IFRS --date YYYY-MM-DD --key lot-policy-1 [--review-only | --review-out <new-file>]";
+
+const BATCH_REVIEW_USAGE: &str = "prepare each disposal with --review-only at the same book prefix, then use batch members {\"review\":\"<bytes hex>\",\"review_digest\":\"<review_digest>\"}; only inline unchanged disposal reviews are accepted";
+
+pub(crate) fn is_batch_review(doc: &Json) -> bool {
+    doc.get("review").is_some() || doc.get("review_digest").is_some()
+}
+
+/// Restore a complete reviewed disposal without rebuilding its sealed fields
+/// or interpreting bytes as a host path. The native batch law still checks
+/// the source prefix, account independence, authority and every derived leg.
+pub(crate) fn batch_review(
+    doc: &Json,
+    book_id: Id128,
+    principal: fgdb_types::VId,
+) -> Result<Option<PostIntent>, Fail> {
+    if !is_batch_review(doc) {
+        return Ok(None);
+    }
+    let Json::Obj(fields) = doc else {
+        return Err(usage(
+            "a disposal review member must be an object",
+            BATCH_REVIEW_USAGE,
+        ));
+    };
+    if fields.len() != 2
+        || fields
+            .iter()
+            .any(|(name, _)| !matches!(name.as_str(), "review" | "review_digest"))
+    {
+        return Err(usage(
+            "a disposal review member contains only review and review_digest",
+            BATCH_REVIEW_USAGE,
+        ));
+    }
+    let supplied = doc.get("review").and_then(Json::as_str).ok_or_else(|| {
+        usage(
+            "review must be the complete bytes hex string",
+            BATCH_REVIEW_USAGE,
+        )
+    })?;
+    if supplied.is_empty()
+        || !supplied.len().is_multiple_of(2)
+        || !supplied.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(usage(
+            "a batch review accepts inline hex bytes only, never a filesystem path or stdin selector",
+            BATCH_REVIEW_USAGE,
+        ));
+    }
+    let expected = doc
+        .get("review_digest")
+        .and_then(Json::as_str)
+        .ok_or_else(|| {
+            usage(
+                "review_digest must be the independently retained digest",
+                BATCH_REVIEW_USAGE,
+            )
+        })?;
+    let expected = parse_digest(expected, "review_digest")?;
+    let bytes = decode_hex_bytes(supplied, "lot-disposal review")?;
+    let intent = PostIntent::decode(&bytes).map_err(|error| {
+        usage(
+            format!("invalid disposal review: {error}"),
+            BATCH_REVIEW_USAGE,
+        )
+    })?;
+    if intent
+        .canonical_bytes()
+        .map_err(|error| Fail::Internal(error.to_string()))?
+        != bytes
+        || intent
+            .digest()
+            .map_err(|error| Fail::Internal(error.to_string()))?
+            != expected
+    {
+        return Err(usage(
+            "the disposal review bytes or digest differ from the retained review",
+            BATCH_REVIEW_USAGE,
+        ));
+    }
+    let proposal = intent.proposal();
+    let basis = proposal
+        .lot_disposal_basis()
+        .map_err(|error| usage(format!("lot-disposal review: {error}"), BATCH_REVIEW_USAGE))?;
+    if proposal.book_id != book_id
+        || proposal.branch_id != Id128::TRUNK
+        || proposal.principal_ref != principal
+        || proposal.class != EntryClass::ORIGINAL
+        || !intent.approvals().is_empty()
+        || basis.is_none()
+        || proposal.extensions.len() != 1
+        || proposal.base_totals.is_some()
+        || proposal.control.is_some()
+        || proposal.pending.is_some()
+        || !proposal.supersession.is_empty()
+    {
+        return Err(usage(
+            "a batch review must be an approval-free Original lot disposal for this book and acting principal",
+            BATCH_REVIEW_USAGE,
+        ));
+    }
+    Ok(Some(intent))
+}
 
 fn required<'a>(args: &'a Args, name: &str) -> Result<&'a str, Fail> {
     args.flag(name)
