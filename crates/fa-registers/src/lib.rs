@@ -1273,12 +1273,15 @@ fn stored_values(row: &VertexRow, pending: bool) -> Result<Option<CellValues>, R
 /// reporting freshness separately. Later postings are lag, not corruption.
 /// A headerless cache retains the current-head comparison; no historical
 /// prefix is inferred from a contribution watermark or publication sequence.
+/// For a checkpoint-backed header, continuation is independently refolded
+/// from the journal. Use [`verify_period_with_context`] to additionally
+/// validate the backing immutable checkpoint and its fragments.
 pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
-    verify_period_in(&mut Reads::new(db, book, &[period_code]), period_code)
+    verify_period_in(&mut Reads::new(db, book, &[period_code]), None, period_code)
 }
 
 type Memberships = BTreeMap<VId, Vec<(fgdb_types::EId, VId)>>;
@@ -1416,11 +1419,12 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
 
 fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
     reads: &mut Reads<'_, V>,
+    cx: Option<&QueryCx>,
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
     let (db, book) = (reads.db, reads.book);
     let head = db.frontier()?;
-    let (through, state_error) = maintainer::verify_state_in(reads, period_code)?;
+    let (through, state_error) = maintainer::verify_state_in(reads, cx, period_code)?;
     let basis = through.unwrap_or(head);
     let fold = reads.fold_at(period_code, basis)?;
     let (rows, memberships) = reads.scans()?;
@@ -1550,7 +1554,7 @@ fn verify_period_with_context_in<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
     let (db, book) = (reads.db, reads.book);
-    let mut result = verify_period_in(reads, period_code)?;
+    let mut result = verify_period_in(reads, Some(cx), period_code)?;
     let at = db.frontier()?;
     let mut next = match checkpoint::load_latest(db, cx, book, period_code, at) {
         Ok(value) => value,

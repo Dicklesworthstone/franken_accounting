@@ -39,6 +39,8 @@ const PRINCIPAL: VId = VId(7);
 mod checkpoint_recovery;
 #[path = "differential/empty_checkpoint_repair.rs"]
 mod empty_checkpoint_repair;
+#[path = "differential/large_pending_state.rs"]
+mod large_pending_state;
 
 fn maintain(k: &mut Kernel, period: &str) -> fa_registers::Advance {
     let ctx = k.ctx();

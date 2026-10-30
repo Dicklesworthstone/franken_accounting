@@ -434,7 +434,7 @@ impl Checkpoint {
     }
 }
 
-fn load_with_birth<V: Vfs + Clone>(
+pub(crate) fn load_with_birth<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
     book: &BookContext,

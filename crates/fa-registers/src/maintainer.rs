@@ -6,6 +6,9 @@
 //! plus the original Pending payload for each release. Leg mirrors are not
 //! inputs. Complete immutable checkpoints can restore missing maintenance
 //! state; a genuinely retired suffix still requires the authoritative fold.
+//! Small maintenance headers retain FARSv2. Large pending-hold continuation
+//! state uses a bounded FARSv3 pointer to a complete checkpoint staged in the
+//! same publication, with the checkpoint's existing byte and count bounds.
 //!
 //! RegisterState and RegisterCheckpoint are disposable caches, not independent
 //! balance proofs. This module does not maintain entity, open-item or availability
@@ -134,6 +137,7 @@ fn state_digest(book: Id128, period: &str, payload: &[u8]) -> [u8; 32] {
 }
 
 const STATE_VERSION: u16 = 2;
+const CHECKPOINT_STATE_VERSION: u16 = 3;
 
 fn empty(period: &str) -> Result<Fold, RegisterError> {
     let pending_holds = BTreeMap::new();
@@ -149,15 +153,23 @@ fn empty(period: &str) -> Result<Fold, RegisterError> {
     })
 }
 
-fn encode(through: CommitSeq, fold: &Fold) -> Result<Vec<u8>, RegisterError> {
+fn state_header(through: CommitSeq, fold: &Fold, version: u16) -> Writer {
     let mut w = Writer::new();
-    w.fixed(b"FARS").u16(STATE_VERSION).u64(through.0);
+    w.fixed(b"FARS").u16(version).u64(through.0);
     w.opt(fold.watermark.as_ref(), |w, seq| {
         w.u64(seq.0);
     });
     w.u64(fold.entries)
         .fixed(&fold.fold_digest)
         .fixed(&fold.posted_legs_digest);
+    w
+}
+
+fn encode(through: CommitSeq, fold: &Fold) -> Result<Vec<u8>, RegisterError> {
+    if fold.pending_holds.len() > fa_model::limits::MAX_BATCH_ENTRIES {
+        return Err(drift("maintenance state exceeds its pending-hold bound"));
+    }
+    let mut w = state_header(through, fold, STATE_VERSION);
     let holds: Vec<_> = fold.pending_holds.iter().collect();
     w.list(&holds, |w, ((seq, vid), digest)| {
         w.u64(seq.0).u128(vid.0).fixed(*digest);
@@ -165,12 +177,33 @@ fn encode(through: CommitSeq, fold: &Fold) -> Result<Vec<u8>, RegisterError> {
     w.finish().map_err(RegisterError::Encoding)
 }
 
-fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterError> {
+/// Large continuation state lives in a complete, immutable checkpoint, whose
+/// existing object storage chunks the body. The mutable header stays bounded;
+/// fragments must never be attached to its repeatedly updated identity.
+fn encode_checkpoint(
+    through: CommitSeq,
+    fold: &Fold,
+    reference: CheckpointRef,
+) -> Result<Vec<u8>, RegisterError> {
+    if reference.through != through {
+        return Err(drift("maintenance checkpoint frontier differs"));
+    }
+    let mut w = state_header(through, fold, CHECKPOINT_STATE_VERSION);
+    w.fixed(&reference.body_digest);
+    w.finish().map_err(RegisterError::Encoding)
+}
+
+fn decode(
+    payload: &[u8],
+    period: &str,
+) -> Result<(CommitSeq, Fold, Option<CheckpointRef>), RegisterError> {
     let read = || -> Result<_, fa_model::DecodeError> {
         let mut r = Reader::new(payload);
-        if r.fixed::<4>("register-state.magic")? != *b"FARS"
-            || r.u16("register-state.version")? != STATE_VERSION
-        {
+        if r.fixed::<4>("register-state.magic")? != *b"FARS" {
+            return Err(r.invalid("register-state.format"));
+        }
+        let version = r.u16("register-state.version")?;
+        if !matches!(version, STATE_VERSION | CHECKPOINT_STATE_VERSION) {
             return Err(r.invalid("register-state.format"));
         }
         let through = CommitSeq(r.u64("register-state.through")?);
@@ -180,27 +213,35 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
         let entries = r.u64("register-state.entries")?;
         let fold_digest = r.fixed::<32>("register-state.digest")?;
         let posted_legs_digest = r.fixed::<32>("register-state.posted_legs_digest")?;
-        let holds = r.list(
-            fa_model::limits::MAX_BATCH_ENTRIES,
-            "register-state.pending_holds",
-            |r| {
-                let seq = CommitSeq(r.u64("register-state.hold_seq")?);
-                let vid = VId(r.u128("register-state.hold_vid")?);
-                let digest = r.fixed::<32>("register-state.hold_digest")?;
-                Ok(((seq, vid), digest))
-            },
-        )?;
         let mut pending_holds = BTreeMap::new();
-        for (key, digest) in holds {
-            if key.0 > through
-                || pending_holds
-                    .last_key_value()
-                    .is_some_and(|(prev, _)| *prev >= key)
-            {
-                return Err(r.invalid("register-state.pending_holds"));
+        let checkpoint = if version == CHECKPOINT_STATE_VERSION {
+            Some(CheckpointRef {
+                through,
+                body_digest: r.fixed("register-state.checkpoint_digest")?,
+            })
+        } else {
+            let holds = r.list(
+                fa_model::limits::MAX_BATCH_ENTRIES,
+                "register-state.pending_holds",
+                |r| {
+                    let seq = CommitSeq(r.u64("register-state.hold_seq")?);
+                    let vid = VId(r.u128("register-state.hold_vid")?);
+                    let digest = r.fixed::<32>("register-state.hold_digest")?;
+                    Ok(((seq, vid), digest))
+                },
+            )?;
+            for (key, digest) in holds {
+                if key.0 > through
+                    || pending_holds
+                        .last_key_value()
+                        .is_some_and(|(prev, _)| *prev >= key)
+                {
+                    return Err(r.invalid("register-state.pending_holds"));
+                }
+                pending_holds.insert(key, digest);
             }
-            pending_holds.insert(key, digest);
-        }
+            None
+        };
         r.finish()?;
         Ok((
             through,
@@ -209,9 +250,10 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
             fold_digest,
             posted_legs_digest,
             pending_holds,
+            checkpoint,
         ))
     };
-    let (through, watermark, entries, fold_digest, posted_legs_digest, pending_holds) =
+    let (through, watermark, entries, fold_digest, posted_legs_digest, pending_holds, checkpoint) =
         read().map_err(|e| drift(e.to_string()))?;
     if watermark.is_some_and(|w| w > through) {
         return Err(drift("contribution watermark exceeds consumed frontier"));
@@ -228,6 +270,7 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
             posted_legs_digest,
             pending_holds,
         },
+        checkpoint,
     ))
 }
 
@@ -236,10 +279,15 @@ fn decode(payload: &[u8], period: &str) -> Result<(CommitSeq, Fold), RegisterErr
 /// proves equality with the journal, including coherently forged cache data.
 fn load<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     book: &BookContext,
     period: &str,
 ) -> Result<Option<(CommitSeq, Fold, CanonicalScalar)>, RegisterError> {
-    load_in(&mut crate::Reads::new(db, book, &[period]), period)
+    load_in(
+        &mut crate::Reads::new(db, book, &[period]),
+        Some(cx),
+        period,
+    )
 }
 
 /// Load and validate a maintenance state using the same current projection
@@ -248,6 +296,7 @@ fn load<V: asupersync::fs::Vfs + Clone>(
 /// reaching the shared journal-fold and projection checks.
 fn load_in<V: asupersync::fs::Vfs + Clone>(
     reads: &mut crate::Reads<'_, V>,
+    cx: Option<&QueryCx>,
     period: &str,
 ) -> Result<Option<(CommitSeq, Fold, CanonicalScalar)>, RegisterError> {
     let (db, book) = (reads.db, reads.book);
@@ -266,7 +315,7 @@ fn load_in<V: asupersync::fs::Vfs + Clone>(
     {
         return Err(drift("maintenance state checksum"));
     }
-    let (through, mut fold) = decode(&payload, period)?;
+    let (through, mut fold, reference) = decode(&payload, period)?;
     if through > db.frontier()? {
         return Err(drift("maintenance cursor exceeds book frontier"));
     }
@@ -276,6 +325,33 @@ fn load_in<V: asupersync::fs::Vfs + Clone>(
             return Err(drift("maintenance cursor predates its period"));
         }
         Err(error) => return Err(error),
+    }
+    if let Some(reference) = reference {
+        let continuation = match cx {
+            Some(cx) => {
+                let (snapshot, born) =
+                    checkpoint::load_with_birth(db, cx, book, period, reference, db.frontier()?)?;
+                if born > state.created_at {
+                    return Err(drift(
+                        "maintenance header predates its checkpoint publication",
+                    ));
+                }
+                snapshot.fold
+            }
+            // The legacy verifier checks mutable cells against the journal,
+            // without inspecting immutable archives. Obtain hold continuation
+            // from that same literal prefix, never from an unchecked object.
+            // Contextual verification also validates the exact backing object.
+            None => reads.fold_at(period, through)?,
+        };
+        if continuation.watermark != fold.watermark
+            || continuation.entries != fold.entries
+            || continuation.fold_digest != fold.fold_digest
+            || continuation.posted_legs_digest != fold.posted_legs_digest
+        {
+            return Err(drift("maintenance checkpoint continuation differs"));
+        }
+        fold.pending_holds = continuation.pending_holds;
     }
     for row in crate::stored_registers_in(db, book, &fold, reads.current_vertices()?)?.values() {
         let account: [u8; 16] = bytes(row, property::ACCOUNT_REF, "register.account")?
@@ -336,9 +412,10 @@ fn load_in<V: asupersync::fs::Vfs + Clone>(
 /// A coherently forged cursor or entry count cannot pass a journal refold.
 pub(crate) fn verify_state_in<V: asupersync::fs::Vfs + Clone>(
     reads: &mut crate::Reads<'_, V>,
+    cx: Option<&QueryCx>,
     period: &str,
 ) -> Result<(Option<CommitSeq>, Option<String>), RegisterError> {
-    match load_in(reads, period) {
+    match load_in(reads, cx, period) {
         Ok(None) => Ok((None, None)),
         Ok(Some((through, fold, _))) => {
             let truth = reads.fold_at(period, through)?;
@@ -531,18 +608,19 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<PreparedAdvance, RegisterError> {
     let basis = db.frontier()?;
     crate::period_at(db, book, period, basis)?;
-    let (from, mut fold, expected_state, recovered_from) = match load(db, book, period)? {
-        Some((through, fold, payload)) => (through, fold, Some(payload), None),
-        None => match checkpoint::load_latest(db, &ctx.query(), book, period, basis)? {
-            Some(checkpoint) => (
-                checkpoint.through,
-                checkpoint.fold,
-                None,
-                Some(checkpoint.through),
-            ),
-            None => (CommitSeq::ORIGIN, empty(period)?, None, None),
-        },
-    };
+    let (from, mut fold, expected_state, recovered_from) =
+        match load(db, &ctx.query(), book, period)? {
+            Some((through, fold, payload)) => (through, fold, Some(payload), None),
+            None => match checkpoint::load_latest(db, &ctx.query(), book, period, basis)? {
+                Some(checkpoint) => (
+                    checkpoint.through,
+                    checkpoint.fold,
+                    None,
+                    Some(checkpoint.through),
+                ),
+                None => (CommitSeq::ORIGIN, empty(period)?, None, None),
+            },
+        };
     if let Err(error) = db.ensure_delta_window(&ctx.commit(), from).await {
         return match error {
             fgdb::RebuildError::Index {
@@ -723,16 +801,15 @@ fn release<V: asupersync::fs::Vfs + Clone>(
     Ok(())
 }
 
-/// The period's maintenance state when it can serve a read at `basis`: its
-/// identity, checksum and format agree and its cursor does not pass the
-/// frontier. The cells are not read here. `None` otherwise; reads never
-/// repair state.
-fn servable_state<V: asupersync::fs::Vfs + Clone>(
+/// The bounded maintenance header at one snapshot. Its cursor can prepare a
+/// delta window without loading an immutable body or mutable cells. Neither
+/// the checksum nor this locator alone establishes cache integrity.
+fn read_header<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     period: &str,
     basis: CommitSeq,
-) -> Result<Option<(CommitSeq, Fold)>, RegisterError> {
+) -> Result<Option<(CommitSeq, Fold, Option<CheckpointRef>)>, RegisterError> {
     let Some(state) = state_row_at(db, book, period, basis)? else {
         return Ok(None);
     };
@@ -756,10 +833,23 @@ fn servable_state<V: asupersync::fs::Vfs + Clone>(
         }
         _ => return Ok(None),
     };
-    let Ok((through, fold)) = decode(&payload, period) else {
+    let Ok((through, fold, reference)) = decode(&payload, period) else {
         return Ok(None);
     };
-    Ok((through <= basis).then_some((through, fold)))
+    Ok((through <= basis).then_some((through, fold, reference)))
+}
+
+/// Legacy context-free readers can consume inline state only. A large state
+/// requires its immutable checkpoint to be read with the caller's QueryCx;
+/// typed readers already use that checkpoint plus its exact retained tail.
+fn servable_state<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    basis: CommitSeq,
+) -> Result<Option<(CommitSeq, Fold)>, RegisterError> {
+    Ok(read_header(db, book, period, basis)?
+        .and_then(|(through, fold, reference)| reference.is_none().then_some((through, fold))))
 }
 
 /// The maintenance cursor of `period` when its state could serve a read at
@@ -769,7 +859,7 @@ pub fn cursor<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<Option<CommitSeq>, RegisterError> {
-    Ok(servable_state(db, book, period, db.frontier()?)?.map(|(through, _)| through))
+    Ok(read_header(db, book, period, db.frontier()?)?.map(|(through, _, _)| through))
 }
 
 /// Earliest point-addressed cache cursor a report may need. Reading a checkpoint
@@ -817,6 +907,8 @@ pub struct HeadFold {
 /// that needs a rebuild); the caller then folds the journal literally. A
 /// maintained read never serves a partial answer, and it never repairs: a
 /// damaged cache is reported by `verify registers`, not here.
+/// Checkpoint-backed FARSv3 states require [`fold_at_with_context`]; this
+/// context-free compatibility API returns `None` for the literal fallback.
 pub fn head_fold<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1122,22 +1214,8 @@ async fn publish_advance_in<V: asupersync::fs::Vfs + Clone>(
         property::EFFECTIVE_PERIOD,
         Some(scalar_text("period", &result.period)?),
     );
-    let payload = encode(result.through, &result.fold)?;
-    batch.set_vertex_property(
-        state,
-        property::FA_DIGEST,
-        Some(scalar_bytes(
-            "register-state.digest",
-            state_digest(book.book_id, &result.period, &payload).to_vec(),
-        )?),
-    );
-    batch.compare_and_set_vertex_property(
-        state,
-        property::FA_PAYLOAD,
-        prepared.expected_state,
-        scalar_bytes("register-state", payload)?,
-        WriteMismatchPolicy::AbortWrite,
-    );
+    let inline_payload = encode(result.through, &result.fold)?;
+    let checkpoint_backed = inline_payload.len() > fa_journal::object::CHUNK_BYTES;
     // The immutable body, fragments, discoverable head, cells and cursor are
     // one publication. A dropped/stale preparation cannot expose any of them.
     let latest = if prepared.reset_checkpoint {
@@ -1149,7 +1227,8 @@ async fn publish_advance_in<V: asupersync::fs::Vfs + Clone>(
         crate::period_at(db, book, &result.period, result.through)?.kind,
         fa_time::PeriodKind::Opening | fa_time::PeriodKind::Closing
     );
-    if prepared.reset_checkpoint
+    if checkpoint_backed
+        || prepared.reset_checkpoint
         || boundary
         || latest.as_ref().is_none_or(|checkpoint| {
             result.through.0.saturating_sub(checkpoint.through.0) >= result.checkpoint_cadence
@@ -1168,6 +1247,36 @@ async fn publish_advance_in<V: asupersync::fs::Vfs + Clone>(
             .reference(),
         );
     }
+    // A large pending-hold map must not be written as a native scalar: its
+    // row ceiling is much smaller than the registered complete-state bound.
+    // Keep old inline FARSv2 bytes for small states, and use a bounded FARSv3
+    // reference to the exact checkpoint staged with this publication otherwise.
+    let payload = if checkpoint_backed {
+        encode_checkpoint(
+            result.through,
+            &result.fold,
+            result
+                .checkpoint
+                .ok_or_else(|| drift("large maintenance state has no complete checkpoint"))?,
+        )?
+    } else {
+        inline_payload
+    };
+    batch.set_vertex_property(
+        state,
+        property::FA_DIGEST,
+        Some(scalar_bytes(
+            "register-state.digest",
+            state_digest(book.book_id, &result.period, &payload).to_vec(),
+        )?),
+    );
+    batch.compare_and_set_vertex_property(
+        state,
+        property::FA_PAYLOAD,
+        prepared.expected_state,
+        scalar_bytes("register-state", payload)?,
+        WriteMismatchPolicy::AbortWrite,
+    );
     result.published_at = db.write_with_crash(&ctx.commit(), batch, crash_at).await?;
     Ok(result)
 }
@@ -1369,5 +1478,75 @@ impl SharedRebuild {
         let advance = publish_advance_in(db, ctx, book, prepared, None, scans).await?;
         self.at = advance.published_at;
         Ok((fold, advance.published_at))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_formats_preserve_inline_history_and_bound_checkpoint_references() {
+        let period = "FY2026-P03";
+        let through = CommitSeq(2);
+        let mut fold = empty(period).unwrap();
+        // Previously persisted FARSv2 with an empty hold list remains exactly
+        // the 91-byte format, including its absent-watermark option tag.
+        let inline = encode(through, &fold).unwrap();
+        assert_eq!(&inline[..6], b"FARS\x02\x00");
+        assert_eq!(inline.len(), 91);
+        assert_eq!(
+            decode(&inline, period).unwrap(),
+            (through, fold.clone(), None)
+        );
+
+        fold.pending_holds = (0..fa_model::limits::MAX_BATCH_ENTRIES)
+            .map(|index| ((CommitSeq(1), VId(index as u128)), [0x12; 32]))
+            .collect();
+        fold.watermark = Some(CommitSeq(1));
+        let large = encode(through, &fold).unwrap();
+        assert!(large.len() > 16 * 1024);
+        assert_eq!(
+            decode(&large, period).unwrap(),
+            (through, fold.clone(), None)
+        );
+        let reference = CheckpointRef {
+            through,
+            body_digest: [0x34; 32],
+        };
+        let bounded = encode_checkpoint(through, &fold, reference).unwrap();
+        assert_eq!(&bounded[..6], b"FARS\x03\x00");
+        assert_eq!(bounded.len(), 127);
+        let (decoded_through, decoded, decoded_reference) = decode(&bounded, period).unwrap();
+        assert_eq!(decoded_through, through);
+        assert_eq!(decoded_reference, Some(reference));
+        assert!(
+            decoded.pending_holds.is_empty(),
+            "the pointer never claims an unchecked hold map"
+        );
+        assert_eq!(decoded.fold_digest, fold.fold_digest);
+        assert!(encode_checkpoint(CommitSeq(3), &fold, reference).is_err());
+        assert!(decode(&bounded[..bounded.len() - 1], period).is_err());
+        let mut trailing = bounded.clone();
+        trailing.push(0);
+        assert!(decode(&trailing, period).is_err());
+        let mut future_version = bounded;
+        future_version[4] = 4;
+        assert!(decode(&future_version, period).is_err());
+
+        fold.pending_holds.insert(
+            (
+                CommitSeq(1),
+                VId(fa_model::limits::MAX_BATCH_ENTRIES as u128),
+            ),
+            [0x56; 32],
+        );
+        assert!(
+            matches!(
+                encode(through, &fold),
+                Err(RegisterError::ProjectionDrift(_))
+            ),
+            "the registered hold bound refuses before publication, not after a corrupt header is written"
+        );
     }
 }
