@@ -36,7 +36,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
-use fa_oracles::cases::book::{BookVariant, StepDef};
+use fa_oracles::cases::book::{BookVariant, StepDef, StepKind};
 use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation, Publication};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::gql;
@@ -534,6 +534,12 @@ impl BookRun<'_> {
         }
         if verb == "export-xbrl" {
             return self.read_export_xbrl(e, t, token, &code, &unit, selector);
+        }
+        if verb == "case-diff" {
+            let case = selector
+                .and_then(|s| s.strip_prefix("case:"))
+                .unwrap_or_default();
+            return self.read_case_diff(e, t, token, &code, &unit, case);
         }
         let mut args: Vec<String> = match verb {
             "balance" => ["explain", "balance", target, "--period"]
@@ -1126,6 +1132,203 @@ impl BookRun<'_> {
         }
     }
 
+    /// A `case-diff` read (E-T-03, plan §8.3): the posted case's certified
+    /// statement diff, `fa case diff <case> --statements --certify`, run once
+    /// per case. The read takes the balance sheet of its period and the
+    /// `delta` of its line in its unit. Each diff is followed by the
+    /// `report_certificate` of its retained statement-diff certificate,
+    /// which the outsider replays. The contributing-entry witness explains
+    /// the line's accounts through the read's period and keeps the legs of
+    /// the entries the case posted: a diff across the Post moves by exactly
+    /// those.
+    fn read_case_diff(
+        &mut self,
+        e: &Expectation,
+        t: Option<&Target>,
+        token: String,
+        code: &str,
+        unit: &str,
+        case: &str,
+    ) -> Read {
+        let target = field(e, t, "read_target").unwrap_or("-");
+        let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
+        let reference = key(e, t);
+        let read = |value: Result<i128, String>,
+                    certificate: Option<String>,
+                    digest: Option<String>,
+                    contributions: Option<Vec<Contribution>>| Read {
+            token: token.clone(),
+            value,
+            certificates: certificate.clone().into_iter().collect(),
+            certificate,
+            contributions,
+            exercised: None,
+            trace: None,
+            known_at: None,
+            output_digest: digest,
+            changed: None,
+        };
+        let Some(scale) = scale_of(unit) else {
+            return read(
+                Err(format!("unit `{unit}` is not registered")),
+                None,
+                None,
+                None,
+            );
+        };
+        if !self.case_statement_diffs.contains_key(case) {
+            let diffed = self.case_statement_diff(&reference, case);
+            self.case_statement_diffs.insert(case.to_string(), diffed);
+        }
+        let call = match self.case_statement_diffs.get(case).cloned() {
+            Some(Ok(call)) => call,
+            Some(Err(why)) => return read(Err(why), None, None, None),
+            None => {
+                return read(
+                    Err("expected a case diff observed none".into()),
+                    None,
+                    None,
+                    None,
+                );
+            }
+        };
+        // The balance sheet of the read's period, and the certificate that
+        // follows it.
+        let mut found = None;
+        for (i, o) in call.observations.iter().enumerate() {
+            let periods: Vec<&str> = o
+                .field("columns")
+                .and_then(Json::as_array)
+                .and_then(|c| c.first())
+                .and_then(|c| c.get("periods"))
+                .and_then(Json::as_array)
+                .map(|p| p.iter().filter_map(Json::as_str).collect())
+                .unwrap_or_default();
+            if o.event == "statement_diff"
+                && o.field("name").and_then(Json::as_str) == Some("balance-sheet")
+                && periods == [code]
+            {
+                let certificate = call.observations[i + 1..]
+                    .iter()
+                    .find(|n| n.event == "report_certificate");
+                found = Some((o, certificate));
+                break;
+            }
+        }
+        let Some((diff, certificate)) = found else {
+            return read(
+                Err(format!(
+                    "expected a balance-sheet statement_diff of {coordinate} from case {case} observed none"
+                )),
+                None,
+                None,
+                None,
+            );
+        };
+        let oid = certificate
+            .and_then(|c| c.field("oid"))
+            .and_then(Json::as_str)
+            .map(str::to_string);
+        let digest = certificate
+            .and_then(|c| c.field("output_digest"))
+            .and_then(Json::as_str)
+            .map(str::to_string);
+        let delta = diff
+            .field("lines")
+            .and_then(Json::as_array)
+            .unwrap_or_default()
+            .iter()
+            .find(|l| {
+                l.get("code").and_then(Json::as_str) == Some(target)
+                    && l.get("unit").and_then(Json::as_str) == Some(unit)
+            })
+            .and_then(|l| l.get("delta").and_then(Json::as_array))
+            .and_then(|d| d.first())
+            .and_then(Json::as_str)
+            .map(str::to_string);
+        let value = match delta {
+            None => Err(format!(
+                "expected line {target} in {unit} in the {coordinate} diff observed none"
+            )),
+            Some(d) => match d.strip_suffix(unit).map(str::trim_end) {
+                Some(amount) => {
+                    parse_amount(amount, scale).map_err(|err| format!("delta `{d}`: {err:?}"))
+                }
+                None => Err(format!("expected a delta in {unit} observed `{d}`")),
+            },
+        };
+        if value.is_err() {
+            return read(value, oid, digest, None);
+        }
+        // The witness: the line's legs through the period, the case's own.
+        let posted = self.case_posted_vids(case);
+        let contributions = self
+            .line_contributions(&reference, "balance-sheet", target, coordinate, unit, &[])
+            .map(|legs| {
+                legs.into_iter()
+                    .filter(|leg| posted.contains(&leg.entry))
+                    .collect::<Vec<_>>()
+            });
+        match contributions {
+            Ok(legs) => read(value, oid, digest, Some(legs)),
+            Err(why) => read(
+                Err(format!("the {target} line's contributions: {why}")),
+                oid,
+                digest,
+                None,
+            ),
+        }
+    }
+
+    /// `fa case diff <number> --statements --certify` of the case labelled
+    /// `case`, as the call that ran it, or why it did not.
+    fn case_statement_diff(&mut self, reference: &str, case: &str) -> Result<Call, String> {
+        let number = self
+            .cases
+            .get(case)
+            .and_then(|r| r.number)
+            .ok_or_else(|| format!("expected case {case} opened observed none"))?;
+        let args: Vec<String> = [
+            "case".to_string(),
+            "diff".to_string(),
+            number.to_string(),
+            "--statements".to_string(),
+            "--certify".to_string(),
+            "--json".to_string(),
+        ]
+        .into();
+        let call = self.call(self.head, reference, "case", args);
+        self.certificate_kind("StatementDiff");
+        if call.exit == 0 {
+            Ok(call)
+        } else {
+            self.lines.push(reproduce(&call));
+            Err(format!(
+                "expected exit=0 from case diff --statements observed exit={} {}",
+                call.exit,
+                call.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string())
+        }
+    }
+
+    /// The entry vids the case labelled `case` posted at its `case_post`
+    /// step.
+    fn case_posted_vids(&self, case: &str) -> BTreeSet<String> {
+        let post = self
+            .book
+            .steps
+            .iter()
+            .find(|s| s.step_kind() == Some(StepKind::CasePost) && s.reference == case)
+            .map(|s| s.seq);
+        self.posted_steps
+            .iter()
+            .filter(|(_, seq)| Some(**seq) == post)
+            .filter_map(|(intent, _)| self.vids.get(intent).cloned())
+            .collect()
+    }
+
     /// `fa export xbrl --period <code>` into the variant's working
     /// directory, and the book's own `fa verify export xbrl` of the file:
     /// the instance text, or why there is none.
@@ -1234,6 +1437,11 @@ impl BookRun<'_> {
         // history certified it.
         if let Some(name) = selector.strip_prefix("scenario:") {
             return (Some(format!("scenario={name}")), Ok(Vec::new()));
+        }
+        // A case-diff read's case: no flag, the diff compares the frontier
+        // just before the case's Post with the Post.
+        if let Some(name) = selector.strip_prefix("case:") {
+            return (Some(format!("case={name}")), Ok(Vec::new()));
         }
         let Some(rest) = selector.strip_prefix("reported_in:") else {
             return (

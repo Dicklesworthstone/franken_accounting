@@ -435,6 +435,13 @@ pub fn named_inputs(book: &BookVariant, read: &Read<'_>) -> BTreeSet<String> {
 
 /// The witness (module doc). `b` is the published value in minor units, when
 /// it states one in the read's unit.
+///
+/// A leg whose magnitude is B's is taken to carry B, a proxy for posting the
+/// published value itself, except on a `delta` T. A delta's contributions
+/// are its deltas alone, and one documented delta that moves the line by the
+/// published adjustment is the claim itself (E-T-03: reversing the $172
+/// million note moves equity by the published -172). There the provenance
+/// check alone decides: no contributing leg may derive from B.
 #[must_use]
 pub fn witness(
     case: &Case,
@@ -445,6 +452,7 @@ pub fn witness(
     b: Option<i128>,
 ) -> ContribVerdict {
     if let Some(b) = b
+        && read.kind() != Some(TKind::Delta)
         && contributions
             .iter()
             .any(|c| c.signed.unsigned_abs() == b.unsigned_abs())
@@ -753,6 +761,55 @@ mod tests {
             assert_eq!(
                 witness(&case, book, read, &bridge(), 90_000, None).token(),
                 "retyped(extra contribution A-1)"
+            );
+        });
+    }
+
+    /// The self-test's bridge T read as a `delta` T.
+    fn as_delta(case: &mut Case) {
+        let set = case.expectations.as_mut().expect("expectations");
+        let t = set
+            .expectations
+            .iter_mut()
+            .find(|e| e.id == "_selftest-T-01")
+            .expect("the bridge T");
+        t.fields.map.insert(
+            "kind".into(),
+            crate::cases::expect::Field::Str("delta".into()),
+        );
+    }
+
+    /// One documented delta that moves the line by exactly the published
+    /// adjustment is the delta T's claim, not a leg that carries B: its
+    /// amount derives from D-1, never from B, so the witness holds.
+    #[test]
+    fn delta_read_whose_one_delta_is_the_published_adjustment_holds() {
+        let mut case = selftest();
+        as_delta(&mut case);
+        let delta = vec![c("d", Some("delta-A-1"), -10_000)];
+        with_read(&case, |book, read| {
+            assert_eq!(
+                witness(&case, book, read, &delta, -10_000, Some(-10_000)).token(),
+                "holds"
+            );
+        });
+    }
+
+    /// On a delta T the provenance check still decides: a delta whose legs
+    /// post the published value is a read-back.
+    #[test]
+    fn delta_read_whose_delta_derives_from_b_retypes_r() {
+        let mut case = selftest();
+        as_delta(&mut case);
+        let book = case.books.get_mut("native").expect("native");
+        for leg in book.legs.iter_mut().filter(|l| l.intent == "delta-A-1") {
+            leg.amount_rule = "value:B-1#1".into();
+        }
+        let delta = vec![c("d", Some("delta-A-1"), -10_000)];
+        with_read(&case, |book, read| {
+            assert_eq!(
+                witness(&case, book, read, &delta, -10_000, Some(-10_000)).token(),
+                "retyped(contribution carries B)"
             );
         });
     }

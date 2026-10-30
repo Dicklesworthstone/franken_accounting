@@ -16,17 +16,20 @@
 # committee's sentences E3 builds on: the Raptor restructuring documents' dates and the
 # notes-for-stock entries ($172 million in April 2000, $828 million in March 2001, and the $1
 # billion correction), each bound to its sentence by hash, with the interpretations that turn
-# their scheme-level wording into entries. The case's reader is the investigator (§12.3).
+# their scheme-level wording into entries. The native book (E3's first slice) books the two
+# notes-for-stock entries as Enron did and reverses them through a Restatement case, whose certified
+# statement diff reproduces the published Raptor equity adjustment line (E-T-03). The case's reader
+# is the investigator (§12.3).
 id = "enron"
 letter = "E"
 title = "Enron, the 1997-2001 restatements and the special purpose entities"
 version = 1
 kind = "case"
 scope = "the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries); the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it, every line and the printed totals they foot to; and the restatement bridges from the as-filed figures to the 8-K's restated FY1999 net income, total assets and equity, and to the 10-Q's restated net income (FY1998-FY2000) and total assets, debt and equity (FY1997-FY2000)"
-claims = ["E-R-01", "E-R-02", "E-T-01", "E-T-02", "E-T-04", "E-T-05"]
+claims = ["E-R-01", "E-R-02", "E-T-01", "E-T-02", "E-T-03", "E-T-04", "E-T-05"]
 capabilities = ["case_kind:Restatement", "verb:assert-balance", "verb:case", "verb:post", "verb:scenario", "verb:statement"]
 pinned_commit = "d0673641d"
-variants = ["statement-10k2000", "statement-10q2001q3", "statement-bridge-8k-fy1999", "statement-bridge-10q"]
+variants = ["statement-10k2000", "statement-10q2001q3", "statement-bridge-8k-fy1999", "statement-bridge-10q", "native"]
 
 [[decision]]
 id = "E4-bridge-books"

@@ -257,7 +257,13 @@ fn lehman() {
 /// four-period book (E-T-01: FY1999 635 / 33,272 / 8,724 $M; FY2000 total
 /// assets 64,926 $M after the Raptor equity adjustment of -172); as
 /// originally reported, each book still reads the as-filed figures (E-R-02,
-/// E-R-01).
+/// E-R-01). On the native book, a Restatement case reverses the two
+/// notes-for-stock entries the special committee documents ($172 million
+/// and $828 million, booked as notes receivable and equity), and its
+/// certified statement diff moves total assets and total equity by the
+/// published Raptor equity adjustment: -172 at 2000Q4, -1,000 at 2001Q1 and
+/// 2001Q2 ($M, E-T-03), its contributions the case's two deltas, its
+/// certificate replayed.
 #[test]
 fn enron() {
     let o = outcome("enron");
@@ -279,6 +285,21 @@ fn enron() {
         "{text}"
     );
     assert_eq!(count("PASS E-R-01 R statement-bridge-10q "), 15, "{text}");
+    let delta_rows: Vec<&String> = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("PASS E-T-03 T native "))
+        .collect();
+    assert_eq!(delta_rows.len(), 6, "{text}");
+    for line in delta_rows {
+        assert!(
+            line.contains(" kind=delta read=case-diff,")
+                && line.contains(",case=enr-raptor ")
+                && line.contains(" contrib=holds outsider=replay:verified"),
+            "{line}"
+        );
+    }
+    assert_eq!(count("PASS E-CASE-enr-raptor R native "), 1, "{text}");
     for (row, value) in [
         (
             "E-T-02 T statement-10k2000 BS10K-TOTAL-ASSETS",
@@ -312,6 +333,8 @@ fn enron() {
             "E-R-01 R statement-bridge-10q BS10K-TOTAL-ASSETS",
             "65503000000.00",
         ),
+        ("E-T-03 T native N3-RAPTOR-TA-FY2000", "-172000000.00"),
+        ("E-T-03 T native N3-RAPTOR-EQ-2001Q2", "-1000000000.00"),
     ] {
         assert!(
             o.lines

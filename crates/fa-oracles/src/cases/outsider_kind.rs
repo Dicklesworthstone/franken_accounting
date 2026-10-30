@@ -17,7 +17,9 @@
 //! - `replay`: certificates `fa bundle produce` does not take, replayed byte
 //!   for byte with `fa replay C:<oid>`, whose output must hash to the digest
 //!   the certificate recorded: the consolidation report (`fa consolidate
-//!   --certify`) and the scenario diff (`fa scenario diff --certificate-out`).
+//!   --certify`), the scenario diff (`fa scenario diff --certificate-out`)
+//!   and a posted case's statement diff (`fa case diff --statements
+//!   --certify`).
 //!   fa-verify recomputes neither, so this is a replay in the book, never an
 //!   offline outsider verification.
 //! - `not_applicable`: an export read (`fa export xbrl`), for which §12.1
@@ -28,7 +30,7 @@
 //!   independent evidence.
 
 /// The read verbs the runner reads (A7b).
-pub const READ_VERBS: [&str; 7] = [
+pub const READ_VERBS: [&str; 8] = [
     "balance",
     "balance-sheet",
     "income-statement",
@@ -36,6 +38,7 @@ pub const READ_VERBS: [&str; 7] = [
     "consolidate",
     "scenario-diff",
     "export-xbrl",
+    "case-diff",
 ];
 
 /// An outsider route.
@@ -80,7 +83,7 @@ pub fn outsider_kind(verb: &str) -> Option<(OutsiderKind, Option<Recomputed>)> {
         "balance-sheet" | "income-statement" => {
             Some((OutsiderKind::Report, Some(Recomputed::StatementLine)))
         }
-        "consolidate" | "scenario-diff" => Some((OutsiderKind::Replay, None)),
+        "consolidate" | "scenario-diff" | "case-diff" => Some((OutsiderKind::Replay, None)),
         "export-xbrl" => Some((OutsiderKind::NotApplicable, None)),
         _ => None,
     }
@@ -107,6 +110,7 @@ mod tests {
                 Some(("replay", None)),
                 Some(("replay", None)),
                 Some(("not_applicable", None)),
+                Some(("replay", None)),
             ]
         );
         assert_eq!(outsider_kind("gl-detail"), None);

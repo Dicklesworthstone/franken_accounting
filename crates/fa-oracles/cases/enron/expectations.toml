@@ -487,3 +487,79 @@ read_target = "3000"
 read_coordinate = "FY2000"
 read_selector = "originally_reported"
 posted = "BS10K-TOTAL-EQUITY"
+
+# E-T-03 (plan §7.2): the program's one T whose adjustment comes from documented entries, not a
+# published bridge. On the native book the Restatement case reverses the two notes-for-stock
+# entries the committee documents (NFS1, NFS2e); its certified statement diff (fa case diff
+# --statements --certify) moves total assets and total equity by -172 at 2000Q4 and by -1,000 at
+# 2001Q1 and 2001Q2 ($M), the Raptor equity adjustment line both restating filings print. The
+# published line is compared, never posted.
+
+[[expectation]]
+id = "E-T-03"
+type = "T"
+book_variant = "native"
+statement_template = "T.delta"
+basis = ["NFS1", "NFS2e"]
+kind = "delta"
+vintages = ["D:SRC-ENR-003", "D:SRC-ENR-002"]
+
+[[target]]
+expectation = "E-T-03"
+fact = "N3-RAPTOR-TA-FY2000"
+basis = ["NFS1"]
+read_verb = "case-diff"
+read_target = "assets"
+read_coordinate = "2000Q4"
+read_selector = "case:enr-raptor"
+published = "N3-RAPTOR-TA-FY2000"
+
+[[target]]
+expectation = "E-T-03"
+fact = "N3-RAPTOR-EQ-FY2000"
+basis = ["NFS1"]
+read_verb = "case-diff"
+read_target = "total_equity"
+read_coordinate = "2000Q4"
+read_selector = "case:enr-raptor"
+published = "N3-RAPTOR-EQ-FY2000"
+
+[[target]]
+expectation = "E-T-03"
+fact = "N3-RAPTOR-TA-2001Q1"
+basis = ["NFS1", "NFS2e"]
+read_verb = "case-diff"
+read_target = "assets"
+read_coordinate = "2001Q1"
+read_selector = "case:enr-raptor"
+published = "N3-RAPTOR-TA-2001Q1"
+
+[[target]]
+expectation = "E-T-03"
+fact = "N3-RAPTOR-EQ-2001Q1"
+basis = ["NFS1", "NFS2e"]
+read_verb = "case-diff"
+read_target = "total_equity"
+read_coordinate = "2001Q1"
+read_selector = "case:enr-raptor"
+published = "N3-RAPTOR-EQ-2001Q1"
+
+[[target]]
+expectation = "E-T-03"
+fact = "N3-RAPTOR-TA-2001Q2"
+basis = ["NFS1", "NFS2e"]
+read_verb = "case-diff"
+read_target = "assets"
+read_coordinate = "2001Q2"
+read_selector = "case:enr-raptor"
+published = "N3-RAPTOR-TA-2001Q2"
+
+[[target]]
+expectation = "E-T-03"
+fact = "N3-RAPTOR-EQ-2001Q2"
+basis = ["NFS1", "NFS2e"]
+read_verb = "case-diff"
+read_target = "total_equity"
+read_coordinate = "2001Q2"
+read_selector = "case:enr-raptor"
+published = "N3-RAPTOR-EQ-2001Q2"

@@ -1732,10 +1732,12 @@ impl<'a> Check<'a, '_> {
 
     /// `read_selector`: empty, originally_reported, currently_stated,
     /// `reported_in:<period label>[#<n>]`, the n-th `issue` step of that
-    /// period in step order, or `scenario:<name>`, the scenario a
+    /// period in step order, `scenario:<name>`, the scenario a
     /// `scenario-diff` read reads the certified diff of (a `scenario_diff`
-    /// step of the variant names it). A `scenario-diff` read names its
-    /// scenario, and only it does.
+    /// step of the variant names it), or `case:<id>`, the case whose posted
+    /// statement diff a `case-diff` read reads (a `case_post` step of the
+    /// variant names it). A `scenario-diff` read names its scenario and a
+    /// `case-diff` read its case, and only they do.
     fn selector(&mut self, f: &Fields, row: &str, variant: &str) {
         let sel = f.str("read_selector").filter(|s| !s.is_empty());
         let scenario = sel.and_then(|s| s.strip_prefix("scenario:"));
@@ -1749,9 +1751,35 @@ impl<'a> Check<'a, '_> {
             );
             return;
         }
+        let case = sel.and_then(|s| s.strip_prefix("case:"));
+        if (f.str("read_verb") == Some("case-diff")) != case.is_some() {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownValue,
+                "a `case-diff` read names its posted case (`read_selector = \"case:<id>\"`), and no other read does".into(),
+            );
+            return;
+        }
         let Some(sel) = sel else {
             return;
         };
+        if let Some(id) = case {
+            let posted = self.view.books.get(variant).is_none_or(|book| {
+                book.steps
+                    .iter()
+                    .any(|s| s.step_kind() == Some(StepKind::CasePost) && s.reference == id)
+            });
+            if !posted {
+                self.push(
+                    f.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    format!("`{sel}`: `{variant}` has no case_post step for `{id}`"),
+                );
+            }
+            return;
+        }
         if let Some(name) = scenario {
             let diffed = self.view.books.get(variant).is_none_or(|book| {
                 book.steps
@@ -1772,7 +1800,7 @@ impl<'a> Check<'a, '_> {
             return;
         }
         let Some(rest) = sel.strip_prefix("reported_in:") else {
-            self.push(f.line, row, LoadErrorKind::UnknownValue, format!("`read_selector = \"{sel}\"` is originally_reported, currently_stated, reported_in:<period>[#<n>] or scenario:<name>"));
+            self.push(f.line, row, LoadErrorKind::UnknownValue, format!("`read_selector = \"{sel}\"` is originally_reported, currently_stated, reported_in:<period>[#<n>], scenario:<name> or case:<id>"));
             return;
         };
         let (label, n) = match rest.split_once('#') {

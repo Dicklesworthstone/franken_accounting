@@ -700,9 +700,20 @@ impl<'c> BookRun<'c> {
         ];
         let diff = self.call(step.seq, &case.id, "case", args);
         self.certificate_kind("StatementDiff");
-        if diff.exit != 0 {
+        let kept = if diff.exit == 0 {
+            Ok(diff)
+        } else {
             self.lines.push(reproduce(&diff));
-        }
+            Err(format!(
+                "expected exit=0 from case diff --statements observed exit={} {}",
+                diff.exit,
+                diff.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string())
+        };
+        // A case-diff read (E-T-03) reads this diff.
+        self.case_statement_diffs.insert(case.id.clone(), kept);
         let targets: Vec<String> = planned
             .into_iter()
             .filter(|i| i.is_delta())

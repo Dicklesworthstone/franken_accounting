@@ -356,6 +356,9 @@ pub struct BookRun<'c> {
     /// Each period code's `fa export xbrl` instance, as written and
     /// self-verified, or why it was not (X-T-02).
     pub exports: BTreeMap<String, Result<String, String>>,
+    /// Each posted case's certified statement diff (`fa case diff <case>
+    /// --statements --certify`) by its id, or why there is none (E-T-03).
+    pub case_statement_diffs: BTreeMap<String, Result<Call, String>>,
 }
 
 impl<'c> BookRun<'c> {
@@ -413,6 +416,7 @@ impl<'c> BookRun<'c> {
             explained: BTreeMap::new(),
             recomputed: BTreeMap::new(),
             exports: BTreeMap::new(),
+            case_statement_diffs: BTreeMap::new(),
         }
     }
 
