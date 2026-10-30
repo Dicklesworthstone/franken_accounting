@@ -1921,9 +1921,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
     reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
-    let (carried, carrying_batch, disposal_batch) = match member {
-        Some(member) => (member.txn, member.carrying, member.disposal),
-        None => (None, None, None),
+    let (carried, carrying_batch, disposal_batch, closing_draft) = match member {
+        Some(member) => (member.txn, member.carrying, member.disposal, member.closing),
+        None => (None, None, None, None),
     };
     let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -2045,22 +2045,21 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     if closing.is_some() {
-        if let Err(refusal) = crate::closing::authorize(db, book, &req.capability, true)? {
+        let authority = if closing_draft.is_some() {
+            crate::closing::authorize_draft_preparation(db, book, &req.capability)?
+        } else {
+            crate::closing::authorize(db, book, &req.capability, true)?
+        };
+        if let Err(refusal) = authority {
             return Ok(Err(refusal));
         }
         if carried.is_some()
-            || matches!(
+            || (matches!(
                 admission,
                 Admission::Promote(_) | Admission::ScratchDraft(_)
-            )
+            ) && closing_draft.is_none())
         {
-            return Ok(Err(Refusal::new(
-                code::CLASS_NOT_IMPLEMENTED,
-                exit::REFUSAL,
-                "a fiscal-year close cannot join an atomic batch or draft promotion",
-                "plan §5.10 / §7.5 (complete aggregate dependency)",
-                "review and commit the close as its own native PostPlan",
-            )));
+            return Ok(Err(crate::closing::draft_scope_refusal()));
         }
     }
     // A present source basis requires whole-book observation authority before
@@ -3181,7 +3180,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             let needed = fa_policy::Op::from_name(op).ok_or_else(|| {
                 KernelError::Corrupt(format!("admissibility.toml cites unregistered op `{op}`"))
             })?;
-            if !req.capability.holds(needed) {
+            // A private singleton close keeps the planner's Read/Post
+            // authority. Its draft factory witnesses the independent
+            // promoter's Close authority in this same publication; rehearsal
+            // never publishes to trunk. No other matrix op is delegated.
+            if !req.capability.holds(needed)
+                && !(needed == fa_policy::Op::Close && closing_draft.is_some())
+            {
                 txn.abort();
                 return Ok(Err(Refusal::new(
                     code::CAPABILITY,

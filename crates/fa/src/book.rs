@@ -6936,6 +6936,20 @@ impl Book {
         )
     }
 
+    /// Prepare an exact close review for a dedicated draft under Read and
+    /// Post. Native publication still needs an independent promoter holding
+    /// Approve and Close; the planner gains no trunk authority.
+    pub fn prepare_year_end_close_for_draft(
+        &mut self,
+        request: &fa_journal::closing::YearEndCloseRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_year_end_close_for_draft(&purposes, request, capability))
+        )
+    }
+
     /// Check zero nominal balances at the last close and expose later deltas.
     pub fn verify_year_end_close(
         &mut self,

@@ -64,10 +64,45 @@ pub(crate) struct IndependentCarryingBatch(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IndependentDisposalBatch(());
 
+/// Only this module proves that the complete draft consists of one intrinsic
+/// Closing. The planner keeps its own authority; promotion additionally
+/// requires the draft factory's explicit Close-authorized promoter token.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SingletonClosingDraft(());
+
 pub(crate) struct MemberPreparation {
     pub(crate) txn: Option<WriteTxn>,
     pub(crate) carrying: Option<IndependentCarryingBatch>,
     pub(crate) disposal: Option<IndependentDisposalBatch>,
+    pub(crate) closing: Option<SingletonClosingDraft>,
+}
+
+fn singleton_closing_draft(
+    batch: &PostBatch,
+    admission: Admission,
+) -> Result<Option<SingletonClosingDraft>, Refusal> {
+    if !matches!(
+        admission,
+        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+    ) || !batch.members().iter().any(|member| {
+        member.proposal().class == EntryClass::CLOSING
+            || member
+                .proposal()
+                .extensions
+                .iter()
+                .any(|(tag, _)| *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION)
+    }) {
+        return Ok(None);
+    }
+    if batch.members().len() != 1
+        || matches!(admission, Admission::Promote(token) if !token.authorizes_closing())
+    {
+        return Err(crate::closing::draft_scope_refusal());
+    }
+    if crate::closing::admit(batch.members()[0].proposal())?.is_none() {
+        return Err(crate::closing::draft_scope_refusal());
+    }
+    Ok(Some(SingletonClosingDraft(())))
 }
 
 fn independent_carrying_batch(
@@ -801,6 +836,10 @@ fn judge_retry<V: Vfs + Clone>(
     admission: Admission,
     outcome: VId,
 ) -> Outcome<BatchPosted> {
+    let closing = match singleton_closing_draft(batch, admission) {
+        Ok(closing) => closing,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let carrying = match independent_carrying_batch(batch, admission) {
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
@@ -833,6 +872,7 @@ fn judge_retry<V: Vfs + Clone>(
                 txn: None,
                 carrying,
                 disposal,
+                closing,
             },
             None,
             &mut reconciliation,
@@ -1093,10 +1133,15 @@ fn stage_batch_with<V: Vfs + Clone>(
             "a batch is staged with one capability per member".into(),
         ));
     }
+    let closing = match singleton_closing_draft(batch, admission) {
+        Ok(closing) => closing,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     if let Some((i, member)) = batch.members().iter().enumerate().find(|(_, m)| {
         // A restatement case's own Post batches its case-bound entries
         // (plan §8.3); the posting law checks each is the case's.
         !batchable(m.proposal().class)
+            && !(m.proposal().class == EntryClass::CLOSING && closing.is_some())
             && !(matches!(admission, Admission::Case(_))
                 && crate::case::case_bound(m.proposal().class))
     }) {
@@ -1148,6 +1193,7 @@ fn stage_batch_with<V: Vfs + Clone>(
                 txn: txn.take(),
                 carrying,
                 disposal,
+                closing,
             },
             Some(std::mem::take(&mut tracker)),
             reconciliation,

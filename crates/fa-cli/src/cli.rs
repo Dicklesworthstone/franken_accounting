@@ -1359,7 +1359,9 @@ fn needs_command_time_evidence(verb: &str, args: &Args) -> bool {
             !args.switch("--dry-run") && args.flag("--plan-out").is_none()
         }
         ("close", Some("year-end")) => {
-            !post_plan_only(verb, args) && args.flag("--plan-out").is_none()
+            !post_plan_only(verb, args)
+                && !closing_draft_only(verb, args)
+                && args.flag("--plan-out").is_none()
         }
         ("statement", Some("issue")) => !args.switch("--dry-run") && args.flag("--plan").is_some(),
         ("schedule", Some("sweep")) => !args.switch("--dry-run"),
@@ -2371,6 +2373,19 @@ fn correction_draft_only(verb: &str, args: &Args) -> bool {
                 && (args.flag("--replace-with").is_some() || args.flag("--review").is_some())))
 }
 
+/// A restored intrinsic close can append a retained intent to its owner's
+/// otherwise empty draft. This control-only append does not publish the close;
+/// promotion independently requires a Human holding both Approve and Close.
+/// The handler validates the review, digest and incompatible modes before it
+/// plans anything, and the kernel admits only a complete singleton close.
+fn closing_draft_only(verb: &str, args: &Args) -> bool {
+    verb == "close"
+        && args.positional.get(1).map(String::as_str) == Some("year-end")
+        && args.flag("--draft").is_some()
+        && args.flag("--review").is_some()
+        && args.flag("--digest").is_some()
+}
+
 /// `fa recover <target> --dry-run` derives and releases its prepared changes
 /// without publishing; only publication needs confirmation.
 fn recovery_preview_only(verb: &str, args: &Args) -> bool {
@@ -2481,6 +2496,7 @@ pub fn bound_command_admissible(
     if !period_plan_only(verb, args)
         && !post_plan_only(verb, args)
         && !correction_draft_only(verb, args)
+        && !closing_draft_only(verb, args)
         && !(authority.can_confirm() && confirmed(args))
     {
         for d in reg.dangerous_for(verb, sub) {
@@ -3007,6 +3023,7 @@ fn gate_from_argv(
     if period_plan_only(&verb.name, args)
         || post_plan_only(&verb.name, args)
         || correction_draft_only(&verb.name, args)
+        || closing_draft_only(&verb.name, args)
         || recovery_preview_only(&verb.name, args)
     {
         return Ok(());
@@ -24819,6 +24836,37 @@ mod tests {
         ] {
             let style = Style::resolve(false, false, false, true, only(name, value));
             assert_eq!(style, styled, "{name}={value}");
+        }
+    }
+
+    #[test]
+    fn retained_closing_draft_append_needs_no_publication_tick() {
+        let reg = registry().unwrap();
+        for (flags, needs_tick) in [
+            (
+                vec!["--review", "aa", "--digest", "bb", "--draft", "annual"],
+                false,
+            ),
+            (vec!["--review-only"], false),
+            (vec!["--review-out", "review"], false),
+            (vec!["--dry-run"], false),
+            (vec!["--plan-out", "plan"], false),
+            (vec!["--review", "aa", "--digest", "bb"], true),
+            (vec!["--draft", "annual"], true),
+            (vec!["--review", "aa", "--draft", "annual"], true),
+            (vec!["--yes"], true),
+        ] {
+            let argv: Vec<String> = ["close", "year-end"]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_string)
+                .collect();
+            let parsed = crate::args::parse(&argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert_eq!(
+                needs_command_time_evidence("close", &parsed),
+                needs_tick,
+                "{argv:?}"
+            );
         }
     }
 }

@@ -90,7 +90,17 @@ const PROMOTION_KEY_DOMAIN: &[u8] = b"fa:draft-promotion-key:v1";
 /// after admitting the promoter and before staging the promotion, so no
 /// other path can waive the Agent's trunk denial.
 #[derive(Clone, Copy, Debug)]
-pub struct Promoting(());
+pub struct Promoting {
+    closing_authorized: bool,
+}
+
+impl Promoting {
+    /// Set only after the draft factory admits the independent promoter's
+    /// Close authority for this dedicated intrinsic closing draft.
+    pub(crate) const fn authorizes_closing(self) -> bool {
+        self.closing_authorized
+    }
+}
 
 /// Only a draft's admitted preview can revalidate retained aggregate sources
 /// across its own journaled planning records. This remains a zero-write plan,
@@ -1051,6 +1061,11 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::post::authorize_request(db, book, &request, Admission::Plan)? {
             return Ok(Err(refusal));
         }
+        if intent.proposal().class == EntryClass::CLOSING
+            && let Err(refusal) = crate::closing::authorize_draft_preparation(db, book, capability)?
+        {
+            return Ok(Err(refusal));
+        }
     }
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
@@ -1246,8 +1261,9 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             "plan the intent with this book's id and the trunk branch",
         )));
     }
-    // Its promotion is one batch, so only a batchable class is planned.
-    if !crate::batch::batchable(p.class) {
+    // A Closing may enter only its own dedicated singleton draft. The
+    // complete ordered preview proves that exception before any Plan record.
+    if !crate::batch::batchable(p.class) && p.class != EntryClass::CLOSING {
         return Ok(Err(usage(
             format!(
                 "a {} entry cannot join a draft: its promotion is one batch of PostEntry intents",
@@ -1512,6 +1528,29 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
             approver: req.capability.holder(),
         })));
     }
+    let closing = view
+        .intents
+        .iter()
+        .any(|planned| planned.intent.proposal().class == EntryClass::CLOSING);
+    if closing {
+        if let Err(d) = fa_policy::require(
+            &req.capability,
+            Op::Close,
+            "promoting a year-end closing draft",
+        )
+        .and_then(|()| fa_policy::reach(&req.capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(denial(&d)));
+        }
+        let [planned] = view.intents.as_slice() else {
+            return Ok(Err(crate::closing::draft_scope_refusal()));
+        };
+        if let Err(d) =
+            crate::policy::payload_reach(&req.capability, book, planned.intent.proposal(), None)
+        {
+            return Ok(Err(denial(&d)));
+        }
+    }
     match (view.state, &view.closed) {
         (DraftState::Promoted, Some(closure)) => {
             let Some((outcome, entries)) = closure.promoted.clone() else {
@@ -1538,6 +1577,17 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
             "plan intents into it with `fa draft plan <name> --intent <file>`, or discard it",
         )));
     }
+    // The retained planner's current whole-book authority precedes loading
+    // any close source. The promoter supplies Close, never the planner's Post
+    // permission, amount ceilings, scope, evidence or approval references.
+    if closing {
+        let planned = &view.intents[0];
+        if let Err(refusal) =
+            crate::closing::authorize_draft_preparation(db, book, &planned.capability)?
+        {
+            return Ok(Err(refusal));
+        }
+    }
     // The promoter was admitted before any read. Load the immutable close
     // history before replaying the members through the native posting laws.
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
@@ -1554,7 +1604,9 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     };
-    let admission = Admission::Promote(Promoting(()));
+    let admission = Admission::Promote(Promoting {
+        closing_authorized: closing,
+    });
     let mut staged = match correction::stage(
         db,
         ctx,
@@ -1571,7 +1623,8 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         staged.abort();
         return Ok(Err(refusal));
     }
-    // The promoter's authority is witnessed in the promotion's own
+    // The promoter's authority, including the Close permission admitted
+    // above for a singleton closing, is witnessed in the promotion's own
     // transaction, as is the draft's Open state.
     if let Err(r) = capability_witness(staged.txn(), db, book, &req.capability)? {
         staged.abort();

@@ -19,6 +19,45 @@ fn fixture() -> Fixture {
     fixture_with_foreign_only_routes(false)
 }
 
+#[test]
+fn carrying_close_draft_preserves_both_measures_under_independent_closing_authority() {
+    let mut f = fixture();
+    f.source(Side::Credit, 1_000, 1_250, b"draft-carrying-sale");
+    f.source(Side::Debit, 400, 520, b"draft-carrying-return");
+    let agent = f.h.agent_capability();
+    let prepared = fa_journal::closing::prepare_year_end_close_for_draft(
+        &f.h.db,
+        &f.h.ctx(),
+        &f.h.book,
+        &agent,
+        &YearEndCloseRequest {
+            fiscal_year: 2026,
+            closing_period: "FY2026-CLOSE".into(),
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let mut proposal = year_end_close_proposal(&f.h, &prepared, b"draft-carrying-close");
+    proposal.principal_ref = AGENT;
+    assert!(proposal.base_totals.is_some());
+    let reviewed_legs = proposal.legs.clone();
+    let reviewed_totals = proposal.base_totals.clone();
+    assert_eq!(measure(&f.h, f.nominal, f.foreign), (-600, -730));
+    f.h.open_draft(agent.clone(), "carrying-close").unwrap();
+    f.h.plan_draft(agent, "carrying-close", proposal).unwrap();
+    let promoter = Capability::embedded(APPROVER, &["read", "approve", "close"]).unwrap();
+    let promoted = f.h.promote(promoter, "carrying-close").unwrap();
+    let (entry, _) = read_entry(&f.h.db, promoted.entries[0].vid)
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.proposal.principal_ref, AGENT);
+    assert_eq!(entry.proposal.legs, reviewed_legs);
+    assert_eq!(entry.proposal.base_totals, reviewed_totals);
+    assert_eq!(measure(&f.h, f.nominal, f.foreign), (0, 0));
+    assert_eq!(measure(&f.h, f.equity, f.foreign), (-600, -730));
+    f.green();
+}
+
 fn fixture_with_foreign_only_routes(foreign_only: bool) -> Fixture {
     let (mut h, native_equity) = year_end_close_fixture();
     let foreign = h.book.units.lookup("EUR").unwrap();

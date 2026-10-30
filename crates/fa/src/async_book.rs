@@ -453,6 +453,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )?)
     }
 
+    /// Derive an intrinsic close for a dedicated draft under Read and Post.
+    /// This read-only preparation grants neither Close nor trunk authority.
+    pub async fn prepare_year_end_close_for_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        request: &fa_journal::closing::YearEndCloseRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        if let Err(refusal) =
+            fa_journal::closing::authorize_draft_preparation(&self.db, &self.context, capability)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        Ok(fa_journal::closing::prepare_year_end_close_for_draft(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            request,
+        )?)
+    }
+
     /// Recompute nominal balances at the last Closing and the selected prefix.
     /// A later adjustment is reported separately as a required delta reclose.
     pub async fn verify_year_end_close(

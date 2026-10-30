@@ -226,6 +226,32 @@ pub fn authorize<V: Vfs + Clone>(
     Ok(crate::policy::current_at(db, book, capability)?.map(|_| ()))
 }
 
+/// Admit a read-only intrinsic close preparation for an owned draft. An
+/// Agent may hold Read and Post, but never acquires Close or trunk authority.
+/// The private singleton-draft admission repeats this check for its planner;
+/// publication separately witnesses the Human promoter's Close authority.
+pub fn authorize_draft_preparation<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id)
+        .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None))
+        .and_then(|()| fa_policy::require(capability, Op::Post, "preparing a year-end close draft"))
+    {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    Ok(crate::policy::current_at(db, book, capability)?.map(|_| ()))
+}
+
+/// A Closing draft is one complete intrinsic computation. No other member
+/// may change its aggregate source or acquire delegated closing authority.
+pub(crate) fn draft_scope_refusal() -> Refusal {
+    unsupported(
+        "a closing draft must contain exactly one intrinsic YearEndClose; mixed or dependent closing batches are not implemented",
+    )
+}
+
 pub fn prepare_year_end_close<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -239,6 +265,32 @@ pub fn prepare_year_end_close<V: Vfs + Clone>(
         .map_err(fgdb::WriteTxnError::Interrupted)?;
     query.with_restriction(|| {
         if let Err(refusal) = authorize(db, book, capability, true)? {
+            return Ok(Err(refusal));
+        }
+        let at = db.frontier()?;
+        if let Err(refusal) = validate_sources(db, cx, book, at)? {
+            return Ok(Err(refusal));
+        }
+        observe(db, cx, book, request, at, true, None)
+    })
+}
+
+/// Derive a reviewed close for a dedicated draft under current Read and Post.
+/// This writes nothing. Native planning and posting still require Close;
+/// only the private singleton workflow can delegate publication to a closer.
+pub fn prepare_year_end_close_for_draft<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    request: &YearEndCloseRequest,
+) -> Outcome<PreparedYearEndClose> {
+    let query = cx.query();
+    query
+        .checkpoint()
+        .map_err(fgdb::WriteTxnError::Interrupted)?;
+    query.with_restriction(|| {
+        if let Err(refusal) = authorize_draft_preparation(db, book, capability)? {
             return Ok(Err(refusal));
         }
         let at = db.frontier()?;

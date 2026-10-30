@@ -192,7 +192,7 @@ fn decode(error: fa_model::DecodeError) -> KernelError {
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
         fa_journal::refusal::code::STRUCTURE,
-        fa_journal::exit::REFUSAL,
+        fa_journal::exit::USAGE,
         message,
         "plan §12.1 (approved statement definitions partition the selected chart)",
         "lint the complete definition against this book, then prepare a new activation and obtain two independent Human approvals",

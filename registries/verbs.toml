@@ -169,14 +169,14 @@ example = "fa calendar periods --fiscal-year 2026 --book ./books/myco --json"
 
 [[verb]]
 name = "close"
-summary = "Rehearse an existing draft atomically with exact balance changes and a replayable certificate, or journal routes and prepare an incremental year-end close for independent approval."
+summary = "Prepare and rehearse an intrinsic year-end close in an Agent-owned draft for independent authorized promotion, inspect routes, or publish a reviewed native close."
 writes = true
 subcommands = ["map","routes","year-end","dry-run"]
 flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year","--period","--key","--description","--evidence","--approval","--review","--review-out","--digest","--plan-out","--grant","--draft","--certificate-out"]
 switches = ["--dry-run","--review-only","--certify"]
-events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","posted","recorded","plan","draft_diff","report_certificate"]
+events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","draft_planned","posted","recorded","plan","draft_diff","report_certificate"]
 exits = [0,2,3,4,5,6,7,8]
-usage = ["close dry-run --period <code> --draft <name> [--certify | --certificate-out <new-file>]   (rehearse the exact retained plans as one atomic scratch batch; show stock trial-balance changes, posted and pending separately; real trunk and draft state remain unchanged)", "Draft rehearsal preserves original planner capabilities, approvals and publication coordinates. CLI review and retained-locator replay require current whole-book read authority. --certify retains a complete replayable review under read and produce; fa replay C:<oid> reproduces its selected source prefix after later plans, promotion or discard. This supplied-draft review does not generate close tasks or issue statements; unsupported draft member classes refuse.", "close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>] | --yes]","A review preserves the exact sealed PostIntent and intrinsic source basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Then restore the review and cite that approval. Relevant journal or routing changes require a new review; approval publications alone do not.","A native --dry-run plan writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances in both native units and functional currency; a reclose includes prior Closing legs and transfers only the residual. A zero native balance with a nonzero functional balance still needs a close; a residual of zero in both bases publishes no entry.","Foreign-currency closing preserves the exact retained functional amounts under YearEndCloseCarrying, without selecting a new rate. Review residuals show native net and base_net; each proposed valued leg shows base_amount. The Equity destination must accept the native units being transferred. Unvalued foreign activity, general dimensions and balance-limited accounts refuse. Undimensioned and legal-entity balances are supported. Closed periods retain their independent approval requirement; Locked case-bound reclose and the full CloseTask DAG remain unavailable."]
+usage = ["close dry-run --period <code> --draft <name> [--certify | --certificate-out <new-file>]   (rehearse the exact retained plans as one atomic scratch batch; show stock trial-balance changes, posted and pending separately; real trunk and draft state remain unchanged)","Draft rehearsal preserves original planner capabilities, approvals and publication coordinates. CLI review and retained-locator replay require current whole-book read authority. --certify retains a complete replayable review under read and produce; fa replay C:<oid> reproduces its selected source prefix after later plans, promotion or discard. This supplied-draft review does not generate close tasks or issue statements; unsupported draft member classes refuse.","close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--draft <empty-owned-draft> | --dry-run [--plan-out <new-file>] | --yes]","A non-posting --review-only or --review-out derives the complete source-bound close under current whole-book read and post. The sealed review preserves the exact PostIntent and intrinsic basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Restore the unchanged review with its independently retained digest and cite each required approval. Relevant source, period or routing changes require a new review; approval and draft-control publications alone do not.","For Agent preparation, restore the reviewed close with --draft naming an otherwise empty owned draft. The draft holds exactly one intrinsic Closing intent; mixing entries, a second close, --dry-run, --plan-out or new review generation refuses. close dry-run rehearses its unchanged reviewed effects. An independent Human promotes with approve and close (fa draft promote <name> --grant close --yes); every planner still needs current read and post. Review or rehearsal never grants the Agent close or trunk posting authority.","A native --dry-run plan still requires read, post and close and writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances in both native units and functional currency; a reclose includes prior Closing legs and transfers only the residual. A zero native balance with a nonzero functional balance still needs a close; a residual of zero in both bases publishes no entry.","Foreign-currency closing preserves the exact retained functional amounts under YearEndCloseCarrying, without selecting a new rate. Review residuals show native net and base_net; each proposed valued leg shows base_amount. The Equity destination must accept the native units being transferred. Unvalued foreign activity, general dimensions and balance-limited accounts refuse. Undimensioned and legal-entity balances are supported. Closed periods retain their independent approval requirement; Locked case-bound reclose and the full CloseTask DAG remain unavailable."]
 example = "fa close year-end --fiscal-year 2026 --period FY2026-CLOSE --key close-2026 --review-only --book ./books/myco --json"
 
 [[verb]]
@@ -205,14 +205,14 @@ example = "fa capability revoke --commitment 01010101010101010101010101010101010
 
 [[verb]]
 name = "draft"
-summary = "Drafts (plan §15.2): an ordered intent log an Agent can work in. Every append rehearses all members under their original capabilities and retains their exact reviewed effects. Later members and capped requests see preceding effects. Promotion re-admits the complete batch against current trunk and refuses changed effects; the promoter holds approve and differs from the owner."
+summary = "Drafts (plan §15.2): an ordered intent log an Agent can work in. Every append rehearses all members under their original capabilities and retains their exact reviewed effects. Later members and capped requests see preceding effects. Promotion re-admits the complete batch against current trunk and refuses changed effects; the promoter holds approve and differs from the owner; a singleton intrinsic year-end close additionally requires the promoter's close authority."
 writes = true
 subcommands = ["new", "plan", "list", "show", "promote", "discard"]
 flags = ["--intent", "--evidence", "--event", "--date", "--description", "--reason", "--grant", "--balancing"]
 switches = []
 events = ["draft_opened", "draft_planned", "drafts", "draft_detail", "draft_promoted", "draft_discarded"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["draft new <name> [--description <text>] [--as <principal>]   (opens an intent log owned by --as; nothing in it is a trunk entry)", "draft plan <name> --intent <file.json|-> [--evidence <oid>]... [--balancing 0|1]   (rehearses the entire ordered draft and retains the appended member with its exact reviewed effects; also: the same post, reverse, reserve or resolve command with --draft <name>)", "draft list", "draft show <name>   (the planned intents in promotion order, and the entries a promotion created)", "draft promote <name> --as <approver> [--grant approve] --yes   (a principal holding approve who is not the draft's owner: every planned intent posts in one batch, admitted again against current trunk with the retained reviewed effects unchanged; any refusal promotes nothing)", "draft discard <name> [--reason <text>]   (the owner, or a principal holding approve, closes the draft; nothing is deleted)"]
+usage = ["draft new <name> [--description <text>] [--as <principal>]   (opens an intent log owned by --as; nothing in it is a trunk entry)","draft plan <name> --intent <file.json|-> [--evidence <oid>]... [--balancing 0|1]   (rehearses the entire ordered draft and retains the appended member with its exact reviewed effects; also: the same post, reverse, reserve or resolve command with --draft <name>)","draft list","draft show <name>   (the planned intents in promotion order, and the entries a promotion created)","draft promote <name> --as <approver> [--grant approve] --yes   (a principal holding approve who is not the draft's owner: every planned intent posts in one batch, admitted again against current trunk with the retained reviewed effects unchanged; any refusal promotes nothing)","A year-end Closing draft contains exactly one complete intrinsic close. Prepare it with close year-end --review-only, retain its unchanged review in the empty draft, and rehearse with close dry-run. Promotion additionally requires --grant close; the retained planner needs read and post, and the independent Human promoter supplies approve and close. Source changes invalidate the review even when later reversed.","draft discard <name> [--reason <text>]   (the owner, or a principal holding approve, closes the draft; nothing is deleted)"]
 example = "fa draft new close-03 --as agent-7 --book ./books/myco --json"
 
 [[verb]]
@@ -4032,7 +4032,7 @@ doc = "Compare retained purchase-order, receiving-report and invoice lines under
 [[mcp.cluster]]
 name = "fa.close"
 on_demand = true
-doc = "Rehearse an existing draft atomically and retain its exact balance comparison, inspect journaled closing routes, verify the last mechanical close, and consolidate a multi-entity book's legal entities for a period. Actual routing changes, year-end close publication and draft promotion remain independently authorized host operations."
+doc = "Prepare a source-bound year-end close under read and post, retain its unchanged reviewed intent in an empty owned draft, and rehearse that draft atomically with exact balance changes. Inspect closing routes, verify the last mechanical close, or consolidate legal entities. Routing changes and monetary close publication remain independently authorized host operations; a Human holding approve and close promotes the closing draft."
 
 [[mcp.cluster]]
 name = "fa.notary"
@@ -4167,11 +4167,6 @@ reason = "host-only: promotion needs a principal holding approve, distinct from 
 verb = "close"
 subcommand = "map"
 reason = "host-only: changing the reviewed Revenue/Expense-to-Equity routing map requires schema_change, which neither launch-bound MCP templates nor their issued tokens may hold (plan §7.5/§15.4 registered exclusion)"
-
-[[mcp.excluded]]
-verb = "close"
-subcommand = "year-end"
-reason = "host-only: preparing or publishing the intrinsic fiscal-year close requires close and post, and Closed reclose additionally requires an independent approval; close and approval are outside MCP launch ceilings and a tool cannot supply dangerous confirmation (plan §7.5/§15.4 registered exclusion)"
 
 [[mcp.excluded]]
 verb = "capability"
@@ -5287,6 +5282,18 @@ mistakes = ["A placeholder such as \"<proposal_digest>\" in `proposal`.", "Tryin
 
 [[mcp.tool]]
 cluster = "fa.close"
+name = "year_end"
+verb = "close"
+subcommands = ["year-end"]
+positionals = []
+flags = ["--fiscal-year", "--period", "--key", "--description", "--evidence", "--review", "--digest", "--draft", "--approval"]
+switches = ["--review-only"]
+required = []
+dont = ["Use review_only with fiscal_year, period and key to derive the complete close under current whole-book read and post; no monetary entry is published. Save the returned bytes and review_digest independently.", "After each required independent approval, pass the unchanged review bytes as hex, digest, approval and the name of an empty owned draft. The kernel retains exactly one intrinsic Closing intent and refuses mixed drafts or stale source history. A changed and reversed source still requires a new review.", "Rehearse with fa_close_dry_run. Only an independent Human holding approve and close can promote on the host; this tool never supplies confirmation, Close authority or a direct trunk posting route. Zero residual returns closing_noop without an intent."]
+mistakes = ["Combining review_only with draft, supplying native dry_run or plan_out, or changing reviewed dates, legs, rates, routing, evidence or key.", "Using review_digest as proposal_digest when approving, omitting the separately saved digest, or putting any other intent in the Closing draft.", "Passing a host review file, output path, grant, principal or confirmation. Review content travels inline and launch authority remains fixed."]
+
+[[mcp.tool]]
+cluster = "fa.close"
 name = "dry_run"
 verb = "close"
 subcommands = ["dry-run"]
@@ -6146,6 +6153,18 @@ ops = ["read", "schema_change"]
 verbs = ["close"]
 subcommands = ["routes", "dry-run"]
 ops = ["read"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["year-end"]
+when_any = ["--review-only", "--review-out"]
+ops = ["read", "post"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["year-end"]
+when_all = ["--review", "--digest", "--draft"]
+ops = ["read", "post"]
 
 [[bound]]
 verbs = ["close"]

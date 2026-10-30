@@ -3799,4 +3799,147 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn year_end_close_reviews_and_singleton_drafts_use_agent_read_and_post() {
+        use fa_cli::authority::{LaunchAuthority, LaunchProfile};
+
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_close_year_end")
+            .expect("governed year-end draft tool");
+        assert!(mcp.cluster("fa.close").unwrap().on_demand);
+        assert_eq!(mcp.tools_of("fa.close").count(), 5);
+        assert!(
+            !mcp.exposed(&[])
+                .any(|item| item.wire_name() == tool.wire_name())
+        );
+        // The underlying command is dangerous when publishing; only the
+        // complete review and retained-draft modes pass the bound gate.
+        assert!(tool.is_dangerous(reg));
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["required"], json!([]));
+        for name in [
+            "fiscal_year",
+            "period",
+            "key",
+            "review_only",
+            "review",
+            "digest",
+            "draft",
+            "approval",
+        ] {
+            assert!(schema["properties"].get(name).is_some(), "{name}");
+        }
+        for name in [
+            "grant",
+            "yes",
+            "as",
+            "dry_run",
+            "plan_out",
+            "review_out",
+            "certificate_out",
+        ] {
+            assert!(schema["properties"].get(name).is_none(), "{name}");
+        }
+        let authority = LaunchAuthority::new(
+            std::path::PathBuf::from("unopened-year-end-draft-book"),
+            None,
+            "close-preparer",
+            LaunchProfile::Agent,
+            &["read", "post"],
+        )
+        .unwrap();
+        let review = "ab".repeat(48);
+        let digest = "cd".repeat(32);
+        for arguments in [
+            json!({
+                "fiscal_year": "2026",
+                "period": "FY2026-CLOSE",
+                "key": "annual-close",
+                "review_only": true
+            }),
+            json!({
+                "review": review,
+                "digest": digest,
+                "draft": "annual",
+                "approval": ["11".repeat(16), "22".repeat(16)]
+            }),
+        ] {
+            let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+            assert!(invocation.stdin.is_none());
+            let parsed =
+                args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert_eq!(parsed.positional, vec!["close", "year-end"]);
+            assert!(parsed.flag("--grant").is_none());
+            assert!(!parsed.switch("--yes"));
+            let ops = fa_cli::cli::bound_command_ops("close", &parsed).unwrap();
+            assert_eq!(
+                ops.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                ["read", "post"]
+            );
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, "close", &parsed, &authority).is_ok()
+            );
+            let command = format!("fa {}", invocation.argv.join(" "));
+            let round_trip = mcp.command_to_call(reg, &command).unwrap();
+            assert_eq!(round_trip.tool, tool.wire_name());
+            assert_eq!(
+                tool.invocation(&mcp, reg, &round_trip.arguments)
+                    .unwrap()
+                    .argv,
+                invocation.argv
+            );
+            assert!(mcp.is_call_admissible(reg, &round_trip, &authority));
+            for grants in [&["read"][..], &["post"][..]] {
+                let insufficient = LaunchAuthority::new(
+                    std::path::PathBuf::from("unopened-year-end-draft-book"),
+                    None,
+                    "insufficient-close-preparer",
+                    LaunchProfile::Agent,
+                    grants,
+                )
+                .unwrap();
+                assert!(!mcp.is_call_admissible(reg, &round_trip, &insufficient));
+            }
+        }
+
+        for arguments in [
+            json!({
+                "fiscal_year": "2026",
+                "period": "FY2026-CLOSE",
+                "key": "native-close"
+            }),
+            json!({"review": review, "digest": digest}),
+            json!({"review": review, "draft": "annual"}),
+            json!({"draft": "annual"}),
+        ] {
+            let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+            let parsed =
+                args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            let ops = fa_cli::cli::bound_command_ops("close", &parsed).unwrap();
+            assert_eq!(
+                ops.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                ["read", "post", "close"]
+            );
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, "close", &parsed, &authority).is_err()
+            );
+        }
+
+        for arguments in [
+            json!({"review_only": true, "grant": ["close"]}),
+            json!({"review_only": true, "yes": false}),
+            json!({"review_only": true, "as": "controller"}),
+            json!({"review_only": true, "dry_run": true}),
+            json!({"review_only": true, "plan_out": "/host/plan"}),
+            json!({"review_only": true, "review_out": "/host/review"}),
+            json!({"review_only": true, "certificate_out": "/host/certificate"}),
+        ] {
+            assert!(
+                tool.invocation(&mcp, reg, &arguments).is_err(),
+                "{arguments}"
+            );
+        }
+    }
 }

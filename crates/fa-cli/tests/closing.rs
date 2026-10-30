@@ -278,6 +278,299 @@ fn leg_nets(event: &Json) -> BTreeMap<String, i128> {
     nets
 }
 
+fn closing_agent(f: &Fixture, grants: &[&str], args: &[&str]) -> (u8, Json) {
+    let authority = fa_cli::authority::LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "closing-agent",
+        fa_cli::authority::LaunchProfile::Agent,
+        grants,
+    )
+    .expect("fixed Agent authority");
+    let mut argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    argv.push("--json".into());
+    let (code, output) = fa_cli::entry::fa_with_authority(
+        &argv,
+        fa_cli::cli::Files {
+            cwd: None,
+            stdin: fa_cli::cli::Stdin::Missing,
+        },
+        &authority,
+        true,
+    );
+    let lines: Vec<_> = output.stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "args={args:?}: {output:?}");
+    fa_cli::verbs::registry()
+        .expect("registry")
+        .check_line(lines[0])
+        .expect("registered Agent closing result");
+    (code, json::parse(lines[0]).expect("robot line"))
+}
+
+#[test]
+fn closing_agent_review_rehearses_exact_draft_before_independent_close_promotion() {
+    const DRAFT: &str = "reviewed-year-end";
+    let f = Fixture::new(true);
+    f.post("agent-sale", "1000", "4000", "100.00");
+    f.post("agent-expense", "6000", "1000", "20.00");
+    let original_rows = get(&ok(&f.book, &["tb", "--period", "FY2026-P12"]), "rows").clone();
+    let (code, opened) = closing_agent(&f, &["read", "post"], &["draft", "new", DRAFT]);
+    assert_eq!(code, 0, "{}", opened.render());
+    let (code, reviewed) = closing_agent(
+        &f,
+        &["read", "post"],
+        &[
+            "close",
+            "year-end",
+            "--fiscal-year",
+            "2026",
+            "--period",
+            "FY2026-CLOSE",
+            "--key",
+            "agent-year-end",
+            "--evidence",
+            &f.evidence,
+            "--review-only",
+        ],
+    );
+    assert_eq!(code, 0, "{}", reviewed.render());
+    assert_eq!(text(&reviewed, "event"), "closing_reviewed");
+    assert_eq!(
+        leg_nets(&reviewed),
+        BTreeMap::from([
+            ("3000".into(), -8_000),
+            ("4000".into(), 10_000),
+            ("6000".into(), -2_000),
+        ])
+    );
+    let append = [
+        "close",
+        "year-end",
+        "--review",
+        text(&reviewed, "bytes"),
+        "--digest",
+        text(&reviewed, "review_digest"),
+        "--draft",
+        DRAFT,
+    ];
+    let (code, planned) = closing_agent(&f, &["read", "post"], &append);
+    assert_eq!(code, 0, "{}", planned.render());
+    assert_eq!(text(&planned, "event"), "draft_planned");
+    assert_eq!(
+        text(&planned, "proposal_digest"),
+        text(&reviewed, "proposal_digest")
+    );
+    let (code, retried) = closing_agent(&f, &["read", "post"], &append);
+    assert_eq!(code, 0, "{}", retried.render());
+    assert_eq!(get(&retried, "already_recorded"), &Json::Bool(true));
+    assert_eq!(
+        text(&retried, "control_entry"),
+        text(&planned, "control_entry")
+    );
+
+    // Reopening the durable book checks the actual retained bytes and planner
+    // capability, rather than trusting the CLI's description of its result.
+    {
+        let book = fa::Book::open_dir(
+            &f.book,
+            fa::BookKeys::load(&f.book.join("book.keys")).unwrap(),
+            fa::Entropy::deterministic(930),
+        )
+        .unwrap();
+        let view = book.draft(DRAFT).unwrap().unwrap();
+        assert_eq!(view.intents.len(), 1);
+        let retained = &view.intents[0];
+        assert!(!retained.capability.holds(fa::Op::Close));
+        let retained_hex: String = retained
+            .intent
+            .canonical_bytes()
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(retained_hex, text(&reviewed, "bytes"));
+    }
+    assert_eq!(
+        get(&ok(&f.book, &["tb", "--period", "FY2026-P12"]), "rows"),
+        &original_rows
+    );
+    let before_rehearsal = head(&f.book);
+    let rehearsed = ok(
+        &f.book,
+        &[
+            "close",
+            "dry-run",
+            "--period",
+            "FY2026-CLOSE",
+            "--draft",
+            DRAFT,
+        ],
+    );
+    assert_eq!(text(&rehearsed, "event"), "draft_diff");
+    assert_eq!(integer(&rehearsed, "plans"), 1);
+    for (code, expected) in [
+        ("4000", "100.00 USD"),
+        ("6000", "-20.00 USD"),
+        ("3000", "-80.00 USD"),
+    ] {
+        let row = get(&rehearsed, "rows")
+            .as_arr()
+            .unwrap()
+            .iter()
+            .find(|row| text(row, "code") == code)
+            .expect("closing delta");
+        assert_eq!(text(row, "delta"), expected);
+    }
+    assert_eq!(
+        head(&f.book),
+        before_rehearsal,
+        "rehearsal publishes nothing"
+    );
+    assert_eq!(
+        get(&ok(&f.book, &["tb", "--period", "FY2026-P12"]), "rows"),
+        &original_rows
+    );
+
+    for args in [
+        vec!["draft", "promote", DRAFT, "--as", "controller", "--yes"],
+        vec![
+            "draft",
+            "promote",
+            DRAFT,
+            "--as",
+            "closing-agent",
+            "--grant",
+            "close",
+            "--yes",
+        ],
+    ] {
+        let (code, refused) = run(&f.book, &args);
+        assert_ne!(
+            code,
+            0,
+            "independent Close authority is mandatory: {}",
+            refused.render()
+        );
+        assert_eq!(head(&f.book), before_rehearsal);
+    }
+    let promote = [
+        "draft",
+        "promote",
+        DRAFT,
+        "--as",
+        "controller",
+        "--grant",
+        "close",
+        "--yes",
+    ];
+    let promoted = ok(&f.book, &promote);
+    assert_eq!(text(&promoted, "event"), "draft_promoted");
+    assert_eq!(get(&promoted, "entries").as_arr().unwrap().len(), 1);
+    assert_eq!(
+        get(&promoted, "entries").as_arr().unwrap()[0]
+            .as_str()
+            .unwrap(),
+        text(&planned, "entry")
+    );
+    let verified = ok(&f.book, &["verify", "close", "FY2026"]);
+    assert_eq!(get(&verified, "nominal_zero_at_close"), &Json::Bool(true));
+    assert_eq!(get(&verified, "needs_reclose"), &Json::Bool(false));
+    let after = head(&f.book);
+    let retried = ok(&f.book, &promote);
+    assert_eq!(get(&retried, "already_recorded"), &Json::Bool(true));
+    assert_eq!(head(&f.book), after);
+}
+
+#[test]
+fn closing_agent_review_requires_read_post_and_cannot_become_native_publication() {
+    let f = Fixture::new(true);
+    let review = [
+        "close",
+        "year-end",
+        "--fiscal-year",
+        "2026",
+        "--period",
+        "FY2026-CLOSE",
+        "--key",
+        "agent-review",
+        "--evidence",
+        &f.evidence,
+        "--review-only",
+    ];
+    let before = head(&f.book);
+    for grants in [&["read"][..], &["post"][..]] {
+        let (code, refused) = closing_agent(&f, grants, &review);
+        assert_ne!(code, 0, "{}", refused.render());
+        assert_eq!(head(&f.book), before, "authority precedes observation");
+    }
+    let (code, noop) = closing_agent(&f, &["read", "post"], &review);
+    assert_eq!(code, 0, "{}", noop.render());
+    assert_eq!(text(&noop, "event"), "closing_noop");
+    f.post("authority-sale", "1000", "4000", "10.00");
+    let (code, reviewed) = closing_agent(&f, &["read", "post"], &review);
+    assert_eq!(code, 0, "{}", reviewed.render());
+    let before_denials = head(&f.book);
+    let native = [
+        "close",
+        "year-end",
+        "--review",
+        text(&reviewed, "bytes"),
+        "--digest",
+        text(&reviewed, "review_digest"),
+        "--dry-run",
+    ];
+    let (code, refused) = closing_agent(&f, &["read", "post"], &native);
+    assert_ne!(
+        code,
+        0,
+        "Agent cannot prepare a native Close plan: {}",
+        refused.render()
+    );
+    assert_eq!(head(&f.book), before_denials);
+    let (code, opened) = closing_agent(&f, &["read", "post"], &["draft", "new", "authority-close"]);
+    assert_eq!(code, 0, "{}", opened.render());
+    let before_denials = head(&f.book);
+    for extra in ["--dry-run", "--review-only", "--certify"] {
+        let args = [
+            "close",
+            "year-end",
+            "--review",
+            text(&reviewed, "bytes"),
+            "--digest",
+            text(&reviewed, "review_digest"),
+            "--draft",
+            "authority-close",
+            extra,
+        ];
+        let (code, refused) = closing_agent(&f, &["read", "post"], &args);
+        assert_ne!(code, 0, "invalid mixed route: {}", refused.render());
+        assert_eq!(head(&f.book), before_denials);
+    }
+    let (code, refused) = closing_agent(
+        &f,
+        &["read", "post"],
+        &[
+            "close",
+            "year-end",
+            "--review",
+            text(&reviewed, "bytes"),
+            "--digest",
+            &"00".repeat(32),
+            "--draft",
+            "authority-close",
+        ],
+    );
+    assert_ne!(code, 0, "wrong review digest: {}", refused.render());
+    assert_eq!(
+        integer(
+            get(&ok(&f.book, &["draft", "show", "authority-close"]), "draft"),
+            "intents"
+        ),
+        0
+    );
+    assert_eq!(run(&f.book, &["verify", "close", "FY2026"]).0, 8);
+}
+
 #[test]
 fn closing_binary_first_close_delta_reclose_zero_noop_and_exact_plan_retry() {
     let f = Fixture::new(true);

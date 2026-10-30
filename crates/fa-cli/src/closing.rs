@@ -3,6 +3,8 @@
 //! A portable review is the existing canonical PostIntent: its sealed proposal
 //! survives approval commits. The intrinsic basis is independently recomputed
 //! during native planning; a PostPlan then guards the publication frontier.
+//! Agents can retain that unchanged review in an otherwise empty owned draft;
+//! rehearsal uses scratch state and independent promotion requires Close.
 
 mod draft_review;
 pub(crate) use draft_review::render_draft_diff;
@@ -20,7 +22,7 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, check_post_planning_options, emit_post_plan, emit_posted, hex, parse_digest,
+    Ctx, Fail, Out, check_post_planning_options, emit_post_plan, emit_posted, hex, parse_digest,
     parse_vid, read_review_bytes, registered_unit_code, render_amount, usage, write_review_file,
 };
 use crate::json::{Json, obj, s};
@@ -446,8 +448,9 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--review-out",
             "--digest",
             "--plan-out",
+            "--draft",
         ],
-        SWITCHES,
+        &["--dry-run", "--review-only"],
     )?;
     check_post_planning_options(args)?;
     let review_only = args.switch("--review-only") || args.flag("--review-out").is_some();
@@ -457,9 +460,31 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             EXAMPLE,
         ));
     }
+    let draft = args.flag("--draft");
+    if draft.is_some()
+        && (args.flag("--review").is_none()
+            || review_only
+            || args.switch("--dry-run")
+            || args.flag("--plan-out").is_some())
+    {
+        return Err(usage(
+            "--draft retains an unchanged reviewed proposal, without a native plan or publication",
+            "fa close year-end --review <file|hex|-> --digest <review_digest> --draft <owned-empty-draft>",
+        ));
+    }
+    if draft.is_some() {
+        let _ = required(args, "--draft")?;
+    }
     let principal = ctx.principal(args);
-    let capability = ctx.capability(args, &["read", "post", "close"])?;
-    require_ops(&capability, &[fa::Op::Read, fa::Op::Post, fa::Op::Close])?;
+    let capability = if review_only || draft.is_some() {
+        let capability = ctx.capability(args, &["read", "post"])?;
+        require_ops(&capability, &[fa::Op::Read, fa::Op::Post])?;
+        capability
+    } else {
+        let capability = ctx.capability(args, &["read", "post", "close"])?;
+        require_ops(&capability, &[fa::Op::Read, fa::Op::Post, fa::Op::Close])?;
+        capability
+    };
     let bound = ctx.authority().is_some();
     if let Some(path) = args.flag("--review") {
         if review_only
@@ -502,6 +527,9 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
         let intent = with_approvals(review, args)?;
+        if let Some(name) = draft {
+            return plan_review_into_draft(&ctx.out, &mut book, capability, name, intent);
+        }
         let plan = book.plan(intent, &capability)??;
         if args.switch("--dry-run") {
             return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
@@ -523,7 +551,11 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let _ = required(args, "--key")?;
     let mut preparation = None;
     let mut book = ctx.books.open_admitted(args, |book| {
-        preparation = Some(book.prepare_year_end_close(&request, &capability)??);
+        preparation = Some(if review_only {
+            book.prepare_year_end_close_for_draft(&request, &capability)??
+        } else {
+            book.prepare_year_end_close(&request, &capability)??
+        });
         Ok(())
     })?;
     let prepared =
@@ -618,6 +650,67 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let posted = book.commit_plan(plan, &capability)??;
     ctx.out.at_book(&book)?;
     emit_posted(&ctx.out, posted, "Closing", false, None, None)
+}
+
+/// Retain the exact reviewed proposal. The kernel admits only one intrinsic
+/// year-end close in an otherwise empty owned draft and preserves its approvals.
+fn plan_review_into_draft(
+    out: &Out,
+    book: &mut Book,
+    capability: fa::Capability,
+    name: &str,
+    intent: PostIntent,
+) -> Result<(), Fail> {
+    let proposal = intent.proposal();
+    let entry = fa_model::entry_vid(
+        proposal.book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    let planned = book.plan_into_draft(capability, name, intent)??;
+    out.at_book(book)?;
+    let (plan_digest, proposal_digest) = match &planned.plan {
+        Some(preview) => {
+            let member = preview.members().last().ok_or_else(|| {
+                Fail::Internal("an admitted closing draft has no retained member".into())
+            })?;
+            (
+                s(hex(&preview.digest().map_err(|error| {
+                    Fail::Internal(format!("encode the closing draft preview: {error}"))
+                })?)),
+                s(hex(&member.entry.proposal_digest)),
+            )
+        }
+        None => (Json::Null, Json::Null),
+    };
+    let recorded = &planned.recorded;
+    out.event(
+        "draft_planned",
+        vec![
+            ("draft", s(format!("{:032x}", recorded.draft.0))),
+            ("name", s(name)),
+            (
+                "control_entry",
+                s(format!("{:032x}", recorded.control_entry.0)),
+            ),
+            ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+            ("entry", s(format!("{:032x}", entry.0))),
+            ("plan_digest", plan_digest),
+            ("proposal_digest", proposal_digest),
+            ("requested", Json::Null),
+            ("moved", Json::Null),
+        ],
+        &format!(
+            "reviewed year-end close retained in draft {name}; independent Close approval is required for promotion{}",
+            if recorded.already_recorded {
+                "; already planned"
+            } else {
+                ""
+            }
+        ),
+    );
+    Ok(())
 }
 
 fn with_approvals(review: PostIntent, args: &Args) -> Result<PostIntent, Fail> {
