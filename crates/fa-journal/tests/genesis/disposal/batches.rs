@@ -502,7 +502,7 @@ fn agent_lot_drafts_revalidate_unchanged_sources_and_promote_exactly_once() {
 
         let promoted = f.h.promote(f.h.approver_capability(), name).unwrap();
         assert_eq!(promoted.entries, entries);
-        assert_eq!(promoted.recorded_at, CommitSeq(before.0 + 1));
+        assert_eq!(promoted.recorded_at, fgdb_types::CommitSeq(before.0 + 1));
         assert_eq!(applied_totals(&f.h, &f.acquisitions), (12, costs.0));
         assert_eq!(applied_totals(&f.h, &acquisitions), (12, costs.1));
         for (reference, retained) in promoted.entries.iter().zip(&retained) {
@@ -696,7 +696,7 @@ fn lot_draft_rehearsal_preserves_source_sequences_vids_and_retained_reviews() {
             .unwrap()
             .unwrap();
     assert_eq!(rehearsal.batch.entries, entries);
-    assert_eq!(rehearsal.batch.recorded_at, CommitSeq(at.0 + 1));
+    assert_eq!(rehearsal.batch.recorded_at, fgdb_types::CommitSeq(at.0 + 1));
     assert_eq!(rehearsal.view, view);
     assert!(
         rehearsal
