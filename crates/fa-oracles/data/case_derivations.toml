@@ -433,3 +433,14 @@ role = ""
 balance_side = "debit"
 read = ["account"]
 example = "OLTA, no role of the 15 fits (plan §6.3)"
+
+# X2 (plan §10.1): us-gaap concepts of the XBRL cases. balance_side is the concept's XBRL
+# balance attribute; a credit concept reads in its natural sign (the runner negates the net).
+[[chart_rule_row]]
+chart_rule = "us-gaap-xbrl-v1"
+concept = "us-gaap:NetIncomeLoss"
+type = "Revenue"
+role = ""
+balance_side = "credit"
+read = ["account"]
+example = "X3's net income (loss) leaf per SunPower fiscal quarter (plan §10.1)"

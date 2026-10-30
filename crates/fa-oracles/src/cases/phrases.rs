@@ -121,15 +121,36 @@ impl Expectation {
             .and_then(AssertionStatus::parse)
     }
 
-    /// The source of the T's `published` fact, when it is sourced.
+    /// The T's published facts: its own `published`, and each target's (a
+    /// T that reads once per target, such as X-T-01).
     #[must_use]
-    pub fn published_source(&self, case: &Case) -> Option<String> {
-        let published = self.fields.str("published")?;
-        case.facts
-            .iter()
-            .find(|f| f.id == published)
-            .and_then(|f| f.sourced())
-            .map(|s| s.source.clone())
+    pub fn published_facts<'a>(&'a self, case: &'a Case) -> Vec<&'a str> {
+        let mut out: Vec<&str> = self.fields.str("published").into_iter().collect();
+        if let Some(set) = &case.expectations {
+            out.extend(
+                set.targets_of(&self.id)
+                    .filter_map(|t| t.fields.str("published")),
+            );
+        }
+        out
+    }
+
+    /// The sources of the T's published facts that are sourced, in order.
+    #[must_use]
+    pub fn published_sources(&self, case: &Case) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in self.published_facts(case) {
+            if let Some(s) = case
+                .facts
+                .iter()
+                .find(|f| f.id == p)
+                .and_then(|f| f.sourced())
+                && !out.contains(&s.source)
+            {
+                out.push(s.source.clone());
+            }
+        }
+        out
     }
 
     /// The sources of the expectation's basis closure (through
@@ -146,7 +167,7 @@ impl Expectation {
         let t_assurance = (self.kind == ExpectationType::T)
             .then(|| self.assurance_status())
             .flatten()
-            .zip(self.published_source(case));
+            .map(|status| (status, self.published_sources(case)));
         let mut out: Vec<SourceStatus> = Vec::new();
         for id in &facts {
             let Some(s) = case
@@ -161,7 +182,7 @@ impl Expectation {
                 continue;
             };
             let entry = match (&t_assurance, s.assurance.and_then(assurance_status)) {
-                (Some((status, published)), _) if *published == source.id => SourceStatus {
+                (Some((status, published)), _) if published.contains(&source.id) => SourceStatus {
                     source: source.id.clone(),
                     fact: None,
                     status: *status,

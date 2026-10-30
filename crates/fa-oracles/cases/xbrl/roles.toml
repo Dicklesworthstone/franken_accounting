@@ -1,0 +1,50 @@
+# XBRL-era restatements roles (plan §2.8). The instances name no individual, so every label is a
+# harness role and the deny list is empty (K-NAMES).
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the citation stubs"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the book's period transitions"
+
+[[role]]
+label = "case-approver-1"
+kind = "harness"
+description = "approves period locks and the restatement case's effect manifest"
+
+[[role]]
+label = "case-approver-2"
+kind = "harness"
+description = "the second approver, with no session lineage shared with the first"
+
+[[role]]
+label = "case-poster-1"
+kind = "harness"
+description = "opens, rehearses and posts the restatement case; approves none of it"
+
+[[role]]
+label = "case-reconciler-1"
+kind = "harness"
+description = "asserts a statement book's balances against the filing (fa assert-balance)"
+
+[[role]]
+label = "case-filer-1"
+kind = "harness"
+description = "posts a statement book's figures as the filing previously reported them"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the case's findings and checkpoints"
+
+[[role]]
+label = "examiner-witness"
+kind = "harness"
+description = "witnesses the case's checkpoints (plan §12.7)"
+
+[deny]
+hashes = []

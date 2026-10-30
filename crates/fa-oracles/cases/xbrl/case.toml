@@ -1,0 +1,17 @@
+# XBRL-era restatements (plan §10). X3's slice 1 lands SunPower's 10-K/A FY2022 income-statement
+# book: us-gaap:NetIncomeLoss in each of the eight fiscal quarters of FY2021 and FY2022, the
+# as-previously-reported A posted as filed, the restatement adjustment posted through a
+# Restatement case, and the certified balance tied to the tagged as-restated B (X-T-01) and read
+# back as originally reported (X-R-01). Coverage is per line: these eight lines only, never "the
+# statements". The balance-sheet book, the fiscal-year fold rows, the remaining concepts and the
+# Microsoft and RH filings are later slices.
+id = "xbrl"
+letter = "X"
+title = "XBRL-era restatements: SunPower fiscal 2022 10-K/A"
+version = 1
+kind = "case"
+scope = "the 10-K/A's tagged restatement of SunPower's net income (loss) for each fiscal quarter of 2021 and 2022: as previously reported, the adjustment, and as restated"
+claims = ["X-CASE-spwr-is-restatement", "X-R-01", "X-T-01"]
+capabilities = ["case_kind:Restatement", "verb:assert-balance", "verb:case", "verb:post", "verb:scenario"]
+pinned_commit = "9f812f33b"
+variants = ["statement-sunpower-is"]

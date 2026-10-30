@@ -19,9 +19,12 @@
 //! `--as-currently-stated`, or `--as-reported-in C:<oid>` for
 //! `reported_in:<period>[#<n>]`, the certificate the period's n-th `issue`
 //! step issued. Its value is the cell's net (debits minus credits) in the
-//! published unit's minor units. A coordinate is a `[[period]] code`, or a
+//! published unit's minor units; a row compares it with its published or
+//! posted figure in the read account's natural sign ([`natural_sign`]: a
+//! credit-normal account's net negated). A coordinate is a `[[period]] code`, or a
 //! fiscal year label (`FY<yyyy>`), read at that year's last period. An
-//! `assert_balance` step records B with `fa assert-balance` and posts its
+//! `assert_balance` step records B with `fa assert-balance` (as the cell's
+//! net, so a credit-normal account asserts -B) and posts its
 //! twins, B plus and B minus one minor unit, which the kernel must each
 //! refuse `FA-REF-140` (§5.3, §3.7 item 4).
 
@@ -29,7 +32,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
-use fa_oracles::cases::book::StepDef;
+use fa_oracles::cases::book::{BookVariant, StepDef};
 use fa_oracles::cases::contrib::{self, Contribution, ExplainedLeg, Explanation, Publication};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::gql;
@@ -114,6 +117,32 @@ pub fn scale_of(unit: &str) -> Option<u8> {
         .into_iter()
         .find(|r| r.code == unit)
         .map(|r| r.scale)
+}
+
+/// The sign that states an account read's net (debits minus credits) as
+/// its published figure: -1 when the account's type is credit-normal
+/// (`registries/account_types.toml` `normal_balance = 1`: Liability,
+/// Equity, Revenue), so a credit-balance concept such as an XBRL
+/// `NetIncomeLoss` compares as filed (X-T-01); 1 otherwise, and for every
+/// statement line, whose amounts are already as published.
+#[must_use]
+pub fn natural_sign(book: &BookVariant, verb: &str, target: &str) -> i128 {
+    if !matches!(verb, "balance" | "tb") {
+        return 1;
+    }
+    let Some(kind) = book
+        .accounts
+        .iter()
+        .find(|a| a.code == target)
+        .map(|a| a.account_type.as_str())
+    else {
+        return 1;
+    };
+    let credit = fa_registry::account_types_embedded()
+        .ok()
+        .and_then(|rows| rows.into_iter().find(|r| r.name == kind))
+        .is_some_and(|r| r.normal_balance == 1);
+    if credit { -1 } else { 1 }
 }
 
 /// A row's field: its target's, else its expectation's.
@@ -896,6 +925,15 @@ impl BookRun<'_> {
         };
         let Some(scale) = scale_of(&unit) else {
             self.fail(format!("expected a registered unit `{unit}` observed none"));
+            return;
+        };
+        // The kernel asserts the cell's net; the fact states the figure as
+        // published.
+        let Some(minor) = minor.checked_mul(natural_sign(self.book, "balance", account)) else {
+            self.fail(format!(
+                "expected {asserts} to have a net in range for {} (step {}) observed none",
+                step.reference, step.seq
+            ));
             return;
         };
         let evidence = step

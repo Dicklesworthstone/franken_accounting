@@ -83,43 +83,44 @@ pub fn check_with(
                     ),
                 ),
                 Some(status) => {
-                    let published = e.fields.str("published").and_then(|p| {
-                        case.facts.iter().find(|f| f.id == p).and_then(|f| f.sourced())
-                    });
-                    let replaced = published.and_then(|s| {
-                        s.assurance.and_then(assurance_status).or_else(|| {
-                            case.sources
-                                .iter()
-                                .find(|x| x.id == s.source)
-                                .map(|x| x.assertion_status)
-                        })
-                    });
-                    match replaced {
-                        Some(replaced) if strength(replaced).is_none() => r.fail(
-                            EXPECTATIONS_FILE,
-                            e.fields.line,
-                            &e.id,
-                            format!(
+                    // A T reading once per target publishes one fact per
+                    // target; its `assurance` replaces each one's status.
+                    let published = e.published_facts(case);
+                    let mut problems = std::collections::BTreeSet::new();
+                    if published.is_empty() {
+                        problems.insert("a T's `assurance` replaces its published fact's status; `published` names no sourced fact".to_string());
+                    }
+                    for p in published {
+                        let replaced = case
+                            .facts
+                            .iter()
+                            .find(|f| f.id == p)
+                            .and_then(|f| f.sourced())
+                            .and_then(|s| {
+                                s.assurance.and_then(assurance_status).or_else(|| {
+                                    case.sources
+                                        .iter()
+                                        .find(|x| x.id == s.source)
+                                        .map(|x| x.assertion_status)
+                                })
+                            });
+                        match replaced {
+                            Some(replaced) if strength(replaced).is_none() => problems.insert(format!(
                                 "`assurance = \"{raw}\"` narrows a filer's own statement, and the published source is {}",
                                 replaced.as_str()
-                            ),
-                        ),
-                        Some(replaced) if stronger(status, replaced) => r.fail(
-                            EXPECTATIONS_FILE,
-                            e.fields.line,
-                            &e.id,
-                            format!(
+                            )),
+                            Some(replaced) if stronger(status, replaced) => problems.insert(format!(
                                 "`assurance = \"{raw}\"` is stronger than the {} it replaces",
                                 replaced.as_str()
-                            ),
-                        ),
-                        Some(_) => {}
-                        None => r.fail(
-                            EXPECTATIONS_FILE,
-                            e.fields.line,
-                            &e.id,
-                            "a T's `assurance` replaces its published fact's status; `published` names no sourced fact",
-                        ),
+                            )),
+                            Some(_) => false,
+                            None => problems.insert(format!(
+                                "a T's `assurance` replaces its published fact's status; `published = \"{p}\"` names no sourced fact"
+                            )),
+                        };
+                    }
+                    for p in problems {
+                        r.fail(EXPECTATIONS_FILE, e.fields.line, &e.id, p);
                     }
                 }
             }
@@ -263,6 +264,40 @@ mod tests {
             exp_line(&case, "X-T-04")
         );
         assert!(text.lines().any(|l| l == want), "{want}\n{text}");
+    }
+
+    #[test]
+    fn t_assurance_holds_for_every_targets_published_fact() {
+        // X-T-01 publishes one B per target and states filer_unaudited.
+        let mut case = crate::cases::load(&crate::cases::embedded::XBRL.case_files())
+            .expect("the xbrl case loads");
+        let r = check(&Context::new(&case));
+        assert_eq!(r.verdict, Verdict::Pass, "{}", r.render(None));
+        assert!(
+            phrases_of(&case, "X-T-01")
+                .contains(&("SRC-SPWR-10KA-2022".into(), "reported (unaudited)")),
+            "{:?}",
+            phrases_of(&case, "X-T-01")
+        );
+        // Stronger than every target's source: one failure, not one per target.
+        set_status(
+            &mut case,
+            "SRC-SPWR-10KA-2022",
+            AssertionStatus::FilerUnaudited,
+        );
+        set_t_assurance(&mut case, "X-T-01", "filer_audited");
+        let r = check(&Context::new(&case));
+        let text = r.render(None);
+        assert_eq!(r.verdict, Verdict::Fail, "{text}");
+        let want = format!(
+            "FAIL K-ASSERT expectations.toml:{} X-T-01: `assurance = \"filer_audited\"` is stronger than the filer_unaudited it replaces",
+            exp_line(&case, "X-T-01")
+        );
+        assert_eq!(
+            text.lines().filter(|l| *l == want).count(),
+            1,
+            "{want}\n{text}"
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub struct EmbeddedCase {
 }
 
 /// Every committed case.
-pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM];
+pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL];
 
 /// The harness self-test (A7a; A8a completes it).
 pub const SELFTEST: EmbeddedCase = EmbeddedCase {
@@ -78,6 +78,33 @@ pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
         (
             "expectations.toml",
             include_str!("../../cases/worldcom/expectations.toml"),
+        ),
+    ],
+};
+
+/// The XBRL-era restatements (X3's slice 1: SunPower's 10-K/A
+/// income-statement book; X1-X7 add the rest).
+pub const XBRL: EmbeddedCase = EmbeddedCase {
+    id: "xbrl",
+    files: &[
+        ("case.toml", include_str!("../../cases/xbrl/case.toml")),
+        (
+            "sources.toml",
+            include_str!("../../cases/xbrl/sources.toml"),
+        ),
+        ("facts.toml", include_str!("../../cases/xbrl/facts.toml")),
+        (
+            "receipts.toml",
+            include_str!("../../cases/xbrl/receipts.toml"),
+        ),
+        ("roles.toml", include_str!("../../cases/xbrl/roles.toml")),
+        (
+            "books/statement-sunpower-is.toml",
+            include_str!("../../cases/xbrl/books/statement-sunpower-is.toml"),
+        ),
+        (
+            "expectations.toml",
+            include_str!("../../cases/xbrl/expectations.toml"),
         ),
     ],
 };

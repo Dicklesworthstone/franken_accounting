@@ -1,0 +1,24 @@
+# XBRL-era restatements sources ledger (plan §4.1, §10.1; §15 X1). Hand-authored. Facts may
+# cite only `OK` rows. Retrieval is archive-first until owner decision 1 grants a sec.gov
+# contact (`FA_SEC_CONTACT`): an Internet Archive capture, `original_hash_compared = false`.
+# `case_fetch.py fetch xbrl` re-downloads each OK row and must reproduce its `sha256`.
+
+[[source]]
+id = "SRC-SPWR-10KA-2022"
+title = "SunPower Corporation, Form 10-K/A for the fiscal year ended January 1, 2023: XBRL instance document"
+publisher = "SunPower Corporation (EDGAR)"
+original_url = "https://www.sec.gov/Archives/edgar/data/867773/000086777323000117/spwr-20230101_htm.xml"
+archive_url = "http://web.archive.org/web/20231224165637id_/https://www.sec.gov/Archives/edgar/data/867773/000086777323000117/spwr-20230101_htm.xml"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-30T04:23:49Z"
+sha256 = "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"
+format = "xml"
+extraction = ["case_fetch.py extract", "text-utf-8", "67c89bd716660f4fa29f763084ca6b3b6997e166ee8d80ea4cfb679eaaa27247"]
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+anchor_scheme = ["xbrl"]
+status = "OK"
+filed_on = "2023-12-18"
+restates = []
+notes = "Accession 0000867773-23-000117, the 10-K/A (dei:AmendmentFlag true) that restates SunPower's fiscal 2022 and 2021 statements; Filing Date 2023-12-18 on its EDGAR filing index (Internet Archive capture of 2023-12-19). This is the instance EDGAR extracts from the inline XBRL document spwr-20230101.htm, 5,332,240 bytes as captured 2023-12-24. Its quarterly figures are the filing's selected unaudited quarterly financial data, so a quarterly line states filer_unaudited; the auditor's report on the annual statements is in the HTML document, which is not yet a row here. The originally filed fiscal 2022 10-K, which this filing restates, is not yet a row either, so restates is empty until it is."

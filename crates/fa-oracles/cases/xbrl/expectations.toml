@@ -1,0 +1,183 @@
+# SunPower 10-K/A FY2022 expectations (plan §10.1; §15 X3 slice 1). X-T-01 bridges
+# us-gaap:NetIncomeLoss in each fiscal quarter of FY2021 and FY2022: the book posts the
+# 10-K/A's as-previously-reported A, its restatement adjustment through the Restatement case,
+# and the certified balance of the quarter's leaf must equal the tagged as-restated B
+# exactly. X-R-01 reads each leaf as originally reported and must return A. The quarterly
+# figures are the filing's unaudited quarterly data, so X-T-01 states filer_unaudited.
+
+[[expectation]]
+id = "X-T-01"
+type = "T"
+book_variant = "statement-sunpower-is"
+statement_template = "T.bridge"
+basis = ["spwr.NetIncomeLoss.c-462", "spwr.NetIncomeLoss.c-463", "spwr.NetIncomeLoss.c-459", "spwr.NetIncomeLoss.c-460", "spwr.NetIncomeLoss.c-456", "spwr.NetIncomeLoss.c-457", "spwr.NetIncomeLoss.c-453", "spwr.NetIncomeLoss.c-454", "spwr.NetIncomeLoss.c-450", "spwr.NetIncomeLoss.c-451", "spwr.NetIncomeLoss.c-447", "spwr.NetIncomeLoss.c-448", "spwr.NetIncomeLoss.c-444", "spwr.NetIncomeLoss.c-445", "spwr.NetIncomeLoss.c-441", "spwr.NetIncomeLoss.c-442"]
+kind = "bridge"
+vintages = ["A:SRC-SPWR-10KA-2022", "D:SRC-SPWR-10KA-2022", "B:SRC-SPWR-10KA-2022"]
+assurance = "filer_unaudited"
+
+[[expectation]]
+id = "X-R-01"
+type = "R"
+book_variant = "statement-sunpower-is"
+statement_template = "R.read_back"
+basis = ["spwr.NetIncomeLoss.c-462", "spwr.NetIncomeLoss.c-459", "spwr.NetIncomeLoss.c-456", "spwr.NetIncomeLoss.c-453", "spwr.NetIncomeLoss.c-450", "spwr.NetIncomeLoss.c-447", "spwr.NetIncomeLoss.c-444", "spwr.NetIncomeLoss.c-441"]
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-464"
+basis = ["spwr.NetIncomeLoss.c-462", "spwr.NetIncomeLoss.c-463"]
+read_verb = "balance"
+read_target = "4101"
+read_coordinate = "FY2021Q1"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-464"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-461"
+basis = ["spwr.NetIncomeLoss.c-459", "spwr.NetIncomeLoss.c-460"]
+read_verb = "balance"
+read_target = "4102"
+read_coordinate = "FY2021Q2"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-461"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-458"
+basis = ["spwr.NetIncomeLoss.c-456", "spwr.NetIncomeLoss.c-457"]
+read_verb = "balance"
+read_target = "4103"
+read_coordinate = "FY2021Q3"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-458"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-455"
+basis = ["spwr.NetIncomeLoss.c-453", "spwr.NetIncomeLoss.c-454"]
+read_verb = "balance"
+read_target = "4104"
+read_coordinate = "FY2021Q4"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-455"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-452"
+basis = ["spwr.NetIncomeLoss.c-450", "spwr.NetIncomeLoss.c-451"]
+read_verb = "balance"
+read_target = "4105"
+read_coordinate = "FY2022Q1"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-452"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-449"
+basis = ["spwr.NetIncomeLoss.c-447", "spwr.NetIncomeLoss.c-448"]
+read_verb = "balance"
+read_target = "4106"
+read_coordinate = "FY2022Q2"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-449"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-446"
+basis = ["spwr.NetIncomeLoss.c-444", "spwr.NetIncomeLoss.c-445"]
+read_verb = "balance"
+read_target = "4107"
+read_coordinate = "FY2022Q3"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-446"
+
+[[target]]
+expectation = "X-T-01"
+fact = "spwr.NetIncomeLoss.c-443"
+basis = ["spwr.NetIncomeLoss.c-441", "spwr.NetIncomeLoss.c-442"]
+read_verb = "balance"
+read_target = "4108"
+read_coordinate = "FY2022Q4"
+read_selector = "currently_stated"
+published = "spwr.NetIncomeLoss.c-443"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-462"
+basis = ["spwr.NetIncomeLoss.c-462"]
+read_verb = "balance"
+read_target = "4101"
+read_coordinate = "FY2021Q1"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-462"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-459"
+basis = ["spwr.NetIncomeLoss.c-459"]
+read_verb = "balance"
+read_target = "4102"
+read_coordinate = "FY2021Q2"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-459"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-456"
+basis = ["spwr.NetIncomeLoss.c-456"]
+read_verb = "balance"
+read_target = "4103"
+read_coordinate = "FY2021Q3"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-456"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-453"
+basis = ["spwr.NetIncomeLoss.c-453"]
+read_verb = "balance"
+read_target = "4104"
+read_coordinate = "FY2021Q4"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-453"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-450"
+basis = ["spwr.NetIncomeLoss.c-450"]
+read_verb = "balance"
+read_target = "4105"
+read_coordinate = "FY2022Q1"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-450"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-447"
+basis = ["spwr.NetIncomeLoss.c-447"]
+read_verb = "balance"
+read_target = "4106"
+read_coordinate = "FY2022Q2"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-447"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-444"
+basis = ["spwr.NetIncomeLoss.c-444"]
+read_verb = "balance"
+read_target = "4107"
+read_coordinate = "FY2022Q3"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-444"
+
+[[target]]
+expectation = "X-R-01"
+fact = "spwr.NetIncomeLoss.c-441"
+basis = ["spwr.NetIncomeLoss.c-441"]
+read_verb = "balance"
+read_target = "4108"
+read_coordinate = "FY2022Q4"
+read_selector = "originally_reported"
+posted = "spwr.NetIncomeLoss.c-441"

@@ -1029,10 +1029,23 @@ fn read_against(
         ));
     };
     row.projection.push(("read".into(), read.token.clone()));
-    let observed = match &read.value {
+    let net = match &read.value {
         Ok(v) => *v,
         Err(why) if why.starts_with("needs:") => return Err((RowVerdict::Unrun, why.clone())),
         Err(why) => return Err((RowVerdict::Fail, why.clone())),
+    };
+    // The read is the account's net; the fact states the figure as
+    // published, in the account type's natural sign.
+    let sign = super::reads::natural_sign(
+        run.book,
+        super::reads::field(e, t, "read_verb").unwrap_or("-"),
+        super::reads::field(e, t, "read_target").unwrap_or("-"),
+    );
+    let Some(observed) = net.checked_mul(sign) else {
+        return Err((
+            RowVerdict::Fail,
+            format!("expected a read in range observed net {net}"),
+        ));
     };
     let fact = super::reads::field(e, t, value_key).unwrap_or("-");
     let Some((want, unit)) = run.value_of(fact) else {
@@ -1139,11 +1152,18 @@ fn drift_read_back(
         );
     };
     let step = cite.trim_start_matches("attestation:");
+    // The assertion recorded the cell's net; B is as published.
+    let sign = super::reads::natural_sign(
+        run.book,
+        "balance",
+        e.fields.str("read_target").unwrap_or("-"),
+    );
     let asserted = run
         .assertions
         .get(step)
         .and_then(|a| a.balance.split_once(' '))
-        .and_then(|(amount, _)| parse_amount(amount, scale).ok());
+        .and_then(|(amount, _)| parse_amount(amount, scale).ok())
+        .and_then(|net| net.checked_mul(sign));
     let Some(a) = asserted else {
         return (
             cite.clone(),

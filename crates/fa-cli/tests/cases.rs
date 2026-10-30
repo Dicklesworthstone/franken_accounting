@@ -112,6 +112,24 @@ fn worldcom() {
     assert!(o.rows_ok, "{text}");
 }
 
+/// X3 slice 1 (§10.1): SunPower's 10-K/A restates net income (loss) in each
+/// fiscal quarter of 2021 and 2022. The book posts each quarter's
+/// as-previously-reported figure as filed, then its tagged adjustment
+/// through a Restatement case. Every quarter's certified balance, read in
+/// the concept's credit sign, equals the tagged as-restated figure
+/// (X-T-01, kernel-attested, its contributions exactly that quarter's A and
+/// delta), and reads back as originally reported (X-R-01).
+#[test]
+fn xbrl() {
+    let o = outcome("xbrl");
+    let text = o.text();
+    println!("{text}");
+    assert!(o.rows_ok, "{text}");
+    let count = |prefix: &str| o.lines.iter().filter(|l| l.starts_with(prefix)).count();
+    assert_eq!(count("PASS X-T-01 T "), 8, "{text}");
+    assert_eq!(count("PASS X-R-01 R "), 8, "{text}");
+}
+
 /// A8b, W5 (§6.4 W-P-01(a)): the director plans F6a into a draft of his own
 /// and promotes it himself. On the cell the posting laws admit (the
 /// reviewed placeholder), the owner check refuses the promotion FA-REF-008

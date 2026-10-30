@@ -1066,6 +1066,10 @@ impl BookRun<'_> {
                 .checked_add(recomputation.value)
                 .ok_or("the recomputations overflow")?;
         }
+        // A recomputed account cell is its net; B is as published.
+        let sign =
+            super::reads::natural_sign(self.book, field(e, t, "read_verb").unwrap_or("-"), target);
+        let sum = sum.checked_mul(sign).ok_or("the recomputations overflow")?;
         if sum == b {
             Ok(())
         } else {

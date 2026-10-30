@@ -10,7 +10,8 @@
 //! or `does not re-add`.
 //!
 //! The named inputs are computed, never authored: every intent of the T's
-//! `basis` facts other than its `published` one, every intent (or intent of
+//! `basis` facts (a target's own, else its row's) other than its
+//! `published` one, every intent (or intent of
 //! a fact) its `inputs_named` lists, and every delta (`restates` or
 //! `revises`) whose target is one of those. A `delta` T's named inputs are
 //! its deltas alone: an A posting does not move a delta.
@@ -382,10 +383,13 @@ pub fn union(
 #[must_use]
 pub fn named_inputs(book: &BookVariant, read: &Read<'_>) -> BTreeSet<String> {
     let published = read.str("published");
+    // A target's own basis names its inputs (X-T-01 reads one quarter per
+    // target); a row without targets, or a target naming none, takes its
+    // expectation's.
     let basis = read
-        .expectation
-        .fields
-        .strs("basis")
+        .target
+        .and_then(|t| t.fields.strs("basis"))
+        .or_else(|| read.expectation.fields.strs("basis"))
         .unwrap_or_default()
         .to_vec();
     let mut named: BTreeSet<String> = book
@@ -594,6 +598,52 @@ mod tests {
                 named,
                 ["A-1", "delta-A-1"].map(str::to_string).into(),
                 "B-1 is published, not an input"
+            );
+        });
+    }
+
+    #[test]
+    fn a_targets_own_basis_names_its_inputs() {
+        use crate::cases::expect::{Field, Fields, Target};
+        // The row's basis spans two inputs; its one target names only A-1.
+        let case = selftest();
+        with_read(&case, |book, read| {
+            let mut e = read.expectation.clone();
+            e.fields.map.insert(
+                "basis".into(),
+                Field::Strs(["A-1", "S-1", "B-1"].map(str::to_string).into()),
+            );
+            let mut fields = Fields::default();
+            fields
+                .map
+                .insert("basis".into(), Field::Strs(vec!["A-1".to_string()]));
+            fields
+                .map
+                .insert("published".into(), Field::Str("B-1".into()));
+            let t = Target {
+                expectation: e.id.clone(),
+                fact: "B-1".into(),
+                fields,
+            };
+            let row = Read {
+                expectation: &e,
+                target: None,
+                fields: &e.fields,
+            };
+            assert_eq!(
+                named_inputs(book, &row),
+                ["A-1", "S-1", "delta-A-1"].map(str::to_string).into(),
+                "without a target, the row's basis names the inputs"
+            );
+            let one = Read {
+                expectation: &e,
+                target: Some(&t),
+                fields: &t.fields,
+            };
+            assert_eq!(
+                named_inputs(book, &one),
+                ["A-1", "delta-A-1"].map(str::to_string).into(),
+                "a target's basis names its inputs, not its row's"
             );
         });
     }
