@@ -146,6 +146,73 @@ fn xbrl() {
     }
 }
 
+/// A14 (§12.3): every committed case's README is the renderer's output of
+/// its data files and this binary's run of the case, so the README cannot
+/// drift from the evidence: a re-render must equal the committed bytes. A
+/// README that differs, or every README with `FA_CASES_RENDER=print`, is
+/// printed between `BEGIN README <case>` and `END README <case>` lines
+/// (authoring; the run happens on a build worker, so the test never writes
+/// the tree).
+#[test]
+fn rendered_docs_do_not_drift() {
+    use fa_oracles::cases::embedded::CASES;
+    use fa_oracles::cases::render::{RunRecords, render_readme};
+    let print = std::env::var("FA_CASES_RENDER").is_ok_and(|v| v == "print");
+    let mut fails = Vec::new();
+    for case in CASES.iter().filter(|c| c.id != SELFTEST) {
+        let path = format!("crates/fa-oracles/cases/{}/README.md", case.id);
+        let o = outcome(case.id);
+        let loaded = fa_oracles::cases::load(&case.case_files()).expect("a committed case loads");
+        let records = RunRecords {
+            steps: &o.steps,
+            verdicts: &o.verdicts,
+            green: o.rows_ok,
+        };
+        let text = match render_readme(&loaded, &records) {
+            Ok(text) => text,
+            Err(e) => {
+                fails.push(format!("RENDER {} FAIL {path} reason={e:?}", case.id));
+                continue;
+            }
+        };
+        let committed = case
+            .files
+            .iter()
+            .find(|(p, _)| *p == "README.md")
+            .map(|(_, t)| *t);
+        if print || committed != Some(text.as_str()) {
+            println!("BEGIN README {}\n{text}END README {}", case.id, case.id);
+        }
+        match committed {
+            Some(c) if c == text => println!("RENDER {} PASS {path}", case.id),
+            Some(c) => {
+                let (n, want, got) = c
+                    .lines()
+                    .zip(text.lines())
+                    .enumerate()
+                    .find(|(_, (a, b))| a != b)
+                    .map_or_else(
+                        || (c.lines().count().min(text.lines().count()), "", ""),
+                        |(n, (a, b))| (n, a, b),
+                    );
+                fails.push(format!(
+                    "RENDER {} FAIL {path} reason=line {} differs: committed `{want}` rendered `{got}`",
+                    case.id,
+                    n + 1
+                ));
+            }
+            None => fails.push(format!(
+                "RENDER {} FAIL {path} reason=no committed README",
+                case.id
+            )),
+        }
+    }
+    for f in &fails {
+        println!("{f}");
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+}
+
 /// A8b, W5 (§6.4 W-P-01(a)): the director plans F6a into a draft of his own
 /// and promotes it himself. On the cell the posting laws admit (the
 /// reviewed placeholder), the owner check refuses the promotion FA-REF-008

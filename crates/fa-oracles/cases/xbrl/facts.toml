@@ -19,6 +19,8 @@ quote_sha256 = "9f84c2d97ff8d788b9832e8bd4f521e4b8068ad3b60789cfc9bcc2831907c2f3
 about_scope = "scheme:spwr-fq-2021-01-2021-04"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2021Q1"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-463"
@@ -30,6 +32,8 @@ quote_sha256 = "ebdc20b28bc7bf2fec2b66c459ffc59ee67215cefeda10c567bd5500feafc8ac
 about_scope = "scheme:spwr-fq-2021-01-2021-04"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2021Q1"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-464"
@@ -41,6 +45,8 @@ quote_sha256 = "bf6ea0d5077cb55acd9b308eb1243c06e2602f2e3030638d8536e0b61f5f664d
 about_scope = "scheme:spwr-fq-2021-01-2021-04"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2021Q1"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-459"
@@ -52,6 +58,8 @@ quote_sha256 = "0f7a7bc4bddf29829f4d4a47010e7a08e4379d1dfe5d21cd3266745d2134935f
 about_scope = "scheme:spwr-fq-2021-04-2021-07"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2021Q2"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-460"
@@ -63,6 +71,8 @@ quote_sha256 = "a89af67cdc20a6887c7cc92c0e39df7f7fc543fec7337f2557641dc1b0a28848
 about_scope = "scheme:spwr-fq-2021-04-2021-07"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2021Q2"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-461"
@@ -74,6 +84,8 @@ quote_sha256 = "4da21a9c6bb5c487ff353467669cb8f70ba98fdffb3afe115f7ff1c5c7213d62
 about_scope = "scheme:spwr-fq-2021-04-2021-07"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2021Q2"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-456"
@@ -85,6 +97,8 @@ quote_sha256 = "893c80f2f96b2a5f154b2642d38a88578459d55dac59fb3b7170b870ce5dee67
 about_scope = "scheme:spwr-fq-2021-07-2021-10"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2021Q3"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-457"
@@ -96,6 +110,8 @@ quote_sha256 = "ecb663ae42ba9c5ca8322aab6846c7502a157e6d1a5d83ab6876d2391c5459a2
 about_scope = "scheme:spwr-fq-2021-07-2021-10"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2021Q3"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-458"
@@ -107,6 +123,8 @@ quote_sha256 = "1afe6dd19dde80b9ac0499ef091899947ab1cafa7e7e270e180999d07a51b6dd
 about_scope = "scheme:spwr-fq-2021-07-2021-10"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2021Q3"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-453"
@@ -118,6 +136,8 @@ quote_sha256 = "ede4055524092ae1ffe278641ea71db58799dec23689d94a5bb18870b69338d3
 about_scope = "scheme:spwr-fq-2021-10-2022-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2021Q4"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-454"
@@ -129,6 +149,8 @@ quote_sha256 = "5cd44f694b5363a970c7d7d0b93382352b9ad7f4df08370703515b13803d3c90
 about_scope = "scheme:spwr-fq-2021-10-2022-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2021Q4"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-455"
@@ -140,6 +162,8 @@ quote_sha256 = "c3b920db4f43ef2883aafdf66f065db60bcd6744b2e98f73403d5cb20f487663
 about_scope = "scheme:spwr-fq-2021-10-2022-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2021Q4"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-450"
@@ -151,6 +175,8 @@ quote_sha256 = "5f4bf5e5868de3a5e428e8dc4947d7bdd6157cb7161932469b0b7ac8ee7ff031
 about_scope = "scheme:spwr-fq-2022-01-2022-04"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2022Q1"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-451"
@@ -162,6 +188,8 @@ quote_sha256 = "9e00787e7372d6f60a18cc96092e99d88098b0f1b3d448f5e1cc7de561070da2
 about_scope = "scheme:spwr-fq-2022-01-2022-04"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2022Q1"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-452"
@@ -173,6 +201,8 @@ quote_sha256 = "e126332e9a339e2761848dc8c1a4d830daed358a72bc43448facee79922ca7ff
 about_scope = "scheme:spwr-fq-2022-01-2022-04"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2022Q1"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-447"
@@ -184,6 +214,8 @@ quote_sha256 = "db8401d934ea6a2a1bf2b7444c4cd275ffe05a36b8170598809c4b4deccb0d4c
 about_scope = "scheme:spwr-fq-2022-04-2022-07"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2022Q2"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-448"
@@ -195,6 +227,8 @@ quote_sha256 = "6762c9d4cfdf39f58138fd0315da95d283c22d1455bb999d106dfab28a3b767e
 about_scope = "scheme:spwr-fq-2022-04-2022-07"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2022Q2"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-449"
@@ -206,6 +240,8 @@ quote_sha256 = "b01f9e1d581733614b15f8d25b86d10e07fe1d6cf0105ac19a070cd4711a135e
 about_scope = "scheme:spwr-fq-2022-04-2022-07"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2022Q2"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-444"
@@ -217,6 +253,8 @@ quote_sha256 = "3266877e7d5513d28904d75620791d1b8968019798d302a9cc3202e80cde8cae
 about_scope = "scheme:spwr-fq-2022-07-2022-10"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2022Q3"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-445"
@@ -228,6 +266,8 @@ quote_sha256 = "ef085502b138d30648743d4ee410520c220b60b04d3036909ee628d6c28bc90c
 about_scope = "scheme:spwr-fq-2022-07-2022-10"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2022Q3"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-446"
@@ -239,6 +279,8 @@ quote_sha256 = "2b81730d08b7dd81347d38343d813755e3c497e0bf3827f05007140abed87d11
 about_scope = "scheme:spwr-fq-2022-07-2022-10"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2022Q3"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-441"
@@ -250,6 +292,8 @@ quote_sha256 = "29c91a8b77e9ee3e8f0e1781233a3ea48c0fba941e6e3328697747e3b88c5584
 about_scope = "scheme:spwr-fq-2022-10-2023-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:ScenarioPreviouslyReportedMember@FY2022Q4"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-442"
@@ -261,6 +305,8 @@ quote_sha256 = "09e951415fd64edb87225b01800eb1a4868544720039637db19ea5937728d783
 about_scope = "scheme:spwr-fq-2022-10-2023-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss:RestatementAdjustmentMember@FY2022Q4"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 [[fact]]
 id = "spwr.NetIncomeLoss.c-443"
@@ -272,6 +318,8 @@ quote_sha256 = "bce46378651d29e7fcfa6faa3ec99bbd7b556c11638e5e5d59976e8c89409e50
 about_scope = "scheme:spwr-fq-2022-10-2023-01"
 granularity = "xbrl_fact"
 cell = "NetIncomeLoss@FY2022Q4"
+assurance = "unaudited"
+assurance_fact = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
 
 # Balance-sheet facts (X3 slice 2): SunPower's fiscal year-ends 2022-01-02 and 2023-01-01.
 # Liabilities, StockholdersEquity and MinorityInterest as previously reported, adjusted and
@@ -521,6 +569,32 @@ quote_sha256 = "8fb60581929025a9bf089b4c734ea192383c01eb552a9daeb39a9dd5cbd667f0
 about_scope = "scheme:spwr-fye-2022-01"
 granularity = "xbrl_fact"
 cell = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest@2022-01-02"
+
+# The assurance facts (plan §2.2, §4.1): the instance tags the auditor of the annual statements
+# (dei:AuditorName, the source row's `assurance = "audited"`), and its quarterly-data text block
+# opens "SELECTED UNAUDITED QUARTERLY FINANCIAL DATA", which every quarterly fact names as its own
+# `assurance = "unaudited"` (a fact narrows its row's status, never widens it). Each binds by the
+# SHA-256 of the whole fact value, like every xbrl fact.
+
+[[fact]]
+id = "spwr.dei.AuditorName"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "dei:AuditorName|c-1"
+quote_sha256 = "b006770243ed2a2886703c0afd5b1a15782779c69ee4775bf6ec2f7593758723"
+about_scope = "scheme:spwr-fy-2022-01-2023-01"
+granularity = "xbrl_fact"
+
+[[fact]]
+id = "spwr.QuarterlyFinancialInformationTextBlock.c-1"
+provenance = "sourced"
+source = "SRC-SPWR-10KA-2022"
+anchor_kind = "xbrl"
+anchor = "us-gaap:QuarterlyFinancialInformationTextBlock|c-1"
+quote_sha256 = "72848fd9c177074a387694ff3b73746a79f2bd642320d4ade8e3b1d7c56e6ced"
+about_scope = "scheme:spwr-quarterly-data"
+granularity = "xbrl_fact"
 
 [[value]]
 fact = "spwr.NetIncomeLoss.c-462"

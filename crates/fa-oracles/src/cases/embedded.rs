@@ -79,6 +79,7 @@ pub const WORLDCOM: EmbeddedCase = EmbeddedCase {
             "expectations.toml",
             include_str!("../../cases/worldcom/expectations.toml"),
         ),
+        ("README.md", include_str!("../../cases/worldcom/README.md")),
     ],
 };
 
@@ -114,6 +115,7 @@ pub const XBRL: EmbeddedCase = EmbeddedCase {
             "expectations.toml",
             include_str!("../../cases/xbrl/expectations.toml"),
         ),
+        ("README.md", include_str!("../../cases/xbrl/README.md")),
     ],
 };
 

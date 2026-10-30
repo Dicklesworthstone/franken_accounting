@@ -78,6 +78,7 @@ pub mod receipt;
 pub mod reference;
 pub mod rel;
 pub mod remedy;
+pub mod render;
 pub mod roles;
 pub mod rows;
 pub mod scope;

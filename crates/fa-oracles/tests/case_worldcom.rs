@@ -56,7 +56,7 @@ const SOURCES: [&str; 10] = [
     "SRC-WC-401",
     "SRC-WC-406",
     "SRC-WC-EX27-1999",
-    "SRC-WC-ABIDE",
+    "SRC-WC-005",
     "SRC-WC-8K-20020626",
     "SRC-WC-8K-20020626-EX991",
 ];
@@ -611,7 +611,7 @@ fn wc_fact_citing_blocked_source_is_refused() {
     edit_row(
         &mut files,
         "sources.toml",
-        "id = \"SRC-WC-ABIDE\"\n",
+        "id = \"SRC-WC-005\"\n",
         "status = \"OK\"",
         "status = \"BLOCKED\"\nstatus_reason = \"unread candidate\"",
     );
@@ -620,7 +620,7 @@ fn wc_fact_citing_blocked_source_is_refused() {
         "facts.toml",
         "id = \"F2\"\n",
         "source = \"SRC-WC-001\"",
-        "source = \"SRC-WC-ABIDE\"",
+        "source = \"SRC-WC-005\"",
     );
     let line = row_header_line(&files, "facts.toml", "id = \"F2\"\n");
     refused(
@@ -629,7 +629,7 @@ fn wc_fact_citing_blocked_source_is_refused() {
         "facts.toml",
         "F2",
         line,
-        &["SRC-WC-ABIDE", "BLOCKED"],
+        &["SRC-WC-005", "BLOCKED"],
     );
 }
 
