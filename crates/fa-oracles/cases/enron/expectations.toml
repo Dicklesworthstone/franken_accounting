@@ -1,0 +1,86 @@
+# Enron expectations (plan §7.2; §15 E4). E-T-02 is the 2000-12-31 balance-sheet footing in both
+# vintages: every printed line posted to its own account on its own statement book, and the
+# certified type-level totals compared with the printed totals, which are never posted. The
+# loader binds an expectation to one book variant, so the plan's one E-T-02 is two rows: E-T-02 on
+# the FY2000 10-K's book (filer_audited), read as reported in its issuance because the 10-Q
+# restates those figures (K-VINTAGE), and E-T-05 on the Q3-2001 10-Q's restated column
+# (filer_unaudited), the latest vintage.
+
+[[expectation]]
+id = "E-T-02"
+type = "T"
+book_variant = "statement-10k2000"
+statement_template = "T.footing"
+basis = ["BS10K-SFC"]
+kind = "footing"
+vintages = ["exhibit:SRC-ENR-008"]
+
+[[target]]
+expectation = "E-T-02"
+fact = "BS10K-TOTAL-ASSETS"
+basis = ["BS10K-SFC"]
+read_verb = "balance-sheet"
+read_target = "assets"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000"
+published = "BS10K-TOTAL-ASSETS"
+
+[[target]]
+expectation = "E-T-02"
+fact = "BS10K-TOTAL-EQUITY"
+basis = ["BS10K-SFC"]
+read_verb = "balance-sheet"
+read_target = "total_equity"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000"
+published = "BS10K-TOTAL-EQUITY"
+
+[[target]]
+expectation = "E-T-02"
+fact = "BS10K-TOTAL-LE"
+basis = ["BS10K-SFC"]
+read_verb = "balance-sheet"
+read_target = "liabilities_and_equity"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000"
+published = "BS10K-TOTAL-LE"
+
+
+[[expectation]]
+id = "E-T-05"
+type = "T"
+book_variant = "statement-10q2001q3"
+statement_template = "T.footing"
+basis = ["BS10Q-SFC"]
+kind = "footing"
+vintages = ["exhibit:SRC-ENR-003"]
+
+[[target]]
+expectation = "E-T-05"
+fact = "BS10Q-TOTAL-ASSETS"
+basis = ["BS10Q-SFC"]
+read_verb = "balance-sheet"
+read_target = "assets"
+read_coordinate = "FY2000"
+read_selector = "currently_stated"
+published = "BS10Q-TOTAL-ASSETS"
+
+[[target]]
+expectation = "E-T-05"
+fact = "BS10Q-TOTAL-EQUITY"
+basis = ["BS10Q-SFC"]
+read_verb = "balance-sheet"
+read_target = "total_equity"
+read_coordinate = "FY2000"
+read_selector = "currently_stated"
+published = "BS10Q-TOTAL-EQUITY"
+
+[[target]]
+expectation = "E-T-05"
+fact = "BS10Q-TOTAL-LE"
+basis = ["BS10Q-SFC"]
+read_verb = "balance-sheet"
+read_target = "liabilities_and_equity"
+read_coordinate = "FY2000"
+read_selector = "currently_stated"
+published = "BS10Q-TOTAL-LE"

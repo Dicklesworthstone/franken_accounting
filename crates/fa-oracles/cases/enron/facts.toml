@@ -3,6 +3,14 @@
 # rest. An assurance sentence is no statement line, but none of the §2.3 granularities describes a
 # legend, so these take `statement_line`, as WorldCom's and Lehman's assurance facts do (the bead
 # records the gap). Each scope is a scheme whose range covers every period its sentence names.
+#
+# E2d slice 1: the 2000-12-31 consolidated balance sheet in both vintages, every printed line
+# (`BS10K-*`, SRC-ENR-008; `BS10Q-*`, SRC-ENR-003's restated column) and its printed totals, in
+# millions (`scale` param 6), each bound by its table cell. Each statement prints its balance sheet
+# as two tables under one title (assets, then liabilities and equity), so an anchor names the table
+# by its occurrence (`#1`, `#2`), and a label the table repeats ("Other") by its own; a label printed
+# over several lines is anchored by its first line. Two interpretation facts read each vintage's
+# lines as one posted entry.
 
 [[fact]]
 id = "ASSUR-ENR-002"
@@ -43,3 +51,1615 @@ anchor = "l4065-4071"
 quote_sha256 = "0a3a4126bf3c5af3fa20b6d6a150a8f0b43e75055fb0ac4d89b33dac2deacb71"
 about_scope = "scheme:enron-audit-1997Q1-1999Q4"
 granularity = "statement_line"
+
+[[fact]]
+id = "BS10K-CASH"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Cash and cash equivalents|2000"
+quote_sha256 = "3cce6179e7ed8d1ca7697a8ed1c0132d73ef1f1cc60f8c3a6f8334f974ee3617"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "cash@2000-12-31"
+
+[[fact]]
+id = "BS10K-TRADE-RECEIVABLES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Trade receivables (net of allowance|2000"
+quote_sha256 = "a8211567d8ff686d68b389999d2dd00b0505a4d0f7333606b1d4d0223cd0111f"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "trade_receivables@2000-12-31"
+
+[[fact]]
+id = "BS10K-OTHER-RECEIVABLES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other receivables|2000"
+quote_sha256 = "0d79c4de2423659b162531390d1e6f26815c1d458ad66d9b1c42e61e4143a6a4"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_receivables@2000-12-31"
+
+[[fact]]
+id = "BS10K-PRICE-RISK-ASSETS-CURRENT"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management|2000"
+quote_sha256 = "b81b67fcea705aaf7bf4df16ffacb7a3d6cc214e5a32462954702acc000772c2"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_assets_current@2000-12-31"
+
+[[fact]]
+id = "BS10K-INVENTORIES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Inventories|2000"
+quote_sha256 = "6953c2a883537cc80135516935de542987c2cd76f94d8cbf2ad004d7bf4c6195"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "inventories@2000-12-31"
+
+[[fact]]
+id = "BS10K-DEPOSITS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Deposits|2000"
+quote_sha256 = "15f73892e447229129683aa56deffd654bff849b271c540db38f509113dff88e"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "deposits@2000-12-31"
+
+[[fact]]
+id = "BS10K-OTHER-CURRENT-ASSETS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other|2000"
+quote_sha256 = "bcafc17d81197cfecc9258e9f6207571cea82aecae1f8dc3858a84b98ef8213a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_current_assets@2000-12-31"
+
+[[fact]]
+id = "BS10K-EQUITY-AFFILIATES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Investments in and advances to|2000"
+quote_sha256 = "dbfed9a0fcee127f0ee11cf6198594f8828d8a2d3a873fa4bf9ba0f3dfb56a7f"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity_affiliates@2000-12-31"
+
+[[fact]]
+id = "BS10K-PRICE-RISK-ASSETS-NONCURRENT"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management#2|2000"
+quote_sha256 = "0bf57f654b1257acd34b68268c9895b5fa4e8bb082cd3384735de50d6758b622"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_assets_noncurrent@2000-12-31"
+
+[[fact]]
+id = "BS10K-GOODWILL"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Goodwill|2000"
+quote_sha256 = "c2cad993a970d986cf25122c385a4e25936508dcc9338d54a22b0a141a8ca410"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "goodwill@2000-12-31"
+
+[[fact]]
+id = "BS10K-OTHER-INVESTMENTS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#2|2000"
+quote_sha256 = "608f72a28123ca352be117a64139a97f37e57e318b640e4f07846b41958e9c15"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_investments@2000-12-31"
+
+[[fact]]
+id = "BS10K-NATURAL-GAS-TRANSMISSION"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Natural gas transmission|2000"
+quote_sha256 = "4db452d122215237fc094a31224a9c35165630c1a49a5a48e7a43131e8e9645c"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "natural_gas_transmission@2000-12-31"
+
+[[fact]]
+id = "BS10K-ELECTRIC-GENERATION"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Electric generation and distribution|2000"
+quote_sha256 = "8bbc94368fc8a51ebe2ce0d1c04925954c57942a9909ecd9963c25085bb3e6ae"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "electric_generation@2000-12-31"
+
+[[fact]]
+id = "BS10K-FIBER-OPTIC"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Fiber optic network and equipment|2000"
+quote_sha256 = "7f3ee9fe1fbf452b0c242614e1cad18b6dce034e5bc80763dff6332e872ad2ff"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "fiber_optic@2000-12-31"
+
+[[fact]]
+id = "BS10K-CONSTRUCTION-IN-PROGRESS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Construction in progress|2000"
+quote_sha256 = "ec1c7d93ba051204e4fea7e167f540c2136769c82329c53f5b7a0770bb237987"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "construction_in_progress@2000-12-31"
+
+[[fact]]
+id = "BS10K-OTHER-PROPERTY"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#3|2000"
+quote_sha256 = "e1490da4765ccef618f9dbf4d64c004550456af86e21584d08b95e15ec9a1d48"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_property@2000-12-31"
+
+[[fact]]
+id = "BS10K-ACCUMULATED-DEPRECIATION"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Less accumulated depreciation,|2000"
+quote_sha256 = "0a4e60fa02217110163cb476aae41ee16b20c342fc663b1fa3cadf20424377be"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "accumulated_depreciation@2000-12-31"
+
+[[fact]]
+id = "BS10K-ACCOUNTS-PAYABLE"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accounts payable|2000"
+quote_sha256 = "c5c70ee0fc858c474363750031b9c5e25e131d519b0a75f709252b1e2169b401"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "accounts_payable@2000-12-31"
+
+[[fact]]
+id = "BS10K-PRICE-RISK-LIABILITIES-CURRENT"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk|2000"
+quote_sha256 = "12baa3065284a96f3b42ebed6641a24761761b359814f6f46835f59b4c6b107a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_liabilities_current@2000-12-31"
+
+[[fact]]
+id = "BS10K-SHORT-TERM-DEBT"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Short-term debt|2000"
+quote_sha256 = "380aff13a2cfad9b11cca5c264ab59a6e56d34b435e3bf721e72e8c53cfaefb4"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "short_term_debt@2000-12-31"
+
+[[fact]]
+id = "BS10K-CUSTOMERS-DEPOSITS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Customers' deposits|2000"
+quote_sha256 = "74cee2dc1acdc0cc31cf4f4970c64d1399c0bd440d5a09163f65b5bfdde4cf05"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "customers_deposits@2000-12-31"
+
+[[fact]]
+id = "BS10K-OTHER-CURRENT-LIABILITIES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other|2000"
+quote_sha256 = "3d8aefb9ce5bb1041a6087022d378c422b4710ff805abd59e86c6340aefe8e5d"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_current_liabilities@2000-12-31"
+
+[[fact]]
+id = "BS10K-LONG-TERM-DEBT"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Long-Term Debt|2000"
+quote_sha256 = "c6193f567858ff01601b0a569adcf758cee8b254ce48f2ed8c24d24056997c24"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "long_term_debt@2000-12-31"
+
+[[fact]]
+id = "BS10K-DEFERRED-INCOME-TAXES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Deferred income taxes|2000"
+quote_sha256 = "6ea49079e7a1d29225d01e6642649c7d29ea2dca8ab034046d1b31a70f557966"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "deferred_income_taxes@2000-12-31"
+
+[[fact]]
+id = "BS10K-PRICE-RISK-LIABILITIES-NONCURRENT"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk#2|2000"
+quote_sha256 = "13b22b59e9bc022b72134af185ffa6fb436cc3cbacbcd91f61b668a86074beb0"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_liabilities_noncurrent@2000-12-31"
+
+[[fact]]
+id = "BS10K-OTHER-DEFERRED-CREDITS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other#2|2000"
+quote_sha256 = "862c086f4b1c23c540cc1ecd8e4b5a322b55c660a6a1698f9dd39729509da785"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_deferred_credits@2000-12-31"
+
+[[fact]]
+id = "BS10K-MINORITY-INTERESTS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Minority Interests|2000"
+quote_sha256 = "4a2714cb15d0eb583f6b80cf74d58442d60e4c5b6d12acab30d74761692ee2db"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "minority_interests@2000-12-31"
+
+[[fact]]
+id = "BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Company-Obligated Preferred Securities|2000"
+quote_sha256 = "533eb9a8909f614c351b65e6b8aba1ffc2890735ce9a8a8936e17c05335dfa47"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "preferred_securities_of_subsidiaries@2000-12-31"
+
+[[fact]]
+id = "BS10K-SECOND-PREFERRED-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Second preferred stock, cumulative, no par|2000"
+quote_sha256 = "6affdae3b3c1aa6aa7689e9b6a7b3225a636aa1ac0025f490cca1285ceaf1487"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "second_preferred_stock@2000-12-31"
+
+[[fact]]
+id = "BS10K-JUNIOR-PREFERRED-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Mandatorily Convertible Junior Preferred|2000"
+quote_sha256 = "66dbae68e4f498ba668b52b481891465277f250cd3cb3ced6c14144dbfae52fb"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "junior_preferred_stock@2000-12-31"
+
+[[fact]]
+id = "BS10K-COMMON-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock, no par value, 1,200,000,000|2000"
+quote_sha256 = "d880396fc93b48d7bae057e3aedaaa7ea057b0da4fbb4dca42a36306ccac5926"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "common_stock@2000-12-31"
+
+[[fact]]
+id = "BS10K-RETAINED-EARNINGS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Retained earnings|2000"
+quote_sha256 = "7b3bf2430755726e1993395dedd4db2242a366fe9e72b30f6d2cd6e6904dd340"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "retained_earnings@2000-12-31"
+
+[[fact]]
+id = "BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accumulated other comprehensive income|2000"
+quote_sha256 = "05ddde7416c853519a1f0334079ed6f8dc4dfb9a447976dafdbdb8d679308cbe"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "accumulated_other_comprehensive_income@2000-12-31"
+
+[[fact]]
+id = "BS10K-TREASURY-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock held in treasury, 577,066|2000"
+quote_sha256 = "6e01646fb397088a9559b4356544b32d30be904e0f2a08fbee95cb5cba0d90ad"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "treasury_stock@2000-12-31"
+
+[[fact]]
+id = "BS10K-RESTRICTED-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Restricted stock and other|2000"
+quote_sha256 = "501c009af5704f1ce36cade53624e5a6fb9989856d4e39b40a2eecb39b6f88f9"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "restricted_stock@2000-12-31"
+
+[[fact]]
+id = "BS10K-TOTAL-ASSETS"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Total Assets|2000"
+quote_sha256 = "de2d1846e7ab6be3f09a5c46d1c2d4598ae971a7b8809a2e45695079e31ddacb"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets@2000-12-31"
+
+[[fact]]
+id = "BS10K-TOTAL-EQUITY"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total shareholders' equity|2000"
+quote_sha256 = "08a8f9380bbb12e39c3ad55a54180c7ced0bb3ed9934f54323ba055b085c7548"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_shareholders_equity@2000-12-31"
+
+[[fact]]
+id = "BS10K-TOTAL-LE"
+provenance = "sourced"
+source = "SRC-ENR-008"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total Liabilities and Shareholders' Equity|2000"
+quote_sha256 = "de2d1846e7ab6be3f09a5c46d1c2d4598ae971a7b8809a2e45695079e31ddacb"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_liabilities_and_equity@2000-12-31"
+
+[[fact]]
+id = "BS10Q-CASH"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Cash and cash equivalents|2000"
+quote_sha256 = "3fe4f4ff9adc01931c13e8b4265e7ff321b725cc6ea1f6e4388a6f45a2381c74"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "cash@2000-12-31"
+
+[[fact]]
+id = "BS10Q-TRADE-RECEIVABLES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Trade receivables (net of allowance for doubtful|2000"
+quote_sha256 = "428f52047c07f6dfb654f6ee8b1f6b03c21f753a3ec66ebfa6272ddfe85f0dc2"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "trade_receivables@2000-12-31"
+
+[[fact]]
+id = "BS10Q-OTHER-RECEIVABLES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other receivables|2000"
+quote_sha256 = "37760f94d2f460c6d9089b7eea79aafbc29e88942d4113df5a4c513a20903b5a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_receivables@2000-12-31"
+
+[[fact]]
+id = "BS10Q-PRICE-RISK-ASSETS-CURRENT"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management activities|2000"
+quote_sha256 = "b81b67fcea705aaf7bf4df16ffacb7a3d6cc214e5a32462954702acc000772c2"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_assets_current@2000-12-31"
+
+[[fact]]
+id = "BS10Q-INVENTORIES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Inventories|2000"
+quote_sha256 = "6953c2a883537cc80135516935de542987c2cd76f94d8cbf2ad004d7bf4c6195"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "inventories@2000-12-31"
+
+[[fact]]
+id = "BS10Q-DEPOSITS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Deposits|2000"
+quote_sha256 = "15f73892e447229129683aa56deffd654bff849b271c540db38f509113dff88e"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "deposits@2000-12-31"
+
+[[fact]]
+id = "BS10Q-OTHER-CURRENT-ASSETS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other|2000"
+quote_sha256 = "bcafc17d81197cfecc9258e9f6207571cea82aecae1f8dc3858a84b98ef8213a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_current_assets@2000-12-31"
+
+[[fact]]
+id = "BS10Q-EQUITY-AFFILIATES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Investments in and advances to unconsolidated|2000"
+quote_sha256 = "e3b54c07815bd3b9d615a6af24b1f56a08a39f443ea9422d76db5561a20f0dd8"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity_affiliates@2000-12-31"
+
+[[fact]]
+id = "BS10Q-PRICE-RISK-ASSETS-NONCURRENT"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management activities#2|2000"
+quote_sha256 = "4ff916a421296a83e0dc9f3d2aadb3a2ddae24e9c7142317631a937310b64a26"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_assets_noncurrent@2000-12-31"
+
+[[fact]]
+id = "BS10Q-GOODWILL"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Goodwill|2000"
+quote_sha256 = "658da566129a06cc58e8401c28d28872e9f525e07ced8cf141528dfb2fe16657"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "goodwill@2000-12-31"
+
+[[fact]]
+id = "BS10Q-OTHER-INVESTMENTS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#2|2000"
+quote_sha256 = "5d2ab570a3968f4262988191c0229450485822d4fa2665a74500b520aebddcf2"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_investments@2000-12-31"
+
+[[fact]]
+id = "BS10Q-NATURAL-GAS-TRANSMISSION"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Natural gas transmission|2000"
+quote_sha256 = "4db452d122215237fc094a31224a9c35165630c1a49a5a48e7a43131e8e9645c"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "natural_gas_transmission@2000-12-31"
+
+[[fact]]
+id = "BS10Q-ELECTRIC-GENERATION"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Electric generation and distribution|2000"
+quote_sha256 = "8bbc94368fc8a51ebe2ce0d1c04925954c57942a9909ecd9963c25085bb3e6ae"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "electric_generation@2000-12-31"
+
+[[fact]]
+id = "BS10Q-FIBER-OPTIC"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Fiber-optic network and equipment|2000"
+quote_sha256 = "deeeb5df3f2cee6bf4e597a8a3a878a6ce49b932b9e90b416922d4499f54fae6"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "fiber_optic@2000-12-31"
+
+[[fact]]
+id = "BS10Q-CONSTRUCTION-IN-PROGRESS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Construction in progress|2000"
+quote_sha256 = "231912aabcdacf0b7d5f69b8b7f75fef4b9c6fbe1e1566f78e998d799f431950"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "construction_in_progress@2000-12-31"
+
+[[fact]]
+id = "BS10Q-OTHER-PROPERTY"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#3|2000"
+quote_sha256 = "e1490da4765ccef618f9dbf4d64c004550456af86e21584d08b95e15ec9a1d48"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_property@2000-12-31"
+
+[[fact]]
+id = "BS10Q-ACCUMULATED-DEPRECIATION"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Less accumulated depreciation, depletion|2000"
+quote_sha256 = "0a4e60fa02217110163cb476aae41ee16b20c342fc663b1fa3cadf20424377be"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "accumulated_depreciation@2000-12-31"
+
+[[fact]]
+id = "BS10Q-ACCOUNTS-PAYABLE"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accounts payable|2000"
+quote_sha256 = "c735998cb89630118af63dbff1be59d72727c8969b9d27b5ff9c3d8f9feca4dd"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "accounts_payable@2000-12-31"
+
+[[fact]]
+id = "BS10Q-PRICE-RISK-LIABILITIES-CURRENT"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk management activities|2000"
+quote_sha256 = "12baa3065284a96f3b42ebed6641a24761761b359814f6f46835f59b4c6b107a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_liabilities_current@2000-12-31"
+
+[[fact]]
+id = "BS10Q-SHORT-TERM-DEBT"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Short-term debt|2000"
+quote_sha256 = "c4a5adce9333b84c71e2a9eb29ee7107bc0bf131fd85474ad7e6b66f3f0dd493"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "short_term_debt@2000-12-31"
+
+[[fact]]
+id = "BS10Q-CUSTOMERS-DEPOSITS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Customers' deposits|2000"
+quote_sha256 = "74cee2dc1acdc0cc31cf4f4970c64d1399c0bd440d5a09163f65b5bfdde4cf05"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "customers_deposits@2000-12-31"
+
+[[fact]]
+id = "BS10Q-OTHER-CURRENT-LIABILITIES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other|2000"
+quote_sha256 = "fe2c2adbbf190f744a1f508e9f70a4247b2bbfcfdd9ec39258a24ee309b58cee"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_current_liabilities@2000-12-31"
+
+[[fact]]
+id = "BS10Q-LONG-TERM-DEBT"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Long-Term Debt|2000"
+quote_sha256 = "6a8c1e00f8d09cd981dc6bd58bc65d5825078d1c3090ca29c9e3e3917550b39a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "long_term_debt@2000-12-31"
+
+[[fact]]
+id = "BS10Q-DEFERRED-INCOME-TAXES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Deferred income taxes|2000"
+quote_sha256 = "380aff13a2cfad9b11cca5c264ab59a6e56d34b435e3bf721e72e8c53cfaefb4"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "deferred_income_taxes@2000-12-31"
+
+[[fact]]
+id = "BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk management activities#2|2000"
+quote_sha256 = "8c72139ba8235f0749c97d2dd6b7866cbba66146b7edf1f778fb5ae127641a55"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "price_risk_liabilities_noncurrent@2000-12-31"
+
+[[fact]]
+id = "BS10Q-OTHER-DEFERRED-CREDITS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other#2|2000"
+quote_sha256 = "862c086f4b1c23c540cc1ecd8e4b5a322b55c660a6a1698f9dd39729509da785"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "other_deferred_credits@2000-12-31"
+
+[[fact]]
+id = "BS10Q-MINORITY-INTERESTS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Minority Interests|2000"
+quote_sha256 = "3f6c77fe51eedb6193f7ba16b5c83bfa8e92698dd7e77255aa26ab117be8c796"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "minority_interests@2000-12-31"
+
+[[fact]]
+id = "BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Company-Obligated Preferred Securities of Subsidiaries|2000"
+quote_sha256 = "533eb9a8909f614c351b65e6b8aba1ffc2890735ce9a8a8936e17c05335dfa47"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "preferred_securities_of_subsidiaries@2000-12-31"
+
+[[fact]]
+id = "BS10Q-SECOND-PREFERRED-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Second preferred stock, cumulative, no par value|2000"
+quote_sha256 = "6affdae3b3c1aa6aa7689e9b6a7b3225a636aa1ac0025f490cca1285ceaf1487"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "second_preferred_stock@2000-12-31"
+
+[[fact]]
+id = "BS10Q-JUNIOR-PREFERRED-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Mandatorily Convertible Junior Preferred Stock,|2000"
+quote_sha256 = "66dbae68e4f498ba668b52b481891465277f250cd3cb3ced6c14144dbfae52fb"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "junior_preferred_stock@2000-12-31"
+
+[[fact]]
+id = "BS10Q-COMMON-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock, no par value (net of notes receivable|2000"
+quote_sha256 = "527f5feb765ff92fe77b5713de12a8cde268a9fd317768a1ceba92acd3ddbb09"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "common_stock@2000-12-31"
+
+[[fact]]
+id = "BS10Q-RETAINED-EARNINGS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Retained earnings|2000"
+quote_sha256 = "457401a59a3994a1fde79fbdfe2f40a95a48b55634bbbc8e6a38147d285c2db2"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "retained_earnings@2000-12-31"
+
+[[fact]]
+id = "BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accumulated other comprehensive income|2000"
+quote_sha256 = "4b59cfbb7ffbab48a629040808f8fe05afdd0e830fef7f5766c453cef59b3282"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "accumulated_other_comprehensive_income@2000-12-31"
+
+[[fact]]
+id = "BS10Q-TREASURY-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock held in treasury|2000"
+quote_sha256 = "6462bbde3e17abbf1c47c9e8237236f0ae023b495db8922c6b043c24990004f1"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "treasury_stock@2000-12-31"
+
+[[fact]]
+id = "BS10Q-RESTRICTED-STOCK"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Restricted stock and other|2000"
+quote_sha256 = "501c009af5704f1ce36cade53624e5a6fb9989856d4e39b40a2eecb39b6f88f9"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "restricted_stock@2000-12-31"
+
+[[fact]]
+id = "BS10Q-TOTAL-ASSETS"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Total Assets|2000"
+quote_sha256 = "e073df5ca6155299a376223684e6a113affbbf12e8ae1aec16d839db0434c5cf"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets@2000-12-31"
+
+[[fact]]
+id = "BS10Q-TOTAL-EQUITY"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total|2000"
+quote_sha256 = "4ab542181d393ff64042a3dd8b732cd0417d22b4d4be3442be35c9f38176b885"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_shareholders_equity@2000-12-31"
+
+[[fact]]
+id = "BS10Q-TOTAL-LE"
+provenance = "sourced"
+source = "SRC-ENR-003"
+anchor_kind = "table_cell"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total Liabilities and Shareholders' Equity|2000"
+quote_sha256 = "e073df5ca6155299a376223684e6a113affbbf12e8ae1aec16d839db0434c5cf"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_liabilities_and_equity@2000-12-31"
+
+[[fact]]
+id = "BS10K-SFC"
+provenance = "interpretation"
+from = ["BS10K-CASH", "BS10K-TRADE-RECEIVABLES", "BS10K-OTHER-RECEIVABLES", "BS10K-PRICE-RISK-ASSETS-CURRENT", "BS10K-INVENTORIES", "BS10K-DEPOSITS", "BS10K-OTHER-CURRENT-ASSETS", "BS10K-EQUITY-AFFILIATES", "BS10K-PRICE-RISK-ASSETS-NONCURRENT", "BS10K-GOODWILL", "BS10K-OTHER-INVESTMENTS", "BS10K-NATURAL-GAS-TRANSMISSION", "BS10K-ELECTRIC-GENERATION", "BS10K-FIBER-OPTIC", "BS10K-CONSTRUCTION-IN-PROGRESS", "BS10K-OTHER-PROPERTY", "BS10K-ACCUMULATED-DEPRECIATION", "BS10K-ACCOUNTS-PAYABLE", "BS10K-PRICE-RISK-LIABILITIES-CURRENT", "BS10K-SHORT-TERM-DEBT", "BS10K-CUSTOMERS-DEPOSITS", "BS10K-OTHER-CURRENT-LIABILITIES", "BS10K-LONG-TERM-DEBT", "BS10K-DEFERRED-INCOME-TAXES", "BS10K-PRICE-RISK-LIABILITIES-NONCURRENT", "BS10K-OTHER-DEFERRED-CREDITS", "BS10K-MINORITY-INTERESTS", "BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES", "BS10K-SECOND-PREFERRED-STOCK", "BS10K-JUNIOR-PREFERRED-STOCK", "BS10K-COMMON-STOCK", "BS10K-RETAINED-EARNINGS", "BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME", "BS10K-TREASURY-STOCK", "BS10K-RESTRICTED-STOCK"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "The 2000-12-31 consolidated balance sheet the FY2000 10-K prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed."
+
+[[fact]]
+id = "BS10Q-SFC"
+provenance = "interpretation"
+from = ["BS10Q-CASH", "BS10Q-TRADE-RECEIVABLES", "BS10Q-OTHER-RECEIVABLES", "BS10Q-PRICE-RISK-ASSETS-CURRENT", "BS10Q-INVENTORIES", "BS10Q-DEPOSITS", "BS10Q-OTHER-CURRENT-ASSETS", "BS10Q-EQUITY-AFFILIATES", "BS10Q-PRICE-RISK-ASSETS-NONCURRENT", "BS10Q-GOODWILL", "BS10Q-OTHER-INVESTMENTS", "BS10Q-NATURAL-GAS-TRANSMISSION", "BS10Q-ELECTRIC-GENERATION", "BS10Q-FIBER-OPTIC", "BS10Q-CONSTRUCTION-IN-PROGRESS", "BS10Q-OTHER-PROPERTY", "BS10Q-ACCUMULATED-DEPRECIATION", "BS10Q-ACCOUNTS-PAYABLE", "BS10Q-PRICE-RISK-LIABILITIES-CURRENT", "BS10Q-SHORT-TERM-DEBT", "BS10Q-CUSTOMERS-DEPOSITS", "BS10Q-OTHER-CURRENT-LIABILITIES", "BS10Q-LONG-TERM-DEBT", "BS10Q-DEFERRED-INCOME-TAXES", "BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT", "BS10Q-OTHER-DEFERRED-CREDITS", "BS10Q-MINORITY-INTERESTS", "BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES", "BS10Q-SECOND-PREFERRED-STOCK", "BS10Q-JUNIOR-PREFERRED-STOCK", "BS10Q-COMMON-STOCK", "BS10Q-RETAINED-EARNINGS", "BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME", "BS10Q-TREASURY-STOCK", "BS10Q-RESTRICTED-STOCK"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "The 2000-12-31 consolidated balance sheet the Q3-2001 10-Q prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed."
+
+[[value]]
+fact = "BS10K-CASH"
+ordinal = 1
+literal = "$ 1,374"
+rule = "scale"
+param = 6
+value = "137400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-TRADE-RECEIVABLES"
+ordinal = 1
+literal = "10,396"
+rule = "scale"
+param = 6
+value = "1039600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-OTHER-RECEIVABLES"
+ordinal = 1
+literal = "1,874"
+rule = "scale"
+param = 6
+value = "187400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-PRICE-RISK-ASSETS-CURRENT"
+ordinal = 1
+literal = "12,018"
+rule = "scale"
+param = 6
+value = "1201800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-INVENTORIES"
+ordinal = 1
+literal = "953"
+rule = "scale"
+param = 6
+value = "95300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-DEPOSITS"
+ordinal = 1
+literal = "2,433"
+rule = "scale"
+param = 6
+value = "243300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-OTHER-CURRENT-ASSETS"
+ordinal = 1
+literal = "1,333"
+rule = "scale"
+param = 6
+value = "133300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-EQUITY-AFFILIATES"
+ordinal = 1
+literal = "5,294"
+rule = "scale"
+param = 6
+value = "529400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-PRICE-RISK-ASSETS-NONCURRENT"
+ordinal = 1
+literal = "8,988"
+rule = "scale"
+param = 6
+value = "898800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-GOODWILL"
+ordinal = 1
+literal = "3,638"
+rule = "scale"
+param = 6
+value = "363800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-OTHER-INVESTMENTS"
+ordinal = 1
+literal = "5,459"
+rule = "scale"
+param = 6
+value = "545900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-NATURAL-GAS-TRANSMISSION"
+ordinal = 1
+literal = "6,916"
+rule = "scale"
+param = 6
+value = "691600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-ELECTRIC-GENERATION"
+ordinal = 1
+literal = "4,766"
+rule = "scale"
+param = 6
+value = "476600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-FIBER-OPTIC"
+ordinal = 1
+literal = "839"
+rule = "scale"
+param = 6
+value = "83900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-CONSTRUCTION-IN-PROGRESS"
+ordinal = 1
+literal = "682"
+rule = "scale"
+param = 6
+value = "68200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-OTHER-PROPERTY"
+ordinal = 1
+literal = "2,256"
+rule = "scale"
+param = 6
+value = "225600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-ACCUMULATED-DEPRECIATION"
+ordinal = 1
+literal = "3,716"
+rule = "scale"
+param = 6
+value = "371600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-ACCOUNTS-PAYABLE"
+ordinal = 1
+literal = "$ 9,777"
+rule = "scale"
+param = 6
+value = "977700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-PRICE-RISK-LIABILITIES-CURRENT"
+ordinal = 1
+literal = "10,495"
+rule = "scale"
+param = 6
+value = "1049500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-SHORT-TERM-DEBT"
+ordinal = 1
+literal = "1,679"
+rule = "scale"
+param = 6
+value = "167900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-CUSTOMERS-DEPOSITS"
+ordinal = 1
+literal = "4,277"
+rule = "scale"
+param = 6
+value = "427700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-OTHER-CURRENT-LIABILITIES"
+ordinal = 1
+literal = "2,178"
+rule = "scale"
+param = 6
+value = "217800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-LONG-TERM-DEBT"
+ordinal = 1
+literal = "8,550"
+rule = "scale"
+param = 6
+value = "855000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-DEFERRED-INCOME-TAXES"
+ordinal = 1
+literal = "1,644"
+rule = "scale"
+param = 6
+value = "164400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-PRICE-RISK-LIABILITIES-NONCURRENT"
+ordinal = 1
+literal = "9,423"
+rule = "scale"
+param = 6
+value = "942300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-OTHER-DEFERRED-CREDITS"
+ordinal = 1
+literal = "2,692"
+rule = "scale"
+param = 6
+value = "269200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-MINORITY-INTERESTS"
+ordinal = 1
+literal = "2,414"
+rule = "scale"
+param = 6
+value = "241400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+ordinal = 1
+literal = "904"
+rule = "scale"
+param = 6
+value = "90400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-SECOND-PREFERRED-STOCK"
+ordinal = 1
+literal = "124"
+rule = "scale"
+param = 6
+value = "12400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-JUNIOR-PREFERRED-STOCK"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 6
+value = "100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-COMMON-STOCK"
+ordinal = 1
+literal = "8,348"
+rule = "scale"
+param = 6
+value = "834800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-RETAINED-EARNINGS"
+ordinal = 1
+literal = "3,226"
+rule = "scale"
+param = 6
+value = "322600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+ordinal = 1
+literal = "(1,048)"
+rule = "scale"
+param = 6
+value = "-104800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-TREASURY-STOCK"
+ordinal = 1
+literal = "(32)"
+rule = "scale"
+param = 6
+value = "-3200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-RESTRICTED-STOCK"
+ordinal = 1
+literal = "(148)"
+rule = "scale"
+param = 6
+value = "-14800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-TOTAL-ASSETS"
+ordinal = 1
+literal = "$65,503"
+rule = "scale"
+param = 6
+value = "6550300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-TOTAL-EQUITY"
+ordinal = 1
+literal = "11,470"
+rule = "scale"
+param = 6
+value = "1147000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10K-TOTAL-LE"
+ordinal = 1
+literal = "$65,503"
+rule = "scale"
+param = 6
+value = "6550300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-CASH"
+ordinal = 1
+literal = "$ 1,240"
+rule = "scale"
+param = 6
+value = "124000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-TRADE-RECEIVABLES"
+ordinal = 1
+literal = "10,491"
+rule = "scale"
+param = 6
+value = "1049100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-OTHER-RECEIVABLES"
+ordinal = 1
+literal = "1,559"
+rule = "scale"
+param = 6
+value = "155900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-PRICE-RISK-ASSETS-CURRENT"
+ordinal = 1
+literal = "12,018"
+rule = "scale"
+param = 6
+value = "1201800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-INVENTORIES"
+ordinal = 1
+literal = "953"
+rule = "scale"
+param = 6
+value = "95300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-DEPOSITS"
+ordinal = 1
+literal = "2,433"
+rule = "scale"
+param = 6
+value = "243300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-OTHER-CURRENT-ASSETS"
+ordinal = 1
+literal = "1,333"
+rule = "scale"
+param = 6
+value = "133300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-EQUITY-AFFILIATES"
+ordinal = 1
+literal = "5,599"
+rule = "scale"
+param = 6
+value = "559900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-PRICE-RISK-ASSETS-NONCURRENT"
+ordinal = 1
+literal = "8,990"
+rule = "scale"
+param = 6
+value = "899000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-GOODWILL"
+ordinal = 1
+literal = "3,720"
+rule = "scale"
+param = 6
+value = "372000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-OTHER-INVESTMENTS"
+ordinal = 1
+literal = "4,857"
+rule = "scale"
+param = 6
+value = "485700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-NATURAL-GAS-TRANSMISSION"
+ordinal = 1
+literal = "6,916"
+rule = "scale"
+param = 6
+value = "691600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-ELECTRIC-GENERATION"
+ordinal = 1
+literal = "4,766"
+rule = "scale"
+param = 6
+value = "476600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-FIBER-OPTIC"
+ordinal = 1
+literal = "350"
+rule = "scale"
+param = 6
+value = "35000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-CONSTRUCTION-IN-PROGRESS"
+ordinal = 1
+literal = "1,161"
+rule = "scale"
+param = 6
+value = "116100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-OTHER-PROPERTY"
+ordinal = 1
+literal = "2,256"
+rule = "scale"
+param = 6
+value = "225600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-ACCUMULATED-DEPRECIATION"
+ordinal = 1
+literal = "3,716"
+rule = "scale"
+param = 6
+value = "371600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-ACCOUNTS-PAYABLE"
+ordinal = 1
+literal = "$ 9,577"
+rule = "scale"
+param = 6
+value = "957700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-PRICE-RISK-LIABILITIES-CURRENT"
+ordinal = 1
+literal = "10,495"
+rule = "scale"
+param = 6
+value = "1049500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-SHORT-TERM-DEBT"
+ordinal = 1
+literal = "2,192"
+rule = "scale"
+param = 6
+value = "219200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-CUSTOMERS-DEPOSITS"
+ordinal = 1
+literal = "4,277"
+rule = "scale"
+param = 6
+value = "427700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-OTHER-CURRENT-LIABILITIES"
+ordinal = 1
+literal = "2,200"
+rule = "scale"
+param = 6
+value = "220000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-LONG-TERM-DEBT"
+ordinal = 1
+literal = "8,665"
+rule = "scale"
+param = 6
+value = "866500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-DEFERRED-INCOME-TAXES"
+ordinal = 1
+literal = "1,679"
+rule = "scale"
+param = 6
+value = "167900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT"
+ordinal = 1
+literal = "9,519"
+rule = "scale"
+param = 6
+value = "951900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-OTHER-DEFERRED-CREDITS"
+ordinal = 1
+literal = "2,692"
+rule = "scale"
+param = 6
+value = "269200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-MINORITY-INTERESTS"
+ordinal = 1
+literal = "2,437"
+rule = "scale"
+param = 6
+value = "243700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+ordinal = 1
+literal = "904"
+rule = "scale"
+param = 6
+value = "90400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-SECOND-PREFERRED-STOCK"
+ordinal = 1
+literal = "124"
+rule = "scale"
+param = 6
+value = "12400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-JUNIOR-PREFERRED-STOCK"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 6
+value = "100000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-COMMON-STOCK"
+ordinal = 1
+literal = "7,926"
+rule = "scale"
+param = 6
+value = "792600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-RETAINED-EARNINGS"
+ordinal = 1
+literal = "2,613"
+rule = "scale"
+param = 6
+value = "261300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+ordinal = 1
+literal = "(1,198)"
+rule = "scale"
+param = 6
+value = "-119800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-TREASURY-STOCK"
+ordinal = 1
+literal = "(28)"
+rule = "scale"
+param = 6
+value = "-2800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-RESTRICTED-STOCK"
+ordinal = 1
+literal = "(148)"
+rule = "scale"
+param = 6
+value = "-14800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-TOTAL-ASSETS"
+ordinal = 1
+literal = "$64,926"
+rule = "scale"
+param = 6
+value = "6492600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-TOTAL-EQUITY"
+ordinal = 1
+literal = "10,289"
+rule = "scale"
+param = 6
+value = "1028900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "BS10Q-TOTAL-LE"
+ordinal = 1
+literal = "$64,926"
+rule = "scale"
+param = 6
+value = "6492600000000"
+unit = "USD"
+precision = 6

@@ -444,6 +444,67 @@ class TableCells(unittest.TestCase):
                "      Segregated cash    (13,031)   (16,569)   (12,743)  (10,579)\n"
                "  Leverage Ratio     (a) / (c)   24.3 x   31.7 x   30.7 x   30.3 x\n")
 
+    # An EDGAR text filing: the balance sheet continues under its repeated title, row labels
+    # run over several lines with the values on the last, and a subsidiary's statements (whose
+    # title contains the parent's) follow.
+    TEXT_BS = ("                 CONSOLIDATED BALANCE SHEET\n"
+               "                                              December 31,\n"
+               "(In millions)                              2000         1999\n"
+               "ASSETS\n"
+               "  Cash and cash equivalents               $ 1,374     $   288\n"
+               "  Trade receivables (net of allowance\n"
+               "   for doubtful accounts of $133 and\n"
+               "   $40, respectively)                      10,396       3,030\n"
+               "  Inventories                                 953         598\n"
+               "Total Assets                              $65,503     $33,381\n"
+               "\n"
+               "                 CONSOLIDATED BALANCE SHEET\n"
+               "                                                    December 31,\n"
+               "(In millions, except shares)                      2000         1999\n"
+               "  Accounts payable                               $ 9,777     $ 2,154\n"
+               "Commitments and Contingencies\n"
+               " (Notes 13, 14 and 15)\n"
+               "\n"
+               "Minority Interests                                 2,414       2,430\n"
+               "<PAGE>\n"
+               "             CONSOLIDATED STATEMENT OF CASH FLOWS\n"
+               "  Inventories                                (133)        (12)\n"
+               "\n"
+               "                        CONSOLIDATED BALANCE SHEETS\n"
+               "                                              2000         1999\n"
+               "  Cash and cash equivalents                   30.0        25.0\n")
+
+    def test_text_filing_titles_labels_and_continued_statements(self):
+        table = "CONSOLIDATED BALANCE SHEET"
+        # The subsidiary's longer title is no title when lines equal the anchor's exactly.
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}|Cash and cash equivalents|2000"),
+                         ["$ 1,374"])
+        # A table ends at the text filing's <PAGE> line: the cash flow statement after it is not
+        # the balance sheet's.
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}|Inventories|2000"), ["953"])
+        # `#<n>` on the table part names the n-th table under the repeated title.
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}#2|Accounts payable|2000"), ["$ 9,777"])
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}#1|Accounts payable|2000"), [])
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}#3|Accounts payable|2000"), [])
+        # A row both titles reach is one cell, not one per title.
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}|Accounts payable|2000"), ["$ 9,777"])
+        # A label over three lines is anchored by its first; the values are on its last.
+        self.assertEqual(
+            self.cell(self.TEXT_BS, f"{table}|Trade receivables (net of allowance|1999"), ["3,030"])
+        # A label that continues onto no values resolves nothing.
+        self.assertEqual(self.cell(self.TEXT_BS, f"{table}|Commitments and Contingencies|2000"), [])
+        # A repeated label is addressed by its occurrence; one past the last resolves nothing.
+        rep = ("BALANCE\n           2000\n  Other     5\n  Assets from price risk\n   management   7\n"
+               "  Other     9\n  Assets from price risk\n   management   11\n")
+        self.assertEqual(self.cell(rep, "BALANCE|Other|2000"), ["5"])
+        self.assertEqual(self.cell(rep, "BALANCE|Other#2|2000"), ["9"])
+        self.assertEqual(self.cell(rep, "BALANCE|Other#3|2000"), [])
+        self.assertEqual(self.cell(rep, "BALANCE|Assets from price risk#2|2000"), ["11"])
+        # Without an exact title line, the subsidiary's table is found by containment.
+        self.assertEqual(
+            self.cell(self.TEXT_BS, "CONSOLIDATED BALANCE SHEETS|Cash and cash equivalents|2000"),
+            ["30.0"])
+
     def test_datecol_layout_pairs_month_days_with_years(self):
         table = "Ratios Table"
         self.assertEqual(self.cell(self.DATECOL, f"{table}|(a) Total Assets|May 31, 2008"),

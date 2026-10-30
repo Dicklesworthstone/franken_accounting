@@ -186,6 +186,42 @@ fn lehman() {
     );
 }
 
+/// Enron's 2000-12-31 balance sheet in both vintages (plan §7.2, E-T-02):
+/// every printed line posted to its own account, on the FY2000 10-K's book
+/// and on the Q3-2001 10-Q's restated column's. The certified assets, total
+/// equity and liabilities-and-equity lines foot to the printed totals:
+/// read as reported in the 10-K's issuance on the 10-K's book, since the
+/// 10-Q restates those figures (E-T-02), and as currently stated on the
+/// 10-Q's (E-T-05).
+#[test]
+fn enron() {
+    let o = outcome("enron");
+    let text = o.text();
+    println!("{text}");
+    assert!(o.rows_ok, "{text}");
+    let count = |prefix: &str| o.lines.iter().filter(|l| l.starts_with(prefix)).count();
+    assert_eq!(count("PASS E-T-02 T statement-10k2000 "), 3, "{text}");
+    assert_eq!(count("PASS E-T-05 T statement-10q2001q3 "), 3, "{text}");
+    for (row, value) in [
+        (
+            "E-T-02 T statement-10k2000 BS10K-TOTAL-ASSETS",
+            "65503000000.00",
+        ),
+        (
+            "E-T-05 T statement-10q2001q3 BS10Q-TOTAL-ASSETS",
+            "64926000000.00",
+        ),
+    ] {
+        assert!(
+            o.lines
+                .iter()
+                .any(|l| l.starts_with(&format!("PASS {row}/"))
+                    && l.contains(&format!(" value={value} "))),
+            "{text}"
+        );
+    }
+}
+
 /// L-R-02 is no vacuous read (§8.3, L3): in a planted copy both legs of the
 /// Repo 105 scenario's entry carry (e) plus one cent (each re-pointed to
 /// `synthetic`, since its `value:` rule would refuse the copy at load), so

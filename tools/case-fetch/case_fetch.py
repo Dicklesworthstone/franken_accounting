@@ -1493,6 +1493,44 @@ MONTH_DAY = re.compile(r"\b([A-Z][a-z]{2})\.? ([0-9]{1,2}),?")
 RATIO_VALUE = re.compile(r"^[0-9][0-9,]*(?:\.[0-9]+)? ?x$")
 
 
+def indent(line):
+    return len(line) - len(line.lstrip(" \t\u00a0"))
+
+
+def continued_cell(loc, t, row, column, limit, nth=1):
+    """A text filing's row whose label is printed over several lines: the anchor's row is the
+    label's first line, which holds no value; the lines after it that are indented deeper
+    continue the label, and the first of them that holds values holds the row's values. A
+    line indented no deeper, or a blank line, ends the row with no value. The column is found
+    as in the one-line layout, by its position from the right of the header. `nth` picks the
+    table's n-th such label."""
+    header, seen = None, 0
+    for j in range(t + 1, limit):
+        cs = [normalize(c) for c in cells(loc.lines[j])]
+        if header is None:
+            if column in cs:
+                header = (cs, cs.index(column))
+            continue
+        if len(cs) != 1 or row_label(cs[0]) != row:
+            continue
+        seen += 1
+        if seen < nth:
+            continue
+        head, col = header
+        from_right = len(head) - 1 - col
+        base = indent(loc.lines[j])
+        for k in range(j + 1, limit):
+            line = loc.lines[k]
+            if not line.strip() or indent(line) <= base:
+                return None
+            vs = [normalize(c) for c in cells(line)]
+            if len(vs) >= 2:
+                idx = len(vs) - 1 - from_right
+                return (vs[idx], k + 1) if idx >= 1 else None
+        return None
+    return None
+
+
 def datecol_cell(loc, t, row, column, limit):
     """A `pdftotext -layout` table whose column headers are a line of month-days over a line
     of years (`May 31   Feb 29,   Nov 30, Aug 31,` above `2008   2008   2007   2007`; the
@@ -1540,43 +1578,81 @@ def tagged_cell(loc, t, row, limit):
 def table_cell(loc, anchor):
     """The cells the `table|row|column` anchor names (one per matching table). The table part
     may end in `@p<page>`, the printed page its title is on, when the title repeats (a filing
-    that prints a table twice). Four layouts: a header line and rows with their values on one
-    line (row labels may carry leader dots); EDGAR's stacked layout (`stacked_cell`); EDGAR's
-    one-cell-per-line layout (`percell_cell`); and an EX-27 schedule, whose rows are `<TAG>`
-    lines."""
+    that prints a table twice). A title is a line containing the table part; when some lines
+    are exactly the table part, only those are titles (a text filing whose "CONSOLIDATED
+    BALANCE SHEETS" of a subsidiary also contains the parent's "CONSOLIDATED BALANCE SHEET").
+    A table runs from its title to the next page break or the next line containing the table
+    part, at most 400 lines; a statement in an EDGAR text filing also ends at its `<PAGE>` line
+    (an EX-27 schedule's tags may follow one). The table part may end in `#<n>`, the n-th table
+    under that title. A cell two titles reach is one cell. The
+    layouts: a header line and rows with their values on one line (row labels may carry leader
+    dots); EDGAR's stacked layout (`stacked_cell`); EDGAR's one-cell-per-line layout
+    (`percell_cell`); month-day columns over years (`datecol_cell`); a label printed over
+    several lines with the values on its last (`continued_cell`); and an EX-27 schedule, whose
+    rows are `<TAG>` lines. A row label may end in `#<n>`, the table's n-th row with that label
+    (a label the table repeats); only the one-line and continued layouts count rows, so the
+    others resolve no `#<n>` row past the first."""
     parts = anchor.split("|")
     if len(parts) != 3:
         return f"anchor `{anchor}` is not `<table>|<row>|<column>`"
     table, row, column = (normalize(p) for p in parts)
+    # `<row label>#<n>`: the table's n-th row with that label (a label the table repeats).
+    nth = 1
+    occurrence = re.fullmatch(r"(.*\S)#([1-9][0-9]*)", row)
+    if occurrence:
+        row, nth = occurrence.group(1), int(occurrence.group(2))
     page = None
     pinned = re.fullmatch(r"(.*\S)@p([0-9A-Za-z]+)", table)
     if pinned:
         table, page = pinned.group(1), pinned.group(2).lower()
+    # `<table>#<n>`: the n-th table under that title (a text filing that continues a statement
+    # under its repeated title, with no page labels to pin it by).
+    nth_table = None
+    repeated = re.fullmatch(r"(.*\S)#([1-9][0-9]*)", table)
+    if repeated:
+        table, nth_table = repeated.group(1), int(repeated.group(2))
     found = []
     titles = [i for i, ln in enumerate(loc.lines) if table in normalize(ln)]
+    containing = set(titles)
+    exact = [i for i in titles if normalize(loc.lines[i]) == table]
+    if exact:
+        titles = exact
     if page is not None:
         line_page = {}
         for i, g in enumerate(loc.gline):
             line_page.setdefault(g, loc.page_labels[loc.page[i] - 1])
         titles = [i for i in titles if line_page.get(i + 1) == page]
+    if nth_table is not None:
+        titles = titles[nth_table - 1:nth_table]
     for t in titles:
-        limit = min(len(loc.lines), t + 400)
+        limit, page_end = min(len(loc.lines), t + 400), None
         for j in range(t + 2, limit):
-            if "\f" in loc.lines[j]:
+            # A table ends at a page break, or at the next line naming the table; a statement
+            # in a text filing also ends at its `<PAGE>` line (an EX-27 schedule's tags may
+            # follow one, so its window does not).
+            if "\f" in loc.lines[j] or j in containing:
                 limit = j
                 break
+            if page_end is None and loc.lines[j].strip() == "<PAGE>":
+                page_end = j
         if FDS_TAG.match(row):
             hit = tagged_cell(loc, t, row, limit)
             if hit:
                 found.append(hit)
             continue
-        hit, header = None, None
+        if page_end is not None:
+            limit = page_end
+        hit, header, seen = None, None, 0
         for j in range(t + 1, limit):
             cs = [normalize(c) for c in cells(loc.lines[j])]
             if header is None:
                 if column in cs:
                     header = (cs, cs.index(column))
                 continue
+            if cs and row_label(cs[0]) == row and len(cs) > 1:
+                seen += 1
+                if seen < nth:
+                    continue
             if cs and row_label(cs[0]) == row:
                 head, col = header
                 from_right = len(head) - 1 - col
@@ -1584,13 +1660,15 @@ def table_cell(loc, anchor):
                 if idx >= 1:
                     hit = (cs[idx], j + 1)
                 break
-        if hit is None:
+        if hit is None and nth == 1:
             hit = stacked_cell(loc, t, row, column, limit)
-        if hit is None:
+        if hit is None and nth == 1:
             hit = percell_cell(loc, t, row, column, limit)
-        if hit is None:
+        if hit is None and nth == 1:
             hit = datecol_cell(loc, t, row, column, limit)
-        if hit:
+        if hit is None:
+            hit = continued_cell(loc, t, row, column, limit, nth)
+        if hit and hit not in found:
             found.append(hit)
     return found
 

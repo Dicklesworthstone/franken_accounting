@@ -2,9 +2,9 @@
 
 # Enron, the 1997-2001 restatements and the special purpose entities
 
-Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case: the six public-record sources and the assurance each filer row carries.
+Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries), and the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it: every line, and the printed totals they foot to.
 
-Claimed rows: -. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `E-T-02`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -29,6 +29,241 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `ASSUR-ENR-003` | `SRC-ENR-003` | `l497-503` | - | reported (unaudited) | statement_line |
 | `ASSUR-ENR-008` | `SRC-ENR-008` | `l3769-3775` | - | reported (audited) | statement_line |
 | `ASSUR-ENR-402` | `SRC-ENR-402` | `l4065-4071` | - | reported (audited) | statement_line |
+| `BS10K-CASH` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Cash and cash equivalents\|2000` | 1,374,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-TRADE-RECEIVABLES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Trade receivables (net of allowance\|2000` | 10,396,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-OTHER-RECEIVABLES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Other receivables\|2000` | 1,874,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-PRICE-RISK-ASSETS-CURRENT` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Assets from price risk management\|2000` | 12,018,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-INVENTORIES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Inventories\|2000` | 953,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-DEPOSITS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Deposits\|2000` | 2,433,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-OTHER-CURRENT-ASSETS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Other\|2000` | 1,333,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-EQUITY-AFFILIATES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Investments in and advances to\|2000` | 5,294,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-PRICE-RISK-ASSETS-NONCURRENT` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Assets from price risk management#2\|2000` | 8,988,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-GOODWILL` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Goodwill\|2000` | 3,638,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-OTHER-INVESTMENTS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Other#2\|2000` | 5,459,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-NATURAL-GAS-TRANSMISSION` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Natural gas transmission\|2000` | 6,916,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-ELECTRIC-GENERATION` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Electric generation and distribution\|2000` | 4,766,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-FIBER-OPTIC` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Fiber optic network and equipment\|2000` | 839,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-CONSTRUCTION-IN-PROGRESS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Construction in progress\|2000` | 682,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-OTHER-PROPERTY` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Other#3\|2000` | 2,256,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-ACCUMULATED-DEPRECIATION` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Less accumulated depreciation,\|2000` | 3,716,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-ACCOUNTS-PAYABLE` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Accounts payable\|2000` | 9,777,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-PRICE-RISK-LIABILITIES-CURRENT` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Liabilities from price risk\|2000` | 10,495,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-SHORT-TERM-DEBT` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Short-term debt\|2000` | 1,679,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-CUSTOMERS-DEPOSITS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Customers' deposits\|2000` | 4,277,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-OTHER-CURRENT-LIABILITIES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Other\|2000` | 2,178,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-LONG-TERM-DEBT` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Long-Term Debt\|2000` | 8,550,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-DEFERRED-INCOME-TAXES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Deferred income taxes\|2000` | 1,644,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-PRICE-RISK-LIABILITIES-NONCURRENT` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Liabilities from price risk#2\|2000` | 9,423,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-OTHER-DEFERRED-CREDITS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Other#2\|2000` | 2,692,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-MINORITY-INTERESTS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Minority Interests\|2000` | 2,414,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Company-Obligated Preferred Securities\|2000` | 904,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-SECOND-PREFERRED-STOCK` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Second preferred stock, cumulative, no par\|2000` | 124,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-JUNIOR-PREFERRED-STOCK` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Mandatorily Convertible Junior Preferred\|2000` | 1,000,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-COMMON-STOCK` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Common stock, no par value, 1,200,000,000\|2000` | 8,348,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-RETAINED-EARNINGS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Retained earnings\|2000` | 3,226,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Accumulated other comprehensive income\|2000` | -1,048,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-TREASURY-STOCK` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Common stock held in treasury, 577,066\|2000` | -32,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-RESTRICTED-STOCK` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Restricted stock and other\|2000` | -148,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-TOTAL-ASSETS` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#1\|Total Assets\|2000` | 65,503,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-TOTAL-EQUITY` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Total shareholders' equity\|2000` | 11,470,000,000.00 USD | reported (audited) | statement_line |
+| `BS10K-TOTAL-LE` | `SRC-ENR-008` | `CONSOLIDATED BALANCE SHEET#2\|Total Liabilities and Shareholders' Equity\|2000` | 65,503,000,000.00 USD | reported (audited) | statement_line |
+| `BS10Q-CASH` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Cash and cash equivalents\|2000` | 1,240,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-TRADE-RECEIVABLES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Trade receivables (net of allowance for doubtful\|2000` | 10,491,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-OTHER-RECEIVABLES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Other receivables\|2000` | 1,559,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-PRICE-RISK-ASSETS-CURRENT` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Assets from price risk management activities\|2000` | 12,018,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-INVENTORIES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Inventories\|2000` | 953,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-DEPOSITS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Deposits\|2000` | 2,433,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-OTHER-CURRENT-ASSETS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Other\|2000` | 1,333,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-EQUITY-AFFILIATES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Investments in and advances to unconsolidated\|2000` | 5,599,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-PRICE-RISK-ASSETS-NONCURRENT` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Assets from price risk management activities#2\|2000` | 8,990,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-GOODWILL` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Goodwill\|2000` | 3,720,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-OTHER-INVESTMENTS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Other#2\|2000` | 4,857,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-NATURAL-GAS-TRANSMISSION` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Natural gas transmission\|2000` | 6,916,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-ELECTRIC-GENERATION` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Electric generation and distribution\|2000` | 4,766,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-FIBER-OPTIC` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Fiber-optic network and equipment\|2000` | 350,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-CONSTRUCTION-IN-PROGRESS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Construction in progress\|2000` | 1,161,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-OTHER-PROPERTY` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Other#3\|2000` | 2,256,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-ACCUMULATED-DEPRECIATION` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Less accumulated depreciation, depletion\|2000` | 3,716,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-ACCOUNTS-PAYABLE` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Accounts payable\|2000` | 9,577,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-PRICE-RISK-LIABILITIES-CURRENT` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Liabilities from price risk management activities\|2000` | 10,495,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-SHORT-TERM-DEBT` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Short-term debt\|2000` | 2,192,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-CUSTOMERS-DEPOSITS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Customers' deposits\|2000` | 4,277,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-OTHER-CURRENT-LIABILITIES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Other\|2000` | 2,200,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-LONG-TERM-DEBT` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Long-Term Debt\|2000` | 8,665,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-DEFERRED-INCOME-TAXES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Deferred income taxes\|2000` | 1,679,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Liabilities from price risk management activities#2\|2000` | 9,519,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-OTHER-DEFERRED-CREDITS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Other#2\|2000` | 2,692,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-MINORITY-INTERESTS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Minority Interests\|2000` | 2,437,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Company-Obligated Preferred Securities of Subsidiaries\|2000` | 904,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-SECOND-PREFERRED-STOCK` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Second preferred stock, cumulative, no par value\|2000` | 124,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-JUNIOR-PREFERRED-STOCK` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Mandatorily Convertible Junior Preferred Stock,\|2000` | 1,000,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-COMMON-STOCK` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Common stock, no par value (net of notes receivable\|2000` | 7,926,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-RETAINED-EARNINGS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Retained earnings\|2000` | 2,613,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Accumulated other comprehensive income\|2000` | -1,198,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-TREASURY-STOCK` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Common stock held in treasury\|2000` | -28,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-RESTRICTED-STOCK` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Restricted stock and other\|2000` | -148,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-TOTAL-ASSETS` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#1\|Total Assets\|2000` | 64,926,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-TOTAL-EQUITY` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Total\|2000` | 10,289,000,000.00 USD | reported (unaudited) | statement_line |
+| `BS10Q-TOTAL-LE` | `SRC-ENR-003` | `CONSOLIDATED BALANCE SHEET#2\|Total Liabilities and Shareholders' Equity\|2000` | 64,926,000,000.00 USD | reported (unaudited) | statement_line |
+
+### Readings of the record
+
+- `BS10K-SFC`, an interpretation of `BS10K-CASH`, `BS10K-TRADE-RECEIVABLES`, `BS10K-OTHER-RECEIVABLES`, `BS10K-PRICE-RISK-ASSETS-CURRENT`, `BS10K-INVENTORIES`, `BS10K-DEPOSITS`, `BS10K-OTHER-CURRENT-ASSETS`, `BS10K-EQUITY-AFFILIATES`, `BS10K-PRICE-RISK-ASSETS-NONCURRENT`, `BS10K-GOODWILL`, `BS10K-OTHER-INVESTMENTS`, `BS10K-NATURAL-GAS-TRANSMISSION`, `BS10K-ELECTRIC-GENERATION`, `BS10K-FIBER-OPTIC`, `BS10K-CONSTRUCTION-IN-PROGRESS`, `BS10K-OTHER-PROPERTY`, `BS10K-ACCUMULATED-DEPRECIATION`, `BS10K-ACCOUNTS-PAYABLE`, `BS10K-PRICE-RISK-LIABILITIES-CURRENT`, `BS10K-SHORT-TERM-DEBT`, `BS10K-CUSTOMERS-DEPOSITS`, `BS10K-OTHER-CURRENT-LIABILITIES`, `BS10K-LONG-TERM-DEBT`, `BS10K-DEFERRED-INCOME-TAXES`, `BS10K-PRICE-RISK-LIABILITIES-NONCURRENT`, `BS10K-OTHER-DEFERRED-CREDITS`, `BS10K-MINORITY-INTERESTS`, `BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES`, `BS10K-SECOND-PREFERRED-STOCK`, `BS10K-JUNIOR-PREFERRED-STOCK`, `BS10K-COMMON-STOCK`, `BS10K-RETAINED-EARNINGS`, `BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME`, `BS10K-TREASURY-STOCK`, `BS10K-RESTRICTED-STOCK`, read by `case-author-1` and second reader `case-second-reader`: The 2000-12-31 consolidated balance sheet the FY2000 10-K prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed.
+- `BS10Q-SFC`, an interpretation of `BS10Q-CASH`, `BS10Q-TRADE-RECEIVABLES`, `BS10Q-OTHER-RECEIVABLES`, `BS10Q-PRICE-RISK-ASSETS-CURRENT`, `BS10Q-INVENTORIES`, `BS10Q-DEPOSITS`, `BS10Q-OTHER-CURRENT-ASSETS`, `BS10Q-EQUITY-AFFILIATES`, `BS10Q-PRICE-RISK-ASSETS-NONCURRENT`, `BS10Q-GOODWILL`, `BS10Q-OTHER-INVESTMENTS`, `BS10Q-NATURAL-GAS-TRANSMISSION`, `BS10Q-ELECTRIC-GENERATION`, `BS10Q-FIBER-OPTIC`, `BS10Q-CONSTRUCTION-IN-PROGRESS`, `BS10Q-OTHER-PROPERTY`, `BS10Q-ACCUMULATED-DEPRECIATION`, `BS10Q-ACCOUNTS-PAYABLE`, `BS10Q-PRICE-RISK-LIABILITIES-CURRENT`, `BS10Q-SHORT-TERM-DEBT`, `BS10Q-CUSTOMERS-DEPOSITS`, `BS10Q-OTHER-CURRENT-LIABILITIES`, `BS10Q-LONG-TERM-DEBT`, `BS10Q-DEFERRED-INCOME-TAXES`, `BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT`, `BS10Q-OTHER-DEFERRED-CREDITS`, `BS10Q-MINORITY-INTERESTS`, `BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES`, `BS10Q-SECOND-PREFERRED-STOCK`, `BS10Q-JUNIOR-PREFERRED-STOCK`, `BS10Q-COMMON-STOCK`, `BS10Q-RETAINED-EARNINGS`, `BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME`, `BS10Q-TREASURY-STOCK`, `BS10Q-RESTRICTED-STOCK`, read by `case-author-1` and second reader `case-second-reader`: The 2000-12-31 consolidated balance sheet the Q3-2001 10-Q prints, posted as one entry: each printed line on its own account, assets debited and liabilities and equity credited, a line the filing prints in parentheses (accumulated depreciation, accumulated other comprehensive loss, treasury and restricted stock) on the other side. Minority interests and the company-obligated preferred securities of subsidiaries are printed outside shareholders' equity, so they are liabilities here. Subtotals and totals are never posted. The printed lines balance on their own (total assets equals total liabilities and shareholders' equity), so no remainder account is needed.
 
 ## How this book was built
+
+### Book `statement-10k2000` (statement)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-10k2000`): not yet evaluated: filler_invariance.
+
+Opened 2000-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `FY2000` | 2000-01-01 | 2000-12-31 | 2000 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1010` | Asset | `BS10K-CASH` |
+| `1020` | Asset | `BS10K-TRADE-RECEIVABLES` |
+| `1030` | Asset | `BS10K-OTHER-RECEIVABLES` |
+| `1040` | Asset | `BS10K-PRICE-RISK-ASSETS-CURRENT` |
+| `1050` | Asset | `BS10K-INVENTORIES` |
+| `1060` | Asset | `BS10K-DEPOSITS` |
+| `1070` | Asset | `BS10K-OTHER-CURRENT-ASSETS` |
+| `1080` | Asset | `BS10K-EQUITY-AFFILIATES` |
+| `1090` | Asset | `BS10K-PRICE-RISK-ASSETS-NONCURRENT` |
+| `1100` | Asset | `BS10K-GOODWILL` |
+| `1110` | Asset | `BS10K-OTHER-INVESTMENTS` |
+| `1120` | Asset | `BS10K-NATURAL-GAS-TRANSMISSION` |
+| `1130` | Asset | `BS10K-ELECTRIC-GENERATION` |
+| `1140` | Asset | `BS10K-FIBER-OPTIC` |
+| `1150` | Asset | `BS10K-CONSTRUCTION-IN-PROGRESS` |
+| `1160` | Asset | `BS10K-OTHER-PROPERTY` |
+| `1170` | Asset | `BS10K-ACCUMULATED-DEPRECIATION` |
+| `2010` | Liability | `BS10K-ACCOUNTS-PAYABLE` |
+| `2020` | Liability | `BS10K-PRICE-RISK-LIABILITIES-CURRENT` |
+| `2030` | Liability | `BS10K-SHORT-TERM-DEBT` |
+| `2040` | Liability | `BS10K-CUSTOMERS-DEPOSITS` |
+| `2050` | Liability | `BS10K-OTHER-CURRENT-LIABILITIES` |
+| `2060` | Liability | `BS10K-LONG-TERM-DEBT` |
+| `2070` | Liability | `BS10K-DEFERRED-INCOME-TAXES` |
+| `2080` | Liability | `BS10K-PRICE-RISK-LIABILITIES-NONCURRENT` |
+| `2090` | Liability | `BS10K-OTHER-DEFERRED-CREDITS` |
+| `2100` | Liability | `BS10K-MINORITY-INTERESTS` |
+| `2110` | Liability | `BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES` |
+| `3010` | Equity | `BS10K-SECOND-PREFERRED-STOCK` |
+| `3020` | Equity | `BS10K-JUNIOR-PREFERRED-STOCK` |
+| `3030` | Equity | `BS10K-COMMON-STOCK` |
+| `3040` | Equity | `BS10K-RETAINED-EARNINGS` |
+| `3050` | Equity | `BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME` |
+| `3060` | Equity | `BS10K-TREASURY-STOCK` |
+| `3070` | Equity | `BS10K-RESTRICTED-STOCK` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+| `BS10K-SFC` | `BS10K-SFC` | Original | 2000-12-31 |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-ENR-10K` | `SRC-ENR-008` | AgentUpload |
+
+Declared defaults (each an encoding choice the record does not fix):
+
+| Attribute | Rule | Why |
+|---|---|---|
+| `evidence_attached` | `placeholder_reviewed` | the FY2000 10-K is cited through its stub, reviewed by case-second-reader (plan §2.7) |
+| `leg_split` | `statement_lines` | every printed line of the balance sheet posts to its own account in one entry; the lines balance on their own, so no remainder account is needed (plan §7.2, E-T-02) |
+| `effective_date` | `reporting_period_last_day` | a balance sheet is as of its date, the fiscal year's last day |
+
+### Book `statement-10q2001q3` (statement)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-10q2001q3`): not yet evaluated: filler_invariance.
+
+Opened 2000-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `FY2000` | 2000-01-01 | 2000-12-31 | 2000 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1010` | Asset | `BS10Q-CASH` |
+| `1020` | Asset | `BS10Q-TRADE-RECEIVABLES` |
+| `1030` | Asset | `BS10Q-OTHER-RECEIVABLES` |
+| `1040` | Asset | `BS10Q-PRICE-RISK-ASSETS-CURRENT` |
+| `1050` | Asset | `BS10Q-INVENTORIES` |
+| `1060` | Asset | `BS10Q-DEPOSITS` |
+| `1070` | Asset | `BS10Q-OTHER-CURRENT-ASSETS` |
+| `1080` | Asset | `BS10Q-EQUITY-AFFILIATES` |
+| `1090` | Asset | `BS10Q-PRICE-RISK-ASSETS-NONCURRENT` |
+| `1100` | Asset | `BS10Q-GOODWILL` |
+| `1110` | Asset | `BS10Q-OTHER-INVESTMENTS` |
+| `1120` | Asset | `BS10Q-NATURAL-GAS-TRANSMISSION` |
+| `1130` | Asset | `BS10Q-ELECTRIC-GENERATION` |
+| `1140` | Asset | `BS10Q-FIBER-OPTIC` |
+| `1150` | Asset | `BS10Q-CONSTRUCTION-IN-PROGRESS` |
+| `1160` | Asset | `BS10Q-OTHER-PROPERTY` |
+| `1170` | Asset | `BS10Q-ACCUMULATED-DEPRECIATION` |
+| `2010` | Liability | `BS10Q-ACCOUNTS-PAYABLE` |
+| `2020` | Liability | `BS10Q-PRICE-RISK-LIABILITIES-CURRENT` |
+| `2030` | Liability | `BS10Q-SHORT-TERM-DEBT` |
+| `2040` | Liability | `BS10Q-CUSTOMERS-DEPOSITS` |
+| `2050` | Liability | `BS10Q-OTHER-CURRENT-LIABILITIES` |
+| `2060` | Liability | `BS10Q-LONG-TERM-DEBT` |
+| `2070` | Liability | `BS10Q-DEFERRED-INCOME-TAXES` |
+| `2080` | Liability | `BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT` |
+| `2090` | Liability | `BS10Q-OTHER-DEFERRED-CREDITS` |
+| `2100` | Liability | `BS10Q-MINORITY-INTERESTS` |
+| `2110` | Liability | `BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES` |
+| `3010` | Equity | `BS10Q-SECOND-PREFERRED-STOCK` |
+| `3020` | Equity | `BS10Q-JUNIOR-PREFERRED-STOCK` |
+| `3030` | Equity | `BS10Q-COMMON-STOCK` |
+| `3040` | Equity | `BS10Q-RETAINED-EARNINGS` |
+| `3050` | Equity | `BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME` |
+| `3060` | Equity | `BS10Q-TREASURY-STOCK` |
+| `3070` | Equity | `BS10Q-RESTRICTED-STOCK` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+| `BS10Q-SFC` | `BS10Q-SFC` | Original | 2000-12-31 |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-ENR-10Q` | `SRC-ENR-003` | AgentUpload |
+
+Declared defaults (each an encoding choice the record does not fix):
+
+| Attribute | Rule | Why |
+|---|---|---|
+| `evidence_attached` | `placeholder_reviewed` | the Q3-2001 10-Q is cited through its stub, reviewed by case-second-reader (plan §2.7) |
+| `leg_split` | `statement_lines` | every printed line of the balance sheet posts to its own account in one entry; the lines balance on their own, so no remainder account is needed (plan §7.2, E-T-02) |
+| `effective_date` | `reporting_period_last_day` | a balance sheet is as of its date, the fiscal year's last day |
+
+## Findings, refusals, tie-outs and read-backs
+
+### `E-T-02`: exact tie-out (T.footing)
+
+On the book `statement-10k2000`, the posted lines (`BS10K-SFC`) fold to each printed total below exactly.
+
+Sources: `SRC-ENR-008` (reported (audited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `BS10K-TOTAL-ASSETS` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,assets,FY2000,as-reported-in=$C_ISSUE_FY2000 value=65503000000.00 contrib=holds outsider=report:verified |
+| `BS10K-TOTAL-EQUITY` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,total_equity,FY2000,as-reported-in=$C_ISSUE_FY2000 value=11470000000.00 contrib=holds outsider=report:verified |
+| `BS10K-TOTAL-LE` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,liabilities_and_equity,FY2000,as-reported-in=$C_ISSUE_FY2000 value=65503000000.00 contrib=holds outsider=report:verified |
+
+### `E-T-05`: exact tie-out (T.footing)
+
+On the book `statement-10q2001q3`, the posted lines (`BS10Q-SFC`) fold to each printed total below exactly.
+
+Sources: `SRC-ENR-003` (reported (unaudited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `BS10Q-TOTAL-ASSETS` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,assets,FY2000,as-currently-stated value=64926000000.00 contrib=holds outsider=report:verified |
+| `BS10Q-TOTAL-EQUITY` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,total_equity,FY2000,as-currently-stated value=10289000000.00 contrib=holds outsider=report:verified |
+| `BS10Q-TOTAL-LE` | `default` | T | PASS | record-consistent | kind=footing read=balance-sheet,liabilities_and_equity,FY2000,as-currently-stated value=64926000000.00 contrib=holds outsider=report:verified |
 

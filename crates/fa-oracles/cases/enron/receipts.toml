@@ -64,3 +64,1219 @@ aligned = true
 values_in_quote = true
 scope_ok = true
 original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-ACCOUNTS-PAYABLE"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accounts payable|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "c5c70ee0fc858c474363750031b9c5e25e131d519b0a75f709252b1e2169b401"
+values_sha256 = "9dd625e9d22ac4a9347c4e55d81bcbb804887da1af6f82eacb59ad908938a02b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-ACCUMULATED-DEPRECIATION"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Less accumulated depreciation,|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "0a4e60fa02217110163cb476aae41ee16b20c342fc663b1fa3cadf20424377be"
+values_sha256 = "7288ca3f28cd04ee315e889ebe37fc8bad54a0e06c4a1dbf31703ea4efbc605a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accumulated other comprehensive income|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "05ddde7416c853519a1f0334079ed6f8dc4dfb9a447976dafdbdb8d679308cbe"
+values_sha256 = "b7c693e048319e93a9857adc0543b7ff57ac35919ebc67a28671356532ea6484"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-CASH"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Cash and cash equivalents|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "3cce6179e7ed8d1ca7697a8ed1c0132d73ef1f1cc60f8c3a6f8334f974ee3617"
+values_sha256 = "3ebff885f61fc283d31280b765a96a5cc05413fa863f7c659785137a3ed25e6c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-COMMON-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock, no par value, 1,200,000,000|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "d880396fc93b48d7bae057e3aedaaa7ea057b0da4fbb4dca42a36306ccac5926"
+values_sha256 = "70113bd3a7b53cde73f0ba61f8e79a2e9284e9c36c35501b012bd204e1e3230b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-CONSTRUCTION-IN-PROGRESS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Construction in progress|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "ec1c7d93ba051204e4fea7e167f540c2136769c82329c53f5b7a0770bb237987"
+values_sha256 = "e063c289e2eca0a11ec62afb7ee00ecb3943dd5d8c6bf116e0d75b7ff5735e59"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-CUSTOMERS-DEPOSITS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Customers' deposits|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "74cee2dc1acdc0cc31cf4f4970c64d1399c0bd440d5a09163f65b5bfdde4cf05"
+values_sha256 = "f8da4e002cb4f5d3e258cd5c61169b5cefc3b84937db10301d9a2fd67fb5fb30"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-DEFERRED-INCOME-TAXES"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Deferred income taxes|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "6ea49079e7a1d29225d01e6642649c7d29ea2dca8ab034046d1b31a70f557966"
+values_sha256 = "0e432e0706d47bde750fcc6238aab56abfea1b786570dc64a322761af8193172"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-DEPOSITS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Deposits|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "15f73892e447229129683aa56deffd654bff849b271c540db38f509113dff88e"
+values_sha256 = "bf493027cf6463e52c9d34e9edcc9d86c3a0a90131ad85b3ca92339d38e5d7ee"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-ELECTRIC-GENERATION"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Electric generation and distribution|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "8bbc94368fc8a51ebe2ce0d1c04925954c57942a9909ecd9963c25085bb3e6ae"
+values_sha256 = "7405d098c91350e6b08659d62ac025e8924feef933f425ee039c8b692b1b107d"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-EQUITY-AFFILIATES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Investments in and advances to|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "dbfed9a0fcee127f0ee11cf6198594f8828d8a2d3a873fa4bf9ba0f3dfb56a7f"
+values_sha256 = "e5fdafb04212bf9809e9f37f3303e2e9d0a0caae8b0b36dcee7dc95de425075c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-FIBER-OPTIC"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Fiber optic network and equipment|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "7f3ee9fe1fbf452b0c242614e1cad18b6dce034e5bc80763dff6332e872ad2ff"
+values_sha256 = "d325a672ff0c2f2d4dac821c6153dc149d041977708e37a87f960bfa308a4d13"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-GOODWILL"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Goodwill|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "c2cad993a970d986cf25122c385a4e25936508dcc9338d54a22b0a141a8ca410"
+values_sha256 = "56241d331bc91b0aaf85eb960df1e11dc1da1787ad33fe485481f5a5bdfc3ae2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-INVENTORIES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Inventories|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "6953c2a883537cc80135516935de542987c2cd76f94d8cbf2ad004d7bf4c6195"
+values_sha256 = "4a2f35d53c1027c81aa3e3f29d355d8f496a1c8b8f617f80bddee825372ff08a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-JUNIOR-PREFERRED-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Mandatorily Convertible Junior Preferred|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "66dbae68e4f498ba668b52b481891465277f250cd3cb3ced6c14144dbfae52fb"
+values_sha256 = "a2501c62626fd10c1c6cf537eae98f4462e770c48c203a65e4e860ed56b3b4dd"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-LONG-TERM-DEBT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Long-Term Debt|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "c6193f567858ff01601b0a569adcf758cee8b254ce48f2ed8c24d24056997c24"
+values_sha256 = "75d92fd6eae67ef96f63109c6166b584b061338fcb3b2e0f7085eef5cfcd4c0e"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-MINORITY-INTERESTS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Minority Interests|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "4a2714cb15d0eb583f6b80cf74d58442d60e4c5b6d12acab30d74761692ee2db"
+values_sha256 = "54aed7a488543cbc9460e937cfbd86aaa1d90b1d8abd73d82b64133a8be613f0"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-NATURAL-GAS-TRANSMISSION"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Natural gas transmission|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "4db452d122215237fc094a31224a9c35165630c1a49a5a48e7a43131e8e9645c"
+values_sha256 = "d3ffd49f4405eff6e3b9d6f9050f251a992956101e8f9b27ab289efa69f68ac2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-OTHER-CURRENT-ASSETS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "bcafc17d81197cfecc9258e9f6207571cea82aecae1f8dc3858a84b98ef8213a"
+values_sha256 = "c6240c6299a81755754da62a9e54d0d693e50226f31c87da90a0ef2b1d0be971"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-OTHER-CURRENT-LIABILITIES"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "3d8aefb9ce5bb1041a6087022d378c422b4710ff805abd59e86c6340aefe8e5d"
+values_sha256 = "46786cef51a960ef2013c391da47783a5d72c1c3a826f8dc867363a3c8857b8a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-OTHER-DEFERRED-CREDITS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other#2|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "862c086f4b1c23c540cc1ecd8e4b5a322b55c660a6a1698f9dd39729509da785"
+values_sha256 = "ea1e75996f0bc67382079da7388abd83a8ea0915661b9b92e0979258091f9695"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-OTHER-INVESTMENTS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#2|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "608f72a28123ca352be117a64139a97f37e57e318b640e4f07846b41958e9c15"
+values_sha256 = "9ec7c8a1640f9739e4bef701bcdc8b77bb05d3470f5255502528405ddf65c90b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-OTHER-PROPERTY"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#3|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "e1490da4765ccef618f9dbf4d64c004550456af86e21584d08b95e15ec9a1d48"
+values_sha256 = "99c7050e3b68e99723d6dca4b2ece4342bc3a9f5a271a344a0752d3c7d34df04"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-OTHER-RECEIVABLES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other receivables|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "0d79c4de2423659b162531390d1e6f26815c1d458ad66d9b1c42e61e4143a6a4"
+values_sha256 = "fc5cf848cdd1626f45d641a56014dfbd1e3f512d4ffccfa7325a8b8877000e17"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Company-Obligated Preferred Securities|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "533eb9a8909f614c351b65e6b8aba1ffc2890735ce9a8a8936e17c05335dfa47"
+values_sha256 = "8b760a43c239a41ead7f09a7b9a2677239952fb89c3b0bfbe27415ecafb27f15"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-PRICE-RISK-ASSETS-CURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "b81b67fcea705aaf7bf4df16ffacb7a3d6cc214e5a32462954702acc000772c2"
+values_sha256 = "4bce73ce3d13cd8fe0959c3f8ad3eba50601181f691e7a7507e14ef5531df653"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-PRICE-RISK-ASSETS-NONCURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management#2|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "0bf57f654b1257acd34b68268c9895b5fa4e8bb082cd3384735de50d6758b622"
+values_sha256 = "9bdc8d06cc5ab2b38c6c2ef8d131172466add5429838e30908115828752c4e61"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-PRICE-RISK-LIABILITIES-CURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "12baa3065284a96f3b42ebed6641a24761761b359814f6f46835f59b4c6b107a"
+values_sha256 = "0da7a41f75669406983237165a1fa1e641cc70a36e23fe8eab658a899bdaa48e"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-PRICE-RISK-LIABILITIES-NONCURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk#2|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "13b22b59e9bc022b72134af185ffa6fb436cc3cbacbcd91f61b668a86074beb0"
+values_sha256 = "66f04d50f07967f85dfa4f288cd1de45408498577dd034db0546d0f351ec8bed"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-RESTRICTED-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Restricted stock and other|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "501c009af5704f1ce36cade53624e5a6fb9989856d4e39b40a2eecb39b6f88f9"
+values_sha256 = "ae4581d664798e8e93f5597d813ed1f8c0026a730d7cb6e0f4acd24a6c1b64ba"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-RETAINED-EARNINGS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Retained earnings|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "7b3bf2430755726e1993395dedd4db2242a366fe9e72b30f6d2cd6e6904dd340"
+values_sha256 = "c0c2642f5bafe8ea557de3a9e05a1617655db035849a93cfa2ad7920041e3002"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-SECOND-PREFERRED-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Second preferred stock, cumulative, no par|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "6affdae3b3c1aa6aa7689e9b6a7b3225a636aa1ac0025f490cca1285ceaf1487"
+values_sha256 = "bff69ef9bd4a6cd3d47a7f6dac439f666526adde4e15924374a1632ed478132a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-SHORT-TERM-DEBT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Short-term debt|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "380aff13a2cfad9b11cca5c264ab59a6e56d34b435e3bf721e72e8c53cfaefb4"
+values_sha256 = "7103787af8e34473b340569a502adc2ae7f1539b5a9f957734d3b14993f8b384"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-TOTAL-ASSETS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Total Assets|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "de2d1846e7ab6be3f09a5c46d1c2d4598ae971a7b8809a2e45695079e31ddacb"
+values_sha256 = "e05301b5ec27bfc2070aa42b7a2711632f59424e5eb3c32fc8b4237f0d22f38f"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-TOTAL-EQUITY"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total shareholders' equity|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "08a8f9380bbb12e39c3ad55a54180c7ced0bb3ed9934f54323ba055b085c7548"
+values_sha256 = "84f394cc7c5385b53db2b0e363d8782be677b5698b3794ee00231e7f6c88902a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-TOTAL-LE"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total Liabilities and Shareholders' Equity|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "de2d1846e7ab6be3f09a5c46d1c2d4598ae971a7b8809a2e45695079e31ddacb"
+values_sha256 = "e05301b5ec27bfc2070aa42b7a2711632f59424e5eb3c32fc8b4237f0d22f38f"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-TRADE-RECEIVABLES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Trade receivables (net of allowance|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "a8211567d8ff686d68b389999d2dd00b0505a4d0f7333606b1d4d0223cd0111f"
+values_sha256 = "f0b5d89d9274613d5625d96182d53a0eff32392f6ef0e5d4e58e5699623ea5c3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-008"
+fact = "BS10K-TREASURY-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock held in treasury, 577,066|2000"
+verified_utc = "2026-10-30T10:39:23Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6c163ef2d336f236b4e1cd736f47b9fefde5ec5338bf5cb91ce926bffdd46d28"
+quote_sha256 = "6e01646fb397088a9559b4356544b32d30be904e0f2a08fbee95cb5cba0d90ad"
+values_sha256 = "f88738a5c833b3c540d00251672c57f4f7afd1487c3c07650cea49971ca72e85"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-ACCOUNTS-PAYABLE"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accounts payable|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "c735998cb89630118af63dbff1be59d72727c8969b9d27b5ff9c3d8f9feca4dd"
+values_sha256 = "04a309d6bebfa49760b4e1c486a80c973ec65d48fdf988a66d357e629a7ede01"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-ACCUMULATED-DEPRECIATION"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Less accumulated depreciation, depletion|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "0a4e60fa02217110163cb476aae41ee16b20c342fc663b1fa3cadf20424377be"
+values_sha256 = "7288ca3f28cd04ee315e889ebe37fc8bad54a0e06c4a1dbf31703ea4efbc605a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Accumulated other comprehensive income|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "4b59cfbb7ffbab48a629040808f8fe05afdd0e830fef7f5766c453cef59b3282"
+values_sha256 = "91aa8b3a45093f65073b5db99f1405ee86455dbb0adbb4fb5a8747110aaa71b8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-CASH"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Cash and cash equivalents|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "3fe4f4ff9adc01931c13e8b4265e7ff321b725cc6ea1f6e4388a6f45a2381c74"
+values_sha256 = "a7dc653f782d7f9c0d589fbee5365af22cb689ab5bb8df8f1ea7920498e8f8a3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-COMMON-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock, no par value (net of notes receivable|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "527f5feb765ff92fe77b5713de12a8cde268a9fd317768a1ceba92acd3ddbb09"
+values_sha256 = "967378a8224f4068b2fd8980e6d564748e763664027adada3843dbc41accd5ca"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-CONSTRUCTION-IN-PROGRESS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Construction in progress|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "231912aabcdacf0b7d5f69b8b7f75fef4b9c6fbe1e1566f78e998d799f431950"
+values_sha256 = "9056919530ca6e4a9755dbfcaf15a76fa06eb1b84b18a1b1e7f2ae2c2908a6bc"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-CUSTOMERS-DEPOSITS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Customers' deposits|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "74cee2dc1acdc0cc31cf4f4970c64d1399c0bd440d5a09163f65b5bfdde4cf05"
+values_sha256 = "f8da4e002cb4f5d3e258cd5c61169b5cefc3b84937db10301d9a2fd67fb5fb30"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-DEFERRED-INCOME-TAXES"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Deferred income taxes|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "380aff13a2cfad9b11cca5c264ab59a6e56d34b435e3bf721e72e8c53cfaefb4"
+values_sha256 = "7103787af8e34473b340569a502adc2ae7f1539b5a9f957734d3b14993f8b384"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-DEPOSITS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Deposits|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "15f73892e447229129683aa56deffd654bff849b271c540db38f509113dff88e"
+values_sha256 = "bf493027cf6463e52c9d34e9edcc9d86c3a0a90131ad85b3ca92339d38e5d7ee"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-ELECTRIC-GENERATION"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Electric generation and distribution|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "8bbc94368fc8a51ebe2ce0d1c04925954c57942a9909ecd9963c25085bb3e6ae"
+values_sha256 = "7405d098c91350e6b08659d62ac025e8924feef933f425ee039c8b692b1b107d"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-EQUITY-AFFILIATES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Investments in and advances to unconsolidated|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "e3b54c07815bd3b9d615a6af24b1f56a08a39f443ea9422d76db5561a20f0dd8"
+values_sha256 = "8bb5612b47eeef27b182ce70657b929e42c7f7455718d88ce5c892e68c359981"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-FIBER-OPTIC"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Fiber-optic network and equipment|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "deeeb5df3f2cee6bf4e597a8a3a878a6ce49b932b9e90b416922d4499f54fae6"
+values_sha256 = "a37a968fd635e20217676232fef3b53c084ea03c1dcb3249b09840d03c1cd213"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-GOODWILL"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Goodwill|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "658da566129a06cc58e8401c28d28872e9f525e07ced8cf141528dfb2fe16657"
+values_sha256 = "bb48674168b6cd7505e684bfa7690ff27619f4a965121346b1eb94dd4de4d55c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-INVENTORIES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Inventories|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "6953c2a883537cc80135516935de542987c2cd76f94d8cbf2ad004d7bf4c6195"
+values_sha256 = "4a2f35d53c1027c81aa3e3f29d355d8f496a1c8b8f617f80bddee825372ff08a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-JUNIOR-PREFERRED-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Mandatorily Convertible Junior Preferred Stock,|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "66dbae68e4f498ba668b52b481891465277f250cd3cb3ced6c14144dbfae52fb"
+values_sha256 = "a2501c62626fd10c1c6cf537eae98f4462e770c48c203a65e4e860ed56b3b4dd"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-LONG-TERM-DEBT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Long-Term Debt|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "6a8c1e00f8d09cd981dc6bd58bc65d5825078d1c3090ca29c9e3e3917550b39a"
+values_sha256 = "1854afffeb181bfaee7839feccb5c1925e4dac2d61120760fb0898a9839cea41"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-MINORITY-INTERESTS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Minority Interests|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "3f6c77fe51eedb6193f7ba16b5c83bfa8e92698dd7e77255aa26ab117be8c796"
+values_sha256 = "976484b7f00a7986d611a8db9c0e7adf2477d9db9821e7ee54ff01b20aa6f369"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-NATURAL-GAS-TRANSMISSION"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Natural gas transmission|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "4db452d122215237fc094a31224a9c35165630c1a49a5a48e7a43131e8e9645c"
+values_sha256 = "d3ffd49f4405eff6e3b9d6f9050f251a992956101e8f9b27ab289efa69f68ac2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-OTHER-CURRENT-ASSETS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "bcafc17d81197cfecc9258e9f6207571cea82aecae1f8dc3858a84b98ef8213a"
+values_sha256 = "c6240c6299a81755754da62a9e54d0d693e50226f31c87da90a0ef2b1d0be971"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-OTHER-CURRENT-LIABILITIES"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "fe2c2adbbf190f744a1f508e9f70a4247b2bbfcfdd9ec39258a24ee309b58cee"
+values_sha256 = "7fa75a260a29d82f7af05e09d043418a76037e129358a5704030d42a468cba13"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-OTHER-DEFERRED-CREDITS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Other#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "862c086f4b1c23c540cc1ecd8e4b5a322b55c660a6a1698f9dd39729509da785"
+values_sha256 = "ea1e75996f0bc67382079da7388abd83a8ea0915661b9b92e0979258091f9695"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-OTHER-INVESTMENTS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "5d2ab570a3968f4262988191c0229450485822d4fa2665a74500b520aebddcf2"
+values_sha256 = "54e5d788b468b952f231c3a609b6033c3308decd774e75998259bdaf6e3f6ffc"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-OTHER-PROPERTY"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other#3|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "e1490da4765ccef618f9dbf4d64c004550456af86e21584d08b95e15ec9a1d48"
+values_sha256 = "99c7050e3b68e99723d6dca4b2ece4342bc3a9f5a271a344a0752d3c7d34df04"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-OTHER-RECEIVABLES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Other receivables|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "37760f94d2f460c6d9089b7eea79aafbc29e88942d4113df5a4c513a20903b5a"
+values_sha256 = "4458589d4dfb1e4c656223ec2e376b2ee04dae3f5b7d110435650d1141034428"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Company-Obligated Preferred Securities of Subsidiaries|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "533eb9a8909f614c351b65e6b8aba1ffc2890735ce9a8a8936e17c05335dfa47"
+values_sha256 = "8b760a43c239a41ead7f09a7b9a2677239952fb89c3b0bfbe27415ecafb27f15"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-PRICE-RISK-ASSETS-CURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management activities|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "b81b67fcea705aaf7bf4df16ffacb7a3d6cc214e5a32462954702acc000772c2"
+values_sha256 = "4bce73ce3d13cd8fe0959c3f8ad3eba50601181f691e7a7507e14ef5531df653"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-PRICE-RISK-ASSETS-NONCURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Assets from price risk management activities#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "4ff916a421296a83e0dc9f3d2aadb3a2ddae24e9c7142317631a937310b64a26"
+values_sha256 = "3712a9342c2fce39b7d757134a4e3a2160625f06102d19ba675dabb816abe279"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-PRICE-RISK-LIABILITIES-CURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk management activities|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "12baa3065284a96f3b42ebed6641a24761761b359814f6f46835f59b4c6b107a"
+values_sha256 = "0da7a41f75669406983237165a1fa1e641cc70a36e23fe8eab658a899bdaa48e"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-PRICE-RISK-LIABILITIES-NONCURRENT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Liabilities from price risk management activities#2|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "8c72139ba8235f0749c97d2dd6b7866cbba66146b7edf1f778fb5ae127641a55"
+values_sha256 = "289858d45a9a82ea454304aac0fb696407eb7bd1c5ace987fb689800532bb827"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-RESTRICTED-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Restricted stock and other|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "501c009af5704f1ce36cade53624e5a6fb9989856d4e39b40a2eecb39b6f88f9"
+values_sha256 = "ae4581d664798e8e93f5597d813ed1f8c0026a730d7cb6e0f4acd24a6c1b64ba"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-RETAINED-EARNINGS"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Retained earnings|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "457401a59a3994a1fde79fbdfe2f40a95a48b55634bbbc8e6a38147d285c2db2"
+values_sha256 = "1c2eeef083b658e2a6b104e8b15c0b12749207baf7da0c2bf500161d98272c2f"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-SECOND-PREFERRED-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Second preferred stock, cumulative, no par value|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "6affdae3b3c1aa6aa7689e9b6a7b3225a636aa1ac0025f490cca1285ceaf1487"
+values_sha256 = "bff69ef9bd4a6cd3d47a7f6dac439f666526adde4e15924374a1632ed478132a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-SHORT-TERM-DEBT"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Short-term debt|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "c4a5adce9333b84c71e2a9eb29ee7107bc0bf131fd85474ad7e6b66f3f0dd493"
+values_sha256 = "c5100e2f5f67c9d78c732ba500e97da8ebd86d72fd428daee21469cc1b7259fa"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-TOTAL-ASSETS"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Total Assets|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "e073df5ca6155299a376223684e6a113affbbf12e8ae1aec16d839db0434c5cf"
+values_sha256 = "ff707d85e39965f3a2457e981b69071d4b5d0c65cd93bc8192e4e47815aa25ab"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-TOTAL-EQUITY"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "4ab542181d393ff64042a3dd8b732cd0417d22b4d4be3442be35c9f38176b885"
+values_sha256 = "c42fb5515cfde3278853d5b8e742ca71c73b1f8e4149d46069a4e75787faf516"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-TOTAL-LE"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Total Liabilities and Shareholders' Equity|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "e073df5ca6155299a376223684e6a113affbbf12e8ae1aec16d839db0434c5cf"
+values_sha256 = "ff707d85e39965f3a2457e981b69071d4b5d0c65cd93bc8192e4e47815aa25ab"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-TRADE-RECEIVABLES"
+anchor = "CONSOLIDATED BALANCE SHEET#1|Trade receivables (net of allowance for doubtful|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "428f52047c07f6dfb654f6ee8b1f6b03c21f753a3ec66ebfa6272ddfe85f0dc2"
+values_sha256 = "e4ed0cedc0948f4f340952e41d90de1ff0265e55a69d4ed6d34e6d35e751e428"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-003"
+fact = "BS10Q-TREASURY-STOCK"
+anchor = "CONSOLIDATED BALANCE SHEET#2|Common stock held in treasury|2000"
+verified_utc = "2026-10-30T10:39:19Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "6a2a8be8dfbce8e7d7d557e6c5ab6ac071c0fc3fd0cd1f88533e6aba82dae153"
+quote_sha256 = "6462bbde3e17abbf1c47c9e8237236f0ae023b495db8922c6b043c24990004f1"
+values_sha256 = "c3fd876fbeca468de8bd22e4e6feb1a0d5aa1ce4f3b63a11252c82b8dff8db79"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

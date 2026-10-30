@@ -103,13 +103,15 @@ fn refused(
 }
 
 /// The committed case loads, and every load check that has input rows
-/// passes: the four assurance facts bind offline through their receipts.
+/// passes: the four assurance facts lead the facts, every sourced fact
+/// (E2d's 2000-12-31 balance-sheet cells included) binds offline through
+/// its receipt, and each vintage prints 35 lines and 3 totals.
 #[test]
 fn enron_ledger_binds_offline() {
     let case = load_copy(&enron()).expect("the committed case loads");
     let ids: Vec<&str> = case.facts.iter().map(|f| f.id.as_str()).collect();
     assert_eq!(
-        ids,
+        ids[..4],
         [
             "ASSUR-ENR-002",
             "ASSUR-ENR-003",
@@ -117,7 +119,15 @@ fn enron_ledger_binds_offline() {
             "ASSUR-ENR-402"
         ]
     );
-    assert_eq!(case.receipts.len(), 4);
+    let sourced = case.facts.iter().filter(|f| f.sourced().is_some()).count();
+    assert_eq!(case.receipts.len(), sourced);
+    for prefix in ["BS10K-", "BS10Q-"] {
+        let cells = ids
+            .iter()
+            .filter(|id| id.starts_with(prefix) && !id.ends_with("-SFC"))
+            .count();
+        assert_eq!(cells, 38, "{prefix}");
+    }
     for report in run_load_checks(&case) {
         assert_ne!(
             report.verdict,

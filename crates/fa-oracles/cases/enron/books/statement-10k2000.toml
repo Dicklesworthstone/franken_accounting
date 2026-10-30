@@ -1,0 +1,714 @@
+# Enron's consolidated balance sheet at 2000-12-31 as the FY2000 10-K prints it (plan §7.2,
+# E-T-02; §7.2a). One period, FY2000. Every printed line posts to its own account in one
+# entry; the printed subtotals and totals are read from the balance sheet and never posted.
+# The 10-Q restates these figures (SRC-ENR-003 restates SRC-ENR-008), so the statement is
+# issued citing the 10-K's stub and the footing reads it as reported in that issuance
+# (K-VINTAGE).
+
+[book]
+variant = "statement-10k2000"
+opening_date = "2000-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "FY2000"
+start = "2000-01-01"
+end = "2000-12-31"
+fiscal_year = 2000
+kind = "Normal"
+
+[[principal]]
+label = "case-filer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce", "verify"]
+
+[[principal]]
+label = "examiner-witness"
+profile = "Human"
+grants = ["read", "witness"]
+
+[[account]]
+code = "1010"
+name_fact = "BS10K-CASH"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1020"
+name_fact = "BS10K-TRADE-RECEIVABLES"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1030"
+name_fact = "BS10K-OTHER-RECEIVABLES"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1040"
+name_fact = "BS10K-PRICE-RISK-ASSETS-CURRENT"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1050"
+name_fact = "BS10K-INVENTORIES"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1060"
+name_fact = "BS10K-DEPOSITS"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1070"
+name_fact = "BS10K-OTHER-CURRENT-ASSETS"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1080"
+name_fact = "BS10K-EQUITY-AFFILIATES"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1090"
+name_fact = "BS10K-PRICE-RISK-ASSETS-NONCURRENT"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1100"
+name_fact = "BS10K-GOODWILL"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1110"
+name_fact = "BS10K-OTHER-INVESTMENTS"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1120"
+name_fact = "BS10K-NATURAL-GAS-TRANSMISSION"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1130"
+name_fact = "BS10K-ELECTRIC-GENERATION"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1140"
+name_fact = "BS10K-FIBER-OPTIC"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1150"
+name_fact = "BS10K-CONSTRUCTION-IN-PROGRESS"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1160"
+name_fact = "BS10K-OTHER-PROPERTY"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1170"
+name_fact = "BS10K-ACCUMULATED-DEPRECIATION"
+type = "Asset"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2010"
+name_fact = "BS10K-ACCOUNTS-PAYABLE"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2020"
+name_fact = "BS10K-PRICE-RISK-LIABILITIES-CURRENT"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2030"
+name_fact = "BS10K-SHORT-TERM-DEBT"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2040"
+name_fact = "BS10K-CUSTOMERS-DEPOSITS"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2050"
+name_fact = "BS10K-OTHER-CURRENT-LIABILITIES"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2060"
+name_fact = "BS10K-LONG-TERM-DEBT"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2070"
+name_fact = "BS10K-DEFERRED-INCOME-TAXES"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2080"
+name_fact = "BS10K-PRICE-RISK-LIABILITIES-NONCURRENT"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2090"
+name_fact = "BS10K-OTHER-DEFERRED-CREDITS"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2100"
+name_fact = "BS10K-MINORITY-INTERESTS"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2110"
+name_fact = "BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3010"
+name_fact = "BS10K-SECOND-PREFERRED-STOCK"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3020"
+name_fact = "BS10K-JUNIOR-PREFERRED-STOCK"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3030"
+name_fact = "BS10K-COMMON-STOCK"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3040"
+name_fact = "BS10K-RETAINED-EARNINGS"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3050"
+name_fact = "BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3060"
+name_fact = "BS10K-TREASURY-STOCK"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3070"
+name_fact = "BS10K-RESTRICTED-STOCK"
+type = "Equity"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-ENR-10K"
+stub_of = "SRC-ENR-008"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "BS10K-SFC"
+fact = "BS10K-SFC"
+class = "Original"
+principal = "case-filer-1"
+effective_date = "2000-12-31"
+memo = "consolidated balance sheet at 2000-12-31, as the FY2000 10-K prints it"
+evidence = "DOC-ENR-10K"
+idempotency_key = "enr-bs10k-2000-12-31"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 0
+account = "1010"
+side = "Dr"
+amount_literal = "1374000000.00"
+amount_rule = "value:BS10K-CASH#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 1
+account = "1020"
+side = "Dr"
+amount_literal = "10396000000.00"
+amount_rule = "value:BS10K-TRADE-RECEIVABLES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 2
+account = "1030"
+side = "Dr"
+amount_literal = "1874000000.00"
+amount_rule = "value:BS10K-OTHER-RECEIVABLES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 3
+account = "1040"
+side = "Dr"
+amount_literal = "12018000000.00"
+amount_rule = "value:BS10K-PRICE-RISK-ASSETS-CURRENT#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 4
+account = "1050"
+side = "Dr"
+amount_literal = "953000000.00"
+amount_rule = "value:BS10K-INVENTORIES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 5
+account = "1060"
+side = "Dr"
+amount_literal = "2433000000.00"
+amount_rule = "value:BS10K-DEPOSITS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 6
+account = "1070"
+side = "Dr"
+amount_literal = "1333000000.00"
+amount_rule = "value:BS10K-OTHER-CURRENT-ASSETS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 7
+account = "1080"
+side = "Dr"
+amount_literal = "5294000000.00"
+amount_rule = "value:BS10K-EQUITY-AFFILIATES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 8
+account = "1090"
+side = "Dr"
+amount_literal = "8988000000.00"
+amount_rule = "value:BS10K-PRICE-RISK-ASSETS-NONCURRENT#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 9
+account = "1100"
+side = "Dr"
+amount_literal = "3638000000.00"
+amount_rule = "value:BS10K-GOODWILL#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 10
+account = "1110"
+side = "Dr"
+amount_literal = "5459000000.00"
+amount_rule = "value:BS10K-OTHER-INVESTMENTS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 11
+account = "1120"
+side = "Dr"
+amount_literal = "6916000000.00"
+amount_rule = "value:BS10K-NATURAL-GAS-TRANSMISSION#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 12
+account = "1130"
+side = "Dr"
+amount_literal = "4766000000.00"
+amount_rule = "value:BS10K-ELECTRIC-GENERATION#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 13
+account = "1140"
+side = "Dr"
+amount_literal = "839000000.00"
+amount_rule = "value:BS10K-FIBER-OPTIC#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 14
+account = "1150"
+side = "Dr"
+amount_literal = "682000000.00"
+amount_rule = "value:BS10K-CONSTRUCTION-IN-PROGRESS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 15
+account = "1160"
+side = "Dr"
+amount_literal = "2256000000.00"
+amount_rule = "value:BS10K-OTHER-PROPERTY#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 16
+account = "1170"
+side = "Cr"
+amount_literal = "3716000000.00"
+amount_rule = "value:BS10K-ACCUMULATED-DEPRECIATION#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 17
+account = "2010"
+side = "Cr"
+amount_literal = "9777000000.00"
+amount_rule = "value:BS10K-ACCOUNTS-PAYABLE#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 18
+account = "2020"
+side = "Cr"
+amount_literal = "10495000000.00"
+amount_rule = "value:BS10K-PRICE-RISK-LIABILITIES-CURRENT#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 19
+account = "2030"
+side = "Cr"
+amount_literal = "1679000000.00"
+amount_rule = "value:BS10K-SHORT-TERM-DEBT#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 20
+account = "2040"
+side = "Cr"
+amount_literal = "4277000000.00"
+amount_rule = "value:BS10K-CUSTOMERS-DEPOSITS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 21
+account = "2050"
+side = "Cr"
+amount_literal = "2178000000.00"
+amount_rule = "value:BS10K-OTHER-CURRENT-LIABILITIES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 22
+account = "2060"
+side = "Cr"
+amount_literal = "8550000000.00"
+amount_rule = "value:BS10K-LONG-TERM-DEBT#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 23
+account = "2070"
+side = "Cr"
+amount_literal = "1644000000.00"
+amount_rule = "value:BS10K-DEFERRED-INCOME-TAXES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 24
+account = "2080"
+side = "Cr"
+amount_literal = "9423000000.00"
+amount_rule = "value:BS10K-PRICE-RISK-LIABILITIES-NONCURRENT#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 25
+account = "2090"
+side = "Cr"
+amount_literal = "2692000000.00"
+amount_rule = "value:BS10K-OTHER-DEFERRED-CREDITS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 26
+account = "2100"
+side = "Cr"
+amount_literal = "2414000000.00"
+amount_rule = "value:BS10K-MINORITY-INTERESTS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 27
+account = "2110"
+side = "Cr"
+amount_literal = "904000000.00"
+amount_rule = "value:BS10K-PREFERRED-SECURITIES-OF-SUBSIDIARIES#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 28
+account = "3010"
+side = "Cr"
+amount_literal = "124000000.00"
+amount_rule = "value:BS10K-SECOND-PREFERRED-STOCK#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 29
+account = "3020"
+side = "Cr"
+amount_literal = "1000000000.00"
+amount_rule = "value:BS10K-JUNIOR-PREFERRED-STOCK#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 30
+account = "3030"
+side = "Cr"
+amount_literal = "8348000000.00"
+amount_rule = "value:BS10K-COMMON-STOCK#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 31
+account = "3040"
+side = "Cr"
+amount_literal = "3226000000.00"
+amount_rule = "value:BS10K-RETAINED-EARNINGS#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 32
+account = "3050"
+side = "Dr"
+amount_literal = "1048000000.00"
+amount_rule = "value:BS10K-ACCUMULATED-OTHER-COMPREHENSIVE-INCOME#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 33
+account = "3060"
+side = "Dr"
+amount_literal = "32000000.00"
+amount_rule = "value:BS10K-TREASURY-STOCK#1"
+unit = "USD"
+
+[[leg]]
+intent = "BS10K-SFC"
+ordinal = 34
+account = "3070"
+side = "Dr"
+amount_literal = "148000000.00"
+amount_rule = "value:BS10K-RESTRICTED-STOCK#1"
+unit = "USD"
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the FY2000 10-K is cited through its stub, reviewed by case-second-reader (plan §2.7)"
+
+[[default]]
+attribute = "leg_split"
+rule = "statement_lines"
+rationale = "every printed line of the balance sheet posts to its own account in one entry; the lines balance on their own, so no remainder account is needed (plan §7.2, E-T-02)"
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "a balance sheet is as of its date, the fiscal year's last day"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "FY2000"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "intent"
+ref = "BS10K-SFC"
+
+[[step]]
+seq = 3
+kind = "period_close"
+ref = "FY2000"
+principal = "case-closer-1"
+
+[[step]]
+seq = 4
+kind = "period_lock"
+ref = "FY2000"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 5
+kind = "issue"
+ref = "FY2000"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-ENR-10K"

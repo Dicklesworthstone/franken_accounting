@@ -1,15 +1,18 @@
 # Enron (plan §7). E1 lands the case's sources ledger: the superseding indictment, the 8-K of
 # 2001-11-08 with its restatement Table 1, the Q3-2001 10-Q with its restated 2000 balance sheet,
 # the special investigative committee's report, and the FY2000 and FY1999 10-Ks, each with the
-# sentence (or table heading) that establishes its assurance. E2a-E2d add the facts and E3-E4 the
-# books and claims. The case's reader is the investigator (§12.3).
+# sentence (or table heading) that establishes its assurance. E2d's first slice adds every printed
+# line and total of the 2000-12-31 balance sheet in both vintages (the FY2000 10-K, audited, and the
+# Q3-2001 10-Q's restated column, unaudited), and E4's E-T-02 foots each on its own statement book
+# (E-T-02 on the 10-K's, read as reported in its issuance; E-T-05 on the 10-Q's). The case's reader
+# is the investigator (§12.3).
 id = "enron"
 letter = "E"
 title = "Enron, the 1997-2001 restatements and the special purpose entities"
 version = 1
 kind = "case"
-scope = "the sources ledger of the Enron case: the six public-record sources and the assurance each filer row carries"
-claims = []
-capabilities = []
+scope = "the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries), and the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it: every line, and the printed totals they foot to"
+claims = ["E-T-02", "E-T-05"]
+capabilities = ["verb:post", "verb:statement"]
 pinned_commit = "d0673641d"
-variants = []
+variants = ["statement-10k2000", "statement-10q2001q3"]
