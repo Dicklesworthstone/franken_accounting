@@ -147,7 +147,8 @@ impl fmt::Display for LotLaw {
     }
 }
 
-/// One open lot candidate available for relief.
+/// One lot layer available for relief. Weighted-average pools also retain
+/// layers with zero quantity and positive cost until the pool relieves them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotCandidate {
     pub entry_id: u128,
@@ -325,13 +326,19 @@ pub fn relieve_lots(
                 lot.entry_id, lot.qty_ordinal
             )));
         }
+        if lot.open_quantity == 0 && lot.open_cost > 0 && law != LotLaw::WeightedAverage {
+            return Err(LotError::InvalidCandidate(format!(
+                "lot {:032x}/{} retains pooled cost without quantity; relieve the remaining pool under WeightedAverage before changing cost-flow laws",
+                lot.entry_id, lot.qty_ordinal
+            )));
+        }
         if by_id.insert((lot.entry_id, lot.qty_ordinal), lot).is_some() {
             return Err(LotError::DuplicateTarget {
                 entry_id: lot.entry_id,
                 qty_ordinal: lot.qty_ordinal,
             });
         }
-        if lot.open_quantity > 0 {
+        if lot.open_quantity > 0 || (law == LotLaw::WeightedAverage && lot.open_cost > 0) {
             total_open_quantity = total_open_quantity
                 .checked_add(lot.open_quantity)
                 .ok_or(LotError::Overflow)?;
@@ -350,8 +357,15 @@ pub fn relieve_lots(
                     "`{law}` orders open lots by law; omit explicit targets or use SpecificId"
                 )));
             }
-            let mut v: Vec<&LotCandidate> =
-                candidates.iter().filter(|c| c.open_quantity > 0).collect();
+            // Weighted-average cost is a property of the entire pool. A
+            // prior disposal can exhaust a layer's quantity before its cost;
+            // that residual still belongs to the remaining pooled quantity.
+            let mut v: Vec<&LotCandidate> = candidates
+                .iter()
+                .filter(|c| {
+                    c.open_quantity > 0 || (law == LotLaw::WeightedAverage && c.open_cost > 0)
+                })
+                .collect();
             v.sort_by_key(|c| (c.effective_day, c.recorded_seq, c.entry_id, c.qty_ordinal));
             v
         }
@@ -519,14 +533,16 @@ pub fn relieve_lots(
             {
                 let rem_for_partial = rem_for_partial.ok_or(LotError::Overflow)?;
                 for (lot, relieved_qty) in qty_relieved_per_lot {
-                    if relieved_qty == 0 {
-                        continue;
-                    }
                     let relieved_cost = if relieved_qty == lot.open_quantity {
                         lot.open_cost
+                    } else if relieved_qty == 0 {
+                        0
                     } else {
                         rem_for_partial
                     };
+                    if relieved_qty == 0 && relieved_cost == 0 {
+                        continue;
+                    }
                     slices.push(LotReliefSlice {
                         entry_id: lot.entry_id,
                         qty_ordinal: lot.qty_ordinal,
@@ -760,6 +776,10 @@ pub fn convert_with_law(
     let rate = Rate::from_ratio(budget, &row.numerator, &row.denominator)?;
     Ok(amount.convert(budget, to_unit, &rate, rounding, reg)?)
 }
+
+#[cfg(test)]
+#[path = "lot/wac_tests.rs"]
+mod wac_tests;
 
 #[cfg(test)]
 mod tests {
