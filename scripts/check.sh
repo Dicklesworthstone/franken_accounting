@@ -272,6 +272,16 @@ CHECK_JOBS="${CHECK_JOBS:-2}"
 # test pool (about 62 GB on 2026-10-29, more than any worker kept free; rch
 # drops slots near 15 GB free). Unset, every rch step uses $RCH_WORKER.
 CHECK_TEST_WORKERS="${CHECK_TEST_WORKERS:-}"
+# CHECK_TEST_CONFIG: cargo `--config` arguments that every test job and every
+# test listing passes, identically, so that both share one pool. By default
+# they build without debuginfo. Under the profile's line-tables-only, 494 of
+# the 731 MB of fa-cli's `cli` test binary is DWARF; without debuginfo it is
+# 238 MB. fa-cli's ~45 integration-test binaries made one worker's half of
+# the test pool 49 GB on 2026-10-30, and that worker ran out of slots
+# (fa-0hs4.2). A failing test still names its file and line, because the
+# panic's Location is compiled in; only backtrace frames lose theirs. Set
+# CHECK_TEST_CONFIG="" to test the developer profile unchanged.
+read -r -a CHECK_TEST_CONFIG_ARGS <<<"${CHECK_TEST_CONFIG---config profile.dev.debug=false --config profile.test.debug=false}"
 cargo_build() {
   local label="$1" sub="$2"; shift 2
   local log="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
@@ -524,7 +534,7 @@ cargo_test_jobs() {
     while :; do
       attempt=$((attempt + 1))
       env "${budget[@]}" RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
-        rch exec -- cargo test -j "$CHECK_JOBS" --no-fail-fast "${argv[@]}" </dev/null >"$job_log" 2>&1
+        rch exec -- cargo test -j "$CHECK_JOBS" --no-fail-fast "${CHECK_TEST_CONFIG_ARGS[@]}" "${argv[@]}" </dev/null >"$job_log" 2>&1
       rc=$?
       if [ "$rc" -ne 0 ] && is_rch_offloader_unrun "$rc" "$job_log" && [ "$attempt" -lt "$CHECK_TEST_ATTEMPTS" ]; then
         { printf '==== test job %s: cargo test %s (attempt %s not run by the offloader, exit %s; retrying)\n' \
@@ -600,7 +610,7 @@ cargo_test_lists() {
     while :; do
       attempt=$((attempt + 1))
       RCH_WORKER="$worker" RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
-        rch exec -- cargo test -j "$CHECK_JOBS" -p "$package" -- --list </dev/null >"$part" 2>&1
+        rch exec -- cargo test -j "$CHECK_JOBS" "${CHECK_TEST_CONFIG_ARGS[@]}" -p "$package" -- --list </dev/null >"$part" 2>&1
       rc=$?
       if [ "$rc" -ne 0 ] && is_rch_offloader_unrun "$rc" "$part" && [ "$attempt" -lt "$CHECK_TEST_ATTEMPTS" ]; then
         continue

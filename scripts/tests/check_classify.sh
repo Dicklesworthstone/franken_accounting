@@ -541,10 +541,13 @@ EOF
       cargo_test_jobs
       cargo_test_lists
     ) > "$dir/stdout.log" 2>&1
-    # alpha weighs 4 -> w1; beta (2) and gamma (1) -> w2.
+    # alpha weighs 4 -> w1; beta (2) and gamma (1) -> w2. Every job and every
+    # listing passes the same CHECK_TEST_CONFIG (default: no debuginfo), so
+    # they build one pool.
     if grep -E '^w2\|.*-p alpha|^w1\|.*-p (beta|gamma)|^default\|' "$dir/state/workers" >/dev/null \
       || [ "$(grep -c '^w1|.*-p alpha' "$dir/state/workers")" -lt 4 ] \
       || ! grep -q '^w2|.*-p gamma -- --list' "$dir/state/workers" \
+      || grep -v -e '--config profile.dev.debug=false --config profile.test.debug=false -p ' "$dir/state/workers" | grep -q . \
       || ! grep -q '^PASS test (5 jobs' "$dir/stdout.log"; then
       gate_fail "test_jobs_and_listings_follow_their_package_worker — $scenario: $(tr '\n' '|' < "$dir/state/workers") / $(tr '\n' '|' < "$dir/stdout.log")"
       return 1
