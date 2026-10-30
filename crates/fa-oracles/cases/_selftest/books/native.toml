@@ -456,6 +456,11 @@ rule = "placeholder_reviewed"
 rationale = "the self-test's documents are placeholders reviewed by case-second-reader (plan §2.6)"
 
 [[default]]
+attribute = "approval_encoding"
+rule = "none"
+rationale = "the self-test posts each entry with no approval attached (plan §6.4 W-P-01)"
+
+[[default]]
 attribute = "reason"
 rule = "WrongAccount"
 rationale = "the self-test's delta moves part of A out of 1100; the correction's reason is the account, never Fraud (K-REASON)"

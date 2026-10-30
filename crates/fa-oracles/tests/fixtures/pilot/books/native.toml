@@ -483,6 +483,11 @@ rule = "placeholder_reviewed"
 rationale = "the record describes the entries' documents without publishing them; a placeholder reviewed by case-second-reader stands in (plan §2.6)"
 
 [[default]]
+attribute = "approval_encoding"
+rule = "none"
+rationale = "the pilot posts each entry with no approval attached (plan §6.4 W-P-01)"
+
+[[default]]
 attribute = "acting_principal"
 rule = "role_of_record"
 rationale = "the role the record names prepared the entry; where it names none, the property accounting director, who directed the transfers"

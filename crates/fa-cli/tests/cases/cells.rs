@@ -169,8 +169,25 @@ impl Sweeper<'_, '_> {
         // A ManualAssertion cell's reason code: the cell is planned by
         // `fa document attest manual --plan-out` instead of a dry run.
         let mut asserted: Option<String> = None;
+        // A draft self-promotion cell (A8b): planned into a draft of the
+        // principal's own, which the principal then promotes.
+        let mut draft = false;
         for (attr, value) in cell.attrs.iter().zip(&cell.key) {
             match attr {
+                BranchAttribute::ApprovalEncoding if value == "draft_self_promotion" => {
+                    draft = true;
+                }
+                BranchAttribute::ApprovalEncoding => {
+                    row.reason =
+                        Some(cell.pending.clone().unwrap_or_else(|| {
+                            format!("needs:A0 (approval_encoding={value} cells)")
+                        }));
+                    self.out.push(SweptCell {
+                        row,
+                        reproduce: None,
+                    });
+                    return;
+                }
                 BranchAttribute::EntryClass => intent.class.clone_from(value),
                 BranchAttribute::PeriodStateAtCommit => {}
                 BranchAttribute::EvidenceAttached => match value.as_str() {
@@ -262,16 +279,77 @@ impl Sweeper<'_, '_> {
             args
         };
         let reference = format!("{}/{}", cell.target, row.cell);
-        let dry = match &asserted {
-            Some(code) => self
-                .run
-                .call(0, &reference, "document", attest_args(code, true)),
-            None => self.run.call(0, &reference, "post", post_args(&[], true)),
+        let dry = match (&asserted, draft) {
+            (Some(_), true) => {
+                row.reason = Some("needs:A7c (a manual assertion planned into a draft)".into());
+                self.out.push(SweptCell {
+                    row,
+                    reproduce: None,
+                });
+                return;
+            }
+            (Some(code), false) => {
+                self.run
+                    .call(0, &reference, "document", attest_args(code, true))
+            }
+            // The draft route (§6.4 W-P-01(a)): `fa draft new` by the
+            // principal, the intent planned into it with `fa post --draft`,
+            // then the principal's own `fa draft promote`. A refused plan is
+            // the cell's first refusal; the owner's promotion of the empty
+            // draft is refused too and is logged, not counted.
+            (None, true) => {
+                let name = cell.idempotency_key.clone();
+                let promote = vec![
+                    s("draft"),
+                    s("promote"),
+                    name.clone(),
+                    s("--as"),
+                    intent.principal.clone(),
+                    s("--yes"),
+                    s("--json"),
+                ];
+                let opened = self.run.call(
+                    0,
+                    &reference,
+                    "draft",
+                    vec![
+                        s("draft"),
+                        s("new"),
+                        name.clone(),
+                        s("--as"),
+                        intent.principal.clone(),
+                        s("--json"),
+                    ],
+                );
+                if opened.exit == 0 {
+                    let planned = self.run.call(
+                        0,
+                        &reference,
+                        "post",
+                        post_args(&[s("--draft"), name], false),
+                    );
+                    let promoted = self.run.call(0, &reference, "draft", promote);
+                    if planned.exit == 0 { promoted } else { planned }
+                } else {
+                    opened
+                }
+            }
+            (None, false) => self.run.call(0, &reference, "post", post_args(&[], true)),
         };
         let observed = outcome(&dry);
         // Representatives per route: an asserted admit is committed from
-        // its own plan even when a plain post already showed an admit.
-        let route = if asserted.is_some() { "attest" } else { "post" };
+        // its own plan even when a plain post already showed an admit. A
+        // draft cell has no separate commit: its promotion is the commit.
+        let route = if draft {
+            "draft"
+        } else if asserted.is_some() {
+            "attest"
+        } else {
+            "post"
+        };
+        if draft {
+            row.projection.push(("route".into(), "draft".into()));
+        }
         row.projection.push(("refusal".into(), observed.clone()));
         row.projection.push(("exit".into(), dry.exit.to_string()));
         if !cell.record_consistent {
@@ -280,7 +358,7 @@ impl Sweeper<'_, '_> {
         }
         let mut fails: Vec<String> = Vec::new();
         let mut repro: Vec<String> = Vec::new();
-        if self.represented.insert(format!("{route}:{observed}")) {
+        if !draft && self.represented.insert(format!("{route}:{observed}")) {
             let extra: Vec<String> = self
                 .plant
                 .filter(|p| p.cell == cell.key)
@@ -351,6 +429,7 @@ impl Sweeper<'_, '_> {
                         period_state: period_state(state.as_str()),
                         evidence: value(BranchAttribute::EvidenceAttached),
                         key: Some(cell.idempotency_key.clone()),
+                        approval_encoding: value(BranchAttribute::ApprovalEncoding),
                     };
                     let kernel = (observed != "admitted").then_some(observed.as_str());
                     let expectation = self

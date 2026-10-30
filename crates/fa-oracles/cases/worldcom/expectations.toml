@@ -318,3 +318,73 @@ target = "F6b"
 cell = ["entered_by_only"]
 expect = "no_finding"
 record_consistent = true
+
+# W-P-01 (plan §6.4, §15 A8b): posting F6a with its one documented approval, which the record states
+# only as the director's habit (p.111; F6-approval). (a) draft_self_promotion: the director plans
+# F6a into a draft of his own and promotes it himself; the owner check refuses the promotion
+# (FA-REF-008, sod_policy.toml#draft-promote) on every cell whose plan the posting laws admit, and
+# a cell they refuse gives that first refusal instead. (b) entry_approval needs A0 (fa post takes
+# no --approval), so its cells are pending; an approval attached at commit is checked before the
+# evidence minimum, so the director's own approval would refuse FA-REF-008 on every evidence value.
+[[expectation]]
+id = "W-P-01"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["F6", "F6-approval"]
+intent = "F6a"
+refusal = "FA-REF-008"
+law_row = "sod_policy.toml#draft-promote"
+attribute = "approval_encoding"
+reference_verdict = "FA-REF-008"
+
+[[target]]
+expectation = "W-P-01"
+fact = "F6a"
+branch_attrs = ["approval_encoding", "evidence_attached"]
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6a"
+cell = ["draft_self_promotion", "placeholder_reviewed"]
+expect = "FA-REF-008"
+record_consistent = true
+default = true
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6a"
+cell = ["draft_self_promotion", "none"]
+expect = "FA-REF-080"
+record_consistent = true
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6a"
+cell = ["draft_self_promotion", "placeholder_unreviewed"]
+expect = "FA-REF-086"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6a"
+cell = ["entry_approval", "placeholder_reviewed"]
+expect = "FA-REF-008"
+record_consistent = true
+pending = "A0: an approval attached at fa post or fa commit"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6a"
+cell = ["entry_approval", "none"]
+expect = "FA-REF-008"
+record_consistent = true
+pending = "A0: an approval attached at fa post or fa commit"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6a"
+cell = ["entry_approval", "placeholder_unreviewed"]
+expect = "FA-REF-008"
+record_consistent = false
+pending = "A0: an approval attached at fa post or fa commit"

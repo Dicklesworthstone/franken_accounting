@@ -132,3 +132,8 @@ approvers = ["case-approver-1"]
 attribute = "evidence_attached"
 rule = "placeholder_reviewed"
 rationale = "the fixture's document is a placeholder reviewed by case-second-reader (plan §2.6)"
+
+[[default]]
+attribute = "approval_encoding"
+rule = "none"
+rationale = "the fixture posts its entry with no approval attached (plan §6.4 W-P-01)"

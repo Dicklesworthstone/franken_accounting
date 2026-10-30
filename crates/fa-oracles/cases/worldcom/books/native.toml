@@ -1060,6 +1060,14 @@ attribute = "evidence_attached"
 rule = "evidence_minimum"
 values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
 
+# W-P-01: how F6's one documented approval is encoded (plan §6.4). The native book posts no
+# approval; a P cell branches the encoding.
+[[branch_class]]
+id = "bc-F6-approval-encoding"
+attribute = "approval_encoding"
+rule = "draft_promotion_owner"
+values = ["draft_self_promotion", "entry_approval"]
+
 [[default]]
 attribute = "effective_date"
 rule = "reporting_period_last_day"
@@ -1069,6 +1077,11 @@ rationale = "the record dates bookings, not effective dates; each entry's source
 attribute = "evidence_attached"
 rule = "placeholder_reviewed"
 rationale = "the record describes the entries' documents without publishing them; a placeholder reviewed by case-second-reader stands in (plan §2.6)"
+
+[[default]]
+attribute = "approval_encoding"
+rule = "none"
+rationale = "the book posts each entry with no approval attached: an entry approval needs A0, and a draft promoted by its owner is W-P-01's own branch (plan §6.4)"
 
 [[default]]
 attribute = "acting_principal"
