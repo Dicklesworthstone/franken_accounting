@@ -11,8 +11,10 @@
 //! book's immutable unit definitions. Foundation pins are retained provenance:
 //! a changed pin is permitted only after all native read certificates still
 //! replay and the complete historical accounting fold reproduces the output.
-//! FX, consolidation and other law-dependent selectors keep their stricter
-//! registry contract until their historical interpreters are available.
+//! One-book consolidation additionally retains account-role and rounding
+//! sources, plus FX laws for functional v7. Those arithmetic and role meanings
+//! must match this interpreter exactly; archiving never activates old policy.
+//! Other law-dependent selectors keep their existing stricter contract.
 
 use super::*;
 use fa_journal::object::{self, ObjectKind};
@@ -31,8 +33,25 @@ const EXPLANATION_NAMES: [&str; 5] = [
     "foundations",
     "reason_codes",
 ];
+const CONSOLIDATION_NAMES: [&str; 6] = [
+    "account_types",
+    "entry_classes",
+    "units",
+    "foundations",
+    "account_roles",
+    "rounding_laws",
+];
+const FUNCTIONAL_CONSOLIDATION_NAMES: [&str; 7] = [
+    "account_types",
+    "entry_classes",
+    "units",
+    "foundations",
+    "account_roles",
+    "fx_laws",
+    "rounding_laws",
+];
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
-const MAX_EPOCH_BYTES: usize = 5 * MAX_SOURCE_BYTES + 1024;
+const MAX_EPOCH_BYTES: usize = 7 * MAX_SOURCE_BYTES + 1024;
 // Source transcripts share the existing certificate-maintenance storage class,
 // like plan certificates. The epoch kind, body format and identity domain
 // distinguish them from report artifacts without changing genesis symbols.
@@ -62,6 +81,8 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
             | ReportSelection::OpenItems { .. }
             | ReportSelection::Statement(_)
             | ReportSelection::ExplainBalance { .. }
+            | ReportSelection::Consolidation { .. }
+            | ReportSelection::FunctionalConsolidation { .. }
     )
 }
 
@@ -82,13 +103,16 @@ impl Epoch {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
-        if names != NAMES && names != EXPLANATION_NAMES
+        if names != NAMES
+            && names != EXPLANATION_NAMES
+            && names != CONSOLIDATION_NAMES
+            && names != FUNCTIONAL_CONSOLIDATION_NAMES
             || sources
                 .iter()
                 .any(|(_, text)| text.len() > MAX_SOURCE_BYTES)
         {
             return Err(invalid(
-                "a native report epoch requires four bounded sources, or five for balance explanations, in exact closure order",
+                "a report epoch requires its exact bounded four-source native, five-source explanation, six-source consolidation or seven-source functional consolidation profile",
             ));
         }
         let sources_ref = sources
@@ -114,7 +138,12 @@ impl Epoch {
     }
 
     fn for_selection(book_id: Id128, selection: &ReportSelection) -> Result<Self, Refusal> {
-        if !matches!(selection, ReportSelection::ExplainBalance { .. }) {
+        if !matches!(
+            selection,
+            ReportSelection::ExplainBalance { .. }
+                | ReportSelection::Consolidation { .. }
+                | ReportSelection::FunctionalConsolidation { .. }
+        ) {
             return Self::current(book_id);
         }
         Self::new(
@@ -133,12 +162,13 @@ impl Epoch {
         selection: &ReportSelection,
         units: &fa_money::UnitRegistry,
     ) -> Result<(), Refusal> {
-        let expected = if matches!(selection, ReportSelection::ExplainBalance { .. }) {
-            EXPLANATION_NAMES.len()
-        } else {
-            NAMES.len()
-        };
-        if self.sources.len() != expected {
+        let expected = report_registries(selection);
+        if self
+            .sources
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .ne(expected.iter().map(|(name, _)| *name))
+        {
             return Err(unavailable(
                 "the retained registry profile does not match this report's selector",
             ));
@@ -162,7 +192,7 @@ impl Epoch {
 
     fn decode(bytes: &[u8]) -> Result<Self, Refusal> {
         if bytes.len() > MAX_EPOCH_BYTES {
-            return Err(invalid("registry epoch exceeds its 5 MiB source budget"));
+            return Err(invalid("registry epoch exceeds its 7 MiB source budget"));
         }
         let mut reader = Reader::new(bytes);
         let bad = |error| invalid(format!("malformed registry epoch: {error}"));
@@ -176,7 +206,7 @@ impl Epoch {
         let book_id = Id128(reader.fixed("registry epoch book").map_err(bad)?);
         let closure = reader.fixed("registry epoch closure").map_err(bad)?;
         let count = reader
-            .count(EXPLANATION_NAMES.len(), "registry sources")
+            .count(FUNCTIONAL_CONSOLIDATION_NAMES.len(), "registry sources")
             .map_err(bad)?;
         let mut sources = Vec::with_capacity(count);
         for _ in 0..count {
@@ -211,6 +241,19 @@ impl Epoch {
                         "registry epoch {name} differs from this interpreter's supported accounting semantics"
                     )));
                 }
+            }
+            let exact = match name.as_str() {
+                "account_roles" => Some(include_str!("../../../../registries/account_roles.toml")),
+                "rounding_laws" => Some(include_str!("../../../../registries/rounding_laws.toml")),
+                "fx_laws" => Some(include_str!("../../../../registries/fx_laws.toml")),
+                _ => None,
+            };
+            if let Some(text) = exact
+                && archived != document(name, text)?
+            {
+                return Err(unavailable(format!(
+                    "registry epoch {name} differs from this interpreter's supported consolidation semantics"
+                )));
             }
             if name == "reason_codes" {
                 let fields = ["code", "scope", "name", "meaning"];
@@ -700,6 +743,85 @@ mod tests {
                 changed.admit(&units).unwrap_err().code,
                 code::CERTIFICATE_REGISTRY_UNAVAILABLE
             );
+        }
+    }
+
+    #[test]
+    fn consolidation_epochs_preserve_exact_roles_and_laws_without_borrowing_other_profiles() {
+        let book = Id128([0xc6; 16]);
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let native = ReportSelection::Consolidation {
+            period: "FY2026-P01".into(),
+        };
+        let functional = ReportSelection::FunctionalConsolidation {
+            period: "FY2026-P01".into(),
+        };
+        for selection in [&native, &functional] {
+            let epoch = Epoch::for_selection(book, selection).unwrap();
+            assert!(supports(selection));
+            assert_eq!(epoch.closure, registry_digest(selection).unwrap());
+            assert_eq!(Epoch::decode(&epoch.encode().unwrap()).unwrap(), epoch);
+            epoch.admit_for(selection, &units).unwrap();
+            let docs = epoch.offline_documents(&units).unwrap();
+            assert_eq!(
+                docs.len(),
+                if selection.uses_functional_valuations() {
+                    7
+                } else {
+                    6
+                }
+            );
+            for (name, from, to) in [
+                (
+                    "account_roles",
+                    "name = \"intercompany\"",
+                    "name = \"intercompany_changed\"",
+                ),
+                (
+                    "rounding_laws",
+                    "name = \"HalfEven\"",
+                    "name = \"HalfEvenChanged\"",
+                ),
+                (
+                    "fx_laws",
+                    "rounding_law = \"HalfEven\"",
+                    "rounding_law = \"HalfUp\"",
+                ),
+            ] {
+                let mut sources = epoch.sources.clone();
+                let Some((_, source)) = sources
+                    .iter_mut()
+                    .find(|(source_name, _)| source_name == name)
+                else {
+                    continue;
+                };
+                assert!(
+                    source.contains(from),
+                    "negative changes a real {name} meaning"
+                );
+                *source = source.replacen(from, to, 1);
+                let changed = Epoch::new(book, sources).unwrap();
+                assert_ne!(changed.closure, epoch.closure);
+                assert_eq!(
+                    changed.admit_for(selection, &units).unwrap_err().code,
+                    code::CERTIFICATE_REGISTRY_UNAVAILABLE
+                );
+            }
+            for other in [
+                &ReportSelection::TrialBalance(TrialBalanceSelection::Periods(vec![
+                    "FY2026-P01".into(),
+                ])),
+                if selection.uses_functional_valuations() {
+                    &native
+                } else {
+                    &functional
+                },
+            ] {
+                assert_eq!(
+                    epoch.admit_for(other, &units).unwrap_err().code,
+                    code::CERTIFICATE_REGISTRY_UNAVAILABLE
+                );
+            }
         }
     }
 

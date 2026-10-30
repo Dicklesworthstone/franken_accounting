@@ -4314,12 +4314,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        let consolidation = matches!(
+            &certificate.selection,
+            crate::ReportSelection::Consolidation { .. }
+                | crate::ReportSelection::FunctionalConsolidation { .. }
+        );
         if certificate.book_id != self.context.book_id
             || !matches!(
                 &certificate.selection,
                 crate::ReportSelection::TrialBalance(_)
                     | crate::ReportSelection::FunctionalTrialBalance(_)
                     | crate::ReportSelection::FunctionalStatement(_)
+                    | crate::ReportSelection::Consolidation { .. }
+                    | crate::ReportSelection::FunctionalConsolidation { .. }
                     | crate::ReportSelection::DimensionTrialBalance { .. }
                     | crate::ReportSelection::Statement(_)
                     | crate::ReportSelection::OpenItems { .. }
@@ -4329,24 +4336,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's native or functional trial-balance or statement, dimension-filtered trial-balance, open-item or balance-explanation certificate",
+                "offline report production requires this book's native or functional trial-balance, statement or one-book consolidation, dimension-filtered trial-balance, open-item or balance-explanation certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify fa tb (optionally --functional or --dimension kind=value), fa statement (optionally --functional), fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
+                "certify fa tb (optionally --functional or --dimension kind=value), fa statement (optionally --functional), fa consolidate (optionally --functional), fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
         }
-        if matches!(
-            &certificate.selection,
-            crate::ReportSelection::FunctionalTrialBalance(_)
-                | crate::ReportSelection::FunctionalStatement(_)
-        ) && (certificate.branch_id != fa_model::Id128::TRUNK
-            || certificate.time_selection.is_some())
+        if (consolidation
+            || matches!(
+                &certificate.selection,
+                crate::ReportSelection::FunctionalTrialBalance(_)
+                    | crate::ReportSelection::FunctionalStatement(_)
+            ))
+            && (certificate.branch_id != fa_model::Id128::TRUNK
+                || certificate.time_selection.is_some())
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "portable functional reports require a sequence-selected trunk certificate",
+                "portable functional and consolidation reports require a sequence-selected trunk certificate",
                 "plan §5.3 / §13.3 (the independent valuation profile has explicit source coordinates)",
-                "certify fa tb --functional or fa statement --functional at a fixed recorded sequence before exporting",
+                "certify fa tb --functional, fa statement --functional or fa consolidate at a fixed recorded sequence before exporting",
             )));
         }
         let history_start = if let ReportBundleCertificate::StatementDiff(comparison) = report {
@@ -4575,6 +4584,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | crate::ReportSelection::ExplainBalance { .. }
                 | crate::ReportSelection::FunctionalTrialBalance(_)
                 | crate::ReportSelection::FunctionalStatement(_)
+                | crate::ReportSelection::Consolidation { .. }
+                | crate::ReportSelection::FunctionalConsolidation { .. }
         );
         let registries = if requires_registry_closure
             || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
@@ -4666,16 +4677,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify the report at its resolved recorded sequence before producing an offline report bundle",
             )));
         }
-        let functional_source = if matches!(
-            &certificate.selection,
-            crate::ReportSelection::FunctionalTrialBalance(_)
-                | crate::ReportSelection::FunctionalStatement(_)
-        ) {
-            let rate_oids =
+        let book_source = if consolidation
+            || matches!(
+                &certificate.selection,
+                crate::ReportSelection::FunctionalTrialBalance(_)
+                    | crate::ReportSelection::FunctionalStatement(_)
+            ) {
+            let rate_oids = if certificate.selection.uses_functional_valuations() {
                 match fa_notary::report::functional_rate_oids(&journal, certificate.known_at)? {
                     Ok(oids) => oids,
                     Err(refusal) => return Ok(Err(refusal)),
-                };
+                }
+            } else {
+                // Native group reports retain each unit separately; their
+                // BookSpec identifies the group, not a valuation conversion.
+                Vec::new()
+            };
             // Stock digests bind these exact historical bytes. Re-encoding a
             // legacy BookSpec could silently change the version and digest.
             let book_spec = self.query(cx, |db, _| {
@@ -4684,12 +4701,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     .map_err(KernelError::from)?
                     .filter(|row| row.labels.contains(&fa_model::symbols::label::BOOK))
                     .ok_or_else(|| {
-                        KernelError::Corrupt("functional report has no historical Book root".into())
+                        KernelError::Corrupt("report proof has no historical Book root".into())
                     })?;
                 Ok(fa_journal::rows::bytes(
                     &row,
                     fa_model::symbols::property::FA_PAYLOAD,
-                    "functional report BookSpec",
+                    "report proof BookSpec",
                 )?)
             })?;
             if !book_spec.starts_with(&2u16.to_le_bytes())
@@ -4698,7 +4715,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 return Ok(Err(fa_journal::Refusal::new(
                     fa_notary::code::SCOPE_UNSUPPORTED,
                     fa_journal::exit::REFUSAL,
-                    "portable functional reports require the canonical version-2 book basis",
+                    "portable functional and consolidation reports require the canonical version-2 book basis",
                     "plan §13.3 (preserve the original historical source bytes)",
                     "replay legacy book certificates locally; do not rewrite their genesis metadata",
                 )));
@@ -4840,23 +4857,36 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
         };
-        let assembled = if let Some((book_spec, rates)) = &functional_source {
+        let assembled = if let Some((book_spec, rates)) = &book_source {
             let Some(registries) = registries.as_deref() else {
                 return Err(KernelError::Corrupt(
-                    "functional proof lost its required registry closure".into(),
+                    "report proof lost its required registry closure".into(),
                 )
                 .into());
             };
-            fa_notary::report::assemble_functional_with_registries(
-                &journal,
-                &checkpoint,
-                &bytes,
-                closure_frontier,
-                &bodies,
-                registries,
-                book_spec,
-                rates,
-            )
+            if consolidation {
+                fa_notary::report::assemble_consolidation_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                    book_spec,
+                    rates,
+                )
+            } else {
+                fa_notary::report::assemble_functional_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                    book_spec,
+                    rates,
+                )
+            }
         } else {
             match (report, registries.as_deref()) {
                 (
@@ -4922,7 +4952,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             bundle,
             receipt,
             checkpoint,
-            documents: functional_source
+            documents: book_source
                 .map(|(_, rates)| rates.into_iter().map(|(oid, _)| oid).collect())
                 .unwrap_or_default(),
         })))

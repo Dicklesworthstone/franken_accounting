@@ -19,6 +19,9 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{Bundle, Journal, StoredCheckpoint, code};
 
+mod consolidation;
+pub use consolidation::assemble as assemble_consolidation_with_registries;
+
 mod functional;
 pub use functional::{
     MAX_FUNCTIONAL_BOOK_BYTES, MAX_FUNCTIONAL_RATE_BYTES, MAX_FUNCTIONAL_RATES,
@@ -40,7 +43,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, native statement-diff, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, native statement-diff, v6/v7 one-book consolidation, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -237,11 +240,11 @@ pub fn assemble_functional_with_registries(
         known_at,
         bodies,
         registries,
-        Some(FunctionalClosure { book_spec, rates }),
+        Some(BookClosure { book_spec, rates }),
     )
 }
 
-struct FunctionalClosure<'a> {
+struct BookClosure<'a> {
     book_spec: &'a [u8],
     rates: &'a [(Oid, Vec<u8>)],
 }
@@ -621,7 +624,7 @@ fn assemble_inner(
     known_at: CommitSeq,
     bodies: &BTreeMap<VId, RunBody>,
     registries: &[(String, Vec<u8>)],
-    functional: Option<FunctionalClosure<'_>>,
+    functional: Option<BookClosure<'_>>,
 ) -> Outcome<Bundle> {
     let major = if functional.is_some() {
         3
@@ -651,10 +654,12 @@ fn assemble_inner(
                 || split_cash_flow_certificate(certificate)
                 || indirect_cash_flow_certificate(certificate)
                 || statement_diff_certificate(certificate))
-        || major == 3 && functional::certificate(certificate, journal, known_at))
+        || major == 3
+            && (functional::certificate(certificate, journal, known_at)
+                || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
