@@ -308,6 +308,84 @@ pub fn sweep_plan(
             }),
         }
     }
+    // A CF row of a P parent (§2.6, A5b): the parent target's default cell
+    // (the documented reading) with one branched attribute changed, decided
+    // on the parent's entry book. It is a counterfactual, never the record,
+    // and its key is its own.
+    if let Some(set) = case.expectations.as_ref() {
+        for cf in set
+            .expectations
+            .iter()
+            .filter(|e| e.kind == ExpectationType::Cf)
+        {
+            let (Some(parent), Some(attr), Some(value)) = (
+                cf.fields.str("parent"),
+                cf.fields.str("changed_attribute"),
+                cf.fields.str("changed_value"),
+            ) else {
+                continue;
+            };
+            let Some(table) = enumerations.iter().find(|e| e.expectation == parent) else {
+                continue;
+            };
+            let Some(base) = table.cells.iter().find(|c| c.default) else {
+                return Err(err(
+                    &cf.id,
+                    LoadErrorKind::MissingField,
+                    format!(
+                        "{parent}'s target {} marks no `default` cell for {} to change",
+                        table.target, cf.id
+                    ),
+                ));
+            };
+            let Some(at) = table.attrs.iter().position(|a| a.as_str() == attr) else {
+                return Err(err(
+                    &cf.id,
+                    LoadErrorKind::UnknownValue,
+                    format!(
+                        "`changed_attribute = \"{attr}\"` is not a branched attribute of {parent}"
+                    ),
+                ));
+            };
+            let mut key = base.key.clone();
+            key[at] = value.to_string();
+            let Some(group) = plan.groups.iter_mut().find(|g| {
+                book.intents
+                    .iter()
+                    .any(|i| i.id == g.intent && (i.id == table.target || i.fact == table.target))
+            }) else {
+                continue;
+            };
+            let state = match table
+                .attrs
+                .iter()
+                .position(|a| a.as_str() == "period_state_at_commit")
+            {
+                Some(i) => PeriodState::parse(&key[i]).ok_or_else(|| {
+                    err(
+                        &cf.id,
+                        LoadErrorKind::UnknownValue,
+                        format!("`{}` is not a period state", key[i]),
+                    )
+                })?,
+                None => state_at(book, &group.intent),
+            };
+            let mut own = vec![cf.id.clone()];
+            own.extend(key.iter().cloned());
+            group.cells.push(SweepCell {
+                expectation: cf.id.clone(),
+                target: table.target.clone(),
+                attrs: table.attrs.clone(),
+                key,
+                state,
+                record_consistent: false,
+                default: false,
+                idempotency_key: cell_key(&group.intent_key, &own),
+                expect: cf.fields.str("expect").map(str::to_string),
+                pending: None,
+            });
+        }
+    }
     for g in &mut plan.groups {
         // Stable: within a state, expectation and enumeration order stay.
         g.cells.sort_by_key(|c| c.state);

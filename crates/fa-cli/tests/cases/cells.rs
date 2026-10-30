@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use fa_oracles::cases::Case;
 use fa_oracles::cases::book::{BranchAttribute, StepDef, StepKind};
 use fa_oracles::cases::branch::{self, Enumeration};
-use fa_oracles::cases::expect::{Expectation, Target};
+use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::intent_json;
 use fa_oracles::cases::log::StepRecord;
 use fa_oracles::cases::reference::{CellSetting, period_state};
@@ -138,10 +138,19 @@ impl Sweeper<'_, '_> {
             .zip(&cell.key)
             .map(|(a, v)| (a.as_str().to_string(), v.clone()))
             .collect();
+        // A CF row's cell is its parent's default cell with one attribute
+        // changed (A5b); it is decided like a P cell and printed as CF.
+        let cf = self
+            .run
+            .case
+            .expectations
+            .as_ref()
+            .and_then(|s| s.get(&cell.expectation))
+            .is_some_and(|e| e.kind == ExpectationType::Cf);
         let mut row = RowLine {
             verdict: RowVerdict::Unrun,
             id: cell.expectation.clone(),
-            kind: "P".into(),
+            kind: if cf { "CF" } else { "P" }.into(),
             variant: self.group.variant.clone(),
             target: Some(cell.target.clone()),
             cell: cell_label(&pairs),
@@ -177,6 +186,8 @@ impl Sweeper<'_, '_> {
                 BranchAttribute::ApprovalEncoding if value == "draft_self_promotion" => {
                     draft = true;
                 }
+                // No approval attached: the plain post (a CF's cell, A5b).
+                BranchAttribute::ApprovalEncoding if value == "none" => {}
                 BranchAttribute::ApprovalEncoding => {
                     row.reason =
                         Some(cell.pending.clone().unwrap_or_else(|| {
@@ -432,12 +443,15 @@ impl Sweeper<'_, '_> {
                         approval_encoding: value(BranchAttribute::ApprovalEncoding),
                     };
                     let kernel = (observed != "admitted").then_some(observed.as_str());
-                    let expectation = self
-                        .run
-                        .case
-                        .expectations
-                        .as_ref()
-                        .and_then(|s| s.get(&cell.expectation));
+                    // A CF's reference reads its parent's refusal and law row.
+                    let expectation = self.run.case.expectations.as_ref().and_then(|s| {
+                        let e = s.get(&cell.expectation)?;
+                        if e.kind == ExpectationType::Cf {
+                            s.get(e.fields.str("parent")?)
+                        } else {
+                            Some(e)
+                        }
+                    });
                     let (token, fail) = match expectation {
                         Some(e) => {
                             let (token, fail, _) = super::evaluate::reference(

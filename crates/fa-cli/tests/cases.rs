@@ -146,6 +146,35 @@ fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
     );
 }
 
+/// A5b, W5 (§6.4 W-P-01-CF-01): the same F6a with no approval attached.
+/// SoD has nothing to refuse, the evidence minimum is met by the reviewed
+/// placeholder, and the post is admitted, so W-P-01's refusal rests on the
+/// self-approval. The CF is decided on W-P-01's entry book as one more
+/// cell, its admit committed as its representative, and the reference
+/// (read through the parent) agrees.
+#[test]
+fn worldcom_w_p_01_cf_01_without_the_self_approval_is_admitted() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-P-01-CF-01")
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "PASS W-P-01-CF-01 CF native F6a/approval_encoding=none,evidence_attached=placeholder_reviewed state=Open refusal=admitted exit=0 record_consistent=false commit_agrees=ok ref=agree"
+        ],
+        "{text}"
+    );
+}
+
 /// A8b (§6.4 W-D-02): F6 as legacy history on WorldCom's migration book.
 /// The run opens, stages F6a and F6b (each one-approval twin refused
 /// FA-REF-012) and finalizes; jet.self_approved sees neither chunk before

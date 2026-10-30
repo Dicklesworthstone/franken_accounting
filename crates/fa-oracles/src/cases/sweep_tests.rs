@@ -307,3 +307,42 @@ fn coresident_copies_on_a_migration_stem_are_staged_with_their_legacy_approval()
         ]
     );
 }
+
+/// A5b: a CF row of a P parent is planned as one more cell of the parent's
+/// entry, its parent's default cell with the changed attribute, under a key
+/// of its own and never record-consistent.
+#[test]
+fn a_cf_row_is_planned_as_its_parents_default_cell_changed() {
+    let case =
+        crate::cases::load(&crate::cases::embedded::WORLDCOM.case_files()).expect("worldcom loads");
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-P-01").expect("W-P-01");
+    let t = set
+        .targets_of("W-P-01")
+        .find(|t| t.fact == "F6a")
+        .expect("F6a");
+    let table = enumerate(&case, e, t).expect("F6a's table");
+    let plan = sweep_plan(&case, "native", &[table]).expect("a plan");
+    let group = plan
+        .groups
+        .iter()
+        .find(|g| g.intent == "F6a")
+        .expect("F6a's group");
+    let cf: Vec<&SweepCell> = group
+        .cells
+        .iter()
+        .filter(|c| c.expectation == "W-P-01-CF-01")
+        .collect();
+    assert_eq!(cf.len(), 1);
+    assert_eq!(cf[0].key, ["none", "placeholder_reviewed"]);
+    assert_eq!(cf[0].expect.as_deref(), Some("admit"));
+    assert!(!cf[0].record_consistent);
+    assert!(
+        group
+            .cells
+            .iter()
+            .filter(|c| c.expectation == "W-P-01")
+            .all(|c| c.idempotency_key != cf[0].idempotency_key),
+        "the CF's key is its own"
+    );
+}

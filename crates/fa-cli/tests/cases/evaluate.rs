@@ -199,6 +199,18 @@ pub fn rows(
             .iter()
             .filter(|e| variant_of(e) == Some(variant))
         {
+            // A CF of a P parent decided cell by cell is one of the parent
+            // entry's swept cells (A5b, A7c).
+            let swept_parent = e
+                .fields
+                .str("parent")
+                .and_then(|p| set.get(p))
+                .is_some_and(|p| {
+                    p.kind == ExpectationType::P && set.targets_of(&p.id).any(has_branch_table)
+                });
+            if e.kind == ExpectationType::Cf && swept_parent {
+                continue;
+            }
             // An N is one row: its `[[target]]` rows state an exact_gap N's
             // sourced values, read by n_row (A11c).
             let targets: Vec<&Target> = if e.kind == ExpectationType::N {

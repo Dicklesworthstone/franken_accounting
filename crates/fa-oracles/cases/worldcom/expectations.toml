@@ -388,3 +388,17 @@ cell = ["entry_approval", "placeholder_unreviewed"]
 expect = "FA-REF-008"
 record_consistent = false
 pending = "A0: an approval attached at fa post or fa commit"
+
+# W-P-01-CF-01 (plan §6.4): the same F6a with no approval attached. SoD then has nothing to refuse,
+# step 5b decides on the evidence, and with the reviewed placeholder the post is admitted: the
+# refusal W-P-01 shows rests on the self-approval, not on the transfer.
+[[expectation]]
+id = "W-P-01-CF-01"
+type = "CF"
+book_variant = "native"
+statement_template = "CF.counterfactual"
+basis = ["F6", "F6-approval"]
+parent = "W-P-01"
+changed_attribute = "approval_encoding"
+changed_value = "none"
+expect = "admit"
