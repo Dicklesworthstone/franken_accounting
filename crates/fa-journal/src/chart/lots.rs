@@ -62,7 +62,7 @@ fn corrupt(message: impl Into<String>) -> KernelError {
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
         code::STRUCTURE,
-        exit::REFUSAL,
+        exit::USAGE,
         message,
         "plan §6.5 / §14.3 (journaled lot policy)",
         "select a debit-normal AnyUnit Asset posting leaf and a permitted registered lot law; a policy change needs two independent approvals over the exact proposal",
