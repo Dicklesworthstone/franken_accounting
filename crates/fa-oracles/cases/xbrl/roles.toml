@@ -2,6 +2,11 @@
 # harness role and the deny list is empty (K-NAMES).
 
 [[role]]
+label = "case-author-1"
+kind = "harness"
+description = "authors the case's interpretations"
+
+[[role]]
 label = "case-second-reader"
 kind = "harness"
 description = "reviews the citation stubs"

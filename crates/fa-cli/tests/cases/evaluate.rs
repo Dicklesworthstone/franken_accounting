@@ -20,6 +20,7 @@ use fa_oracles::cases::contrib::{
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
+use fa_oracles::cases::outsider_kind::OutsiderKind;
 use fa_oracles::cases::ratios;
 use fa_oracles::cases::reference::{CellSetting, LiveEntry, RefVerdict, ReferenceAdapter};
 use fa_oracles::cases::rel;
@@ -1349,18 +1350,14 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
         fails.push(format!("outsider {}: {why}", kind.name()));
     }
     let outsider_token = outsider.map(|(kind, verdict)| {
-        (
-            "outsider".to_string(),
-            format!(
-                "{}:{}",
-                kind.name(),
-                if verdict.is_ok() {
-                    "verified"
-                } else {
-                    "failed"
-                }
-            ),
-        )
+        let state = if *kind == OutsiderKind::NotApplicable {
+            String::new()
+        } else if verdict.is_ok() {
+            ":verified".to_string()
+        } else {
+            ":failed".to_string()
+        };
+        ("outsider".to_string(), format!("{}{state}", kind.name()))
     });
     // A12 (§12.7): on a book whose examiner witness cosigned the as-filed
     // checkpoint, a T holds only if the restated book extends it.

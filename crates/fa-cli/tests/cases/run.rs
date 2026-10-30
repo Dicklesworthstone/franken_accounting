@@ -353,6 +353,9 @@ pub struct BookRun<'c> {
     /// Each (certificate, account, unit) the report route verified -> the
     /// account cell fa-verify recomputed from its bundle (A12).
     pub recomputed: BTreeMap<(String, String, String), i128>,
+    /// Each period code's `fa export xbrl` instance, as written and
+    /// self-verified, or why it was not (X-T-02).
+    pub exports: BTreeMap<String, Result<String, String>>,
 }
 
 impl<'c> BookRun<'c> {
@@ -409,6 +412,7 @@ impl<'c> BookRun<'c> {
             migration_runs: BTreeMap::new(),
             explained: BTreeMap::new(),
             recomputed: BTreeMap::new(),
+            exports: BTreeMap::new(),
         }
     }
 

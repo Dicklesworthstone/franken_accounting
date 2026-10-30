@@ -385,3 +385,118 @@ read_target = "3100"
 read_coordinate = "FY2021"
 read_selector = "originally_reported"
 posted = "spwr.MinorityInterest.c-115"
+
+# X-T-02 and X-T-07 (plan §10.1; §15 X4): the round trip through franken_accounting's own XBRL
+# writer. After each balance-sheet book's Restatement case, `fa export xbrl --period <year>` writes
+# the book's instance (and `fa verify export xbrl` re-reads it in the book, a logged self-check);
+# the harness's own std-only reader (fa-oracles cases::instance, never fa-formats' reader) takes
+# each non-dimensional instant fact at the year-end and compares it exactly with SunPower's tagged
+# as-restated value under the same QName. The loader binds an expectation to one book, so the two
+# year-ends are two rows. Each read's contributing-entry witness explains the balance-sheet line
+# the writer binds the QName to. No outsider route applies to an export read (§12.1). Excluded,
+# with no row: us-gaap:StockholdersEquity (X-NCI-BINDING, X-NOTE-01), the writer's income-statement
+# (duration) facts and its unclosed-earnings binding, which these books hold none of.
+
+[[expectation]]
+id = "X-T-02"
+type = "T"
+book_variant = "statement-sunpower"
+statement_template = "T.round_trip"
+basis = ["spwr.Liabilities.c-113", "spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+kind = "round_trip"
+vintages = ["B:SRC-SPWR-10KA-2022"]
+
+[[target]]
+expectation = "X-T-02"
+fact = "spwr.Assets.c-4"
+basis = ["spwr.Liabilities.c-113", "spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:Assets"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.Assets.c-4"
+
+[[target]]
+expectation = "X-T-02"
+fact = "spwr.Liabilities.c-4"
+basis = ["spwr.Liabilities.c-113"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:Liabilities"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.Liabilities.c-4"
+
+[[target]]
+expectation = "X-T-02"
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+basis = ["spwr.Liabilities.c-113", "spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:LiabilitiesAndStockholdersEquity"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.LiabilitiesAndStockholdersEquity.c-4"
+
+[[target]]
+expectation = "X-T-02"
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+basis = ["spwr.StockholdersEquity.c-113", "spwr.MinorityInterest.c-113"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4"
+
+[[expectation]]
+id = "X-T-07"
+type = "T"
+book_variant = "statement-sunpower-fy2021"
+statement_template = "T.round_trip"
+basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+kind = "round_trip"
+vintages = ["B:SRC-SPWR-10KA-2022"]
+
+[[target]]
+expectation = "X-T-07"
+fact = "spwr.Assets.c-5"
+basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:Assets"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.Assets.c-5"
+
+[[target]]
+expectation = "X-T-07"
+fact = "spwr.Liabilities.c-5"
+basis = ["spwr.Liabilities.c-115"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:Liabilities"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.Liabilities.c-5"
+
+[[target]]
+expectation = "X-T-07"
+fact = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:LiabilitiesAndStockholdersEquity"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.LiabilitiesAndStockholdersEquity.c-5"
+
+[[target]]
+expectation = "X-T-07"
+fact = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+basis = ["spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+
+[[note]]
+id = "X-NOTE-01"
+case = "xbrl"
+basis = ["X-NCI-BINDING"]
+template = "NOTE.observation"

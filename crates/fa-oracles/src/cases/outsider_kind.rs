@@ -20,15 +20,22 @@
 //!   --certify`) and the scenario diff (`fa scenario diff --certificate-out`).
 //!   fa-verify recomputes neither, so this is a replay in the book, never an
 //!   offline outsider verification.
+//! - `not_applicable`: an export read (`fa export xbrl`), for which §12.1
+//!   names no outsider route (X-T-02, §10.1). The exported file is read by
+//!   fa-oracles' own reader ([`super::instance`]) and compared with the
+//!   filer's tagged value; the row prints `outsider=not_applicable`, and the
+//!   in-book `fa verify export xbrl` it also runs is a self-check, never
+//!   independent evidence.
 
 /// The read verbs the runner reads (A7b).
-pub const READ_VERBS: [&str; 6] = [
+pub const READ_VERBS: [&str; 7] = [
     "balance",
     "balance-sheet",
     "income-statement",
     "tb",
     "consolidate",
     "scenario-diff",
+    "export-xbrl",
 ];
 
 /// An outsider route.
@@ -36,6 +43,8 @@ pub const READ_VERBS: [&str; 6] = [
 pub enum OutsiderKind {
     Report,
     Replay,
+    /// A read kind §12.1 names no outsider route for (an export).
+    NotApplicable,
 }
 
 impl OutsiderKind {
@@ -45,6 +54,7 @@ impl OutsiderKind {
         match self {
             Self::Report => "report",
             Self::Replay => "replay",
+            Self::NotApplicable => "not_applicable",
         }
     }
 }
@@ -71,6 +81,7 @@ pub fn outsider_kind(verb: &str) -> Option<(OutsiderKind, Option<Recomputed>)> {
             Some((OutsiderKind::Report, Some(Recomputed::StatementLine)))
         }
         "consolidate" | "scenario-diff" => Some((OutsiderKind::Replay, None)),
+        "export-xbrl" => Some((OutsiderKind::NotApplicable, None)),
         _ => None,
     }
 }
@@ -95,6 +106,7 @@ mod tests {
                 Some(("report", Some(Recomputed::TrialBalanceRow))),
                 Some(("replay", None)),
                 Some(("replay", None)),
+                Some(("not_applicable", None)),
             ]
         );
         assert_eq!(outsider_kind("gl-detail"), None);

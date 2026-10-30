@@ -128,6 +128,14 @@ fn worldcom() {
 /// as-restated figures (X-T-05, X-T-06), and each posted leaf reads back
 /// (X-R-03, X-R-04). The noncontrolling interest has no adjustment, so it is
 /// read back, never bridged (its one posting would carry B).
+///
+/// X4: after each book's case, the instance `fa export xbrl` writes, read
+/// by the harness's own reader, carries the tagged as-restated Assets,
+/// Liabilities, LiabilitiesAndStockholdersEquity and
+/// StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest at
+/// the year-end exactly (X-T-02, X-T-07). Each read's witness explains the
+/// line the writer binds the QName to, and no outsider route applies to an
+/// export read.
 #[test]
 fn xbrl() {
     let o = outcome("xbrl");
@@ -137,13 +145,62 @@ fn xbrl() {
     let count = |prefix: &str| o.lines.iter().filter(|l| l.starts_with(prefix)).count();
     assert_eq!(count("PASS X-T-01 T "), 8, "{text}");
     assert_eq!(count("PASS X-R-01 R "), 8, "{text}");
-    for (t, r, book) in [
-        ("X-T-05", "X-R-03", "statement-sunpower"),
-        ("X-T-06", "X-R-04", "statement-sunpower-fy2021"),
+    for (t, r, round_trip, book) in [
+        ("X-T-05", "X-R-03", "X-T-02", "statement-sunpower"),
+        ("X-T-06", "X-R-04", "X-T-07", "statement-sunpower-fy2021"),
     ] {
         assert_eq!(count(&format!("PASS {t} T {book} ")), 5, "{t}\n{text}");
         assert_eq!(count(&format!("PASS {r} R {book} ")), 3, "{r}\n{text}");
+        let exported: Vec<&String> = o
+            .lines
+            .iter()
+            .filter(|l| l.starts_with(&format!("PASS {round_trip} T {book} ")))
+            .collect();
+        assert_eq!(exported.len(), 4, "{round_trip}\n{text}");
+        for line in exported {
+            assert!(
+                line.contains(" kind=round_trip read=export-xbrl,us-gaap:")
+                    && line.contains(" contrib=holds outsider=not_applicable"),
+                "{line}"
+            );
+        }
     }
+}
+
+/// X-T-02's published value one unit off (§10.1, X4): a copy whose tagged
+/// as-restated Assets at the fiscal 2022 year-end is one unit of its
+/// declared precision higher (one thousand dollars), its receipt unchanged,
+/// stops the case at load. K-BIND fails naming the fact, no book is built,
+/// and the X-T-02 line FAILs with that check as its reason. A run-time
+/// exported value one unit off cannot be planted with one edit; the
+/// comparator's value check is fa-oracles' value_off_by_one_unit_fails_match.
+#[test]
+fn xbrl_neg_x_t_02_published_plus_one_unit() {
+    let o = run_planted(
+        "xbrl",
+        &[PlantedEdit {
+            file: "facts.toml",
+            old: "fact = \"spwr.Assets.c-4\"\nordinal = 1\nliteral = \"1763626000\"\nrule = \"scale\"\nparam = 0\nvalue = \"176362600000\"",
+            new: "fact = \"spwr.Assets.c-4\"\nordinal = 1\nliteral = \"1763627000\"\nrule = \"scale\"\nparam = 0\nvalue = \"176362700000\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a published value its receipt does not bind stops the case");
+    let text = o.text();
+    assert!(
+        o.lines
+            .iter()
+            .any(|l| l.starts_with("FAIL K-BIND facts.toml:") && l.contains(" spwr.Assets.c-4: ")),
+        "{text}"
+    );
+    assert!(
+        o.lines.iter().any(|l| {
+            l.starts_with("FAIL X-T-02 T statement-sunpower spwr.Assets.c-4/")
+                && l.contains("expected K-BIND=PASS observed K-BIND=FAIL")
+        }),
+        "{text}"
+    );
+    assert!(o.books.is_empty(), "{text}");
 }
 
 /// L2 slice 1 (§8.3): the Q2-2008 10-Q's condensed consolidated statement of

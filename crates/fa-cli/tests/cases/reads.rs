@@ -532,6 +532,9 @@ impl BookRun<'_> {
         if verb == "balance" {
             return self.read_balance(e, t, token, &unit, &flags);
         }
+        if verb == "export-xbrl" {
+            return self.read_export_xbrl(e, t, token, &code, &unit, selector);
+        }
         let mut args: Vec<String> = match verb {
             "balance" => ["explain", "balance", target, "--period"]
                 .map(str::to_string)
@@ -1028,6 +1031,147 @@ impl BookRun<'_> {
                 changed: None,
             },
         }
+    }
+
+    /// An `export-xbrl` read (X-T-02, §10.1). `fa export xbrl --period
+    /// <code>` writes the book's instance as currently stated, once per
+    /// period, and `fa verify export xbrl` re-reads it in the book (a logged
+    /// self-check, never independent evidence). fa-oracles' own reader
+    /// (`fa_oracles::cases::instance`) takes the non-dimensional instant fact of the
+    /// target QName at the period's last day in the read's unit. The
+    /// contributing-entry witness explains the balance-sheet line that
+    /// fa-formats' binding table exports under that QName; a QName the
+    /// table does not bind has no line, and the read fails.
+    fn read_export_xbrl(
+        &mut self,
+        e: &Expectation,
+        t: Option<&Target>,
+        token: String,
+        code: &str,
+        unit: &str,
+        selector: Option<&str>,
+    ) -> Read {
+        let concept = field(e, t, "read_target").unwrap_or("-");
+        let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
+        let reference = key(e, t);
+        let read = |value: Result<i128, String>, contributions| Read {
+            token: token.clone(),
+            value,
+            certificate: None,
+            certificates: Vec::new(),
+            contributions,
+            exercised: None,
+            trace: None,
+            known_at: None,
+            output_digest: None,
+            changed: None,
+        };
+        if !matches!(selector, None | Some("currently_stated")) {
+            return read(
+                Err(format!(
+                    "expected an export read as currently stated observed selector {}",
+                    selector.unwrap_or("-")
+                )),
+                None,
+            );
+        }
+        let line = fa_formats::xbrl::StatementXbrlMapping::us_gaap_type_level_balance_sheet()
+            .bindings
+            .into_iter()
+            .find(|b| b.concept == concept)
+            .map(|b| b.line_code);
+        let Some(line) = line else {
+            return read(
+                Err(format!(
+                    "expected a balance-sheet line fa export xbrl binds to {concept} observed none"
+                )),
+                None,
+            );
+        };
+        let end = contrib::fold_periods(self.book, false, coordinate)
+            .and_then(|own| own.last().cloned())
+            .and_then(|last| self.book.periods.iter().find(|p| p.code == last))
+            .map(|p| p.end.clone());
+        let (Some(end), Some(scale)) = (end, scale_of(unit)) else {
+            return read(
+                Err(format!(
+                    "expected a period end for `{coordinate}` and a registered unit `{unit}`"
+                )),
+                None,
+            );
+        };
+        if !self.exports.contains_key(code) {
+            let exported = self.export_xbrl(&reference, code);
+            self.exports.insert(code.to_string(), exported);
+        }
+        let instance = match self.exports.get(code).cloned() {
+            Some(Ok(xml)) => match fa_oracles::cases::instance::read(&xml) {
+                Ok(instance) => instance,
+                Err(why) => return read(Err(why.to_string()), None),
+            },
+            Some(Err(why)) => return read(Err(why), None),
+            None => return read(Err("expected an export observed none".into()), None),
+        };
+        // The exported value itself: the row compares it with B exactly
+        // (read_against), so a mismatch FAILs naming both values.
+        let value =
+            match fa_oracles::cases::instance::instant_value(&instance, concept, &end, unit, scale)
+            {
+                Ok(value) => value,
+                Err(why) => return read(Err(why), None),
+            };
+        match self.line_contributions(&reference, "balance-sheet", &line, coordinate, unit, &[]) {
+            Ok(contributions) => read(Ok(value), Some(contributions)),
+            Err(why) => read(Err(format!("the {line} line's contributions: {why}")), None),
+        }
+    }
+
+    /// `fa export xbrl --period <code>` into the variant's working
+    /// directory, and the book's own `fa verify export xbrl` of the file:
+    /// the instance text, or why there is none.
+    fn export_xbrl(&mut self, reference: &str, code: &str) -> Result<String, String> {
+        let out = self.work.join(format!("export-{code}.xbrl"));
+        let path = out.display().to_string();
+        let args = vec![
+            "export".to_string(),
+            "xbrl".to_string(),
+            "--period".to_string(),
+            code.to_string(),
+            "--out".to_string(),
+            path.clone(),
+            "--json".to_string(),
+        ];
+        let exported = self.call(self.head, reference, "export", args);
+        if exported.exit != 0 {
+            self.lines.push(reproduce(&exported));
+            return Err(format!(
+                "expected exit=0 from export xbrl observed exit={} {}",
+                exported.exit,
+                exported.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string());
+        }
+        let verified = self.call(
+            self.head,
+            reference,
+            "verify",
+            ["verify", "export", "xbrl", path.as_str(), "--json"]
+                .map(str::to_string)
+                .into(),
+        );
+        if verified.exit != 0 {
+            self.lines.push(reproduce(&verified));
+            return Err(format!(
+                "expected fa verify export xbrl exit=0 observed exit={} {}",
+                verified.exit,
+                verified.refusal_id().unwrap_or_default()
+            )
+            .trim_end()
+            .to_string());
+        }
+        std::fs::read_to_string(&out)
+            .map_err(|e| format!("expected the exported {path} observed {e}"))
     }
 
     /// A statement line read's contributions (A11b): every account its

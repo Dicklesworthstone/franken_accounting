@@ -61,7 +61,7 @@ pub const TEXTS: [(&str, &str); 17] = [
     ),
     (
         "T.round_trip",
-        "On the book `{variant}`, the export and re-import of each line below returns the published value exactly.",
+        "On the book `{variant}`, the XBRL instance `fa export xbrl` writes carries each line below under its US-GAAP QName at its instant, and the harness's own reader of that file reads the published value exactly.",
     ),
     (
         "C.band",

@@ -596,6 +596,14 @@ quote_sha256 = "72848fd9c177074a387694ff3b73746a79f2bd642320d4ade8e3b1d7c56e6ced
 about_scope = "scheme:spwr-quarterly-data"
 granularity = "xbrl_fact"
 
+[[fact]]
+id = "X-NCI-BINDING"
+provenance = "interpretation"
+from = ["spwr.StockholdersEquity.c-4", "spwr.StockholdersEquity.c-5", "spwr.MinorityInterest.c-113", "spwr.MinorityInterest.c-115"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "us-gaap:StockholdersEquity is outside the round trips X-T-02 and X-T-07. fa export xbrl binds the balance sheet's equity line, every Equity-type account, to us-gaap:StockholdersEquity (crates/fa-formats/src/xbrl.rs, the type-level balance-sheet mapping). SunPower's balance-sheet books post its noncontrolling interest (us-gaap:MinorityInterest) on an Equity account, so the exported StockholdersEquity is the parent's equity plus the noncontrolling interest. That is the figure SunPower tags as StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest, which both round trips compare under that QName, while a US-GAAP StockholdersEquity is the parent's alone. Comparing the export's StockholdersEquity with the tagged one would compare different concepts. The writer needs the noncontrolling_interest account role to split them (bead fa-yugf.99, H19)."
+
 [[value]]
 fact = "spwr.NetIncomeLoss.c-462"
 ordinal = 1

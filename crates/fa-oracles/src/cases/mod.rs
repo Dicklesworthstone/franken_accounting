@@ -64,6 +64,7 @@ pub mod filler;
 pub mod gql;
 pub mod harness_verbs;
 pub mod header;
+pub mod instance;
 pub mod intent_json;
 pub mod invariance;
 pub mod log;

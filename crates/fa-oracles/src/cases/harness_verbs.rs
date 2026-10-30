@@ -85,6 +85,9 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("finding", Some("replay")),
     // The consolidate read (A7b) and its replay route.
     ("consolidate", None),
+    // X4: the export read and the book's own re-read of the exported file.
+    ("export", Some("xbrl")),
+    ("verify", Some("export")),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

@@ -9,7 +9,12 @@
 #   against the Assets leaf and restate the same way. The adjusted leaves, the Assets leaf and
 #   the statement's liabilities_and_equity and equity lines tie to their tagged B (X-T-05,
 #   X-T-06: X-T-01's balance-sheet half); MinorityInterest, which the 10-K/A does not adjust,
-#   is read back with the other posted leaves (X-R-03, X-R-04).
+#   is read back with the other posted leaves (X-R-03, X-R-04). X4 adds the round trip through
+#   franken_accounting's own XBRL writer on both books: the instance `fa export xbrl` writes
+#   carries the tagged as-restated Assets, Liabilities, LiabilitiesAndStockholdersEquity and
+#   StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest at each year-end
+#   (X-T-02, X-T-07). Its StockholdersEquity binding carries the noncontrolling interest and is
+#   left out with the reason (X-NCI-BINDING, X-NOTE-01).
 # Coverage is per line: these lines only, never "the statements". The fiscal-year fold rows,
 # the remaining concepts and the Microsoft and RH filings are later slices.
 id = "xbrl"
@@ -17,8 +22,8 @@ letter = "X"
 title = "XBRL-era restatements: SunPower fiscal 2022 10-K/A"
 version = 1
 kind = "case"
-scope = "the 10-K/A's tagged restatement of SunPower's net income (loss) for each fiscal quarter of 2021 and 2022, and of its fiscal year-end 2021 and 2022 balance-sheet totals: as previously reported, the adjustment, and as restated"
-claims = ["X-CASE-spwr-bs2021-restatement", "X-CASE-spwr-bs2022-restatement", "X-CASE-spwr-is-restatement", "X-R-01", "X-R-03", "X-R-04", "X-T-01", "X-T-05", "X-T-06"]
-capabilities = ["case_kind:Restatement", "verb:assert-balance", "verb:case", "verb:post", "verb:scenario", "verb:statement"]
+scope = "the 10-K/A's tagged restatement of SunPower's net income (loss) for each fiscal quarter of 2021 and 2022, and of its fiscal year-end 2021 and 2022 balance-sheet totals: as previously reported, the adjustment, and as restated; and those restated totals as franken_accounting's XBRL writer exports them"
+claims = ["X-CASE-spwr-bs2021-restatement", "X-CASE-spwr-bs2022-restatement", "X-CASE-spwr-is-restatement", "X-R-01", "X-R-03", "X-R-04", "X-T-01", "X-T-02", "X-T-05", "X-T-06", "X-T-07"]
+capabilities = ["case_kind:Restatement", "verb:assert-balance", "verb:case", "verb:export", "verb:post", "verb:scenario", "verb:statement", "verb:verify"]
 pinned_commit = "9f812f33b"
 variants = ["statement-sunpower-is", "statement-sunpower", "statement-sunpower-fy2021"]

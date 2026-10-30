@@ -39,7 +39,7 @@ use fa_oracles::cases::amount::format_amount;
 use fa_oracles::cases::book::{StepDef, StepKind};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::log::StepRecord;
-use fa_oracles::cases::outsider_kind::{Recomputed, outsider_kind};
+use fa_oracles::cases::outsider_kind::{OutsiderKind, Recomputed, outsider_kind};
 use fa_oracles::cases::verify_report::recomputed;
 use fa_oracles::json::{self, Json};
 
@@ -747,6 +747,14 @@ impl BookRun<'_> {
             let Some((kind, what)) = outsider_kind(field(e, t, "read_verb").unwrap_or("-")) else {
                 continue;
             };
+            // A read kind with no outsider route (§12.1) is recorded as
+            // such, once its read holds a value; it verifies nothing.
+            if kind == OutsiderKind::NotApplicable {
+                if self.reads.get(&reference).is_some_and(|r| r.value.is_ok()) {
+                    self.read_checks.insert(reference, (kind, Ok(())));
+                }
+                continue;
+            }
             let (certificates, digest) = match self.reads.get(&reference) {
                 Some(read) if read.value.is_ok() && !read.certificates.is_empty() => {
                     (read.certificates.clone(), read.output_digest.clone())
