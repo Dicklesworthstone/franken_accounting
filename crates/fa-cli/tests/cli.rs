@@ -5285,6 +5285,9 @@ fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> s
         "--yes",
         "--json",
     ]);
+    // Materializing an empty fold is deliberately a no-op. Advance also
+    // initializes those periods' headers, so every period certifies a prefix.
+    ok(&["registers", "advance", "--fiscal-year", "2026", "--json"]);
     ok(&["verify", "book", "--require-materialized", "--json"]);
 
     let absent = dir.join("invalid-target-book");
