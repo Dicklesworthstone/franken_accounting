@@ -1131,10 +1131,68 @@ impl BookRun<'_> {
                 Ok(value) => value,
                 Err(why) => return read(Err(why), None),
             };
-        match self.line_contributions(&reference, "balance-sheet", &line, coordinate, unit, &[]) {
+        let contributions = if matches!(
+            concept,
+            "us-gaap:StockholdersEquity" | "us-gaap:MinorityInterest"
+        ) {
+            self.xbrl_equity_contributions(
+                &reference,
+                coordinate,
+                unit,
+                concept == "us-gaap:MinorityInterest",
+            )
+        } else {
+            self.line_contributions(&reference, "balance-sheet", &line, coordinate, unit, &[])
+        };
+        match contributions {
             Ok(contributions) => read(Ok(value), Some(contributions)),
             Err(why) => read(Err(format!("the {line} line's contributions: {why}")), None),
         }
+    }
+
+    /// Independently explain the role partition from the book inputs, rather
+    /// than treating the producer's parent-equity fact as all Equity accounts.
+    fn xbrl_equity_contributions(
+        &mut self,
+        reference: &str,
+        coordinate: &str,
+        unit: &str,
+        minority: bool,
+    ) -> Result<Vec<Contribution>, String> {
+        let definition =
+            contrib::definition("balance-sheet").ok_or("no balance sheet definition")?;
+        let terms = contrib::line_terms(definition, "total_equity")?;
+        let periods = contrib::fold_periods(self.book, true, coordinate)
+            .ok_or_else(|| format!("no stock periods for {coordinate}"))?;
+        let accounts: Vec<_> = self
+            .book
+            .accounts
+            .iter()
+            .filter_map(|account| {
+                let is_minority = account.role.as_deref() == Some("noncontrolling_interest");
+                (is_minority == minority)
+                    .then(|| {
+                        terms
+                            .get(&account.account_type)
+                            .map(|sign| (account.code.clone(), *sign))
+                    })
+                    .flatten()
+            })
+            .collect();
+        let mut contributions = Vec::new();
+        for (account, sign) in accounts {
+            for mut leg in self
+                .explain(reference, &account, &periods, unit, &[], &[])?
+                .contributions
+            {
+                leg.signed = leg
+                    .signed
+                    .checked_mul(sign)
+                    .ok_or("an equity contribution overflows")?;
+                contributions.push(leg);
+            }
+        }
+        Ok(contributions)
     }
 
     /// A `case-diff` read (E-T-03, W-T-03, plan §8.3): the posted case's

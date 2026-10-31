@@ -4,7 +4,7 @@
 
 Case `xbrl` (letter X), version 1. Scope: the 10-K/A's tagged restatement of SunPower's net income (loss) for each fiscal quarter of 2021 and 2022, and of its fiscal year-end 2021 and 2022 balance-sheet totals: as previously reported, the adjustment, and as restated; and those restated totals as franken_accounting's XBRL writer exports them.
 
-Claimed rows: `X-CASE-spwr-bs2021-restatement`, `X-CASE-spwr-bs2022-restatement`, `X-CASE-spwr-is-restatement`, `X-R-01`, `X-R-03`, `X-R-04`, `X-T-01`, `X-T-02`, `X-T-05`, `X-T-06`, `X-T-07`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `X-CASE-spwr-bs2021-restatement`, `X-CASE-spwr-bs2022-restatement`, `X-CASE-spwr-is-restatement`, `X-R-01`, `X-R-03`, `X-R-04`, `X-R-05`, `X-R-06`, `X-T-01`, `X-T-02`, `X-T-05`, `X-T-06`, `X-T-07`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -73,7 +73,7 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 
 ### Readings of the record
 
-- `X-NCI-BINDING`, an interpretation of `spwr.StockholdersEquity.c-4`, `spwr.StockholdersEquity.c-5`, `spwr.MinorityInterest.c-113`, `spwr.MinorityInterest.c-115`, read by `case-author-1` and second reader `case-second-reader`: us-gaap:StockholdersEquity is outside the round trips X-T-02 and X-T-07. fa export xbrl binds the balance sheet's equity line, every Equity-type account, to us-gaap:StockholdersEquity (crates/fa-formats/src/xbrl.rs, the type-level balance-sheet mapping). SunPower's balance-sheet books post its noncontrolling interest (us-gaap:MinorityInterest) on an Equity account, so the exported StockholdersEquity is the parent's equity plus the noncontrolling interest. That is the figure SunPower tags as StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest, which both round trips compare under that QName, while a US-GAAP StockholdersEquity is the parent's alone. Comparing the export's StockholdersEquity with the tagged one would compare different concepts. The writer needs the noncontrolling_interest account role to split them (bead fa-yugf.99, H19).
+- `X-NCI-BINDING`, an interpretation of `spwr.StockholdersEquity.c-4`, `spwr.StockholdersEquity.c-5`, `spwr.MinorityInterest.c-113`, `spwr.MinorityInterest.c-115`, read by `case-author-1` and second reader `case-second-reader`: The balance-sheet books classify the filing's MinorityInterest leaf with the registered noncontrolling_interest role. The XBRL writer separates that amount from parent StockholdersEquity and adds them to total equity (fa-yugf.99). X-T-02 and X-T-07 now compare the parent's restated equity with its separately tagged B. Each unchanged minority balance is a single directly posted amount, so its XBRL check is R, not T (X-R-05 and X-R-06). The earlier exclusion of parent equity is retired; neither the role classification nor the self-authored calculation linkbase establishes external taxonomy conformance.
 
 ## How this book was built
 
@@ -315,6 +315,7 @@ Sources: `SRC-SPWR-10KA-2022` (reported (audited)).
 |---|---|---|---|---|---|
 | `spwr.Assets.c-4` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:Assets,FY2022,as-currently-stated value=1763626000.00 contrib=holds outsider=not_applicable append_only=ok |
 | `spwr.Liabilities.c-4` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:Liabilities,FY2022,as-currently-stated value=1207581000.00 contrib=holds outsider=not_applicable append_only=ok |
+| `spwr.StockholdersEquity.c-4` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:StockholdersEquity,FY2022,as-currently-stated value=555242000.00 contrib=holds outsider=not_applicable append_only=ok |
 | `spwr.LiabilitiesAndStockholdersEquity.c-4` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:LiabilitiesAndStockholdersEquity,FY2022,as-currently-stated value=1763626000.00 contrib=holds outsider=not_applicable append_only=ok |
 | `spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-4` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest,FY2022,as-currently-stated value=556045000.00 contrib=holds outsider=not_applicable append_only=ok |
 
@@ -328,8 +329,29 @@ Sources: `SRC-SPWR-10KA-2022` (reported (audited)).
 |---|---|---|---|---|---|
 | `spwr.Assets.c-5` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:Assets,FY2021,as-currently-stated value=1559318000.00 contrib=holds outsider=not_applicable append_only=ok |
 | `spwr.Liabilities.c-5` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:Liabilities,FY2021,as-currently-stated value=1175715000.00 contrib=holds outsider=not_applicable append_only=ok |
+| `spwr.StockholdersEquity.c-5` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:StockholdersEquity,FY2021,as-currently-stated value=381968000.00 contrib=holds outsider=not_applicable append_only=ok |
 | `spwr.LiabilitiesAndStockholdersEquity.c-5` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:LiabilitiesAndStockholdersEquity,FY2021,as-currently-stated value=1559318000.00 contrib=holds outsider=not_applicable append_only=ok |
 | `spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5` | `default` | T | PASS | record-consistent | kind=round_trip read=export-xbrl,us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest,FY2021,as-currently-stated value=383603000.00 contrib=holds outsider=not_applicable append_only=ok |
+
+### `X-R-05`: read-back (R.read_back)
+
+On the book `statement-sunpower`, each read below returns the posted value it names (`spwr.MinorityInterest.c-113`).
+
+Sources: `SRC-SPWR-10KA-2022` (reported (audited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `-` | `default` | R | PASS | record-consistent | kind=read_back read=export-xbrl,us-gaap:MinorityInterest,FY2022,as-currently-stated value=803000.00 |
+
+### `X-R-06`: read-back (R.read_back)
+
+On the book `statement-sunpower-fy2021`, each read below returns the posted value it names (`spwr.MinorityInterest.c-115`).
+
+Sources: `SRC-SPWR-10KA-2022` (reported (audited)).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `-` | `default` | R | PASS | record-consistent | kind=read_back read=export-xbrl,us-gaap:MinorityInterest,FY2021,as-currently-stated value=1635000.00 |
 
 ### `X-NOTE-01`: note (NOTE.observation)
 

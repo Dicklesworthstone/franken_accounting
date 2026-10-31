@@ -393,9 +393,9 @@ posted = "spwr.MinorityInterest.c-115"
 # each non-dimensional instant fact at the year-end and compares it exactly with SunPower's tagged
 # as-restated value under the same QName. The loader binds an expectation to one book, so the two
 # year-ends are two rows. Each read's contributing-entry witness explains the balance-sheet line
-# the writer binds the QName to. No outsider route applies to an export read (§12.1). Excluded,
-# with no row: us-gaap:StockholdersEquity (X-NCI-BINDING, X-NOTE-01), the writer's income-statement
-# (duration) facts and its unclosed-earnings binding, which these books hold none of.
+# the writer binds the QName to. Parent equity excludes the registered NCI account. The unchanged
+# single-posted NCI amount is checked separately as R (X-R-05/06), preserving K-TAUT. No outsider
+# route applies to an export read (§12.1). Duration facts and unclosed earnings are outside these books.
 
 [[expectation]]
 id = "X-T-02"
@@ -425,6 +425,16 @@ read_target = "us-gaap:Liabilities"
 read_coordinate = "FY2022"
 read_selector = "currently_stated"
 published = "spwr.Liabilities.c-4"
+
+[[target]]
+expectation = "X-T-02"
+fact = "spwr.StockholdersEquity.c-4"
+basis = ["spwr.StockholdersEquity.c-113"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:StockholdersEquity"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquity.c-4"
 
 [[target]]
 expectation = "X-T-02"
@@ -477,6 +487,16 @@ published = "spwr.Liabilities.c-5"
 
 [[target]]
 expectation = "X-T-07"
+fact = "spwr.StockholdersEquity.c-5"
+basis = ["spwr.StockholdersEquity.c-115"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:StockholdersEquity"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+published = "spwr.StockholdersEquity.c-5"
+
+[[target]]
+expectation = "X-T-07"
 fact = "spwr.LiabilitiesAndStockholdersEquity.c-5"
 basis = ["spwr.Liabilities.c-115", "spwr.StockholdersEquity.c-115", "spwr.MinorityInterest.c-115"]
 read_verb = "export-xbrl"
@@ -494,6 +514,30 @@ read_target = "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontro
 read_coordinate = "FY2021"
 read_selector = "currently_stated"
 published = "spwr.StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest.c-5"
+
+[[expectation]]
+id = "X-R-05"
+type = "R"
+book_variant = "statement-sunpower"
+statement_template = "R.read_back"
+basis = ["spwr.MinorityInterest.c-113"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:MinorityInterest"
+read_coordinate = "FY2022"
+read_selector = "currently_stated"
+posted = "spwr.MinorityInterest.c-113"
+
+[[expectation]]
+id = "X-R-06"
+type = "R"
+book_variant = "statement-sunpower-fy2021"
+statement_template = "R.read_back"
+basis = ["spwr.MinorityInterest.c-115"]
+read_verb = "export-xbrl"
+read_target = "us-gaap:MinorityInterest"
+read_coordinate = "FY2021"
+read_selector = "currently_stated"
+posted = "spwr.MinorityInterest.c-115"
 
 [[note]]
 id = "X-NOTE-01"

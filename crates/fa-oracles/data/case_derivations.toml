@@ -444,3 +444,12 @@ role = ""
 balance_side = "credit"
 read = ["account"]
 example = "X3's net income (loss) leaf per SunPower fiscal quarter (plan §10.1)"
+
+[[chart_rule_row]]
+chart_rule = "us-gaap-xbrl-v1"
+concept = "us-gaap:MinorityInterest"
+type = "Equity"
+role = "noncontrolling_interest"
+balance_side = "credit"
+read = ["account"]
+example = "SunPower's minority equity at each fiscal year-end; separate from parent StockholdersEquity (fa-yugf.99)"

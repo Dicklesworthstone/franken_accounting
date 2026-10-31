@@ -131,11 +131,13 @@ fn worldcom() {
 ///
 /// X4: after each book's case, the instance `fa export xbrl` writes, read
 /// by the harness's own reader, carries the tagged as-restated Assets,
-/// Liabilities, LiabilitiesAndStockholdersEquity and
+/// Liabilities, parent StockholdersEquity, LiabilitiesAndStockholdersEquity and
 /// StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest at
 /// the year-end exactly (X-T-02, X-T-07). Each read's witness explains the
 /// line the writer binds the QName to, and no outsider route applies to an
 /// export read.
+/// MinorityInterest is a separate R read-back: each book posts it unchanged,
+/// so its export comparison cannot claim a non-tautological T.
 ///
 /// X7: every SunPower Restatement case is determined on the day the Item
 /// 4.02 8-K states (2023-10-19, the Audit Committee's non-reliance
@@ -160,7 +162,30 @@ fn xbrl() {
             .iter()
             .filter(|l| l.starts_with(&format!("PASS {round_trip} T {book} ")))
             .collect();
-        assert_eq!(exported.len(), 4, "{round_trip}\n{text}");
+        assert_eq!(exported.len(), 5, "{round_trip}\n{text}");
+        assert!(
+            exported
+                .iter()
+                .any(|row| row.contains("read=export-xbrl,us-gaap:StockholdersEquity,")),
+            "{round_trip}\n{text}"
+        );
+        let nci_read = if book == "statement-sunpower" {
+            "X-R-05"
+        } else {
+            "X-R-06"
+        };
+        assert_eq!(
+            count(&format!("PASS {nci_read} R {book} ")),
+            1,
+            "{nci_read}\n{text}"
+        );
+        assert!(
+            o.lines
+                .iter()
+                .any(|row| row.starts_with(&format!("PASS {nci_read} R {book} "))
+                    && row.contains("read=export-xbrl,us-gaap:MinorityInterest,")),
+            "{nci_read}\n{text}"
+        );
         let case_row: Vec<&String> = o
             .lines
             .iter()
@@ -179,6 +204,19 @@ fn xbrl() {
                 "{line}"
             );
         }
+    }
+    // Author this case's generated README without executing unrelated cases.
+    // The full rendered_docs_do_not_drift gate below still checks every case.
+    if std::env::var("FA_CASES_RENDER").is_ok_and(|value| value == "print") {
+        let case = &fa_oracles::cases::embedded::XBRL;
+        let loaded = fa_oracles::cases::load(&case.case_files()).unwrap();
+        let records = fa_oracles::cases::render::RunRecords {
+            steps: &o.steps,
+            verdicts: &o.verdicts,
+            green: o.rows_ok,
+        };
+        let text = fa_oracles::cases::render::render_readme(&loaded, &records).unwrap();
+        println!("BEGIN README xbrl\n{text}END README xbrl");
     }
 }
 
@@ -216,6 +254,44 @@ fn xbrl_neg_x_t_02_published_plus_one_unit() {
         "{text}"
     );
     assert!(o.books.is_empty(), "{text}");
+}
+
+/// Removing the minority classification recreates H19's wrong parent amount.
+/// The parent comparison must lose PASS with the actual wrong value, and the
+/// missing minority read must fail, independently of the case's timing budget.
+#[test]
+fn xbrl_neg_missing_minority_role_cannot_pass_the_equity_export_rows() {
+    let o = run_planted(
+        "xbrl",
+        &[PlantedEdit {
+            file: "books/statement-sunpower.toml",
+            old: "name_fact = \"spwr.MinorityInterest.c-113\"\ntype = \"Equity\"\nrole = \"noncontrolling_interest\"",
+            new: "name_fact = \"spwr.MinorityInterest.c-113\"\ntype = \"Equity\"\nrole = \"\"",
+        }],
+        HARNESS_VERBS,
+    ).expect_err("the missing role cannot pass the equity export comparisons");
+    let text = o.text();
+    assert!(!o.rows_ok, "{text}");
+    let parent = o
+        .lines
+        .iter()
+        .find(|row| row.contains(" X-T-02 T statement-sunpower spwr.StockholdersEquity.c-4/"))
+        .expect("the planted parent-equity comparison ran");
+    // A7b currently labels a non-equal coarsely stated B as UNRUN. This
+    // negative proves the observed 803,000 USD misclassification and denies
+    // PASS; it cannot succeed on an unrelated setup error or timeout.
+    assert!(
+        !parent.starts_with("PASS ") && parent.contains("value=556045000.00"),
+        "{text}"
+    );
+    assert!(
+        o.lines
+            .iter()
+            .any(|row| row.starts_with("FAIL X-R-05 R statement-sunpower ")
+                && row.contains("us-gaap:MinorityInterest")
+                && row.contains("observed none")),
+        "{text}"
+    );
 }
 
 /// L2 slice 1 (§8.3): the Q2-2008 10-Q's condensed consolidated statement of

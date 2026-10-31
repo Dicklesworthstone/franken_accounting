@@ -94,7 +94,7 @@ role_map_rule = "role_map"
 code = "3100"
 name_fact = "spwr.MinorityInterest.c-115"
 type = "Equity"
-role = ""
+role = "noncontrolling_interest"
 opened = "2021-01-03"
 role_map_rule = "role_map"
 

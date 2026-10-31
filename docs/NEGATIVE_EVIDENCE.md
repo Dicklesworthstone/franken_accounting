@@ -1264,3 +1264,41 @@ The candidate now additionally requires `rows_ok == false`, as the runner's
 existing contract recommends for tests of non-budget behavior. All previous
 assertions and budgets remain. The earlier complete 74-test pass does not
 qualify this stronger test body; both bodies must be compared on the same base.
+
+## 2026-10-30 — XBRL parent equity included the minority's share (fa-yugf.99)
+
+`write_format_journal_xbrl_xml` grouped every Equity account into
+`us-gaap:StockholdersEquity`, including registered noncontrolling interests.
+Its type-level linkbase also added unclosed earnings to StockholdersEquity to
+reach total equity, admitting a parent-equity concept that omitted current
+income. These are incorrect concept predicates, even when the balance sheet
+foots. The source-bound SunPower case deliberately excluded parent equity and
+recorded the mismatch in `X-NCI-BINDING`; that exclusion is historical evidence,
+not an external conformance result.
+
+The correction carries the actual historical role set in the interop journal,
+binds it to the coordinate digest, and preserves it across owned format round
+trips. Parent equity is total equity less the registered minority balance;
+total equity is parent equity plus MinorityInterest. The changed linkbase
+admits the correct 600.00 parent / 400.00 minority / 1,000.00 total split and
+rejects a one-cent minority substitution. With 25.00 of unclosed parent
+income, it admits 625.00 parent / 400.00 minority / 1,025.00 total and rejects
+the old omitted-income parent value. The former equation would reject that
+correct inclusive parent amount by double-counting income. The exact-byte
+test's parent-equity amount changes for that semantic reason; its other
+facts, contexts, ordering and duration checks remain pinned. No validation
+tolerance or negative control is removed.
+
+The feature bead requested six T comparisons per SunPower year. Minority
+interest is one unchanged, directly posted amount, so the existing K-TAUT
+guard correctly classifies its export comparison as R. The candidate keeps
+that guard, adds parent equity as the fifth T target, and adds separate NCI
+R rows X-R-05/X-R-06. Six exported concepts are checked without inflating
+their evidence class. The focused XBRL tests, all 58 fa-formats tests, the
+historical-role export test, workspace all-target checking and affected-crate
+Clippy have passed. All three native XBRL case tests also pass, including
+the role-removal negative that observes the original wrong parent value
+and missing minority fact; the final positive renderer exactly matches
+the refreshed case README. The complete repository gate remains a
+separate qualification; these scoped results are not a release verdict
+or authority to close the bead.

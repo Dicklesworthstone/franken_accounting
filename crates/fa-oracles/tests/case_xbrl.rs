@@ -74,6 +74,61 @@ fn reads_instant_fact() {
     assert_eq!(minor_units("12.500", 2), Ok(1250));
 }
 
+/// The independent reader distinguishes the two equity QNames even when
+/// they share their instant, currency and precision.
+#[test]
+fn parent_and_minority_equity_are_distinct_instant_concepts() {
+    let xml = exported("us-gaap:Assets", "1000.00").replace(
+        "</xbrli:xbrl>",
+        "<us-gaap:StockholdersEquity contextRef=\"ctx_current\" unitRef=\"USD\" decimals=\"2\">600.00</us-gaap:StockholdersEquity>\n<us-gaap:MinorityInterest contextRef=\"ctx_current\" unitRef=\"USD\" decimals=\"2\">400.00</us-gaap:MinorityInterest>\n</xbrli:xbrl>",
+    );
+    let instance = read(&xml).unwrap();
+    assert_eq!(
+        compare(
+            &instance,
+            "us-gaap:StockholdersEquity",
+            "2023-01-01",
+            "USD",
+            2,
+            60_000
+        ),
+        Ok(60_000)
+    );
+    assert_eq!(
+        compare(
+            &instance,
+            "us-gaap:MinorityInterest",
+            "2023-01-01",
+            "USD",
+            2,
+            40_000
+        ),
+        Ok(40_000)
+    );
+    assert!(
+        compare(
+            &instance,
+            "us-gaap:StockholdersEquity",
+            "2023-01-01",
+            "USD",
+            2,
+            100_000
+        )
+        .is_err()
+    );
+    assert!(
+        compare(
+            &instance,
+            "us-gaap:MinorityInterest",
+            "2023-01-01",
+            "USD",
+            2,
+            60_000
+        )
+        .is_err()
+    );
+}
+
 /// A duration context reads as a duration and never matches an instant
 /// target, even at its end date.
 #[test]
