@@ -116,8 +116,8 @@ pub fn assemble(
 /// Direct cash flow adds its explicit classification over that complete source;
 /// policy cash flow also retains the complete counterpart-classification policy
 /// and its decision transcript. Both keep the same four-document profile.
-/// Aging-to-control reconciliations retain both original sources and their
-/// shared four-document closure. No v1 fallback serves either v3 selector or
+/// Aging-to-control reconciliations and whole-chart portfolios retain both
+/// original sources and their shared four-document closure. No v1 fallback serves either v3 selector or
 /// composed schedule.
 /// Native statement comparisons retain both original v4 sources and the exact
 /// outer bridge under their shared four-document closure. Each source is
@@ -582,15 +582,33 @@ fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
         let format = reader.bytes(64, "reconciliation format")?;
+        let portfolio = format == b"fa:aging-portfolio-certificate:v1";
         let due_date = if format == b"fa:due-date-aging-reconciliation-certificate:v1" {
             true
-        } else if format == b"fa:aging-reconciliation-certificate:v1" {
+        } else if format == b"fa:aging-reconciliation-certificate:v1" || portfolio {
             false
         } else {
             return Ok(false);
         };
         reader.u128("reconciliation producer")?;
         reader.fixed::<32>("reconciliation capability")?;
+        if portfolio {
+            match reader.u8("portfolio scope")? {
+                0 => {}
+                1 => {
+                    let count = reader.count(4096, "portfolio accounts")?;
+                    let mut previous = None;
+                    for _ in 0..count {
+                        let account = reader.u128("portfolio account")?;
+                        if previous.is_some_and(|prior| prior >= account) {
+                            return Ok(false);
+                        }
+                        previous = Some(account);
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
         let aging = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation aging")?;
         let control = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation control")?;
         let valid_aging = if due_date {

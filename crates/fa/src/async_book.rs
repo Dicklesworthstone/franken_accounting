@@ -149,6 +149,10 @@ enum ReportBundleCertificate<'a> {
         certificate: &'a crate::AgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
     },
+    AgingPortfolio {
+        certificate: &'a crate::aging::portfolio::AgingPortfolioCertificate,
+        expected: &'a crate::aging::portfolio::AgingPortfolioRequest,
+    },
     DueDateAgingReconciliation {
         certificate: &'a crate::DueDateAgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
@@ -180,6 +184,7 @@ impl<'a> ReportBundleCertificate<'a> {
                 certificate.source_certificate().native_source_certificate()
             }
             Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
+            Self::AgingPortfolio { certificate, .. } => certificate.aging_source().source(),
             Self::DueDateAgingReconciliation { certificate, .. } => {
                 certificate.aging_source().source()
             }
@@ -4507,6 +4512,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export the complete historical chart partition and all selected aging
+    /// comparisons. Both native sources are replayed against the independently
+    /// selected request before their original closure is disclosed.
+    pub async fn produce_aging_portfolio_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::aging::portfolio::AgingPortfolioCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::AgingPortfolio {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     /// Export due-date/control reconciliation with both original source
     /// certificates over a complete signed journal and registry closure.
     pub async fn produce_due_date_aging_reconciliation_bundle(
@@ -4784,6 +4814,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::AgingPortfolio {
+                certificate: portfolio,
+                expected,
+            } => {
+                if let Err(refusal) =
+                    self.replay_aging_portfolio(cx, principal, capability, portfolio, expected)?
+                {
+                    return Ok(Err(refusal));
+                }
+                if portfolio.control_source().registry_digest != certificate.registry_digest {
+                    return Ok(Err(fa_journal::Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        fa_journal::exit::REFUSAL,
+                        "portable aging portfolios require one original registry closure for both sources",
+                        "plan §5.7 / §13.3 (independent chart coverage and native-unit comparisons)",
+                        "retain and export whole-book aging and AsOf control sources certified against the same historical registry epoch",
+                    )));
+                }
+                None
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -4818,6 +4868,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::SplitCashFlow { .. }
                 | ReportBundleCertificate::IndirectCashFlow { .. }
                 | ReportBundleCertificate::AgingReconciliation { .. }
+                | ReportBundleCertificate::AgingPortfolio { .. }
                 | ReportBundleCertificate::DueDateAgingReconciliation { .. }
         ) || matches!(
             &certificate.selection,
@@ -5086,6 +5137,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
             ReportBundleCertificate::AgingReconciliation { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::AgingPortfolio { certificate, .. } => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

@@ -13,7 +13,7 @@ pub(crate) use expectations::{
     due_date_reconciliation_expectation_json, equity_expectation_json,
     external_feed_expectation_json, indirect_cash_flow_bundle_expectation,
     indirect_expectation_json, lots_expectation_json, native_subledger_expectation_json,
-    policy_cash_flow_expectation_json, portfolio_expectation_json,
+    policy_cash_flow_expectation_json, portfolio_bundle_expectation, portfolio_expectation_json,
     reconciliation_bundle_expectation, reconciliation_expectation_json,
     split_cash_flow_bundle_expectation, split_cash_flow_expectation_json,
 };

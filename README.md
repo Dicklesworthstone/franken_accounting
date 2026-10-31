@@ -729,6 +729,35 @@ binding instead. MCP exposes the same request as a separate `expect` string on
 `fa_notary_bundle`, alongside a retained `C:<oid>` or full certificate hex.
 Export remains read-only and requires whole-book read and produce authority.
 
+A portfolio reconciliation uses that same portable workflow for either every
+posting leaf or an explicitly selected account list. Its export request uses
+`kind: "aging-portfolio"`, `scope: "all-posting"` or `scope: "selected"`, and the
+original `through`, fixed integer `known_at` and `buckets`; a selected scope also
+includes `accounts`. For example, after certifying the all-posting reconciliation
+and recording a checkpoint:
+
+```bash
+fa bundle produce --certificate march-portfolio.cert \
+  --expect '{"kind":"aging-portfolio","scope":"all-posting","through":"2026-03-31","known_at":42,"buckets":[0,30,60,90]}' \
+  --book ./books/acme --out march-portfolio.fab \
+  --receipt-out march-portfolio.receipt --json
+fa-verify report march-portfolio.fab --key <trusted-checkpoint-public-key> \
+  --receipt march-portfolio.receipt --json
+```
+
+Independent verification reconstructs the complete historical posting chart and
+both original sources at one prefix. It checks each selected account in each
+native unit, preserves zero-activity leaves and lists uncovered accounts explicitly.
+Equal and opposite account differences cannot cancel into a passing result, and
+pending reservations remain separate from posted and open amounts. `complete` and
+`reconciled` are distinct verdicts; the proof does not establish agreement with an
+external subledger. The recipient pins the outer portfolio certificate or keeps
+the signed receipt. Embedded recipients can additionally use
+`fa_verify::report::verify_aging_portfolio_report_expected` with their independently
+chosen `AgingPortfolioRequest`, including the exact all-posting versus selected
+scope even when both happen to cover the same leaves. The existing major-2 bundle
+and native portfolio certificate formats are unchanged.
+
 Instant-selected certificates also retain their requested instant, observed frontier,
 and tick identities. Replay uses those saved brackets even after later ticks or
 postings arrive. An open upper bracket is explicit; this is a clock-observation

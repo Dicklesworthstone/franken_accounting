@@ -110,7 +110,8 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N] independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
-                                                effective-date or due-date aging, reconciliation, account roll-forwards,
+                                                effective-date or due-date aging, reconciliation, whole-chart aging portfolios,
+                                                account roll-forwards,
                                                 direct cash flows, changes in equity, lot schedules,
                                                 native/functional one-book consolidated group statements.
                                                 V1 statements require --units;
@@ -1481,6 +1482,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 "report_mode",
                                 s(if report.explanation.is_some() {
                                     "balance_explanation"
+                                } else if report.aging_portfolio.is_some() {
+                                    "aging_portfolio"
                                 } else if report.aging_reconciliation.is_some() {
                                     "aging_reconciliation"
                                 } else if report.due_date_aging_reconciliation.is_some() {
@@ -1547,6 +1550,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 "rows",
                                 n(if let Some(explanation) = &report.explanation {
                                     explanation.contributions.len()
+                                } else if let Some(portfolio) = &report.aging_portfolio {
+                                    portfolio.accounts.iter().map(|a| a.rows.len()).sum()
                                 } else if let Some(comparison) = &report.aging_reconciliation {
                                     comparison.rows.len()
                                 } else if let Some(comparison) =
@@ -1692,6 +1697,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     if let Some(comparison) = &report.aging_reconciliation {
                         checks.extend(reconciliation_checks(comparison));
                         checks.extend(aging_checks(&comparison.aging));
+                    }
+                    if let Some(portfolio) = &report.aging_portfolio {
+                        checks.extend(portfolio_checks(portfolio));
                     }
                     if let Some(comparison) = &report.due_date_aging_reconciliation {
                         checks.extend(due_date_reconciliation_checks(comparison));
@@ -2153,6 +2161,94 @@ fn open_items_checks(report: &crate::report::VerifiedOpenItems) -> Vec<Check> {
                 ],
             ));
         }
+    }
+    checks
+}
+
+fn portfolio_checks(report: &crate::report::VerifiedAgingPortfolio) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "aging_portfolio",
+        "recomputation",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "scope",
+                s(match &report.scope {
+                    crate::report::AgingPortfolioScope::AllPosting => "all-posting",
+                    crate::report::AgingPortfolioScope::Selected(_) => "selected",
+                }),
+            ),
+            ("selected_accounts", n(report.accounts.len() as u64)),
+            (
+                "uncovered_accounts",
+                n(report.uncovered_accounts.len() as u64),
+            ),
+            ("complete", Json::Bool(report.is_complete())),
+            ("reconciled", Json::Bool(report.is_reconciled())),
+            (
+                "complete_and_reconciled",
+                Json::Bool(report.is_complete_and_reconciled()),
+            ),
+            (
+                "has_pending_reservations",
+                Json::Bool(report.has_pending_reservations()),
+            ),
+            (
+                "buckets",
+                Json::List(
+                    report
+                        .upper_bounds
+                        .iter()
+                        .map(|value| n(u64::from(*value)))
+                        .collect(),
+                ),
+            ),
+            (
+                "aging_certificate_digest",
+                h(&report.aging_certificate_digest),
+            ),
+            (
+                "control_certificate_digest",
+                h(&report.control_certificate_digest),
+            ),
+            (
+                "comparison",
+                s("posted debit net minus open debit net, separately per account and native unit"),
+            ),
+            ("external_subledger", s("not judged")),
+        ],
+    )];
+    for account in &report.accounts {
+        checks.push(account_check(
+            "aging_portfolio_selected_account",
+            &account.account,
+        ));
+        for row in &account.rows {
+            checks.push(Check::pass(
+                "aging_portfolio_row",
+                "recomputation",
+                vec![
+                    ("account", s(format!("{:032x}", account.account.account))),
+                    ("unit", n(u64::from(row.unit_id))),
+                    ("posted_debits", s(row.posted_debits.to_string())),
+                    ("posted_credits", s(row.posted_credits.to_string())),
+                    ("pending_debits", s(row.pending_debits.to_string())),
+                    ("pending_credits", s(row.pending_credits.to_string())),
+                    ("open_debits", s(row.open_debits.to_string())),
+                    ("open_credits", s(row.open_credits.to_string())),
+                    ("open_item_count", n(row.open_item_count)),
+                    ("posted_net", s(row.posted_net.to_string())),
+                    ("open_net", s(row.open_net.to_string())),
+                    ("difference", s(row.difference.to_string())),
+                    ("reconciled", Json::Bool(row.difference == 0)),
+                ],
+            ));
+        }
+    }
+    for account in &report.uncovered_accounts {
+        checks.push(account_check("aging_portfolio_uncovered_account", account));
     }
     checks
 }

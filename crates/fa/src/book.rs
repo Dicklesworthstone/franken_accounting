@@ -5240,6 +5240,26 @@ impl Book {
         ))
     }
 
+    /// Export historical portfolio coverage and per-account aging/control
+    /// comparisons under current whole-book read and produce authority. The
+    /// recipient's independently selected scope, cutoff, fixed recorded prefix
+    /// and age bands must match before any complete source closure is exported.
+    pub fn produce_aging_portfolio_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::aging::portfolio::AgingPortfolioCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_aging_portfolio_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
     /// Export contractual-aging reconciliation under current whole-book read
     /// and produce authority, bound to an independently fixed request.
     pub fn produce_due_date_aging_reconciliation_bundle(
