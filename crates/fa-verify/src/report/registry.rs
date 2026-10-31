@@ -628,7 +628,13 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
     ] {
         // Older retained registry closures precede the additive law11. They
         // stay readable, but cannot authorize a claim under that newer law.
-        if id == 11 && !laws.iter().any(|row| matches!(row.get("id"), Some(Value::Int(11)))) { continue; }
+        if id == 11
+            && !laws
+                .iter()
+                .any(|row| matches!(row.get("id"), Some(Value::Int(11))))
+        {
+            continue;
+        }
         let row = laws
             .iter()
             .find(|row| {
@@ -732,7 +738,9 @@ pub(super) fn verify_functional(
     functional_laws(&docs[4])?;
     functional_rounding(&docs[5])?;
     let mut definitions = functional_definitions(&docs[2])?;
-    definitions.spot_carrying = rows(&docs[4], "law")?.iter().any(|row| matches!(row.get("id"), Some(Value::Int(11))));
+    definitions.spot_carrying = rows(&docs[4], "law")?
+        .iter()
+        .any(|row| matches!(row.get("id"), Some(Value::Int(11))));
     Ok(definitions)
 }
 

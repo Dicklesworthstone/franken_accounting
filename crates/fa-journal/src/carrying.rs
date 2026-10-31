@@ -156,7 +156,11 @@ pub(crate) fn is_source_bound(proposal: &EntryPayload) -> bool {
         && proposal.base_totals.as_ref().is_some_and(|totals| {
             matches!(
                 FxLawId::from_oid(&totals.fx_law_oid),
-                Some(FxLawId::SettlementCarryingBasis | FxLawId::SettlementAllocatedCarrying | FxLawId::SettlementSpotCarrying)
+                Some(
+                    FxLawId::SettlementCarryingBasis
+                        | FxLawId::SettlementAllocatedCarrying
+                        | FxLawId::SettlementSpotCarrying
+                )
             )
         })
 }
@@ -501,10 +505,17 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
                     if application.target.vid != target.vid || application.ordinal != ordinal {
                         continue;
                     }
-                    let spot = entry.proposal.base_totals.as_ref().is_some_and(|totals| totals.fx_law_oid == FxLawId::SettlementSpotCarrying.oid());
+                    let spot = entry.proposal.base_totals.as_ref().is_some_and(|totals| {
+                        totals.fx_law_oid == FxLawId::SettlementSpotCarrying.oid()
+                    });
                     if application.target != target
                         || applying.settles.len() != 1
-                        || if spot { application.amount.mantissa > applying.amount.mantissa } else { application.amount != applying.amount || settlement_ranges(&entry.proposal).is_err() }
+                        || if spot {
+                            application.amount.mantissa > applying.amount.mantissa
+                        } else {
+                            application.amount != applying.amount
+                                || settlement_ranges(&entry.proposal).is_err()
+                        }
                         || applying.account_ref != leg.account_ref
                         || applying.side == leg.side
                         || applying.dimension_set != leg.dimension_set
@@ -515,12 +526,23 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
                         )));
                     }
                     let relief = if spot {
-                        match spot_application_relief(db, book, &entry.proposal, application.amount, seq, &mut budget)? {
+                        match spot_application_relief(
+                            db,
+                            book,
+                            &entry.proposal,
+                            application.amount,
+                            seq,
+                            &mut budget,
+                        )? {
                             Ok(relief) => relief,
                             Err(refusal) => return Ok(Err(refusal)),
                         }
                     } else {
-                        let Some(relief) = applying.base_amount else { return Ok(Err(invalid("retained application lacks recorded base relief"))); };
+                        let Some(relief) = applying.base_amount else {
+                            return Ok(Err(invalid(
+                                "retained application lacks recorded base relief",
+                            )));
+                        };
                         relief
                     };
                     let expected = match remaining_carrying_relief(
@@ -1070,7 +1092,11 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     if !is_source_bound(proposal) {
         return Ok(Ok(()));
     }
-    if proposal.base_totals.as_ref().is_some_and(|totals| totals.fx_law_oid == FxLawId::SettlementSpotCarrying.oid()) {
+    if proposal
+        .base_totals
+        .as_ref()
+        .is_some_and(|totals| totals.fx_law_oid == FxLawId::SettlementSpotCarrying.oid())
+    {
         return validate_spot_applications(db, cx, book, proposal, at);
     }
     if has_allocated_basis(proposal) {
@@ -1111,61 +1137,152 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
 /// A partial application's immutable quote and native amount uniquely record
 /// its relief, independently of any unapplied remainder on the same leg.
 fn spot_application_relief<V: Vfs + Clone>(
-    db: &Database<V>, book: &BookContext, proposal: &EntryPayload,
-    amount: Amount, at: CommitSeq, budget: &mut ArithmeticBudget<'_, impl Sized>,
+    db: &Database<V>,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    amount: Amount,
+    at: CommitSeq,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<Amount> {
-    let Some(totals) = &proposal.base_totals else { return Ok(Err(invalid("spot settlement has no valuation claim"))); };
+    let Some(totals) = &proposal.base_totals else {
+        return Ok(Err(invalid("spot settlement has no valuation claim")));
+    };
     let mut selected = None;
     for oid in &totals.rate_doc_oids {
-        let Some(row) = db.vertex_at(document_vid(oid), at)? else { return Ok(Err(invalid("spot settlement Rate is absent at its recorded prefix"))); };
-        let record = DocumentRecord::decode(&crate::rows::bytes(&row, property::FA_PAYLOAD, "spot settlement Rate")?)?;
-        let Storage::Inline(raw) = record.storage else { return Ok(Err(invalid("spot settlement requires retained inline Rate bytes"))); };
-        let rate = match FxRateDocument::decode(&raw) { Ok(rate) => rate, Err(refusal) => return Ok(Err(refusal)) };
-        if rate.quote_unit != amount.unit { continue; }
-        if selected.is_some() || record.kind != RATE_DOCUMENT_KIND || !row.labels.contains(&label::DOCUMENT)
-            || rate.purpose != FxRatePurpose::Settlement || rate.as_of != proposal.effective_date
-            || rate.base_unit.0 != totals.unit_id || rate.rounding != RoundingLaw::HalfEven
-            || rate.evidence_ref(book.book_id).map_err(|refusal| KernelError::Corrupt(refusal.message))?.document_oid != *oid
-        { return Ok(Err(invalid("spot settlement requires one exact current Settlement quote for its unit"))); }
-        let value = match rate.to_rate(budget).and_then(|rate| amount.convert(budget, fa_money::UnitId(totals.unit_id), &rate, RoundingLaw::HalfEven, &book.units).map_err(invalid)) {
-            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
+        let Some(row) = db.vertex_at(document_vid(oid), at)? else {
+            return Ok(Err(invalid(
+                "spot settlement Rate is absent at its recorded prefix",
+            )));
+        };
+        let record = DocumentRecord::decode(&crate::rows::bytes(
+            &row,
+            property::FA_PAYLOAD,
+            "spot settlement Rate",
+        )?)?;
+        let Storage::Inline(raw) = record.storage else {
+            return Ok(Err(invalid(
+                "spot settlement requires retained inline Rate bytes",
+            )));
+        };
+        let rate = match FxRateDocument::decode(&raw) {
+            Ok(rate) => rate,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if rate.quote_unit != amount.unit {
+            continue;
+        }
+        if selected.is_some()
+            || record.kind != RATE_DOCUMENT_KIND
+            || !row.labels.contains(&label::DOCUMENT)
+            || rate.purpose != FxRatePurpose::Settlement
+            || rate.as_of != proposal.effective_date
+            || rate.base_unit.0 != totals.unit_id
+            || rate.rounding != RoundingLaw::HalfEven
+            || rate
+                .evidence_ref(book.book_id)
+                .map_err(|refusal| KernelError::Corrupt(refusal.message))?
+                .document_oid
+                != *oid
+        {
+            return Ok(Err(invalid(
+                "spot settlement requires one exact current Settlement quote for its unit",
+            )));
+        }
+        let value = match rate.to_rate(budget).and_then(|rate| {
+            amount
+                .convert(
+                    budget,
+                    fa_money::UnitId(totals.unit_id),
+                    &rate,
+                    RoundingLaw::HalfEven,
+                    &book.units,
+                )
+                .map_err(invalid)
+        }) {
+            Ok(value) => value,
+            Err(refusal) => return Ok(Err(refusal)),
         };
         selected = Some(value);
     }
-    Ok(selected.ok_or_else(|| invalid("spot settlement has no retained quote for its applying unit")))
+    Ok(selected
+        .ok_or_else(|| invalid("spot settlement has no retained quote for its applying unit")))
 }
 
 fn validate_spot_applications<V: Vfs + Clone>(
-    db: &Database<V>, cx: &PurposeContexts, book: &BookContext,
-    proposal: &EntryPayload, at: CommitSeq,
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    at: CommitSeq,
 ) -> Outcome<()> {
     let spec = crate::fx::book_spec_at(db, book, at)?;
-    let current = asupersync::Cx::current().ok_or_else(|| KernelError::Corrupt("spot settlement requires caller context".into()))?;
+    let current = asupersync::Cx::current()
+        .ok_or_else(|| KernelError::Corrupt("spot settlement requires caller context".into()))?;
     let stripped = current.restrict::<asupersync::cx::cap::None>();
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
     let mut targets = BTreeSet::new();
     for leg in &proposal.legs {
-        if leg.amount.unit == spec.base_unit || leg.settles.is_empty() { continue; }
-        cx.query().checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
-        let [application] = leg.settles.as_slice() else { return Ok(Err(invalid("each foreign spot-settlement leg names one explicit target"))); };
-        if application.amount.unit != leg.amount.unit || application.amount.mantissa > leg.amount.mantissa
+        if leg.amount.unit == spec.base_unit || leg.settles.is_empty() {
+            continue;
+        }
+        cx.query()
+            .checkpoint()
+            .map_err(fgdb::WriteTxnError::Interrupted)?;
+        let [application] = leg.settles.as_slice() else {
+            return Ok(Err(invalid(
+                "each foreign spot-settlement leg names one explicit target",
+            )));
+        };
+        if application.amount.unit != leg.amount.unit
+            || application.amount.mantissa > leg.amount.mantissa
             || !targets.insert((application.target.vid, application.ordinal))
-        { return Ok(Err(invalid("foreign spot applications require positive disjoint target allocations bounded by their complete legs"))); }
-        let item = match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)? {
-            Ok(item) => item, Err(refusal) => return Ok(Err(refusal)),
+        {
+            return Ok(Err(invalid(
+                "foreign spot applications require positive disjoint target allocations bounded by their complete legs",
+            )));
+        }
+        let item =
+            match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)?
+            {
+                Ok(item) => item,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        if item.valuation_route.is_some()
+            || item.account != leg.account_ref
+            || item.side == leg.side
+            || item.dimensions != leg.dimension_set
+            || proposal.effective_date < item.latest_effective_date
+        {
+            return Ok(Err(invalid(
+                "spot settlement requires an unadjusted matching carrying source and nonretroactive date; use the explicit conversion/release path",
+            )));
+        }
+        let expected = match remaining_carrying_relief(
+            &mut budget,
+            item.open_native,
+            item.open_base,
+            application.amount,
+        ) {
+            Ok(value) => value,
+            Err(refusal) => return Ok(Err(refusal)),
         };
-        if item.valuation_route.is_some() || item.account != leg.account_ref || item.side == leg.side
-            || item.dimensions != leg.dimension_set || proposal.effective_date < item.latest_effective_date
-        { return Ok(Err(invalid("spot settlement requires an unadjusted matching carrying source and nonretroactive date; use the explicit conversion/release path"))); }
-        let expected = match remaining_carrying_relief(&mut budget, item.open_native, item.open_base, application.amount) {
-            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
-        };
-        let recorded = match spot_application_relief(db, book, proposal, application.amount, at, &mut budget)? {
-            Ok(value) => value, Err(refusal) => return Ok(Err(refusal)),
-        };
-        if expected != recorded { return Ok(Err(invalid("Settlement quote disagrees with RemainingCarryingValue relief; use an explicit realized-FX conversion route"))); }
+        let recorded =
+            match spot_application_relief(db, book, proposal, application.amount, at, &mut budget)?
+            {
+                Ok(value) => value,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        if expected != recorded {
+            return Ok(Err(invalid(
+                "Settlement quote disagrees with RemainingCarryingValue relief; use an explicit realized-FX conversion route",
+            )));
+        }
     }
-    if targets.is_empty() { return Ok(Err(invalid("SettlementSpotCarrying requires at least one foreign application"))); }
+    if targets.is_empty() {
+        return Ok(Err(invalid(
+            "SettlementSpotCarrying requires at least one foreign application",
+        )));
+    }
     Ok(Ok(()))
 }
 

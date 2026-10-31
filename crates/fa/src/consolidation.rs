@@ -12,7 +12,10 @@
 //! consolidated equity against the members' equity, the eliminations and the
 //! NCI. Nothing is posted: the run is a deterministic read whose digest is a
 //! function of the journal prefix, so the same prefix reruns to the same
-//! bytes. Consolidation across books (an entity per book, translation and
+//! bytes. Single-parent ownership forests include partly owned intermediates:
+//! only each child's controlling earnings and reserves flow up to its parent,
+//! with exact minority residuals at every registered rounding boundary.
+//! Consolidation across books (an entity per book, translation and
 //! CTA) and posting the eliminations on a consolidation branch stay with
 //! fa-76hy.
 
@@ -375,19 +378,6 @@ fn consolidate_at_basis<V: Vfs + Clone>(
             cursor = parent.as_str();
         }
     }
-    for (owned, (parent, _)) in &parent_of {
-        if let Some((_, parent_bps)) = parent_of.get(parent)
-            && *parent_bps < 10_000
-        {
-            return Ok(Err(refusal(
-                format!(
-                    "{parent} owns {owned} and is itself {parent_bps} bps owned: the NCI in {parent} shares in {owned}'s earnings, which a direct-ownership consolidation does not allocate"
-                ),
-                "consolidate groups whose partly owned subsidiaries own no other member; tiered NCI is not available yet (fa-76hy)",
-            )));
-        }
-    }
-
     // The accounts each role names.
     let roles = fa_journal::account_roles_at(db, book, at)?;
     let role = |name: &str| -> Vec<u128> {

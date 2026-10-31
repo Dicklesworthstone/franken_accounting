@@ -124,9 +124,9 @@ impl FxLawId {
             | Self::TranslationCurrentRate
             | Self::RemeasurementTemporal => Some(FxRatePurpose::PeriodClose),
             Self::PeriodAverage => Some(FxRatePurpose::PeriodAverage),
-            Self::SettlementCarryingBasis | Self::SettlementAllocatedCarrying | Self::SettlementSpotCarrying => {
-                Some(FxRatePurpose::Settlement)
-            }
+            Self::SettlementCarryingBasis
+            | Self::SettlementAllocatedCarrying
+            | Self::SettlementSpotCarrying => Some(FxRatePurpose::Settlement),
             Self::YearEndCloseCarrying => None,
         }
     }
@@ -405,7 +405,10 @@ pub fn value_proposal(
     law: FxLawId,
     rate_docs: &[FxRateDocument],
 ) -> Result<EntryPayload, Refusal> {
-    if !matches!(law, FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying) {
+    if !matches!(
+        law,
+        FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying
+    ) {
         return Err(fx_structure(
             "value_proposal supports SpotClose, PeriodAverage and SettlementSpotCarrying; use the source-bound planners for other laws",
         ));
@@ -433,7 +436,9 @@ pub fn value_proposal(
         rate_docs,
     )?;
     if law == FxLawId::SettlementSpotCarrying && computed.residual.is_some() {
-        return Err(fx_structure("SettlementSpotCarrying permits no residual absorption; use an explicit conversion route"));
+        return Err(fx_structure(
+            "SettlementSpotCarrying permits no residual absorption; use an explicit conversion route",
+        ));
     }
 
     for (leg, base_amt) in proposal.legs.iter_mut().zip(computed.base_amounts) {
@@ -1118,8 +1123,11 @@ fn verify_claim(
             claim.law.version(),
         ))));
     }
-    let rounding_law = matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying)
-        .then_some(law.rounding_law.as_str());
+    let rounding_law = matches!(
+        claim.law,
+        FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying
+    )
+    .then_some(law.rounding_law.as_str());
     let average_as_of = if claim.law == FxLawId::PeriodAverage {
         Some(valuation_period.end.pred()?)
     } else {
@@ -1255,8 +1263,15 @@ fn verify_claim(
 
     match claim.law {
         FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying => {
-            if claim.law == FxLawId::SettlementSpotCarrying && proposal.base_totals.as_ref().is_some_and(|totals| totals.residual.is_some()) {
-                return Ok(Err(fx_structure("SettlementSpotCarrying permits no residual absorption")));
+            if claim.law == FxLawId::SettlementSpotCarrying
+                && proposal
+                    .base_totals
+                    .as_ref()
+                    .is_some_and(|totals| totals.residual.is_some())
+            {
+                return Ok(Err(fx_structure(
+                    "SettlementSpotCarrying permits no residual absorption",
+                )));
             }
             let computed = match compute_entity_valuations(
                 &mut budget,
@@ -1715,7 +1730,9 @@ fn compute_entity_valuations(
                 law.name()
             )));
         }
-        if matches!(law, FxLawId::SpotClose | FxLawId::SettlementSpotCarrying) && doc.as_of != effective_date {
+        if matches!(law, FxLawId::SpotClose | FxLawId::SettlementSpotCarrying)
+            && doc.as_of != effective_date
+        {
             return Err(fx_structure(format!(
                 "SpotClose rate document as_of {} does not match entry effective_date {}",
                 doc.as_of.render(),

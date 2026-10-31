@@ -2541,7 +2541,10 @@ impl FxLaws {
         if laws.len() != expected_count {
             return Err(invalid(
                 R,
-                format!("expected {expected_count} [[law]] rows, found {}", laws.len()),
+                format!(
+                    "expected {expected_count} [[law]] rows, found {}",
+                    laws.len()
+                ),
             ));
         }
         for required_code in [

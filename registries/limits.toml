@@ -162,3 +162,10 @@ value = 65536
 [[limit]]
 name = "max_statement_definition_plan_bytes"
 value = 66880
+
+# Actual earnings/reserve buckets split along ownership links by one group
+# report, across stock and period-activity attribution. Count includes inherited
+# and zero-cancelled buckets; a partial result never substitutes for refusal.
+[[limit]]
+name = "max_consolidation_nci_attribution_cells"
+value = 2000000
