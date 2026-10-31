@@ -36,6 +36,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_time_zone(None)
+    }
+
+    fn with_time_zone(time_zone_policy: Option<fa_journal::TimeZonePolicy>) -> Self {
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let eur = units.lookup("EUR").unwrap();
@@ -46,7 +50,7 @@ impl Fixture {
                 name: "Cumulative functional stock".into(),
                 base_unit: usd,
                 calendar: FiscalCalendar::monthly("fx-stock", 1, 1).unwrap(),
-                time_zone_policy: None,
+                time_zone_policy,
                 entities: Vec::new(),
                 opening_date: None,
             },
