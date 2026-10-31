@@ -145,7 +145,52 @@ pub fn verify_prefix_with_records(
             envelopes,
         });
     }
-    let (mut r, _) = read_header(proof, anchor)?;
+    let (r, _) = read_header(proof, anchor)?;
+    let envelopes = records(r, anchor)?
+        .into_iter()
+        .map(|record| record.envelope)
+        .collect();
+    Ok(Prefix {
+        scope: SCOPE_SEQ_RANGE_COMPLETE,
+        checkpoint: *anchor,
+        envelopes,
+    })
+}
+
+/// One leaf of a complete prefix with its record.
+pub(crate) struct LeafRecord<'a> {
+    pub(crate) envelope: LeafEnvelope,
+    pub(crate) payload: &'a [u8],
+    /// Where the payload's proposal ends.
+    pub(crate) split: usize,
+}
+
+/// Every leaf of a complete v2 prefix with its record, in journal order,
+/// after the checks [`verify_prefix_with_records`] makes of a v2 prefix.
+/// A v3 balance export is refused here: [`crate::verify_balance`] reads it.
+pub(crate) fn complete_records<'a>(
+    proof: &'a [u8],
+    anchor: &Checkpoint,
+) -> Result<Vec<LeafRecord<'a>>, VerifyError> {
+    check_size(proof)?;
+    let (mut preflight, kind) = read_header(proof, anchor)?;
+    if kind != PrefixKind::Complete {
+        return Err(VerifyError::Format {
+            expected: PREFIX_FORMAT_V2,
+        });
+    }
+    preflight.count(
+        super::MAX_PRODUCTION_LEAVES,
+        4,
+        "production.prefix.envelopes",
+    )?;
+    let (r, _) = read_header(proof, anchor)?;
+    records(r, anchor)
+}
+
+/// The envelopes and records after a v2 header: every leaf of the anchor's
+/// prefix, hashing to its root, and every record rebuilding its envelope.
+fn records<'a>(mut r: Reader<'a>, anchor: &Checkpoint) -> Result<Vec<LeafRecord<'a>>, VerifyError> {
     let raw = read_envelopes(&mut r)?;
     let envelopes = complete_prefix(&raw, anchor)?;
     let count = r.count(envelopes.len(), 16, "prefix.records")?;
@@ -154,7 +199,8 @@ pub fn verify_prefix_with_records(
             index: count as u64,
         });
     }
-    for (position, envelope) in envelopes.iter().enumerate() {
+    let mut records = Vec::with_capacity(envelopes.len());
+    for (position, envelope) in envelopes.into_iter().enumerate() {
         let index = r.u64("prefix.record.leaf_index")?;
         let expected = position as u64; // bounded by MAX_PRODUCTION_LEAVES
         if index != expected {
@@ -164,12 +210,13 @@ pub fn verify_prefix_with_records(
         }
         let split = usize::try_from(r.u32("prefix.record.proposal_len")?).unwrap_or(usize::MAX);
         let payload = r.bytes(MAX_RECORD_BYTES, "prefix.record.payload")?;
-        check_record(envelope, payload, split).map_err(VerifyError::Record)?;
+        check_record(&envelope, payload, split).map_err(VerifyError::Record)?;
+        records.push(LeafRecord {
+            envelope,
+            payload,
+            split,
+        });
     }
     r.finish("complete prefix proof")?;
-    Ok(Prefix {
-        scope: SCOPE_SEQ_RANGE_COMPLETE,
-        checkpoint: *anchor,
-        envelopes,
-    })
+    Ok(records)
 }

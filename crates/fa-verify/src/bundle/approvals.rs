@@ -61,25 +61,20 @@ use crate::checkpoint::SignedCheckpoint;
 use crate::codec::{DecodeError, Reader, Reason};
 use crate::ed25519;
 use crate::envelope::{KIND_ENTRY, LeafEnvelope, MAX_RECORD_BYTES, check_record};
+use crate::principal_keys::{KeyGeneration, SCHEME_ED25519, chain_grade, framed, same_digest};
 use crate::proof::{MAX_ENVELOPE_BYTES, VerifyError, read_path, within};
 use crate::tree::{Digest, leaf_hash, root_from_inclusion};
 
 const APPROVAL_DOMAIN: &[u8] = b"fa:approval:v1";
 const APPROVAL_VID_DOMAIN: &[u8] = b"fa:vid:approval:v1";
 const APPROVAL_SIGNATURE_DOMAIN: &[u8] = b"fa:approval-signature:v1";
-const KEY_ID_DOMAIN: &[u8] = b"fa:principal-key-id:v1";
-const REGISTRATION_DOMAIN: &[u8] = b"fa:principal-key-registration:v1";
-const SCHEME_ED25519: u16 = 1;
 const BODY_VERSION: u16 = 1;
 const SIGNED_VERSION: u16 = 2;
-const KEY_VERSION: u16 = 1;
 /// A version-1 approval body is exactly this long.
 const BODY_BYTES: usize = 2 + 16 + 16 + 1 + 32 + 32 + 8 + 1 + 2;
 /// A signed record: version, framed body, scheme, generation, key id,
 /// signature.
 const SIGNED_BYTES: usize = 2 + 4 + BODY_BYTES + 2 + 4 + 32 + 64;
-/// The kernel walks at most this many generations of one chain.
-const MAX_KEY_GENERATIONS: usize = 64;
 const MAX_APPROVALS: usize = 1 << 20;
 const MAX_KEY_LEAVES: usize = 1 << 16;
 
@@ -129,17 +124,6 @@ pub(super) fn read_key_leaves<'a>(r: &mut Reader<'a>) -> Result<Vec<KeyLeaf<'a>>
 /// Whether a stored approval record is the signed (version 2) form.
 pub(super) fn is_signed(record: &[u8]) -> bool {
     record.get(..2) == Some(&SIGNED_VERSION.to_le_bytes()[..])
-}
-
-/// `BLAKE3(domain ‖ (u32 len ‖ part)...)`, fa-model's `domain_digest`.
-fn framed(domain: &[u8], parts: &[&[u8]]) -> Digest {
-    let mut framed: Vec<u8> = Vec::new();
-    for part in parts {
-        let len = u32::try_from(part.len()).unwrap_or(u32::MAX);
-        framed.extend_from_slice(&len.to_le_bytes());
-        framed.extend_from_slice(part);
-    }
-    hash_parts(domain, &[&framed])
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,77 +204,6 @@ fn decode_body(body: &[u8]) -> Result<ApprovalRecord, DecodeError> {
         digest: framed(APPROVAL_DOMAIN, &[body]),
         signature: None,
     })
-}
-
-/// One generation of a principal's key chain.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct KeyGeneration {
-    pub book_id: [u8; 16],
-    pub principal: u128,
-    pub generation: u32,
-    pub public_key: [u8; 32],
-    pub possession: [u8; 64],
-    pub endorsement: Option<[u8; 64]>,
-}
-
-impl KeyGeneration {
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut r = Reader::new(bytes);
-        let version = r.u16("principal_key.version")?;
-        if version != KEY_VERSION {
-            return Err(r.error(
-                "principal_key.version",
-                Reason::BadTag(version.to_le_bytes()[0]),
-            ));
-        }
-        let book_id = r.fixed("principal_key.book_id")?;
-        let principal = r.u128("principal_key.principal")?;
-        let generation = r.u32("principal_key.generation")?;
-        let scheme = r.u16("principal_key.scheme")?;
-        if scheme != SCHEME_ED25519 {
-            return Err(r.error(
-                "principal_key.scheme",
-                Reason::BadTag(scheme.to_le_bytes()[0]),
-            ));
-        }
-        let public_key = r.fixed("principal_key.public_key")?;
-        let possession = r.fixed("principal_key.possession")?;
-        let endorsement = if r.present("principal_key.endorsement")? {
-            Some(r.fixed("principal_key.endorsement")?)
-        } else {
-            None
-        };
-        r.finish("principal key")?;
-        Ok(Self {
-            book_id,
-            principal,
-            generation,
-            public_key,
-            possession,
-            endorsement,
-        })
-    }
-
-    pub(crate) fn key_id(&self) -> Digest {
-        framed(KEY_ID_DOMAIN, &[&self.public_key])
-    }
-
-    /// The statement this generation's possession proof and endorsement
-    /// sign.
-    pub(crate) fn registration(&self) -> Vec<u8> {
-        let mut message = REGISTRATION_DOMAIN.to_vec();
-        message.extend_from_slice(&framed(
-            REGISTRATION_DOMAIN,
-            &[
-                &self.book_id,
-                &self.principal.to_le_bytes(),
-                &self.generation.to_le_bytes(),
-                &SCHEME_ED25519.to_le_bytes(),
-                &self.public_key,
-            ],
-        ));
-        message
-    }
 }
 
 /// The approvals one authenticated in-scope entry cites.
@@ -537,55 +450,6 @@ fn key_leaf(
     Ok(key)
 }
 
-/// Generations 0..n in leaf order, each proving possession and each after
-/// the first endorsed by the one before.
-fn chain_grade(chain: &[KeyGeneration]) -> Result<(), String> {
-    if chain.len() > MAX_KEY_GENERATIONS {
-        return Err(format!(
-            "{} generations exceed the {MAX_KEY_GENERATIONS}-generation bound",
-            chain.len()
-        ));
-    }
-    let mut previous: Option<&KeyGeneration> = None;
-    for (expected, key) in (0u32..).zip(chain) {
-        if key.generation != expected {
-            return Err(format!(
-                "in leaf order, generation {} stands where generation {expected} belongs",
-                key.generation
-            ));
-        }
-        let message = key.registration();
-        ed25519::verify(&key.public_key, &message, &key.possession).map_err(|e| {
-            format!(
-                "generation {expected}'s possession proof is not its key's signature of its registration: {e}"
-            )
-        })?;
-        match (previous, &key.endorsement) {
-            (None, None) => {}
-            (Some(before), Some(endorsement)) => {
-                ed25519::verify(&before.public_key, &message, endorsement).map_err(|e| {
-                    format!(
-                        "generation {expected} is not endorsed by generation {}'s key: {e}",
-                        before.generation
-                    )
-                })?;
-            }
-            (None, Some(_)) => return Err("generation 0 carries an endorsement".to_string()),
-            (Some(_), None) => {
-                return Err(format!("generation {expected} carries no endorsement"));
-            }
-        }
-        previous = Some(key);
-    }
-    Ok(())
-}
-
-/// Digest equality without an early exit. Key ids are public, so this only
-/// keeps one comparison shape for everything a signature names.
-fn same_digest(a: &Digest, b: &Digest) -> bool {
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 fn signature_grade(
     approval: &ApprovalRecord,
     signature: &ApprovalSignature,
@@ -638,6 +502,7 @@ fn signature_grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::principal_keys::{KEY_ID_DOMAIN, KEY_VERSION};
 
     const BOOK: [u8; 16] = [7; 16];
 

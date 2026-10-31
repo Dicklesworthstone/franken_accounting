@@ -57,7 +57,7 @@ use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
 use crate::checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
 use crate::document::doc_commit;
 use crate::envelope::LeafEnvelope;
-use crate::proof::production::derivation::verify_prefix_with_status;
+use crate::proof::production::derivation::{PREFIX_FORMAT_V2, verify_prefix_with_status};
 use crate::proof::{Checkpoint, RecordCheck, VerifyError, verify_consistency, verify_inclusion};
 use crate::scope::{IndexDerivation, ScopeClaim, verify_scope};
 use crate::state::verify_state;
@@ -1283,6 +1283,20 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                 }
             });
+            // A complete prefix with its records also re-checks every
+            // attestation signature against the key chains it holds (plan
+            // §14.5, fa-kae).
+            if cmd == "prefix"
+                && checks
+                    .last()
+                    .is_some_and(|c| matches!(c.verdict, Verdict::Pass))
+                && crate::codec::Reader::new(&proof)
+                    .bytes(64, "proof.format")
+                    .ok()
+                    == Some(PREFIX_FORMAT_V2)
+            {
+                checks.push(attestation_signatures_check(&proof, &cp));
+            }
             Ok(checks)
         }
         "consistency" => {
@@ -4019,6 +4033,31 @@ fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
 }
 
 /// The bundle's identity, then every graded predicate in report order.
+/// The `attestation_signatures` check of a complete prefix with records.
+fn attestation_signatures_check(proof: &[u8], cp: &Checkpoint) -> Check {
+    const NAME: &str = "attestation_signatures";
+    match crate::attestation_signatures::verify_attestation_signatures(proof, cp) {
+        Err(e) => Check::fail(NAME, "signature", &e),
+        Ok(Err(why)) => Check {
+            name: NAME,
+            scope: "signature",
+            verdict: Verdict::Fail,
+            detail: Vec::new(),
+            reason: Some(why),
+        },
+        Ok(Ok(r)) => Check::pass(
+            NAME,
+            "signature",
+            vec![
+                ("attestations", n(r.attestations)),
+                ("signed", n(r.signed)),
+                ("keyed_principals", n(r.keyed_principals)),
+                ("key_generations", n(r.key_generations)),
+            ],
+        ),
+    }
+}
+
 fn bundle_checks(report: &BundleReport) -> Vec<Check> {
     let m = &report.manifest;
     let scope = match &m.scope {

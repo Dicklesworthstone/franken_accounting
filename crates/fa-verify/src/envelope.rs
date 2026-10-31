@@ -777,6 +777,80 @@ fn attestation_record(
     commit_seq: u64,
     within_commit_ordinal: u32,
 ) -> Result<LeafEnvelope, RecordError> {
+    attestation_parts(payload, proposal_len, commit_seq, within_commit_ordinal)
+        .map(|(envelope, _)| envelope)
+}
+
+/// An attestation's signature under trailer scheme 1 (fa-kae): the key
+/// generation it names, that key's id, and the Ed25519 signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AttestationSignature {
+    pub generation: u32,
+    pub key_id: [u8; 32],
+    pub bytes: [u8; 64],
+}
+
+/// What authenticates an attestation beyond its digest: its principal, its
+/// `signed_digest`, and its signature under scheme 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AttestationAuth {
+    pub principal: u128,
+    pub signed_digest: [u8; 32],
+    pub signature: Option<AttestationSignature>,
+}
+
+/// The [`AttestationAuth`] of an attestation record whose `envelope` it
+/// rebuilds (the record and the envelope are checked again here). Nothing
+/// is verified about the signature.
+pub(crate) fn attestation_auth(
+    payload: &[u8],
+    proposal_len: usize,
+    envelope: &LeafEnvelope,
+) -> Result<AttestationAuth, RecordError> {
+    let (rebuilt, principal) = attestation_parts(
+        payload,
+        proposal_len,
+        envelope.commit_seq,
+        envelope.within_commit_ordinal,
+    )?;
+    if rebuilt != *envelope {
+        return Err(RecordError::Envelope);
+    }
+    // attestation_parts admitted the split: body, digest, then a 34- or
+    // 134-byte trailer whose first byte is the scheme.
+    let digest_at = proposal_len;
+    let mut signed_digest = [0u8; 32];
+    signed_digest.copy_from_slice(&payload[digest_at..digest_at + 32]);
+    let signature = if payload[digest_at + 32] == 1 {
+        let at = digest_at + 32 + 34;
+        let mut generation = [0u8; 4];
+        generation.copy_from_slice(&payload[at..at + 4]);
+        let mut key_id = [0u8; 32];
+        key_id.copy_from_slice(&payload[at + 4..at + 36]);
+        let mut bytes = [0u8; 64];
+        bytes.copy_from_slice(&payload[at + 36..at + 100]);
+        Some(AttestationSignature {
+            generation: u32::from_le_bytes(generation),
+            key_id,
+            bytes,
+        })
+    } else {
+        None
+    };
+    Ok(AttestationAuth {
+        principal,
+        signed_digest,
+        signature,
+    })
+}
+
+/// [`attestation_record`] and the attesting principal.
+fn attestation_parts(
+    payload: &[u8],
+    proposal_len: usize,
+    commit_seq: u64,
+    within_commit_ordinal: u32,
+) -> Result<(LeafEnvelope, u128), RecordError> {
     let n = payload.len();
     if n > MAX_RECORD_BYTES {
         return Err(RecordError::Decode(DecodeError {
@@ -831,7 +905,7 @@ fn attestation_record(
             which: "attestation.signed_digest",
         });
     }
-    let (book_id, claim_tag) = (|| -> Result<([u8; 16], u8), DecodeError> {
+    let (book_id, claim_tag, principal) = (|| -> Result<([u8; 16], u8, u128), DecodeError> {
         let mut r = Reader::new(body);
         let version = r.u16("attestation.version")?;
         if version != 1 {
@@ -923,7 +997,7 @@ fn attestation_record(
         if !valid_subject {
             return Err(r.error("attestation.subject", Reason::BadTag(subject_tag)));
         }
-        r.u128("attestation.principal")?;
+        let principal = r.u128("attestation.principal")?;
         if let Some(source) = expected_source {
             let mut expected = [source.manifest_oid, source.statement_oid];
             expected.sort();
@@ -953,21 +1027,24 @@ fn attestation_record(
             }
         }
         r.finish("attestation.body")?;
-        Ok((book_id, claim_tag))
+        Ok((book_id, claim_tag, principal))
     })()
     .map_err(RecordError::Decode)?;
-    Ok(LeafEnvelope {
-        kind: KIND_ATTESTATION,
-        book_id,
-        branch_id: [0; 16],
-        commit_seq,
-        within_commit_ordinal,
-        record_digest,
-        class: u16::from(claim_tag),
-        effective_day: None,
-        account_vids: Vec::new(),
-        unit_ids: Vec::new(),
-    })
+    Ok((
+        LeafEnvelope {
+            kind: KIND_ATTESTATION,
+            book_id,
+            branch_id: [0; 16],
+            commit_seq,
+            within_commit_ordinal,
+            record_digest,
+            class: u16::from(claim_tag),
+            effective_day: None,
+            account_vids: Vec::new(),
+            unit_ids: Vec::new(),
+        },
+        principal,
+    ))
 }
 
 fn import_receipt_record(

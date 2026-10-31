@@ -145,6 +145,13 @@ fn native_v2_and_legacy_v1_keep_different_assurance_for_the_same_checkpoint() {
                 "\"scope_derivation\":\"not_verified\""
             }));
             assert_eq!(out.contains("\"name\":\"record_recomputation\""), full);
+            // Only records let attestation signatures be checked (fa-kae).
+            assert_eq!(out.contains("\"name\":\"attestation_signatures\""), full);
+            assert!(out.contains(if full {
+                "\"attestation_signatures\":{\"attestations\":"
+            } else {
+                "\"attestation_signatures\":\"not_verified\""
+            }));
             assert!(!out.contains("posted_balance_recomputation"));
             assert_eq!(fs::read(&proof).unwrap(), *bytes);
         }
@@ -192,6 +199,12 @@ fn library_cli_and_explicit_anchor_dispatch_preserve_native_prefix_assurance() {
             } else {
                 "\"scope_derivation\":\"not_verified\""
             }));
+            assert_eq!(
+                library
+                    .stdout
+                    .contains("\"check\":\"attestation_signatures\""),
+                full
+            );
             no_payload(&library.stdout);
             no_payload(&library.stderr);
             let binary = Command::new(env!("CARGO_BIN_EXE_fa-verify"))

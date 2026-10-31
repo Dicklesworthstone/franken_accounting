@@ -56,6 +56,7 @@
 
 pub mod access_log;
 pub mod ads;
+pub mod attestation_signatures;
 pub mod balance;
 pub mod balance_request;
 pub mod blake3;
@@ -69,6 +70,7 @@ pub mod ed25519;
 pub mod envelope;
 pub mod evidence;
 pub mod migration_balance;
+pub(crate) mod principal_keys;
 pub mod proof;
 pub mod report;
 pub mod saft;
@@ -80,6 +82,7 @@ pub mod tree;
 pub use access_log::{
     AccessLogError, AccessLogRequest, VerifiedAccessEvent, VerifiedAccessLog, verify_access_log,
 };
+pub use attestation_signatures::{AttestationSignatures, verify_attestation_signatures};
 pub use balance::{Balance, BalanceClaim};
 pub use balance_request::{
     BalanceAmounts, BalanceExpectation, BalanceExpectationError, BalanceScope, verify_balance_for,

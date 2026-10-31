@@ -500,6 +500,77 @@ fn a_keyed_principal_signs_its_approvals_and_rotates_only_with_endorsement() -> 
         complete.envelopes.iter().any(|leaf| leaf.kind == 2),
         "the review is an attestation leaf of the prefix"
     );
+
+    // Its attestation signatures verify offline too (fa-verify
+    // attestation_signatures): the controller's chain of two generations is
+    // read from the prefix, and the review is signed by generation 1, current
+    // at its position.
+    let prefix_bytes = unhex(text(&prefix, "bytes"));
+    let signatures = fa_verify::verify_attestation_signatures(&prefix_bytes, &anchor.checkpoint)
+        .expect("the prefix verifies")
+        .expect("every attestation signature verifies");
+    assert_eq!(signatures.signed, 1, "{signatures:?}");
+    assert_eq!(signatures.keyed_principals, 1, "{signatures:?}");
+    assert_eq!(signatures.key_generations, 2, "{signatures:?}");
+    // The same through the CLI: `fa-verify prefix` adds the check.
+    let signed_bytes = unhex(text(&signed, "bytes"));
+    let read = |path: &str| match path {
+        "prefix.bin" => Ok(prefix_bytes.clone()),
+        "signed.bin" => Ok(signed_bytes.clone()),
+        other => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("offline verification reads only its two files, not {other}"),
+        )),
+    };
+    let key_hex: String = checkpoint_key.iter().map(|b| format!("{b:02x}")).collect();
+    let argv = [
+        "prefix",
+        "--proof",
+        "prefix.bin",
+        "--checkpoint",
+        "signed.bin",
+        "--key",
+        &key_hex,
+        "--json",
+    ]
+    .map(str::to_string);
+    let verified = fa_verify::cli::run(&argv, &read);
+    assert_eq!(verified.exit, 0, "{}\n{}", verified.stdout, verified.stderr);
+    assert!(
+        verified.stdout.contains(
+            "{\"check\":\"attestation_signatures\",\"scope\":\"signature\",\"result\":\"pass\",\"detail\":{\"attestations\":1,\"signed\":1,\"keyed_principals\":1,\"key_generations\":2}"
+        ),
+        "{}",
+        verified.stdout
+    );
+    // A changed signature byte leaves the prefix itself intact (the signature
+    // is outside the attestation's digest) and is named by the signature
+    // check. The trailer ends `u32 generation (1) ‖ [32] key_id ‖ [64]
+    // signature`.
+    let mut trailer = vec![1, 0, 0, 0];
+    trailer.extend_from_slice(&unhex(&second_key_id));
+    let found: Vec<usize> = prefix_bytes
+        .windows(trailer.len())
+        .enumerate()
+        .filter(|(_, w)| *w == trailer.as_slice())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "one signed attestation names generation 1's key"
+    );
+    let mut forged = prefix_bytes.clone();
+    forged[found[0] + trailer.len()] ^= 1;
+    fa_verify::proof::production::derivation::verify_prefix_with_records(
+        &forged,
+        &anchor.checkpoint,
+    )
+    .expect("the prefix still verifies: the signature is outside the digest");
+    let why = fa_verify::verify_attestation_signatures(&forged, &anchor.checkpoint)
+        .expect("the prefix verifies")
+        .expect_err("the forged signature is refused");
+    assert!(why.contains("not generation 1's signature"), "{why}");
     Ok(())
 }
 
