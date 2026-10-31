@@ -24,7 +24,8 @@
 //! Its envelope is fully determined by the schedule, so both paths mint the
 //! same thing:
 //! - the book's System principal, with the original author retained by lineage;
-//! - the exact swap, under the target's own sealed description;
+//! - the exact swap, under the target's own sealed description, retaining its
+//!   functional carrying amounts, original Rate evidence and residual;
 //! - dated `reverse_on`;
 //! - the date basis recorded as extension 3.
 //!
@@ -59,6 +60,7 @@ use fa_model::{
 };
 use fa_money::Side;
 use fa_policy::Party;
+use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::{DateDay, PeriodState, resolve_period};
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
@@ -219,8 +221,9 @@ fn structure(why: impl Into<String>) -> Refusal {
 /// the posting transaction (plan §7.6, §7.7): `Ok(None)` when it carries none;
 /// `Some((reverse_on, period))` when it is admissible. Only the kernel
 /// records a date basis; only an `Adjusting` entry schedules its reversal,
-/// with the exact-negation rule, carrying no applications or base
-/// valuation, for a date after its own; and the book must declare its
+/// with the exact-negation rule, carrying no applications, for a date after
+/// its own. A functional valuation uses SpotClose or PeriodAverage and is
+/// inherited without repricing. The book must declare its
 /// `time_zone_policy` (FA-REF-102 otherwise).
 pub(crate) fn admit_request<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -248,9 +251,19 @@ pub(crate) fn admit_request<V: asupersync::fs::Vfs + Clone>(
             "auto-reverse rule {rule} is not registered (1 = exact negation)"
         ))));
     }
-    if p.legs.iter().any(|l| !l.settles.is_empty()) || p.base_totals.is_some() {
+    if p.legs.iter().any(|l| !l.settles.is_empty()) {
         return Ok(Err(structure(
-            "a scheduled-reversal Adjusting carries no applications and no base valuation",
+            "a scheduled-reversal Adjusting carries no applications",
+        )));
+    }
+    if p.base_totals.as_ref().is_some_and(|totals| {
+        !matches!(
+            crate::fx::FxLawId::from_oid(&totals.fx_law_oid),
+            Some(crate::fx::FxLawId::SpotClose | crate::fx::FxLawId::PeriodAverage)
+        )
+    }) {
+        return Ok(Err(structure(
+            "a scheduled-reversal Adjusting retains only a SpotClose or PeriodAverage valuation; other carrying laws require their own execution effects",
         )));
     }
     if reverse_on <= p.effective_date {
@@ -803,6 +816,91 @@ fn execution_refusal(
     }
 }
 
+/// Recheck the original quote-based calculation under transaction witnesses.
+/// The schedule already binds the immutable Adjusting entry, so its original
+/// date, period and sides are the valuation context even when the reversal is
+/// published in a later period. No current-date quote is selected.
+fn inherited_valuation<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    original: &EntryPayload,
+    reversal: &EntryPayload,
+) -> Outcome<()> {
+    if !crate::post::exact_side_swap(original, reversal) {
+        return Err(KernelError::Corrupt(
+            "a scheduled reversal does not preserve its bound native and functional effects".into(),
+        ));
+    }
+    if original.base_totals.is_none() {
+        return Ok(Ok(()));
+    }
+    let spec = match txn.vertex_property(db, book_root(), property::FA_PAYLOAD)? {
+        Some(CanonicalScalar::Bytes(payload)) => crate::genesis::BookSpec::decode(&payload)?,
+        _ => {
+            return Err(KernelError::Corrupt(
+                "a scheduled valuation has no canonical book declaration".into(),
+            ));
+        }
+    };
+    if spec.book_id != book.book_id
+        || spec.calendar != book.calendar
+        || original
+            .effective_period
+            .as_ref()
+            .is_some_and(|period| period.calendar != spec.calendar.id)
+    {
+        return Err(KernelError::Corrupt(
+            "a scheduled valuation disagrees with its original book or fiscal calendar".into(),
+        ));
+    }
+    let entities = match crate::entity::leg_entities(&spec, &reversal.legs) {
+        Ok(entities) => entities,
+        Err(crate::entity::LegEntityError::Refused(refusal)) => return Ok(Err(refusal)),
+        Err(crate::entity::LegEntityError::OtherDimension) => {
+            return Err(KernelError::Corrupt(
+                "a scheduled valuation has an unregistered dimension".into(),
+            ));
+        }
+    };
+    let claim = match crate::fx::admit_structure(reversal, &spec, &entities, &book.units) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => {
+            return Err(KernelError::Corrupt(
+                "a valued scheduled reversal lost its FX claim".into(),
+            ));
+        }
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let periods = spec
+        .calendar
+        .periods_for_year(spec.calendar.fiscal_year_of(original.effective_date)?)?;
+    let source_period = resolve_period(
+        &periods,
+        original.effective_date,
+        original
+            .effective_period
+            .as_ref()
+            .map(|period| period.code.as_str()),
+    )
+    .map_err(|error| {
+        KernelError::Corrupt(format!(
+            "a scheduled valuation has no original fiscal period: {error:?}",
+        ))
+    })?;
+    crate::fx::verify_in_txn(
+        txn,
+        db,
+        &spec,
+        source_period,
+        &book.units,
+        &entities,
+        reversal,
+        &claim,
+        Some((original, source_period)),
+    )
+}
+
 /// Mint (or block) the scheduled reversal of `schedule` inside `txn`, in a
 /// period of `state`, under `tick`'s evidence (plan §7.6). The envelope is
 /// fully determined by the schedule. Its actual effects undergo shared native
@@ -903,8 +1001,30 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let legs = swapped(&target.proposal.legs);
+    let mut extensions = vec![(DATE_BASIS_EXTENSION, date_basis_bytes(policy, tick.entry))];
+    // These source commitments survive an exact manual reversal too. The
+    // original auto-reversal request itself never propagates to its result.
+    extensions.extend(
+        target
+            .proposal
+            .extensions
+            .iter()
+            .filter(|(tag, _)| {
+                matches!(
+                    *tag,
+                    fa_model::entry::ASSET_CHARGE_EXTENSION
+                        | fa_model::entry::LOT_DISPOSAL_EXTENSION
+                        | fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION
+                )
+            })
+            .cloned(),
+    );
+    extensions.sort_by_key(|(tag, _)| *tag);
     let proposal = EntryPayload {
-        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
+        schema_minor: target
+            .proposal
+            .schema_minor
+            .max(fa_model::entry::EXTENSIONS_MINOR),
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class: EntryClass::REVERSAL,
@@ -915,7 +1035,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         unit_totals: EntryPayload::fold_unit_totals(&legs)?,
         legs,
         control: None,
-        base_totals: None,
+        base_totals: target.proposal.base_totals.clone(),
         idempotency_key: format!("scheduled:{:032x}", schedule.target.vid.0).into_bytes(),
         // Authorship travels through the schedule's lineage (the target, its
         // proposal and approvals); the entry is the book's own (CobaltGull
@@ -926,7 +1046,13 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         },
         principal_ref: system_principal(book.book_id),
         session_ref: None,
-        evidence: Vec::new(),
+        evidence: target
+            .proposal
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.role == crate::fx::RATE_EVIDENCE_ROLE)
+            .copied()
+            .collect(),
         supersession: vec![Supersession {
             target: schedule.target,
             kind: SupersessionKind::Reverses,
@@ -934,7 +1060,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         }],
         pending: None,
         external_ids: Vec::new(),
-        extensions: vec![(DATE_BASIS_EXTENSION, date_basis_bytes(policy, tick.entry))],
+        extensions,
         tags: Vec::new(),
     };
     // System is attribution, not ambient authority. The actual executor
@@ -965,6 +1091,15 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = policy::capability_witness(txn, db, book, capability)? {
         return execution_refusal(mints, schedule, trigger, refusal);
     }
+    if let Err(refusal) = inherited_valuation(txn, db, book, &target.proposal, &proposal)? {
+        return execution_refusal(mints, schedule, trigger, refusal);
+    }
+    let evidence_policy =
+        EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let evidence = match crate::evidence::resolve_evidence(txn, db, &evidence_policy, &proposal)? {
+        Ok(evidence) => evidence,
+        Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
+    };
     match crate::post::admit_accounts(
         db,
         book,
@@ -1037,6 +1172,12 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     next_tracker.record_legs(rvid, &entry, book)?;
     next_tracker.add_edge(relation::IN_PERIOD, &[]);
     next_tracker.add_edge(relation::SUPERSEDES, &[]);
+    for _ in &evidence.documents {
+        next_tracker.add_edge(relation::EVIDENCED_BY, &[]);
+    }
+    if evidence.manual_assertion.is_some() {
+        next_tracker.add_edge(relation::ATTESTS, &[]);
+    }
     if let Some(usage) = &usage {
         usage.record_template_bytes(&mut next_tracker)?;
     }
@@ -1081,6 +1222,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         .transpose()?;
     let mut batches = vec![has_leg, in_period, supersedes];
     batches.extend(leg_edges);
+    batches.extend(crate::evidence::evidence_edges(rvid, &evidence));
     if let Some(edges) = usage_edges {
         batches.extend(edges);
     }
@@ -1751,7 +1893,8 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
                 .vertex(target.vid)?
                 .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
             let original = decode_entry(&target_row)?;
-            let exact = reversal.proposal.legs == swapped(&original.proposal.legs)
+            let exact = crate::post::exact_side_swap(&original.proposal, &reversal.proposal)
+                && reversal.proposal.legs == swapped(&original.proposal.legs)
                 && reversal.proposal.effective_date == *reverse_on
                 && reversal.proposal.principal_ref == system_principal(book.book_id)
                 && matches!(date_basis(&reversal.proposal), Ok(Some(_)));

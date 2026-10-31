@@ -4,7 +4,9 @@
 //! legal-entity declarations are explicit Book parameters. Eliminations and
 //! noncontrolling interests are derived here; no producer-supplied elimination
 //! or statement amount is used as an input. Cross-book translation, goodwill,
-//! inventory-profit elimination and tiered NCI are outside this method.
+//! inventory-profit elimination are outside this method. In a single-parent
+//! ownership tree, each subsidiary's controlling earnings and reserves flow
+//! to its parent before that parent's noncontrolling share is calculated.
 
 mod math;
 mod statements;
@@ -256,11 +258,6 @@ fn controls(
         while let Some((parent, _)) = parents.get(cursor) {
             if !seen.insert(cursor) {
                 return Err(invalid("ownership contains a cycle"));
-            }
-            if parents.get(parent).is_some_and(|(_, bps)| *bps < 10_000) {
-                return Err(invalid(
-                    "tiered noncontrolling interests are outside this method",
-                ));
             }
             cursor = parent;
         }

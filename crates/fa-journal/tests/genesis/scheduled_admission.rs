@@ -1,9 +1,12 @@
 //! Automatic accrual reversals obey native posting laws at execution.
 use super::*;
+use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, value_proposal};
 use fa_journal::refusal::code;
 use fa_journal::schedule::{ReversalBatch, ReversalStatus};
 use fa_journal::usage::{UsageCell, UsageKey, verify_usage};
 use fa_model::symbols::label;
+use fa_money::RoundingLaw;
+use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fgdb_types::CommitSeq;
 
 fn april() -> DateDay {
@@ -115,6 +118,294 @@ fn closer() -> Capability {
 
 fn reviewing_closer() -> Capability {
     Capability::embedded(PRINCIPAL, &["read", "close", "post"]).unwrap()
+}
+
+fn valued_accrual(h: &mut Harness, law: FxLawId) -> (EntryRef, Oid) {
+    let foreign = h.book.units.lookup("EUR").unwrap();
+    let accounts = [("6100", 5, 0), ("2100", 2, 1)]
+        .into_iter()
+        .map(|(code, account_type, normal_balance)| AccountSpec {
+            code: code.into(),
+            name: code.into(),
+            account_type,
+            normal_balance,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(foreign),
+            parent_code: None,
+            limit: None,
+        })
+        .collect::<Vec<_>>();
+    let ctx = h.ctx();
+    let day = h.day();
+    let description = h.statement("foreign accrual chart", 151);
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &accounts,
+            PRINCIPAL,
+            day,
+            b"foreign-accrual-chart",
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let (as_of, purpose) = match law {
+        FxLawId::SpotClose => (day, FxRatePurpose::SpotClose),
+        FxLawId::PeriodAverage => (
+            DateDay::from_ymd(2026, 3, 31).unwrap(),
+            FxRatePurpose::PeriodAverage,
+        ),
+        _ => panic!("fixture requires a quote-based accrual law"),
+    };
+    let rate = FxRateDocument::new(
+        FxRateTerms {
+            base_unit: h.usd,
+            quote_unit: foreign,
+            rate_num: 1,
+            rate_den: 3,
+            rounding: RoundingLaw::HalfEven,
+        },
+        as_of,
+        1,
+        purpose,
+        "Original March quote with a split-credit residual",
+    )
+    .unwrap();
+    let document = rate
+        .document(h.book.book_id, PRINCIPAL, HUMAN_UPLOAD)
+        .unwrap();
+    h.add_document(&document).unwrap();
+    let proposal = with_auto_reverse(
+        h.proposal(
+            vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(h.book.book_id, "6100"),
+                    Amount::new(foreign, 8),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(h.book.book_id, "2100"),
+                    Amount::new(foreign, 4),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(h.book.book_id, "2100"),
+                    Amount::new(foreign, 4),
+                ),
+            ],
+            b"foreign-auto-reversing-accrual",
+            EntryClass::ADJUSTING,
+        ),
+        april(),
+    );
+    let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
+    let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
+    let proposal = value_proposal(
+        &mut budget,
+        proposal,
+        &fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap(),
+        &h.book.units,
+        law,
+        &[rate],
+    )
+    .unwrap();
+    assert_eq!(
+        proposal
+            .legs
+            .iter()
+            .map(|leg| leg.base_amount.unwrap().mantissa)
+            .collect::<Vec<_>>(),
+        [3, 2, 1],
+    );
+    assert_eq!(
+        proposal.base_totals.as_ref().unwrap().residual,
+        Some(fa_model::Residual {
+            leg_ordinal: 1,
+            amount: Amount::new(h.usd, 1),
+        })
+    );
+    let target = h.post(h.request(proposal, &["post"])).unwrap().entry_ref();
+    (target, document.oid())
+}
+
+#[test]
+fn scheduled_foreign_accruals_keep_original_rates_and_residuals_on_both_execution_paths() {
+    for law in [FxLawId::SpotClose, FxLawId::PeriodAverage] {
+        for via_open in [false, true] {
+            let mut h = fixture();
+            let (target, rate) = valued_accrual(&mut h, law);
+            let (original, _) = read_entry(&h.db, target.vid).unwrap().unwrap();
+            let march = h.march.clone();
+            h.transition(&march, PeriodTransition::SoftClose, b"close-source-soft")
+                .unwrap();
+            h.transition(&march, PeriodTransition::Close, b"close-source")
+                .unwrap();
+            if !via_open {
+                open(&mut h, &closer(), b"foreign-open-before-due").unwrap();
+            }
+            tick(&mut h, april(), 152);
+            let minted = if via_open {
+                let result = open(&mut h, &closer(), b"foreign-open-with-due").unwrap();
+                assert!(result.blocked.is_empty(), "{result:?}");
+                result.minted
+            } else {
+                let capability = executor(&h);
+                let result = sweep(&mut h, capability).unwrap().unwrap();
+                assert!(result.blocked.is_empty(), "{result:?}");
+                result.minted
+            };
+            assert_eq!(minted.len(), 1, "{law:?}, open={via_open}");
+            assert_eq!(minted[0].0, target);
+            let (reversal, at) = read_entry(&h.db, minted[0].1.vid).unwrap().unwrap();
+            assert_eq!(reversal.proposal.effective_date, april());
+            assert_eq!(reversal.proposal.base_totals, original.proposal.base_totals);
+            for (before, after) in original.proposal.legs.iter().zip(&reversal.proposal.legs) {
+                assert_eq!(before.amount, after.amount);
+                assert_eq!(before.base_amount, after.base_amount);
+                assert_ne!(before.side, after.side);
+            }
+            assert_eq!(
+                reversal.proposal.evidence,
+                original
+                    .proposal
+                    .evidence
+                    .iter()
+                    .filter(|evidence| evidence.role == fa_journal::fx::RATE_EVIDENCE_ROLE)
+                    .copied()
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                h.db.edges().unwrap().iter().any(|edge| {
+                    edge.entry.relation == relation::EVIDENCED_BY
+                        && edge.entry.src == minted[0].1.vid
+                        && edge.entry.dst == document_vid(&rate)
+                }),
+                "the retained quote is in the reversal's evidence graph"
+            );
+            assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
+            let ctx = h.ctx();
+            assert!(
+                ctx.query()
+                    .with_restriction(|| {
+                        fa_journal::fx::verify_fx_conversions(&h.db, &ctx, &h.book, at)
+                    })
+                    .unwrap()
+                    .is_green(),
+                "{law:?}, open={via_open}"
+            );
+            let capability = executor(&h);
+            assert!(
+                sweep(&mut h, capability).unwrap().is_none(),
+                "resolved exactly once"
+            );
+        }
+    }
+}
+
+#[test]
+fn scheduled_foreign_accrual_refuses_damaged_rate_evidence_at_execution() {
+    for via_open in [false, true] {
+        let mut h = fixture();
+        let (target, rate) = valued_accrual(&mut h, FxLawId::SpotClose);
+        if !via_open {
+            open(&mut h, &closer(), b"damaged-rate-open-before-due").unwrap();
+        }
+        tick(&mut h, april(), 153);
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        damage.set_vertex_property(
+            document_vid(&rate),
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(vec![0x99; 32]).unwrap()),
+        );
+        h.write_raw(damage);
+        if via_open {
+            let head = h.db.frontier().unwrap();
+            let refusal = open(&mut h, &closer(), b"damaged-rate-open-with-due").unwrap_err();
+            assert_eq!(refusal.code, code::EVIDENCE_COMMIT);
+            assert_eq!(h.period_state(&h.april), PeriodState::Future);
+            assert_eq!(h.db.frontier().unwrap(), head);
+        } else {
+            let capability = executor(&h);
+            let result = sweep(&mut h, capability).unwrap().unwrap();
+            assert!(result.minted.is_empty());
+            assert_eq!(result.blocked.len(), 1);
+            assert_eq!(result.blocked[0].0, target);
+            assert!(result.blocked[0].1.contains(code::EVIDENCE_COMMIT));
+        }
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    }
+}
+
+#[test]
+fn schedule_verification_rejects_repriced_functional_effects_even_when_native_legs_match() {
+    let mut h = fixture();
+    let (target, _) = valued_accrual(&mut h, FxLawId::SpotClose);
+    tick(&mut h, april(), 154);
+    let result = open(&mut h, &closer(), b"foreign-repricing-control").unwrap();
+    let reversed = result.minted[0].1;
+    let (entry, _) = read_entry(&h.db, reversed.vid).unwrap().unwrap();
+    let mut changed = entry.proposal;
+    // Keep the native side swap and the functional double-entry equality,
+    // but make the reversal carry 4 instead of the original 3 USD cents.
+    changed.legs[0].base_amount.as_mut().unwrap().mantissa = 4;
+    changed.legs[1].base_amount.as_mut().unwrap().mantissa = 3;
+    let totals = changed.base_totals.as_mut().unwrap();
+    totals.debits = 4;
+    totals.credits = 4;
+    let changed = changed
+        .seal(entry.approvals, entry.plan_certificate)
+        .unwrap();
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.set_vertex_property(
+        reversed.vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(changed.encode().unwrap()).unwrap()),
+    );
+    damage.set_vertex_property(
+        reversed.vid,
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(changed.entry_digest.to_vec()).unwrap()),
+    );
+    h.write_raw(damage);
+    let verified = verify_schedules(&h.db, &h.book).unwrap();
+    assert!(!verified.is_green());
+    assert!(
+        verified.drift.iter().any(|problem| {
+            problem.contains(&format!("{:032x}", target.vid.0))
+                && problem.contains("not the bound effect")
+        }),
+        "{verified:?}"
+    );
+}
+
+#[test]
+fn automatic_accruals_still_refuse_application_effects_without_an_undo_law() {
+    let mut h = fixture();
+    let invoice = h
+        .post(h.request(h.invoice(10, b"application-accrual-invoice"), &["post"]))
+        .unwrap()
+        .entry_ref();
+    let mut applying = h.receipt(
+        10,
+        vec![Settlement {
+            target: invoice,
+            ordinal: 0,
+            amount: Amount::new(h.usd, 10),
+        }],
+        b"application-accrual",
+    );
+    applying.class = EntryClass::ADJUSTING;
+    let applying = with_auto_reverse(applying, april());
+    let head = h.db.frontier().unwrap();
+    let refusal = h.post(h.request(applying, &["post"])).unwrap_err();
+    assert_eq!(refusal.code, code::STRUCTURE);
+    assert!(refusal.message.contains("no applications"));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.applied_to(invoice.vid, 0), 0);
 }
 
 fn opening_plan(

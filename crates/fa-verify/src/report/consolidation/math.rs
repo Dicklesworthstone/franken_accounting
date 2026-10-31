@@ -108,6 +108,7 @@ fn controlling_share(amount: i128, bps: u16) -> Result<i128, ReportError> {
     }
 }
 
+#[cfg(test)]
 fn minority_share(amount: i128, bps: u16) -> Result<i128, ReportError> {
     subtract(amount, controlling_share(amount, bps)?)
 }
@@ -222,26 +223,163 @@ fn earnings_allocation(
     })
 }
 
-fn reserves_allocation(
+/// The unit and original reserve account remain distinct at every ownership
+/// level. A child's capital was already eliminated against the parent's
+/// investment; it must never enter this propagation a second time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum AttributionBucket {
+    Earnings,
+    Reserve(u128),
+}
+
+type Attributions = BTreeMap<(Entity, u32, AttributionBucket), i128>;
+
+// Same accounting workload bound as max_consolidation_nci_attribution_cells.
+// This counter covers both stock and period activity, including buckets that
+// cancel to zero, and is independent of any producer-supplied work claim.
+const MAX_NCI_ATTRIBUTION_CELLS: usize = 2_000_000;
+
+/// Resolve the graph without recursion, then order child allocations before
+/// their parents. Siblings have a fixed identity order, so signed checked
+/// accumulation and per-link rounding are reproducible.
+fn attribution_order<'a>(
+    members: &BTreeMap<String, Entity>,
+    ownership: &'a [Ownership],
+) -> Result<Vec<&'a Ownership>, ReportError> {
+    let entities: BTreeSet<_> = members.values().copied().collect();
+    if entities.len() != members.len() {
+        return Err(invalid("consolidation members have duplicate identities"));
+    }
+    let mut parent_of = BTreeMap::new();
+    let mut children: BTreeMap<Entity, BTreeSet<Entity>> = BTreeMap::new();
+    for link in ownership {
+        if !entities.contains(&link.parent)
+            || !entities.contains(&link.subsidiary)
+            || link.parent == link.subsidiary
+            || !(1..=10_000).contains(&link.bps)
+        {
+            return Err(invalid(
+                "invalid consolidation ownership endpoints or share",
+            ));
+        }
+        if parent_of.insert(link.subsidiary, link.parent).is_some() {
+            return Err(invalid(
+                "a subsidiary requires exactly one active group parent",
+            ));
+        }
+        children
+            .entry(link.parent)
+            .or_default()
+            .insert(link.subsidiary);
+    }
+    let mut ready: BTreeSet<_> = entities
+        .iter()
+        .filter(|entity| !parent_of.contains_key(*entity))
+        .map(|entity| (0_usize, *entity))
+        .collect();
+    let mut depths = BTreeMap::new();
+    while let Some((depth, entity)) = ready.pop_first() {
+        if depths.insert(entity, depth).is_some() {
+            return Err(invalid("ownership contains a cycle"));
+        }
+        for &child in children.get(&entity).into_iter().flatten() {
+            ready.insert((depth + 1, child));
+        }
+    }
+    if depths.len() != entities.len() {
+        return Err(invalid("ownership contains a cycle"));
+    }
+    let mut order: Vec<_> = ownership.iter().collect();
+    order.sort_by_key(|link| {
+        (
+            std::cmp::Reverse(depths[&link.subsidiary]),
+            link.parent,
+            link.subsidiary,
+        )
+    });
+    Ok(order)
+}
+
+/// Independently allocate only existing source buckets. Each edge rounds its
+/// controlling share once; the exact remainder belongs to that edge's NCI.
+/// Multiplying ownership percentages first would both misallocate intermediate
+/// earnings and change the rounding law for small amounts.
+fn attribute(
     source: &Nets,
     schema: &metadata::Schema,
+    order: &[&Ownership],
+    include_reserves: bool,
+    work: &mut usize,
+) -> Result<Attributions, ReportError> {
+    let links: BTreeMap<_, _> = order.iter().map(|link| (link.subsidiary, *link)).collect();
+    let mut basis: BTreeMap<Entity, BTreeMap<(u32, AttributionBucket), i128>> = BTreeMap::new();
+    for (&(entity, account, unit), &net) in &source.cells {
+        let Some(link) = links.get(&entity) else {
+            continue;
+        };
+        let bucket = match schema.accounts[&account].account_type {
+            4 | 5 => AttributionBucket::Earnings,
+            3 if include_reserves
+                && !link.capital.contains(&account)
+                && link.nci != Some(account) =>
+            {
+                AttributionBucket::Reserve(account)
+            }
+            _ => continue,
+        };
+        let value = basis
+            .entry(entity)
+            .or_default()
+            .entry((unit, bucket))
+            .or_default();
+        *value = add(*value, negate(net)?)?;
+    }
+    let mut shares = Attributions::new();
+    for link in order {
+        let Some(buckets) = basis.remove(&link.subsidiary) else {
+            continue;
+        };
+        for ((unit, bucket), amount) in buckets {
+            *work = work
+                .checked_add(1)
+                .ok_or_else(|| invalid("NCI work overflow"))?;
+            if *work > MAX_NCI_ATTRIBUTION_CELLS {
+                return Err(super::failed(
+                    "bounded_input",
+                    "consolidation NCI attribution exceeds two million cells",
+                ));
+            }
+            let controlling = controlling_share(amount, link.bps)?;
+            let minority = subtract(amount, controlling)?;
+            if minority != 0 {
+                shares.insert((link.subsidiary, unit, bucket), minority);
+            }
+            if controlling != 0 && links.contains_key(&link.parent) {
+                let value = basis
+                    .entry(link.parent)
+                    .or_default()
+                    .entry((unit, bucket))
+                    .or_default();
+                *value = add(*value, controlling)?;
+            }
+        }
+    }
+    Ok(shares)
+}
+
+fn reserves_allocation(
+    shares: &Attributions,
     link: &Ownership,
     unit: u32,
 ) -> Result<Option<(ConsolidationElimination, i128)>, ReportError> {
     let mut legs = Vec::new();
     let mut total = 0;
-    for &(account, net) in source.entity(link.subsidiary, unit) {
-        if net == 0
-            || schema.accounts[&account].account_type != 3
-            || link.capital.contains(&account)
-            || link.nci == Some(account)
-        {
+    let first = (link.subsidiary, unit, AttributionBucket::Reserve(0));
+    let last = (link.subsidiary, unit, AttributionBucket::Reserve(u128::MAX));
+    for (&(_, _, bucket), &share) in shares.range(first..=last) {
+        let AttributionBucket::Reserve(account) = bucket else {
             continue;
-        }
-        let share = minority_share(negate(net)?, link.bps)?;
-        if share == 0 {
-            continue;
-        }
+        };
         reversing(&mut legs, link.subsidiary, account, unit, negate(share)?)?;
         total = add(total, share)?;
     }
@@ -320,6 +458,10 @@ pub(super) fn derive(
 ) -> Result<Calculation, ReportError> {
     let stock_nets = Nets::new(stock)?;
     let activity_nets = Nets::new(activity)?;
+    let order = attribution_order(members, ownership)?;
+    let mut attribution_work = 0;
+    let stock_shares = attribute(&stock_nets, schema, &order, true, &mut attribution_work)?;
+    let activity_shares = attribute(&activity_nets, schema, &order, false, &mut attribution_work)?;
     let mut eliminations = Vec::new();
     for &unit in units {
         if let Some(entry) = group_elimination(&stock_nets, schema, intercompany, unit, false)? {
@@ -344,16 +486,17 @@ pub(super) fn derive(
             }
             let mut allocations = Vec::new();
             if link.bps < 10_000 {
-                if let Some((entry, share)) = reserves_allocation(&stock_nets, schema, link, unit)?
-                {
+                if let Some((entry, share)) = reserves_allocation(&stock_shares, link, unit)? {
                     let nci = recognized.entry(unit).or_default();
                     *nci = add(*nci, share)?;
                     let debit = allocated.entry(unit).or_default();
                     *debit = subtract(*debit, share)?;
                     allocations.push(entry);
                 }
-                let earnings = stock_nets.credit(schema, link.subsidiary, unit, &[4, 5])?;
-                let share = minority_share(earnings, link.bps)?;
+                let share = stock_shares
+                    .get(&(link.subsidiary, unit, AttributionBucket::Earnings))
+                    .copied()
+                    .unwrap_or(0);
                 if share != 0 {
                     allocations.push(earnings_allocation(link, unit, share, "unclosed earnings")?);
                     let nci = recognized.entry(unit).or_default();
@@ -413,8 +556,10 @@ pub(super) fn derive(
     }
     for link in ownership.iter().filter(|link| link.bps < 10_000) {
         for &unit in units {
-            let earnings = activity_nets.credit(schema, link.subsidiary, unit, &[4, 5])?;
-            let share = minority_share(earnings, link.bps)?;
+            let share = activity_shares
+                .get(&(link.subsidiary, unit, AttributionBucket::Earnings))
+                .copied()
+                .unwrap_or(0);
             if share != 0 {
                 income_eliminations.push(earnings_allocation(
                     link,
@@ -677,5 +822,180 @@ mod tests {
         assert_eq!(equity.equity_eliminations, -104);
         assert_eq!(equity.consolidated_total_equity, 1_040);
         assert_eq!(equity.controlling_interest_equity, 1_016);
+    }
+
+    fn tiered_links(parent: Entity, sub: Entity, child: Entity) -> Vec<Ownership> {
+        [(parent, sub, 8_000), (sub, child, 7_500)]
+            .into_iter()
+            .map(|(parent, subsidiary, bps)| Ownership {
+                parent,
+                subsidiary,
+                bps,
+                investment: 2,
+                capital: vec![3],
+                nci: Some(7),
+                nci_income: Some(8),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tiered_nci_allocates_descendant_earnings_and_reserves_without_capital_twice() {
+        let (parent, sub, child) = ([1; 16], [2; 16], [3; 16]);
+        let members =
+            BTreeMap::from([("P".into(), parent), ("S".into(), sub), ("T".into(), child)]);
+        let stock = BTreeMap::from([
+            ((parent, 1, 0), (600, 0)),
+            ((parent, 2, 0), (400, 0)),
+            ((parent, 3, 0), (0, 1_000)),
+            ((sub, 1, 0), (410, 0)),
+            ((sub, 2, 0), (150, 0)),
+            ((sub, 3, 0), (0, 500)),
+            ((sub, 4, 0), (0, 40)),
+            ((sub, 5, 0), (0, 20)),
+            ((child, 1, 0), (380, 0)),
+            ((child, 3, 0), (0, 200)),
+            ((child, 4, 0), (0, 80)),
+            ((child, 5, 0), (0, 100)),
+        ]);
+        let activity = BTreeMap::from([
+            ((sub, 1, 0), (10, 0)),
+            ((sub, 5, 0), (0, 10)),
+            ((child, 1, 0), (40, 0)),
+            ((child, 5, 0), (0, 40)),
+        ]);
+        let mut links = tiered_links(parent, sub, child);
+        let result = derive(
+            &schema(),
+            &[0],
+            &members,
+            &links,
+            &BTreeSet::new(),
+            &stock,
+            &activity,
+        )
+        .unwrap();
+        // Capital: 100 + 50. Reserves: 20 + 20. Unclosed earnings: 25 + 19.
+        // Only the child's controlling remainder enters the next split.
+        assert_eq!(result.equity[0].non_controlling_interest_equity, 234);
+        assert_eq!(result.equity[0].consolidated_total_equity, 1_390);
+        assert_eq!(result.equity[0].controlling_interest_equity, 1_156);
+        assert_eq!(result.stock[&(2, 0)], (550, 550));
+        assert_eq!(result.stock[&(4, 0)], (40, 120));
+        assert_eq!(result.stock[&(7, 0)], (0, 234));
+        assert_eq!(result.stock[&(8, 0)], (44, 0));
+        assert_eq!(result.activity[&(8, 0)], (18, 0));
+        assert_eq!(result.activity[&(5, 0)], (0, 50));
+
+        // A wholly owned intermediate introduces no additional minority.
+        links[0].bps = 10_000;
+        let mut whole_intermediate = stock.clone();
+        whole_intermediate.insert((parent, 1, 0), (500, 0));
+        whole_intermediate.insert((parent, 2, 0), (500, 0));
+        let wholly_owned = derive(
+            &schema(),
+            &[0],
+            &members,
+            &links,
+            &BTreeSet::new(),
+            &whole_intermediate,
+            &activity,
+        )
+        .unwrap();
+        assert_eq!(wholly_owned.equity[0].non_controlling_interest_equity, 95);
+        assert_eq!(wholly_owned.activity[&(8, 0)], (10, 0));
+
+        // Losses follow the same ownership tree and can reduce minority equity.
+        links[0].bps = 8_000;
+        let mut losses = stock;
+        losses.insert((sub, 1, 0), (370, 0));
+        losses.insert((sub, 5, 0), (0, 0));
+        losses.insert((sub, 6, 0), (20, 0));
+        losses.insert((child, 1, 0), (180, 0));
+        losses.insert((child, 5, 0), (0, 0));
+        losses.insert((child, 6, 0), (100, 0));
+        let activity_losses = BTreeMap::from([
+            ((sub, 1, 0), (0, 10)),
+            ((sub, 6, 0), (10, 0)),
+            ((child, 1, 0), (0, 40)),
+            ((child, 6, 0), (40, 0)),
+        ]);
+        let negative = derive(
+            &schema(),
+            &[0],
+            &members,
+            &links,
+            &BTreeSet::new(),
+            &losses,
+            &activity_losses,
+        )
+        .unwrap();
+        assert_eq!(negative.equity[0].non_controlling_interest_equity, 146);
+        assert_eq!(negative.equity[0].consolidated_total_equity, 1_150);
+        assert_eq!(negative.equity[0].controlling_interest_equity, 1_004);
+        assert_eq!(negative.activity[&(8, 0)], (0, 18));
+    }
+
+    #[test]
+    fn tiered_nci_rounds_each_direct_edge_and_uses_the_declared_work_bound() {
+        // Reverse identity order relative to the hierarchy: source ordering
+        // cannot stand in for a topological traversal.
+        let (parent, sub, child) = ([3; 16], [2; 16], [1; 16]);
+        let members =
+            BTreeMap::from([("P".into(), parent), ("S".into(), sub), ("T".into(), child)]);
+        let mut links = tiered_links(parent, sub, child);
+        links[0].bps = 7_500;
+        let stock = BTreeMap::from([((child, 1, 0), (2, 0)), ((child, 5, 0), (0, 2))]);
+        let result = derive(
+            &schema(),
+            &[0],
+            &members,
+            &links,
+            &BTreeSet::new(),
+            &stock,
+            &stock,
+        )
+        .unwrap();
+        // HalfEven(2 * .75) = 2 at BOTH edges. Collapsing the ownership to
+        // .5625 before rounding would incorrectly leave only 1 for the parent.
+        assert!(result.eliminations.is_empty());
+        assert!(result.income_eliminations.is_empty());
+        assert_eq!(result.equity[0].controlling_interest_equity, 2);
+        assert_eq!(result.equity[0].non_controlling_interest_equity, 0);
+        let order = attribution_order(&members, &links).unwrap();
+        let nets = Nets::new(&stock).unwrap();
+        let mut work = MAX_NCI_ATTRIBUTION_CELLS - 2;
+        assert!(attribute(&nets, &schema(), &order, true, &mut work).is_ok());
+        assert_eq!(work, MAX_NCI_ATTRIBUTION_CELLS);
+        let error = attribute(&nets, &schema(), &order, false, &mut work).unwrap_err();
+        assert!(error.detail.contains("two million cells"));
+    }
+
+    #[test]
+    fn tiered_nci_rejects_multiple_parents_cycles_and_unknown_members() {
+        let (parent, sub, child) = ([1; 16], [2; 16], [3; 16]);
+        let members =
+            BTreeMap::from([("P".into(), parent), ("S".into(), sub), ("T".into(), child)]);
+        let mut links = tiered_links(parent, sub, child);
+        links[1].parent = child;
+        links[1].subsidiary = sub;
+        assert!(
+            attribution_order(&members, &links)
+                .err()
+                .unwrap()
+                .detail
+                .contains("one active group parent")
+        );
+        links[1].parent = sub;
+        links[1].subsidiary = parent;
+        assert!(
+            attribution_order(&members, &links)
+                .err()
+                .unwrap()
+                .detail
+                .contains("cycle")
+        );
+        links[1].subsidiary = [4; 16];
+        assert!(attribution_order(&members, &links).is_err());
     }
 }

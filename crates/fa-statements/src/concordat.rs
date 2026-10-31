@@ -9,6 +9,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
+use fa_model::limits::MAX_CONSOLIDATION_NCI_ATTRIBUTION_CELLS as MAX_NCI_ATTRIBUTION_CELLS;
 use fa_model::{DecodeError, EncodeError, Id128, Oid, Reader, Writer, domain_digest};
 use fa_money::rounding::RoundingLaw;
 use fa_money::wide::U256;
@@ -1181,31 +1182,170 @@ fn entity_total_equity(
     Ok(total)
 }
 
-/// The credit-normal sum of `entity`'s nets in `unit_id` on the accounts
-/// `admit` selects.
-fn credit_of(
-    nets: &BTreeMap<(Id128, u128, u32), i128>,
-    accounts: &BTreeMap<u128, &Account>,
-    entity_id: Id128,
-    unit_id: u32,
-    admit: impl Fn(&Account) -> bool,
-) -> Result<i128, ConcordatError> {
-    let mut total = 0i128;
-    for (&(ent, acct_id, u), &net) in nets {
-        if ent != entity_id || u != unit_id || !admit(accounts[&acct_id]) {
-            continue;
-        }
-        total = net
-            .checked_neg()
-            .and_then(|credit| total.checked_add(credit))
-            .ok_or(ConcordatError::Overflow("credit-normal sum"))?;
-    }
-    Ok(total)
-}
-
 /// Revenue (4) and Expense (5): an entity's earnings not yet closed to equity.
 fn is_earnings(account: &Account) -> bool {
     matches!(account.account_type, 4 | 5)
+}
+
+/// Validate a single-parent ownership forest and order its links from the
+/// deepest subsidiary upward. Emission remains in canonical parent/subsidiary
+/// order; this order is only for exact attribution through intermediates.
+fn ownership_attribution_order<'a>(
+    sorted: &[&'a OwnershipSpec],
+    known_entities: &BTreeSet<Id128>,
+) -> Result<Vec<&'a OwnershipSpec>, ConcordatError> {
+    let mut parents = BTreeMap::new();
+    for &spec in sorted {
+        if spec.parent_entity == spec.subsidiary_entity {
+            return Err(ConcordatError::Input(
+                "an entity cannot own itself in consolidation".into(),
+            ));
+        }
+        if parents.insert(spec.subsidiary_entity, spec).is_some() {
+            return Err(ConcordatError::Input(format!(
+                "duplicate ownership specification for subsidiary {}",
+                spec.subsidiary_entity.to_hex()
+            )));
+        }
+        if !known_entities.contains(&spec.parent_entity)
+            || !known_entities.contains(&spec.subsidiary_entity)
+        {
+            return Err(ConcordatError::Input(
+                "ownership specification references an entity outside members".into(),
+            ));
+        }
+        if spec.ownership_bps == 0 || i128::from(spec.ownership_bps) > BPS_DENOMINATOR {
+            return Err(ConcordatError::Input(format!(
+                "ownership_bps {} must be in 1..=10000",
+                spec.ownership_bps
+            )));
+        }
+        if spec.subsidiary_equity_account_ids.is_empty() {
+            return Err(ConcordatError::Input(
+                "ownership specification requires at least one subsidiary equity account".into(),
+            ));
+        }
+    }
+    let mut depths = BTreeMap::new();
+    for &subsidiary in parents.keys() {
+        let mut seen = BTreeSet::new();
+        let mut cursor = subsidiary;
+        while let Some(spec) = parents.get(&cursor) {
+            if !seen.insert(cursor) {
+                return Err(ConcordatError::Input(format!(
+                    "ownership cycle through entity {}",
+                    cursor.to_hex()
+                )));
+            }
+            cursor = spec.parent_entity;
+        }
+        depths.insert(subsidiary, seen.len());
+    }
+    let mut order = sorted.to_vec();
+    order.sort_by(|a, b| {
+        depths[&b.subsidiary_entity]
+            .cmp(&depths[&a.subsidiary_entity])
+            .then(a.parent_entity.cmp(&b.parent_entity))
+            .then(a.subsidiary_entity.cmp(&b.subsidiary_entity))
+    });
+    Ok(order)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NciBucket {
+    Earnings,
+    Reserve(u128),
+}
+
+#[derive(Default)]
+struct NciAttribution {
+    earnings: BTreeMap<(Id128, u32), i128>,
+    reserves: BTreeMap<(Id128, u32, u128), i128>,
+}
+
+/// Attribute post-acquisition equity from children to parents. Each link
+/// splits the entity's own basis plus the controlling amounts already passed
+/// up by its children. The minority is the exact residual of that link's
+/// registered rounding; multiplying percentages first would change its law.
+/// Capital is deliberately excluded: each parent's investment already funds
+/// its direct share and is eliminated separately, exactly once.
+fn attribute_nci(
+    nets: &BTreeMap<(Id128, u128, u32), i128>,
+    accounts: &BTreeMap<u128, &Account>,
+    order: &[&OwnershipSpec],
+    include_reserves: bool,
+    remaining: &mut usize,
+) -> Result<NciAttribution, ConcordatError> {
+    let owners: BTreeMap<_, _> = order
+        .iter()
+        .map(|spec| (spec.subsidiary_entity, *spec))
+        .collect();
+    let mut basis: BTreeMap<Id128, BTreeMap<(u32, NciBucket), i128>> = BTreeMap::new();
+    for (&(entity, account_id, unit), &net) in nets {
+        let Some(spec) = owners.get(&entity) else {
+            continue;
+        };
+        let account = accounts[&account_id];
+        let bucket = if is_earnings(account) {
+            NciBucket::Earnings
+        } else if include_reserves
+            && account.account_type == 3
+            && !spec.subsidiary_equity_account_ids.contains(&account_id)
+            && spec.nci_equity_account_id != Some(account_id)
+        {
+            NciBucket::Reserve(account_id)
+        } else {
+            continue;
+        };
+        let amount = basis
+            .entry(entity)
+            .or_default()
+            .entry((unit, bucket))
+            .or_default();
+        *amount = net
+            .checked_neg()
+            .and_then(|credit| amount.checked_add(credit))
+            .ok_or(ConcordatError::Overflow("ownership attribution basis"))?;
+    }
+    let mut attributed = NciAttribution::default();
+    for spec in order {
+        for ((unit, bucket), amount) in basis.remove(&spec.subsidiary_entity).unwrap_or_default() {
+            *remaining = remaining.checked_sub(1).ok_or_else(|| {
+                ConcordatError::Input(format!(
+                    "max_consolidation_nci_attribution_cells ({MAX_NCI_ATTRIBUTION_CELLS}) exceeded; consolidate a smaller ownership forest or reserve-account scope"
+                ))
+            })?;
+            let controlling = round_bps_share(amount, spec.ownership_bps, spec.rounding_law)?;
+            let minority = amount
+                .checked_sub(controlling)
+                .ok_or(ConcordatError::Overflow("tiered noncontrolling share"))?;
+            if minority != 0 {
+                match bucket {
+                    NciBucket::Earnings => {
+                        attributed
+                            .earnings
+                            .insert((spec.subsidiary_entity, unit), minority);
+                    }
+                    NciBucket::Reserve(account) => {
+                        attributed
+                            .reserves
+                            .insert((spec.subsidiary_entity, unit, account), minority);
+                    }
+                }
+            }
+            if controlling != 0 && owners.contains_key(&spec.parent_entity) {
+                let parent = basis
+                    .entry(spec.parent_entity)
+                    .or_default()
+                    .entry((unit, bucket))
+                    .or_default();
+                *parent = parent
+                    .checked_add(controlling)
+                    .ok_or(ConcordatError::Overflow("tiered controlling share"))?;
+            }
+        }
+    }
+    Ok(attributed)
 }
 
 /// The NCI's share of a partly owned subsidiary's `share` of `what`
@@ -1268,36 +1408,15 @@ fn nci_allocation(
 /// share is zero; otherwise the entry and the NCI it recognizes.
 fn nci_reserves_allocation(
     spec: &OwnershipSpec,
-    nets: &BTreeMap<(Id128, u128, u32), i128>,
+    shares: &BTreeMap<(Id128, u32, u128), i128>,
     accounts: &BTreeMap<u128, &Account>,
     unit_id: u32,
 ) -> Result<Option<(EliminationEntry, i128)>, ConcordatError> {
     let mut legs = Vec::new();
     let mut total = 0i128;
-    for (&(ent, acct_id, u), &net) in nets {
-        let account = accounts[&acct_id];
-        if ent != spec.subsidiary_entity
-            || u != unit_id
-            || net == 0
-            || account.account_type != 3
-            || spec.subsidiary_equity_account_ids.contains(&acct_id)
-            || spec.nci_equity_account_id == Some(acct_id)
-        {
-            continue;
-        }
-        let reserve = net
-            .checked_neg()
-            .ok_or(ConcordatError::Overflow("subsidiary reserve negation"))?;
-        let share = reserve
-            .checked_sub(round_bps_share(
-                reserve,
-                spec.ownership_bps,
-                spec.rounding_law,
-            )?)
-            .ok_or(ConcordatError::Overflow("nci reserve share"))?;
-        if share == 0 {
-            continue;
-        }
+    let first = (spec.subsidiary_entity, unit_id, 0);
+    let last = (spec.subsidiary_entity, unit_id, u128::MAX);
+    for (&(ent, _, acct_id), &share) in shares.range(first..=last) {
         // The reserve gives up the NCI's share: debit a credit reserve.
         push_reversing_leg(
             &mut legs,
@@ -1600,7 +1719,9 @@ fn balances_of(totals: Totals) -> Vec<AccountBalance> {
 ///    subsidiaries; the sum of controlling shares must equal its balance) with Non-Controlling
 ///    Interest on that capital, the NCI's share of the subsidiary's reserves reclassified within
 ///    equity, and its share of the subsidiary's unclosed earnings charged to the NCI income
-///    allocation, each under the link's registered `RoundingLaw`.
+///    allocation, each under the link's registered `RoundingLaw`. Post-acquisition equity
+///    passes from leaves upward: an intermediate's basis includes only the controlling
+///    amounts received from its children, never their capital or recognized minority.
 /// 4. Derives the income statement's eliminations from the members' activity over its periods:
 ///    revenue/expense pairs, the group's revenue and expense accounts, and the NCI's share of
 ///    each partly owned subsidiary's earnings for the period.
@@ -1696,7 +1817,15 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
             .cmp(&b.parent_entity.0)
             .then(a.subsidiary_entity.0.cmp(&b.subsidiary_entity.0))
     });
-    let mut seen_subsidiaries = BTreeSet::new();
+    let attribution_order = ownership_attribution_order(&sorted_ownership, &known_entities)?;
+    let mut attribution_remaining = MAX_NCI_ATTRIBUTION_CELLS;
+    let stock_attribution = attribute_nci(
+        &member_nets,
+        &accounts,
+        &attribution_order,
+        true,
+        &mut attribution_remaining,
+    )?;
     let mut nci_recognized_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
     let mut eliminated_sub_equity_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
     // Equity impact (credit-normal) of the NCI allocations' debits: the
@@ -1718,35 +1847,6 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
     };
 
     for spec in &sorted_ownership {
-        if spec.parent_entity == spec.subsidiary_entity {
-            return Err(ConcordatError::Input(
-                "an entity cannot own itself in consolidation".into(),
-            ));
-        }
-        if !seen_subsidiaries.insert(spec.subsidiary_entity) {
-            return Err(ConcordatError::Input(format!(
-                "duplicate ownership specification for subsidiary {}",
-                spec.subsidiary_entity.to_hex()
-            )));
-        }
-        if !known_entities.contains(&spec.parent_entity)
-            || !known_entities.contains(&spec.subsidiary_entity)
-        {
-            return Err(ConcordatError::Input(
-                "ownership specification references an entity outside members".into(),
-            ));
-        }
-        if spec.ownership_bps == 0 || i128::from(spec.ownership_bps) > BPS_DENOMINATOR {
-            return Err(ConcordatError::Input(format!(
-                "ownership_bps {} must be in 1..=10000",
-                spec.ownership_bps
-            )));
-        }
-        if spec.subsidiary_equity_account_ids.is_empty() {
-            return Err(ConcordatError::Input(
-                "ownership specification requires at least one subsidiary equity account".into(),
-            ));
-        }
         for &unit_id in &units {
             let expected = investment_expected
                 .entry((spec.parent_entity, spec.investment_account_id, unit_id))
@@ -1774,25 +1874,16 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
             let mut allocations = Vec::new();
             if spec.ownership_bps < 10_000 {
                 if let Some((entry, share)) =
-                    nci_reserves_allocation(spec, &member_nets, &accounts, unit_id)?
+                    nci_reserves_allocation(spec, &stock_attribution.reserves, &accounts, unit_id)?
                 {
                     allocations.push(entry);
                     recognize(unit_id, share, share)?;
                 }
-                let earnings = credit_of(
-                    &member_nets,
-                    &accounts,
-                    spec.subsidiary_entity,
-                    unit_id,
-                    is_earnings,
-                )?;
-                let share = earnings
-                    .checked_sub(round_bps_share(
-                        earnings,
-                        spec.ownership_bps,
-                        spec.rounding_law,
-                    )?)
-                    .ok_or(ConcordatError::Overflow("nci earnings share"))?;
+                let share = stock_attribution
+                    .earnings
+                    .get(&(spec.subsidiary_entity, unit_id))
+                    .copied()
+                    .unwrap_or(0);
                 if share != 0 {
                     allocations.push(nci_allocation(
                         spec,
@@ -1941,25 +2032,23 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
             &[false],
         )?);
     }
+    let income_attribution = attribute_nci(
+        &income_nets,
+        &accounts,
+        &attribution_order,
+        false,
+        &mut attribution_remaining,
+    )?;
     for spec in &sorted_ownership {
         if spec.ownership_bps >= 10_000 {
             continue;
         }
         for &unit_id in &units {
-            let earnings = credit_of(
-                &income_nets,
-                &accounts,
-                spec.subsidiary_entity,
-                unit_id,
-                is_earnings,
-            )?;
-            let share = earnings
-                .checked_sub(round_bps_share(
-                    earnings,
-                    spec.ownership_bps,
-                    spec.rounding_law,
-                )?)
-                .ok_or(ConcordatError::Overflow("nci period earnings share"))?;
+            let share = income_attribution
+                .earnings
+                .get(&(spec.subsidiary_entity, unit_id))
+                .copied()
+                .unwrap_or(0);
             if share != 0 {
                 income_eliminations.push(nci_allocation(
                     spec,
@@ -2743,6 +2832,296 @@ mod tests {
             consolidate(&stranger),
             Err(ConcordatError::Input(ref m)) if m.contains("must be the consolidation's members")
         ));
+    }
+
+    fn tiered_input() -> ConsolidationInput {
+        // Deliberately non-topological ids and input order: P=1, S=9, T=3.
+        let (p, s, t) = (Id128([1; 16]), Id128([9; 16]), Id128([3; 16]));
+        let member = |entity_id, balances| EntityMemberInput {
+            entity_id,
+            book_id: Id128([0x31; 16]),
+            known_at: 12,
+            balances,
+        };
+        let mut accounts = consolidation_chart();
+        accounts.push(account(3300, "3300", "Retained Earnings", 3));
+        let link = |parent_entity, subsidiary_entity, ownership_bps| OwnershipSpec {
+            parent_entity,
+            subsidiary_entity,
+            ownership_bps,
+            investment_account_id: 1500,
+            subsidiary_equity_account_ids: vec![3100],
+            nci_equity_account_id: Some(3200),
+            nci_income_account_id: Some(5900),
+            rounding_law: RoundingLaw::HalfEven,
+        };
+        ConsolidationInput {
+            consolidation_book_id: Id128([0x32; 16]),
+            branch_id: Id128::TRUNK,
+            known_at: 12,
+            period: "FY2026-P03".into(),
+            effective_through: DateDay(90),
+            accounts,
+            units: vec![1],
+            members: vec![
+                member(
+                    s,
+                    vec![
+                        bal(1000, 1, 410, 0),
+                        bal(1500, 1, 150, 0),
+                        bal(3100, 1, 0, 500),
+                        bal(3300, 1, 0, 40),
+                        bal(4000, 1, 0, 20),
+                    ],
+                ),
+                member(
+                    t,
+                    vec![
+                        bal(1000, 1, 380, 0),
+                        bal(3100, 1, 0, 200),
+                        bal(3300, 1, 0, 80),
+                        bal(4000, 1, 0, 100),
+                    ],
+                ),
+                member(
+                    p,
+                    vec![
+                        bal(1000, 1, 600, 0),
+                        bal(1500, 1, 400, 0),
+                        bal(3000, 1, 0, 1_000),
+                    ],
+                ),
+            ],
+            intercompany_pairs: vec![],
+            intercompany_accounts: vec![],
+            ownership: vec![link(s, t, 7_500), link(p, s, 8_000)],
+            income: IncomeInput {
+                periods: vec!["FY2026-P03".into()],
+                effective_from: DateDay(60),
+                members: vec![
+                    member(t, vec![bal(1000, 1, 40, 0), bal(4000, 1, 0, 40)]),
+                    member(p, vec![]),
+                    member(s, vec![bal(1000, 1, 10, 0), bal(4000, 1, 0, 10)]),
+                ],
+            },
+        }
+    }
+
+    fn group_line(statement: &Statement, code: &str) -> i128 {
+        statement
+            .lines
+            .iter()
+            .find(|line| line.code == code && line.unit_id == 1)
+            .unwrap()
+            .amounts[0]
+    }
+
+    #[test]
+    fn tiered_nci_attributes_descendant_earnings_and_reserves_without_double_counting_capital() {
+        let input = tiered_input();
+        let run = consolidate(&input).unwrap();
+        // S has 500 capital, 40 reserves and 20 unclosed earnings; T has
+        // 200 capital, 80 reserves and 100 unclosed earnings. P owns 80% S,
+        // S owns 75% T. Capital NCI remains 100+50, not an effective-stake
+        // reallocation of capital already financed by S's investment.
+        // T passes 60 reserves and 75 earnings to S. S's minority receives
+        // 20 of its combined 100 reserves, and 19 of its combined 95 earnings.
+        let eq = &run.equity_reconciliations[0];
+        assert_eq!(eq.non_controlling_interest_equity, 150 + 20 + 20 + 25 + 19);
+        assert_eq!(eq.controlling_interest_equity, 1_156);
+        assert_eq!(eq.consolidated_total_equity, 1_390);
+        assert_eq!(group_line(&run.balance_sheet, "unclosed_earnings"), 76);
+        assert_eq!(group_line(&run.balance_sheet, "balance_check"), 0);
+        // March holds S=10, T=40: T's NCI=10; S's NCI=(10+30)*20%=8.
+        assert_eq!(group_line(&run.income_statement, "net_income"), 32);
+        let s = Id128([9; 16]);
+        let s_income = run
+            .income_eliminations
+            .iter()
+            .find(|entry| entry.code == format!("ELIM-NCI-{}-U1", s.to_hex()))
+            .unwrap();
+        assert_eq!(s_income.legs[0].debits, 8);
+        assert!(run.eliminations.iter().all(EliminationEntry::is_balanced));
+        assert!(
+            run.income_eliminations
+                .iter()
+                .all(EliminationEntry::is_balanced)
+        );
+
+        let mut permuted = input;
+        permuted.members.reverse();
+        permuted.accounts.reverse();
+        permuted.ownership.reverse();
+        permuted.income.members.reverse();
+        for member in &mut permuted.members {
+            member.balances.reverse();
+        }
+        assert_eq!(
+            run.canonical_bytes().unwrap(),
+            consolidate(&permuted).unwrap().canonical_bytes().unwrap()
+        );
+    }
+
+    #[test]
+    fn tiered_nci_preserves_wholly_owned_links_and_shares_losses_and_reserve_deficits() {
+        // (P stake, S stake, P investment, S investment, NCI equity,
+        //  consolidated equity, period controlling income).
+        for (parent_bps, child_bps, p_investment, s_investment, nci, equity, income) in [
+            (10_000, 7_500, 500, 150, 95, 1_290, 40),
+            (8_000, 10_000, 400, 200, 148, 1_340, 40),
+            (10_000, 10_000, 500, 200, 0, 1_240, 50),
+        ] {
+            let mut input = tiered_input();
+            input.ownership[0].ownership_bps = child_bps;
+            input.ownership[1].ownership_bps = parent_bps;
+            input.members[0].balances[0] = bal(1000, 1, 560 - s_investment, 0);
+            input.members[0].balances[1] = bal(1500, 1, s_investment, 0);
+            input.members[2].balances[0] = bal(1000, 1, 1_000 - p_investment, 0);
+            input.members[2].balances[1] = bal(1500, 1, p_investment, 0);
+            let run = consolidate(&input).unwrap();
+            assert_eq!(
+                run.equity_reconciliations[0].non_controlling_interest_equity,
+                nci
+            );
+            assert_eq!(
+                run.equity_reconciliations[0].consolidated_total_equity,
+                equity
+            );
+            assert_eq!(group_line(&run.income_statement, "net_income"), income);
+            assert_eq!(group_line(&run.balance_sheet, "balance_check"), 0);
+        }
+        let mut losing = tiered_input();
+        losing.members[1].balances = vec![
+            bal(1000, 1, 20, 0),
+            bal(3100, 1, 0, 200),
+            bal(3300, 1, 80, 0),
+            bal(5000, 1, 100, 0),
+        ];
+        losing.income.members[0].balances = vec![bal(1000, 1, 0, 40), bal(5000, 1, 40, 0)];
+        let run = consolidate(&losing).unwrap();
+        assert_eq!(
+            run.equity_reconciliations[0].non_controlling_interest_equity,
+            90
+        );
+        assert_eq!(
+            run.equity_reconciliations[0].consolidated_total_equity,
+            1_030
+        );
+        assert_eq!(group_line(&run.balance_sheet, "unclosed_earnings"), -44);
+        assert_eq!(group_line(&run.income_statement, "net_income"), -16);
+        assert_eq!(group_line(&run.balance_sheet, "balance_check"), 0);
+    }
+
+    #[test]
+    fn tiered_nci_rounds_each_combined_link_basis_and_preserves_inherited_reserve_classification() {
+        for (parent_bps, child_bps, own_earnings, child_earnings, p_investment, income, nci) in [
+            // 2 * 75% rounds to 2 at each link. Multiplying the stakes
+            // before rounding would incorrectly reduce the controlling 2 to 1.
+            (7_500, 7_500, 0, 2, 375, 2, 175),
+            // S's combined basis 1+round(3*75%)=3 rounds to 2 at 50%.
+            // Splitting S's own 1 separately would incorrectly yield only 1.
+            (5_000, 7_500, 1, 3, 250, 2, 302),
+        ] {
+            let mut input = tiered_input();
+            input.ownership[0].ownership_bps = child_bps;
+            input.ownership[1].ownership_bps = parent_bps;
+            input.members[0].balances = vec![
+                bal(1000, 1, 350 + own_earnings, 0),
+                bal(1500, 1, 150, 0),
+                bal(3100, 1, 0, 500),
+                bal(4000, 1, 0, own_earnings),
+            ];
+            input.members[1].balances = vec![
+                bal(1000, 1, 200 + child_earnings, 0),
+                bal(3100, 1, 0, 200),
+                bal(4000, 1, 0, child_earnings),
+            ];
+            input.members[2].balances[0] = bal(1000, 1, 1_000 - p_investment, 0);
+            input.members[2].balances[1] = bal(1500, 1, p_investment, 0);
+            input.income.members = input.members.clone();
+            let run = consolidate(&input).unwrap();
+            assert_eq!(group_line(&run.income_statement, "net_income"), income);
+            assert_eq!(
+                run.equity_reconciliations[0].non_controlling_interest_equity,
+                nci
+            );
+            assert_eq!(group_line(&run.balance_sheet, "balance_check"), 0);
+        }
+        let mut input = tiered_input();
+        // T's reserve account is S's capital account. Only T's own capital
+        // is excluded when its native basis is classified; its controlling
+        // reserve stays a reserve when passed through S.
+        input.ownership[0].subsidiary_equity_account_ids = vec![3000];
+        input.members[1].balances[1] = bal(3000, 1, 0, 200);
+        input.members[1].balances[2] = bal(3100, 1, 0, 80);
+        let run = consolidate(&input).unwrap();
+        assert_eq!(
+            run.equity_reconciliations[0].non_controlling_interest_equity,
+            234
+        );
+        assert_eq!(
+            run.equity_reconciliations[0].controlling_interest_equity,
+            1_156
+        );
+        assert_eq!(group_line(&run.balance_sheet, "balance_check"), 0);
+    }
+
+    #[test]
+    fn tiered_nci_refuses_invalid_ownership_graphs_and_bounds_actual_attribution_work() {
+        let valid = tiered_input();
+        let mut cycle = valid.clone();
+        let mut link = cycle.ownership[0].clone();
+        link.parent_entity = Id128([3; 16]);
+        link.subsidiary_entity = Id128([1; 16]);
+        cycle.ownership.push(link);
+        assert!(
+            matches!(consolidate(&cycle), Err(ConcordatError::Input(message)) if message.contains("ownership cycle"))
+        );
+        let mut duplicate = valid.clone();
+        let mut link = duplicate.ownership[0].clone();
+        link.parent_entity = Id128([1; 16]);
+        duplicate.ownership.push(link);
+        assert!(
+            matches!(consolidate(&duplicate), Err(ConcordatError::Input(message)) if message.contains("duplicate ownership"))
+        );
+        for (parent, child, stake, expected) in [
+            (Id128([9; 16]), Id128([9; 16]), 7_500, "cannot own itself"),
+            (Id128([8; 16]), Id128([3; 16]), 7_500, "outside members"),
+            (Id128([9; 16]), Id128([3; 16]), 0, "ownership_bps"),
+        ] {
+            let mut invalid = valid.clone();
+            invalid.ownership[0].parent_entity = parent;
+            invalid.ownership[0].subsidiary_entity = child;
+            invalid.ownership[0].ownership_bps = stake;
+            assert!(
+                matches!(consolidate(&invalid), Err(ConcordatError::Input(message)) if message.contains(expected))
+            );
+        }
+        assert_eq!(
+            fa_registry::limits_embedded().unwrap()["max_consolidation_nci_attribution_cells"],
+            MAX_NCI_ATTRIBUTION_CELLS as u64
+        );
+        let accounts = valid.accounts.iter().map(|a| (a.id, a)).collect();
+        let entities = valid.members.iter().map(|m| m.entity_id).collect();
+        let links = valid.ownership.iter().collect::<Vec<_>>();
+        let order = ownership_attribution_order(&links, &entities).unwrap();
+        let stock = nets_of(&valid.members, &accounts, &valid.units, "stock").unwrap();
+        let income = nets_of(&valid.income.members, &accounts, &valid.units, "income").unwrap();
+        // Four stock buckets and two activity buckets, including inherited
+        // contributions combined into each intermediate's existing bucket.
+        for budget in [5, 6, 7] {
+            let mut remaining = budget;
+            attribute_nci(&stock, &accounts, &order, true, &mut remaining).unwrap();
+            let result = attribute_nci(&income, &accounts, &order, false, &mut remaining);
+            if budget == 5 {
+                assert!(
+                    matches!(result, Err(ConcordatError::Input(message)) if message.contains("max_consolidation_nci_attribution_cells"))
+                );
+            } else {
+                assert!(result.is_ok());
+                assert_eq!(remaining, budget - 6);
+            }
+        }
     }
 
     #[test]

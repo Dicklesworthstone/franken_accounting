@@ -21,6 +21,145 @@ fn verified_transition(
 }
 
 #[test]
+fn scheduled_foreign_accrual_exports_replay_original_carrying_after_later_quotes_and_posts() {
+    let mut fixture = Fixture::with_time_zone(Some(fa_journal::TimeZonePolicy::Utc));
+    let rate = FxRateDocument::new(
+        FxRateTerms {
+            base_unit: fixture.usd,
+            quote_unit: fixture.eur,
+            rate_num: 1,
+            rate_den: 3,
+            rounding: RoundingLaw::HalfEven,
+        },
+        day(1, 5),
+        1_767_571_200_000_000_000,
+        FxRatePurpose::SpotClose,
+        "January accrual, before the automatic February reversal",
+    )
+    .unwrap();
+    let rate = fixture
+        .book
+        .upload_fx_rate(&cap(&["post"]), &rate)
+        .unwrap()
+        .unwrap()
+        .oid;
+    let mut proposal = fixture.proposal(b"portable-scheduled-accrual", day(1, 5), 8);
+    proposal.class = EntryClass::ADJUSTING;
+    proposal.legs[1].amount.mantissa = 4;
+    proposal.legs.push(proposal.legs[1].clone());
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let proposal = fa_journal::with_auto_reverse(proposal, day(2, 1));
+    let proposal = fixture
+        .book
+        .value_fx_proposal(
+            &cap(&["read", "post"]),
+            proposal,
+            FxLawId::SpotClose,
+            &[rate],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        proposal.base_totals.as_ref().unwrap().residual,
+        Some(Residual {
+            leg_ordinal: 1,
+            amount: Amount::new(fixture.usd, 1),
+        })
+    );
+    let target = fixture
+        .book
+        .post(request(proposal))
+        .unwrap()
+        .unwrap()
+        .entry_ref();
+    let initial = certify(&mut fixture, TrialBalanceSelection::AsOf(day(2, 28)));
+
+    // No February quote exists. The scheduled effect must use the original
+    // January carrying values and original residual ordinal, just as an
+    // exact manual reversal does.
+    let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+    let instant = u64::try_from(day(2, 1).0).unwrap() * 86_400_000_000_000;
+    runtime
+        .block_on(
+            fixture
+                .book
+                .record_tick(&root, instant, true, &cap(&["witness"])),
+        )
+        .unwrap()
+        .unwrap();
+    let system = fa_journal::rows::system_principal(fixture.book.context().book_id);
+    let executor = Capability::new(
+        system,
+        fa_policy::Profile::System,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap();
+    let swept = fixture.book.sweep_now(&executor, 16).unwrap().unwrap();
+    let minted = swept
+        .reversals
+        .iter()
+        .flat_map(|batch| batch.minted.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(minted.len(), 1);
+    assert_eq!(minted[0].0, target);
+    assert!(swept.reversals.iter().all(|batch| batch.blocked.is_empty()));
+    let (original, _) = fixture.book.read_entry(target.vid).unwrap().unwrap();
+    let (reversal, _) = fixture.book.read_entry(minted[0].1.vid).unwrap().unwrap();
+    assert_eq!(reversal.proposal.base_totals, original.proposal.base_totals);
+    assert!(matches!(
+        reversal.proposal.origin,
+        EntryOrigin::Schedule { .. }
+    ));
+    assert!(fixture.book.verify_schedules().unwrap().is_green());
+    assert!(fixture.book.verify_fx_conversions(None).unwrap().is_green());
+    let offset = certify(&mut fixture, TrialBalanceSelection::AsOf(day(2, 28)));
+    let february = certify(
+        &mut fixture,
+        TrialBalanceSelection::Activity(vec!["FY2026-P02".into()]),
+    );
+
+    fixture.rate(
+        day(1, 5),
+        99,
+        "A later quote cannot reprice the saved automatic reversal",
+    );
+    fixture.post(b"after-scheduled-proof", day(1, 20), 20, 13);
+    let state = checkpoint(&mut fixture.book);
+    let head = fixture.book.head().unwrap();
+    let account = account_vid(fixture.book.context().book_id, "1200").0;
+    for (certificate, entries, gross, net) in [(&initial, 1, 3, 3), (&offset, 2, 6, 0)] {
+        let verified = verified_transition(&mut fixture, state, certificate, rate);
+        assert_eq!(verified.entries, entries);
+        assert_eq!(
+            verified.cells.iter().map(|cell| cell.debits).sum::<i128>(),
+            gross
+        );
+        assert_eq!(
+            verified.cells.iter().map(|cell| cell.credits).sum::<i128>(),
+            gross
+        );
+        let cell = verified
+            .cells
+            .iter()
+            .find(|cell| cell.account == account)
+            .unwrap();
+        assert_eq!(cell.debits.checked_sub(cell.credits), Some(net));
+    }
+    let activity = verified_transition(&mut fixture, state, &february, rate);
+    assert!(activity.activity);
+    assert_eq!(activity.entries, 1);
+    let cell = activity
+        .cells
+        .iter()
+        .find(|cell| cell.account == account)
+        .unwrap();
+    assert_eq!((cell.debits, cell.credits), (0, 3));
+    assert_eq!(fixture.book.head().unwrap(), head);
+}
+
+#[test]
 fn valued_pending_exports_keep_old_holds_and_release_them_across_periods() {
     let mut fixture = Fixture::new();
     let rate = fixture.rate(day(1, 5), 15, "Original January reservation valuation");

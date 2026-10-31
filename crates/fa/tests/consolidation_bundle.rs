@@ -35,17 +35,25 @@ struct Group {
 
 impl Group {
     fn new(seed: u8) -> Self {
+        Self::with_tier(seed, false)
+    }
+
+    fn with_tier(seed: u8, tiered: bool) -> Self {
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let eur = units.lookup("EUR").unwrap();
         let book_id = Id128([seed; 16]);
+        let mut entities = vec![("P", "Parent & Co"), ("S", "Subsidiary")];
+        if tiered {
+            entities.push(("T", "Lower subsidiary"));
+        }
         let spec = BookSpec {
             book_id,
             name: "Portable group with a minority shareholder".into(),
             base_unit: usd,
             calendar: FiscalCalendar::monthly("group-calendar", 1, 1).unwrap(),
             time_zone_policy: None,
-            entities: [("P", "Parent & Co"), ("S", "Subsidiary")]
+            entities: entities
                 .into_iter()
                 .map(|(code, name)| fa_journal::genesis::LegalEntitySpec {
                     code: code.into(),
@@ -62,7 +70,7 @@ impl Group {
         )
         .unwrap();
         let schema = capability(&["read", "schema_change"]);
-        let accounts: Vec<_> = [
+        let mut accounts: Vec<_> = [
             ("1000", "Cash", AccountType::ASSET),
             ("1300", "Due from group", AccountType::ASSET),
             ("1500", "Subsidiary investment", AccountType::ASSET),
@@ -87,6 +95,18 @@ impl Group {
             limit: None,
         })
         .collect();
+        if tiered {
+            accounts.push(AccountSpec {
+                code: "3300".into(),
+                name: "Post-acquisition reserves".into(),
+                account_type: AccountType::EQUITY.0,
+                normal_balance: 1,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            });
+        }
         book.install_chart(&accounts, PRINCIPAL, day(1), b"group-chart", &schema)
             .unwrap()
             .unwrap();
@@ -190,6 +210,34 @@ impl Group {
         group.transfer("subsidiary-advance", "S", "1000", "2300", usd, 100_000);
         group.transfer("subsidiary-usd-sales", "S", "1000", "4000", usd, 20_000);
         group.transfer("subsidiary-eur-sales", "S", "1000", "4000", eur, 501);
+        if tiered {
+            group
+                .book
+                .record_relationship(
+                    &RelationshipSpec {
+                        from: legal_entity_vid(book_id, "S"),
+                        to: legal_entity_vid(book_id, "T"),
+                        kind: RelationshipKind::Owns {
+                            pct: OwnershipPct::new(3, 4).unwrap(),
+                        },
+                        basis: "equity_voting".into(),
+                        valid_from: day(1),
+                        valid_to: None,
+                    },
+                    PRINCIPAL,
+                    day(1),
+                    b"lower-owns-three-quarters",
+                    &schema,
+                )
+                .unwrap()
+                .unwrap();
+            group.transfer("lower-capital", "T", "1000", "3000", usd, 200_000);
+            group.transfer("subsidiary-investment", "S", "1500", "1000", usd, 150_000);
+            group.transfer("subsidiary-reserves", "S", "1000", "3300", usd, 4_000);
+            group.transfer("lower-reserves", "T", "1000", "3300", usd, 8_000);
+            group.transfer("lower-usd-sales", "T", "1000", "4000", usd, 10_000);
+            group.transfer("lower-eur-sales", "T", "1000", "4000", eur, 503);
+        }
         group
     }
 
@@ -673,4 +721,158 @@ fn group_production_checks_current_whole_book_authority_before_certificate_or_ch
         }
     }
     assert_eq!(group.book.head().unwrap(), before);
+}
+
+#[test]
+fn tiered_group_native_and_functional_reports_replay_and_verify_offline_after_source_changes() {
+    let mut group = Group::with_tier(0xc8, true);
+    let producer = capability(&["read", "produce"]);
+    let pin = group.book.head().unwrap();
+    let native = group
+        .book
+        .certify_report(
+            ReportSelection::Consolidation {
+                period: PERIOD.into(),
+            },
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    let functional = group
+        .book
+        .certify_functional_consolidation(PRINCIPAL, &producer, PERIOD, Some(pin))
+        .unwrap()
+        .unwrap();
+    let ReportOutput::Consolidation(native_group) = &native.report else {
+        panic!("native three-level group");
+    };
+    let ReportOutput::FunctionalConsolidation(functional_group) = &functional.report else {
+        panic!("functional three-level group");
+    };
+    // Native USD: 250,000 minority capital + 4,000 reserves + 8,000 earnings.
+    // EUR: T's 503 => controlling377/NCI126; S's (501+377) => controlling702/NCI176.
+    for (unit, total, minority, earnings) in [
+        (group.usd, 2_292_000, 262_000, 22_000),
+        (group.eur, 1_004, 302, 702),
+    ] {
+        let equity = native_group
+            .run
+            .equity_reconciliations
+            .iter()
+            .find(|row| row.unit_id == unit.0)
+            .unwrap();
+        assert_eq!(equity.consolidated_total_equity, total);
+        assert_eq!(equity.non_controlling_interest_equity, minority);
+        assert_eq!(
+            line(&native_group.run.income_statement, unit, "net_income"),
+            earnings
+        );
+        assert_eq!(
+            line(&native_group.run.balance_sheet, unit, "balance_check"),
+            0
+        );
+    }
+    // The retained EUR valuations are 752 and 754 USD minor units. T's
+    // 10,754 earnings yields controlling8066, then S's 28,818 yields23054.
+    let functional_eq = &functional_group.group.run.equity_reconciliations[0];
+    assert_eq!(functional_eq.consolidated_total_equity, 2_293_506);
+    assert_eq!(functional_eq.non_controlling_interest_equity, 262_452);
+    assert_eq!(functional_eq.controlling_interest_equity, 2_031_054);
+    assert_eq!(
+        line(
+            &functional_group.group.run.income_statement,
+            group.usd,
+            "net_income"
+        ),
+        23_054
+    );
+
+    for certificate in [&native.certificate, &functional.certificate] {
+        group
+            .book
+            .retain_certificate(PRINCIPAL, &producer, certificate)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            group.book.certificate_status(certificate).unwrap().unwrap(),
+            fa::CertificateStatus::Current { .. }
+        ));
+    }
+    // A later descendant posting changes the current result, but cannot
+    // change either historical certificate's rounded intermediate shares.
+    group.transfer("later-lower-sales", "T", "1000", "4000", group.usd, 333);
+    for certificate in [&native.certificate, &functional.certificate] {
+        assert!(matches!(
+            group.book.certificate_status(certificate).unwrap().unwrap(),
+            fa::CertificateStatus::SupersededBy { .. }
+        ));
+    }
+    // A second active parent makes today's group ambiguous. Historical
+    // replay and its portable closure must use the original single-parent graph.
+    let book_id = group.book.context().book_id;
+    group
+        .book
+        .record_relationship(
+            &RelationshipSpec {
+                from: legal_entity_vid(book_id, "P"),
+                to: legal_entity_vid(book_id, "T"),
+                kind: RelationshipKind::Owns {
+                    pct: OwnershipPct::new(1, 5).unwrap(),
+                },
+                basis: "equity_voting".into(),
+                valid_from: day(1),
+                valid_to: None,
+            },
+            PRINCIPAL,
+            day(1),
+            b"later-ambiguous-lower-parent",
+            &capability(&["read", "schema_change"]),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        group
+            .book
+            .consolidation(PERIOD, None, &capability(&["read"]))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-194"
+    );
+    group.checkpoint();
+    for certificate in [&native.certificate, &functional.certificate] {
+        let replayed = group.book.replay_report(certificate).unwrap().unwrap();
+        assert_eq!(replayed.canonical_bytes().unwrap(), certificate.output);
+        let produced = group
+            .book
+            .produce_report_bundle(PRINCIPAL, &producer, None, certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[group.book.checkpoint_public_key()],
+            None,
+            Some(&produced.receipt),
+            Some(&certificate.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output);
+        assert_eq!(verified.known_at, pin.0);
+        assert!(verified.consolidation.is_some());
+        assert!(verified.checkpoint.checkpoint.through_seq > pin.0);
+        let mut tampered = produced.bundle.bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &tampered,
+                &[group.book.checkpoint_public_key()],
+                None,
+                Some(&produced.receipt),
+                Some(&certificate.digest),
+            )
+            .is_err()
+        );
+    }
 }

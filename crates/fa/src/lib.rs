@@ -61,6 +61,7 @@ pub mod balance_allocation;
 pub mod balance_allocation_review;
 pub mod bank;
 pub mod book;
+pub mod case_statements;
 pub mod cash_flow_basis;
 pub mod cash_flow_certificate;
 pub mod cash_flow_policy;
@@ -148,6 +149,7 @@ pub use book::{
     Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS, ProducedBundle, ReadScope,
     Replanned,
 };
+pub use case_statements::{CaseStatementBasis, CaseStatementDiffRequest};
 pub use cash_flow_basis::{
     CashFlowBasis, CashFlowBasisCertificate, CashFlowBasisDefinition, CashFlowBasisKind,
 };

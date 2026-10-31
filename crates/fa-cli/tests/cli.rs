@@ -5189,7 +5189,32 @@ fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> s
 /// - The same intent posted outside the case is refused (FA-REF-178).
 #[test]
 fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()> {
-    let dir = tmp("revision")?;
+    revision_case_statement_comparison(false, false)
+}
+
+/// The original reporting closure can precede other postings. A restatement
+/// comparison must include those intervening changes, not only Post's delta.
+#[test]
+fn a_case_compares_first_issued_statements_with_its_fixed_post() -> std::io::Result<()> {
+    revision_case_statement_comparison(true, false)
+}
+
+#[test]
+fn a_case_without_issuance_compares_first_lock_with_its_fixed_post() -> std::io::Result<()> {
+    revision_case_statement_comparison(false, true)
+}
+
+fn revision_case_statement_comparison(
+    issued_before_post: bool,
+    locked_before_post: bool,
+) -> std::io::Result<()> {
+    let dir = tmp(if issued_before_post {
+        "revision-issued"
+    } else if locked_before_post {
+        "revision-locked"
+    } else {
+        "revision"
+    })?;
     let book = dir.join("book");
     let run = |args: &[&str]| -> (i32, String) {
         let (code, out, err) = fa(Some(&book), args);
@@ -5224,6 +5249,93 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         "--json",
     ]);
     let target = field(&out, "vid").unwrap_or_default().to_string();
+    let issue_certificate = |key: &str, certificate: &str| {
+        let planned = doc(&ok(&[
+            "statement",
+            "issue",
+            "--certificate",
+            certificate,
+            "--for",
+            "FY2026-P03",
+            "--issued-to",
+            "auditor",
+            "--key",
+            key,
+            "--dry-run",
+            "--json",
+        ]));
+        let plan = write(&dir, &format!("{key}.plan"), text(&planned, "bytes"));
+        let digest = text(&planned, "proposal_digest");
+        let approval = field(
+            &ok(&[
+                "approve",
+                "--proposal",
+                digest,
+                "--as",
+                "controller",
+                "--json",
+            ]),
+            "approval_vid",
+        )
+        .unwrap()
+        .to_string();
+        ok(&[
+            "statement",
+            "issue",
+            "--plan",
+            &plan,
+            "--approval",
+            &approval,
+            "--json",
+        ]);
+    };
+    let issue_statement = |key: &str| -> i128 {
+        let mut statement = vec![
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--json",
+        ];
+        if issued_before_post {
+            statement.extend(["--compare", "FY2026-P02"]);
+        }
+        let certified = ok(&statement);
+        let certificate = format!("C:{}", field(&certified, "oid").unwrap());
+        let at = field(&certified, "known_at").unwrap().parse().unwrap();
+        issue_certificate(key, &certificate);
+        at
+    };
+    let mut originally_reported = issued_before_post.then(|| {
+        let at = issue_statement("original-statements");
+        // A later publication may reuse the original frontier but introduce
+        // another comparative layout. It is not part of the first issuance:
+        // neither its January comparative nor its selector may leak into
+        // the original balance sheet or move the opening before January.
+        let later_layout = ok(&[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P01",
+            "--as-known-at",
+            &at.to_string(),
+            "--certify",
+            "--json",
+        ]);
+        let certificate = format!("C:{}", field(&later_layout, "oid").unwrap());
+        assert_eq!(int(&doc(&later_layout), "known_at"), Some(at));
+        issue_certificate("later-layout", &certificate);
+        let later = write(
+            &dir,
+            "later-expense.json",
+            r#"{"effective_date":"2026-03-20","idempotency_key":"later-expense","legs":[{"side":"debit","account":"6100","amount":"7.00 USD"},{"side":"credit","account":"1000","amount":"7.00 USD"}]}"#,
+        );
+        ok(&["post", "--intent", &later, "--evidence", &evidence, "--json"]);
+        at
+    });
     ok(&[
         "period",
         "close",
@@ -5233,6 +5345,40 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         "--yes",
         "--json",
     ]);
+    if locked_before_post {
+        let plan = dir.join("lock.plan").display().to_string();
+        let planned = ok(&[
+            "period",
+            "lock",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--plan-out",
+            &plan,
+            "--json",
+        ]);
+        let digest = field(&planned, "proposal_digest").unwrap();
+        let approved = ok(&[
+            "approve",
+            "--proposal",
+            digest,
+            "--as",
+            "controller",
+            "--json",
+        ]);
+        let approval = field(&approved, "approval_vid").unwrap();
+        let locked = ok(&[
+            "period",
+            "lock",
+            "FY2026-P03",
+            "--plan",
+            &plan,
+            "--approval",
+            approval,
+            "--json",
+        ]);
+        originally_reported = Some(field(&locked, "recorded_at").unwrap().parse().unwrap());
+    }
     let out = ok(&[
         "case",
         "open",
@@ -5388,19 +5534,51 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
     assert!(lineage.contains("Revises"), "{lineage}");
     let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
     assert!(
-        tb.contains("1020.00 USD"),
+        tb.contains(if issued_before_post {
+            "1027.00 USD"
+        } else {
+            "1020.00 USD"
+        }),
         "the closed March moves by the delta: {tb}"
     );
     // The restatement diff (plan §8.3): March's balance sheet and income
-    // statement, then the February balance sheet that opens March (IAS
-    // 1.40A), each from the frontier just before the Post to the Post.
+    // statement, then the opening position before the earliest comparative
+    // (IAS 1.40A). Issued March starts at its original reporting closure; an
+    // unreported period explicitly identifies its correction-only fallback.
     let statement_diffs = |out: &str| -> Vec<Json> {
         out.lines()
             .filter(|l| l.contains("\"event\":\"statement_diff\""))
             .map(|l| json::parse(l).unwrap_or(Json::Null))
             .collect()
     };
-    let diffs = statement_diffs(&ok(&["case", "diff", "1", "--statements", "--json"]));
+    let compared = ok(&["case", "diff", "1", "--statements", "--json"]);
+    let bases: Vec<_> = compared
+        .lines()
+        .filter(|line| line.contains("\"event\":\"case_statement_basis\""))
+        .map(doc)
+        .collect();
+    assert_eq!(bases.len(), 3, "{compared}");
+    assert_eq!(
+        text(&bases[0], "basis"),
+        if issued_before_post {
+            "first-issuance"
+        } else if locked_before_post {
+            "first-lock"
+        } else {
+            "before-post-unreported"
+        }
+    );
+    assert_eq!(text(&bases[2], "basis"), text(&bases[0], "basis"));
+    assert_eq!(text(&bases[2], "basis_period"), "FY2026-P03");
+    if issued_before_post {
+        assert!(
+            bases
+                .iter()
+                .all(|basis| int(basis, "issuance_ordinal") == Some(1)),
+            "a later pre-Post layout cannot replace the first reporting event: {compared}"
+        );
+    }
+    let diffs = statement_diffs(&compared);
     let names: Vec<String> = diffs
         .iter()
         .map(|d| text(&data(d), "name").to_string())
@@ -5419,32 +5597,68 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
             .collect()
     };
     assert_eq!(periods(&diffs[0]), ["FY2026-P03"]);
-    assert_eq!(periods(&diffs[1]), ["FY2026-P03"]);
-    assert_eq!(periods(&diffs[2]), ["FY2026-P02"]);
+    assert_eq!(
+        periods(&diffs[1]),
+        if issued_before_post {
+            vec!["FY2026-P03", "FY2026-P02"]
+        } else {
+            vec!["FY2026-P03"]
+        },
+        "the issued comparative column is preserved"
+    );
+    assert_eq!(
+        periods(&diffs[2]),
+        [if issued_before_post {
+            "FY2026-P01"
+        } else {
+            "FY2026-P02"
+        }],
+        "opening position precedes the earliest issued comparative"
+    );
     let after = int(&data(&diffs[0]), "after_known_at");
     for d in &diffs {
         assert_eq!(int(&data(d), "after_known_at"), after, "{d:?}");
-        assert_eq!(
-            int(&data(d), "before_known_at").map(|seq| seq + 1),
-            after,
-            "the frontier just before the Post: {d:?}"
-        );
+        if let Some(originally_reported) = originally_reported {
+            assert_eq!(
+                int(&data(d), "before_known_at"),
+                Some(originally_reported),
+                "{d:?}"
+            );
+            assert!(
+                Some(originally_reported + 1) < after,
+                "first issuance precedes other publications: {d:?}"
+            );
+        } else {
+            assert_eq!(
+                int(&data(d), "before_known_at").map(|seq| seq + 1),
+                after,
+                "explicit correction-only fallback: {d:?}"
+            );
+        }
     }
     // The correction's own effect: March's expense line moves by 20.00 and
-    // both March statements change; the opening February position does not.
+    // both March statements change; the opening position does not.
     let expense = arr(&data(&diffs[1]), "lines")
         .iter()
         .find(|line| {
-            arr(line, "after")
-                .iter()
-                .any(|a| a.as_str() == Some("1020.00 USD"))
+            arr(line, "after").iter().any(|a| {
+                a.as_str()
+                    == Some(if issued_before_post {
+                        "1027.00 USD"
+                    } else {
+                        "1020.00 USD"
+                    })
+            })
         })
         .cloned()
         .unwrap_or(Json::Null);
     assert!(
-        arr(&expense, "delta")
-            .iter()
-            .any(|d| d.as_str() == Some("20.00 USD")),
+        arr(&expense, "delta").iter().any(|d| d.as_str()
+            == Some(if issued_before_post {
+                "27.00 USD"
+            } else {
+                "20.00 USD"
+            })),
         "{diffs:?}"
     );
     for (d, changed) in diffs.iter().zip([true, true, false]) {
@@ -5470,6 +5684,26 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         assert_eq!(replayed.len(), 1);
         assert_eq!(data(&replayed[0]), data(d), "C:{oid} replays");
     }
+    // The first or a subsequent issuance after Post must not replace either
+    // source of an already posted case, even after reopening the CLI book.
+    issue_statement("later-statements");
+    // Later versions of period metadata must not remove the original opening
+    // period from the historical comparison's statement set.
+    ok(&[
+        "period",
+        "open",
+        if issued_before_post {
+            "FY2026-P01"
+        } else {
+            "FY2026-P02"
+        },
+        "--json",
+    ]);
+    let later = statement_diffs(&ok(&["case", "diff", "1", "--statements", "--json"]));
+    assert_eq!(
+        later.iter().map(data).collect::<Vec<_>>(),
+        diffs.iter().map(data).collect::<Vec<_>>()
+    );
     // Planted: --certify certifies only the statements, and an unknown case
     // has none.
     let (code, out) = run(&["case", "diff", "1", "--certify", "--json"]);
@@ -5696,6 +5930,11 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         tb.contains("1200.00 USD"),
         "the closed March moves by the delta: {tb}"
     );
+    // A Restatement cannot call the pre-Post frontier "originally reported"
+    // when no statement was issued and the period was only Closed.
+    let (code, out) = run(&["case", "diff", "1", "--statements", "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-161"), "{out}");
     // Outside its case a Restatement is refused, even confirmed and with restate.
     let (code, out) = run(&[
         "post",
@@ -5763,13 +6002,42 @@ fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() ->
         "--json",
     ]);
     let original_certificate = dir.join("original-income.cert").display().to_string();
-    ok(&[
+    let original = ok(&[
         "statement",
         "income-statement",
         "--for",
         "FY2026-P03",
         "--certificate-out",
         &original_certificate,
+        "--json",
+    ]);
+    let certificate = format!("C:{}", field(&original, "oid").unwrap());
+    let planned = doc(&ok(&[
+        "statement",
+        "issue",
+        "--certificate",
+        &certificate,
+        "--issued-to",
+        "auditor",
+        "--dry-run",
+        "--json",
+    ]));
+    let plan = write(&dir, "policy-original.plan", text(&planned, "bytes"));
+    let approved = ok(&[
+        "approve",
+        "--proposal",
+        text(&planned, "proposal_digest"),
+        "--as",
+        "controller",
+        "--json",
+    ]);
+    ok(&[
+        "statement",
+        "issue",
+        "--plan",
+        &plan,
+        "--approval",
+        field(&approved, "approval_vid").unwrap(),
         "--json",
     ]);
     let original_status = || {
@@ -11900,6 +12168,57 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["statement", "balance-sheet", "--for", "FY2026-P03"]).0,
         0
     );
+    // A statement issuance (fa-wrrw): planned, approved in another hand,
+    // committed from the exact plan, then listed. Record the original
+    // reporting basis before the case workflows and their Post frontier.
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issued = field(&out, "oid").unwrap_or_default().to_string();
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "issue",
+            "--certificate",
+            &issued,
+            "--issued-to",
+            "auditor",
+            "--dry-run",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issue_plan = write(&dir, "issue.plan", field(&out, "bytes").unwrap_or_default());
+    let issue_digest = field(&out, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (code, out) = run(
+        true,
+        &["approve", "--proposal", &issue_digest, "--as", "controller"],
+    );
+    assert_eq!(code, 0, "{out}");
+    let issue_approval = field(&out, "approval_vid").unwrap_or_default().to_string();
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            &issue_plan,
+            "--approval",
+            &issue_approval,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(run(true, &["statement", "issuances"]).0, 0);
     // A restatement case (fa-75j4): opened, determined, read.
     assert_eq!(
         run(
@@ -12136,6 +12455,22 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let (code, out) = run(true, &["case", "post", "2"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let (code, out) = run(true, &["case", "diff", "2", "--statements"]);
+    assert_eq!(code, 0, "{out}");
+    let statement_bases: Vec<_> = out
+        .lines()
+        .filter(|line| field(line, "event") == Some("case_statement_basis"))
+        .map(doc)
+        .collect();
+    assert_eq!(statement_bases.len(), 3, "{out}");
+    assert!(
+        statement_bases.iter().all(|basis| {
+            text(basis, "basis") == "first-issuance"
+                && text(basis, "basis_period") == "FY2026-P03"
+                && int(basis, "issuance_ordinal") == Some(1)
+        }),
+        "{out}"
+    );
     // Current-period equity separates the correction from current income
     // and retains the exact case/period citation in certified replay.
     let equity_args = [
@@ -12247,56 +12582,6 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(code, 0, "{out}");
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Closed", "{out}");
-    // A statement issuance (fa-wrrw): planned, approved in another hand,
-    // committed from the exact plan, then listed.
-    let (code, out) = run(
-        true,
-        &[
-            "statement",
-            "income-statement",
-            "--for",
-            "FY2026-P03",
-            "--certify",
-        ],
-    );
-    assert_eq!(code, 0, "{out}");
-    let issued = field(&out, "oid").unwrap_or_default().to_string();
-    let (code, out) = run(
-        true,
-        &[
-            "statement",
-            "issue",
-            "--certificate",
-            &issued,
-            "--issued-to",
-            "auditor",
-            "--dry-run",
-        ],
-    );
-    assert_eq!(code, 0, "{out}");
-    let issue_plan = write(&dir, "issue.plan", field(&out, "bytes").unwrap_or_default());
-    let issue_digest = field(&out, "proposal_digest")
-        .unwrap_or_default()
-        .to_string();
-    let (code, out) = run(
-        true,
-        &["approve", "--proposal", &issue_digest, "--as", "controller"],
-    );
-    assert_eq!(code, 0, "{out}");
-    let issue_approval = field(&out, "approval_vid").unwrap_or_default().to_string();
-    let (code, out) = run(
-        true,
-        &[
-            "statement",
-            "issue",
-            "--plan",
-            &issue_plan,
-            "--approval",
-            &issue_approval,
-        ],
-    );
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(run(true, &["statement", "issuances"]).0, 0);
     assert_eq!(
         run(
             true,
