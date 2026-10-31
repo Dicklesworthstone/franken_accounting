@@ -1,10 +1,12 @@
 //! Statement questions for a posted correction case. Both frontiers are fixed
 //! by journal evidence: later publications cannot change an old case's bridge.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use asupersync::fs::Vfs;
 use fa_journal::{CaseKind, CaseState, IssuedTo, KernelError, Refusal};
-use fa_model::Id128;
-use fa_time::{PeriodKind, PeriodState};
+use fa_model::{EntryClass, Id128};
+use fa_time::{PeriodDef, PeriodKind, PeriodState};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
@@ -29,6 +31,10 @@ pub enum CaseStatementBasis {
         recorded_at: CommitSeq,
     },
     BeforePost,
+    /// The case's effect in the current posting period of a prior-period
+    /// adjustment. This is an additional bridge over the atomic Post, not a
+    /// claim that the current period had already been issued or locked.
+    BeforePostImpact,
 }
 
 impl CaseStatementBasis {
@@ -38,6 +44,7 @@ impl CaseStatementBasis {
             Self::FirstIssuance { .. } => "first-issuance",
             Self::FirstLock { .. } => "first-lock",
             Self::BeforePost => "before-post-unreported",
+            Self::BeforePostImpact => "before-post-impact",
         }
     }
 }
@@ -55,7 +62,8 @@ pub struct CaseStatementDiffRequest {
     pub basis: CaseStatementBasis,
     /// The period whose original reporting event supplies the earlier
     /// frontier. An otherwise unreported opening statement uses the earliest
-    /// affected period's reporting closure.
+    /// affected period's reporting closure. For `BeforePostImpact`, this is
+    /// the actual posting period whose case-only movement is compared.
     pub basis_period: String,
     pub request: StatementDiffRequest,
 }
@@ -178,6 +186,91 @@ fn period_source<V: Vfs + Clone>(
     }))
 }
 
+/// Follow the immutable Post's bounded member list, rather than scanning later
+/// entries or guessing that a prior-period adjustment posts in a declared
+/// source period. Resolve each member against the historical period metadata,
+/// including explicit adjustment-period discriminators.
+fn adjustment_posting_periods<V: Vfs + Clone>(
+    db: &fgdb::Database<V>,
+    book: &fa_journal::BookContext,
+    view: &fa_journal::CaseView,
+    periods: &[fa_journal::rows::PeriodRow],
+    posted_at: CommitSeq,
+) -> Result<Vec<String>, KernelError> {
+    if view.body.kind != CaseKind::PriorPeriodAdjustment {
+        return Ok(Vec::new());
+    }
+    let mut by_year = BTreeMap::<i32, Vec<PeriodDef>>::new();
+    for period in periods {
+        if period.calendar_id == book.calendar.id {
+            by_year
+                .entry(period.fiscal_year)
+                .or_default()
+                .push(PeriodDef {
+                    code: period.code.clone(),
+                    fiscal_year: period.fiscal_year,
+                    ordinal: period.ordinal,
+                    kind: period.kind,
+                    start: period.start,
+                    end: period.end,
+                });
+        }
+    }
+    let mut selected = BTreeSet::new();
+    for member in &view.posted {
+        let (entry, recorded_at) = fa_journal::post::read_entry_at(db, member.entry, posted_at)?
+            .ok_or_else(|| {
+                KernelError::Corrupt("case posting impact has a missing Post member".into())
+            })?;
+        if recorded_at != posted_at
+            || entry.entry_digest != member.entry_digest
+            || entry.proposal.book_id != book.book_id
+            || entry.proposal.branch_id != Id128::TRUNK
+            || entry.proposal.class != EntryClass::PRIOR_PERIOD_ADJUSTMENT
+        {
+            return Err(KernelError::Corrupt(
+                "case posting impact differs from its committed Post member".into(),
+            ));
+        }
+        let binding = entry
+            .proposal
+            .extensions
+            .iter()
+            .find_map(|(tag, bytes)| {
+                (*tag == fa_model::entry::CASE_MEMBER_EXTENSION).then_some(bytes)
+            })
+            .ok_or_else(|| {
+                KernelError::Corrupt("case posting impact lacks its membership".into())
+            })?;
+        let binding = fa_journal::CaseMember::decode(binding)?;
+        if binding.ordinal != view.body.ordinal || binding.plan != member.plan {
+            return Err(KernelError::Corrupt(
+                "case posting impact names another case or approved plan".into(),
+            ));
+        }
+        let explicit = entry.proposal.effective_period.as_ref();
+        if explicit.is_some_and(|period| period.calendar != book.calendar.id) {
+            return Err(KernelError::Corrupt(
+                "case posting impact names another fiscal calendar".into(),
+            ));
+        }
+        let year = book
+            .calendar
+            .fiscal_year_of(entry.proposal.effective_date)?;
+        let calendar = by_year.get(&year).ok_or_else(|| {
+            KernelError::Corrupt("case posting impact has no recorded fiscal year".into())
+        })?;
+        let period = fa_time::resolve_period(
+            calendar,
+            entry.proposal.effective_date,
+            explicit.map(|period| period.code.as_str()),
+        )
+        .map_err(|error| KernelError::Corrupt(format!("case posting impact period: {error:?}")))?;
+        selected.insert(period.code.clone());
+    }
+    Ok(selected.into_iter().collect())
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Select affected-period statements and the opening balance sheet under
     /// current whole-book Read authority. The original coordinate is the first
@@ -192,6 +285,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// into that original reporting closure, even if certified at the same
     /// frontier. The opening statement alone derives a new
     /// single-period stock question. Every `after` is Post, never HEAD.
+    /// Prior-period adjustments additionally compare their actual current
+    /// posting periods immediately before and at Post, under every valuation
+    /// measure used by the original-report comparisons. These explicitly
+    /// labelled impact questions cannot replace the historical questions.
     pub async fn case_statement_diff_requests(
         &mut self,
         cx: &PurposeContexts,
@@ -282,9 +379,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     Err(refusal) => return Ok(Err(refusal)),
                 }
             }
-            Ok(Ok((periods, selected)))
+            let posting_periods = adjustment_posting_periods(db, book, &view, &periods, posted_at)?;
+            Ok(Ok((periods, selected, posting_periods)))
         })?;
-        let (periods, selected) = match selected {
+        let (periods, selected, posting_periods) = match selected {
             Ok(selected) => selected,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -365,6 +463,39 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             }
         }
+        // Keep original-report/opening questions intact. A PPA changes current
+        // retained earnings while its historical source period can correctly
+        // show zero movement; requiring these extra questions prevents that
+        // zero historical bridge from concealing the actual correction.
+        let measures: BTreeSet<_> = requests
+            .iter()
+            .filter(|request| !request.opening)
+            .map(|request| request.functional)
+            .collect();
+        for period in posting_periods {
+            for &functional in &measures {
+                for name in ["balance-sheet", "income-statement"] {
+                    requests.push(CaseStatementDiffRequest {
+                        case: ordinal,
+                        period: period.clone(),
+                        opening: false,
+                        functional,
+                        basis: CaseStatementBasis::BeforePostImpact,
+                        basis_period: period.clone(),
+                        request: StatementDiffRequest {
+                            selection: StatementSelection {
+                                definition: StatementDefinition::embedded(name)
+                                    .map_err(|error| KernelError::Corrupt(error.to_string()))?,
+                                periods: vec![period.clone()],
+                                comparative: Vec::new(),
+                            },
+                            before: before_post,
+                            after: Some(posted_at),
+                        },
+                    });
+                }
+            }
+        }
         Ok(Ok(requests))
     }
 
@@ -410,7 +541,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         )
                     })?,
             ),
-            CaseStatementBasis::FirstLock { .. } | CaseStatementBasis::BeforePost => None,
+            CaseStatementBasis::FirstLock { .. }
+            | CaseStatementBasis::BeforePost
+            | CaseStatementBasis::BeforePostImpact => None,
         };
         let issued_selection = if let Some(issued) = original {
             let artifact = match self
@@ -557,13 +690,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 expected.push(selection);
             }
         }
-        if digests.len() != expected.len() {
-            return Ok(Err(comparison_refused(format!(
-                "case {ordinal} needs {} distinct fixed statement comparisons; {} were supplied",
-                expected.len(),
-                digests.len(),
-            ))));
-        }
         let post = self.query(cx, |db, book| {
             let authority = match fa_journal::policy::admit_reads(db, book, principal, capability)?
             {
@@ -580,15 +706,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .iter()
                 .find(|transition| transition.to == CaseState::Posted)
                 .ok_or_else(|| KernelError::Corrupt("validated case Post vanished".into()))?;
-            Ok(Ok(fa_journal::DisclosurePost {
+            let post = fa_journal::DisclosurePost {
                 entry: post.control_entry,
                 recorded_at: post.recorded_at,
-            }))
+            };
+            // The immutable evidence set of an existing disclosure also fixes
+            // its exact retry across additive comparison-profile extensions.
+            // The kernel still requires the original document, request and
+            // idempotency key; this path cannot publish another disclosure.
+            let recorded = view
+                .disclosure
+                .filter(|disclosure| disclosure.post == Some(post))
+                .map(|disclosure| disclosure.comparisons);
+            Ok(Ok((post, recorded)))
         })?;
-        let post = match post {
+        let (post, recorded) = match post {
             Ok(post) => post,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        if let Some(recorded) = recorded {
+            if recorded != digests {
+                return Ok(Err(comparison_refused(
+                    "an already recorded disclosure fixes its comparison digests; an exact retry must supply the same set",
+                )));
+            }
+        } else if digests.len() != expected.len() {
+            return Ok(Err(comparison_refused(format!(
+                "case {ordinal} needs {} distinct fixed statement comparisons; {} were supplied",
+                expected.len(),
+                digests.len(),
+            ))));
+        }
         let mut matched = vec![false; expected.len()];
         let mut validated = Vec::with_capacity(digests.len());
         for digest in &digests {

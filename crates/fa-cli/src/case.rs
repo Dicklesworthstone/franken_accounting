@@ -749,7 +749,7 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
                     ("issued_to", Json::Null),
                 ]);
             }
-            fa::CaseStatementBasis::BeforePost => {
+            fa::CaseStatementBasis::BeforePost | fa::CaseStatementBasis::BeforePostImpact => {
                 fields.extend([
                     ("issuance_ordinal", Json::Null),
                     ("basis_recorded_at", Json::Null),

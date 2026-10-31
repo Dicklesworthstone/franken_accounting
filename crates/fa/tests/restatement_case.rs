@@ -971,6 +971,56 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         entry.approvals.is_empty(),
         "the case's approvals are its own"
     );
+    // The historical period has no monetary delta: this case posts its
+    // correction to current retained earnings. Its disclosure must therefore
+    // include the current posting period, explicitly labelled as the atomic
+    // Post's effect rather than a previously issued current-period report.
+    let comparison_cap = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
+    let fixed_questions = book
+        .case_statement_diff_requests(PRINCIPAL, &comparison_cap, 1, None)
+        .unwrap()
+        .unwrap();
+    let impacts: Vec<_> = fixed_questions
+        .iter()
+        .filter(|question| question.basis == fa::CaseStatementBasis::BeforePostImpact)
+        .collect();
+    assert_eq!(impacts.len(), 2);
+    for impact in &impacts {
+        assert_eq!(impact.period, "FY2026-P02");
+        assert_eq!(impact.basis_period, "FY2026-P02");
+        assert!(!impact.opening);
+        assert_eq!(impact.request.before, before_adjustment);
+        assert_eq!(impact.request.after, Some(posted.recorded_at));
+        let diff = book
+            .statement_diff(PRINCIPAL, &comparison_cap, &impact.request)
+            .unwrap()
+            .unwrap();
+        let line = |name| diff.lines().iter().find(|line| line.code == name).unwrap();
+        if impact.request.selection.definition.name() == "balance-sheet" {
+            assert_eq!(line("assets").delta, vec![50_000]);
+            assert_eq!(line("total_equity").delta, vec![50_000]);
+        } else {
+            assert!(
+                diff.lines().iter().all(|line| line.delta == [0]),
+                "a prior-period correction must not become current income"
+            );
+        }
+    }
+    for original in fixed_questions
+        .iter()
+        .filter(|question| question.basis != fa::CaseStatementBasis::BeforePostImpact)
+    {
+        let diff = book
+            .statement_diff(PRINCIPAL, &comparison_cap, &original.request)
+            .unwrap()
+            .unwrap();
+        assert!(
+            diff.lines()
+                .iter()
+                .all(|line| line.delta.iter().all(|value| *value == 0)),
+            "a zero historical bridge must remain visible alongside the actual posting impact"
+        );
+    }
     let mut expected_case = fa::CertificateSupersedingCase {
         ordinal: 1,
         kind: CaseKind::PriorPeriodAdjustment,
@@ -1144,6 +1194,38 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     )
     .unwrap()
     .unwrap();
+    let historical_only: Vec<_> = comparisons
+        .iter()
+        .copied()
+        .filter(|digest| {
+            let artifact = book
+                .read_report_artifact(PRINCIPAL, &read, digest)
+                .unwrap()
+                .unwrap();
+            let certificate =
+                fa::StatementDiffCertificate::decode(&artifact.canonical_bytes().unwrap()).unwrap();
+            certificate.request().unwrap().selection.periods != ["FY2026-P02"]
+        })
+        .collect();
+    assert_eq!(historical_only.len() + 2, comparisons.len());
+    let head = book.head().unwrap();
+    let omitted_impact = book
+        .disclose_case(
+            closer.clone(),
+            1,
+            note.oid(),
+            &historical_only,
+            date,
+            b"missing-current-effect",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(omitted_impact.code, code::CASE_STATEMENT_DIFF);
+    assert_eq!(
+        book.head().unwrap(),
+        head,
+        "omitting the actual correction writes nothing"
+    );
     // Every comparison is mandatory and must answer the exact original
     // statement question at the immutable case Post. A valid but unrelated
     // retained report is no disclosure evidence for this case.
@@ -1540,6 +1622,13 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
             .unwrap(),
         certified.report,
         "later reversals never reinterpret the original retained certificate"
+    );
+    assert_eq!(
+        book.case_statement_diff_requests(PRINCIPAL, &read, 1, None)
+            .unwrap()
+            .unwrap(),
+        fixed_questions,
+        "later disclosures and reversals cannot change the original Post's historical or current-period questions"
     );
 }
 
