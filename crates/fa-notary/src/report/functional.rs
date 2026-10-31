@@ -141,11 +141,12 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                             | FxLawId::PeriodEndRevaluation
                             | FxLawId::PeriodAverage
                             | FxLawId::SettlementCarryingBasis
+                            | FxLawId::SettlementSpotCarrying
                             | FxLawId::YearEndCloseCarrying
                     )
                 ) {
                     return Ok(Err(refused(
-                        "portable functional reports support SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis, YearEndCloseCarrying and exact inherited reversals",
+                        "portable functional reports support SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis and SettlementSpotCarrying, YearEndCloseCarrying and exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {

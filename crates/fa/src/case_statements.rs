@@ -542,9 +542,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let mut digests = comparisons.to_vec();
         digests.sort();
-        if digests.iter().any(|digest| *digest == [0; 32])
-            || digests.windows(2).any(|pair| pair[0] == pair[1])
-        {
+        if digests.contains(&[0; 32]) || digests.windows(2).any(|pair| pair[0] == pair[1]) {
             return Ok(Err(comparison_refused(
                 "duplicate or zero disclosure comparison digest",
             )));
