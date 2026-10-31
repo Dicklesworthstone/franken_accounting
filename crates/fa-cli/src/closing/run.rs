@@ -483,9 +483,12 @@ mod tests {
         ] {
             assert!(task_definition(text).is_err(), "{text}");
         }
-        let tasks =
-            task_definition(r#"[{"id":"lock","depends_on":["accruals"],"transition":"lock"}]"#)
-                .unwrap();
+        let tasks = match task_definition(
+            r#"[{"id":"lock","depends_on":["accruals"],"transition":"lock"}]"#,
+        ) {
+            Ok(tasks) => tasks,
+            Err(_) => panic!("a lock task depending on accruals parses"),
+        };
         assert_eq!(tasks[0].depends_on, ["accruals"]);
         assert_eq!(
             tasks[0].action,

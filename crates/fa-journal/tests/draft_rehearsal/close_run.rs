@@ -522,11 +522,19 @@ fn close_run_status_refuses_state_and_immutable_definition_tampering() {
     let declaration = definition(&h, "tamper", vec![task("post", &[], action)]);
     let run = start(&mut h, &declaration).unwrap();
     let mut batch = WriteBatch::new(relation::IN_CASE);
-    batch.set_vertex_property(run.tasks[0].vid, property::STATE, CanonicalScalar::Int(1));
+    batch.set_vertex_property(
+        run.tasks[0].vid,
+        property::STATE,
+        Some(CanonicalScalar::Int(1)),
+    );
     h.write(batch);
     assert!(close_run_status(&h.db, &h.ctx(), &h.book, "tamper", &reader()).is_err());
     let mut restore = WriteBatch::new(relation::IN_CASE);
-    restore.set_vertex_property(run.tasks[0].vid, property::STATE, CanonicalScalar::Int(0));
+    restore.set_vertex_property(
+        run.tasks[0].vid,
+        property::STATE,
+        Some(CanonicalScalar::Int(0)),
+    );
     h.write(restore);
     assert!(
         close_run_status(&h.db, &h.ctx(), &h.book, "tamper", &reader()).is_err(),
@@ -559,7 +567,7 @@ fn close_run_status_binds_the_original_native_outcome_not_a_rewritten_entry_list
         batch.set_vertex_property(
             outcome,
             property::FA_PAYLOAD,
-            CanonicalScalar::bytes(body.canonical_bytes().unwrap()).unwrap(),
+            Some(CanonicalScalar::bytes(body.canonical_bytes().unwrap()).unwrap()),
         );
         h.write(batch);
         assert!(close_run_status(&h.db, &h.ctx(), &h.book, "outcome-history", &reader()).is_err());

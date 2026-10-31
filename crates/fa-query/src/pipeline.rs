@@ -264,12 +264,13 @@ fn output_columns(lexed: &Lexed<'_>, returned: usize) -> Result<Vec<String>, Ref
     let end = (returned + 1..lexed.tokens.len())
         .find(|&i| clause_word(lexed, i))
         .unwrap_or(lexed.tokens.len());
-    let mut from = returned + 1;
-    if lexed.word(from, "DISTINCT") {
-        from += 1;
+    let mut first = returned + 1;
+    if lexed.word(first, "DISTINCT") {
+        first += 1;
     }
     let mut ranges = Vec::new();
-    for i in from..end {
+    let mut from = first;
+    for i in first..end {
         if lexed.root(i) && lexed.punct(i, ',') {
             ranges.push(from..i);
             from = i + 1;

@@ -807,7 +807,7 @@ fn read_view<V: Vfs + Clone>(
                         && p.extensions.is_empty()
                         && proof_refs.len() == 1 =>
                 {
-                    completed_at = Some((*seq, proof_refs[0].clone(), p.principal_ref));
+                    completed_at = Some((*seq, proof_refs[0], p.principal_ref));
                     RecordKind::Complete
                 }
                 _ => {
@@ -1211,7 +1211,7 @@ impl TaskCompletion {
         &self,
         txn: &mut WriteTxn,
         tracker: &mut TemplateByteTracker,
-        db: &Database<V>,
+        db: &mut Database<V>,
         book: &BookContext,
         effect: VId,
         entries: Option<&[EntryRef]>,
