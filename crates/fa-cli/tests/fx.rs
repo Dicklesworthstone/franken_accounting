@@ -453,7 +453,7 @@ fn same_unit_foreign_and_native_group_use_retained_quotes_and_exact_cold_retry()
     let before = head(&f.book);
     let (status, refused) = run(&f.book, &["settle", "--intent", &bad], None);
     assert_eq!(status, 3, "{}", refused.render());
-    assert_eq!(text(&refused, "refusal_id"), "FA-REF-071");
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-071");
     assert_eq!(head(&f.book), before);
     let path = f.file(
         "same-unit-group.json",

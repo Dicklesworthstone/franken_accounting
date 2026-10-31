@@ -189,8 +189,9 @@ pub fn assemble_with_registries(
 /// original six-registry closure, exact historical version-2 BookSpec, and every authenticated Rate
 /// document cited at or before known-at. The facade must govern every Rate read.
 /// This profile supports sequence-selected trunk reports under SpotClose,
-/// PeriodAverage and source-bound SettlementCarryingBasis, including exact
-/// inherited reversals. Migration visibility and activation are independently
+/// PeriodAverage, aggregate PeriodEndRevaluation, source-bound
+/// SettlementCarryingBasis and SettlementSpotCarrying, and YearEndCloseCarrying,
+/// including exact inherited reversals. Migration visibility and activation are independently
 /// derived from the authenticated lifecycle and run bodies; imported values
 /// use base-unit identity or SpotClose. Other valuation laws remain unsupported.
 ///
