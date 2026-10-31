@@ -5420,8 +5420,9 @@ fn the_query_cluster_runs_the_clis_profile_statement() {
 /// restate), the fa.case cluster's read tool returns what the Post changed
 /// in each affected statement, as `fa case diff <case> --statements`: March's
 /// balance sheet and income statement and the February balance sheet that
-/// opens March, each the CLI's own statement_diff data. A show with
-/// statements is a usage error, not a silently ignored switch.
+/// opens March, each the CLI's own case_statement_basis and statement_diff
+/// data. A show with statements is a usage error, not a silently ignored
+/// switch.
 #[test]
 fn the_case_cluster_reads_a_posted_cases_statement_diffs_like_the_cli() {
     let dir = tmp("case-statements");
@@ -5540,18 +5541,22 @@ fn the_case_cluster_reads_a_posted_cases_statement_diffs_like_the_cli() {
         &auditor,
     ]);
     ok(&["case", "post", "1"]);
-    let expected: Vec<Json> = ok(&["case", "diff", "1", "--statements"])
+    // Each statement is its comparison basis, then its diff (fa-0hs4.7).
+    let lines: Vec<(String, Json)> = ok(&["case", "diff", "1", "--statements"])
         .lines()
         .map(|line| {
             let line = fa_cli::json::parse(line).expect("a robot line");
-            assert_eq!(
-                line.get("event").and_then(Json::as_str),
-                Some("statement_diff")
-            );
-            line.get("data").cloned().unwrap_or(Json::Null)
+            let event = text_of(&line, "event");
+            (event, line.get("data").cloned().unwrap_or(Json::Null))
         })
         .collect();
-    assert_eq!(expected.len(), 3, "{expected:?}");
+    let events: Vec<&str> = lines.iter().map(|(event, _)| event.as_str()).collect();
+    assert_eq!(
+        events,
+        ["case_statement_basis", "statement_diff"].repeat(3),
+        "{lines:?}"
+    );
+    let expected: Vec<Json> = lines.into_iter().map(|(_, data)| data).collect();
 
     let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.case"]);
     mcp.discover();
@@ -5575,7 +5580,14 @@ fn the_case_cluster_reads_a_posted_cases_statement_diffs_like_the_cli() {
         .collect();
     assert_eq!(
         names,
-        ["balance-sheet", "income-statement", "balance-sheet"]
+        [
+            "balance-sheet",
+            "balance-sheet",
+            "income-statement",
+            "income-statement",
+            "balance-sheet",
+            "balance-sheet"
+        ]
     );
     let (error, text, _) = call_tool(
         &mut mcp,

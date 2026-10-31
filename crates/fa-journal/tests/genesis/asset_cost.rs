@@ -81,6 +81,10 @@ impl Fixture {
             ))
             .unwrap()
             .unwrap();
+        // The schedules charge April and May; Adjusting is refused in a
+        // Future period (admissibility.toml), and the harness opens March.
+        h.transition("FY2026-P04", PeriodTransition::Open, b"open-asset-april")
+            .unwrap();
         h.transition("FY2026-P05", PeriodTransition::Open, b"open-asset-may")
             .unwrap();
         let source = h.proposal(
