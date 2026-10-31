@@ -30,8 +30,10 @@ use fa_model::{
 use fgdb_types::{CommitSeq, VId};
 
 mod replacement_review;
+mod schema_control_review;
 
 pub use replacement_review::{MAX_REPLACEMENT_REVIEW_BYTES, ReplacementReview};
+pub use schema_control_review::{MAX_SCHEMA_CONTROL_REVIEW_BYTES, SchemaControlReview};
 
 const INTENT_MAGIC: &[u8; 10] = b"FA-INTENT\0";
 const PLAN_MAGIC: &[u8; 13] = b"FA-POST-PLAN\0";

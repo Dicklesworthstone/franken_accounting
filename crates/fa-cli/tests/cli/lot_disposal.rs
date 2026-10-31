@@ -25,6 +25,38 @@ fn ok(book: &Path, step: &str, args: &[&str]) -> String {
     out
 }
 
+/// A launch-bound session receives a batch on stdin (`--intent -`), never
+/// as a host path (fa-yha).
+fn ok_bound_batch(book: &Path, step: &str, token: &str, batch: &str, draft: &str) -> String {
+    use std::io::Write;
+    let args = [
+        "--token", token, "batch", "--intent", "-", "--draft", draft, "--json",
+    ];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(book)
+        .args(args)
+        .env_remove("FA_BOOK")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run fa");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(&std::fs::read(batch).expect("batch file"))
+        .expect("forward the batch");
+    let output = child.wait_with_output().expect("fa exits");
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    let code = output.status.code().unwrap_or(-1);
+    check_robot_output(&args, code, &out);
+    assert_eq!(code, 0, "{step}: argv={args:?}\nstdout={out}\nstderr={err}");
+    out
+}
+
 fn frontier(book: &Path) -> Json {
     let out = ok(book, "frontier", &["book", "info", "--json"]);
     json::parse(out.trim())
@@ -639,20 +671,24 @@ fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> st
     let mut reviews = Vec::new();
     let mut batches = Vec::new();
     for (account, key) in [("1400", "first-draft-lot"), ("1401", "second-draft-lot")] {
-        let before = frontier(&book);
+        let Json::Int(before) = frontier(&book) else {
+            panic!("book info reports an integer frontier");
+        };
         let review = lot_agent_review(&book, &token, &evidence, account, key);
+        // A bound session journals its access receipt before it reads
+        // (access_log.rs); the review itself publishes no entry.
         assert_eq!(
             frontier(&book),
-            before,
-            "review preparation publishes nothing"
+            Json::Int(before + 1),
+            "review preparation publishes only its access record"
         );
         let batch = batch_file(&dir, key, vec![review_member(&review)]);
-        let planned = ok(
+        let planned = ok_bound_batch(
             &book,
             "append independently reviewed inventory",
-            &[
-                "--token", &token, "batch", "--intent", &batch, "--draft", name, "--json",
-            ],
+            &token,
+            &batch,
+            name,
         );
         assert_eq!(field(&planned, "event"), Some("draft_planned"));
         reviews.push(retained_disposal(&review));
@@ -679,7 +715,9 @@ fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> st
     }
     let original_first = remaining_lots(&book, "1400");
     let original_second = remaining_lots(&book, "1401");
-    let before = frontier(&book);
+    let Json::Int(before) = frontier(&book) else {
+        panic!("book info reports an integer frontier");
+    };
     let certificate = dir.join("lot-draft.cert").display().to_string();
     let reviewed = ok(
         &book,
@@ -699,10 +737,17 @@ fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> st
     let reviewed = doc(reviewed.lines().next().unwrap());
     assert_eq!(int(&reviewed, "plans"), Some(2));
     assert_eq!(arr(&reviewed, "entries").len(), 2);
-    assert_eq!(frontier(&book), before);
+    // --certificate-out retains the review certificate (a storage-only
+    // publication, fa draft_review.rs); no entry posts and no lot moves.
+    assert_eq!(
+        frontier(&book),
+        Json::Int(before + 1),
+        "the rehearsal publishes only its retained certificate"
+    );
     assert_eq!(remaining_lots(&book, "1400"), original_first);
     assert_eq!(remaining_lots(&book, "1401"), original_second);
 
+    let before_promotion = frontier(&book);
     let (code, out, err) = run(
         &book,
         "agent cannot promote its inventory draft",
@@ -724,7 +769,11 @@ fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> st
     );
     assert_eq!(code, 7, "{out}\n{err}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-008"));
-    assert_eq!(frontier(&book), before);
+    assert_eq!(
+        frontier(&book),
+        before_promotion,
+        "refused promotions publish nothing"
+    );
 
     let promoted = doc(&ok(
         &book,
@@ -739,7 +788,17 @@ fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> st
             "--json",
         ],
     ));
-    assert_eq!(promoted.get("entries"), reviewed.get("entries"));
+    // The rehearsal names each entry with its digest; promotion publishes
+    // exactly those entries.
+    let rehearsed: Vec<&str> = arr(&reviewed, "entries")
+        .iter()
+        .map(|entry| text(entry, "vid"))
+        .collect();
+    let published: Vec<&str> = arr(&promoted, "entries")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(published, rehearsed);
     for (vid, original) in arr(&promoted, "entries").iter().zip(&reviews) {
         let vid = fgdb_types::VId(u128::from_str_radix(vid.as_str().unwrap(), 16).unwrap());
         let (entry, at) = open().read_entry(vid).unwrap().unwrap();
@@ -765,12 +824,12 @@ fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> st
     );
     assert_eq!(doc(&replayed), reviewed);
     for batch in &batches {
-        let retry = ok(
+        let retry = ok_bound_batch(
             &book,
             "retry original draft append after promotion",
-            &[
-                "--token", &token, "batch", "--intent", batch, "--draft", name, "--json",
-            ],
+            &token,
+            batch,
+            name,
         );
         assert!(
             retry
@@ -814,13 +873,7 @@ fn stale_lot_draft_refuses_promotion_without_partial_inventory_relief() -> std::
         "stale-lot-draft",
         vec![review_member(&first), review_member(&second)],
     );
-    ok(
-        &book,
-        "append two lot reviews",
-        &[
-            "--token", &token, "batch", "--intent", &batch, "--draft", name, "--json",
-        ],
-    );
+    ok_bound_batch(&book, "append two lot reviews", &token, &batch, name);
     ok(
         &book,
         "competing second inventory disposal",

@@ -4757,7 +4757,19 @@ fn parse_chart_specs_fail(
                     "type: Asset|Liability|Equity|Revenue|Expense|Memo|Statistical|OffBalance",
                 )
             })?;
-        let normal_balance = AccountType(account_type).normal_balance().unwrap_or(0);
+        // A contra account (accumulated depreciation, treasury stock) states
+        // the side opposite its type's; otherwise the type's side holds.
+        let normal_balance = match row.get("normal_balance") {
+            None | Some(Json::Null) => AccountType(account_type).normal_balance().unwrap_or(0),
+            Some(Json::Str(side)) if side == "debit" => 0,
+            Some(Json::Str(side)) if side == "credit" => 1,
+            Some(_) => {
+                return Err(usage(
+                    format!("{what}: `normal_balance` must be \"debit\" or \"credit\""),
+                    "normal_balance: \"credit\" (a contra account; omit it for the type's own side)",
+                ));
+            }
+        };
         let is_leaf = row.get("leaf").and_then(Json::as_bool).unwrap_or(true);
         let unit_policy = match row.get("unit").and_then(Json::as_str) {
             None | Some("any") => UnitPolicy::AnyUnit,
@@ -10669,6 +10681,54 @@ pub(crate) fn decode_hex_bytes(text: &str, what: &str) -> Result<Vec<u8>, Fail> 
         .collect()
 }
 
+/// An approval-free retained review a typed command restores unchanged: a
+/// PostEntry intent, or a schema-control proposal (lot policy, asset
+/// schedule), which keeps its own Control-origin codec.
+pub(crate) trait RetainedReview: Sized {
+    fn decode_review(bytes: &[u8]) -> Result<Self, fa::IntentError>;
+    fn review_bytes(&self) -> Result<Vec<u8>, fa::IntentError>;
+    fn review_digest(&self) -> Result<[u8; 32], fa::IntentError>;
+    fn reviewed(&self) -> &fa_model::EntryPayload;
+    fn approval_free(&self) -> bool;
+}
+
+impl RetainedReview for fa::PostIntent {
+    fn decode_review(bytes: &[u8]) -> Result<Self, fa::IntentError> {
+        Self::decode(bytes)
+    }
+    fn review_bytes(&self) -> Result<Vec<u8>, fa::IntentError> {
+        self.canonical_bytes()
+    }
+    fn review_digest(&self) -> Result<[u8; 32], fa::IntentError> {
+        self.digest()
+    }
+    fn reviewed(&self) -> &fa_model::EntryPayload {
+        self.proposal()
+    }
+    fn approval_free(&self) -> bool {
+        self.approvals().is_empty()
+    }
+}
+
+impl RetainedReview for fa::SchemaControlReview {
+    fn decode_review(bytes: &[u8]) -> Result<Self, fa::IntentError> {
+        Self::decode(bytes)
+    }
+    fn review_bytes(&self) -> Result<Vec<u8>, fa::IntentError> {
+        self.canonical_bytes()
+    }
+    fn review_digest(&self) -> Result<[u8; 32], fa::IntentError> {
+        self.digest()
+    }
+    fn reviewed(&self) -> &fa_model::EntryPayload {
+        self.proposal()
+    }
+    fn approval_free(&self) -> bool {
+        // The codec never carries approvals; they are cited on restore.
+        true
+    }
+}
+
 pub(crate) fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Result<Vec<u8>, Fail> {
     let is_inline_hex = path != "-"
         && path.len() >= 28
@@ -10733,6 +10793,7 @@ pub(crate) fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Resul
     }
     if bytes.starts_with(b"FA-INTENT\0")
         || bytes.starts_with(ReplacementReview::MAGIC)
+        || bytes.starts_with(fa::SchemaControlReview::MAGIC)
         || bytes.starts_with(fa::RecurringPlan::MAGIC)
         || bytes.starts_with(b"FA-ALLOC-REVIEW\0")
         || bytes.starts_with(b"FA-BAL-REVIEW\0")
@@ -15608,8 +15669,25 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "fa verify schedules --book <dir> [--json]",
                 ));
             }
-            let book = ctx.books.open(args)?;
-            let v = book.verify_schedules()?;
+            let principal = ctx.principal(args);
+            let capability = ctx.capability(args, &["read", "verify"])?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                fa_policy::admit_read(&capability, principal, book.context().book_id)
+                    .and_then(|()| {
+                        fa_policy::require(
+                            &capability,
+                            fa_policy::Op::Verify,
+                            "verifying schedules",
+                        )
+                    })
+                    .and_then(|()| {
+                        fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+                    })
+                    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                book.read_scope(principal, &capability)??;
+                Ok(())
+            })?;
+            let v = book.verify_schedules_with_history(&capability)??;
             let fields = vec![
                 ("schedules_checked", Json::Int(v.schedules_checked as i128)),
                 ("executed", Json::Int(v.executed as i128)),

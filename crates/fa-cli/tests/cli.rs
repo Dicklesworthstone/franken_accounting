@@ -13871,6 +13871,167 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&matched, "invoice_total"), "10.00 USD");
     assert_eq!(matched.get("confirmed"), Some(&Json::Bool(false)));
 
+    // Lot policy, lot disposal and asset-cost schedules emit their registered
+    // events through the real commands (083e1ccde, 23bd97ee1, f267b9a8b).
+    let assets_book = dir.join("lots-and-assets-events-book");
+    let mut run_assets = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&assets_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_assets(&["book", "create", "--name", "Lot and asset events"]);
+    let assets_chart = write(
+        &dir,
+        "lots-assets-chart.json",
+        r#"{"accounts":[
+        {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+        {"code":"1400","name":"Inventory","type":"Asset","unit":"any"},
+        {"code":"1499","name":"Quantity offset","type":"Equity","unit":"SHARE"},
+        {"code":"1500","name":"Equipment","type":"Asset","unit":"USD"},
+        {"code":"1590","name":"Accumulated cost","type":"Asset","normal_balance":"credit","unit":"USD"},
+        {"code":"5100","name":"Cost of goods sold","type":"Expense","unit":"USD"},
+        {"code":"6100","name":"Depreciation","type":"Expense","unit":"USD"}
+    ]}"#,
+    );
+    run_assets(&["chart", "import", &assets_chart]);
+    run_assets(&["period", "create", "--fiscal-year", "2026"]);
+    run_assets(&["period", "open", "FY2026-P01"]);
+    run_assets(&["period", "open", "FY2026-P02"]);
+    let assets_evidence = format!("D:{}", source_doc(&dir, &assets_book));
+    run_assets(&["chart", "lot-policy", "show", "--account", "1400"]);
+    let lot_policy = [
+        "chart",
+        "lot-policy",
+        "set",
+        "--account",
+        "1400",
+        "--law",
+        "FIFO",
+        "--regime",
+        "US-GAAP",
+        "--date",
+        "2026-01-01",
+        "--key",
+        "events-lot-policy",
+    ];
+    run_assets(&[&lot_policy[..], &["--review-only"][..]].concat());
+    run_assets(&lot_policy);
+    let lots = write(
+        &dir,
+        "events-lots.json",
+        r#"{"effective_date":"2026-01-05","idempotency_key":"events-lots","legs":[
+        {"side":"debit","account":"1400","amount":"10.000000 SHARE"},
+        {"side":"credit","account":"1499","amount":"10.000000 SHARE"},
+        {"side":"debit","account":"1400","amount":"100.00 USD"},
+        {"side":"credit","account":"1000","amount":"100.00 USD"}
+    ]}"#,
+    );
+    run_assets(&["post", "--intent", &lots, "--evidence", &assets_evidence]);
+    run_assets(&[
+        "dispose",
+        "--account",
+        "1400",
+        "--quantity",
+        "3.000000 SHARE",
+        "--quantity-offset",
+        "1499",
+        "--cost-offset",
+        "5100",
+        "--date",
+        "2026-01-15",
+        "--key",
+        "events-disposal",
+        "--evidence",
+        &assets_evidence,
+        "--review-only",
+    ]);
+    let equipment = write(
+        &dir,
+        "events-equipment.json",
+        r#"{"effective_date":"2026-01-05","idempotency_key":"events-equipment","legs":[
+        {"side":"debit","account":"1500","amount":"100.00 USD"},
+        {"side":"credit","account":"1000","amount":"100.00 USD"}
+    ]}"#,
+    );
+    let acquired = doc(&run_assets(&[
+        "post",
+        "--intent",
+        &equipment,
+        "--evidence",
+        &assets_evidence,
+    ]));
+    let acquisition = text(&acquired, "vid").to_string();
+    let schedule = [
+        "schedule",
+        "asset",
+        "create",
+        "events-press",
+        "--kind",
+        "depreciation",
+        "--acquisition",
+        acquisition.as_str(),
+        "--leg",
+        "0",
+        "--first-period",
+        "FY2026-P01",
+        "--periods",
+        "1",
+        "--salvage",
+        "0.00 USD",
+        "--expense",
+        "6100",
+        "--accumulated",
+        "1590",
+        "--rounding-law",
+        "HalfEven",
+        "--date",
+        "2026-01-05",
+        "--key",
+        "events-press",
+    ];
+    run_assets(&[&schedule[..], &["--review-only"][..]].concat());
+    run_assets(&schedule);
+    run_assets(&["schedule", "asset", "list"]);
+    let charge = |period: &'static str, key: &'static str| {
+        [
+            "depreciate",
+            "--schedule",
+            "events-press",
+            "--period",
+            period,
+            "--key",
+            key,
+            "--evidence",
+        ]
+    };
+    // A one-period life: the first period's charge is reviewed, then posted;
+    // the second period has nothing left to recognize.
+    run_assets(
+        &[
+            &charge("FY2026-P01", "events-charge-review")[..],
+            &[assets_evidence.as_str(), "--review-only"][..],
+        ]
+        .concat(),
+    );
+    run_assets(
+        &[
+            &charge("FY2026-P01", "events-charge")[..],
+            &[assets_evidence.as_str()][..],
+        ]
+        .concat(),
+    );
+    run_assets(
+        &[
+            &charge("FY2026-P02", "events-charge-noop")[..],
+            &[assets_evidence.as_str()][..],
+        ]
+        .concat(),
+    );
+    run_assets(&["schedule", "asset", "register"]);
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -13882,6 +14043,48 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         seen, declared,
         "every declared event is emitted, and nothing undeclared is"
     );
+    Ok(())
+}
+
+/// A chart row's `normal_balance` makes a contra account (accumulated
+/// depreciation) credit-normal; omitted, the type's side holds; any other
+/// value is refused before anything is installed.
+#[test]
+fn chart_import_reads_a_contra_accounts_normal_balance() -> std::io::Result<()> {
+    let dir = tmp("contra-chart")?;
+    let book = dir.join("book");
+    let (code, out, err) = fa(
+        Some(&book),
+        &["book", "create", "--name", "Contra Co", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let sideways = write(
+        &dir,
+        "sideways.json",
+        r#"{"accounts":[{"code":"1590","name":"Accumulated","type":"Asset","normal_balance":"sideways","unit":"USD"}]}"#,
+    );
+    let (code, out, _) = fa(Some(&book), &["chart", "import", &sideways, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("normal_balance"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["chart", "show", "1590", "--json"]);
+    assert_eq!(code, 2, "a refused chart installs nothing: {out}");
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+        {"code":"1500","name":"Equipment","type":"Asset","unit":"USD"},
+        {"code":"1590","name":"Accumulated depreciation","type":"Asset","normal_balance":"credit","unit":"USD"},
+        {"code":"3900","name":"Treasury stock","type":"Equity","normal_balance":"debit","unit":"USD"}
+    ]}"#,
+    );
+    let (code, out, err) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    for (account, side) in [("1500", "debit"), ("1590", "credit"), ("3900", "debit")] {
+        let (code, out, err) = fa(Some(&book), &["chart", "show", account, "--json"]);
+        assert_eq!(code, 0, "{out}\n{err}");
+        let shown = doc(&out).get("account").cloned().unwrap_or(Json::Null);
+        assert_eq!(text(&shown, "normal_side"), side, "{account}: {out}");
+    }
     Ok(())
 }
 

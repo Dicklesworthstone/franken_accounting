@@ -1,0 +1,25 @@
+# Retained unapproved schema-control proposals: a lot policy (fa chart lot-policy set
+# --review-only) or an asset schedule (fa schedule asset create --review-only).
+# A review is request data. It is neither a successful native rehearsal nor an
+# approval, signature, certificate, or authority to record the control.
+schema_version = 1
+format = "FA-SCHEMA-REVIEW"
+major = 1
+minor = 0
+max_review_bytes = 8388640
+review_domain = "fa:schema-control-review:v1"
+
+# Canonical bytes: fixed("FA-SCHEMA-REVIEW\0") || u16 major || u16 minor
+# || bytes(sealed Entry). bytes is a u32 little-endian length followed by the
+# exact bounded Entry. The Entry carries no approvals and no plan certificate.
+# Its proposal has class SchemaControl, a SchemaChange control payload, and
+# origin Control{ChartInstall}: a PostIntent (Intent origin) never decodes as
+# this review, and this review never decodes as a PostIntent. Unknown
+# versions and trailing bytes refuse.
+
+# review_digest = domain_digest(review_domain, [complete canonical bytes]).
+# Restore requires this independently retained digest, the same book on trunk,
+# and (for an asset schedule) the original acting principal. --approval binds
+# only the proposal_digest, never the review container. The typed control
+# operation then rebuilds the canonical control from the proposal and checks
+# current authority, the control bytes, and every approval before recording it.

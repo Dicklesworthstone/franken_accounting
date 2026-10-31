@@ -6257,6 +6257,19 @@ impl Book {
         with_store!(&self.store, core => core.verify_schedules(&self.purposes()))
     }
 
+    /// [`Self::verify_schedules`] after loading retained native history under
+    /// current whole-book Read and Verify authority, as a reopened or
+    /// checkpointed book needs for its asset schedules. Publishes nothing.
+    pub fn verify_schedules_with_history(
+        &mut self,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::ScheduleVerification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_schedules_with_history(&purposes, capability)
+        ))
+    }
+
     /// Recompute every FX-valued entry recorded at or before `known_at` (the
     /// head when `None`) from the Rate documents it cites, under the law it
     /// names (plan §6.4, §15.3 `fa verify fx-conversion`; FA-INV-01 `base`).

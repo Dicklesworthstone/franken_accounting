@@ -38,6 +38,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(Ok(()))
     }
 
+    /// `fa verify schedules` over complete native history. Current
+    /// whole-book Read and Verify admit loading the retained prefix, which
+    /// the asset-schedule verifier's entry history needs once a checkpoint
+    /// has retired the delta cursor. Nothing is published.
+    pub async fn verify_schedules_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+    ) -> Outcome<fa_journal::ScheduleVerification> {
+        if let Err(denial) = fa_policy::require(capability, Op::Verify, "verifying schedules") {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.prepare_asset_history(cx, None, capability).await? {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(self.verify_schedules(cx)?))
+    }
+
     pub async fn create_asset_schedule(
         &mut self,
         cx: &PurposeContexts,
@@ -139,10 +157,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &AssetChargeRequest,
         template: &EntryPayload,
     ) -> Outcome<PreparedAssetCharge> {
-        if let Err(refusal) = self
-            .prepare_source_history(cx, template.principal_ref, capability, Op::Post, &[])
-            .await?
+        // This method derives a proposal and writes nothing. Judge it as a
+        // plan, as lot disposals are, so an Agent can review a charge
+        // without receiving direct trunk authority; posting, committing or
+        // promoting it still runs the full trunk admission.
+        if let Err(denial) =
+            fa_policy::admit_read(capability, template.principal_ref, self.context.book_id)
+                .and_then(|()| {
+                    fa_policy::admit_base_for_plan(
+                        capability,
+                        &fa_policy::Intent {
+                            principal: template.principal_ref,
+                            trunk: true,
+                            op: Op::Post,
+                            book: self.context.book_id,
+                            legs: &[],
+                        },
+                    )
+                })
+                .and_then(|()| {
+                    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+                })
         {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.prepare_asset_history(cx, None, capability).await? {
             return Ok(Err(refusal));
         }
         Ok(fa_journal::asset_cost::prepare_asset_charge(

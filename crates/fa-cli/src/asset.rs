@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use fa::{AssetChargeRequest, Book, PostIntent, StoredAssetSchedule};
+use fa::{AssetChargeRequest, Book, PostIntent, SchemaControlReview, StoredAssetSchedule};
 use fa_model::{
     ApprovalRef, AssetCostKind, AssetScheduleSpec, ControlPayload, EntryClass, EntryOrigin,
     EntryPayload, EntryRef, Id128, Oid, PeriodRef, account_vid, domain_digest,
@@ -14,9 +14,9 @@ use fgdb_types::VId;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, Files, Out, check_post_planning_options, emit_post_plan, emit_posted, hex,
-    known_at_read_flag, parse_digest, parse_vid, plan_intent_into_draft, read_review_bytes,
-    render_amount, usage, write_review_file,
+    Ctx, Fail, Files, Out, RetainedReview, check_post_planning_options, emit_post_plan,
+    emit_posted, hex, known_at_read_flag, parse_digest, parse_vid, plan_intent_into_draft,
+    read_review_bytes, render_amount, usage, write_review_file,
 };
 use crate::json::{Json, obj, s};
 
@@ -110,14 +110,14 @@ fn review_mode(args: &Args) -> Result<bool, Fail> {
     Ok(review)
 }
 
-fn restore(
+fn restore<R: RetainedReview>(
     files: &Files,
     bound: bool,
     args: &Args,
     book: &Book,
     principal: VId,
     inputs: &[&str],
-) -> Result<PostIntent, Fail> {
+) -> Result<R, Fail> {
     if args.switch("--review-only")
         || args.flag("--review-out").is_some()
         || inputs.iter().any(|name| args.flag(name).is_some())
@@ -128,21 +128,21 @@ fn restore(
         ));
     }
     let bytes = read_review_bytes(files, required(args, "--review")?, bound)?;
-    let intent = PostIntent::decode(&bytes)
+    let intent = R::decode_review(&bytes)
         .map_err(|error| usage(format!("invalid asset review: {error}"), CHARGE_USAGE))?;
     let expected = parse_digest(required(args, "--digest")?, "review digest")?;
     if intent
-        .canonical_bytes()
+        .review_bytes()
         .map_err(|error| Fail::Internal(error.to_string()))?
         != bytes
         || intent
-            .digest()
+            .review_digest()
             .map_err(|error| Fail::Internal(error.to_string()))?
             != expected
-        || intent.proposal().book_id != book.context().book_id
-        || intent.proposal().branch_id != Id128::TRUNK
-        || intent.proposal().principal_ref != principal
-        || !intent.approvals().is_empty()
+        || intent.reviewed().book_id != book.context().book_id
+        || intent.reviewed().branch_id != Id128::TRUNK
+        || intent.reviewed().principal_ref != principal
+        || !intent.approval_free()
     {
         return Err(usage(
             "asset review bytes, digest, book or acting principal do not match",
@@ -175,23 +175,23 @@ fn approvals(args: &Args, proposal: &EntryPayload) -> Result<Vec<ApprovalRef>, F
         .collect()
 }
 
-fn emit_review(
+fn emit_review<R: RetainedReview>(
     out: &Out,
     files: &Files,
     args: &Args,
     book: &Book,
-    intent: &PostIntent,
+    intent: &R,
     event: &str,
     mut fields: Vec<(&str, Json)>,
 ) -> Result<(), Fail> {
     let bytes = intent
-        .canonical_bytes()
+        .review_bytes()
         .map_err(|error| Fail::Internal(error.to_string()))?;
     let digest = intent
-        .digest()
+        .review_digest()
         .map_err(|error| Fail::Internal(error.to_string()))?;
     let proposal_digest = intent
-        .proposal()
+        .reviewed()
         .proposal_digest()
         .map_err(|error| Fail::Internal(error.to_string()))?;
     if let Some(path) = args.flag("--review-out") {
@@ -395,7 +395,7 @@ fn create(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .books
         .open_admitted(args, |book| admit(book, &capability, Op::SchemaChange))?;
     let intent = if args.flag("--review").is_some() {
-        restore(&ctx.files, bound, args, &book, principal, SCHEDULE_INPUTS)?
+        restore::<SchemaControlReview>(&ctx.files, bound, args, &book, principal, SCHEDULE_INPUTS)?
     } else {
         if args.flag("--digest").is_some() || args.flag("--approval").is_some() {
             return Err(usage(
@@ -459,7 +459,7 @@ fn create(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             description,
         )
         .map_err(|error| usage(format!("asset schedule: {error}"), SCHEDULE_USAGE))?;
-        PostIntent::new(proposal, Vec::new())
+        SchemaControlReview::new(proposal)
             .map_err(|error| usage(format!("asset schedule: {error}"), SCHEDULE_USAGE))?
     };
     let spec = match &intent.proposal().control {
@@ -630,7 +630,7 @@ fn charge(ctx: &mut Ctx<'_>, args: &Args, kind: AssetCostKind) -> Result<(), Fai
         .open_admitted(args, |book| admit(book, &capability, Op::Post))?;
     let mut preview_amounts = None;
     let intent = if args.flag("--review").is_some() {
-        restore(&ctx.files, bound, args, &book, principal, CHARGE_INPUTS)?
+        restore::<PostIntent>(&ctx.files, bound, args, &book, principal, CHARGE_INPUTS)?
     } else {
         if args.flag("--digest").is_some() || args.flag("--approval").is_some() {
             return Err(usage(

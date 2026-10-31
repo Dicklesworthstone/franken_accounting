@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fa::{Book, BookKeys, Entropy, PostIntent, PostPlan};
+use fa::{Book, BookKeys, Entropy, PostIntent, PostPlan, SchemaControlReview};
 use fa_cli::json::{self, Json};
 use fa_journal::refusal::code;
 use fa_model::{AssetScheduleSpec, ControlPayload, Entry, EntryClass};
@@ -289,7 +289,10 @@ impl Fixture {
         );
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes, decode_hex(text(data(&review), "bytes")));
-        let intent = PostIntent::decode(&bytes).unwrap();
+        // A schedule is a Control-origin schema control, retained in its own
+        // codec: it is never a PostEntry intent.
+        assert!(PostIntent::decode(&bytes).is_err());
+        let intent = SchemaControlReview::decode(&bytes).unwrap();
         assert_eq!(intent.canonical_bytes().unwrap(), bytes);
         assert_eq!(
             hex(&intent.digest().unwrap()),
@@ -347,7 +350,14 @@ impl Fixture {
             ],
         );
         assert_eq!(integer(data(&historical), "known_at"), before);
-        assert!(rows(data(&historical), "schedules").is_empty());
+        // Earlier schedules of the same book may exist; this one may not.
+        assert!(
+            rows(data(&historical), "schedules")
+                .iter()
+                .all(|row| row.get("terms").map(|terms| text(terms, "name")) != Some(name)),
+            "{}",
+            historical.render()
+        );
         let shown = ok(
             &self.book,
             "show schedule",
@@ -460,6 +470,8 @@ fn assert_charge(
     let bytes = decode_hex(text(data(review), "bytes"));
     let intent = PostIntent::decode(&bytes).unwrap();
     assert_eq!(intent.canonical_bytes().unwrap(), bytes);
+    // A charge is an ordinary Intent-origin posting, never a schema control.
+    assert!(SchemaControlReview::new(intent.proposal().clone()).is_err());
     assert_eq!(
         hex(&intent.digest().unwrap()),
         text(data(review), "review_digest")
@@ -1084,7 +1096,7 @@ fn typed_and_raw_reversals_retain_the_exact_asset_charge_basis() {
     std::fs::write(
         &restore_path,
         format!(
-            r#"{{"class":"Reversal","reverses":"{reversal_vid}","reason":"DataEntryError","idempotency_key":"restore-press-charge"}}"#
+            r#"{{"class":"Reversal","reverses":"{reversal_vid}","reason":"DataEntryError","effective_date":"2026-01-31","idempotency_key":"restore-press-charge"}}"#
         ),
     )
     .unwrap();

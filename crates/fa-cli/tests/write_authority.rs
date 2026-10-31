@@ -1347,6 +1347,40 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Read, Op::Post, Op::Close],
             Reaches,
         ),
+        // Lots and asset schedules (083e1ccde, 23bd97ee1): each restores a
+        // placeholder review after authority, so none changes the book.
+        row(
+            &["dispose", "--review", ZERO_DIGEST, "--digest", ZERO_DIGEST],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
+            &[
+                "chart",
+                "lot-policy",
+                "set",
+                "--review",
+                ZERO_DIGEST,
+                "--digest",
+                ZERO_DIGEST,
+            ],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "schedule",
+                "asset",
+                "create",
+                "matrix-asset",
+                "--review",
+                ZERO_DIGEST,
+                "--digest",
+                ZERO_DIGEST,
+            ],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
     ];
     let mut produce = row(
         &[
