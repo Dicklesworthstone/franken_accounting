@@ -473,7 +473,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 selection.clone()
             } else {
                 StatementSelection {
-                    definition: StatementDefinition::embedded(&name).map_err(KernelError::from)?,
+                    definition: StatementDefinition::embedded(&name)
+                        .map_err(|error| KernelError::Corrupt(error.to_string()))?,
                     periods: vec![period.clone()],
                     comparative: Vec::new(),
                 }
