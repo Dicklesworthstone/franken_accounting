@@ -678,63 +678,8 @@ fn export_part370_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &capability))?;
     let known_at = known_at_read_flag(args, &book, &ctx.out, &capability)?.0;
     let bank = book.part370_book(as_of, known_at, &capability)??;
-    let bundle = fa_formats::part370::generate_part370_bundle(&bank).map_err(|error| {
-        Fail::Refusal(fa_journal::Refusal::new(
-            fa_journal::refusal::code::STRUCTURE,
-            fa_journal::exit::USAGE,
-            error.to_string(),
-            "plan §15.6 workflow 3 (the FDIC Part 370 profile's file contract)",
-            "correct the named deposit, participant or customer record (fa instrument profile, fa party identifiers) and export again",
-        ))
-    })?;
+    let (bundle, files, owners) = part370_package(&bank)?;
     let coordinate = &bundle.coordinate;
-    let money = |mantissa: i128, scale: u8| fa_formats::format_exact_decimal(mantissa, scale);
-    let mut certificate = format!(
-        "format = \"fdic_part370_v1\"\nbook = \"{}\"\neffective_date = \"{}\"\nknown_at = {}\njournal_certificate_digest = \"{}\"\ncertificate_digest = \"{}\"\nsdia = \"{}\"\nallocation_law = \"LargestRemainder\"\nallocation_law_version = 1\n",
-        coordinate.book_name,
-        bundle.effective_date,
-        coordinate.known_at_seq,
-        hex(&coordinate.certificate_digest),
-        bundle.certificate_digest_hex,
-        money(bank.sdia_mantissa, 2),
-    );
-    let mut owners = Vec::with_capacity(bundle.owner_aggregations.len());
-    for row in &bundle.owner_aggregations {
-        certificate.push_str(&format!(
-            "\n[[owner]]\ncustomer = \"{}\"\ncapacity = \"{}\"\nunit = \"{}\"\naggregate = \"{}\"\ninsured = \"{}\"\nuninsured = \"{}\"\n",
-            row.cs_unique_id,
-            row.orc_code.as_str(),
-            row.unit_code,
-            money(row.aggregate_balance_mantissa, row.scale),
-            money(row.insured_amount_mantissa, row.scale),
-            money(row.uninsured_amount_mantissa, row.scale),
-        ));
-        owners.push(obj(vec![
-            ("customer", s(row.cs_unique_id.as_str())),
-            ("capacity", s(row.orc_code.as_str())),
-            ("unit", s(row.unit_code.as_str())),
-            (
-                "aggregate",
-                s(money(row.aggregate_balance_mantissa, row.scale)),
-            ),
-            ("insured", s(money(row.insured_amount_mantissa, row.scale))),
-            (
-                "uninsured",
-                s(money(row.uninsured_amount_mantissa, row.scale)),
-            ),
-        ]));
-    }
-    let files: Vec<ExportFile> = PART370_FILES
-        .into_iter()
-        .zip([
-            bundle.customer_file.clone(),
-            bundle.account_file.clone(),
-            bundle.account_participant_file.clone(),
-            bundle.pending_file.clone(),
-            certificate,
-        ])
-        .map(|(name, content)| ExportFile { name, content })
-        .collect();
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()
         .map_err(|e| Fail::Internal(e.into()))?
@@ -809,7 +754,81 @@ fn export_part370_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-const VERIFY_EXAMPLE: &str = "fa verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl|warehouse <the exported file, or the ads package directory> --json";
+/// The Part 370 package of `bank`: its bundle, the five files in package
+/// order (the four profile files and `Part370_Certificate.toml`), and the
+/// owner rows as robot JSON. Export writes it; verification regenerates it
+/// at the package's own coordinate and compares.
+fn part370_package(
+    bank: &fa_formats::part370::Part370BankBook,
+) -> Result<
+    (
+        fa_formats::part370::Part370OutputBundle,
+        Vec<ExportFile>,
+        Vec<Json>,
+    ),
+    Fail,
+> {
+    let bundle = fa_formats::part370::generate_part370_bundle(bank).map_err(|error| {
+        Fail::Refusal(fa_journal::Refusal::new(
+            fa_journal::refusal::code::STRUCTURE,
+            fa_journal::exit::USAGE,
+            error.to_string(),
+            "plan §15.6 workflow 3 (the FDIC Part 370 profile's file contract)",
+            "correct the named deposit, participant or customer record (fa instrument profile, fa party identifiers) and export again",
+        ))
+    })?;
+    let coordinate = &bundle.coordinate;
+    let money = |mantissa: i128, scale: u8| fa_formats::format_exact_decimal(mantissa, scale);
+    let mut certificate = format!(
+        "format = \"fdic_part370_v1\"\nbook = \"{}\"\neffective_date = \"{}\"\nknown_at = {}\njournal_certificate_digest = \"{}\"\ncertificate_digest = \"{}\"\nsdia = \"{}\"\nallocation_law = \"LargestRemainder\"\nallocation_law_version = 1\n",
+        coordinate.book_name,
+        bundle.effective_date,
+        coordinate.known_at_seq,
+        hex(&coordinate.certificate_digest),
+        bundle.certificate_digest_hex,
+        money(bank.sdia_mantissa, 2),
+    );
+    let mut owners = Vec::with_capacity(bundle.owner_aggregations.len());
+    for row in &bundle.owner_aggregations {
+        certificate.push_str(&format!(
+            "\n[[owner]]\ncustomer = \"{}\"\ncapacity = \"{}\"\nunit = \"{}\"\naggregate = \"{}\"\ninsured = \"{}\"\nuninsured = \"{}\"\n",
+            row.cs_unique_id,
+            row.orc_code.as_str(),
+            row.unit_code,
+            money(row.aggregate_balance_mantissa, row.scale),
+            money(row.insured_amount_mantissa, row.scale),
+            money(row.uninsured_amount_mantissa, row.scale),
+        ));
+        owners.push(obj(vec![
+            ("customer", s(row.cs_unique_id.as_str())),
+            ("capacity", s(row.orc_code.as_str())),
+            ("unit", s(row.unit_code.as_str())),
+            (
+                "aggregate",
+                s(money(row.aggregate_balance_mantissa, row.scale)),
+            ),
+            ("insured", s(money(row.insured_amount_mantissa, row.scale))),
+            (
+                "uninsured",
+                s(money(row.uninsured_amount_mantissa, row.scale)),
+            ),
+        ]));
+    }
+    let files: Vec<ExportFile> = PART370_FILES
+        .into_iter()
+        .zip([
+            bundle.customer_file.clone(),
+            bundle.account_file.clone(),
+            bundle.account_participant_file.clone(),
+            bundle.pending_file.clone(),
+            certificate,
+        ])
+        .map(|(name, content)| ExportFile { name, content })
+        .collect();
+    Ok((bundle, files, owners))
+}
+
+const VERIFY_EXAMPLE: &str = "fa verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl|warehouse|part370 <the exported file, or the ads or part370 package directory> --json";
 const VERIFY_FIX: &str = "export again with fa export at the coordinate you need and verify that file; an edited export is not the book's";
 const VERIFY_CITE: &str = "plan §16 (export then import is the identity on folds) and the export's coordinate certificate (content_digest over the canonical journal, certificate_digest over its coordinate)";
 
@@ -1119,14 +1138,22 @@ struct Claimed {
 pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let [_, _, format, path] = args.positional.as_slice() else {
         return Err(usage(
-            "verify export needs the format and the exported file (the package directory for ads)",
+            "verify export needs the format and the exported file (the package directory for ads and part370)",
             VERIFY_EXAMPLE,
         ));
     };
     let (format, path) = (format.as_str(), path.as_str());
     if !matches!(
         format,
-        "ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl" | "warehouse"
+        "ads"
+            | "saft"
+            | "csv-gl"
+            | "beancount"
+            | "hledger"
+            | "ndjson"
+            | "xbrl"
+            | "warehouse"
+            | "part370"
     ) {
         return Err(usage(
             format!("unknown export format `{format}`"),
@@ -1135,6 +1162,9 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     }
     if format == "warehouse" {
         return verify_warehouse_export(ctx, args, path);
+    }
+    if format == "part370" {
+        return verify_part370_export(ctx, args, path);
     }
     if format == "ads" && path == "-" {
         return Err(usage(
@@ -1300,20 +1330,10 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         None
     };
     let expected = render_files(format, &journal, equity.as_ref(), activity.as_ref())?;
-    for (file, found) in expected.iter().zip(&contents) {
-        if file.content != *found {
-            let line = file
-                .content
-                .lines()
-                .zip(found.lines())
-                .position(|(a, b)| a != b)
-                .unwrap_or_else(|| file.content.lines().count().min(found.lines().count()));
-            return Err(failed(format!(
-                "{} differs from what fa export {format} writes at this coordinate, first at line {}",
-                file.name,
-                line + 1
-            )));
-        }
+    if let Some((name, line)) = first_difference(&expected, &contents) {
+        return Err(failed(format!(
+            "{name} differs from what fa export {format} writes at this coordinate, first at line {line}"
+        )));
     }
     let legs: usize = journal.entries.iter().map(|e| e.legs.len()).sum();
     let refold = journal
@@ -1345,6 +1365,202 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             coordinate.effective_through.render(),
             coordinate.known_at_seq,
             coordinate.entry_count,
+        ),
+    );
+    Ok(())
+}
+
+/// The first of `found` that is not byte for byte its `expected` file,
+/// with the first line (1-based) where the two part.
+fn first_difference(expected: &[ExportFile], found: &[String]) -> Option<(&'static str, usize)> {
+    expected
+        .iter()
+        .zip(found)
+        .find(|(file, found)| file.content != **found)
+        .map(|(file, found)| {
+            let line = file
+                .content
+                .lines()
+                .zip(found.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| file.content.lines().count().min(found.lines().count()));
+            (file.name, line + 1)
+        })
+}
+
+const PART370_VERIFY_CITE: &str = "plan §15.6 workflow 3 (the Part 370 package reproduces each figure from the book) and its Part370_Certificate.toml (journal_certificate_digest over the journal coordinate; certificate_digest, fa.formats.fdic_part370.v1, over that coordinate, the four files and the owner aggregation)";
+
+/// `fa verify export part370 <dir>` (plan §15.6 workflow 3, bead
+/// `fa-p370`). The package's certificate names its end-of-day effective
+/// date and known-at prefix; the book's deposits, parties, balances and
+/// holds are read again there, under read and verify. The package's four
+/// files, owner rows and certificate digest must replay from them
+/// (`verify_part370_bundle`), and each of its five files must be byte for
+/// byte what `fa export part370` writes at that coordinate. Nothing is
+/// written to the book.
+fn verify_part370_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result<(), Fail> {
+    use fa_formats::part370::{Part370OrcCode, Part370OutputBundle, Part370OwnerSummaryRow};
+    use fa_registry::toml::Value;
+    if path == "-" {
+        return Err(usage(
+            "a part370 export is a package directory, not stdin",
+            VERIFY_EXAMPLE,
+        ));
+    }
+    for name in PART370_FILES {
+        let inner = format!("{path}/{name}");
+        let regular = std::fs::symlink_metadata(ctx.files.resolve(&inner))
+            .is_ok_and(|meta| meta.file_type().is_file());
+        if !regular {
+            return Err(usage(
+                format!("{inner} is not a regular file of a Part 370 package"),
+                "pass the directory fa export part370 --out wrote, with its five files",
+            ));
+        }
+    }
+    let contents = PART370_FILES
+        .iter()
+        .map(|name| ctx.files.read_text(&format!("{path}/{name}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let [customer, account, participant, pending, certificate] = contents.as_slice() else {
+        return Err(Fail::Internal("a Part 370 package has five files".into()));
+    };
+    let failed = |message: String| Fail::Verification {
+        message,
+        detail: obj(vec![("format", s("part370")), ("file", s(path))]),
+        cite: Some(PART370_VERIFY_CITE.into()),
+        fix: Some(VERIFY_FIX.into()),
+    };
+    let document = fa_registry::toml::parse(certificate)
+        .map_err(|e| failed(format!("Part370_Certificate.toml does not parse: {e}")))?;
+    let text = |table: &fa_registry::toml::Table, key: &str, what: &str| {
+        table
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| failed(format!("{what} has no string {key}")))
+    };
+    let root = "Part370_Certificate.toml";
+    let format = text(&document.root, "format", root)?;
+    if format != "fdic_part370_v1" {
+        return Err(failed(format!(
+            "{root} is format `{format}`, not fdic_part370_v1"
+        )));
+    }
+    let effective_date = DateDay::parse(&text(&document.root, "effective_date", root)?)
+        .map_err(|e| failed(format!("{root}'s effective_date: {e}")))?;
+    let known_at = document
+        .root
+        .get("known_at")
+        .and_then(Value::as_int)
+        .and_then(|seq| u64::try_from(seq).ok())
+        .ok_or_else(|| failed(format!("{root} has no known_at sequence")))?;
+    let claimed_journal = text(&document.root, "journal_certificate_digest", root)?;
+    let mut owners = Vec::new();
+    for (n, row) in document
+        .arrays
+        .get("owner")
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .enumerate()
+    {
+        let what = format!("{root}'s owner row {}", n + 1);
+        let money = |key: &str| {
+            fa_formats::parse_exact_decimal("fdic_part370_v1", &text(row, key, &what)?, 2)
+                .map_err(|e| failed(format!("{what}: {key}: {e}")))
+        };
+        owners.push(Part370OwnerSummaryRow {
+            cs_unique_id: text(row, "customer", &what)?,
+            orc_code: Part370OrcCode::parse(&text(row, "capacity", &what)?, "capacity", &what)
+                .map_err(|e| failed(e.to_string()))?,
+            unit_code: text(row, "unit", &what)?,
+            scale: 2,
+            aggregate_balance_mantissa: money("aggregate")?,
+            insured_amount_mantissa: money("insured")?,
+            uninsured_amount_mantissa: money("uninsured")?,
+        });
+    }
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    for op in [Op::Read, Op::Verify] {
+        fa_policy::require(
+            &capability,
+            op,
+            "verifying a Part 370 package against the journal",
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    let who = capability.holder();
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &capability))?;
+    let seq = fgdb_types::CommitSeq(known_at);
+    let bank = book.part370_book(effective_date, Some(seq), &capability)??;
+    let coordinate = &bank.coordinate;
+    let book_digest = hex(&coordinate.certificate_digest);
+    if claimed_journal != book_digest {
+        return Err(failed(format!(
+            "the package's journal certificate {claimed_journal} is not this book's at {}, known-at {known_at} ({book_digest}): another book's package, or an edited coordinate",
+            effective_date.render(),
+        )));
+    }
+    let (_, expected, _) = part370_package(&bank)?;
+    let package = Part370OutputBundle {
+        coordinate: coordinate.clone(),
+        effective_date,
+        customer_file: customer.clone(),
+        account_file: account.clone(),
+        account_participant_file: participant.clone(),
+        pending_file: pending.clone(),
+        owner_aggregations: owners,
+        certificate_digest_hex: text(&document.root, "certificate_digest", root)?,
+    };
+    if let Err(e) = fa_formats::part370::verify_part370_bundle(&bank, &package) {
+        let at = first_difference(&expected, &contents).map_or_else(String::new, |(name, line)| {
+            format!("; {name} differs from what fa export part370 writes, first at line {line}")
+        });
+        return Err(failed(format!(
+            "the Part 370 package does not replay from the book at its coordinate: {e}{at}"
+        )));
+    }
+    // The bundle check binds the four files, the owner rows and the
+    // digest; the certificate's remaining lines (book, sdia, allocation
+    // law) are held to the bytes export writes.
+    if let Some((name, line)) = first_difference(&expected, &contents) {
+        return Err(failed(format!(
+            "{name} differs from what fa export part370 writes at this coordinate, first at line {line}"
+        )));
+    }
+    let journal = book.format_journal(effective_date, Some(seq))?;
+    if journal.coordinate != *coordinate {
+        return Err(Fail::Internal(
+            "the Part 370 coordinate is not the journal's at the same date and prefix".into(),
+        ));
+    }
+    let legs: usize = journal.entries.iter().map(|e| e.legs.len()).sum();
+    let refold = journal
+        .refold_digest()
+        .map_err(|e| Fail::Internal(format!("refold digest: {e}")))?;
+    let out = &ctx.out;
+    out.at_book(&book)?;
+    out.known_at(seq);
+    out.event(
+        "export_verified",
+        vec![
+            ("format", s("part370")),
+            ("file", s(path)),
+            ("effective_through", s(effective_date.render())),
+            ("known_at", Json::Int(i128::from(known_at))),
+            ("entries", Json::Int(i128::from(coordinate.entry_count))),
+            ("legs", Json::Int(legs as i128)),
+            ("content_digest", s(hex(&coordinate.content_digest))),
+            ("certificate_digest", s(&book_digest)),
+            ("refold_digest", s(hex(&refold))),
+            ("reread", s("package")),
+            ("files", Json::Arr(files_json(&expected, false))),
+        ],
+        &format!(
+            "verified the Part 370 package {path}: its files, owner rows and certificate replay from the book's deposits at {} (known-at {known_at}), byte for byte what fa export part370 writes",
+            effective_date.render(),
         ),
     );
     Ok(())

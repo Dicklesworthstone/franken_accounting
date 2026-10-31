@@ -367,6 +367,163 @@ fn part370_export_of_a_real_book_equals_the_profile_goldens() -> std::io::Result
 }
 
 #[test]
+fn part370_package_verifies_at_its_own_coordinate_and_refuses_an_edit() -> std::io::Result<()> {
+    let (dir, book, evidence) = bank()?;
+    let package = dir.join("p370").display().to_string();
+    let exported = ok(
+        &book,
+        "export",
+        &[
+            "export",
+            "part370",
+            "--as-of",
+            "2026-04-10",
+            "--out",
+            &package,
+            "--json",
+        ],
+    );
+    let digest = text(&doc(&exported), "certificate_digest").to_string();
+    // A later deposit into DEP-1001 dated before the package's day does
+    // not move it: verification reads the book again at the certificate's
+    // own known-at.
+    let later = write(
+        &dir,
+        "later.json",
+        r#"{"effective_date":"2026-04-05","idempotency_key":"DEP-1001-late","legs":[{"side":"debit","account":"1000","amount":"75000.00 USD"},{"side":"credit","account":"2810","amount":"75000.00 USD"}]}"#,
+    );
+    ok(
+        &book,
+        "later deposit",
+        &[
+            "post",
+            "--intent",
+            &later,
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
+    );
+    let verified = ok(
+        &book,
+        "verify",
+        &["verify", "export", "part370", &package, "--json"],
+    );
+    assert_eq!(field(&verified, "event"), Some("export_verified"));
+    let data = doc(&verified);
+    assert_eq!(text(&data, "format"), "part370");
+    assert_eq!(text(&data, "reread"), "package");
+    assert_eq!(text(&data, "effective_through"), "2026-04-10");
+    assert_eq!(
+        text(&data, "certificate_digest"),
+        text(&doc(&exported), "journal_certificate_digest")
+    );
+    let names: Vec<&str> = arr(&data, "files")
+        .iter()
+        .map(|f| text(f, "name"))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "customer.txt",
+            "account.txt",
+            "account_participant.txt",
+            "pending.txt",
+            "Part370_Certificate.toml",
+        ]
+    );
+    // The same day exported now is another package: it carries the deposit.
+    let now = ok(
+        &book,
+        "export now",
+        &["export", "part370", "--as-of", "2026-04-10", "--json"],
+    );
+    assert_ne!(text(&doc(&now), "certificate_digest"), digest);
+    // Each edit is a verification failure (exit 8) naming what moved.
+    let mut flipped = digest.clone();
+    flipped.replace_range(0..1, if digest.starts_with('0') { "1" } else { "0" });
+    let edits: [(&str, &str, String, String, &str); 5] = [
+        (
+            "balance",
+            "account.txt",
+            "|180000.00|500.00|180500.00|".into(),
+            "|170000.00|500.00|170500.00|".into(),
+            "account.txt differs",
+        ),
+        (
+            "digest",
+            "Part370_Certificate.toml",
+            format!("certificate_digest = \"{digest}\""),
+            format!("certificate_digest = \"{flipped}\""),
+            "does not replay from the book",
+        ),
+        (
+            "owner row",
+            "Part370_Certificate.toml",
+            "uninsured = \"60000.00\"".into(),
+            "uninsured = \"0.00\"".into(),
+            "does not replay from the book",
+        ),
+        (
+            "maximum",
+            "Part370_Certificate.toml",
+            "sdia = \"250000.00\"".into(),
+            "sdia = \"500000.00\"".into(),
+            "Part370_Certificate.toml differs from what fa export part370 writes",
+        ),
+        (
+            "journal",
+            "Part370_Certificate.toml",
+            "journal_certificate_digest = \"".into(),
+            "journal_certificate_digest = \"00".into(),
+            "is not this book's",
+        ),
+    ];
+    for (step, target, from, to, expect) in edits {
+        let copy = dir.join(format!("edited-{}", step.replace(' ', "-")));
+        std::fs::create_dir(&copy)?;
+        for name in [
+            "customer.txt",
+            "account.txt",
+            "account_participant.txt",
+            "pending.txt",
+            "Part370_Certificate.toml",
+        ] {
+            let mut body = std::fs::read_to_string(format!("{package}/{name}"))?;
+            if name == target {
+                assert_eq!(body.matches(from.as_str()).count(), 1, "{step}: {from}");
+                body = body.replace(from.as_str(), &to);
+            }
+            std::fs::write(copy.join(name), body)?;
+        }
+        let copy = copy.display().to_string();
+        let (code, out) = refused(
+            &book,
+            step,
+            &["verify", "export", "part370", &copy, "--json"],
+        );
+        assert_eq!(code, 8, "{step}: {out}");
+        assert!(out.contains(expect), "{step}: {out}");
+    }
+    // A package lacking one of its files is a usage error.
+    let partial = dir.join("partial");
+    std::fs::create_dir(&partial)?;
+    std::fs::copy(
+        format!("{package}/customer.txt"),
+        partial.join("customer.txt"),
+    )?;
+    let partial = partial.display().to_string();
+    let (code, out) = refused(
+        &book,
+        "partial package",
+        &["verify", "export", "part370", &partial, "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("account.txt"), "{out}");
+    Ok(())
+}
+
+#[test]
 fn part370_refuses_incomplete_deposits_naming_what_is_missing() -> std::io::Result<()> {
     let (dir, book, _) = bank()?;
     let profile = |name: &str, body: &str| write(&dir, name, body);
