@@ -783,6 +783,65 @@ pub(crate) fn verify_capability_recorded<V: Vfs + Clone>(
     verify_control_claim(db, row, entry)
 }
 
+/// A principal-key generation at its target-derived identity (fa-kae): a
+/// trunk PolicyControl minted by `principal_key`, whose origin digest is
+/// its key id and whose identity is its (principal, generation).
+fn principal_key_control(entry: &Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if proposal.branch_id != Id128::TRUNK
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || !proposal.extensions.is_empty()
+    {
+        return false;
+    }
+    let Some(key) = crate::principal_key::key_of(proposal) else {
+        return false;
+    };
+    matches!(
+        &proposal.origin,
+        fa_model::EntryOrigin::Control {
+            control_kind,
+            spec_body_digest,
+        } if *control_kind == fa_model::ControlKind::PRINCIPAL_KEY
+            && *spec_body_digest == key.key_id()
+    ) && key.book_id == proposal.book_id
+        && key.principal == proposal.principal_ref
+        && vid
+            == crate::principal_key::principal_key_vid(
+                proposal.book_id,
+                key.principal,
+                key.generation,
+            )
+}
+
+/// Called only by the principal-key writer after admitting the complete
+/// generation. The key and its target publish in one transaction.
+pub(crate) fn stage_principal_key_control(
+    batch: &mut WriteBatch,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !principal_key_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "principal-key outcome claim requires its registered target-derived control".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
+/// Check the atomic claim after authenticating a principal-key target.
+pub(crate) fn verify_principal_key_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !principal_key_control(entry, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
+}
+
 fn verify_control_claim<V: Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,

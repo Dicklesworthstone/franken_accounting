@@ -294,6 +294,16 @@ pub mod code {
     pub const CASE_DISCLOSURE: &str = "FA-REF-179";
     /// A disclosure's exact retained statement comparisons do not match its case.
     pub const CASE_STATEMENT_DIFF: &str = "FA-REF-203";
+    /// A principal-key generation is not admissible: not the principal's
+    /// own registration, out of chain order, without the new key's proof
+    /// of possession, or a rotation the current key did not endorse
+    /// (plan §14.5, fa-kae).
+    pub const PRINCIPAL_KEY: &str = "FA-REF-204";
+    /// An approval's signature does not establish its principal's key: a
+    /// keyed principal's approval unsigned or signed by another key, or a
+    /// signed approval by a principal with no registered key (plan §14.5,
+    /// fa-kae).
+    pub const APPROVAL_SIGNATURE: &str = "FA-REF-205";
     /// A prior-period adjustment lacks its earlier period or does not
     /// route its cumulative effect through retained earnings.
     pub const PRIOR_PERIOD_ADJUSTMENT: &str = "FA-REF-202";

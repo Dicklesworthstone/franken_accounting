@@ -19,9 +19,13 @@ use fgdb_types::VId;
 use crate::capability::{Capability, CapabilityError, Profile};
 use crate::denial::Denial;
 use crate::op::Op;
+use crate::principal_key::ApprovalSignature;
 
 pub const APPROVAL_DOMAIN: &[u8] = b"fa:approval:v1";
 const APPROVAL_VERSION: u16 = 1;
+const SIGNED_RECORD_VERSION: u16 = 2;
+/// A version-1 body is exactly 110 bytes; a record may not smuggle more.
+const MAX_BODY_BYTES: usize = 2 + 16 + 16 + 1 + 32 + 32 + 8 + 1 + 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
@@ -87,7 +91,53 @@ impl Approval {
         Ok(domain_digest(APPROVAL_DOMAIN, &[&self.canonical_bytes()?]))
     }
 
+    /// The bytes an Approval vertex stores: the version-1 body alone, or,
+    /// for a principal's signed approval, the version-2 record `u16 2 ‖
+    /// bytes body ‖ u16 scheme ‖ u32 generation ‖ [32] key_id ‖ [64]
+    /// signature`. The digest, the approval's identity and what the
+    /// signature signs are all the body's, so the signature stays outside
+    /// the signed digest (plan Appendix A, bead fa-kae).
+    pub fn record_bytes(
+        &self,
+        signature: Option<&ApprovalSignature>,
+    ) -> Result<Vec<u8>, EncodeError> {
+        let body = self.canonical_bytes()?;
+        let Some(signature) = signature else {
+            return Ok(body);
+        };
+        let mut w = Writer::with_capacity(2 + 4 + body.len() + 2 + 4 + 32 + 64);
+        w.u16(SIGNED_RECORD_VERSION)
+            .bytes(&body)
+            .u16(signature.scheme)
+            .u32(signature.generation)
+            .fixed(&signature.key_id)
+            .fixed(&signature.bytes);
+        w.finish()
+    }
+
+    /// A stored record: the approval and, for version 2, its signature.
+    pub fn decode_record(bytes: &[u8]) -> Result<(Self, Option<ApprovalSignature>), DecodeError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("approval.version")? != SIGNED_RECORD_VERSION {
+            return Ok((Self::decode_body(bytes)?, None));
+        }
+        let approval = Self::decode_body(r.bytes(MAX_BODY_BYTES, "approval.body")?)?;
+        let signature = ApprovalSignature {
+            scheme: r.u16("approval.signature.scheme")?,
+            generation: r.u32("approval.signature.generation")?,
+            key_id: r.fixed("approval.signature.key_id")?,
+            bytes: r.fixed("approval.signature.bytes")?,
+        };
+        r.finish()?;
+        Ok((approval, Some(signature)))
+    }
+
+    /// The approval a stored record carries, signed or not.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::decode_record(bytes).map(|(approval, _)| approval)
+    }
+
+    fn decode_body(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
         if r.u16("approval.version")? != APPROVAL_VERSION {
             return Err(r.invalid("approval.version"));
@@ -176,6 +226,53 @@ mod tests {
         let mut long = bytes;
         long.push(1);
         assert!(Approval::decode(&long).is_err());
+    }
+
+    /// A signed record carries the unchanged v1 body: the same approval,
+    /// the same digest, its signature beside it; a malformed record is
+    /// refused.
+    #[test]
+    fn a_signed_record_keeps_the_body_and_its_digest() {
+        let a = sample();
+        let unsigned = a.record_bytes(None).unwrap();
+        assert_eq!(unsigned, a.canonical_bytes().unwrap());
+        assert_eq!(
+            Approval::decode_record(&unsigned).unwrap(),
+            (a.clone(), None)
+        );
+        let signature = ApprovalSignature {
+            scheme: crate::principal_key::SCHEME_ED25519,
+            generation: 2,
+            key_id: [5; 32],
+            bytes: [6; 64],
+        };
+        let signed = a.record_bytes(Some(&signature)).unwrap();
+        assert_eq!(
+            Approval::decode_record(&signed).unwrap(),
+            (a.clone(), Some(signature))
+        );
+        assert_eq!(
+            Approval::decode(&signed).unwrap().digest().unwrap(),
+            a.digest().unwrap()
+        );
+        let mut long = signed.clone();
+        long.push(0);
+        assert!(Approval::decode_record(&long).is_err());
+        let mut short = signed;
+        short.pop();
+        assert!(Approval::decode_record(&short).is_err());
+        // A version-2 record whose body is itself a record is refused.
+        let nested = Approval::decode_record(&{
+            let mut w = Writer::new();
+            w.u16(SIGNED_RECORD_VERSION)
+                .bytes(&[0; MAX_BODY_BYTES + 1])
+                .u16(1)
+                .u32(0)
+                .fixed(&[0; 32])
+                .fixed(&[0; 64]);
+            w.finish().unwrap()
+        });
+        assert!(nested.is_err());
     }
 
     #[test]

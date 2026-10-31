@@ -51,9 +51,10 @@ use fa_model::{
     ApprovalRef, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
     Oid, account_vid, entry_mirrors, entry_vid,
 };
+use fa_policy::principal_key::KeyError;
 use fa_policy::{
-    AccountScope, Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party,
-    Reach, Steward,
+    AccountScope, Approval, ApprovalSignature, Approver, Capability, CapabilityError, Denial,
+    Intent, Op, Party, Reach, SignatureVerifier, Steward,
 };
 use fa_registry::sod_policy::SodKey;
 use fa_time::{DateDay, PeriodDef};
@@ -383,12 +384,37 @@ impl Approved {
 /// Record an approval (plan Appendix A `Approval`): admitted from the
 /// capability alone (it holds `approve`, which no Agent or System profile
 /// can), current at the admission point, bound to the epoch witnessed in
-/// the same transaction. One commit on success.
+/// the same transaction. One commit on success. An unsigned approval: its
+/// principal must have no registered signing key ([`record_signed_approval`]).
 pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     req: ApprovalRequest,
+) -> Outcome<Approved> {
+    record_signed_approval(db, ctx, book, req, None).await
+}
+
+/// An approver's signature over its approval and the verifier that checks
+/// it (plan §14.5, fa-kae).
+#[derive(Clone, Copy, Debug)]
+pub struct SignedBy {
+    pub signature: ApprovalSignature,
+    pub verifier: &'static dyn SignatureVerifier,
+}
+
+/// [`record_approval`] for a principal that may hold a signing key (plan
+/// §14.5 non-repudiation, fa-kae). The principal's key chain is read with
+/// point witnesses in the approval's transaction: with no key the approval
+/// is unsigned; with one, `signed` must be its current key's Ed25519
+/// signature over the approval's digest, and the record keeps it beside
+/// the unchanged body. A concurrent rotation invalidates the approval.
+pub async fn record_signed_approval<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: ApprovalRequest,
+    signed: Option<SignedBy>,
 ) -> Outcome<Approved> {
     // An approval binds an opaque proposal digest, so it reaches the whole
     // book: a scoped token cannot judge what it approves and is refused.
@@ -425,11 +451,28 @@ pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal(&d)));
         }
     };
-    let bytes = approval
-        .canonical_bytes()
-        .map_err(|e| KernelError::Model(e.into()))?;
     let digest = approval
         .digest()
+        .map_err(|e| KernelError::Model(e.into()))?;
+    let keys =
+        crate::principal_key::chain(book, approval.principal, |vid| Ok(txn.vertex(db, vid)?))?;
+    let signature_check = match (keys.last(), &signed) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(KeyError::NoKey),
+        (Some(_), None) => Err(KeyError::Unsigned),
+        (Some(current), Some(signed)) => signed.signature.check(
+            &digest,
+            current.key.generation,
+            &current.key.public_key,
+            signed.verifier,
+        ),
+    };
+    if let Err(error) = signature_check {
+        txn.abort();
+        return Ok(Err(crate::principal_key::key_refusal(&error, true)));
+    }
+    let bytes = approval
+        .record_bytes(signed.as_ref().map(|s| &s.signature))
         .map_err(|e| KernelError::Model(e.into()))?;
     let vid = approval_vid(
         book.book_id,
@@ -1712,7 +1755,7 @@ fn recorded_capability_event<V: asupersync::fs::Vfs + Clone>(
 /// Admit the caller's scoped key independently of a capability's target
 /// identity. In particular, a fresh key cannot observe an existing target
 /// when that key already belongs to a posting, batch or another control.
-fn capability_key_witness<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn capability_key_witness<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     proposal: &EntryPayload,

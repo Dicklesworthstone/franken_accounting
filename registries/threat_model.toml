@@ -93,10 +93,10 @@ boundary = "TB-01"
 asset = "Dangerous entry classes, period transitions (Lock/Reopen), and self-sourced evidence promotion"
 vector = "Submitting a self-signed approval, reusing an approval across mutated proposal legs, or approving with a stale policy epoch"
 mitigation_clauses = ["FA-INV-10.sod", "FA-INV-10.approval-binds-proposal", "FA-INV-03.transition-approvals"]
-mitigation_refusals = ["FA-REF-008", "FA-REF-012", "FA-REF-016", "FA-REF-111"]
+mitigation_refusals = ["FA-REF-008", "FA-REF-012", "FA-REF-016", "FA-REF-111", "FA-REF-205"]
 status = "live"
-residual_risk = "On the token-less owner CLI both principals are names the operator supplies (`--as`), so one operator can satisfy dual control; issued Human tokens bind approvals to issued identities, and signed approvals are fa-z46b / fa-kae. Two distinct token holders who collude out-of-band with valid, disjoint roles can still satisfy commit-time SoD; forensic detection relies on Lantern JET timing and concentration procedures (fa-lantern)."
-test_refs = ["fa-journal::tests/policy.rs::self_approval_is_refused_and_a_distinct_human_approval_admits", "fa-policy::tests/sod_oracle.rs::engine_and_oracle_agree_on_every_transcript", "fa-policy::lib::approval::tests::recording_requires_the_op_and_binding_is_exact"]
+residual_risk = "On the token-less owner CLI both principals are names the operator supplies (`--as`), so one operator can satisfy dual control; issued Human tokens bind approvals to issued identities. A principal that registers an Ed25519 signing key (fa principal key add, fa-kae) has every later approval refused unless that key signed it (FA-REF-205), and the key is the client's; but a principal with no registered key still approves unsigned, so dual control between unkeyed principals stays forgeable by one operator until keys are required of approvers (fa-z46b). Two distinct token holders who collude out-of-band with valid, disjoint roles can still satisfy commit-time SoD; forensic detection relies on Lantern JET timing and concentration procedures (fa-lantern)."
+test_refs = ["fa-journal::tests/policy.rs::self_approval_is_refused_and_a_distinct_human_approval_admits", "fa-policy::tests/sod_oracle.rs::engine_and_oracle_agree_on_every_transcript", "fa-policy::lib::approval::tests::recording_requires_the_op_and_binding_is_exact", "fa-cli::tests/cli.rs::principal_key::a_keyed_principal_signs_its_approvals_and_rotates_only_with_endorsement"]
 
 [[threat]]
 id = "FA-THR-03"

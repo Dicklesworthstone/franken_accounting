@@ -184,11 +184,11 @@ name = "approve"
 summary = "Record an approval of a planned proposal's digest or a reviewed allocation/settlement review artifact under the caller's capability (journaled; bound to the current security policy epoch)."
 writes = true
 subcommands = []
-flags = ["--proposal", "--review", "--digest", "--grant"]
+flags = ["--proposal", "--review", "--digest", "--grant", "--sign-key"]
 switches = []
 events = ["approved"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["approve --proposal <proposal_digest> [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal)", "approve --review <file|-|hex> --digest <review_digest> [--as <principal>] [--grant <op>]...   (verifies the review artifact's digest and records an approval of its sealed proposal_digest)"]
+usage = ["approve --proposal <proposal_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal. A principal that registered a signing key (fa principal key add) must sign: --sign-key names its current key file, read by the client and never routed through fad, and the approval stores the Ed25519 signature over its digest; plan §14.5)", "approve --review <file|-|hex> --digest <review_digest> [--as <principal>] [--grant <op>]...   (verifies the review artifact's digest and records an approval of its sealed proposal_digest)"]
 example = "fa approve --proposal <proposal_digest> --as controller --book ./books/myco --json"
 
 [[verb]]
@@ -202,6 +202,18 @@ events = ["capability_revoked", "capability_issued", "capabilities_issued", "cap
 exits = [0, 2, 4, 5, 6, 7]
 usage = ["capability revoke --commitment <64-hex> [--date YYYY-MM-DD] [--key K] [--description <text>] --as <principal> [--grant issue_capability] --yes", "capability issue --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] [--period <code>]... [--effective-through YYYY-MM-DD] [--known-at-most <seq>] --out <new-file> [--date YYYY-MM-DD] [--key K] --as <issuer> --grant issue_capability   (journals the holder-bound capability, then writes the holder's 0600 token: principal, capability and secret; the issued ops, units, per-leg ceilings, daily totals, scope caveats and expiry never widen the issuer's; --period, --effective-through and --known-at-most scope its reads and writes, refused before any query, never filtered)", "capability issue --issuer-token <existing-token-file> --holder <principal> --profile agent|human --op <op>... [--ceiling \"1000.00 USD\"]... [--daily-total \"1000.00 USD\"]... [--expires-at <seq>] [--period <code>]... [--effective-through YYYY-MM-DD] [--known-at-most <seq>] --out <new-file>   (uses the issued Human token holder and exact authority, with current Read and IssueCapability admission; descendants inherit the original shared daily root and cannot widen its limits. --as, --grant and launch-bound sessions cannot be combined with --issuer-token; the token must be an explicit file, never stdin)", "--daily-total bounds cumulative gross debits per native unit and committed UTC day across the original issuance and its descendants. Repeated limits tighten by minimum; descendants retain the original quota root. Posting requires an explicit UTC book calendar and corroborated retained TimeEvidence. A retry does not charge twice, and a reversal or release does not refund capacity. FA-REF-166 refuses a daily limit breach; FA-REF-167 refuses inconsistent usage history.", "capability list   (every capability this book issued, from the journal, with its revocation state, per-leg ceilings and daily quota lineage)", "capability show --commitment <64-hex>", "An issued token is admitted only against its journaled issuance (FA-REF-156 otherwise); launch fa-mcp with --token <file> to bind a session to it. Issuance and delegation remain operator acts; a launch-bound session cannot grant itself issue_capability."]
 example = "fa capability revoke --commitment 0101010101010101010101010101010101010101010101010101010101010101 --as controller --grant issue_capability --yes --book ./books/myco --json"
+
+[[verb]]
+name = "principal"
+summary = "A principal's Ed25519 signing key: make one held by the client (key new) and register it as the next generation of the principal's key chain (key add), after which every approval it records must carry that key's signature (plan §14.5 non-repudiation)."
+writes = true
+subcommands = ["key"]
+flags = ["--out", "--sign-key", "--endorse-key", "--date", "--key", "--description", "--grant"]
+switches = []
+events = ["principal_key_created", "principal_key_registered"]
+exits = [0, 2, 4, 5, 6, 7]
+usage = ["principal key new --out <new key file>   (a new Ed25519 key from the operating system's entropy: its seed as 64 hex characters in a new 0600 file, never stdout; no book is opened)", "principal key add --sign-key <key file> [--endorse-key <current key file>] [--as <principal>] [--date YYYY-MM-DD] [--key K] [--description <text>]   (journals the key as the next generation of the acting principal's chain: only the principal itself registers, holding approve; the key proves possession by signing the registration, and a rotation is endorsed by the current key. From then on fa approve --proposal ... --sign-key <current key file> signs each approval and an unsigned one is refused FA-REF-205. Both commands read or write a secret on the host: neither runs through fad nor over MCP)"]
+example = "fa principal key add --sign-key ./keys/controller.key --as controller --book ./books/myco --json"
 
 [[verb]]
 name = "draft"
@@ -2282,6 +2294,17 @@ doc = "A new Ed25519 witness key (plan §13.5, fa checkpoint witness-key): its 3
 fields = ["public_key:hex", "signer_key_id:hex", "out:string"]
 
 [[event]]
+name = "principal_key_created"
+doc = "A new Ed25519 principal signing key (plan §14.5, fa principal key new): its 32-byte seed written as 64 hex characters to the new 0600 file `out`, its public key and key_id (BLAKE3 fa:principal-key-id:v1 over the public key). No book is read or written; register it with fa principal key add."
+fields = ["public_key:hex", "key_id:hex", "out:string"]
+
+[[event]]
+name = "principal_key_registered"
+book = true
+doc = "A principal's signing key was journaled as generation `generation` of its key chain (a PolicyControl entry at control_entry, recorded_at), or was already recorded with this key (then nothing was written). The key proved possession by signing the registration statement and, after generation 0, was endorsed by the previous generation's key. From recorded_at on, the principal's approvals carry its signature (plan §14.5)."
+fields = ["principal:hex", "generation:int", "key_id:hex", "public_key:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
 name = "checkpoint_created"
 book = true
 doc = "An AccumulatorState over every entry in the named book/branch prefix through through_seq, every journaled evidence record (attestation, import receipt, custody transfer, supplemental evidence) created after evidence_after_seq, and every AccessEvent created after access_after_seq, recorded in a later commit. A null boundary marks a legacy state that does not accumulate that record kind. Coverage boundaries cannot move or be dropped after their first admission; legacy state bytes and roots remain valid. leaf_kinds counts leaf_count by record kind. It may be the unsigned raw statement, or its TransparencyCheckpoint (checkpoint_oid) signed by the book's Ed25519 key public_key; signatures is ed25519 for the signed checkpoint and unsigned for the raw statement. prev_state_oid links its predecessor. scope entry_prefix names this accumulator prefix in commit order; signatures and bundles are not leaves. `fa proof signed-checkpoint` exports the signed checkpoint for fa-verify --key."
@@ -3961,7 +3984,7 @@ fields = ["side:string", "account:string", "amount:amount", "dimensions:[string]
 server = "fa-mcp"
 max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
-hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
+hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token", "--sign-key", "--endorse-key"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
@@ -4093,6 +4116,11 @@ reason = "host-only: a witness cosigns with its own key file on the host (fa-qtf
 verb = "checkpoint"
 subcommand = "witness-key"
 reason = "host-only: writes a new secret key file on the host for a witness; MCP output is inline only and never carries a secret"
+
+[[mcp.excluded]]
+verb = "principal"
+subcommand = "key"
+reason = "host-only: a principal's signing key is made, read and held by the client on the host, never by fad or an MCP session (plan §14.5); a keyed principal's MCP approvals are refused FA-REF-205"
 
 [[mcp.excluded]]
 verb = "bank"
@@ -6518,6 +6546,15 @@ ops = ["read", "issue_capability"]
 verbs = ["capability"]
 subcommands = ["list", "show"]
 ops = ["read"]
+
+# Registering a signing key is the principal's own act under the op its
+# key signs. `principal key new` writes a secret on the host and has no
+# bound row (host-only).
+[[bound]]
+verbs = ["principal"]
+subcommands = ["key"]
+args = ["add"]
+ops = ["approve"]
 
 [[bound]]
 verbs = ["draft"]

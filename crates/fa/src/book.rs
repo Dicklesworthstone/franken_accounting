@@ -36,6 +36,20 @@ use fgdb_types::{CommitSeq, VId};
 use crate::AsyncBook;
 use crate::async_book::{ScratchReplayMode, rooted_path, sync_file};
 
+/// fa-notary's strict Ed25519 verification (RFC 8032 §5.1.7), the
+/// kernel's verifier for principals' signatures (plan §14.5, fa-kae).
+#[derive(Debug)]
+pub struct NotaryVerifier;
+
+impl fa_policy::SignatureVerifier for NotaryVerifier {
+    fn verify_ed25519(&self, public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
+        fa_notary::sign::ed25519::verify(public_key, message, signature).is_ok()
+    }
+}
+
+/// The one [`NotaryVerifier`] the facade hands the kernel.
+pub static PRINCIPAL_SIGNATURES: NotaryVerifier = NotaryVerifier;
+
 /// The three secrets a book directory needs: the object-identity key, the
 /// security namespace, and the data-encryption key (the substrate's
 /// `DatabaseKeys`). On disk these are the three 64-hex lines of the key file.
@@ -1507,6 +1521,45 @@ impl Book {
     ) -> Outcome<fa_journal::Approved> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve(&purposes, capability, proposal_digest)))
+    }
+
+    /// [`Self::approve`] signed with the principal's key (plan §14.5,
+    /// fa-kae; [`AsyncBook::approve_signed`]).
+    pub fn approve_signed(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
+    }
+
+    /// Register `key` as the next generation of the capability holder's
+    /// signing-key chain, endorsed by its current key when it has one
+    /// ([`AsyncBook::register_principal_key`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_principal_key(
+        &mut self,
+        capability: fa_journal::Capability,
+        key: &fa_notary::SigningKey,
+        endorse: Option<&fa_notary::SigningKey>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::KeyRegistered> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.register_principal_key(
+            &purposes, capability, key, endorse, effective_date, idempotency_key, description,
+        )))
+    }
+
+    /// `principal`'s signing-key chain as the journal records it.
+    pub fn principal_keys(
+        &self,
+        principal: VId,
+    ) -> Result<Vec<fa_journal::KeyGeneration>, BookError> {
+        with_store!(&self.store, core => core.principal_keys(&self.purposes(), principal))
     }
 
     /// Revoke a capability by its commitment under `capability` (plan §14.2):

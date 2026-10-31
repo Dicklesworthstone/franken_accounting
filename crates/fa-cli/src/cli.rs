@@ -86,6 +86,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("close", crate::closing::close_cmd),
     ("approve", approve_cmd),
     ("capability", capability_cmd),
+    ("principal", crate::principal::principal_cmd),
     ("draft", draft_cmd),
     ("scenario", crate::scenario::scenario_cmd),
     ("branch", crate::scenario::branch_cmd),
@@ -1195,6 +1196,12 @@ impl Ctx<'_> {
 
     pub(crate) fn authority(&self) -> Option<&LaunchAuthority> {
         self.authority.as_ref()
+    }
+
+    /// This command runs inside `fad`, on a client's behalf. A principal's
+    /// signing key is the client's and is never read here (plan §14.5).
+    pub(crate) fn routed_through_daemon(&self) -> bool {
+        self.daemon_files.is_some()
     }
 
     /// A bound host reuses the launch capability verbatim. The handler's
@@ -5651,6 +5658,12 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(review_arg) = args.flag("--review") {
+        if args.flag("--sign-key").is_some() {
+            return Err(usage(
+                "--sign-key signs a proposal approval; a signed review approval is not supported yet (fa-kae)",
+                "fa approve --proposal <proposal_digest> --sign-key <key file>",
+            ));
+        }
         if args.flag("--proposal").is_some() {
             return Err(usage(
                 "supply either --proposal <digest> or --review <file|-|hex> --digest <64-hex>, not both",
@@ -5675,9 +5688,13 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let digest = parse_digest(text, "--proposal")?;
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["approve"])?;
     let mut book = ctx.books.open(args)?;
-    let approved = book.approve(capability, digest)??;
+    let approved = match &key {
+        Some(key) => book.approve_signed(capability, digest, key)??,
+        None => book.approve(capability, digest)??,
+    };
     emit_approved(&ctx.out, &book, approved)
 }
 

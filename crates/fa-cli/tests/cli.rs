@@ -19,6 +19,8 @@ use fa_cli::verbs::registry;
 mod lot_disposal;
 #[path = "cli/part370.rs"]
 mod part370;
+#[path = "cli/principal_key.rs"]
+mod principal_key;
 #[path = "cli/proportional_post.rs"]
 mod proportional_post;
 
@@ -11260,6 +11262,29 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let witness_key = dir.join("witness.key").display().to_string();
     assert_eq!(
         run(false, &["checkpoint", "witness-key", "--out", &witness_key]).0,
+        0
+    );
+    // fa-kae: a principal's signing key, and its registration by a principal
+    // of its own (the operator's later approvals here stay unsigned).
+    let principal_key = dir.join("principal.key").display().to_string();
+    assert_eq!(
+        run(false, &["principal", "key", "new", "--out", &principal_key]).0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "principal",
+                "key",
+                "add",
+                "--sign-key",
+                &principal_key,
+                "--as",
+                "key-holder"
+            ]
+        )
+        .0,
         0
     );
     let cosigned = dir.join("cosigned.cp").display().to_string();

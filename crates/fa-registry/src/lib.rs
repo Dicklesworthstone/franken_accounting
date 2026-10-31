@@ -1487,6 +1487,7 @@ mod tests {
                 (17, "case_transition"),
                 (18, "recurring_schedule"),
                 (19, "rule_activation"),
+                (20, "principal_key"),
             ]
         );
         assert_eq!(

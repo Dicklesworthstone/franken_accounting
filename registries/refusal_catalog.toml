@@ -1273,6 +1273,22 @@ exit = "refusal"
 cite = "plan §8.3 (a disclosure binds the complete supported original-report-to-Post statement comparisons; native and retained-functional built-in layouts, not all active custom, cash-flow or equity layouts)"
 fix = "run fa case diff <case> --statements --certify --json, then pass every distinct returned comparison digest to fa case disclose <case> --document <oid> --certificate <digest> (repeat --certificate); use the fixed Post and original reporting basis, never a later head or another statement question"
 
+[[refusal]]
+code = "FA-REF-204"
+name = "PRINCIPAL_KEY"
+owners = ["fa-journal"]
+exit = "usage"
+cite = "plan §14.5 (non-repudiation) and Appendix A TrustAnchorSet: a principal's key chain advances one generation at a time, each registration proved by the new key and, after the first, endorsed by the current key (bead fa-kae)"
+fix = "register as the principal itself, holding approve, with fa principal key add --sign-key <new key file>, adding --endorse-key <current key file> to rotate an existing key"
+
+[[refusal]]
+code = "FA-REF-205"
+name = "APPROVAL_SIGNATURE"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §14.5 (a principal cannot later deny an approval it signed): once a principal registers a signing key, every approval it records carries that key's Ed25519 signature over the approval digest (bead fa-kae)"
+fix = "approve the proposal with fa approve --proposal <digest> --sign-key <the principal's current key file>, never routed through fad; a principal with no registered key approves without --sign-key. A keyed principal's review approvals (fa approve --review) cannot be signed yet (fa-kae)"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

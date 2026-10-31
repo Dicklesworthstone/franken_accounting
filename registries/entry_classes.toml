@@ -397,3 +397,9 @@ id = 19
 name = "rule_activation"
 class = "PolicyControl"
 minted_by = "fa-journal rule::activate_rule_version"
+
+[[control_kind]]
+id = 20
+name = "principal_key"
+class = "PolicyControl"
+minted_by = "fa-journal policy::register_principal_key"

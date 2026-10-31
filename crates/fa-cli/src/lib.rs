@@ -49,6 +49,7 @@ mod migration_import;
 pub(crate) mod notary;
 mod obligation;
 pub mod panic;
+mod principal;
 mod production;
 mod proof;
 mod query;
