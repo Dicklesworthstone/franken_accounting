@@ -836,7 +836,7 @@ fn inherited_valuation<V: asupersync::fs::Vfs + Clone>(
         return Ok(Ok(()));
     }
     let spec = match txn.vertex_property(db, book_root(), property::FA_PAYLOAD)? {
-        Some(CanonicalScalar::Bytes(payload)) => crate::genesis::BookSpec::decode(&payload)?,
+        Some(CanonicalScalar::Bytes(payload)) => crate::genesis::BookSpec::decode(payload.as_slice())?,
         _ => {
             return Err(KernelError::Corrupt(
                 "a scheduled valuation has no canonical book declaration".into(),
