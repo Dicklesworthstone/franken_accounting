@@ -45,9 +45,10 @@ const FLAGS: &[&str] = &[
     "--as-of",
     "--as-known-at",
     "--draft",
+    "--scenario",
     "--certificate-out",
 ];
-const SWITCHES: &[&str] = &["--dry-run", "--review-only", "--certify"];
+const SWITCHES: &[&str] = &["--dry-run", "--review-only", "--case-review", "--certify"];
 
 pub(crate) fn close_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
@@ -449,8 +450,9 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--digest",
             "--plan-out",
             "--draft",
+            "--scenario",
         ],
-        &["--dry-run", "--review-only"],
+        &["--dry-run", "--review-only", "--case-review"],
     )?;
     check_post_planning_options(args)?;
     let review_only = args.switch("--review-only") || args.flag("--review-out").is_some();
@@ -461,6 +463,30 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let draft = args.flag("--draft");
+    let scenario = args.flag("--scenario");
+    let case_review = args.switch("--case-review");
+    if case_review && (!review_only || draft.is_some() || scenario.is_some()) {
+        return Err(usage(
+            "--case-review prepares a Locked-period proposal with --review-only or --review-out; it never posts or appends it",
+            "fa close year-end --fiscal-year 2026 --period FY2026-CLOSE --key reclose --case-review --review-out reclose.review",
+        ));
+    }
+    if scenario.is_some()
+        && (draft.is_some()
+            || args.flag("--review").is_none()
+            || review_only
+            || args.switch("--dry-run")
+            || args.flag("--plan-out").is_some()
+            || args.flag("--approval").is_some())
+    {
+        return Err(usage(
+            "--scenario rehearses one unchanged Locked-period closing review; its approvals belong to the case manifest",
+            "fa close year-end --review reclose.review --digest <review_digest> --scenario <owned-empty-scenario>",
+        ));
+    }
+    if scenario.is_some() {
+        let _ = required(args, "--scenario")?;
+    }
     if draft.is_some()
         && (args.flag("--review").is_none()
             || review_only
@@ -476,7 +502,11 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let _ = required(args, "--draft")?;
     }
     let principal = ctx.principal(args);
-    let capability = if review_only || draft.is_some() {
+    let capability = if case_review || scenario.is_some() {
+        let capability = ctx.capability(args, &["read", "post", "restate"])?;
+        require_ops(&capability, &[fa::Op::Read, fa::Op::Post, fa::Op::Restate])?;
+        capability
+    } else if review_only || draft.is_some() {
         let capability = ctx.capability(args, &["read", "post"])?;
         require_ops(&capability, &[fa::Op::Read, fa::Op::Post])?;
         capability
@@ -530,6 +560,9 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if let Some(name) = draft {
             return plan_review_into_draft(&ctx.out, &mut book, capability, name, intent);
         }
+        if let Some(name) = scenario {
+            return plan_review_into_scenario(&ctx.out, &mut book, capability, name, intent);
+        }
         let plan = book.plan(intent, &capability)??;
         if args.switch("--dry-run") {
             return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
@@ -551,7 +584,9 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let _ = required(args, "--key")?;
     let mut preparation = None;
     let mut book = ctx.books.open_admitted(args, |book| {
-        preparation = Some(if review_only {
+        preparation = Some(if case_review {
+            book.prepare_year_end_close_for_case(&request, &capability)??
+        } else if review_only {
             book.prepare_year_end_close_for_draft(&request, &capability)??
         } else {
             book.prepare_year_end_close(&request, &capability)??
@@ -650,6 +685,41 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let posted = book.commit_plan(plan, &capability)??;
     ctx.out.at_book(&book)?;
     emit_posted(&ctx.out, posted, "Closing", false, None, None)
+}
+
+/// Rehearse the retained close in a dedicated scenario. The resulting Plan
+/// is only a candidate for an approved case; no monetary entry reaches trunk.
+fn plan_review_into_scenario(
+    out: &Out,
+    book: &mut Book,
+    capability: fa::Capability,
+    name: &str,
+    intent: PostIntent,
+) -> Result<(), Fail> {
+    let proposal = intent.proposal();
+    let entry = fa_model::entry_vid(
+        proposal.book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    let run = book.run_in_scenario(capability, name, intent)??;
+    out.at_book(book)?;
+    let recorded = &run.recorded;
+    out.event(
+        "scenario_run",
+        vec![
+            ("scenario", s(format!("{:032x}", recorded.scenario.0))),
+            ("name", s(name)),
+            ("control_entry", s(format!("{:032x}", recorded.control_entry.0))),
+            ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+            ("ordinal", Json::Int(run.ordinal as i128)),
+            ("entry", s(format!("{:032x}", entry.0))),
+            ("rehearsed", Json::Bool(run.rehearsed.is_some())),
+        ],
+        &format!("reviewed reclose retained in scenario {name}; its case must be rehearsed and dual-approved before publication"),
+    );
+    Ok(())
 }
 
 /// Retain the exact reviewed proposal. The kernel admits only one intrinsic

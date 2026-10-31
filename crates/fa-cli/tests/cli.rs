@@ -2536,7 +2536,16 @@ fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pin
         args.extend(["--as-known-at", &before]);
         let historical = doc(&ok(&args));
         assert_eq!(int(&historical, "known_at"), Some(posted_at[0]));
-        assert_eq!(historical.get("served"), Some(&Json::Null));
+        let serving = historical.get("served").expect("historical serving basis");
+        assert_eq!(serving.get("mode").and_then(Json::as_str), Some("literal"));
+        assert!(
+            serving
+                .get("reason")
+                .and_then(Json::as_str)
+                .unwrap()
+                .contains("selected snapshot"),
+            "the snapshot precedes the first cache: {historical:?}"
+        );
         assert!(historical.render().contains("\"debits\":\"10.00 USD\""));
         assert!(historical.render().contains("\"credits\":\"10.00 USD\""));
     }
@@ -2577,6 +2586,29 @@ fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pin
     );
     assert!(restricted.render().contains("\"debits\":\"12.00 USD\""));
     assert!(restricted.render().contains("\"credits\":\"12.00 USD\""));
+    let selected = posted_at[1].to_string();
+    let historical = doc(&ok(&[
+        "--token",
+        "march.token",
+        "tb",
+        "--activity",
+        "--period",
+        period,
+        "--as-known-at",
+        &selected,
+    ]));
+    assert_eq!(int(&historical, "known_at"), Some(posted_at[1]));
+    let served = historical.get("served").unwrap();
+    assert_eq!(served.get("mode").and_then(Json::as_str), Some("literal"));
+    assert!(
+        served
+            .get("reason")
+            .and_then(Json::as_str)
+            .unwrap()
+            .contains("`periods` caveat")
+    );
+    assert!(historical.render().contains("\"debits\":\"12.00 USD\""));
+    assert!(historical.render().contains("\"credits\":\"12.00 USD\""));
     for args in [
         vec!["--token", "march.token", "tb", "--period", period],
         vec![
@@ -12740,20 +12772,63 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .filter(|line| field(line, "event") == Some("case_statement_basis"))
         .map(doc)
         .collect();
-    assert_eq!(statement_bases.len(), 3, "{out}");
+    assert_eq!(statement_bases.len(), 5, "{out}");
     let disclosure_comparisons: Vec<String> = out
         .lines()
         .filter(|line| field(line, "event") == Some("statement_diff"))
         .map(|line| field(line, "certificate").unwrap().to_string())
         .collect();
-    assert_eq!(disclosure_comparisons.len(), 3, "{out}");
+    assert_eq!(disclosure_comparisons.len(), 5, "{out}");
     assert!(
-        statement_bases.iter().all(|basis| {
+        statement_bases[..3].iter().all(|basis| {
             text(basis, "basis") == "first-issuance"
                 && text(basis, "basis_period") == "FY2026-P03"
                 && int(basis, "issuance_ordinal") == Some(1)
         }),
         "{out}"
+    );
+    let ppa_posted_at = int(&posted, "recorded_at").unwrap();
+    assert!(
+        statement_bases[3..].iter().all(|basis| {
+            text(basis, "basis") == "before-post-impact"
+                && text(basis, "period") == "FY2026-P04"
+                && text(basis, "basis_period") == "FY2026-P04"
+                && int(basis, "before_known_at") == ppa_posted_at.checked_sub(1)
+                && int(basis, "after_known_at") == Some(ppa_posted_at)
+                && basis.get("issuance_ordinal") == Some(&Json::Null)
+        }),
+        "the current correction has its own explicitly labelled Post bridge: {out}"
+    );
+    let comparisons: Vec<_> = out
+        .lines()
+        .filter(|line| field(line, "event") == Some("statement_diff"))
+        .map(doc)
+        .collect();
+    assert!(
+        comparisons[..3]
+            .iter()
+            .all(|comparison| { comparison.get("amounts_changed") == Some(&Json::Bool(false)) }),
+        "the historical source period correctly has no posted change: {out}"
+    );
+    let impact = &comparisons[3];
+    assert_eq!(text(impact, "name"), "balance-sheet");
+    for code in ["assets", "equity", "total_equity"] {
+        let lines = arr(impact, "lines");
+        let line = lines
+            .iter()
+            .find(|line| text(line, "code") == code)
+            .unwrap();
+        assert_eq!(
+            arr(line, "delta"),
+            vec![Json::Str("-2.00 USD".into())],
+            "{out}"
+        );
+    }
+    assert_eq!(text(&comparisons[4], "name"), "income-statement");
+    assert_eq!(
+        comparisons[4].get("amounts_changed"),
+        Some(&Json::Bool(false)),
+        "a prior-period adjustment never becomes current income: {out}"
     );
     // Current-period equity separates the correction from current income
     // and retains the exact case/period citation in certified replay.
@@ -12862,6 +12937,20 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["attest", "review", &note_oid, "--as", "reviewer"]).0,
         0
     );
+    let mut missing_current = vec!["case", "disclose", "2", "--document", &note_oid];
+    for digest in &disclosure_comparisons[..3] {
+        missing_current.extend(["--certificate", digest]);
+    }
+    let (code, out) = run(true, &missing_current);
+    assert_eq!(
+        code, 3,
+        "historical zero comparisons cannot omit the current correction: {out}"
+    );
+    assert!(out.contains("FA-REF-203"), "{out}");
+    let (code, unchanged) = run(true, &["case", "show", "2"]);
+    assert_eq!(code, 0, "{unchanged}");
+    let unchanged_case = doc(&unchanged).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&unchanged_case, "state"), "Posted", "{unchanged}");
     let (code, out) = run(true, &disclose_args);
     assert_eq!(code, 0, "{out}");
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);

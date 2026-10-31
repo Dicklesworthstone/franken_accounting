@@ -62,7 +62,10 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     let basis = fa_model::YearEndCloseBasis::decode(raw)
                         .map_err(|error| fa_journal::KernelError::Model(error.into()))?;
                     if proposal.class != fa_model::EntryClass::CLOSING
-                        || proposal.extensions.len() != 1
+                        || !(proposal.extensions.len() == 1
+                            || proposal.extensions.len() == 2
+                                && proposal.extensions[1].0
+                                    == fa_model::entry::CASE_MEMBER_EXTENSION)
                         || !matches!(proposal.origin, EntryOrigin::Intent { intent_kind: 1, .. })
                         || proposal.control.is_some()
                         || proposal.pending.is_some()
@@ -257,6 +260,47 @@ pub(super) fn certificate(certificate: &[u8], journal: &Journal, known_at: Commi
             && reader.u8("selector")? == selector)
     };
     check().unwrap_or(false)
+}
+
+/// A two-source functional comparison uses one complete later prefix. The
+/// earlier prefix is contained in it; its historical metadata, valuations and
+/// exact Rate subset are independently replayed by the report verifier.
+/// Routing has a fixed depth and never admits a nested arbitrary report.
+pub(super) fn comparison_certificate(bytes: &[u8], journal: &Journal, known_at: CommitSeq) -> bool {
+    let check = || -> Result<bool, fa_model::DecodeError> {
+        let mut r = Reader::new(bytes);
+        if r.bytes(64, "functional comparison format")?
+            != b"fa:functional-statement-diff-certificate:v1"
+        {
+            return Ok(false);
+        }
+        r.u128("functional comparison producer")?;
+        r.fixed::<32>("functional comparison capability")?;
+        let before = r.bytes(
+            super::MAX_REPORT_BUNDLE_BYTES,
+            "functional comparison before",
+        )?;
+        let after = r.bytes(
+            super::MAX_REPORT_BUNDLE_BYTES,
+            "functional comparison after",
+        )?;
+        let format = b"fa:report-certificate:v5";
+        if !before.starts_with(format) || !after.starts_with(format) {
+            return Ok(false);
+        }
+        let mut earlier = Reader::new(before);
+        earlier.fixed::<{ b"fa:report-certificate:v5".len() }>("functional source format")?;
+        earlier.str(64, "functional source scope")?;
+        earlier.str(64, "functional source authority")?;
+        earlier.str(64, "functional source output")?;
+        earlier.fixed::<16>("functional source book")?;
+        earlier.fixed::<16>("functional source branch")?;
+        let before_at = CommitSeq(earlier.u64("functional source frontier")?);
+        Ok(before_at <= known_at
+            && certificate(before, journal, before_at)
+            && certificate(after, journal, known_at))
+    };
+    bytes.len() <= super::MAX_REPORT_BUNDLE_BYTES && check().unwrap_or(false)
 }
 
 pub(super) fn validate(

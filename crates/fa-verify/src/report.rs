@@ -55,6 +55,9 @@
 //! PeriodEndRevaluation laws with exact Rate bodies, signed intake receipts,
 //! six registries and explicit Book parameters. Recipient pins or production
 //! receipts authenticate those parameters; Book genesis is not proved.
+//! Functional statement comparisons retain both v5 sources in this same
+//! transport. Each historical prefix is reconstructed independently, including
+//! its exact original Rate subset, before every delta and mapping is compared.
 //! The same transport carries v6/v7 one-book consolidated group reports, with
 //! their distinct account-role and rounding registry closure. Historical
 //! ownership and role controls, entity stocks and period activity, intercompany
@@ -76,6 +79,7 @@ mod indirect_cash_flow;
 mod lots;
 mod metadata;
 mod open_items;
+mod portfolio;
 mod reconciliation;
 mod registry;
 mod roll_forward;
@@ -127,13 +131,19 @@ pub use open_items::{
     OpenItemBalanceLimit, OpenItemUnitPolicy, VerifiedApplication, VerifiedOpenItem,
     VerifiedOpenItemAccount, VerifiedOpenItems,
 };
+pub use portfolio::{
+    AgingPortfolioRequest, AgingPortfolioScope, VerifiedAgingPortfolio,
+    VerifiedAgingPortfolioAccount,
+};
 pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
 pub use registry::Reason as ExplanationReason;
 pub use roll_forward::{
     RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
 };
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
-pub use statement_diff::{StatementLineChange, StatementMappingChange, VerifiedStatementDiff};
+pub use statement_diff::{
+    StatementDiffValuation, StatementLineChange, StatementMappingChange, VerifiedStatementDiff,
+};
 pub use summary::{SummaryScope, VerifiedSummaryGroup, VerifiedSummaryTrialBalance};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
@@ -245,6 +255,8 @@ pub struct VerifiedReport {
     pub due_date_aging: Option<VerifiedDueDateAging>,
     /// Both source folds and their selected-account consistency comparison.
     pub aging_reconciliation: Option<VerifiedAgingReconciliation>,
+    /// Selected and uncovered posting accounts, including zero-activity leaves.
+    pub aging_portfolio: Option<VerifiedAgingPortfolio>,
     /// Due-date installments and unscheduled amounts compared to native stock.
     pub due_date_aging_reconciliation: Option<VerifiedDueDateAgingReconciliation>,
     /// Complete account/unit lead schedule with every classified posted leg.
@@ -554,6 +566,34 @@ pub fn verify_report_expected(
     )
 }
 
+/// Verify a portfolio against an independently chosen accounting question.
+/// Scope identity is exact: AllPosting differs from an explicitly selected
+/// list even when that list includes every posting account or all amounts are
+/// zero. The ordinary version-2 contract still requires an outer certificate
+/// pin or signed receipt; when supplied, both are checked.
+pub fn verify_aging_portfolio_report_expected(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected: &AgingPortfolioRequest,
+    expected_certificate: Option<&[u8; 32]>,
+) -> Result<VerifiedReport, ReportError> {
+    let report = verify_report_expected(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+    )?;
+    let portfolio = report
+        .aging_portfolio
+        .as_ref()
+        .ok_or_else(|| failed("portfolio_request", "recipient requires an aging portfolio"))?;
+    portfolio::expect(portfolio, expected)?;
+    Ok(report)
+}
+
 /// Verify a complete lot schedule with a recipient-selected cost base unit.
 /// The base is a report premise, not an authenticated Book-genesis assertion.
 /// Existing checkpoint, outer-certificate pin and receipt requirements remain
@@ -794,12 +834,19 @@ fn verify_report_with_lots_input(
     } else {
         None
     };
+    let portfolio = if portfolio::recognizes(certificate_bytes) {
+        Some(portfolio::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     let due_date_reconciliation = if due_date_reconciliation::recognizes(certificate_bytes) {
         Some(due_date_reconciliation::decode(certificate_bytes)?)
     } else {
         None
     };
     let aging = if let Some(value) = &reconciliation {
+        Some(aging::decode(value.aging)?)
+    } else if let Some(value) = &portfolio {
         Some(aging::decode(value.aging)?)
     } else if aging::recognizes(certificate_bytes) {
         Some(aging::decode(certificate_bytes)?)
@@ -884,10 +931,16 @@ fn verify_report_with_lots_input(
     let control = reconciliation
         .as_ref()
         .or(due_date_reconciliation.as_ref())
-        .map(|value| certificate(value.control))
+        .map(|value| value.control)
+        .or_else(|| portfolio.as_ref().map(|value| value.control))
+        .map(certificate)
         .transpose()?;
     if let (Some(aging), Some(control)) = (&aging, &control) {
-        reconciliation::bind(aging, &cert, control)?;
+        if portfolio.is_some() {
+            portfolio::bind(aging, &cert, control)?;
+        } else {
+            reconciliation::bind(aging, &cert, control)?;
+        }
     }
     if let (Some(aging), Some(control)) = (&due_date, &control) {
         due_date_reconciliation::bind(aging, &cert, control)?;
@@ -900,6 +953,7 @@ fn verify_report_with_lots_input(
         .or_else(|| cash.as_ref().map(|value| value.digest))
         .or_else(|| split_cash.as_ref().map(|value| value.digest))
         .or_else(|| reconciliation.as_ref().map(|value| value.digest))
+        .or_else(|| portfolio.as_ref().map(|value| value.digest))
         .or_else(|| due_date_reconciliation.as_ref().map(|value| value.digest))
         .or_else(|| aging.as_ref().map(|value| value.digest))
         .or_else(|| due_date.as_ref().map(|value| value.digest))
@@ -934,7 +988,7 @@ fn verify_report_with_lots_input(
     if (is_open_items
         || is_explanation
         || roll_forward.is_some()
-        || statement_diff.is_some()
+        || statement_diff.is_some() && !cert.functional
         || summary.is_some())
         && major != 2
     {
@@ -1184,6 +1238,7 @@ fn verify_report_with_lots_input(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            aging_portfolio: None,
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1265,12 +1320,76 @@ fn verify_report_with_lots_input(
                 report.columns[0].periods.clone(),
             )
         };
+        let (functional_statement, statement_diff, output, output_digest) = if let (
+            Some(request),
+            Some(before_certificate),
+        ) =
+            (&statement_diff, &before_statement)
+        {
+            let Selection::Statement(before_selection) = &before_certificate.selection else {
+                return Err(failed(
+                    "supported_report",
+                    "functional comparison source is not a statement",
+                ));
+            };
+            let before_bodies = crate::migration_balance::report_bodies_at(
+                envelopes,
+                &records,
+                &bodies,
+                before_certificate.known_at,
+            )
+            .map_err(|e| failed("migration_visibility", e.to_string()))?;
+            let before_inputs =
+                historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
+            let before_rates =
+                functional::historical_rates(&functional_rates, &records, &before_inputs.infos)?;
+            let (before, before_output) = functional::replay_statement(
+                before_certificate,
+                before_selection,
+                definitions,
+                book,
+                &before_rates,
+                &before_inputs.schema,
+                envelopes,
+                &records,
+                &legs,
+                &before_inputs.infos,
+                &before_inputs.resolved,
+                &before_inputs.visible_migrations,
+                &before_inputs.migration_activations,
+            )?;
+            if before_output != before_certificate.output {
+                return Err(failed(
+                    "report_recomputation",
+                    "the comparison's earlier functional statement differs from its independently replayed historical source",
+                ));
+            }
+            let after = functional_statement.ok_or_else(|| {
+                failed(
+                    "supported_report",
+                    "functional comparison has no later statement",
+                )
+            })?;
+            let (comparison, output) = statement_diff::replay(
+                request,
+                before_certificate,
+                &cert,
+                before.statement,
+                &before_output,
+                after.statement,
+                &output,
+            )?;
+            let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+            (None, Some(comparison), output, output_digest)
+        } else {
+            (functional_statement, None, output, cert.output_digest)
+        };
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
             bundle_digest: digest,
-            certificate_digest: cert.digest,
-            output_digest: cert.output_digest,
+            certificate_digest,
+            output_digest,
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
@@ -1279,7 +1398,7 @@ fn verify_report_with_lots_input(
             periods,
             rows: Vec::new(),
             statement: None,
-            statement_diff: None,
+            statement_diff,
             dimension: None,
             open_items: None,
             lots: None,
@@ -1287,6 +1406,7 @@ fn verify_report_with_lots_input(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            aging_portfolio: None,
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1391,6 +1511,7 @@ fn verify_report_with_lots_input(
                 aging: None,
                 due_date_aging: None,
                 aging_reconciliation: None,
+                aging_portfolio: None,
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
@@ -1481,6 +1602,7 @@ fn verify_report_with_lots_input(
                     aging: None,
                     due_date_aging: None,
                     aging_reconciliation: None,
+                    aging_portfolio: None,
                     due_date_aging_reconciliation: Some(comparison),
                     roll_forward: None,
                     cash_flow: None,
@@ -1518,6 +1640,7 @@ fn verify_report_with_lots_input(
                 aging: None,
                 due_date_aging: Some(report),
                 aging_reconciliation: None,
+                aging_portfolio: None,
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
@@ -1554,6 +1677,67 @@ fn verify_report_with_lots_input(
                 cert.digest,
                 historical,
             )?;
+            if let (Some(portfolio_certificate), Some(control_certificate)) = (&portfolio, &control)
+            {
+                let control = replay_trial_balance(
+                    control_certificate,
+                    &schema,
+                    None,
+                    &dimension_history,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &infos,
+                    &resolved,
+                    &visible_migrations,
+                )?;
+                let (comparison, output) = portfolio::replay(
+                    portfolio_certificate,
+                    aging_certificate,
+                    control_certificate.digest,
+                    &schema,
+                    aging,
+                    control.rows,
+                    &units,
+                )?;
+                return Ok(VerifiedReport {
+                    scope: "recomputation",
+                    summary: None,
+                    bundle_digest: digest,
+                    certificate_digest,
+                    output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                    checkpoint: signed,
+                    known_at: cert.known_at,
+                    time_selection: None,
+                    effective_through: Some(comparison.effective_through),
+                    activity: false,
+                    periods: control.periods,
+                    rows: Vec::new(),
+                    statement: None,
+                    statement_diff: None,
+                    dimension: None,
+                    open_items: None,
+                    lots: None,
+                    explanation: None,
+                    aging: None,
+                    due_date_aging: None,
+                    aging_reconciliation: None,
+                    aging_portfolio: Some(comparison),
+                    due_date_aging_reconciliation: None,
+                    roll_forward: None,
+                    cash_flow: None,
+                    split_cash_flow: None,
+                    indirect_cash_flow: None,
+                    equity_roll_forward: None,
+                    functional_trial_balance: None,
+                    functional_statement: None,
+                    consolidation: None,
+                    unit_universe_source: "authenticated-registry",
+                    output,
+                    checked_records: records.len(),
+                    receipt,
+                });
+            }
             if let (Some(reconciliation_certificate), Some(control_certificate)) =
                 (&reconciliation, &control)
             {
@@ -1606,6 +1790,7 @@ fn verify_report_with_lots_input(
                     aging: None,
                     due_date_aging: None,
                     aging_reconciliation: Some(comparison),
+                    aging_portfolio: None,
                     due_date_aging_reconciliation: None,
                     roll_forward: None,
                     cash_flow: None,
@@ -1643,6 +1828,7 @@ fn verify_report_with_lots_input(
                 aging: Some(aging),
                 due_date_aging: None,
                 aging_reconciliation: None,
+                aging_portfolio: None,
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
@@ -1680,6 +1866,7 @@ fn verify_report_with_lots_input(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            aging_portfolio: None,
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1738,6 +1925,7 @@ fn verify_report_with_lots_input(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            aging_portfolio: None,
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1857,6 +2045,7 @@ fn verify_report_with_lots_input(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            aging_portfolio: None,
             due_date_aging_reconciliation: None,
             roll_forward: None,
             cash_flow: None,
@@ -1939,6 +2128,7 @@ fn verify_report_with_lots_input(
                 aging: None,
                 due_date_aging: None,
                 aging_reconciliation: None,
+                aging_portfolio: None,
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow: None,
@@ -2031,6 +2221,7 @@ fn verify_report_with_lots_input(
                 aging: None,
                 due_date_aging: None,
                 aging_reconciliation: None,
+                aging_portfolio: None,
                 due_date_aging_reconciliation: None,
                 roll_forward: None,
                 cash_flow,
@@ -2068,6 +2259,7 @@ fn verify_report_with_lots_input(
             aging: None,
             due_date_aging: None,
             aging_reconciliation: None,
+            aging_portfolio: None,
             due_date_aging_reconciliation: None,
             roll_forward: Some(roll_forward),
             cash_flow: None,
@@ -2125,6 +2317,7 @@ fn verify_report_with_lots_input(
         aging: None,
         due_date_aging: None,
         aging_reconciliation: None,
+        aging_portfolio: None,
         due_date_aging_reconciliation: None,
         roll_forward: None,
         cash_flow: None,

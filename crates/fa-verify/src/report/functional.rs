@@ -27,7 +27,7 @@ pub(super) use valuation::{MAX_RATE_BYTES, MAX_RATES};
 pub(super) const MAX_BOOK_BYTES: usize = 1024 * 1024;
 pub(super) const OUTPUT_FORMAT: &[u8] = b"fa:functional-trial-balance:v1";
 pub(super) const STATEMENT_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement:v1";
-const BOOK_PARAMETERS_SOURCE: &str =
+pub(super) const BOOK_PARAMETERS_SOURCE: &str =
     "certificate-bound-report-parameters; genesis-registration-not-proved";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +38,49 @@ pub struct VerifiedFunctionalStatement {
     pub statement: statement::VerifiedStatement,
     /// The checkpoint does not authenticate the separate Book root vertex.
     pub book_parameters_source: &'static str,
+}
+
+/// Read the canonical inner statement after the complete functional output
+/// has been independently reproduced. No producer-selected amount is trusted.
+pub(super) fn statement_bytes(bytes: &[u8]) -> Result<&[u8], ReportError> {
+    let mut r = Reader::new(bytes);
+    if r.fixed::<{ STATEMENT_OUTPUT_FORMAT.len() }>("functional statement format")?
+        != STATEMENT_OUTPUT_FORMAT
+        || r.bytes(64, "functional statement valuation")? != b"retained-base-amounts"
+    {
+        return Err(failed(
+            "statement_diff_selection",
+            "invalid functional source wrapper",
+        ));
+    }
+    let inner = r.bytes(super::MAX_REPORT_BUNDLE_BYTES, "functional statement")?;
+    r.finish("functional statement output")?;
+    Ok(inner)
+}
+
+/// The later source has already checked that the supplied Rate closure is
+/// exact. Project the earlier source's set from its authenticated proposals,
+/// never from its reported amounts, selected dates or producer-supplied list.
+/// Replay will still check exactness, custody and first-use visibility at that
+/// earlier frontier, so a later import cannot repair missing earlier evidence.
+pub(super) fn historical_rates<'a>(
+    documents: &[([u8; 32], &'a [u8])],
+    records: &[(usize, &[u8])],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+) -> Result<Vec<([u8; 32], &'a [u8])>, ReportError> {
+    let required = valuation::referenced_rates(records, infos)?;
+    let selected: Vec<_> = documents
+        .iter()
+        .filter(|(oid, _)| required.contains(oid))
+        .copied()
+        .collect();
+    if selected.len() != required.len() {
+        return Err(failed(
+            "functional_rates",
+            "earlier statement has an incomplete original Rate closure",
+        ));
+    }
+    Ok(selected)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

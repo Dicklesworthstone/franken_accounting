@@ -11,6 +11,9 @@
 //! saved observation and the current preparation snapshot. The original
 //! prepared posting retains a complete-frontier guard until publication;
 //! newly appended activity cannot escape an aggregate dependency check.
+//! A Locked-period reclose is rehearsed as a dedicated scenario, then posted
+//! as the sole monetary member of an approved correction case. It closes only
+//! corrections already committed before its reviewed source observation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -244,6 +247,39 @@ pub fn authorize_draft_preparation<V: Vfs + Clone>(
     Ok(crate::policy::current_at(db, book, capability)?.map(|_| ()))
 }
 
+/// Case preparation observes the complete fiscal year under Read/Post/Restate.
+/// It grants no right to post a standalone Closing into a Locked period.
+pub fn authorize_case_preparation<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id)
+        .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None))
+        .and_then(|()| fa_policy::require(capability, Op::Post, "preparing a case reclose"))
+        .and_then(|()| fa_policy::require(capability, Op::Restate, "reclosing a Locked period"))
+    {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    Ok(crate::policy::current_at(db, book, capability)?.map(|_| ()))
+}
+
+pub(crate) fn case_scope_refusal() -> Refusal {
+    unsupported(
+        "a Locked-period reclose requires one intrinsic Closing in a dedicated scenario and approved case; post corrections first, then review their exact remaining nominal balances",
+    )
+}
+
+#[derive(Clone, Copy)]
+enum CloseMode {
+    Inspect,
+    /// Reproduce arithmetic already recorded in either trunk or an isolated
+    /// case rehearsal. This grants no admission or publication authority.
+    Recorded,
+    Ordinary,
+    Case,
+}
+
 /// A Closing draft is one complete intrinsic computation. No other member
 /// may change its aggregate source or acquire delegated closing authority.
 pub(crate) fn draft_scope_refusal() -> Refusal {
@@ -271,7 +307,7 @@ pub fn prepare_year_end_close<V: Vfs + Clone>(
         if let Err(refusal) = validate_sources(db, cx, book, at)? {
             return Ok(Err(refusal));
         }
-        observe(db, cx, book, request, at, true, None)
+        observe(db, cx, book, request, at, CloseMode::Ordinary, None)
     })
 }
 
@@ -297,7 +333,33 @@ pub fn prepare_year_end_close_for_draft<V: Vfs + Clone>(
         if let Err(refusal) = validate_sources(db, cx, book, at)? {
             return Ok(Err(refusal));
         }
-        observe(db, cx, book, request, at, true, None)
+        observe(db, cx, book, request, at, CloseMode::Ordinary, None)
+    })
+}
+
+/// Derive a complete, read-only reclose for an approved-case workflow. The
+/// period must already be Locked. Rehearsal and the case's atomic Post repeat
+/// this calculation; neither may append a correction beside the close.
+pub fn prepare_year_end_close_for_case<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    request: &YearEndCloseRequest,
+) -> Outcome<PreparedYearEndClose> {
+    let query = cx.query();
+    query
+        .checkpoint()
+        .map_err(fgdb::WriteTxnError::Interrupted)?;
+    query.with_restriction(|| {
+        if let Err(refusal) = authorize_case_preparation(db, book, capability)? {
+            return Ok(Err(refusal));
+        }
+        let at = db.frontier()?;
+        if let Err(refusal) = validate_sources(db, cx, book, at)? {
+            return Ok(Err(refusal));
+        }
+        observe(db, cx, book, request, at, CloseMode::Case, None)
     })
 }
 
@@ -306,7 +368,7 @@ fn selected_period<V: Vfs + Clone>(
     book: &BookContext,
     request: &YearEndCloseRequest,
     at: CommitSeq,
-    posting: bool,
+    mode: CloseMode,
 ) -> Outcome<PeriodRow> {
     let (_, end) = book.calendar.year_bounds(request.fiscal_year)?;
     let periods = book.calendar.periods_for_year(request.fiscal_year)?;
@@ -336,15 +398,26 @@ fn selected_period<V: Vfs + Clone>(
             "closing period differs from its calendar definition".into(),
         ));
     }
-    if posting
-        && !matches!(
-            period.state,
-            PeriodState::Open | PeriodState::SoftClosed | PeriodState::Closed
-        )
-    {
-        return Ok(Err(unsupported(
-            "Closing is supported only in Open, SoftClosed or Closed; Locked case-bound reclose is not implemented",
-        )));
+    match mode {
+        CloseMode::Ordinary
+            if !matches!(
+                period.state,
+                PeriodState::Open | PeriodState::SoftClosed | PeriodState::Closed
+            ) =>
+        {
+            return Ok(Err(unsupported(
+                "standalone Closing requires Open, SoftClosed or Closed; a Locked period requires a dedicated, rehearsed and approved reclose case",
+            )));
+        }
+        CloseMode::Case if period.state != PeriodState::Locked => {
+            return Ok(Err(case_scope_refusal()));
+        }
+        CloseMode::Recorded if period.state == PeriodState::Future => {
+            return Ok(Err(unsupported(
+                "a recorded Closing cannot precede period opening",
+            )));
+        }
+        _ => {}
     }
     Ok(Ok(period))
 }
@@ -674,7 +747,7 @@ fn observe<V: Vfs + Clone>(
     book: &BookContext,
     request: &YearEndCloseRequest,
     at: CommitSeq,
-    posting: bool,
+    mode: CloseMode,
     version: Option<u16>,
 ) -> Outcome<PreparedYearEndClose> {
     if at.0 == 0 || at > db.frontier()? {
@@ -682,7 +755,7 @@ fn observe<V: Vfs + Clone>(
             "the closing observation is outside this book's recorded history",
         )));
     }
-    let period = match selected_period(db, book, request, at, posting)? {
+    let period = match selected_period(db, book, request, at, mode)? {
         Ok(period) => period,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1022,7 +1095,12 @@ pub(crate) fn admit(proposal: &EntryPayload) -> Result<Option<YearEndCloseBasis>
         ));
     };
     if proposal.schema_minor != EXTENSIONS_MINOR
-        || proposal.extensions.len() != 1
+        || proposal.extensions.iter().any(|(tag, _)| {
+            !matches!(
+                *tag,
+                YEAR_END_CLOSE_EXTENSION | fa_model::entry::CASE_MEMBER_EXTENSION
+            )
+        })
         || !matches!(&proposal.origin, EntryOrigin::Intent { intent_kind: 1, .. })
         || proposal.control.is_some()
         || proposal.pending.is_some()
@@ -1078,6 +1156,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     book: &BookContext,
     proposal: &EntryPayload,
     basis: &YearEndCloseBasis,
+    in_case: bool,
 ) -> Outcome<()> {
     if proposal
         .effective_period
@@ -1099,7 +1178,12 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         if let Err(refusal) = validate_sources(db, cx, book, at)? {
             return Ok(Err(refusal));
         }
-        let observed = match observe(db, cx, book, &request, at, true, Some(basis.version))? {
+        let mode = if in_case {
+            CloseMode::Case
+        } else {
+            CloseMode::Ordinary
+        };
+        let observed = match observe(db, cx, book, &request, at, mode, Some(basis.version))? {
             Ok(observed) => observed,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -1167,7 +1251,7 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
             fiscal_year,
             closing_period: period.code,
         };
-        let current = match observe(db, cx, book, &request, at, false, None)? {
+        let current = match observe(db, cx, book, &request, at, CloseMode::Inspect, None)? {
             Ok(current) => current,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -1230,7 +1314,20 @@ fn verify_record<V: Vfs + Clone>(
     let mut snapshots = BTreeSet::new();
     snapshots.extend([basis.observed_at, CommitSeq(record.recorded_at.0 - 1)]);
     for at in snapshots {
-        let observed = match observe(db, cx, book, request, at, true, Some(basis.version))? {
+        let mode = if entry
+            .proposal
+            .extensions
+            .iter()
+            .any(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION)
+        {
+            CloseMode::Case
+        } else {
+            // The isolated scenario rehearses the exact unclaimed intent;
+            // CaseMember and its approved Post exist only on trunk. Arithmetic
+            // verification must remain usable inside that scratch book too.
+            CloseMode::Recorded
+        };
+        let observed = match observe(db, cx, book, request, at, mode, Some(basis.version))? {
             Ok(observed) => observed,
             Err(_) => return Ok(false),
         };
@@ -1252,7 +1349,7 @@ fn verify_record<V: Vfs + Clone>(
             book,
             request,
             record.recorded_at,
-            false,
+            CloseMode::Inspect,
             Some(basis.version),
         )? {
             Ok(closed) => closed.is_noop(),

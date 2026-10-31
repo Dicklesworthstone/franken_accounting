@@ -306,7 +306,7 @@ fn functional_statement_diff_does_not_borrow_the_native_portable_profile() {
     assert!(functional.certificate.uses_functional_valuations());
     let state = checkpoint(&mut fixture.book);
     let head = fixture.book.head().unwrap();
-    let refusal = fixture
+    let produced = fixture
         .book
         .produce_statement_diff_bundle(
             PRINCIPAL,
@@ -315,8 +315,39 @@ fn functional_statement_diff_does_not_borrow_the_native_portable_profile() {
             &functional.certificate,
         )
         .unwrap()
-        .unwrap_err();
-    assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
+        .unwrap()
+        .unwrap();
+    let key = fixture.book.checkpoint_public_key();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        None,
+        Some(&produced.receipt),
+        Some(functional.certificate.digest()),
+    )
+    .unwrap();
+    assert_eq!(verified.output, functional.certificate.output());
+    assert!(matches!(
+        verified.statement_diff.unwrap().valuation,
+        fa_verify::report::StatementDiffValuation::Functional { .. }
+    ));
+    let mut native_profile = produced.bundle.bytes.clone();
+    let major_at = 4 + fa_notary::report::REPORT_BUNDLE_FORMAT.len();
+    assert_eq!(&native_profile[major_at..major_at + 2], &3u16.to_le_bytes());
+    native_profile[major_at..major_at + 2].copy_from_slice(&2u16.to_le_bytes());
+    assert_eq!(
+        fa_verify::report::verify_report_expected(
+            &native_profile,
+            &[key],
+            None,
+            None,
+            Some(functional.certificate.digest()),
+        )
+        .unwrap_err()
+        .predicate,
+        "supported_report",
+        "functional comparisons cannot borrow the native profile"
+    );
     assert_eq!(fixture.book.head().unwrap(), head);
 }
 

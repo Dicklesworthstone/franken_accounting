@@ -397,11 +397,12 @@ fn scratch_request(
     planner: &fa_journal::Capability,
 ) -> Outcome<PostRequest> {
     let principal = intent.proposal().principal_ref;
-    let observes_roles = intent
-        .proposal()
-        .extensions
-        .iter()
-        .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION);
+    let observes_roles = intent.proposal().class == fa_model::EntryClass::CLOSING
+        || intent
+            .proposal()
+            .extensions
+            .iter()
+            .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION);
     if observes_roles
         && let Err(denial) = fa_policy::admit_read(planner, principal, intent.proposal().book_id)
             .and_then(|()| fa_policy::reach(planner, &fa_policy::Reach::whole_book(true), None))
@@ -410,8 +411,8 @@ fn scratch_request(
     }
     // These are the only additional operations used by the batchable
     // posting classes and a Revision case's Revision entries (`restate`).
-    // A Closing or Restatement intent cannot enter a scenario, so their
-    // other operations are never copied.
+    // A dedicated Closing scenario is a Locked-period case rehearsal. It
+    // retains Read/Restate, never Close or permission to publish on trunk.
     let mut ops: Vec<&str> = [
         fa_policy::Op::Post,
         fa_policy::Op::PostSoftclosed,

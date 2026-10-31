@@ -4768,6 +4768,163 @@ fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
     assert_eq!(snapshot(&book), before);
 }
 
+/// A selected historical prefix can use its own maintained state under a
+/// known-at ceiling, even after later postings and cache damage at HEAD.
+#[test]
+fn authorized_historical_reports_pin_cache_tail_and_authority_to_the_selected_prefix() {
+    use fa_model::symbols::{property, relation};
+    use fa_registers::Served;
+
+    let (mut book, usd, day, _) = certified_fixture();
+    let principal = VId(1);
+    let periods = ["FY2026-P03".to_string()];
+    let before_cache = book.head().unwrap();
+    let advance = book
+        .advance_registers(principal, &maintenance_capability(principal), &periods[0])
+        .unwrap()
+        .unwrap();
+    assert!(advance.wrote);
+    let selected = post_rent(&mut book, usd, principal, day, b"historical-tail", 12_345)
+        .unwrap()
+        .unwrap()
+        .recorded_at();
+    let literal_stock = book.trial_balance_at(&periods, Some(selected)).unwrap();
+    let literal_activity = book.period_activity(&periods, Some(selected)).unwrap();
+    assert_eq!(literal_stock.unit_totals[&usd.0], (162_345, 162_345));
+    let reader = Capability::embedded(principal, &["read"])
+        .unwrap()
+        .known_at_most(selected);
+    let assert_reports = |book: &Book| {
+        let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+        let reports = [
+            scope
+                .trial_balance_served_at(&periods, Some(selected))
+                .unwrap()
+                .unwrap(),
+            scope
+                .period_activity_served_at(&periods, Some(selected))
+                .unwrap()
+                .unwrap(),
+        ];
+        for ((report, served), expected) in reports.iter().zip([&literal_stock, &literal_activity])
+        {
+            assert_eq!(report.known_at, selected);
+            assert_eq!(
+                report.canonical_bytes().unwrap(),
+                expected.canonical_bytes().unwrap()
+            );
+            let Served::Maintained(cursors) = served else {
+                panic!("historical resident state must serve the admitted prefix: {served:?}");
+            };
+            assert_eq!(cursors.len(), 1);
+            assert_eq!(
+                (&cursors[0].0, cursors[0].1),
+                (&periods[0], advance.through)
+            );
+            assert!(
+                cursors[0].2 > 0,
+                "the selected prefix includes a tail posting"
+            );
+        }
+        assert_eq!(
+            scope
+                .trial_balance_at(&periods, Some(selected))
+                .unwrap()
+                .unwrap(),
+            literal_stock
+        );
+        assert_eq!(
+            scope
+                .period_activity(&periods, Some(selected))
+                .unwrap()
+                .unwrap(),
+            literal_activity
+        );
+        reports
+    };
+    let historical_reports = assert_reports(&book);
+
+    // A backdated future publication and a newer cache must not enter either
+    // the historical answer or its disclosed serving cursor/tail count.
+    post_rent(&mut book, usd, principal, day, b"later-backdated", 700_000)
+        .unwrap()
+        .unwrap();
+    book.advance_registers(principal, &maintenance_capability(principal), &periods[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(assert_reports(&book), historical_reports);
+    assert_eq!(
+        book.trial_balance(&periods).unwrap().unit_totals[&usd.0],
+        (862_345, 862_345)
+    );
+
+    // Damage only the current cache. The historical read must not inspect
+    // or repair it, nor silently widen a known-at ceiling to the head.
+    let contexts = book.purposes();
+    let cell = fa_registers::register_vid(
+        book.context().book_id,
+        &fa_registers::CellKey {
+            account: account_vid(book.context().book_id, "6000"),
+            unit_id: usd.0,
+            period: periods[0].clone(),
+        },
+    );
+    let mut damage = fgdb::WriteBatch::new(relation::IN_PERIOD);
+    damage.set_vertex_property(
+        cell,
+        property::DEBITS_POSTED,
+        Some(fa_journal::rows::mantissa_scalar("damaged current cache", 1).unwrap()),
+    );
+    with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), damage)))
+        .unwrap();
+    let head = book.head().unwrap();
+    let snapshot = || {
+        contexts
+            .query()
+            .with_restriction(|| with_store!(&book.store, core => core.db.vertices()).unwrap())
+    };
+    let before = snapshot();
+    assert_eq!(assert_reports(&book), historical_reports);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for refusal in [
+        scope.trial_balance_served(&periods).unwrap().unwrap_err(),
+        scope.period_activity_served(&periods).unwrap().unwrap_err(),
+    ] {
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+        assert!(refusal.message.contains("`known_at` caveat"));
+    }
+    // A prefix preceding all caches uses the complete literal report.
+    for (report, served) in [
+        scope
+            .trial_balance_served_at(&periods, Some(before_cache))
+            .unwrap()
+            .unwrap(),
+        scope
+            .period_activity_served_at(&periods, Some(before_cache))
+            .unwrap()
+            .unwrap(),
+    ] {
+        assert!(matches!(served, Served::Literal(_)), "{served:?}");
+        assert_eq!(report.known_at, before_cache);
+        assert_eq!(report.unit_totals[&usd.0], (150_000, 150_000));
+    }
+    // A period caveat still disallows inspecting the global delta window,
+    // even when that window contains an otherwise admissible historical tail.
+    let restricted = reader.clone().for_periods(&[&periods[0]]).unwrap();
+    let scope = book.read_scope(principal, &restricted).unwrap().unwrap();
+    let (activity, served) = scope
+        .period_activity_served_at(&periods, Some(selected))
+        .unwrap()
+        .unwrap();
+    assert_eq!(activity, literal_activity);
+    assert!(
+        matches!(served, Served::Literal(ref reason) if reason.contains("`periods` caveat")),
+        "{served:?}"
+    );
+    assert_eq!(book.head().unwrap(), head);
+    assert_eq!(snapshot(), before, "historical reads must write no repair");
+}
+
 /// Reads under a capability (fa-llx; fa-t6m "historical read using a
 /// revoked token"): admitted once against current policy, then every
 /// read judged by the scope caveats before its query is constructed —

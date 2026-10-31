@@ -416,8 +416,8 @@ impl PreparedPost {
             proofs.disposal.is_some() && crate::disposal::has_basis(&self.request.proposal);
         let independent_asset_charge =
             proofs.asset_charge.is_some() && crate::asset_cost::has_basis(&self.request.proposal);
-        let singleton_closing =
-            proofs.closing.is_some() && self.request.proposal.class == EntryClass::CLOSING;
+        let singleton_closing = (proofs.closing.is_some() || proofs.case_closing.is_some())
+            && self.request.proposal.class == EntryClass::CLOSING;
         let singleton_revaluation =
             proofs.revaluation.is_some() && self.request.proposal.class == EntryClass::REVALUATION;
         // The posting pipeline has already witnessed the exact side-swap
@@ -1938,6 +1938,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         disposal: disposal_batch,
         asset_charge: asset_charge_batch,
         closing: closing_draft,
+        case_closing,
         revaluation: revaluation_draft,
     } = proofs;
     let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
@@ -2016,8 +2017,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // A case-bound class rehearsed in a scenario's scratch replay carries
     // no approvals: its case's approvals bind its entries at the case's
     // own Post.
+    let scratch_closing =
+        matches!(admission, Admission::ScratchScenario(_)) && proposal.class == EntryClass::CLOSING;
     let scratch_case = matches!(admission, Admission::ScratchScenario(_))
-        && crate::case::case_bound(proposal.class);
+        && (crate::case::case_bound(proposal.class) || scratch_closing);
     if crate::asset_cost::has_basis(proposal) {
         if let Err(refusal) = crate::asset_cost::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
@@ -2067,7 +2070,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     if closing.is_some() {
-        let authority = if closing_draft.is_some() {
+        let authority = if case_member.is_some() || scratch_closing {
+            crate::closing::authorize_case_preparation(db, book, &req.capability)?
+        } else if closing_draft.is_some() {
             crate::closing::authorize_draft_preparation(db, book, &req.capability)?
         } else {
             crate::closing::authorize(db, book, &req.capability, true)?
@@ -2075,7 +2080,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = authority {
             return Ok(Err(refusal));
         }
-        if carried.is_some()
+        if (carried.is_some() && case_closing.is_none())
             || (matches!(
                 admission,
                 Admission::Promote(_) | Admission::ScratchDraft(_)
@@ -2823,7 +2828,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // PreparedPost::commit additionally guards the entire preparation
     // frontier, including zero-result and newly appended contributions.
     if let Some(basis) = &closing
-        && let Err(refusal) = crate::closing::validate_post(&txn, db, ctx, book, proposal, basis)?
+        && let Err(refusal) = crate::closing::validate_post(
+            &txn,
+            db,
+            ctx,
+            book,
+            proposal,
+            basis,
+            case_member.is_some() || scratch_closing,
+        )?
     {
         txn.abort();
         return Ok(Err(refusal));

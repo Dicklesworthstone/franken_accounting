@@ -275,8 +275,8 @@ pub fn admit_rule_change<V: Vfs + Clone>(
     ) {
         return Ok(Some(crate::policy::refusal(&d)));
     }
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Some(crate::policy::refusal(&d)));
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Some(refusal));
     }
     Ok(None)
 }
@@ -722,8 +722,8 @@ pub fn admit_rule_activation<V: Vfs + Clone>(
     ) {
         return Ok(Err(crate::policy::refusal(&d)));
     }
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Err(crate::policy::refusal(&d)));
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
     }
     Ok(Ok(()))
 }

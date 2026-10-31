@@ -5016,13 +5016,15 @@ impl Book {
         )))
     }
 
-    /// Export a native statement comparison for independent offline replay.
+    /// Export a native or functional statement comparison for independent offline replay.
     /// Both historical statements, exact deltas and zero-balance chart mapping
     /// changes are bound by the original outer certificate. A complete signed
-    /// prefix and the shared four-registry closure supply both source frontiers.
+    /// prefix and shared original registry closure supply both source frontiers.
+    /// Functional comparisons additionally carry the historical Book parameters
+    /// and exact Rate evidence, independently selected and checked at each frontier.
     /// Requires current whole-book read/produce authority, appends nothing, and
-    /// returns `None` when the requested checkpoint is unavailable. Functional
-    /// or cross-registry comparisons remain supported only by in-book replay.
+    /// returns `None` when the requested checkpoint is unavailable. Cross-registry
+    /// comparisons remain supported only by in-book replay.
     pub fn produce_statement_diff_bundle(
         &mut self,
         principal: VId,
@@ -5233,6 +5235,26 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.produce_aging_reconciliation_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
+    /// Export historical portfolio coverage and per-account aging/control
+    /// comparisons under current whole-book read and produce authority. The
+    /// recipient's independently selected scope, cutoff, fixed recorded prefix
+    /// and age bands must match before any complete source closure is exported.
+    pub fn produce_aging_portfolio_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::aging::portfolio::AgingPortfolioCertificate,
+        expected: &crate::aging::portfolio::AgingPortfolioRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_aging_portfolio_bundle(
                 &purposes, principal, capability, state, certificate, expected,
             )
         ))
@@ -7095,6 +7117,20 @@ impl Book {
         )
     }
 
+    /// Prepare the exact residual of a Locked year for one dedicated case.
+    /// Retain it in a scenario, rehearse and dual-approve that case, then use
+    /// post_case; a standalone plan cannot publish this Locked-period close.
+    pub fn prepare_year_end_close_for_case(
+        &mut self,
+        request: &fa_journal::closing::YearEndCloseRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_year_end_close_for_case(&purposes, request, capability))
+        )
+    }
+
     /// Check zero nominal balances at the last close and expose later deltas.
     pub fn verify_year_end_close(
         &mut self,
@@ -7567,8 +7603,22 @@ impl ReadScope<'_> {
         &self,
         periods: &[String],
     ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        self.trial_balance_served_at(periods, None)
+    }
+
+    /// An authorized trial balance at one recorded frontier, with its actual
+    /// serving basis. Historical metadata, cells, checkpoints and tail all
+    /// use the admitted sequence; later cache maintenance cannot change it.
+    /// A known-at ceiling permits this historical path without admitting the
+    /// current head. Narrower account, period or effective scopes retain the
+    /// literal path, which does not inspect the global register window.
+    pub fn trial_balance_served_at(
+        &self,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
         let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
-        let seq = match self.admit_report(&selection.into(), None)? {
+        let seq = match self.admit_report(&selection.into(), known_at)? {
             Ok(seq) => seq,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -7581,28 +7631,26 @@ impl ReadScope<'_> {
                 )),
             )));
         }
-        Ok(Ok(self.book.trial_balance_served(periods)?))
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            Ok(Ok(fa_registers::trial_balance_served_at_with_context(
+                db, &purposes.query(), book, periods, Some(seq),
+            )?))
+        }))
     }
 
     /// [`Book::trial_balance_at`] under the scope caveats (see
-    /// [`Self::admit_report`]). HEAD uses the maintained path when available;
-    /// an explicit recorded sequence keeps the literal historical path.
+    /// [`Self::admit_report`]). Maintained cells or checkpoints at the selected
+    /// frontier supply an exact tail when available; otherwise the journal
+    /// is folded literally at that same frontier.
     pub fn trial_balance_at(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        if known_at.is_none() {
-            return Ok(self
-                .trial_balance_served(periods)?
-                .map(|(report, _)| report));
-        }
-        let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
-        let seq = match self.admit_report(&selection.into(), known_at)? {
-            Ok(seq) => seq,
-            Err(r) => return Ok(Err(r)),
-        };
-        Ok(Ok(self.book.trial_balance_at(periods, Some(seq))?))
+        Ok(self
+            .trial_balance_served_at(periods, known_at)?
+            .map(|(report, _)| report))
     }
 
     /// [`Book::balance_as_of`] under the scope caveats: it reaches every
@@ -7628,8 +7676,20 @@ impl ReadScope<'_> {
         &self,
         periods: &[String],
     ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        self.period_activity_served_at(periods, None)
+    }
+
+    /// Authorized activity at one recorded frontier, including historical
+    /// reads admitted by a known-at ceiling. The cache and its exact tail are
+    /// pinned to that sequence. Missing or damaged retained cache state uses
+    /// the literal fold; reading neither advances nor repairs the cache.
+    pub fn period_activity_served_at(
+        &self,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
         let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
-        let seq = match self.admit_report(&selection.into(), None)? {
+        let seq = match self.admit_report(&selection.into(), known_at)? {
             Ok(seq) => seq,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -7642,28 +7702,25 @@ impl ReadScope<'_> {
                 )),
             )));
         }
-        Ok(Ok(self.book.period_activity_served(periods)?))
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+            Ok(Ok(fa_registers::period_activity_served_at_with_context(
+                db, &purposes.query(), book, periods, Some(seq),
+            )?))
+        }))
     }
 
     /// [`Book::period_activity`] under the scope caveats: it reaches exactly
-    /// the selected periods. HEAD may use maintained cells; an explicit
-    /// recorded sequence remains a literal historical read.
+    /// the selected periods. Both head and historical reads use exact
+    /// maintained state when the authority and retained history permit it.
     pub fn period_activity(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        if known_at.is_none() {
-            return Ok(self
-                .period_activity_served(periods)?
-                .map(|(report, _)| report));
-        }
-        let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
-        let seq = match self.admit_report(&selection.into(), known_at)? {
-            Ok(seq) => seq,
-            Err(r) => return Ok(Err(r)),
-        };
-        Ok(Ok(self.book.period_activity(periods, Some(seq))?))
+        Ok(self
+            .period_activity_served_at(periods, known_at)?
+            .map(|(report, _)| report))
     }
 }
 

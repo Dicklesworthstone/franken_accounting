@@ -299,6 +299,22 @@ pub(crate) fn aging_bundle_expectation(
     }
 }
 
+/// Use the recipient's independently retained account scope, cutoff and age
+/// bands. The certificate being exported never supplies its own expected inputs.
+pub(crate) fn portfolio_bundle_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<AgingPortfolioRequest, Fail> {
+    match parse(args, book, principal, capability)? {
+        Expected::Portfolio(request) => Ok(request),
+        _ => Err(invalid(
+            "aging portfolio export requires --expect JSON with kind aging-portfolio, an independent account scope, fixed known_at, through and buckets",
+        )),
+    }
+}
+
 /// Use the recipient's independently retained scope and original-leg decisions.
 /// The certificate being exported never supplies its own expected inputs.
 pub(crate) fn split_cash_flow_bundle_expectation(

@@ -929,13 +929,14 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 fa::ReportArtifactFamily::EffectiveDateAging
                     | fa::ReportArtifactFamily::DueDateAging
                     | fa::ReportArtifactFamily::AgingReconciliation
+                    | fa::ReportArtifactFamily::AgingPortfolio
                     | fa::ReportArtifactFamily::DueDateAgingReconciliation
                     | fa::ReportArtifactFamily::SplitCashFlow
                     | fa::ReportArtifactFamily::IndirectCashFlow
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging, aging reconciliation, split cash-flow or indirect cash-flow certificate",
+                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, split cash-flow or indirect cash-flow certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -1010,6 +1011,22 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let expected = crate::notary::reconciliation_bundle_expectation(args, &book)?;
                 let certificate = fa::AgingReconciliationCertificate::decode(&bytes)?;
                 book.produce_aging_reconciliation_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                    &expected,
+                )??
+            }
+            fa::ReportArtifactFamily::AgingPortfolio => {
+                let expected = crate::notary::portfolio_bundle_expectation(
+                    args,
+                    &book,
+                    principal,
+                    &capability,
+                )?;
+                let certificate = fa::aging::portfolio::AgingPortfolioCertificate::decode(&bytes)?;
+                book.produce_aging_portfolio_bundle(
                     principal,
                     &capability,
                     state,
@@ -1092,7 +1109,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, summary or functional trial-balance or statement report, native statement diff, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff, lot schedule, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }

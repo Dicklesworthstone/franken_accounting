@@ -82,6 +82,111 @@ pub(super) fn promotion_control(proposal: &[u8]) -> Result<bool, ReportError> {
     Ok(true)
 }
 
+#[derive(Clone, Copy)]
+struct CaseMember {
+    ordinal: u32,
+    plan: u128,
+}
+
+impl CaseMember {
+    fn read(bytes: &[u8]) -> Result<Self, ReportError> {
+        let mut r = Reader::new(bytes);
+        if r.u16("closing.case.version")? != 1 {
+            return Err(invalid("unsupported Closing case-membership version"));
+        }
+        let member = Self {
+            ordinal: r.u32("closing.case.ordinal")?,
+            plan: r.u128("closing.case.plan")?,
+        };
+        r.finish("Closing case membership")?;
+        if member.ordinal == 0 {
+            return Err(invalid("Closing case ordinal is zero"));
+        }
+        Ok(member)
+    }
+}
+
+/// A Locked-period close publishes only with the existing singleton Case Post.
+/// Authenticate the exact member, plan and record digest named by that Post;
+/// it cannot smuggle a second monetary member into the closing observation.
+/// This proves immutable linkage and arithmetic, not the case's determination,
+/// approval signatures, capabilities or complete lifecycle authorization.
+fn case_post_control(
+    proposal: &[u8],
+    book: &[u8; 16],
+    member: CaseMember,
+    identity: u128,
+    digest: [u8; 32],
+) -> Result<bool, ReportError> {
+    let mut header = Reader::new(proposal);
+    if header.u16("case.major")? != 1
+        || header.u16("case.minor")? != 1
+        || header.fixed::<16>("case.book")? != *book
+        || header.fixed::<16>("case.branch")? != [0; 16]
+        || header.u16("case.class")? != 30
+    {
+        return Ok(false);
+    }
+    header.i32("case.date")?;
+    if header.present("case.document_date")? {
+        return Ok(false);
+    }
+    skip_erasable(&mut header, "case.description")?;
+    if header.present("case.period")? || header.count(4096, 1, "case.legs")? != 0 {
+        return Ok(false);
+    }
+    let case_digest = framed_hash(b"fa:vid:case:v1", &[book, &member.ordinal.to_le_bytes()]);
+    let mut case_bytes = [0; 16];
+    case_bytes.copy_from_slice(&case_digest[..16]);
+    let mut r = proposal_after_legs(proposal)?;
+    if !r.present("case.control")?
+        || r.u8("case.control_tag")? != 3
+        || r.u128("case.object")? != u128::from_le_bytes(case_bytes)
+        || r.u8("case.from")? != 4
+        || r.u8("case.to")? != 5
+        || r.count(1, 17, "case.proof_refs")? != 1
+        || r.u8("case.proof_ref_tag")? != 0
+        || r.u128("case.proof_member")? != identity
+        || r.u16("case.reason")? != 0
+        || r.count(4096, 36, "case.unit_totals")? != 0
+        || r.present("case.base_totals")?
+        || r.bytes(256, "case.key")?.len() != 32
+        || r.u8("case.origin")? != 3
+        || r.u16("case.control_kind")? != 17
+    {
+        return Ok(false);
+    }
+    let body_digest = r.fixed::<32>("case.body_digest")?;
+    r.u128("case.principal")?;
+    if r.present("case.session")?
+        || r.count(4096, 65, "case.evidence")? != 0
+        || r.count(4096, 51, "case.supersession")? != 0
+        || r.present("case.pending")?
+        || r.count(256, 65, "case.external_ids")? != 0
+        || r.count(32, 65, "case.tags")? != 0
+        || r.count(1, 6, "case.extensions")? != 1
+        || r.u16("case.extension_tag")? != 24
+    {
+        return Ok(false);
+    }
+    let bytes = r.bytes(70, "case.posted")?;
+    r.finish("case Post metadata")?;
+    if framed_hash(b"fa:case-posted:v1", &[bytes]) != body_digest {
+        return Ok(false);
+    }
+    let mut posted = Reader::new(bytes);
+    if posted.u16("case.posted.version")? != 1
+        || posted.count(1, 64, "case.posted.entries")? != 1
+        || posted.u128("case.posted.plan")? != member.plan
+        || posted.u128("case.posted.entry")? != identity
+        || posted.fixed::<32>("case.posted.digest")? != digest
+    {
+        return Ok(false);
+    }
+    posted.finish("case Post member")?;
+    Ok(true)
+}
+
 struct Basis {
     version: u16,
     year: i32,
@@ -459,10 +564,14 @@ impl History<'_> {
             || kind != 3
             || period_start != end
             || end.checked_add(1) != Some(period_end)
-            || !matches!(state, 1..=3)
+            || if self.infos[&index].case_member.is_some() {
+                state != 4
+            } else {
+                !matches!(state, 1..=3)
+            }
         {
             return Err(invalid(
-                "Closing requires its fiscal year's explicit Open/SoftClosed/Closed final-day period",
+                "Closing requires its fiscal year's explicit final-day period: Locked for a case member, otherwise Open/SoftClosed/Closed",
             ));
         }
         let map = maps
@@ -718,19 +827,36 @@ pub(super) fn verify<'a>(
                 "Closing header or recorded observation differs from its saved basis",
             ));
         }
-        let mut promotion_seen = false;
+        let member = info.case_member.map(CaseMember::read).transpose()?;
+        let mut companion_seen = false;
         for other in infos.keys().filter(|other| {
             **other != index && envelopes[**other].commit_seq == envelopes[index].commit_seq
         }) {
-            if promotion_seen
-                || envelopes[*other].class != 25
-                || !promotion_control(&records[*other].1[..records[*other].0])?
-            {
+            let companion = &records[*other].1[..records[*other].0];
+            let recognized = match member {
+                Some(member) => {
+                    envelopes[*other].class == 30
+                        && case_post_control(
+                            companion,
+                            &spec.book,
+                            member,
+                            info.identity,
+                            envelopes[index].record_digest,
+                        )?
+                }
+                None => envelopes[*other].class == 25 && promotion_control(companion)?,
+            };
+            if companion_seen || !recognized {
                 return Err(invalid(
                     "intrinsic Closing cannot share publication with a monetary or source-changing Entry",
                 ));
             }
-            promotion_seen = true;
+            companion_seen = true;
+        }
+        if member.is_some() && !companion_seen {
+            return Err(invalid(
+                "case-bound Closing has no exact singleton Case Post in its publication",
+            ));
         }
         plain_legs(&records[index].1[..records[index].0])?;
         if basis.version == 1 {

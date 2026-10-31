@@ -1,6 +1,8 @@
 use super::super::test_support::*;
 use super::*;
 
+mod offline;
+
 fn certify(h: &Harness, request: &AgingPortfolioRequest) -> CertifiedAgingPortfolio {
     h.book
         .certify_aging_portfolio(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), request)
