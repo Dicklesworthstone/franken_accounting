@@ -39,7 +39,7 @@ fn locked_case_modes_require_operator_restate_without_expanding_launch_ceilings(
             )
             .unwrap();
             let refusal =
-                fa_cli::cli::bound_command_admissible(&registry, "close", &args, &authority)
+                fa_cli::cli::bound_command_admissible(registry, "close", &args, &authority)
                     .unwrap_err();
             assert!(refusal.contains("restate"), "{argv:?}: {refusal}");
             assert!(!profile.ceiling().contains(&fa::Op::Restate));

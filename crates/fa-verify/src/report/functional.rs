@@ -58,16 +58,19 @@ pub(super) fn statement_bytes(bytes: &[u8]) -> Result<&[u8], ReportError> {
     Ok(inner)
 }
 
+/// A Rate document: its content id and its bytes.
+type RateDocument<'a> = ([u8; 32], &'a [u8]);
+
 /// The later source has already checked that the supplied Rate closure is
 /// exact. Project the earlier source's set from its authenticated proposals,
 /// never from its reported amounts, selected dates or producer-supplied list.
 /// Replay will still check exactness, custody and first-use visibility at that
 /// earlier frontier, so a later import cannot repair missing earlier evidence.
 pub(super) fn historical_rates<'a>(
-    documents: &[([u8; 32], &'a [u8])],
+    documents: &[RateDocument<'a>],
     records: &[(usize, &[u8])],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
-) -> Result<Vec<([u8; 32], &'a [u8])>, ReportError> {
+) -> Result<Vec<RateDocument<'a>>, ReportError> {
     let required = valuation::referenced_rates(records, infos)?;
     let selected: Vec<_> = documents
         .iter()
