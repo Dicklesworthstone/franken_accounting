@@ -393,8 +393,8 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
     ) {
         return Ok(Err(denial(&d)));
     }
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Err(denial(&d)));
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
     }
     Ok(Ok(()))
 }
@@ -783,10 +783,7 @@ pub fn admit_scenario_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     capability: &Capability,
 ) -> Outcome<()> {
-    if let Err(r) = admit(db, book, capability, Kind::Plan)? {
-        return Ok(Err(r));
-    }
-    crate::policy::capability_admitted(db, book, capability)
+    admit(db, book, capability, Kind::Plan)
 }
 
 /// What a scenario intent's checks found: the recorded outcome of its

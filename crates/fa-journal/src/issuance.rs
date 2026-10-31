@@ -456,8 +456,8 @@ pub fn admit<V: asupersync::fs::Vfs + Clone>(
     ) {
         return Ok(Err(denial(&d)));
     }
-    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
-        return Ok(Err(denial(&d)));
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
     }
     Ok(Ok(()))
 }
