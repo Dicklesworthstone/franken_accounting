@@ -1289,6 +1289,14 @@ exit = "safety"
 cite = "plan §14.5 (a principal cannot later deny an approval it signed): once a principal registers a signing key, every approval it records carries that key's Ed25519 signature over the approval digest (bead fa-kae)"
 fix = "approve with --sign-key <the principal's current key file> (fa approve --proposal or --review, fa allocate approve, fa settle approve), never routed through fad; a principal with no registered key approves without --sign-key"
 
+[[refusal]]
+code = "FA-REF-206"
+name = "ATTESTATION_SIGNATURE"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §14.5 (a principal cannot later deny an attestation it signed): once a principal registers a signing key, every attestation it records carries that key's Ed25519 signature over the attestation's signed_digest (bead fa-kae)"
+fix = "attest with --sign-key <the principal's current key file> (fa document attest review|confirmed|represented|manual|register-equals, fa assert-balance, fa exhibit mark, fa bank reconcile), never routed through fad; a principal with no registered key attests without --sign-key"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

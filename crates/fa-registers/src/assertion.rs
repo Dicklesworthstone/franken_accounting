@@ -155,6 +155,7 @@ pub async fn record_register_equals<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn fa_policy::PrincipalSigner>,
     claim: &RegisterEquals,
     evidence: Vec<Oid>,
 ) -> Result<Result<Attested, Refusal>, RegisterError> {
@@ -170,7 +171,10 @@ pub async fn record_register_equals<V: asupersync::fs::Vfs + Clone>(
     if let Some(why) = differences(db, book, claim)? {
         return Ok(Err(claim_false(why)));
     }
-    Ok(commit_register_equals(db, ctx, book, capability, claim_of(claim), evidence).await?)
+    Ok(
+        commit_register_equals(db, ctx, book, capability, signer, claim_of(claim), evidence)
+            .await?,
+    )
 }
 
 /// Whether the RegisterEquals attestation at `vid` is exactly what the book

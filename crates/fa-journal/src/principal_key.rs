@@ -20,8 +20,11 @@ use fa_model::symbols::{label, relation};
 use fa_model::{
     ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, entry_mirrors,
 };
-use fa_policy::principal_key::{KeyError, MAX_KEY_GENERATIONS, PrincipalKey, SignatureVerifier};
-use fa_policy::{Approval, Capability, Intent, Op};
+use fa_policy::principal_key::{
+    KeyError, MAX_KEY_GENERATIONS, PrincipalKey, SCHEME_ED25519, SignatureVerifier,
+    attestation_message,
+};
+use fa_policy::{Approval, Capability, Intent, Op, PrincipalSignature, PrincipalSigner};
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
 use fgdb_crypto::Hasher;
@@ -141,6 +144,68 @@ pub fn read_principal_keys<V: asupersync::fs::Vfs + Clone>(
     principal: VId,
 ) -> Result<Vec<KeyGeneration>, KernelError> {
     chain(book, principal, |vid| Ok(db.vertex(vid)?))
+}
+
+/// The signature `principal`'s attestation of `signed_digest` carries,
+/// with its key chain read through `read` (the attestation transaction's
+/// point reads, so a concurrent rotation conflicts):
+/// - no registered key and no signer: `None`, an attestation by capability
+///   alone, as before keys existed;
+/// - a registered key: `signer` must hold the current generation's key, and
+///   signs [`fa_policy::principal_key::attestation_message`] of the digest;
+/// - otherwise FA-REF-206.
+pub(crate) fn attestation_signature(
+    book: &BookContext,
+    principal: VId,
+    signed_digest: &[u8; 32],
+    signer: Option<&dyn PrincipalSigner>,
+    read: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+) -> Result<Result<Option<PrincipalSignature>, Refusal>, KernelError> {
+    let chain = chain(book, principal, read)?;
+    let refuse = |why: String| Ok(Err(attestation_refusal(why)));
+    match (chain.last(), signer) {
+        (None, None) => Ok(Ok(None)),
+        (None, Some(_)) => refuse(
+            "the attesting principal has no registered signing key, so a signature has nothing to verify against"
+                .to_string(),
+        ),
+        (Some(current), None) => refuse(format!(
+            "the attesting principal has a registered signing key (generation {}), so its attestation must be signed",
+            current.key.generation
+        )),
+        (Some(current), Some(signer)) => {
+            if signer.public_key() != current.key.public_key {
+                return refuse(format!(
+                    "the signing key is not the attesting principal's current key, generation {} ({})",
+                    current.key.generation,
+                    hex(&current.key.key_id())
+                ));
+            }
+            Ok(Ok(Some(PrincipalSignature {
+                scheme: SCHEME_ED25519,
+                generation: current.key.generation,
+                key_id: current.key.key_id(),
+                bytes: signer.sign_ed25519(&attestation_message(signed_digest)),
+            })))
+        }
+    }
+}
+
+fn attestation_refusal(why: String) -> Refusal {
+    Refusal::new(
+        code::ATTESTATION_SIGNATURE,
+        exit::SAFETY,
+        why,
+        CITE,
+        ATTESTATION_SIGNATURE_FIX,
+    )
+}
+
+/// FA-REF-206's fix: every attestation verb that takes `--sign-key`.
+const ATTESTATION_SIGNATURE_FIX: &str = "attest with --sign-key <the principal's current key file> (fa document attest review|confirmed|represented|manual|register-equals, fa assert-balance, fa exhibit mark, fa bank reconcile), never routed through fad; a principal with no registered key attests without --sign-key";
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The refusal for a key or signature `error` under `code`.

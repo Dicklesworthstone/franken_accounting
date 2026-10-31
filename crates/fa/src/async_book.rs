@@ -116,10 +116,18 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     /// post checks only the commits since the last (fa-rcw1). Bound to `db`'s
     /// own committed prefix by its Chronicle markers.
     carried: fa_journal::CarriedHistory,
-    /// The client's principal key, when this handle signs every approval it
-    /// records ([`Self::sign_approvals_with`], plan §14.5, fa-kae). Held only
-    /// for the handle's life; never journaled.
-    approval_key: Option<fa_notary::SigningKey>,
+    /// The client's principal key, when this handle signs every approval and
+    /// attestation it records ([`Self::sign_with_principal_key`], plan
+    /// §14.5, fa-kae). Held only for the handle's life; never journaled.
+    pub(crate) principal_key: Option<crate::book::ClientKey>,
+}
+
+/// The handle's principal key as the kernel's attestation signer.
+pub(crate) fn signer(
+    key: &Option<crate::book::ClientKey>,
+) -> Option<&dyn fa_policy::PrincipalSigner> {
+    key.as_ref()
+        .map(|key| key as &dyn fa_policy::PrincipalSigner)
 }
 
 /// Borrow the exact certificate being exported while sharing its native
@@ -238,7 +246,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
-            approval_key: None,
+            principal_key: None,
         })
     }
 
@@ -294,7 +302,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
-            approval_key: None,
+            principal_key: None,
         })
     }
 }
@@ -1077,11 +1085,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         proposal_digest: [u8; 32],
     ) -> Outcome<fa_journal::Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        if let Some(key) = self.approval_key.take() {
+        if let Some(key) = self.principal_key.take() {
             let signed = self
-                .approve_signed(cx, capability, proposal_digest, &key)
+                .approve_signed(cx, capability, proposal_digest, &key.0)
                 .await;
-            self.approval_key = Some(key);
+            self.principal_key = Some(key);
             return signed;
         }
         Ok(fa_journal::record_approval(
@@ -1097,13 +1105,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
-    /// Sign every approval this handle records with `key`, the client's
-    /// principal key (plan §14.5, fa-kae): proposal approvals and every
-    /// review approval (allocation, balance allocation, settlement and
-    /// settlement group), which all record through [`Self::approve`]. The
-    /// key lives as long as this handle and is never journaled.
-    pub fn sign_approvals_with(&mut self, key: fa_notary::SigningKey) {
-        self.approval_key = Some(key);
+    /// Sign every approval and attestation this handle records with `key`,
+    /// the client's principal key (plan §14.5, fa-kae):
+    /// - proposal approvals and every review approval (allocation, balance
+    ///   allocation, settlement and settlement group), which all record
+    ///   through [`Self::approve`];
+    /// - every attestation: review, confirmation, representation, manual
+    ///   assertion, RegisterEquals, exhibit marking and bank reconciliation.
+    ///
+    /// The key lives as long as this handle and is never journaled.
+    pub fn sign_with_principal_key(&mut self, key: fa_notary::SigningKey) {
+        self.principal_key = Some(crate::book::ClientKey(key));
     }
 
     /// [`Self::approve`] as a principal that signs with `key` (plan §14.5,
@@ -1149,7 +1161,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let digest = approval
             .digest()
             .map_err(|e| BookError::Kernel(fa_journal::KernelError::Model(e.into())))?;
-        let signature = fa_policy::ApprovalSignature {
+        let signature = fa_policy::PrincipalSignature {
             scheme: fa_policy::principal_key::SCHEME_ED25519,
             generation,
             key_id: fa_policy::principal_key::key_id(&key.public_key()),
@@ -2138,6 +2150,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &self.context,
             &capability,
+            signer(&self.principal_key),
             matter,
             document,
             label,
@@ -3206,7 +3219,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
-                approval_key: None,
+                principal_key: None,
             },
             map,
         )))
@@ -3247,7 +3260,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
-                approval_key: None,
+                principal_key: None,
             },
             rehearsal,
         )))
@@ -3297,7 +3310,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
-                approval_key: None,
+                principal_key: None,
             },
             map,
             entries,
@@ -3662,6 +3675,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &self.context,
             capability,
+            signer(&self.principal_key),
             capability.holder(),
             *document,
             against,
@@ -3686,6 +3700,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &self.context,
             capability,
+            signer(&self.principal_key),
             capability.holder(),
             *document,
             by_party,
@@ -3715,6 +3730,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &self.context,
             capability,
+            signer(&self.principal_key),
             capability.holder(),
             *document,
             claims,
@@ -3737,6 +3753,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &self.context,
             capability,
+            signer(&self.principal_key),
             proposal,
             reason_code,
             statement,
@@ -3799,6 +3816,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &self.context,
             capability,
+            signer(&self.principal_key),
             claim,
             evidence,
         )

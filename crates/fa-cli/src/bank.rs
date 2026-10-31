@@ -1224,12 +1224,14 @@ fn reconcile_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 RECONCILE_EXAMPLE,
             )
         })?;
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["read", "reconcile"])?;
     admit(&capability, false)?;
     let mut book = ctx.books.open_admitted(args, |book| {
         book.read_scope(capability.holder(), &capability)??;
         Ok(())
     })?;
+    crate::principal::sign_with(&mut book, key);
     let recorded = book.reconcile_bank_statement(
         &capability,
         BankReconciliationRequest {

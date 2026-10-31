@@ -3260,6 +3260,7 @@ fn historical_register_assertion_is_not_current_fair_value() {
                 profile: Profile::Human,
                 capability_commitment: [0x33; 32],
             },
+            signature: None,
         },
     );
 

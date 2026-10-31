@@ -2091,7 +2091,17 @@ impl Harness {
         let book = &self.book;
         self.runtime
             .block_on(async move {
-                record_review(db, &ctx, book, &capability, ALICE, document, Vec::new()).await
+                record_review(
+                    db,
+                    &ctx,
+                    book,
+                    &capability,
+                    None,
+                    ALICE,
+                    document,
+                    Vec::new(),
+                )
+                .await
             })
             .expect("kernel")
     }
@@ -2107,7 +2117,8 @@ impl Harness {
         let book = &self.book;
         self.runtime
             .block_on(async move {
-                record_manual_assertion(db, &ctx, book, &capability, proposal, 1, statement).await
+                record_manual_assertion(db, &ctx, book, &capability, None, proposal, 1, statement)
+                    .await
             })
             .expect("kernel")
     }

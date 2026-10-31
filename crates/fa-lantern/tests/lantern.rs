@@ -4702,6 +4702,7 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
                 profile: Profile::Human,
                 capability_commitment: [0xEF; 32],
             },
+            signature: None,
         },
     );
 
@@ -5316,6 +5317,7 @@ fn solvency_historical_register_assertion_is_not_current_fair_value() {
             &ctx,
             &h.book,
             &Capability::embedded(REVIEWER, &["reconcile"]).unwrap(),
+            None,
             &claim,
             evidence,
         ))
@@ -5895,6 +5897,7 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
                 profile: Profile::Human,
                 capability_commitment: [0x33; 32],
             },
+            signature: None,
         },
     );
 
@@ -6252,6 +6255,7 @@ fn assertion_drift_cites_the_attestation_and_only_the_later_entries_that_move_it
                     profile: Profile::Human,
                     capability_commitment: [0xEF; 32],
                 },
+                signature: None,
             },
         )
     };

@@ -788,19 +788,31 @@ fn attestation_record(
             },
         }));
     }
-    if proposal_len > n || n - proposal_len != 66 {
+    // After the body: the 32-byte signed_digest, then the trailer. Scheme 0
+    // is the capability binding (scheme, profile, commitment: 34 bytes);
+    // scheme 1 appends the principal's signature (u32 generation, [32]
+    // key_id, [64] Ed25519 signature: 100 bytes, fa-kae). The signature is
+    // outside the digest and is not verified here.
+    if proposal_len > n || !matches!(n - proposal_len, 66 | 166) {
         return Err(RecordError::Split);
     }
     let body = &payload[..proposal_len];
     let stored_digest = &payload[proposal_len..proposal_len + 32];
     let scheme = payload[proposal_len + 32];
     let profile = payload[proposal_len + 33];
-    if scheme != 0 {
-        return Err(RecordError::Decode(DecodeError {
-            offset: proposal_len + 32,
-            what: "attestation.scheme",
-            reason: Reason::BadTag(scheme),
-        }));
+    let expected_trailer = match scheme {
+        0 => 66,
+        1 => 166,
+        _ => {
+            return Err(RecordError::Decode(DecodeError {
+                offset: proposal_len + 32,
+                what: "attestation.scheme",
+                reason: Reason::BadTag(scheme),
+            }));
+        }
+    };
+    if n - proposal_len != expected_trailer {
+        return Err(RecordError::Split);
     }
     // The admitting capability's profile tag as the kernel journals it
     // (`fa_policy::Profile::tag`: Human 0, Agent 1, System 2). A review is

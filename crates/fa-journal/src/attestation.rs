@@ -51,12 +51,19 @@
 //! ManualAssertion → Entry beside the entry. A Reviewed attestation's
 //! `ATTESTS` edge to its document is written when it is recorded.
 //!
+//! **Signatures (plan §14.5, bead fa-kae).** The stored payload carries,
+//! after `signed_digest` and outside it exactly where Appendix A's
+//! `signature` goes, the capability binding the kernel admitted it under:
+//! the scheme, the profile and the capability's commitment. Scheme 0 is
+//! that binding alone. A principal that registered a signing key
+//! ([`crate::principal_key`]) attests only under scheme 1: the binding, then
+//! the key generation, its `key_id` and its Ed25519 signature of
+//! [`fa_policy::principal_key::attestation_message`] of `signed_digest`.
+//! The kernel reads the principal's key chain inside the attestation's
+//! transaction, so a concurrent rotation conflicts. A principal without a
+//! key attests under scheme 0, as before.
+//!
 //! Interim postures, stated rather than hidden:
-//! - **No signature.** Appendix A's `signature` needs principal keys
-//!   (Warden), which this build does not have. The stored payload carries,
-//!   after `signed_digest` and outside it exactly where the signature goes,
-//!   the capability binding the kernel admitted it under: scheme 0
-//!   (capability-bound), the profile, and the capability's commitment.
 //! - **One subject, no `evidence_refs`.** `subject_refs` is written as a
 //!   list (of exactly one in this subset) and `evidence_refs` as an empty
 //!   list, so the v1 bytes already carry Appendix A's field set; a decoder
@@ -71,7 +78,8 @@ use fa_model::{
     DecodeError, EntryPayload, Erasable, Id128, Oid, Reader, SealKey, Writer, domain_digest,
 };
 use fa_money::{Amount, UnitId};
-use fa_policy::{Capability, Op, Profile};
+use fa_policy::principal_key::SCHEME_ED25519;
+use fa_policy::{Capability, Op, PrincipalSignature, PrincipalSigner, Profile};
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
 use fa_registry::reason_codes::ReasonCodes;
 use fa_time::DateDay;
@@ -90,6 +98,12 @@ pub const ATTESTATION_DOMAIN: &[u8] = b"fa:attestation:v1";
 const ATTESTATION_VERSION: u16 = 1;
 /// The authentication trailer's scheme: the admitting capability's binding.
 const SCHEME_CAPABILITY: u8 = 0;
+/// The binding and the attesting principal's Ed25519 signature.
+const SCHEME_CAPABILITY_SIGNED: u8 = 1;
+/// The trailer after `signed_digest`: scheme, profile, commitment.
+const BINDING_TRAILER: usize = 1 + 1 + 32;
+/// Scheme 1's addition: generation, key id, signature.
+const SIGNATURE_TRAILER: usize = 4 + 32 + 64;
 /// The `reason_codes.toml` scope a ManualAssertion's reason belongs to.
 pub const MANUAL_ASSERTION_SCOPE: &str = "manual_assertion";
 
@@ -416,6 +430,10 @@ pub struct StoredAttestation {
     pub attestation: Attestation,
     pub signed_digest: [u8; 32],
     pub binding: CapabilityBinding,
+    /// Scheme 1: the attesting principal's signature, made when the kernel
+    /// recorded the attestation by a signer holding the key current at that
+    /// commit. The decoder reads it without verifying it.
+    pub signature: Option<PrincipalSignature>,
 }
 
 fn vid_of(domain: &[u8], book: Id128, key: &[u8; 32]) -> VId {
@@ -621,19 +639,63 @@ impl Attestation {
         Ok(domain_digest(ATTESTATION_DOMAIN, &[&self.body()?]))
     }
 
-    /// `body ‖ signed_digest ‖ u8 scheme ‖ u8 profile ‖ [32] capability
-    /// commitment`: the stored payload.
+    /// `body ‖ signed_digest ‖ u8 scheme 0 ‖ u8 profile ‖ [32] capability
+    /// commitment`: the stored payload of an unsigned attestation.
     pub fn canonical_bytes(&self, binding: &CapabilityBinding) -> Result<Vec<u8>, KernelError> {
+        self.stored_bytes(binding, None)
+    }
+
+    /// The stored payload: scheme 0 as [`Self::canonical_bytes`], or, with
+    /// `signature`, scheme 1, which appends `u32 generation ‖ [32] key_id ‖
+    /// [64] signature`.
+    pub fn stored_bytes(
+        &self,
+        binding: &CapabilityBinding,
+        signature: Option<&PrincipalSignature>,
+    ) -> Result<Vec<u8>, KernelError> {
         let mut bytes = self.body()?;
         bytes.extend_from_slice(&self.signed_digest()?);
-        bytes.push(SCHEME_CAPABILITY);
+        bytes.push(if signature.is_some() {
+            SCHEME_CAPABILITY_SIGNED
+        } else {
+            SCHEME_CAPABILITY
+        });
         bytes.push(binding.profile.tag());
         bytes.extend_from_slice(&binding.capability_commitment);
+        if let Some(s) = signature {
+            if s.scheme != SCHEME_ED25519 {
+                return Err(KernelError::Corrupt(format!(
+                    "an attestation signature of scheme {} (only Ed25519, 1, is stored)",
+                    s.scheme
+                )));
+            }
+            bytes.extend_from_slice(&s.generation.to_le_bytes());
+            bytes.extend_from_slice(&s.key_id);
+            bytes.extend_from_slice(&s.bytes);
+        }
         Ok(bytes)
     }
 }
 
 impl StoredAttestation {
+    /// The payload this decodes from.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        self.attestation
+            .stored_bytes(&self.binding, self.signature.as_ref())
+    }
+
+    /// The length of the trailer after `signed_digest`: the binding, and
+    /// under scheme 1 the signature.
+    #[must_use]
+    pub fn trailer_len(&self) -> usize {
+        BINDING_TRAILER
+            + if self.signature.is_some() {
+                SIGNATURE_TRAILER
+            } else {
+                0
+            }
+    }
+
     /// Decode and verify: the trailing digest is the body's, and the claim
     /// and subject are a pair this build records.
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
@@ -642,9 +704,15 @@ impl StoredAttestation {
                 "attestation exceeds its payload bound".into(),
             ));
         }
+        type Decoded = (
+            Attestation,
+            [u8; 32],
+            CapabilityBinding,
+            Option<PrincipalSignature>,
+        );
         let mut r = Reader::new(bytes);
-        let (attestation, signed_digest, binding) =
-            (|| -> Result<(Attestation, [u8; 32], CapabilityBinding), DecodeError> {
+        let (attestation, signed_digest, binding, signature) =
+            (|| -> Result<Decoded, DecodeError> {
                 if r.u16("attestation.version")? != ATTESTATION_VERSION {
                     return Err(r.invalid("attestation.version"));
                 }
@@ -745,13 +813,24 @@ impl StoredAttestation {
                     Vec::new()
                 };
                 let signed_digest: [u8; 32] = r.fixed("attestation.signed_digest")?;
-                if r.u8("attestation.scheme")? != SCHEME_CAPABILITY {
+                let scheme = r.u8("attestation.scheme")?;
+                if scheme != SCHEME_CAPABILITY && scheme != SCHEME_CAPABILITY_SIGNED {
                     return Err(r.invalid("attestation.scheme"));
                 }
                 let profile_tag = r.u8("attestation.profile")?;
                 let profile = Profile::from_tag(profile_tag)
                     .ok_or_else(|| r.bad_tag("attestation.profile", profile_tag))?;
                 let capability_commitment = r.fixed("attestation.capability")?;
+                let signature = if scheme == SCHEME_CAPABILITY_SIGNED {
+                    Some(PrincipalSignature {
+                        scheme: SCHEME_ED25519,
+                        generation: r.u32("attestation.signature.generation")?,
+                        key_id: r.fixed("attestation.signature.key_id")?,
+                        bytes: r.fixed("attestation.signature.bytes")?,
+                    })
+                } else {
+                    None
+                };
                 r.finish()?;
                 Ok((
                     Attestation {
@@ -766,6 +845,7 @@ impl StoredAttestation {
                         profile,
                         capability_commitment,
                     },
+                    signature,
                 ))
             })()
             .map_err(|e| KernelError::Model(e.into()))?;
@@ -799,6 +879,7 @@ impl StoredAttestation {
             attestation,
             signed_digest,
             binding,
+            signature,
         })
     }
 }
@@ -1093,10 +1174,18 @@ async fn commit_attestation<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     txn: WriteTxn,
     attestation: &Attestation,
-    binding: &CapabilityBinding,
+    by: &Attester<'_>,
     attests: Option<VId>,
 ) -> Outcome<Attested> {
-    commit_attestation_in_case(db, ctx, book, txn, attestation, binding, attests, None).await
+    commit_attestation_in_case(db, ctx, book, txn, attestation, by, attests, None).await
+}
+
+/// Who records an attestation: the capability binding the kernel admits it
+/// under and, for a principal with a registered signing key, the signer
+/// holding that key (supplied by the client, never by fad).
+pub(crate) struct Attester<'a> {
+    pub binding: CapabilityBinding,
+    pub signer: Option<&'a dyn PrincipalSigner>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1106,7 +1195,7 @@ pub(crate) async fn commit_attestation_in_case<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     mut txn: WriteTxn,
     attestation: &Attestation,
-    binding: &CapabilityBinding,
+    by: &Attester<'_>,
     attests: Option<VId>,
     in_case: Option<VId>,
 ) -> Outcome<Attested> {
@@ -1118,10 +1207,28 @@ pub(crate) async fn commit_attestation_in_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return recorded_or_conflict(&row, attestation, &book.seal_key);
     }
+    // The principal's key chain is read in this transaction: a concurrent
+    // rotation conflicts (first committer wins).
+    let signature = match crate::principal_key::attestation_signature(
+        book,
+        attestation.principal,
+        &signed_digest,
+        by.signer,
+        |v| Ok(txn.vertex(db, v)?),
+    )? {
+        Ok(signature) => signature,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     let mut props = vec![
         (
             property::FA_PAYLOAD,
-            scalar_bytes("_fa_payload", attestation.canonical_bytes(binding)?)?,
+            scalar_bytes(
+                "_fa_payload",
+                attestation.stored_bytes(&by.binding, signature.as_ref())?,
+            )?,
         ),
         (
             property::FA_DIGEST,
@@ -1240,11 +1347,13 @@ fn recorded_or_conflict(row: &VertexRow, ours: &Attestation, key: &SealKey) -> O
 /// FA-REF-085 if drifted); the reviewer is not the subject's uploader
 /// (FA-REF-111); and one Attestation vertex with `ATTESTS → Document` is
 /// written. Recording the same review again is the recorded outcome.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn PrincipalSigner>,
     reviewer: VId,
     document: Oid,
     against: Vec<Oid>,
@@ -1268,7 +1377,10 @@ pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(crate::policy::refusal(&d)));
     }
-    let binding = binding(capability)?;
+    let by = Attester {
+        binding: binding(capability)?,
+        signer,
+    };
     let attestation = Attestation {
         book_id: book.book_id,
         claim: AttestationClaim::Reviewed {
@@ -1327,7 +1439,7 @@ pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    commit_attestation(db, ctx, book, txn, &attestation, &binding, Some(dvid)).await
+    commit_attestation(db, ctx, book, txn, &attestation, &by, Some(dvid)).await
 }
 
 /// Record a `Confirmed { by_party, balance, as_of }` attestation over the
@@ -1346,6 +1458,7 @@ pub async fn record_confirmation<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn PrincipalSigner>,
     principal: VId,
     document: Oid,
     by_party: VId,
@@ -1380,7 +1493,10 @@ pub async fn record_confirmation<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(crate::policy::refusal(&d)));
     }
-    let binding = binding(capability)?;
+    let by = Attester {
+        binding: binding(capability)?,
+        signer,
+    };
     let attestation = Attestation {
         book_id: book.book_id,
         claim: AttestationClaim::Confirmed {
@@ -1444,7 +1560,7 @@ pub async fn record_confirmation<V: asupersync::fs::Vfs + Clone>(
         book,
         txn,
         &attestation,
-        &binding,
+        &by,
         Some(document_vid(&document)),
     )
     .await
@@ -1464,6 +1580,7 @@ pub async fn record_representation<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn PrincipalSigner>,
     principal: VId,
     document: Oid,
     claims: Vec<Erasable<String>>,
@@ -1492,7 +1609,10 @@ pub async fn record_representation<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(crate::policy::refusal(&d)));
     }
-    let binding = binding(capability)?;
+    let by = Attester {
+        binding: binding(capability)?,
+        signer,
+    };
     let attestation = Attestation {
         book_id: book.book_id,
         claim: AttestationClaim::Represented { claims, as_of },
@@ -1539,7 +1659,7 @@ pub async fn record_representation<V: asupersync::fs::Vfs + Clone>(
         book,
         txn,
         &attestation,
-        &binding,
+        &by,
         Some(document_vid(&document)),
     )
     .await
@@ -1594,11 +1714,13 @@ fn held_document<V: asupersync::fs::Vfs + Clone>(
 /// the capability is current. Then one Attestation vertex at the
 /// proposal's derived identity. Posting the proposal afterwards relies on
 /// it, inside the posting transaction.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn PrincipalSigner>,
     proposal: &EntryPayload,
     reason_code: u16,
     statement: Erasable<String>,
@@ -1660,7 +1782,10 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(crate::policy::refusal(&d)));
     }
-    let binding = binding(capability)?;
+    let by = Attester {
+        binding: binding(capability)?,
+        signer,
+    };
     let attestation = Attestation {
         book_id: book.book_id,
         claim: AttestationClaim::ManualAssertion {
@@ -1677,7 +1802,7 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    commit_attestation(db, ctx, book, txn, &attestation, &binding, None).await
+    commit_attestation(db, ctx, book, txn, &attestation, &by, None).await
 }
 
 /// Authority for a balance assertion (plan §9.4): the capability is its
@@ -1712,6 +1837,7 @@ pub async fn commit_register_equals<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn PrincipalSigner>,
     claim: RegisterEqualsClaim,
     evidence: Vec<Oid>,
 ) -> Outcome<Attested> {
@@ -1734,7 +1860,10 @@ pub async fn commit_register_equals<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {
         return Ok(Err(crate::policy::refusal(&d)));
     }
-    let binding = binding(capability)?;
+    let by = Attester {
+        binding: binding(capability)?,
+        signer,
+    };
     let cell = claim.cell_digest();
     let attestation = Attestation {
         book_id: book.book_id,
@@ -1768,7 +1897,7 @@ pub async fn commit_register_equals<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    commit_attestation(db, ctx, book, txn, &attestation, &binding, None).await
+    commit_attestation(db, ctx, book, txn, &attestation, &by, None).await
 }
 
 #[cfg(test)]
@@ -1840,6 +1969,59 @@ mod tests {
         };
         assert_eq!(crossed.vid(), None);
         assert!(StoredAttestation::decode(&crossed.canonical_bytes(&binding()).unwrap()).is_err());
+    }
+
+    /// Scheme 1 (fa-kae): the binding then the principal's signature, outside
+    /// the digest. It round-trips with its signature, re-encodes to the same
+    /// bytes, and is refused cut short, with a scheme byte that disagrees
+    /// with its length, or with a signature scheme other than Ed25519.
+    #[test]
+    fn a_signed_attestation_round_trips_with_its_signature_outside_the_digest() {
+        let review = Attestation {
+            book_id: Id128([5; 16]),
+            claim: AttestationClaim::Reviewed {
+                against: vec![Oid([1; 32])],
+            },
+            subject: Subject::Document(Oid([9; 32])),
+            principal: VId(8),
+            evidence_refs: Vec::new(),
+        };
+        let signature = PrincipalSignature {
+            scheme: SCHEME_ED25519,
+            generation: 2,
+            key_id: [0x5a; 32],
+            bytes: [0xa5; 64],
+        };
+        let unsigned = review.canonical_bytes(&binding()).unwrap();
+        let signed = review.stored_bytes(&binding(), Some(&signature)).unwrap();
+        assert_eq!(signed.len(), unsigned.len() + SIGNATURE_TRAILER);
+        assert_eq!(
+            signed[..unsigned.len() - BINDING_TRAILER],
+            unsigned[..unsigned.len() - BINDING_TRAILER],
+            "the body and signed_digest are the unsigned attestation's"
+        );
+        let stored = StoredAttestation::decode(&signed).unwrap();
+        assert_eq!(stored.attestation, review);
+        assert_eq!(stored.signature, Some(signature));
+        assert_eq!(stored.trailer_len(), BINDING_TRAILER + SIGNATURE_TRAILER);
+        assert_eq!(stored.canonical_bytes().unwrap(), signed);
+        let plain = StoredAttestation::decode(&unsigned).unwrap();
+        assert_eq!(plain.signature, None);
+        assert_eq!(plain.trailer_len(), BINDING_TRAILER);
+
+        assert!(StoredAttestation::decode(&signed[..signed.len() - 1]).is_err());
+        let scheme_at = unsigned.len() - BINDING_TRAILER;
+        let mut zero_with_signature = signed.clone();
+        zero_with_signature[scheme_at] = SCHEME_CAPABILITY;
+        assert!(StoredAttestation::decode(&zero_with_signature).is_err());
+        let mut one_without = unsigned.clone();
+        one_without[scheme_at] = SCHEME_CAPABILITY_SIGNED;
+        assert!(StoredAttestation::decode(&one_without).is_err());
+        let other = PrincipalSignature {
+            scheme: 2,
+            ..signature
+        };
+        assert!(review.stored_bytes(&binding(), Some(&other)).is_err());
     }
 
     /// Confirmed and Represented round-trip, bind every signed byte, take

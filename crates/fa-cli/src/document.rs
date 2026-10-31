@@ -1621,8 +1621,10 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 against.push(Oid(hex32(a, "--against")?));
             }
             against.sort();
+            let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
             let capability = ctx.capability(args, &["approve"])?;
             let mut book = ctx.books.open(args)?;
+            crate::principal::sign_with(&mut book, key);
             let attested = book.record_review(&capability, &document, against)??;
             ctx.out.at_book(&book)?;
             let vid_hex = format!("{:032x}", attested.vid.0);
@@ -1666,9 +1668,11 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let as_of_text = args.require("--as-of", "YYYY-MM-DD")?;
             let as_of = fa_time::DateDay::parse(as_of_text)
                 .map_err(|e| usage(format!("--as-of `{as_of_text}`: {e}"), example))?;
+            let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
             let (attested, claim) = if kind == "confirmed" {
                 let capability = ctx.capability(args, &["produce"])?;
                 let mut book = ctx.books.open(args)?;
+                crate::principal::sign_with(&mut book, key);
                 let party = args.require("--party", "the confirming party's code")?;
                 let balance_text = args.require("--balance", "\"<amount> <UNIT>\"")?;
                 let balance = fa_money::Amount::parse(balance_text, &book.context().units)
@@ -1692,6 +1696,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 let capability = ctx.capability(args, &["approve"])?;
                 let mut book = ctx.books.open(args)?;
+                crate::principal::sign_with(&mut book, key);
                 let attested =
                     book.record_representation(&capability, &document, &claims, as_of)??;
                 ctx.out.at_book(&book)?;
@@ -1768,6 +1773,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         )
                     })?
             };
+            let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
             let capability = ctx.capability(args, &["post"])?;
             let (mut book, proposal) = match source {
                 ManualSource::Review(review) => (ctx.books.open(args)?, review.proposal().clone()),
@@ -1791,6 +1797,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .proposal_digest()
                 .map_err(fa_journal::KernelError::Model)
                 .map_err(BookError::Kernel)?;
+            crate::principal::sign_with(&mut book, key);
             let attested =
                 book.record_manual_assertion(&capability, &proposal, reason_code, statement)??;
             if let Some(plan_out) = args.flag("--plan-out") {
@@ -1869,6 +1876,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let entity = args.flag("--entity").map(str::to_string);
             let known_at = head_or_seq(args)?;
             let evidence = sorted_evidence(args)?;
+            let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
             let capability = ctx.capability(args, &["reconcile"])?;
             // Authority precedes observation: the record law's admission,
             // decided from the capability alone, runs before the cell is
@@ -1886,13 +1894,14 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 None => book.spec()?.base_unit.0,
             };
-            let key = fa::EntityCellKey {
+            let cell = fa::EntityCellKey {
                 account: account_vid(book.context().book_id, account_code),
                 unit_id,
                 period,
                 entity,
             };
-            let claim = book.evaluate_register_equals(&key, known_at)?;
+            let claim = book.evaluate_register_equals(&cell, known_at)?;
+            crate::principal::sign_with(&mut book, key);
             record_register_equals(&ctx.out, &mut book, &capability, &claim, evidence)
         }
         other => Err(usage(
@@ -1992,6 +2001,7 @@ pub(crate) fn assert_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     let entity = args.flag("--entity").map(str::to_string);
     let known_at = head_or_seq(args)?;
     let evidence = sorted_evidence(args)?;
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["reconcile"])?;
     // Admitted before the balance is parsed or the cell evaluated.
     let mut book = ctx
@@ -1999,14 +2009,15 @@ pub(crate) fn assert_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         .open_admitted(args, |book| admit_reconciler(book, &capability))?;
     let balance = fa_money::Amount::parse(balance_text, &book.context().units)
         .map_err(|e| usage(format!("--balance `{balance_text}`: {e}"), FIX))?;
-    let key = fa::EntityCellKey {
+    let cell = fa::EntityCellKey {
         account: account_vid(book.context().book_id, account_code),
         unit_id: balance.unit.0,
         period,
         entity,
     };
-    let mut claim = book.evaluate_register_equals(&key, known_at)?;
+    let mut claim = book.evaluate_register_equals(&cell, known_at)?;
     claim.amount = balance;
+    crate::principal::sign_with(&mut book, key);
     record_register_equals(&ctx.out, &mut book, &capability, &claim, evidence)
 }
 

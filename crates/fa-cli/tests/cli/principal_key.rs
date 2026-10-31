@@ -322,8 +322,56 @@ fn a_keyed_principal_signs_its_approvals_and_rotates_only_with_endorsement() -> 
             &approval,
         ],
     );
-    // The key controls and the signed approvals leave every verification
-    // green.
+    // Attestations too (FA-REF-206): the keyed controller's review of the
+    // operator's document is refused unsigned and under its rotated-out
+    // key, and admitted under its current key.
+    let invoice = write(&dir, "invoice.txt", "INVOICE 17: consulting, 1,200.00 USD");
+    let added = ok(
+        &book,
+        "document",
+        &[
+            "document",
+            "add",
+            &invoice,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let document = text(&added, "oid").to_string();
+    let review = |key: Option<&str>| -> Vec<String> {
+        let mut argv = vec![
+            "document",
+            "attest",
+            "review",
+            &document,
+            "--as",
+            "controller",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        if let Some(key) = key {
+            argv.extend(["--sign-key".to_string(), key.to_string()]);
+        }
+        argv
+    };
+    let refused_review = |step: &str, key: Option<&str>| {
+        let argv = review(key);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        refused(&book, step, &argv, 7, "FA-REF-206");
+    };
+    refused_review("unsigned review", None);
+    refused_review("review under the rotated-out key", Some(&first));
+    let argv = review(Some(&second));
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out) = run(&book, "signed review", &argv);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("attestation_recorded"), "{out}");
+
+    // The key controls, the signed approvals and the signed attestation
+    // leave every verification green.
     ok(&book, "verify book", &["verify", "book"]);
 
     // Offline (fa-verify bundle format 1.1): a bundle of the prefix carries
@@ -435,6 +483,22 @@ fn a_keyed_principal_signs_its_approvals_and_rotates_only_with_endorsement() -> 
             .all(|(_, g)| matches!(g, fa_verify::Grade::Unrun(_))),
         "{:#?}",
         report.checks
+    );
+
+    // The signed attestation is a journal leaf: a complete prefix with its
+    // records, the review's signed payload among them, verifies offline.
+    let signed = ok(&book, "signed checkpoint", &["proof", "signed-checkpoint"]);
+    let prefix = ok(&book, "prefix", &["proof", "prefix", "--with-record"]);
+    let anchor = fa_verify::verify_checkpoint(&unhex(text(&signed, "bytes")), &[checkpoint_key])
+        .expect("the signed checkpoint verifies");
+    let complete = fa_verify::proof::production::derivation::verify_prefix_with_records(
+        &unhex(text(&prefix, "bytes")),
+        &anchor.checkpoint,
+    )
+    .expect("every leaf, the signed review among them, verifies");
+    assert!(
+        complete.envelopes.iter().any(|leaf| leaf.kind == 2),
+        "the review is an attestation leaf of the prefix"
     );
     Ok(())
 }

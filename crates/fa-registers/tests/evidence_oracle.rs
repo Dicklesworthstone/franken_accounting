@@ -263,6 +263,7 @@ impl Book {
                     &ctx,
                     book,
                     &cap,
+                    None,
                     VId(u128::from(reviewer)),
                     document,
                     against,
@@ -290,7 +291,8 @@ impl Book {
         let (db, book) = (&mut self.db, &self.book);
         self.runtime
             .block_on(async move {
-                record_manual_assertion(db, &ctx, book, &cap, proposal, reason, statement).await
+                record_manual_assertion(db, &ctx, book, &cap, None, proposal, reason, statement)
+                    .await
             })
             .expect("kernel")
     }

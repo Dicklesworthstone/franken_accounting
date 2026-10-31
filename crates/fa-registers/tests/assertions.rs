@@ -137,9 +137,9 @@ impl Book {
         let ctx = self.ctx();
         let (db, book) = (&mut self.db, &self.book);
         self.runtime
-            .block_on(
-                async move { record_register_equals(db, &ctx, book, cap, claim, evidence).await },
-            )
+            .block_on(async move {
+                record_register_equals(db, &ctx, book, cap, None, claim, evidence).await
+            })
             .expect("no foundation failure")
     }
 

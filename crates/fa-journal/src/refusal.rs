@@ -304,6 +304,10 @@ pub mod code {
     /// signed approval by a principal with no registered key (plan §14.5,
     /// fa-kae).
     pub const APPROVAL_SIGNATURE: &str = "FA-REF-205";
+    /// An attestation's signer does not establish its principal's key: a
+    /// keyed principal attesting without its current key, or a signer for
+    /// a principal with no registered key (plan §14.5, fa-kae).
+    pub const ATTESTATION_SIGNATURE: &str = "FA-REF-206";
     /// A prior-period adjustment lacks its earlier period or does not
     /// route its cumulative effect through retained earnings.
     pub const PRIOR_PERIOD_ADJUSTMENT: &str = "FA-REF-202";

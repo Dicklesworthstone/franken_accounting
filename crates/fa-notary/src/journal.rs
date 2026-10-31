@@ -84,8 +84,9 @@ pub const KIND_SUPPLEMENTAL_EVIDENCE: u8 = 5;
 pub const KIND_ACCESS_EVENT: u8 = 6;
 
 /// An attestation's payload ends with its `signed_digest` and the
-/// authentication trailer (scheme, profile, capability commitment).
-const ATTESTATION_TRAILER: usize = 32 + 1 + 1 + 32;
+/// authentication trailer (scheme, profile, capability commitment, and
+/// under scheme 1 the signature: [`StoredAttestation::trailer_len`]).
+const ATTESTATION_DIGEST: usize = 32;
 /// Custody events and supplements end with the digest of their body.
 const DIGEST_TRAILER: usize = 32;
 
@@ -319,7 +320,7 @@ impl Record {
     pub fn payload(&self) -> Result<Vec<u8>, KernelError> {
         match self {
             Self::Entry(e) => Ok(e.encode()?),
-            Self::Attestation(a) => a.attestation.canonical_bytes(&a.binding),
+            Self::Attestation(a) => a.canonical_bytes(),
             Self::Custody(e) => e.canonical_bytes(),
             Self::Supplement(s) => s.canonical_bytes(),
             Self::Access(a) => {
@@ -335,7 +336,7 @@ impl Record {
     pub fn body_len(&self, payload: &[u8]) -> Result<usize, KernelError> {
         let trailer = match self {
             Self::Entry(e) => return Ok(e.proposal.canonical_bytes()?.len()),
-            Self::Attestation(_) => ATTESTATION_TRAILER,
+            Self::Attestation(a) => ATTESTATION_DIGEST + a.trailer_len(),
             Self::Custody(_) | Self::Supplement(_) => DIGEST_TRAILER,
             Self::Access(_) => return Ok(payload.len()),
         };
@@ -1223,6 +1224,7 @@ mod tests {
                 profile: fa_journal::Profile::Human,
                 capability_commitment: [6; 32],
             },
+            signature: None,
         })
     }
 

@@ -178,8 +178,10 @@ fn mark_exhibit(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.flag_all("--matter").len() > 1 {
         return Err(usage("--matter is given once", EXHIBIT_EXAMPLE));
     }
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["produce"])?;
     let mut book = ctx.books.open(args)?;
+    crate::principal::sign_with(&mut book, key);
     let marked = book.mark_exhibit(capability, matter, document, label)??;
     ctx.out.at_book(&book)?;
     ctx.out.event(

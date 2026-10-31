@@ -19,7 +19,7 @@ use fgdb_types::VId;
 use crate::capability::{Capability, CapabilityError, Profile};
 use crate::denial::Denial;
 use crate::op::Op;
-use crate::principal_key::ApprovalSignature;
+use crate::principal_key::PrincipalSignature;
 
 pub const APPROVAL_DOMAIN: &[u8] = b"fa:approval:v1";
 const APPROVAL_VERSION: u16 = 1;
@@ -99,7 +99,7 @@ impl Approval {
     /// the signed digest (plan Appendix A, bead fa-kae).
     pub fn record_bytes(
         &self,
-        signature: Option<&ApprovalSignature>,
+        signature: Option<&PrincipalSignature>,
     ) -> Result<Vec<u8>, EncodeError> {
         let body = self.canonical_bytes()?;
         let Some(signature) = signature else {
@@ -116,13 +116,13 @@ impl Approval {
     }
 
     /// A stored record: the approval and, for version 2, its signature.
-    pub fn decode_record(bytes: &[u8]) -> Result<(Self, Option<ApprovalSignature>), DecodeError> {
+    pub fn decode_record(bytes: &[u8]) -> Result<(Self, Option<PrincipalSignature>), DecodeError> {
         let mut r = Reader::new(bytes);
         if r.u16("approval.version")? != SIGNED_RECORD_VERSION {
             return Ok((Self::decode_body(bytes)?, None));
         }
         let approval = Self::decode_body(r.bytes(MAX_BODY_BYTES, "approval.body")?)?;
-        let signature = ApprovalSignature {
+        let signature = PrincipalSignature {
             scheme: r.u16("approval.signature.scheme")?,
             generation: r.u32("approval.signature.generation")?,
             key_id: r.fixed("approval.signature.key_id")?,
@@ -240,7 +240,7 @@ mod tests {
             Approval::decode_record(&unsigned).unwrap(),
             (a.clone(), None)
         );
-        let signature = ApprovalSignature {
+        let signature = PrincipalSignature {
             scheme: crate::principal_key::SCHEME_ED25519,
             generation: 2,
             key_id: [5; 32],

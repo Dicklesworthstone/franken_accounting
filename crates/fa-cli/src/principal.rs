@@ -60,6 +60,15 @@ pub(crate) fn load_principal_key(
     }
 }
 
+/// Make `book` sign every approval and attestation it records with `key`,
+/// the `--sign-key` file [`load_principal_key`] read before the book opened
+/// (plan §14.5, fa-kae).
+pub(crate) fn sign_with(book: &mut fa::Book, key: Option<fa::SigningKey>) {
+    if let Some(key) = key {
+        book.sign_with_principal_key(key);
+    }
+}
+
 /// `fa principal key new --out <new file>`: a new Ed25519 key from the
 /// operating system's entropy in a new 0600 file. No book is opened.
 fn key_new(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

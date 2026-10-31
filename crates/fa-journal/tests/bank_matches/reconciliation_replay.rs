@@ -52,6 +52,7 @@ fn closed_source_with_maintenance(h: &mut Harness, before_close: bool) -> Closed
             &cx,
             &h.book,
             &cap(CONFIRMER),
+            None,
             request,
         ))
         .unwrap()

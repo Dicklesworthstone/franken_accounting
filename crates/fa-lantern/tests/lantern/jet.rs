@@ -38,7 +38,17 @@ fn review(h: &mut Harness, reviewer: VId, document: Oid) {
     let (db, book) = (&mut h.db, &h.book);
     h.runtime
         .block_on(async {
-            record_review(db, &ctx, book, &capability, reviewer, document, Vec::new()).await
+            record_review(
+                db,
+                &ctx,
+                book,
+                &capability,
+                None,
+                reviewer,
+                document,
+                Vec::new(),
+            )
+            .await
         })
         .expect("kernel")
         .expect("admitted");

@@ -55,6 +55,7 @@ fn close(h: &mut Harness, import: BankImportWitness) -> BankReconciliationRecord
             &cx,
             &h.book,
             &cap(CONFIRMER),
+            None,
             request,
         ))
         .unwrap()
@@ -221,6 +222,7 @@ fn a_new_close_and_a_prepared_cash_post_conflict_in_either_commit_order() {
             &cx,
             &h.book,
             &cap(CONFIRMER),
+            None,
             BankReconciliationRequest {
                 import,
                 predecessors: Vec::new(),
@@ -931,6 +933,7 @@ fn migration_activation_invalidates_a_prepared_close_even_without_an_existing_cu
         &cx,
         &h.book,
         &cap(CONFIRMER),
+        None,
         BankReconciliationRequest {
             import,
             predecessors: Vec::new(),

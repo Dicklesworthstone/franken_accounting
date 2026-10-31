@@ -53,8 +53,8 @@ use fa_model::{
 };
 use fa_policy::principal_key::KeyError;
 use fa_policy::{
-    AccountScope, Approval, ApprovalSignature, Approver, Capability, CapabilityError, Denial,
-    Intent, Op, Party, Reach, SignatureVerifier, Steward,
+    AccountScope, Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party,
+    PrincipalSignature, Reach, SignatureVerifier, Steward,
 };
 use fa_registry::sod_policy::SodKey;
 use fa_time::{DateDay, PeriodDef};
@@ -429,7 +429,7 @@ pub async fn record_approval<V: asupersync::fs::Vfs + Clone>(
 /// it (plan §14.5, fa-kae).
 #[derive(Clone, Copy, Debug)]
 pub struct SignedBy {
-    pub signature: ApprovalSignature,
+    pub signature: PrincipalSignature,
     pub verifier: &'static dyn SignatureVerifier,
 }
 

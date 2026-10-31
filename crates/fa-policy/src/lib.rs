@@ -49,7 +49,7 @@ pub use decision::{
 };
 pub use denial::Denial;
 pub use op::Op;
-pub use principal_key::{ApprovalSignature, PrincipalKey, SignatureVerifier};
+pub use principal_key::{PrincipalKey, PrincipalSignature, PrincipalSigner, SignatureVerifier};
 pub use sod::{
     Approver, AuthorityGraph, AuthorityVertex, CachedJudgment, ConservedRightsPool,
     DECISION_CLOSURE_DOMAIN, DecisionClosure, EMPTINESS_WITNESS_DOMAIN, EmptinessWitness,

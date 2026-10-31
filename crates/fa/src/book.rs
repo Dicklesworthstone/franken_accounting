@@ -50,6 +50,21 @@ impl fa_policy::SignatureVerifier for NotaryVerifier {
 /// The one [`NotaryVerifier`] the facade hands the kernel.
 pub static PRINCIPAL_SIGNATURES: NotaryVerifier = NotaryVerifier;
 
+/// A client's principal key as the kernel's attestation signer (plan
+/// §14.5, fa-kae): fa-notary's Ed25519 key, held for one handle's life.
+#[derive(Debug)]
+pub struct ClientKey(pub(crate) fa_notary::SigningKey);
+
+impl fa_policy::PrincipalSigner for ClientKey {
+    fn public_key(&self) -> [u8; 32] {
+        self.0.public_key()
+    }
+
+    fn sign_ed25519(&self, message: &[u8]) -> [u8; 64] {
+        self.0.sign(message)
+    }
+}
+
 /// The three secrets a book directory needs: the object-identity key, the
 /// security namespace, and the data-encryption key (the substrate's
 /// `DatabaseKeys`). On disk these are the three 64-hex lines of the key file.
@@ -1535,10 +1550,10 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
     }
 
-    /// Sign every approval this handle records with `key`, the client's
-    /// principal key ([`AsyncBook::sign_approvals_with`]).
-    pub fn sign_approvals_with(&mut self, key: fa_notary::SigningKey) {
-        with_store!(&mut self.store, core => core.sign_approvals_with(key))
+    /// Sign every approval and attestation this handle records with `key`,
+    /// the client's principal key ([`AsyncBook::sign_with_principal_key`]).
+    pub fn sign_with_principal_key(&mut self, key: fa_notary::SigningKey) {
+        with_store!(&mut self.store, core => core.sign_with_principal_key(key))
     }
 
     /// Register `key` as the next generation of the capability holder's

@@ -10868,7 +10868,7 @@ fn approve_allocation_review_bytes(
     let capability = ctx.capability(args, &["read", "approve"])?;
     let mut book = ctx.books.open(args)?;
     if let Some(key) = key {
-        book.sign_approvals_with(key);
+        book.sign_with_principal_key(key);
     }
     let approved = if bytes.starts_with(b"FA-BAL-REVIEW\0") {
         let review = BalanceAllocationReview::decode(bytes).map_err(|e| {
@@ -10900,7 +10900,7 @@ fn approve_settlement_review_bytes(
     let capability = ctx.capability(args, &["read", "approve"])?;
     let mut book = ctx.books.open(args)?;
     if let Some(key) = key {
-        book.sign_approvals_with(key);
+        book.sign_with_principal_key(key);
     }
     let approved = if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0") {
         let review = SettlementGroupReview::decode(bytes).map_err(|e| {

@@ -30,6 +30,7 @@ fn close(
             &cx,
             &h.book,
             &cap(CONFIRMER),
+            None,
             request,
         ))
         .unwrap()
@@ -556,6 +557,7 @@ fn reconciliation_authority_is_current_and_checked_before_any_close_write() {
                 &cx,
                 &h.book,
                 &missing_privileged,
+                None,
                 request.clone()
             ))
             .unwrap()
@@ -569,6 +571,7 @@ fn reconciliation_authority_is_current_and_checked_before_any_close_write() {
                 &cx,
                 &h.book,
                 &no_reconcile,
+                None,
                 request
             ))
             .unwrap()

@@ -226,7 +226,7 @@ pub(super) fn unchanged_attestations<V: Vfs + Clone>(
             || att.book_id != snapshot.coordinate.book_id
             || att.vid() != Some(vid)
             || bytes(&old, property::FA_DIGEST, "attestation digest")? != stored.signed_digest
-            || att.canonical_bytes(&stored.binding)? != payload
+            || stored.canonical_bytes()? != payload
             || !matches!(prop(&old, property::CODE), Some(CanonicalScalar::Text(t)) if t.as_bytes() == att.claim.name().as_bytes())
             || !matches!(prop(&old, property::BOOK_ID), Some(CanonicalScalar::Bytes(b)) if b.as_slice() == att.book_id.0.as_slice())
         {

@@ -2547,6 +2547,7 @@ mod tests {
                 &cx,
                 &book,
                 &cap_review,
+                None,
                 HUMAN_REVIEWER,
                 added_ocr.oid,
                 vec![added_src.oid],

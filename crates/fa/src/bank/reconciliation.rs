@@ -61,6 +61,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             &context,
             capability,
+            crate::async_book::signer(&self.principal_key),
             fa_journal::bank::BankReconciliationRequest {
                 import: verified.witness,
                 predecessors: predecessors.into_iter().skip(1).collect(),

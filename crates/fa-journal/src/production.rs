@@ -1232,12 +1232,15 @@ fn bates_record(entry: &fa_model::Entry) -> Result<Option<BatesRecord>, KernelEr
 }
 
 /// Record an `ExhibitMarked` attestation binding `label` to `document` in
-/// `matter` (plan §13.2, Appendix B `MarkExhibit`).
+/// `matter` (plan §13.2, Appendix B `MarkExhibit`), signed by `signer`
+/// when the marking principal has a registered key (FA-REF-206 otherwise).
+#[allow(clippy::too_many_arguments)]
 pub async fn mark_exhibit<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn fa_policy::PrincipalSigner>,
     matter: &str,
     document: Oid,
     label: &str,
@@ -1251,7 +1254,10 @@ pub async fn mark_exhibit<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit(db, book, capability, Kind::Produce)? {
         return Ok(Err(r));
     }
-    let binding = crate::attestation::binding(capability)?;
+    let by = crate::attestation::Attester {
+        binding: crate::attestation::binding(capability)?,
+        signer,
+    };
     let attestation = crate::attestation::Attestation {
         book_id: book.book_id,
         claim: crate::attestation::AttestationClaim::ExhibitMarked {
@@ -1298,7 +1304,7 @@ pub async fn mark_exhibit<V: asupersync::fs::Vfs + Clone>(
         book,
         txn,
         &attestation,
-        &binding,
+        &by,
         Some(document_vid(&document)),
         Some(profile_vid),
     )

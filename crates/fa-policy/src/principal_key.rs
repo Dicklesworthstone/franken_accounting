@@ -30,12 +30,22 @@ const KEY_VERSION: u16 = 1;
 const KEY_ID_DOMAIN: &[u8] = b"fa:principal-key-id:v1";
 const REGISTRATION_DOMAIN: &[u8] = b"fa:principal-key-registration:v1";
 const APPROVAL_SIGNATURE_DOMAIN: &[u8] = b"fa:approval-signature:v1";
+const ATTESTATION_SIGNATURE_DOMAIN: &[u8] = b"fa:attestation-signature:v1";
 
 /// Ed25519 verification, supplied by the layer that owns the signer.
 pub trait SignatureVerifier: Send + Sync + core::fmt::Debug {
     /// Whether `signature` is `public_key`'s valid Ed25519 signature of
     /// `message`.
     fn verify_ed25519(&self, public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool;
+}
+
+/// A principal's Ed25519 key, held by the client for one operation (never
+/// by fad). The kernel asks it to sign what the kernel itself builds, an
+/// attestation, after checking that it holds the principal's current key.
+pub trait PrincipalSigner: Send + Sync + core::fmt::Debug {
+    fn public_key(&self) -> [u8; 32];
+    /// The Ed25519 signature of `message` by this key.
+    fn sign_ed25519(&self, message: &[u8]) -> [u8; 64];
 }
 
 /// `key_id = BLAKE3("fa:principal-key-id:v1" ‖ len ‖ public_key)`.
@@ -50,6 +60,15 @@ pub fn key_id(public_key: &[u8; 32]) -> [u8; 32] {
 pub fn approval_message(approval_digest: &[u8; 32]) -> Vec<u8> {
     let mut message = APPROVAL_SIGNATURE_DOMAIN.to_vec();
     message.extend_from_slice(approval_digest);
+    message
+}
+
+/// What a signed attestation's signature covers: its `signed_digest`
+/// (Appendix A) under its own domain, so it is never also an approval's.
+#[must_use]
+pub fn attestation_message(signed_digest: &[u8; 32]) -> Vec<u8> {
+    let mut message = ATTESTATION_SIGNATURE_DOMAIN.to_vec();
+    message.extend_from_slice(signed_digest);
     message
 }
 
@@ -267,17 +286,17 @@ impl PrincipalKey {
     }
 }
 
-/// Appendix A `signature`: an approval's signature by its principal's key
-/// generation `generation` (whose `key_id` it names).
+/// Appendix A `signature`: an approval's or an attestation's signature by
+/// its principal's key generation `generation` (whose `key_id` it names).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ApprovalSignature {
+pub struct PrincipalSignature {
     pub scheme: u16,
     pub generation: u32,
     pub key_id: [u8; 32],
     pub bytes: [u8; 64],
 }
 
-impl ApprovalSignature {
+impl PrincipalSignature {
     /// Admit this signature of the approval digest `digest` against the
     /// principal's current key, generation `current` with `public_key`.
     pub fn check(
@@ -421,7 +440,7 @@ mod tests {
     fn an_approval_signature_must_be_the_current_keys_over_this_digest() {
         let digest = [7u8; 32];
         let public_key = [2u8; 32];
-        let signature = ApprovalSignature {
+        let signature = PrincipalSignature {
             scheme: SCHEME_ED25519,
             generation: 1,
             key_id: key_id(&public_key),
@@ -446,7 +465,7 @@ mod tests {
                 current: 1
             })
         );
-        let other = ApprovalSignature {
+        let other = PrincipalSignature {
             scheme: 2,
             ..signature
         };

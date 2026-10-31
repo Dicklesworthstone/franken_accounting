@@ -86,6 +86,7 @@ fn empty_close(h: &mut Harness, closing: DateDay, key: &[u8]) -> BankReconciliat
             &cx,
             &h.book,
             &capability,
+            None,
             request,
         ))
         .unwrap()

@@ -751,11 +751,14 @@ fn history_at<V: Vfs + Clone>(
 
 /// Current authority precedes any source/history observation. The ordinary
 /// async entrypoint hydrates retained history before preparing one atomic close.
+/// A reconciler with a registered signing key signs through `signer`
+/// (FA-REF-206 otherwise).
 pub async fn reconcile_bank_statement<V: Vfs + Clone>(
     db: &mut Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn fa_policy::PrincipalSigner>,
     request: BankReconciliationRequest,
 ) -> Outcome<BankReconciliationRecorded> {
     if let Err(refusal) = admit_confirmation(db, book, capability)? {
@@ -764,7 +767,7 @@ pub async fn reconcile_bank_statement<V: Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
         return Ok(Err(refusal));
     }
-    match prepare_bank_reconciliation(db, cx, book, capability, request)? {
+    match prepare_bank_reconciliation(db, cx, book, capability, signer, request)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(BankReconciliationPreparation::AlreadyRecorded(recorded)) => Ok(Ok(*recorded)),
         Ok(BankReconciliationPreparation::Ready(prepared)) => prepared.commit(db, cx).await,
@@ -827,6 +830,7 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
     cx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    signer: Option<&dyn fa_policy::PrincipalSigner>,
     request: BankReconciliationRequest,
 ) -> Outcome<BankReconciliationPreparation> {
     if let Err(refusal) = admit_confirmation(db, book, capability)? {
@@ -982,7 +986,21 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
             .commitment()
             .map_err(|error| KernelError::Corrupt(format!("reconciliation capability: {error}")))?,
     };
-    let payload = attestation.canonical_bytes(&binding)?;
+    // A keyed reconciler signs; its key chain is read in this transaction.
+    let signature = match crate::principal_key::attestation_signature(
+        book,
+        capability.holder(),
+        &attestation.signed_digest()?,
+        signer,
+        |vid| Ok(txn.vertex(db, vid)?),
+    )? {
+        Ok(signature) => signature,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    let payload = attestation.stored_bytes(&binding, signature.as_ref())?;
     if payload.len() > fa_model::limits::MAX_ENTRY_BYTES {
         return Ok(Err(invalid(
             "the complete statement-close attestation exceeds its native payload bound; no predecessor or match may be omitted",
