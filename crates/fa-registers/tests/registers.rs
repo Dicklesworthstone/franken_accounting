@@ -5570,7 +5570,7 @@ fn fx_tampered_functional_fold_is_detected_by_verify_functional_fold() {
 
 #[test]
 fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_oracle() {
-    use fa_journal::refusal::code;
+    use fa_journal::refusal::{code, exit};
     use fa_journal::{FxRateDocument, FxRatePurpose, add_document};
     use fa_money::RoundingLaw;
     use fa_money::rate::{ArithmeticBudget, BudgetLimits};
@@ -6066,7 +6066,12 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
     assert_eq!(recycle_entry.legs[0].amount, Amount::new(usd, 8_900));
     assert_eq!(recycle_entry.legs[1].side, Side::Credit);
     assert_eq!(recycle_entry.legs[1].amount, Amount::new(usd, 8_900));
+    // The recycling plan matches the oracle, but the kernel refuses to post
+    // it (d99f8d639): a caller-supplied TranslationCurrentRate adjustment
+    // cannot establish a translation of the journal's source population
+    // (plan §12.4). The refusal writes nothing.
     {
+        let before = h.db.frontier().unwrap();
         let ctx = h.ctx();
         let db = &mut h.db;
         let book = &h.book;
@@ -6076,15 +6081,29 @@ fn fx_current_rate_translation_two_period_cta_roll_forward_and_recycling_match_o
             plan_certificate: None,
             capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
         };
-        h.runtime
+        let refusal = h
+            .runtime
             .block_on(async move { post(db, &ctx, book, req).await })
             .unwrap()
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CLASS_NOT_IMPLEMENTED, exit::REFUSAL)
+        );
+        assert!(
+            refusal
+                .message
+                .starts_with("TranslationCurrentRate has no source-bound native posting law"),
+            "{}",
+            refusal.message
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
     }
 }
 
 #[test]
 fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle() {
+    use fa_journal::refusal::{code, exit};
     use fa_journal::{FxRateDocument, FxRatePurpose, add_document};
     use fa_model::AccountType;
     use fa_money::RoundingLaw;
@@ -6381,7 +6400,10 @@ fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle(
         oracle_out.ending_retained_earnings_functional
     );
 
-    // Plan and post the delta-cumulative remeasurement entry into the book:
+    // Plan the delta-cumulative remeasurement entry. The kernel refuses to
+    // post it (d99f8d639): a caller-supplied RemeasurementTemporal adjustment
+    // cannot establish a remeasurement of the journal's source population
+    // (plan §12.4). The refusal writes nothing.
     let mut remeas_tpl = h.proposal(Vec::new(), b"fx-remeas-p1", EntryClass::REVALUATION);
     remeas_tpl.effective_date = mar_31;
     let remeas_entry = plan_remeasurement_entry(
@@ -6396,6 +6418,7 @@ fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle(
     )
     .unwrap();
     {
+        let before = h.db.frontier().unwrap();
         let ctx = h.ctx();
         let db = &mut h.db;
         let book = &h.book;
@@ -6405,9 +6428,22 @@ fn fx_temporal_remeasurement_two_period_monetary_vs_non_monetary_matches_oracle(
             plan_certificate: None,
             capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
         };
-        h.runtime
+        let refusal = h
+            .runtime
             .block_on(async move { post(db, &ctx, book, req).await })
             .unwrap()
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CLASS_NOT_IMPLEMENTED, exit::REFUSAL)
+        );
+        assert!(
+            refusal
+                .message
+                .starts_with("RemeasurementTemporal has no source-bound native posting law"),
+            "{}",
+            refusal.message
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
     }
 }
