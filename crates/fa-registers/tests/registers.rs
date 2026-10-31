@@ -2259,6 +2259,287 @@ fn items_without_terms_are_listed_not_defaulted() {
 }
 
 #[test]
+fn receivable_due_dates_follow_partial_receipts_reversals_and_known_at() {
+    let mut h = harness();
+    h.open_april();
+    let day = |m, d| DateDay::from_ymd(2026, m, d).unwrap();
+    let ctx = h.ctx();
+    let receivable = h
+        .runtime
+        .block_on(open_account(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &AccountSpec {
+                code: "1200".into(),
+                name: "Contractual receivable".into(),
+                account_type: AccountType::ASSET.0,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(h.usd),
+                parent_code: None,
+                limit: None,
+            },
+            day(1, 1),
+            None,
+            PRINCIPAL,
+            day(3, 1),
+            b"open-receivable",
+            Erasable::seal(
+                &"Receivable with contractual terms".to_string(),
+                None,
+                &h.book.seal_key,
+                [21; 32],
+                [22; 24],
+            ),
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap()
+        .account_vid;
+    // A refundable advance: its receipt later settles the debit receivable.
+    let mut invoice = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, receivable, Amount::new(h.usd, 1_000)),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 1_000)),
+        ],
+        b"receivable-terms",
+        EntryClass::ORIGINAL,
+    );
+    invoice.effective_date = day(3, 1);
+    invoice.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    invoice.extensions = vec![
+        InlineObligationTerms::to_extension_for_legs(
+            &[InlineObligationTerms {
+                ordinal: 0,
+                status: ObligationStatus::Contractual,
+                installments: vec![
+                    ObligationInstallment {
+                        due_date: day(3, 31),
+                        amount: 600,
+                    },
+                    ObligationInstallment {
+                        due_date: day(4, 30),
+                        amount: 400,
+                    },
+                ],
+            }],
+            &invoice.legs,
+        )
+        .unwrap(),
+    ];
+    let original = h.commit(invoice);
+    let at_invoice = h.db.frontier().unwrap();
+    let buckets = AgingBuckets::thirty_day();
+    let age = |h: &Harness, cutoff, at| {
+        due_date_aging(&h.db, &h.book, Some(receivable), cutoff, at, &buckets).unwrap()
+    };
+    let parts = |aging: &DueDateAging| -> Vec<(DateDay, i128, u64)> {
+        aging
+            .items
+            .iter()
+            .map(|part| (part.due_date, part.open, part.days_past_due))
+            .collect()
+    };
+    let on_due = age(&h, day(3, 31), None);
+    assert_eq!(parts(&on_due), [(day(3, 31), 600, 0), (day(4, 30), 400, 0)]);
+    let next_day = age(&h, day(4, 1), None);
+    assert_eq!(
+        parts(&next_day),
+        [(day(4, 30), 400, 0), (day(3, 31), 600, 1)]
+    );
+    assert!(next_day.unscheduled.is_empty());
+    assert!(
+        next_day
+            .items
+            .iter()
+            .all(|part| part.item.side == Side::Debit)
+    );
+
+    let mut receipt = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, h.cash, Amount::new(h.usd, 700)),
+            LegPayload::simple(Side::Credit, receivable, Amount::new(h.usd, 700)),
+        ],
+        b"receivable-partial-receipt",
+        EntryClass::ORIGINAL,
+    );
+    receipt.effective_date = day(4, 15);
+    receipt.legs[1].settles = vec![fa_model::Settlement {
+        target: original.entry_ref(),
+        ordinal: 0,
+        amount: Amount::new(h.usd, 700),
+    }];
+    let payment = h.commit(receipt);
+    let at_payment = h.db.frontier().unwrap();
+    let paid = age(&h, day(5, 1), None);
+    assert_eq!(parts(&paid), [(day(4, 30), 300, 1)]);
+    assert_eq!(paid.totals[0].amounts.debits, 300);
+    assert_eq!(paid.totals[0].amounts.credits, 0);
+    assert_eq!(parts(&age(&h, day(4, 1), None)), parts(&next_day));
+    assert_eq!(
+        parts(&age(&h, day(4, 1), Some(at_invoice))),
+        parts(&next_day)
+    );
+
+    // Reversing a receipt reopens the exact original schedule; it does not
+    // assign a fresh due date based on the receipt or the reversal's date.
+    let mut reversal = h.proposal(
+        vec![
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, 700)),
+            LegPayload::simple(Side::Debit, receivable, Amount::new(h.usd, 700)),
+        ],
+        b"reverse-receipt",
+        EntryClass::REVERSAL,
+    );
+    reversal.effective_date = day(4, 16);
+    reversal.supersession = vec![Supersession {
+        target: payment.entry_ref(),
+        kind: SupersessionKind::Reverses,
+        reason_code: 1,
+    }];
+    h.commit(reversal);
+    let reopened = age(&h, day(5, 1), None);
+    assert_eq!(
+        parts(&reopened),
+        [(day(4, 30), 400, 1), (day(3, 31), 600, 31)]
+    );
+    assert_eq!(age(&h, day(5, 1), Some(at_payment)), paid);
+    assert_eq!(parts(&age(&h, day(4, 15), None)), [(day(4, 30), 300, 0)]);
+}
+
+#[test]
+fn due_date_aging_keeps_both_maturity_directions_and_unscheduled_receivables() {
+    let mut h = harness();
+    let day = |d| DateDay::from_ymd(2026, 3, d).unwrap();
+    let mut both = h.proposal(
+        h.expense_legs(100),
+        b"both-maturity-sides",
+        EntryClass::ORIGINAL,
+    );
+    both.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    both.extensions = vec![
+        InlineObligationTerms::to_extension_for_legs(
+            &[
+                InlineObligationTerms {
+                    ordinal: 0,
+                    status: ObligationStatus::Contractual,
+                    installments: vec![ObligationInstallment {
+                        due_date: day(30),
+                        amount: 100,
+                    }],
+                },
+                InlineObligationTerms {
+                    ordinal: 1,
+                    status: ObligationStatus::Contractual,
+                    installments: vec![ObligationInstallment {
+                        due_date: day(20),
+                        amount: 100,
+                    }],
+                },
+            ],
+            &both.legs,
+        )
+        .unwrap(),
+    ];
+    let posted = h.commit(both);
+    for (key, status) in [
+        (
+            b"debit-unknown".as_slice(),
+            ObligationStatus::MissingMaturity,
+        ),
+        (
+            b"debit-disputed".as_slice(),
+            ObligationStatus::Disputed { reason_code: 7 },
+        ),
+    ] {
+        let mut unscheduled = h.proposal(h.expense_legs(200), key, EntryClass::ORIGINAL);
+        unscheduled.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+        unscheduled.extensions = vec![
+            InlineObligationTerms::to_extension_for_legs(
+                &[InlineObligationTerms {
+                    ordinal: 0,
+                    status,
+                    installments: Vec::new(),
+                }],
+                &unscheduled.legs,
+            )
+            .unwrap(),
+        ];
+        h.commit(unscheduled);
+    }
+    let report = due_date_aging(
+        &h.db,
+        &h.book,
+        None,
+        day(31),
+        None,
+        &AgingBuckets::thirty_day(),
+    )
+    .unwrap();
+    assert_eq!(report.items.len(), 2);
+    for (ordinal, due, side, days) in [(0, day(30), Side::Debit, 1), (1, day(20), Side::Credit, 11)]
+    {
+        assert!(
+            report
+                .items
+                .iter()
+                .any(|part| part.item.entry == posted.entry_ref().vid
+                    && part.item.ordinal == ordinal
+                    && part.item.side == side
+                    && part.due_date == due
+                    && part.open == 100
+                    && part.days_past_due == days)
+        );
+    }
+    for reason in [
+        Unscheduled::MissingMaturity,
+        Unscheduled::Disputed { reason_code: 7 },
+    ] {
+        assert!(
+            report
+                .unscheduled
+                .iter()
+                .any(|item| item.item.side == Side::Debit
+                    && item.item.open == 200
+                    && item.reason == reason)
+        );
+    }
+    assert_eq!(report.unscheduled.len(), 4);
+    let effective = effective_date_aging(
+        &h.db,
+        &h.book,
+        None,
+        day(31),
+        None,
+        &AgingBuckets::thirty_day(),
+    )
+    .unwrap();
+    for expected in &effective.totals {
+        let amounts: Vec<_> = report
+            .totals
+            .iter()
+            .chain(&report.unscheduled_totals)
+            .filter(|total| total.account == expected.account && total.unit_id == expected.unit_id)
+            .collect();
+        assert_eq!(
+            amounts
+                .iter()
+                .map(|total| total.amounts.debits)
+                .sum::<i128>(),
+            expected.amounts.debits
+        );
+        assert_eq!(
+            amounts
+                .iter()
+                .map(|total| total.amounts.credits)
+                .sum::<i128>(),
+            expected.amounts.credits
+        );
+    }
+}
+
+#[test]
 fn pending_column_corruption_is_detected_and_rebuilt_from_the_journal() {
     let mut h = harness();
     h.post_rent(123, b"posted-rent");

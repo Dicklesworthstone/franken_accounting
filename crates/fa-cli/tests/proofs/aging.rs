@@ -1105,3 +1105,521 @@ fn reconciliation_export_requires_an_independent_exact_request_before_success() 
     assert_eq!(stray.0, 2, "{}", stray.1.render());
     assert_eq!(fixture.head(), before, "refused exports do not publish");
 }
+
+fn receivable_events(fixture: &Fixture, args: &[&str], expected_exit: i32) -> Vec<Json> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&fixture.book)
+        .args(args)
+        .arg("--json")
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("run the persisted receivable workflow");
+    let exit = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        exit, expected_exit,
+        "argv=fa --book {:?} {args:?} --json\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        fixture.book,
+    );
+    let registry = fa_cli::verbs::registry().unwrap();
+    let events: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            registry
+                .check_line(line)
+                .unwrap_or_else(|error| panic!("argv={args:?}: {error}\n{stdout}\n{stderr}"));
+            json::parse(line)
+                .unwrap_or_else(|error| panic!("argv={args:?}: {error:?}\n{stdout}\n{stderr}"))
+        })
+        .collect();
+    assert!(!events.is_empty(), "argv={args:?}: no events\n{stderr}");
+    eprintln!(
+        "receivable argv=fa --book {:?} {args:?} --json exit={exit} events={:?}",
+        fixture.book,
+        events
+            .iter()
+            .map(|event| text(event, "event"))
+            .collect::<Vec<_>>(),
+    );
+    for event in &events {
+        if matches!(
+            text(event, "event"),
+            "due_date_aging" | "aging_reconciled" | "report_replayed" | "error"
+        ) {
+            eprintln!("{}", event.render());
+        }
+    }
+    events
+}
+
+fn receivable_event<'a>(events: &'a [Json], name: &str) -> &'a Json {
+    events
+        .iter()
+        .find(|event| text(event, "event") == name)
+        .unwrap_or_else(|| panic!("missing {name} event: {events:?}"))
+}
+
+fn receivable_fixture() -> (Fixture, String) {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "receivables-chart.json",
+        r#"{"accounts":[{"code":"1100","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    receivable_events(&fixture, &["chart", "import", &chart], 0);
+    (fixture, evidence)
+}
+
+fn receivable_invoice(fixture: &Fixture, key: &str, amount: &str, terms: Option<&str>) -> String {
+    let maturity = terms.map_or_else(String::new, |terms| {
+        format!(r#", "obligation_maturity":{terms}"#)
+    });
+    write(
+        &fixture.dir,
+        &format!("{key}.json"),
+        &format!(
+            r#"{{"effective_date":"2026-03-01","idempotency_key":"{key}","legs":[{{"side":"debit","account":"1100","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]{maturity}}}"#,
+        ),
+    )
+}
+
+#[test]
+fn receivable_due_date_aging_replays_and_verifies_offline() {
+    let (fixture, evidence) = receivable_fixture();
+    let invoice = receivable_invoice(
+        &fixture,
+        "receivable-contractual",
+        "100.00",
+        Some(
+            r#"[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"60.00 USD"},{"due_date":"2026-04-30","amount":"40.00 USD"}]}]"#,
+        ),
+    );
+    let posted = receivable_events(
+        &fixture,
+        &["post", "--intent", &invoice, "--evidence", &evidence],
+        0,
+    );
+    let receipt = write(
+        &fixture.dir,
+        "receivable-partial-receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"receivable-partial-receipt","legs":[{{"side":"debit","account":"1000","amount":"25.00 USD"}},{{"side":"credit","account":"1100","amount":"25.00 USD","settles":[{{"entry":"{}","ordinal":0,"amount":"25.00 USD"}}]}}]}}"#,
+            text(&posted[0], "vid"),
+        ),
+    );
+    receivable_events(
+        &fixture,
+        &["post", "--intent", &receipt, "--evidence", &evidence],
+        0,
+    );
+    let at = fixture.head();
+    let certified = receivable_events(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--account",
+            "1100",
+            "--basis",
+            "due-date",
+            "--as-of",
+            "2026-04-01",
+            "--certify",
+        ],
+        0,
+    );
+    let scheduled = receivable_event(&certified, "due_date_aging");
+    assert_eq!(integer(scheduled, "known_at"), i128::from(at));
+    let items = get(scheduled, "items").as_arr().unwrap();
+    assert_eq!(items.len(), 2, "{}", scheduled.render());
+    for (item, due, open, days, bucket) in [
+        (&items[0], "2026-04-30", "40.00 USD", 0, 0),
+        (&items[1], "2026-03-31", "35.00 USD", 1, 1),
+    ] {
+        assert_eq!(text(item, "entry"), text(&posted[0], "vid"));
+        assert_eq!(integer(item, "ordinal"), 0);
+        assert_eq!(text(item, "side"), "debit");
+        assert_eq!(text(item, "applied"), "25.00 USD");
+        assert_eq!(text(item, "item_open"), "75.00 USD");
+        assert_eq!(text(item, "due_date"), due);
+        assert_eq!(text(item, "open"), open);
+        assert_eq!(integer(item, "days_past_due"), days);
+        assert_eq!(integer(item, "bucket"), bucket);
+    }
+    let totals = get(scheduled, "totals").as_arr().unwrap();
+    assert_eq!(totals.len(), 1);
+    assert_eq!(text(&totals[0], "debits"), "75.00 USD");
+    assert_eq!(text(&totals[0], "credits"), "0.00 USD");
+    assert!(get(scheduled, "unscheduled").as_arr().unwrap().is_empty());
+    let metadata = receivable_event(&certified, "report_certificate");
+    assert_eq!(text(metadata, "output_format"), "fa:due-date-aging:v1");
+    let certificate = fa::DueDateAgingCertificate::decode(&bytes(metadata)).unwrap();
+    assert_eq!(certificate.source().known_at.0, at);
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let request = format!(
+        r#"{{"kind":"due-date-aging","account":"1100","through":"2026-04-01","known_at":{at},"buckets":[0,30,60,90]}}"#,
+    );
+
+    // Omitted terms, explicitly missing maturity, and a disputed dated claim
+    // all remain visible without inventing contractual due dates.
+    for (key, amount, terms) in [
+        ("receivable-no-terms", "10.00", None),
+        (
+            "receivable-missing-maturity",
+            "7.00",
+            Some(r#"[{"ordinal":0,"status":"missing_maturity"}]"#),
+        ),
+        (
+            "receivable-disputed",
+            "9.00",
+            Some(
+                r#"[{"ordinal":0,"status":"disputed","reason_code":7,"installments":[{"due_date":"2026-03-31","amount":"9.00 USD"}]}]"#,
+            ),
+        ),
+    ] {
+        let intent = receivable_invoice(&fixture, key, amount, terms);
+        receivable_events(
+            &fixture,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+            0,
+        );
+    }
+    let rec_at = fixture.head();
+    let rec_at_text = rec_at.to_string();
+    let reconciled = receivable_events(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--account",
+            "1100",
+            "--basis",
+            "due-date",
+            "--as-of",
+            "2026-04-01",
+            "--as-known-at",
+            &rec_at_text,
+            "--reconcile",
+            "--certify",
+        ],
+        0,
+    );
+    let aging = receivable_event(&reconciled, "due_date_aging");
+    assert_eq!(get(aging, "items"), get(scheduled, "items"));
+    let unscheduled = get(aging, "unscheduled").as_arr().unwrap();
+    assert_eq!(unscheduled.len(), 3, "{}", aging.render());
+    for (reason, open) in [
+        ("no_terms", "10.00 USD"),
+        ("missing_maturity", "7.00 USD"),
+        ("disputed", "9.00 USD"),
+    ] {
+        let item = unscheduled
+            .iter()
+            .find(|item| text(item, "reason") == reason)
+            .unwrap();
+        assert_eq!(text(item, "side"), "debit");
+        assert_eq!(text(item, "open"), open);
+        if reason == "disputed" {
+            assert_eq!(integer(item, "reason_code"), 7);
+        } else {
+            assert_eq!(get(item, "reason_code"), &Json::Null);
+        }
+    }
+    let control = receivable_event(&reconciled, "aging_reconciled");
+    let rows = get(control, "rows").as_arr().unwrap();
+    assert_eq!(rows.len(), 1, "{}", control.render());
+    assert_eq!(text(&rows[0], "posted_net"), "101.00 USD");
+    assert_eq!(text(&rows[0], "open_net"), "101.00 USD");
+    assert_eq!(text(&rows[0], "difference"), "0.00 USD");
+    assert_eq!(integer(&rows[0], "open_item_count"), 4);
+    let rec_metadata = receivable_event(&reconciled, "report_certificate");
+    let reconciliation =
+        fa::DueDateAgingReconciliationCertificate::decode(&bytes(rec_metadata)).unwrap();
+    let rec_locator = format!("C:{}", text(rec_metadata, "oid"));
+    let rec_request = format!(
+        r#"{{"kind":"due-date-aging-reconciliation","account":"1100","through":"2026-04-01","known_at":{rec_at},"buckets":[0,30,60,90]}}"#,
+    );
+
+    // A later commit with an earlier effective date changes today's control,
+    // while each retained question must still reproduce its original bytes.
+    let later = receivable_invoice(&fixture, "receivable-later-backdated", "5.00", None);
+    receivable_events(
+        &fixture,
+        &["post", "--intent", &later, "--evidence", &evidence],
+        0,
+    );
+    let current = receivable_events(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--account",
+            "1100",
+            "--basis",
+            "due-date",
+            "--as-of",
+            "2026-04-01",
+            "--reconcile",
+        ],
+        0,
+    );
+    let current_rows = get(receivable_event(&current, "aging_reconciled"), "rows")
+        .as_arr()
+        .unwrap();
+    assert_eq!(text(&current_rows[0], "posted_net"), "106.00 USD");
+    assert_eq!(text(&current_rows[0], "open_net"), "106.00 USD");
+    let replayed = receivable_events(&fixture, &["replay", &locator, "--expect", &request], 0);
+    assert_eq!(
+        get(receivable_event(&replayed, "due_date_aging"), "data"),
+        get(scheduled, "data"),
+        "the retained receivable schedule must not absorb later backdated items",
+    );
+    let output_path = fixture.dir.join("receivable-reconciliation.replayed");
+    let replayed = receivable_events(
+        &fixture,
+        &[
+            "replay",
+            &rec_locator,
+            "--expect",
+            &rec_request,
+            "--output",
+            output_path.to_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(
+        integer(receivable_event(&replayed, "report_replayed"), "known_at"),
+        i128::from(rec_at)
+    );
+    assert_eq!(
+        std::fs::read(&output_path).unwrap(),
+        reconciliation.output()
+    );
+    receivable_events(
+        &fixture,
+        &[
+            "replay",
+            &locator,
+            "--expect",
+            &request.replace("1100", "1000"),
+        ],
+        8,
+    );
+
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    for (name, locator, expectation, digest, canonical, known_at, is_reconciliation) in [
+        (
+            "receivable-aging",
+            &locator,
+            &request,
+            certificate.digest(),
+            certificate.output(),
+            at,
+            false,
+        ),
+        (
+            "receivable-reconciliation",
+            &rec_locator,
+            &rec_request,
+            reconciliation.digest(),
+            reconciliation.output(),
+            rec_at,
+            true,
+        ),
+    ] {
+        let mut export_args = vec![
+            "bundle",
+            "produce",
+            "--certificate",
+            locator.as_str(),
+            "--state",
+            text(&state, "oid"),
+        ];
+        if is_reconciliation {
+            export_args.extend(["--expect", expectation.as_str()]);
+        }
+        let exported = receivable_events(&fixture, &export_args, 0);
+        let produced = receivable_event(&exported, "bundle_produced");
+        let verified = fa_verify::report::verify_report_expected(
+            &bytes(produced),
+            &[key],
+            None,
+            Some(&unhex(text(produced, "receipt"))),
+            Some(digest),
+        )
+        .unwrap_or_else(|error| panic!("{name}: independent verification failed: {error:?}"));
+        assert_eq!(
+            verified.output, canonical,
+            "{name}: canonical output changed"
+        );
+        let aging = if is_reconciliation {
+            let report = verified.due_date_aging_reconciliation.as_ref().unwrap();
+            assert!(report.is_reconciled());
+            assert_eq!(report.known_at, known_at);
+            assert_eq!(
+                (report.rows[0].posted_net, report.rows[0].open_net),
+                (10_100, 10_100)
+            );
+            assert_eq!(report.rows[0].open_item_count, 4);
+            assert_eq!(report.aging.unscheduled_totals[0].amounts.debits, 2_600);
+            assert_eq!(report.aging.unscheduled_totals[0].amounts.credits, 0);
+            for reason in [
+                fa_verify::report::VerifiedUnscheduled::NoTerms,
+                fa_verify::report::VerifiedUnscheduled::MissingMaturity,
+                fa_verify::report::VerifiedUnscheduled::Disputed { reason_code: 7 },
+            ] {
+                assert!(
+                    report
+                        .aging
+                        .unscheduled
+                        .iter()
+                        .any(|item| item.reason == reason)
+                );
+            }
+            &report.aging
+        } else {
+            let report = verified.due_date_aging.as_ref().unwrap();
+            assert!(report.unscheduled.is_empty());
+            report
+        };
+        assert_eq!(aging.known_at, known_at);
+        assert_eq!(aging.totals[0].amounts.debits, 7_500);
+        assert_eq!(aging.totals[0].amounts.credits, 0);
+        assert_eq!(aging.items.len(), 2);
+        assert_eq!(
+            (aging.items[0].open, aging.items[0].days_past_due),
+            (4_000, 0)
+        );
+        assert_eq!(
+            (aging.items[1].open, aging.items[1].days_past_due),
+            (3_500, 1)
+        );
+        assert!(
+            aging.items.iter().all(|part| part.item.debit
+                && part.item.applied == 2_500
+                && part.item.open == 7_500)
+        );
+
+        let bundle_path = fixture.dir.join(format!("{name}.fab"));
+        std::fs::write(&bundle_path, bytes(produced)).unwrap();
+        let expected = fa_verify::blake3::hex(digest);
+        let argv = [
+            "report",
+            bundle_path.to_str().unwrap(),
+            "--key",
+            text(&signed, "checkpoint_public_key"),
+            "--expect",
+            &expected,
+            "--json",
+        ]
+        .map(str::to_string);
+        let result = fa_verify::cli::run(&argv, &|path| std::fs::read(path));
+        assert_eq!(
+            result.exit, 0,
+            "argv=fa-verify {argv:?}\n{}\n{}",
+            result.stdout, result.stderr
+        );
+        let result_json = json::parse(&result.stdout).unwrap();
+        eprintln!(
+            "receivable offline argv=fa-verify {argv:?} exit={}",
+            result.exit
+        );
+        assert_eq!(
+            text(&result_json, "verdict"),
+            "verified",
+            "argv=fa-verify {argv:?}: {}",
+            result.stdout,
+        );
+        let checks = get(&result_json, "checks").as_arr().unwrap();
+        let total = checks
+            .iter()
+            .find(|check| text(check, "check") == "due_date_aging_total")
+            .unwrap();
+        assert_eq!(text(get(total, "detail"), "debits"), "7500");
+        if is_reconciliation {
+            let row = checks
+                .iter()
+                .find(|check| text(check, "check") == "due_date_aging_reconciliation_row")
+                .unwrap();
+            assert_eq!(text(get(row, "detail"), "posted_net"), "10100");
+            assert_eq!(text(get(row, "detail"), "open_net"), "10100");
+            assert_eq!(text(get(row, "detail"), "difference"), "0");
+        }
+    }
+}
+
+#[test]
+fn receivable_maturity_refuses_invalid_terms_without_posting() {
+    let (fixture, evidence) = receivable_fixture();
+    let before = fixture.head();
+    for (name, terms, refusal) in [
+        (
+            "duplicate-ordinal",
+            r#"[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"100.00 USD"}]},{"ordinal":0,"status":"missing_maturity"}]"#,
+            "terms must be strictly ascending by leg ordinal",
+        ),
+        (
+            "wrong-total",
+            r#"[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"99.99 USD"}]}]"#,
+            "installments must total exactly the leg's amount",
+        ),
+        (
+            "wrong-unit",
+            r#"[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"100.00 EUR"}]}]"#,
+            "is not in leg 0's unit",
+        ),
+        (
+            "contractual-without-installments",
+            r#"[{"ordinal":0,"status":"contractual"}]"#,
+            "a Contractual term declares at least one installment",
+        ),
+        (
+            "empty-terms",
+            "[]",
+            "obligation_maturity is empty; omit it instead",
+        ),
+        (
+            "missing-with-installments",
+            r#"[{"ordinal":0,"status":"missing_maturity","installments":[{"due_date":"2026-03-31","amount":"100.00 USD"}]}]"#,
+            "a MissingMaturity term declares no installment",
+        ),
+        (
+            "disputed-without-reason",
+            r#"[{"ordinal":0,"status":"disputed"}]"#,
+            "a disputed obligation names its reason_code",
+        ),
+    ] {
+        let intent = receivable_invoice(
+            &fixture,
+            &format!("receivable-invalid-{name}"),
+            "100.00",
+            Some(terms),
+        );
+        let events = receivable_events(
+            &fixture,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+            2,
+        );
+        let error = receivable_event(&events, "error");
+        assert!(
+            error.render().contains(refusal),
+            "{name}: {}",
+            error.render()
+        );
+        assert_eq!(
+            fixture.head(),
+            before,
+            "{name}: invalid receivable terms must not publish"
+        );
+    }
+}

@@ -12,8 +12,18 @@ const BOUNDS: &[u32] = &[0, 30, 60, 90];
 mod reconciliation_tests;
 
 fn terms(ordinal: u16, status: u8, reason: u16, installments: &[(i32, i128)]) -> Vec<u8> {
+    versioned_terms(1, ordinal, status, reason, installments)
+}
+
+fn versioned_terms(
+    version: u16,
+    ordinal: u16,
+    status: u8,
+    reason: u16,
+    installments: &[(i32, i128)],
+) -> Vec<u8> {
     let mut w = Writer::default();
-    w.u16(1).count(1).u16(ordinal).u8(status);
+    w.u16(version).count(1).u16(ordinal).u8(status);
     if status == 2 {
         w.u16(reason);
     }
@@ -514,6 +524,189 @@ fn due_date_aging_whole_book_preserves_unscheduled_debits_and_scheduled_credits(
     assert_eq!(actual.unscheduled, expected.unscheduled);
     assert_eq!(actual.totals[0].amounts.credits, 100);
     assert_eq!(actual.unscheduled_totals[0].amounts.debits, 100);
+}
+
+#[test]
+fn due_date_receivables_independently_replay_partial_receipts_and_reversals() {
+    let mut records = schema();
+    let invoice_legs = [leg("1000", true, 100), leg("3000", false, 100)];
+    // One independently encoded v2 list carries both debit and credit
+    // schedules in canonical ordinal order; neither direction shadows the other.
+    let mut maturity = Writer::default();
+    maturity
+        .u16(2)
+        .count(2)
+        .u16(0)
+        .u8(1)
+        .count(2)
+        .i32(30)
+        .i128(30)
+        .i32(60)
+        .i128(70)
+        .u16(1)
+        .u8(1)
+        .count(1)
+        .i32(60)
+        .i128(100);
+    let (invoice, invoice_id) = extend(
+        posting(1, 3, b"receivable", &invoice_legs, None, None),
+        &maturity.buf,
+    );
+    let mut receipt_legs = [leg("3000", true, 40), leg("1000", false, 40)];
+    receipt_legs[1]
+        .settles
+        .push(application(&invoice, invoice_id, 0, 40));
+    let (receipt, receipt_id) = dated(posting(1, 4, b"receipt", &receipt_legs, None, None), 40);
+    let (undo, _) = dated(
+        reverse(&receipt, receipt_id, 5, b"receipt-undo", &receipt_legs),
+        70,
+    );
+    records.extend([invoice, receipt, undo]);
+
+    // These expected schedules are calculated independently of both maturity
+    // decoders. The later-effective reversal is invisible at day 45.
+    for (known_at, cutoff, applied, history, installments) in [
+        (3, 31, false, None, vec![(60, 70, 0, 0), (30, 30, 1, 1)]),
+        (4, 45, true, Some(true), vec![(60, 60, 0, 0)]),
+        (5, 45, true, Some(true), vec![(60, 60, 0, 0)]),
+        (
+            5,
+            90,
+            false,
+            Some(false),
+            vec![(60, 70, 30, 1), (30, 30, 60, 2)],
+        ),
+    ] {
+        let make_item = |applied: bool, history: Option<bool>| {
+            item(
+                invoice_id,
+                0,
+                "1000",
+                true,
+                3,
+                100,
+                if applied { 40 } else { 0 },
+                0,
+                if applied { 60 } else { 100 },
+                history
+                    .map(|live| VerifiedApplication {
+                        entry: receipt_id,
+                        ordinal: 1,
+                        amount: 40,
+                        recorded_at: 4,
+                        live,
+                    })
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        let mut source_items = vec![make_item(
+            known_at == 4,
+            (known_at >= 4).then_some(known_at == 4),
+        )];
+        if known_at == 4 {
+            let mut receipt = item(receipt_id, 1, "1000", false, 4, 40, 0, 40, 0, vec![]);
+            receipt.effective_date = 40;
+            source_items.push(receipt);
+        }
+        let original = make_item(applied, history);
+        let expected = VerifiedDueDateAging {
+            book_id: BOOK,
+            known_at,
+            effective_through: cutoff,
+            account_filter: Some(account_id("1000")),
+            source_certificate_digest: [0; 32],
+            bands: bands(),
+            items: installments
+                .iter()
+                .map(
+                    |&(due_date, open, days_past_due, bucket)| VerifiedDueDateAgedItem {
+                        item: original.clone(),
+                        due_date,
+                        open,
+                        days_past_due,
+                        bucket,
+                    },
+                )
+                .collect(),
+            cells: installments
+                .iter()
+                .map(|&(_, open, _, bucket)| VerifiedAgingCell {
+                    account: account_id("1000"),
+                    unit_id: 1,
+                    bucket,
+                    amounts: VerifiedAgingAmounts {
+                        debits: open,
+                        credits: 0,
+                        item_count: 1,
+                    },
+                })
+                .collect(),
+            totals: vec![VerifiedAgingTotal {
+                account: account_id("1000"),
+                unit_id: 1,
+                amounts: VerifiedAgingAmounts {
+                    debits: original.open,
+                    credits: 0,
+                    item_count: installments.len() as u64,
+                },
+            }],
+            unscheduled: vec![],
+            unscheduled_totals: vec![],
+        };
+        let source = report(Some(account_id("1000")), source_items);
+        let (native, anchor, _) = pack(&records, known_at, &source);
+        let (bundle, pin) = wrap(&native, cutoff, BOUNDS, &output(&expected));
+        let actual = verify_pinned(&bundle, anchor, Some(&pin))
+            .unwrap_or_else(|error| panic!("known-at {known_at}, cutoff {cutoff}: {error}"));
+        assert_eq!(actual.output, output(&expected));
+        let actual = actual.due_date_aging.unwrap();
+        assert_eq!(actual.items, expected.items);
+        assert_eq!(actual.totals, expected.totals);
+        assert!(actual.unscheduled.is_empty());
+    }
+}
+
+#[test]
+fn due_date_receivable_terms_reject_downgrades_and_incomplete_schedules() {
+    for (name, bytes) in [
+        ("absent ordinal", versioned_terms(2, 2, 1, 0, &[(30, 100)])),
+        ("unknown version", versioned_terms(3, 0, 1, 0, &[(30, 100)])),
+        ("legacy debit", terms(0, 1, 0, &[(30, 100)])),
+        ("wrong sum", versioned_terms(2, 0, 1, 0, &[(30, 99)])),
+        ("missing schedule", versioned_terms(2, 0, 1, 0, &[])),
+        (
+            "duplicate due",
+            versioned_terms(2, 0, 1, 0, &[(30, 30), (30, 70)]),
+        ),
+    ] {
+        let mut f = fixture();
+        f.records[2] = extend(
+            posting(
+                1,
+                3,
+                b"due-invoice",
+                &[leg("1000", true, 100), leg("3000", false, 100)],
+                None,
+                None,
+            ),
+            &bytes,
+        )
+        .0;
+        let expected = expected(
+            &f,
+            3,
+            30,
+            invoice_item(&f, false, None),
+            &[(30, 30, 0, 0), (60, 70, 0, 0)],
+            false,
+        );
+        assert_eq!(
+            verify(&f, 3, &expected).unwrap_err().predicate,
+            "obligation_terms",
+            "{name}"
+        );
+    }
 }
 
 #[test]

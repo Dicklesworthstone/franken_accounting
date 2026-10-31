@@ -4,15 +4,16 @@
 //! since the item's effective date. It is not a claim that anything is due.
 //!
 //! **Due-date aging** ([`due_date_aging`]) measures civil days past each
-//! contractual due date the journal records: the obligation maturity terms an
-//! entry carries on its leg (extension 33, `fa:obligation-maturity:v1`).
+//! contractual due date the journal records: the maturity terms an entry
+//! carries on its leg (extension 33, version 1 for credit obligations and
+//!   version 2 for either side).
 //! - Settlements relieve a schedule's earliest installments first, as
 //!   `solvency.cash_flow_test` does, and each open remainder is aged from its
 //!   own due date.
 //! - An item without contractual terms is listed as unscheduled, with the
 //!   reason, and is never given a guessed due date.
-//! - The kernel admits terms on credit legs only, where an obligation is
-//!   booked, so receivables are unscheduled until terms can name a debit leg.
+//! - Version 1 keeps its credit-only law. Version 2 also admits receivables,
+//!   with no due date inferred from a posting.
 //!
 //! Both keep both time coordinates, exact native-unit debit and credit
 //! columns, bucket definitions, and item-level drilldown. They never add
@@ -317,7 +318,7 @@ pub struct DueDateAging {
     pub unscheduled_totals: Vec<AgingTotal>,
 }
 
-/// Each leg's obligation maturity terms, by `(entry, leg ordinal)`. The
+/// Each leg's obligation or receivable maturity terms, by `(entry, leg ordinal)`. The
 /// kernel validated them at admission, so bytes that no longer decode are
 /// corruption.
 pub type ObligationTerms = BTreeMap<(VId, u16), InlineObligationTerms>;
@@ -331,10 +332,15 @@ fn obligation_terms(entries: &[(VId, Entry, CommitSeq)]) -> Result<ObligationTer
             }
             for term in InlineObligationTerms::decode_list(bytes).map_err(|e| {
                 KernelError::Corrupt(format!(
-                    "entry {vid:?} carries obligation terms that do not decode: {e}"
+                    "entry {vid:?} carries maturity terms that do not decode: {e}"
                 ))
             })? {
-                terms.insert((*vid, term.ordinal), term);
+                if terms.insert((*vid, term.ordinal), term).is_some() {
+                    return Err(KernelError::Corrupt(format!(
+                        "entry {vid:?} carries more than one maturity schedule for one leg"
+                    ))
+                    .into());
+                }
             }
         }
     }

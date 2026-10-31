@@ -3625,6 +3625,82 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn receivable_maturity_preserves_prior_bytes_and_requires_its_wire_version() {
+        use crate::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
+
+        let term = |ordinal, amount| InlineObligationTerms {
+            ordinal,
+            status: ObligationStatus::Contractual,
+            installments: vec![ObligationInstallment {
+                due_date: DateDay(20_100),
+                amount,
+            }],
+        };
+        let mut legacy = proposal(two_legs());
+        legacy.schema_minor = EXTENSIONS_MINOR;
+        legacy.extensions = vec![InlineObligationTerms::to_extension(&[term(1, 120_000)]).unwrap()];
+        let prior = legacy.clone().seal(Vec::new(), None).unwrap();
+        let prior_bytes = prior.encode().unwrap();
+        assert_eq!(Entry::decode(&prior_bytes).unwrap(), prior);
+
+        let mut current = legacy;
+        current.extensions = vec![
+            InlineObligationTerms::to_extension_for_legs(
+                &[term(0, 120_000), term(1, 120_000)],
+                &current.legs,
+            )
+            .unwrap(),
+        ];
+        current.validate().unwrap();
+        assert_eq!(&current.extensions[0].1[..2], &2_u16.to_le_bytes());
+        let complete = current.clone().seal(Vec::new(), None).unwrap();
+        assert_eq!(
+            Entry::decode(&complete.encode().unwrap()).unwrap(),
+            complete
+        );
+        assert_ne!(complete.proposal_digest, prior.proposal_digest);
+        assert_eq!(prior.encode().unwrap(), prior_bytes);
+
+        let mut downgraded = current.clone();
+        downgraded.extensions[0].1[..2].copy_from_slice(&1_u16.to_le_bytes());
+        assert!(matches!(
+            downgraded.validate(),
+            Err(EntryError::Invalid {
+                what: "extensions.obligation_maturity",
+                why: "names a debit leg; an obligation is booked on a credit leg",
+            })
+        ));
+        for (ordinal, amount, expected) in
+            [(2, 120_000, "does not have"), (0, 119_999, "total exactly")]
+        {
+            let mut invalid = current.clone();
+            invalid.extensions = vec![
+                InlineObligationTerms::to_extension_for_legs(
+                    &[term(ordinal, amount)],
+                    &invalid.legs,
+                )
+                .unwrap(),
+            ];
+            assert!(matches!(
+                invalid.validate(),
+                Err(EntryError::Invalid {
+                    what: "extensions.obligation_maturity",
+                    why,
+                }) if why.contains(expected)
+            ));
+        }
+        let mut malformed = current;
+        malformed.extensions[0].1 = vec![1, 2, 3];
+        assert!(matches!(
+            malformed.validate(),
+            Err(EntryError::Invalid {
+                what: "extensions.obligation_maturity",
+                why: "does not decode",
+            })
+        ));
+    }
+
     /// A disposal basis is a versioned posting contract, not an opaque tag.
     #[test]
     fn lot_disposal_basis_requires_its_minor_and_posting_class() {

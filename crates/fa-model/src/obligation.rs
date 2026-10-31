@@ -39,7 +39,7 @@ pub struct ObligationInstallment {
     pub amount: i128,
 }
 
-/// How an obligation's maturity is known.
+/// How an obligation's or receivable's maturity is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObligationStatus {
     /// Its contractual maturity schedule is known and complete.
@@ -494,5 +494,58 @@ mod tests {
         .unwrap();
         assert!(InlineObligationTerms::decode_list(&zero).is_err());
         assert!(validate_terms(&zero, &legs()).is_err());
+    }
+
+    #[test]
+    fn receivable_terms_pin_v2_bytes_and_refuse_incomplete_schedules() {
+        let due = vec![term(
+            0,
+            ObligationStatus::Contractual,
+            vec![installment(100, 500)],
+        )];
+        let (tag, bytes) = InlineObligationTerms::to_extension_for_legs(&due, &legs()).unwrap();
+        assert_eq!(tag, crate::entry::OBLIGATION_MATURITY_EXTENSION);
+        // Fixed v2 transcript: one term, debit leg 0, contractual, one
+        // installment, day 100, amount 500. Only its explicit wire version
+        // distinguishes it from the legacy credit-only codec.
+        assert_eq!(
+            bytes,
+            [
+                2, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 0, 0, 0, 244, 1, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+            ]
+        );
+        assert_eq!(InlineObligationTerms::decode_list(&bytes).unwrap(), due);
+        assert_eq!(validate_terms(&bytes, &legs()), Ok(()));
+        let legacy = InlineObligationTerms::to_extension(&due).unwrap().1;
+        assert_eq!(&legacy[2..], &bytes[2..]);
+        assert_eq!(
+            validate_terms(&legacy, &legs()),
+            Err((
+                "extensions.obligation_maturity",
+                "names a debit leg; an obligation is booked on a credit leg",
+            ))
+        );
+        for terms in [
+            vec![term(0, ObligationStatus::Contractual, Vec::new())],
+            vec![term(
+                0,
+                ObligationStatus::Contractual,
+                vec![installment(100, 499)],
+            )],
+            vec![term(
+                0,
+                ObligationStatus::Contractual,
+                vec![installment(100, 250), installment(100, 250)],
+            )],
+            vec![term(
+                0,
+                ObligationStatus::MissingMaturity,
+                vec![installment(100, 500)],
+            )],
+        ] {
+            let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap();
+            assert!(validate_terms(&bytes, &legs()).is_err());
+        }
     }
 }

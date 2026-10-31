@@ -18,6 +18,13 @@ envelope_fields = ["proposal_digest:bytes32", "plan_certificate_oid:option<bytes
 extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1|v2", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1|v2", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1", "37:fa:fx-settlement-valuation:v1", "38:fa:lot-disposal:v1", "39:fa:asset-charge:v1"]
 
 [[decision]]
+field = "extensions.33"
+appendix_a = "Contractual maturity for obligations and receivable due-date aging (plan §11.6–11.7)"
+code_type = "fa-model::obligation::InlineObligationTerms; OBLIGATION_MATURITY_EXTENSION=33; wire versions 1 and 2"
+rationale = "The original version-1 bytes retain their credit-only meaning. Version 2 admits either debit receivables or credit obligations with ordered unique leg ordinals, explicit contractual/disputed/missing status, and positive date-ordered installments totaling each named leg exactly. Credit-only encoders retain v1 bytes; debit declarations select v2, and the proposal digest authenticates the version and terms. Historical aging selects the authenticated prefix before reading terms, relieves earliest installments by exact recorded applications, and preserves missing or disputed terms as unscheduled. The independent verifier decodes both versions and refuses downgraded v1 debit terms, incomplete schedules and unknown versions. The liability-only cash-flow solvency schedule filters out debit terms without inferring cash inflows."
+tracking_bead = "fa-0hs4.13"
+
+[[decision]]
 field = "extensions.39"
 appendix_a = "Source-bound finite Depreciate/Amortize schedules (plan §10.2, Appendix B)"
 code_type = "fa-model::asset_cost::AssetChargeBasis; ASSET_CHARGE_EXTENSION=39; minimum schema minor 6"
