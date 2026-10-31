@@ -1333,7 +1333,9 @@ impl TaskCompletion {
                 WriteMismatchPolicy::AbortWrite,
             );
         }
-        txn.write(db, batch)?;
+        // The effect's transaction may be staged in another relation (a
+        // period transition's): append the receipt as a dependent group.
+        txn.write_ordered(db, vec![batch])?;
         if tracker.total_bytes() > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
             return Ok(Err(crate::batch::batch_byte_budget_refusal(
                 tracker.total_bytes(),
