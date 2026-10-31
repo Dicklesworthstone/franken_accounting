@@ -2965,6 +2965,7 @@ mod tests {
             json!([
                 "signed-checkpoint",
                 "checkpoint",
+                "state",
                 "inclusion",
                 "consistency",
                 "suffix",
@@ -2994,6 +2995,10 @@ mod tests {
             (
                 json!({"kind": "checkpoint"}),
                 vec!["proof", "checkpoint", "--json"],
+            ),
+            (
+                json!({"kind": "state", "state": state}),
+                vec!["proof", "state", "--state", &state, "--json"],
             ),
             (
                 json!({"kind": "inclusion", "state": state, "entry": entry, "with_record": true}),

@@ -15,6 +15,8 @@
 //! available, but are not used to claim recomputation of a complete proof.
 //! PrefixWithRecords exports the native v2 journal witness without requiring
 //! any account, unit, or migration-balance policy. Prefix retains v1 bytes.
+//! State exports the full canonical AccumulatorState, including its evidence
+//! and access coverage boundaries, for binding to a signed checkpoint's oid.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -42,6 +44,10 @@ pub mod code {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofKind {
+    /// The full canonical AccumulatorState, including versioned coverage
+    /// boundaries. Authenticate its oid through the signed checkpoint;
+    /// the raw 80-byte statement alone does not bind those boundaries.
+    State,
     /// The exact 80-byte checkpoint statement, for separate distribution.
     Checkpoint,
     /// The state's journaled `TransparencyCheckpoint`, signed by the book's
@@ -74,6 +80,7 @@ impl ProofKind {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
+            Self::State => "state",
             Self::Checkpoint => "checkpoint",
             Self::SignedCheckpoint => "signed-checkpoint",
             Self::Inclusion { .. } => "inclusion",
@@ -86,7 +93,7 @@ impl ProofKind {
     #[must_use]
     pub fn scope(self) -> &'static str {
         match self {
-            Self::Checkpoint | Self::SignedCheckpoint => "entry_prefix",
+            Self::State | Self::Checkpoint | Self::SignedCheckpoint => "entry_prefix",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
             Self::Prefix | Self::PrefixWithRecords => "seq_range_complete",
@@ -273,6 +280,7 @@ pub(crate) fn export<V: Vfs + Clone>(
     };
     let mut next_checkpoint = None;
     let produced = match request.kind {
+        ProofKind::State => Ok(checkpoint.bytes.clone()),
         ProofKind::Checkpoint => Ok(checkpoint_bytes(&checkpoint)?),
         ProofKind::SignedCheckpoint => {
             fa_notary::stored_checkpoint(db, ctx, book, &checkpoint, signer)?

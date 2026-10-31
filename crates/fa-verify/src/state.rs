@@ -46,6 +46,12 @@ pub struct State {
     pub checkpoint: Checkpoint,
     pub peaks: Vec<Digest>,
     pub prev_state_oid: Option<Digest>,
+    /// Evidence records are covered strictly after this sequence; `None`
+    /// means the state makes no evidence-coverage claim.
+    pub evidence_after_seq: Option<u64>,
+    /// Access attempts are covered strictly after this sequence; `None`
+    /// must never imply an authenticated empty access history.
+    pub access_after_seq: Option<u64>,
     pub oid: Digest,
     pub signatures: Signatures,
 }
@@ -56,7 +62,7 @@ pub fn state_oid(bytes: &[u8]) -> Digest {
     hash_parts(STATE_OID_DOMAIN, &[bytes])
 }
 
-fn decode(bytes: &[u8]) -> Result<(Checkpoint, Vec<Digest>, Option<Digest>), DecodeError> {
+fn decode(bytes: &[u8]) -> Result<State, DecodeError> {
     let mut r = Reader::new(bytes);
     let major = r.u16("state.schema_major")?;
     if major != STATE_SCHEMA_MAJOR {
@@ -88,37 +94,46 @@ fn decode(bytes: &[u8]) -> Result<(Checkpoint, Vec<Digest>, Option<Digest>), Dec
         if boundary == 0 || boundary > checkpoint.through_seq {
             return Err(r.error("state.evidence_after_seq", Reason::BadTag(0)));
         }
-        boundary
+        Some(boundary)
     } else {
-        0
+        None
     };
-    if minor == STATE_SCHEMA_MINOR_ACCESS_BOUNDARY {
+    let access_after_seq = if minor == STATE_SCHEMA_MINOR_ACCESS_BOUNDARY {
         let boundary = r.u64("state.access_after_seq")?;
-        if boundary == 0 || boundary > checkpoint.through_seq || boundary < evidence_after_seq {
+        if boundary == 0
+            || boundary > checkpoint.through_seq
+            || evidence_after_seq.is_some_and(|evidence| boundary < evidence)
+        {
             return Err(r.error("state.access_after_seq", Reason::BadTag(0)));
         }
-    }
+        Some(boundary)
+    } else {
+        None
+    };
     r.finish("accumulator state")?;
-    Ok((checkpoint, peaks, prev_state_oid))
+    Ok(State {
+        checkpoint,
+        peaks,
+        prev_state_oid,
+        evidence_after_seq,
+        access_after_seq,
+        oid: state_oid(bytes),
+        signatures: Signatures::Unsigned,
+    })
 }
 
 /// Decode a state and check it is internally consistent: one peak per set
 /// bit of `leaf_count`, bagging to `root`, and valid versioned coverage cuts.
 /// A standalone state does not authenticate transitions from its predecessors.
 pub fn verify_state(bytes: &[u8]) -> Result<State, VerifyError> {
-    let (checkpoint, peaks, prev_state_oid) = decode(bytes)?;
-    if u64::try_from(peaks.len()).ok() != Some(u64::from(checkpoint.leaf_count.count_ones()))
-        || bag_peaks(&peaks) != checkpoint.root
+    let state = decode(bytes)?;
+    if u64::try_from(state.peaks.len()).ok()
+        != Some(u64::from(state.checkpoint.leaf_count.count_ones()))
+        || bag_peaks(&state.peaks) != state.checkpoint.root
     {
         return Err(VerifyError::Root);
     }
-    Ok(State {
-        checkpoint,
-        peaks,
-        prev_state_oid,
-        oid: state_oid(bytes),
-        signatures: Signatures::Unsigned,
-    })
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -221,8 +236,12 @@ mod tests {
         };
         let base = encode(&cp, &[peak], Some([7; 32]));
         let legacy = verify_state(&base).unwrap();
+        assert_eq!(legacy.evidence_after_seq, None);
+        assert_eq!(legacy.access_after_seq, None);
         let evidence_bytes = versioned(&base, 1, &[5]);
         let evidence = verify_state(&evidence_bytes).unwrap();
+        assert_eq!(evidence.evidence_after_seq, Some(5));
+        assert_eq!(evidence.access_after_seq, None);
         assert_eq!(evidence.checkpoint, legacy.checkpoint);
         assert_eq!(evidence.prev_state_oid, legacy.prev_state_oid);
         assert_ne!(evidence.oid, legacy.oid);
@@ -233,6 +252,8 @@ mod tests {
         for boundaries in [[1, 1], [1, 42], [42, 42], [5, 9], [5, 10], [4, 9]] {
             let bytes = versioned(&base, 2, &boundaries);
             let state = verify_state(&bytes).unwrap();
+            assert_eq!(state.evidence_after_seq, Some(boundaries[0]));
+            assert_eq!(state.access_after_seq, Some(boundaries[1]));
             assert_eq!(state.checkpoint, cp);
             assert_eq!(state.peaks, vec![peak]);
             assert_eq!(state.prev_state_oid, Some([7; 32]));

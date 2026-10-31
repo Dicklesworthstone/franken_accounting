@@ -105,6 +105,9 @@ fn exported(book: &Path, args: &[&str]) -> Json {
     if args[0] == "signed-checkpoint" {
         assert_eq!(text(&line, "signatures"), "ed25519");
         assert_eq!(text(&line, "trust"), "checkpoint_public_key");
+    } else if args[0] == "state" {
+        assert_eq!(text(&line, "signatures"), "unsigned");
+        assert_eq!(text(&line, "trust"), "signed_state_oid_required");
     } else {
         assert_eq!(text(&line, "signatures"), "unsigned");
         assert_eq!(text(&line, "trust"), "external_checkpoint_required");
@@ -613,6 +616,163 @@ fn a_signed_checkpoint_export_verifies_against_the_named_public_key() {
         fa_verify::verify_checkpoint(&bytes(&signed), &[stranger]).is_err(),
         "another key never verifies it"
     );
+}
+
+/// The full state exposes authenticated coverage boundaries that the raw
+/// 80-byte checkpoint omits. The same fixed state selects all three artifacts,
+/// even after later reads and checkpoints advance the source book.
+#[test]
+fn canonical_state_export_preserves_access_boundaries_and_historical_selection() {
+    let f = Fixture::new();
+    let (code, absent) = run(&f.book, &["proof", "state"]);
+    assert_eq!(code, 2, "{}", absent.render());
+    assert_eq!(text(&absent, "refusal_id"), "FA-REF-145");
+
+    let auditor = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "state-proof-auditor",
+        LaunchProfile::Human,
+        &["read"],
+    )
+    .unwrap();
+    let after_seq = f.head();
+    let (code, log) = bound(&auditor, &["access", "log"]);
+    assert_eq!(code, 0, "{}", log.render());
+    assert_eq!(integer(&log, "count"), 1);
+    let created = f.checkpoint();
+    let state_oid = text(&created, "oid");
+    let exported_state = exported(&f.book, &["state", "--state", state_oid]);
+    let state_bytes = bytes(&exported_state);
+    let native = fa_notary::AccumulatorState::decode(&state_bytes).unwrap();
+    assert_eq!(native.access_after, Some(fgdb_types::CommitSeq(1)));
+    assert_eq!(native.evidence_after, Some(fgdb_types::CommitSeq(1)));
+    assert_eq!(native.canonical_bytes().unwrap(), state_bytes);
+    assert_eq!(
+        integer(get(&exported_state, "claim"), "access_after_seq"),
+        1
+    );
+
+    let signed = exported(&f.book, &["signed-checkpoint", "--state", state_oid]);
+    let prefix = exported(&f.book, &["prefix", "--with-record", "--state", state_oid]);
+    let signed_bytes = bytes(&signed);
+    let prefix_bytes = bytes(&prefix);
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let independent_state = fa_verify::verify_state(&state_bytes).unwrap();
+    let anchor = fa_verify::verify_checkpoint(&signed_bytes, &[key]).unwrap();
+    assert_eq!(independent_state.oid, anchor.state_oid);
+    assert_eq!(independent_state.checkpoint, anchor.checkpoint);
+    assert_eq!(fa_verify::blake3::hex(&independent_state.oid), state_oid);
+    let complete = fa_verify::proof::production::derivation::verify_prefix_with_records(
+        &prefix_bytes,
+        &anchor.checkpoint,
+    )
+    .unwrap();
+    assert_eq!(
+        complete
+            .envelopes
+            .iter()
+            .filter(|leaf| leaf.kind == 6)
+            .count(),
+        1,
+        "the bound read's receipt belongs to this authenticated prefix"
+    );
+
+    let output = f.dir.join("access-state.bin");
+    let file = exported(
+        &f.book,
+        &[
+            "state",
+            "--state",
+            state_oid,
+            "--out",
+            output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(get(&file, "bytes"), &Json::Null);
+    assert_eq!(std::fs::read(&output).unwrap(), state_bytes);
+
+    // The recipient has only these three files and chooses the recorded
+    // interval and reader independently of their contents.
+    let after = after_seq.to_string();
+    let through = anchor.checkpoint.through_seq.to_string();
+    let reader = format!("{:032x}", principal_vid("state-proof-auditor").0);
+    let public_key = fa_verify::blake3::hex(&key);
+    let argv = [
+        "access-log",
+        "prefix.bin",
+        "--state",
+        "state.bin",
+        "--checkpoint",
+        "signed.bin",
+        "--key",
+        &public_key,
+        "--after-seq",
+        &after,
+        "--through-seq",
+        &through,
+        "--reader",
+        &reader,
+        "--json",
+    ]
+    .map(str::to_string);
+    let read = |path: &str| match path {
+        "prefix.bin" => Ok(prefix_bytes.clone()),
+        "state.bin" => Ok(state_bytes.clone()),
+        "signed.bin" => Ok(signed_bytes.clone()),
+        other => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("offline verification cannot read {other}"),
+        )),
+    };
+    let verified = fa_verify::cli::run(&argv, &read);
+    assert_eq!(
+        verified.exit, 0,
+        "argv={argv:?}\n{}\n{}",
+        verified.stdout, verified.stderr
+    );
+    let offline = json::parse(verified.stdout.trim()).expect("one verified access-log object");
+    let checks = get(&offline, "checks")
+        .as_arr()
+        .expect("verification checks");
+    assert_eq!(checks.len(), 1);
+    assert_eq!(text(&checks[0], "scope"), "access_log_complete");
+    assert_eq!(text(&checks[0], "result"), "pass");
+    let detail = get(&checks[0], "detail");
+    assert_eq!(integer(detail, "count"), 1);
+    assert_eq!(text(detail, "reader"), reader);
+    let events = get(detail, "events")
+        .as_arr()
+        .expect("verified access events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(text(&events[0], "command"), "access log");
+    assert_eq!(text(&events[0], "principal_name"), "state-proof-auditor");
+
+    let (code, later_log) = bound(&auditor, &["access", "log"]);
+    assert_eq!(code, 0, "{}", later_log.render());
+    let later = f.checkpoint();
+    assert_ne!(text(&later, "oid"), state_oid);
+    let head = f.head();
+    assert_eq!(
+        bytes(&exported(&f.book, &["state", "--state", state_oid])),
+        state_bytes,
+        "later reads and checkpoints cannot change an earlier state's bytes"
+    );
+    assert_eq!(
+        text(&exported(&f.book, &["state"]), "state_oid"),
+        text(&later, "oid"),
+        "an omitted selector chooses the latest recorded state"
+    );
+    assert_eq!(f.head(), head, "owner proof exports make no publication");
+
+    let (code, refused) = run(&f.book, &["proof", "state", "--state", UNKNOWN_STATE]);
+    assert_eq!(code, 2, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-145");
+    let (code, refused) = run(&f.book, &["proof", "state", "--with-record"]);
+    assert_eq!(code, 2, "{}", refused.render());
+    assert_eq!(f.head(), head);
 }
 
 /// `fa bundle produce` end to end: a prefix bundle and an account-interval

@@ -22,7 +22,8 @@ use fa_verify::cli::{EXIT_IO, MAX_INPUT_BYTES};
 const PLACEHOLDER: &str = "\u{0}non-UTF-8 argument #";
 
 /// Commands only the library verifies.
-const LIBRARY_COMMANDS: [&str; 8] = [
+const LIBRARY_COMMANDS: [&str; 9] = [
+    "access-log",
     "state",
     "checkpoint",
     "scope",
@@ -71,7 +72,11 @@ pub fn handles(args: &[OsString]) -> bool {
 }
 
 /// Flags of either grammar that take a value.
-const VALUE_FLAGS: [&str; 20] = [
+const VALUE_FLAGS: [&str; 24] = [
+    "--state",
+    "--after-seq",
+    "--through-seq",
+    "--reader",
     "--witness",
     "--quorum",
     "--proof",

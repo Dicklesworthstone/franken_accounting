@@ -5328,6 +5328,7 @@ fn proof_exports_require_whole_book_scope_before_checkpoint_selection() {
             .unwrap();
 
     for kind in [
+        ProofKind::State,
         ProofKind::Checkpoint,
         ProofKind::SignedCheckpoint,
         ProofKind::Inclusion {
@@ -5367,6 +5368,11 @@ fn proof_exports_require_whole_book_scope_before_checkpoint_selection() {
         );
         assert_eq!(produced.checkpoint.oid, first.stored.oid);
         assert!(!produced.bytes.is_empty());
+        if kind == ProofKind::State {
+            let state = fa_verify::verify_state(&produced.bytes).unwrap();
+            assert_eq!(state.oid, first.stored.oid.0);
+            assert_eq!(state.checkpoint, old);
+        }
         if kind == ProofKind::PrefixWithRecords {
             fa_verify::proof::production::derivation::verify_prefix_with_records(
                 &produced.bytes,

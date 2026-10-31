@@ -16,6 +16,73 @@ const MAX_COMMAND: usize = 128;
 const MAX_OPS: usize = 32;
 const MAX_OP: usize = 64;
 
+/// Shared independent decoder for leaf derivation and verified extraction.
+/// All strings borrow the bounded payload; operations are sorted and unique.
+pub(crate) struct AccessEventFields<'a> {
+    pub book_id: [u8; 16],
+    pub principal: u128,
+    pub principal_name: &'a str,
+    pub capability_commitment: [u8; 32],
+    pub ops: Vec<&'a str>,
+    pub command: &'a str,
+    pub request_digest: [u8; 32],
+    pub observed_at: u64,
+}
+
+fn text<'a>(r: &mut Reader<'a>, max: usize, what: &'static str) -> Result<&'a str, DecodeError> {
+    let bytes = non_empty_str(r, max, what)?;
+    std::str::from_utf8(bytes).map_err(|_| r.error(what, Reason::BadTag(0)))
+}
+
+pub(crate) fn fields(
+    payload: &[u8],
+    commit_seq: u64,
+) -> Result<AccessEventFields<'_>, DecodeError> {
+    let mut r = Reader::new(payload);
+    if payload.len() > MAX_RECORD_BYTES {
+        return Err(r.error(
+            "access.payload",
+            Reason::TooLong {
+                max: MAX_RECORD_BYTES,
+                actual: payload.len(),
+            },
+        ));
+    }
+    if r.fixed::<18>("access.format")? != *FORMAT {
+        return Err(r.error("access.format", Reason::BadTag(0)));
+    }
+    let book_id = r.fixed("access.book_id")?;
+    let principal = r.u128("access.principal")?;
+    let principal_name = text(&mut r, MAX_NAME, "access.principal_name")?;
+    let capability_commitment = r.fixed("access.capability_commitment")?;
+    let count = r.count(MAX_OPS, 5, "access.ops")?;
+    let mut ops = Vec::with_capacity(count);
+    for _ in 0..count {
+        let op = text(&mut r, MAX_OP, "access.op")?;
+        if ops.last().is_some_and(|previous| *previous >= op) {
+            return Err(r.error("access.ops", Reason::Unsorted));
+        }
+        ops.push(op);
+    }
+    let command = text(&mut r, MAX_COMMAND, "access.command")?;
+    let request_digest = r.fixed("access.request_digest")?;
+    let observed_at = r.u64("access.observed_at")?;
+    if observed_at >= commit_seq {
+        return Err(r.error("access.observed_at", Reason::BadTag(0)));
+    }
+    r.finish("access.payload")?;
+    Ok(AccessEventFields {
+        book_id,
+        principal,
+        principal_name,
+        capability_commitment,
+        ops,
+        command,
+        request_digest,
+        observed_at,
+    })
+}
+
 pub(super) fn record(
     payload: &[u8],
     body_len: usize,
@@ -35,36 +102,9 @@ pub(super) fn record(
     if body_len != payload.len() {
         return Err(RecordError::Split);
     }
-    let book_id = (|| -> Result<[u8; 16], DecodeError> {
-        let mut r = Reader::new(payload);
-        if r.fixed::<18>("access.format")? != *FORMAT {
-            return Err(r.error("access.format", Reason::BadTag(0)));
-        }
-        let book_id = r.fixed("access.book_id")?;
-        r.u128("access.principal")?;
-        non_empty_str(&mut r, MAX_NAME, "access.principal_name")?;
-        r.fixed::<32>("access.capability_commitment")?;
-        let count = r.count(MAX_OPS, 5, "access.ops")?;
-        let mut previous = None;
-        for _ in 0..count {
-            let op = non_empty_str(&mut r, MAX_OP, "access.op")?;
-            // Valid UTF-8 byte order is the producer's String order. The
-            // empty set is supported; duplicate or descending ops are not.
-            if previous.is_some_and(|prev| prev >= op) {
-                return Err(r.error("access.ops", Reason::Unsorted));
-            }
-            previous = Some(op);
-        }
-        non_empty_str(&mut r, MAX_COMMAND, "access.command")?;
-        r.fixed::<32>("access.request_digest")?;
-        let observed_at = r.u64("access.observed_at")?;
-        if observed_at >= commit_seq {
-            return Err(r.error("access.observed_at", Reason::BadTag(0)));
-        }
-        r.finish("access.payload")?;
-        Ok(book_id)
-    })()
-    .map_err(RecordError::Decode)?;
+    let book_id = fields(payload, commit_seq)
+        .map_err(RecordError::Decode)?
+        .book_id;
     Ok(LeafEnvelope {
         kind: KIND_ACCESS_EVENT,
         book_id,

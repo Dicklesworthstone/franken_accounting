@@ -49,6 +49,8 @@
 //! hexadecimal text instead (whitespace ignored), as the golden fixtures
 //! store them.
 
+mod access_log;
+
 use crate::ads::{AdsReport, verify_ads};
 use crate::blake3::hex;
 use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
@@ -87,6 +89,10 @@ fa-verify — the dependency-free verifier (FrankenAccounting plan §13.3)
 usage: fa-verify <command> <file> [options] [--json] [--hex]
 
 commands:
+  access-log   <prefix> --state S --checkpoint C --key K...
+               --after-seq N --through-seq N [--reader HEX32]
+                                                complete recorded pre-disclosure access attempts;
+                                                C must sign S's identity, and prefix must be v2
   state        <state>                          an AccumulatorState's bytes on their own
   checkpoint   <checkpoint> --key K...          a TransparencyCheckpoint signed by a trusted key
                [--witness W... [--quorum N]]    and cosigned by N of the named witnesses (default
@@ -130,6 +136,11 @@ ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its
 options:
   --proof P      the proof file (instead of naming it positionally)
   --key K        a trusted Ed25519 public key, 64 hex characters (repeatable)
+  --state S      access-log: canonical AccumulatorState exported for C's signed state_oid
+  --after-seq N --through-seq N  access-log: recipient-selected recording interval (N, N];
+                 the lower bound cannot precede S's authenticated access_after boundary
+  --reader HEX32 access-log: optional principal ID, exactly 32 hex digits (optional 0x);
+                 names are display data. Attempts do not prove successful delivery.
   --account A    an account vid: decimal, or 0x followed by up to 32 hex characters
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
   --receipt R    a bundle's detached production receipt
@@ -153,7 +164,8 @@ expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
-const COMMANDS: [&str; 12] = [
+const COMMANDS: [&str; 13] = [
+    "access-log",
     "state",
     "checkpoint",
     "inclusion",
@@ -169,7 +181,11 @@ const COMMANDS: [&str; 12] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 17] = [
+const VALUE_FLAGS: [&str; 21] = [
+    "--state",
+    "--after-seq",
+    "--through-seq",
+    "--reader",
     "--key",
     "--witness",
     "--quorum",
@@ -195,6 +211,15 @@ const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 fn admitted(command: &str) -> &'static [&'static str] {
     match command {
         "checkpoint" => &["--key", "--witness", "--quorum"],
+        "access-log" => &[
+            "--proof",
+            "--state",
+            "--checkpoint",
+            "--key",
+            "--after-seq",
+            "--through-seq",
+            "--reader",
+        ],
         "inclusion" | "prefix" | "balance" => {
             &["--proof", "--checkpoint", "--key", "--unsigned-checkpoint"]
         }
@@ -1026,6 +1051,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     }
     args.admitted_by(cmd)?;
     match cmd {
+        "access-log" => access_log::run(args, read),
         "state" => {
             let bytes = load(read, subject(args, "a state file")?, args.hex)?;
             Ok(vec![match verify_state(&bytes) {
@@ -1039,6 +1065,14 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         ("leaf_count", n(st.checkpoint.leaf_count)),
                         ("root", h(&st.checkpoint.root)),
                         ("peaks", n(st.peaks.len() as u64)),
+                        (
+                            "evidence_after_seq",
+                            st.evidence_after_seq.map_or(Json::Null, n),
+                        ),
+                        (
+                            "access_after_seq",
+                            st.access_after_seq.map_or(Json::Null, n),
+                        ),
                         (
                             "prev_state_oid",
                             st.prev_state_oid.map_or(Json::Null, |o| h(&o)),
