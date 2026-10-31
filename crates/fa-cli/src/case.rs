@@ -27,7 +27,7 @@ const OPEN_EXAMPLE: &str = "fa case open --kind Restatement|Revision|PriorPeriod
 const DETERMINE_EXAMPLE: &str =
     "fa case determine <case> --on YYYY-MM-DD --authority <oid> [--key K] --json";
 const APPROVE_EXAMPLE: &str = "fa case approve <case> --dry-run --json (prints the manifest digest); fa approve --proposal <digest> --as <approver> (twice); fa case approve <case> --approval <vid> --approval <vid> --json";
-const DISCLOSE_EXAMPLE: &str = "fa case disclose <case> --document <oid> [--key K] [--date YYYY-MM-DD] --json  (a Disclosure document another principal reviewed: fa attest review <oid>)";
+const DISCLOSE_EXAMPLE: &str = "fa case disclose <case> --document <oid> --certificate <digest>... [--key K] [--date YYYY-MM-DD] --json  (first run fa case diff <case> --statements --certify; the Disclosure document needs another principal's review)";
 const CLOSE_EXAMPLE: &str = "fa case close <case> [--key K] [--date YYYY-MM-DD] --json";
 const POST_EXAMPLE: &str = "fa case post <case> [--key K] [--date YYYY-MM-DD] --json  (after fa case approve; needs restate and post)";
 const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
@@ -170,10 +170,20 @@ fn case_json(view: &CaseView) -> Json {
         ),
         (
             "disclosure",
-            view.disclosure.map_or(Json::Null, |d| {
+            view.disclosure.as_ref().map_or(Json::Null, |d| {
                 obj(vec![
                     ("document", s(hex(&d.document.0))),
                     ("attestation", vid(d.attestation)),
+                    ("post", d.post.map_or(Json::Null, |post| vid(post.entry))),
+                    (
+                        "posted_at",
+                        d.post
+                            .map_or(Json::Null, |post| Json::Int(i128::from(post.recorded_at.0))),
+                    ),
+                    (
+                        "comparisons",
+                        Json::Arr(d.comparisons.iter().map(|digest| s(hex(digest))).collect()),
+                    ),
                 ])
             }),
         ),
@@ -514,6 +524,13 @@ fn disclose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let disclosure = document(text, "--document")?;
+    let comparisons = args
+        .flag_all("--certificate")
+        .into_iter()
+        .map(|text| {
+            crate::cli::parse_digest(text.strip_prefix("C:").unwrap_or(text), "--certificate")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let key = match args.flag("--key") {
         Some(key) => key.to_string(),
         None => hex(&fa_model::domain_digest(
@@ -524,7 +541,14 @@ fn disclose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let capability = ctx.capability(args, &["restate", "read"])?;
     let mut book = ctx.books.open(args)?;
     let date = control_date(args, &book)?;
-    let done = book.disclose_case(capability, ordinal, disclosure, date, key.as_bytes())??;
+    let done = book.disclose_case(
+        capability,
+        ordinal,
+        disclosure,
+        &comparisons,
+        date,
+        key.as_bytes(),
+    )??;
     ctx.out.at_book(&book)?;
     recorded(ctx, "case_disclosed", &done, "disclosed");
     Ok(())
@@ -692,6 +716,7 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
             ("period", s(&selected.period)),
             ("name", s(request.selection.definition.name())),
             ("opening", Json::Bool(selected.opening)),
+            ("functional", Json::Bool(selected.functional)),
             ("basis", s(selected.basis.name())),
             ("basis_period", s(&selected.basis_period)),
             ("before_known_at", Json::Int(i128::from(request.before.0))),
@@ -747,12 +772,20 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
             ),
         );
         if certify {
-            let certified = book.certify_statement_diff(who, &cap, request)??;
+            let certified = if selected.functional {
+                book.certify_functional_statement_diff(who, &cap, request)??
+            } else {
+                book.certify_statement_diff(who, &cap, request)??
+            };
             crate::cli::emit_certified_statement_diff(
                 &ctx.out, &ctx.files, args, &mut book, &cap, &certified,
             )?;
         } else {
-            let diff = book.statement_diff(who, &cap, request)??;
+            let diff = if selected.functional {
+                book.functional_statement_diff(who, &cap, request)??
+            } else {
+                book.statement_diff(who, &cap, request)??
+            };
             crate::cli::render_statement_diff(&ctx.out, &book, &diff, None)?;
         }
     }

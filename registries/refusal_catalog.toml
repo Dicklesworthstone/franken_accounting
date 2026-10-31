@@ -1115,7 +1115,7 @@ name = "CASE_DISCLOSURE"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §8.3 (Disclosed: the disclosure document is attested), §9.3 (a Reviewed attestation by a principal other than the uploader; bead fa-75j4)"
-fix = "record the disclosure with fa document add <file> --kind Disclosure, have a principal other than its uploader attest it with fa attest review <oid>, then fa case disclose <case> --document <oid>"
+fix = "record the disclosure with fa document add <file> --kind Disclosure, have another principal attest it with fa attest review <oid>, obtain every comparison with fa case diff <case> --statements --certify --json, then fa case disclose <case> --document <oid> --certificate <digest> (repeat --certificate for the complete set)"
 
 # ---- Engagements (180–184, 190–191; fa-zgn; 185–189 are other beads') ---
 [[refusal]]
@@ -1264,6 +1264,14 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §7.5, §8.1, §8.3 (a case-bound PriorPeriodAdjustment names the earlier error period and corrects opening retained earnings, never current-period income)"
 fix = "rehearse with --relates-to <earlier-period> on the case scenario, route every equity leg to an Equity leaf holding the retained_earnings role, omit income and expense leaves, and obtain fresh approvals of the corrected case manifest"
+
+[[refusal]]
+code = "FA-REF-203"
+name = "CASE_STATEMENT_DIFF"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.3 (a disclosure binds the complete supported original-report-to-Post statement comparisons; native and retained-functional built-in layouts, not all active custom, cash-flow or equity layouts)"
+fix = "run fa case diff <case> --statements --certify --json, then pass every distinct returned comparison digest to fa case disclose <case> --document <oid> --certificate <digest> (repeat --certificate); use the fixed Post and original reporting basis, never a later head or another statement question"
 
 # ---- Proof export (145–146) ---
 [[refusal]]
