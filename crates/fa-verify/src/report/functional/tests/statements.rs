@@ -3,9 +3,13 @@
 
 use super::*;
 use crate::report::{
-    FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT, StatementColumn, StatementLine, StatementMapping,
-    VerifiedReport, VerifiedStatement,
+    FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT, StatementColumn, StatementDiffValuation,
+    StatementLine, StatementLineChange, StatementMapping, StatementMappingChange, VerifiedReport,
+    VerifiedStatement, VerifiedStatementDiff,
 };
+
+#[path = "statement_diff.rs"]
+mod comparison;
 
 fn definition(activity: bool) -> Vec<u8> {
     unhex(if activity {

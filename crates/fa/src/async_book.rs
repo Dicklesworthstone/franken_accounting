@@ -484,6 +484,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )?)
     }
 
+    /// Prepare a Locked-period reclose for a dedicated correction case.
+    /// Read/Post/Restate are admitted before historical source observation.
+    pub async fn prepare_year_end_close_for_case(
+        &mut self,
+        cx: &PurposeContexts,
+        request: &fa_journal::closing::YearEndCloseRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        if let Err(refusal) =
+            fa_journal::closing::authorize_case_preparation(&self.db, &self.context, capability)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        Ok(fa_journal::closing::prepare_year_end_close_for_case(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            request,
+        )?)
+    }
+
     /// Recompute nominal balances at the last Closing and the selected prefix.
     /// A later adjustment is reported separately as a required delta reclose.
     pub async fn verify_year_end_close(
@@ -4268,11 +4293,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
-    /// Export both historical native statements and their complete bridge over
-    /// one signed journal prefix. The original four-registry closure must be
+    /// Export both historical native or functional statements and their complete bridge over
+    /// one signed journal prefix. The original registry closure must be
     /// identical on both sides. Replay checks the two recorded frontiers before
     /// the outer certificate is packaged; no issuance or case approval follows
-    /// from the comparison alone.
+    /// from the comparison alone. Functional comparisons carry the original
+    /// six registries, Book parameters and exact Rate closure through the later source.
     pub async fn produce_statement_diff_bundle(
         &mut self,
         cx: &PurposeContexts,
@@ -4577,15 +4603,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let history_start = if let ReportBundleCertificate::StatementDiff(comparison) = report {
             let (before, after) = comparison.sources();
-            if comparison.uses_functional_valuations()
-                || before.registry_digest != after.registry_digest
-            {
+            if before.registry_digest != after.registry_digest {
                 return Ok(Err(fa_journal::Refusal::new(
                     fa_notary::code::SCOPE_UNSUPPORTED,
                     fa_journal::exit::REFUSAL,
-                    "portable statement comparisons require two native statements with the same original registry closure",
+                    "portable statement comparisons require the same original registry closure on both sources",
                     "plan §8.3 / §12.5 / §13.3 (both sides must be independently recomputed from their authenticated inputs)",
-                    "export a native statement diff certified against one historical registry epoch; replay functional or cross-epoch comparisons in the retained book",
+                    "export a native or functional statement diff certified against one historical registry epoch; replay cross-epoch comparisons in the retained book",
                 )));
             }
             before.known_at

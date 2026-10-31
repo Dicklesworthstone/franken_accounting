@@ -41,6 +41,8 @@ mod carrying_tests;
 mod chart_outcome_keys;
 #[path = "genesis/closing_carrying.rs"]
 mod closing_carrying_tests;
+#[path = "genesis/closing_case.rs"]
+mod closing_case_tests;
 #[path = "genesis/closing_draft.rs"]
 mod closing_draft_tests;
 #[path = "genesis/disposal.rs"]

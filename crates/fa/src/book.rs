@@ -5016,13 +5016,15 @@ impl Book {
         )))
     }
 
-    /// Export a native statement comparison for independent offline replay.
+    /// Export a native or functional statement comparison for independent offline replay.
     /// Both historical statements, exact deltas and zero-balance chart mapping
     /// changes are bound by the original outer certificate. A complete signed
-    /// prefix and the shared four-registry closure supply both source frontiers.
+    /// prefix and shared original registry closure supply both source frontiers.
+    /// Functional comparisons additionally carry the historical Book parameters
+    /// and exact Rate evidence, independently selected and checked at each frontier.
     /// Requires current whole-book read/produce authority, appends nothing, and
-    /// returns `None` when the requested checkpoint is unavailable. Functional
-    /// or cross-registry comparisons remain supported only by in-book replay.
+    /// returns `None` when the requested checkpoint is unavailable. Cross-registry
+    /// comparisons remain supported only by in-book replay.
     pub fn produce_statement_diff_bundle(
         &mut self,
         principal: VId,
@@ -7092,6 +7094,20 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.prepare_year_end_close_for_draft(&purposes, request, capability))
+        )
+    }
+
+    /// Prepare the exact residual of a Locked year for one dedicated case.
+    /// Retain it in a scenario, rehearse and dual-approve that case, then use
+    /// post_case; a standalone plan cannot publish this Locked-period close.
+    pub fn prepare_year_end_close_for_case(
+        &mut self,
+        request: &fa_journal::closing::YearEndCloseRequest,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_year_end_close_for_case(&purposes, request, capability))
         )
     }
 

@@ -70,6 +70,37 @@ fn base_totals(proposal: &[u8]) -> Result<Option<BaseTotals>, ReportError> {
         residual,
     }))
 }
+
+pub(super) fn referenced_rates(
+    records: &[(usize, &[u8])],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+) -> Result<BTreeSet<[u8; 32]>, ReportError> {
+    let mut required = BTreeSet::new();
+    for index in infos.keys() {
+        let (length, record) = records.get(*index).ok_or_else(|| {
+            failed(
+                "functional_rates",
+                "historical entry has no authenticated record",
+            )
+        })?;
+        let proposal = record.get(..*length).ok_or_else(|| {
+            failed(
+                "functional_rates",
+                "historical proposal exceeds its authenticated record",
+            )
+        })?;
+        if let Some(base) = base_totals(proposal)? {
+            required.extend(base.rates);
+            if required.len() > MAX_RATES {
+                return Err(failed(
+                    "bounded_input",
+                    "historical Rate closure exceeds 4096 documents",
+                ));
+            }
+        }
+    }
+    Ok(required)
+}
 pub(super) fn law_oid(id: u16) -> [u8; 32] {
     framed_hash(b"fa:fx-law:v1", &[&id.to_le_bytes(), &1u16.to_le_bytes()])
 }

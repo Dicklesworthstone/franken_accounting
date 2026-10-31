@@ -1785,7 +1785,12 @@ pub fn derive_member(
     planned: &EntryPayload,
     principal: VId,
 ) -> Result<Result<EntryPayload, Refusal>, KernelError> {
-    let Some(class) = posting_class(kind) else {
+    let closing = planned.class == EntryClass::CLOSING;
+    let Some(class) = (if closing {
+        (kind != CaseKind::PriorPeriodAdjustment).then_some(EntryClass::CLOSING)
+    } else {
+        posting_class(kind)
+    }) else {
         return Ok(Err(membership(format!(
             "a {} case's entries supersede a target with delta legs, which this build does not post",
             kind.name()
@@ -1803,7 +1808,20 @@ pub fn derive_member(
     // and a Restatement or PolicyChangeRetrospective case's a Restatement
     // that restates one; a PriorPeriodAdjustment case plans plain postings
     // that post as its class.
-    if let Some(supersedes) = delta_kind(class) {
+    if closing {
+        let basis = match crate::closing::admit(planned) {
+            Ok(basis) => basis,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if basis.is_none()
+            || planned
+                .extensions
+                .iter()
+                .any(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION)
+        {
+            return Ok(Err(crate::closing::case_scope_refusal()));
+        }
+    } else if let Some(supersedes) = delta_kind(class) {
         let one_target = matches!(
             planned.supersession.as_slice(),
             [s] if s.kind == supersedes
@@ -2039,7 +2057,10 @@ pub(crate) fn member_of(
         .extensions
         .iter()
         .find(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION);
-    let case_bound = case_bound(proposal.class);
+    // Closing is normally independent. Its explicit case claim is valid only
+    // in the private case Post, never on a standalone or ordinary draft path.
+    let case_bound =
+        case_bound(proposal.class) || (proposal.class == EntryClass::CLOSING && claim.is_some());
     let posting = matches!(admission, crate::post::Admission::Case(_));
     let rehearsing = matches!(admission, crate::post::Admission::ScratchScenario(_));
     match (claim, case_bound, posting) {
@@ -2116,6 +2137,13 @@ pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
             member.ordinal
         )));
     };
+    if proposal.class == EntryClass::CLOSING
+        && (approval.manifest.entries.len() != 1
+            || rehearsal.intents.len() != 1
+            || !view.body.periods.iter().any(|p| p == period))
+    {
+        return Ok(Err(crate::closing::case_scope_refusal()));
+    }
     if view.body.kind == CaseKind::PriorPeriodAdjustment {
         let adjustment = proposal
             .prior_period_adjustment()
@@ -2226,6 +2254,13 @@ fn case_members<V: asupersync::fs::Vfs + Clone>(
             Ok(derived) => out.push((entry.plan, derived)),
             Err(r) => return Ok(Err(r)),
         }
+    }
+    if out
+        .iter()
+        .any(|(_, proposal)| proposal.class == EntryClass::CLOSING)
+        && out.len() != 1
+    {
+        return Ok(Err(crate::closing::case_scope_refusal()));
     }
     Ok(Ok(out))
 }

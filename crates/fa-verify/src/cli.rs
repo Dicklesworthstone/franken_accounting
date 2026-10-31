@@ -1497,8 +1497,15 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     }
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
-                                } else if report.statement_diff.is_some() {
-                                    "statement_diff"
+                                } else if let Some(comparison) = &report.statement_diff {
+                                    match comparison.valuation {
+                                        crate::report::StatementDiffValuation::Native => {
+                                            "statement_diff"
+                                        }
+                                        crate::report::StatementDiffValuation::Functional {
+                                            ..
+                                        } => "functional_statement_diff",
+                                    }
                                 } else if report.functional_trial_balance.is_some() {
                                     if report.activity {
                                         "functional_activity"
@@ -3699,6 +3706,33 @@ fn statement_diff_checks(
             ("economic_truth", s("not_judged")),
         ],
     )];
+    if let crate::report::StatementDiffValuation::Functional {
+        base_unit,
+        book_parameters_source,
+    } = comparison.valuation
+    {
+        checks.push(Check::pass(
+            "functional_statement_diff_basis",
+            "recomputation",
+            vec![
+                ("base_unit", n(u64::from(base_unit))),
+                ("valuation_basis", s("retained-base-amounts")),
+                (
+                    "historical_rate_closure",
+                    s("exact Rate documents referenced by authenticated entries at each original frontier"),
+                ),
+                (
+                    "rate_visibility",
+                    s("original signed ImportReceipt history through first use at each frontier"),
+                ),
+                ("book_parameters_source", s(book_parameters_source)),
+                ("genesis_registration", s("not_judged")),
+                ("registry_activation", s("not_judged")),
+                ("external_rate_truth", s("not_judged")),
+                ("case_admission", s("not_judged")),
+            ],
+        ));
+    }
     for (side, statement) in [("before", &comparison.before), ("after", &comparison.after)] {
         for mut check in statement_checks(statement, unit_universe_source) {
             check.detail.insert(0, ("side", s(side)));
@@ -4004,6 +4038,63 @@ pub fn run(args: &[String], read: Read<'_>) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn functional_statement_diff_renders_arithmetic_scope_without_case_or_rate_truth_claims() {
+        use crate::report::{StatementDiffValuation, VerifiedStatement, VerifiedStatementDiff};
+        let statement = VerifiedStatement {
+            definition_name: "income-statement".into(),
+            definition_version: 1,
+            definition_digest: [4; 32],
+            kind: "IncomeStatement",
+            units: vec![7],
+            columns: vec![],
+            lines: vec![],
+            mappings: vec![],
+        };
+        let mut comparison = VerifiedStatementDiff {
+            valuation: StatementDiffValuation::Functional {
+                base_unit: 7,
+                book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
+            },
+            before_known_at: 11,
+            after_known_at: 19,
+            before_digest: [5; 32],
+            after_digest: [6; 32],
+            before: statement.clone(),
+            after: statement,
+            lines: vec![],
+            mapping_changes: vec![],
+        };
+        let checks = statement_diff_checks(&comparison, "authenticated-registry");
+        let basis = checks
+            .iter()
+            .find(|check| check.name == "functional_statement_diff_basis")
+            .expect("functional comparisons must disclose their valuation premises");
+        assert_eq!(basis.scope, "recomputation");
+        assert!(matches!(basis.verdict, Verdict::Pass));
+        let mut json = String::new();
+        basis.json().write(&mut json);
+        for expected in [
+            "\"base_unit\":7",
+            "\"valuation_basis\":\"retained-base-amounts\"",
+            "\"historical_rate_closure\":\"exact Rate documents referenced by authenticated entries at each original frontier\"",
+            "\"rate_visibility\":\"original signed ImportReceipt history through first use at each frontier\"",
+            "\"book_parameters_source\":\"certificate-bound-report-parameters; genesis-registration-not-proved\"",
+            "\"genesis_registration\":\"not_judged\"",
+            "\"registry_activation\":\"not_judged\"",
+            "\"external_rate_truth\":\"not_judged\"",
+            "\"case_admission\":\"not_judged\"",
+        ] {
+            assert!(json.contains(expected), "{expected}: {json}");
+        }
+        comparison.valuation = StatementDiffValuation::Native;
+        assert!(
+            statement_diff_checks(&comparison, "authenticated-registry")
+                .iter()
+                .all(|check| check.name != "functional_statement_diff_basis")
+        );
+    }
 
     #[test]
     fn reconciliation_renders_discrepancies_as_verified_data_with_exact_amounts() {

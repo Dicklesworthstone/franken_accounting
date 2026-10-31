@@ -76,6 +76,12 @@ pub(crate) struct IndependentAssetChargeBatch(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SingletonClosingDraft(());
 
+/// Only a complete, singleton case batch can carry this proof. It delegates
+/// no authority: the member's own Locked row still requires Restate and the
+/// case's dual approval, and its original source guard survives publication.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SingletonCaseClosing(());
+
 /// A source-bound revaluation can be rehearsed and promoted only as the
 /// complete draft's one intrinsic effect. No sibling can change its source.
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +95,7 @@ pub(crate) struct AggregateProofs {
     pub(crate) disposal: Option<IndependentDisposalBatch>,
     pub(crate) asset_charge: Option<IndependentAssetChargeBatch>,
     pub(crate) closing: Option<SingletonClosingDraft>,
+    pub(crate) case_closing: Option<SingletonCaseClosing>,
     pub(crate) revaluation: Option<SingletonRevaluationDraft>,
 }
 
@@ -123,6 +130,35 @@ fn singleton_closing_draft(
         return Err(crate::closing::draft_scope_refusal());
     }
     Ok(Some(SingletonClosingDraft(())))
+}
+
+fn singleton_case_closing(
+    batch: &PostBatch,
+    admission: Admission,
+) -> Result<Option<SingletonCaseClosing>, Refusal> {
+    if !matches!(admission, Admission::Case(_))
+        || !batch.members().iter().any(|member| {
+            member.proposal().class == EntryClass::CLOSING
+                || member
+                    .proposal()
+                    .extensions
+                    .iter()
+                    .any(|(tag, _)| *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION)
+        })
+    {
+        return Ok(None);
+    }
+    if batch.members().len() != 1
+        || crate::closing::admit(batch.members()[0].proposal())?.is_none()
+        || !batch.members()[0]
+            .proposal()
+            .extensions
+            .iter()
+            .any(|(tag, _)| *tag == fa_model::entry::CASE_MEMBER_EXTENSION)
+    {
+        return Err(crate::closing::case_scope_refusal());
+    }
+    Ok(Some(SingletonCaseClosing(())))
 }
 
 fn singleton_revaluation_draft(
@@ -948,6 +984,10 @@ fn judge_retry<V: Vfs + Clone>(
         Ok(closing) => closing,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let case_closing = match singleton_case_closing(batch, admission) {
+        Ok(proof) => proof,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let revaluation = match singleton_revaluation_draft(batch, admission) {
         Ok(proof) => proof,
         Err(refusal) => return Ok(Err(refusal)),
@@ -970,6 +1010,7 @@ fn judge_retry<V: Vfs + Clone>(
         disposal,
         asset_charge,
         closing,
+        case_closing,
         revaluation,
     };
     // A single-entry claim at this common key is a conflict. Read only its
@@ -1267,6 +1308,10 @@ fn stage_batch_with<V: Vfs + Clone>(
         Ok(closing) => closing,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let case_closing = match singleton_case_closing(batch, admission) {
+        Ok(proof) => proof,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let revaluation = match singleton_revaluation_draft(batch, admission) {
         Ok(proof) => proof,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1275,7 +1320,8 @@ fn stage_batch_with<V: Vfs + Clone>(
         // A restatement case's own Post batches its case-bound entries
         // (plan §8.3); the posting law checks each is the case's.
         !batchable(m.proposal().class)
-            && !(m.proposal().class == EntryClass::CLOSING && closing.is_some())
+            && !(m.proposal().class == EntryClass::CLOSING
+                && (closing.is_some() || case_closing.is_some()))
             && !(m.proposal().class == EntryClass::REVALUATION && revaluation.is_some())
             && !(matches!(admission, Admission::Case(_))
                 && crate::case::case_bound(m.proposal().class))
@@ -1317,6 +1363,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         disposal,
         asset_charge,
         closing,
+        case_closing,
         revaluation,
     };
     let mut txn: Option<WriteTxn> = None;

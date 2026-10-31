@@ -312,7 +312,7 @@ pub(super) fn entry_info<'a>(
             previous = Some(tag);
             if tag == 12 {
                 if envelope.class != 8
-                    || n != 1
+                    || !matches!(n, 1 | 2)
                     || !post_intent
                     || has_control
                     || has_pending
@@ -320,7 +320,7 @@ pub(super) fn entry_info<'a>(
                 {
                     return Err(failed(
                         "supported_report",
-                        "source-bound Closing requires its sole intrinsic PostEntry extension without lifecycle effects",
+                        "source-bound Closing permits only its intrinsic PostEntry basis and optional case membership, without lifecycle effects",
                     ));
                 }
                 year_end_close_basis = Some(bytes);
@@ -375,6 +375,12 @@ pub(super) fn entry_info<'a>(
                     &[&source.to_le_bytes(), &index.to_le_bytes()],
                 ));
             }
+        }
+        if year_end_close_basis.is_some() && n != 1 + usize::from(case_member.is_some()) {
+            return Err(failed(
+                "supported_report",
+                "source-bound Closing has an unrelated extension",
+            ));
         }
     }
     r.finish("report entry metadata")?;

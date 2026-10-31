@@ -301,6 +301,7 @@ fn fixture(activity: bool) -> Fixture {
         after_bundle,
         anchor,
         claim: VerifiedStatementDiff {
+            valuation: StatementDiffValuation::Native,
             before_known_at: 9,
             after_known_at: 12,
             before_digest: hash_parts(

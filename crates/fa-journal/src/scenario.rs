@@ -850,13 +850,24 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
         p.class,
         fa_model::EntryClass::REVISION | fa_model::EntryClass::RESTATEMENT
     );
-    if !crate::batch::batchable(p.class) && !delta {
+    let closing = p.class == fa_model::EntryClass::CLOSING;
+    if closing {
+        if let Err(refusal) = crate::closing::authorize_case_preparation(db, book, capability)? {
+            return Ok(Err(refusal));
+        }
+        match crate::closing::admit(p) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(Err(crate::closing::case_scope_refusal())),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    }
+    if !crate::batch::batchable(p.class) && !delta && !closing {
         return Ok(Err(usage(
             format!(
                 "a {} entry cannot join a scenario",
                 p.class.name().unwrap_or("?")
             ),
-            "plan Original, Adjusting, Reversal, Pending or Resolution entries, or a Revision or Restatement case's Revision or Restatement entries",
+            "plan Original, Adjusting, Reversal, Pending or Resolution entries, a case's Revision or Restatement entries, or one reviewed Locked-period Closing in a dedicated case scenario",
         )));
     }
     let Some(view) = read_scenario(db, book, name)? else {
@@ -917,6 +928,15 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
             refusal = refusal.or_field_change("scenario", vec![fresh]);
         }
         return Ok(Err(refusal));
+    }
+    if !view.intents.is_empty()
+        && (closing
+            || view
+                .intents
+                .iter()
+                .any(|planned| planned.intent.proposal().class == fa_model::EntryClass::CLOSING))
+    {
+        return Ok(Err(crate::closing::case_scope_refusal()));
     }
     if let Some(from) = view.body.from
         && p.effective_date < from
@@ -1002,6 +1022,16 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
             "create a fresh open_memory database for the materialization",
         ))));
     }
+    if requests.len() != 1
+        && let Some(index) = requests
+            .iter()
+            .position(|request| request.proposal.class == fa_model::EntryClass::CLOSING)
+    {
+        return Ok(Err(MaterializeRefusal::Intent(
+            index,
+            crate::closing::case_scope_refusal(),
+        )));
+    }
     let replayed = match coordinates {
         Coordinates::Protected => {
             crate::scratch::replay_into(source, &mut target, ctx, book, Some(fork_at)).await?
@@ -1027,6 +1057,7 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
         // retained historical-period marker is valid only in this scratch
         // factory until a case derives the committed PPA member.
         let admission = if crate::case::case_bound(req.proposal.class)
+            || req.proposal.class == fa_model::EntryClass::CLOSING
             || req
                 .proposal
                 .extensions

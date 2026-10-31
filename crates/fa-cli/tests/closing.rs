@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa_cli::json::{self, Json};
 
+#[path = "closing/case.rs"]
+mod case;
 #[path = "closing/draft_review.rs"]
 mod draft_review;
 #[path = "closing/equity_certificate.rs"]

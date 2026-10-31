@@ -1,6 +1,6 @@
 //! Independently recomputed statement bridges between two recorded frontiers.
 //!
-//! Both native sources are checked against the complete authenticated prefix
+//! Both sources are checked against the complete authenticated prefix
 //! at their own known-at coordinates. The outer certificate selects the same
 //! accounting question twice; it cannot substitute source amounts, omit zero
 //! lines, or hide chart changes behind unchanged monetary values. Approval,
@@ -18,8 +18,22 @@ use crate::codec::{Reader, Writer};
 const FORMAT: &[u8] = b"fa:statement-diff-certificate:v1";
 const FUNCTIONAL_FORMAT: &[u8] = b"fa:functional-statement-diff-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-diff-certificate-digest:v1";
+const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-diff-certificate-digest:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-diff-source:v1";
+const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-diff-source:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:statement-diff:v1";
+const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-diff:v1";
+const FUNCTIONAL_VALUATION_BASIS: &[u8] = b"retained-base-amounts";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatementDiffValuation {
+    Native,
+    Functional {
+        base_unit: u32,
+        /// This remains a certificate-bound premise, not checkpoint proof of genesis.
+        book_parameters_source: &'static str,
+    },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatementLineChange {
@@ -40,6 +54,7 @@ pub struct StatementMappingChange {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedStatementDiff {
+    pub valuation: StatementDiffValuation,
     pub before_known_at: u64,
     pub after_known_at: u64,
     /// Domain-separated commitments to the complete reconstructed statements.
@@ -54,6 +69,7 @@ pub struct VerifiedStatementDiff {
 }
 
 pub(super) struct Certificate<'a> {
+    pub functional: bool,
     pub before: &'a [u8],
     pub after: &'a [u8],
     pub output: &'a [u8],
@@ -74,27 +90,39 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let mut r = Reader::new(bytes);
-    if r.bytes(64, "statement_diff.format")? != FORMAT {
-        return Err(failed(
-            "supported_report",
-            "portable statement comparisons require the native v1 family; functional comparisons need their own two-source valuation closure",
-        ));
-    }
+    let functional = match r.bytes(64, "statement_diff.format")? {
+        FORMAT => false,
+        FUNCTIONAL_FORMAT => true,
+        _ => {
+            return Err(failed(
+                "supported_report",
+                "unsupported statement comparison family",
+            ));
+        }
+    };
     // These fields are retained provenance, not an authorization grant.
     r.u128("statement_diff.producer")?;
     r.fixed::<32>("statement_diff.capability")?;
     let before = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_diff.before")?;
     let after = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_diff.after")?;
-    if !before.starts_with(super::STATEMENT_CERTIFICATE_FORMAT)
-        || !after.starts_with(super::STATEMENT_CERTIFICATE_FORMAT)
-    {
+    let source_format = if functional {
+        super::FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
+    } else {
+        super::STATEMENT_CERTIFICATE_FORMAT
+    };
+    if !before.starts_with(source_format) || !after.starts_with(source_format) {
         return Err(failed(
             "supported_report",
-            "both comparison sources must be native v4 financial statements",
+            "both comparison sources must preserve the outer family's native v4 or functional v5 statement measure",
         ));
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_diff.output")?;
-    if Reader::new(output).bytes(64, "statement_diff.output_format")? != OUTPUT_FORMAT {
+    let output_format = if functional {
+        FUNCTIONAL_OUTPUT_FORMAT
+    } else {
+        OUTPUT_FORMAT
+    };
+    if Reader::new(output).bytes(64, "statement_diff.output_format")? != output_format {
         return Err(failed(
             "supported_report",
             "statement comparison has an unrelated output format",
@@ -106,7 +134,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     // Model identities frame each part with its u32 byte length. The
     // accumulator/report-output hashes elsewhere deliberately use raw parts.
     if hash_parts(
-        DIGEST_DOMAIN,
+        if functional {
+            FUNCTIONAL_DIGEST_DOMAIN
+        } else {
+            DIGEST_DOMAIN
+        },
         &[&(body_len as u32).to_le_bytes(), &bytes[..body_len]],
     ) != digest
     {
@@ -116,6 +148,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     Ok(Certificate {
+        functional,
         before,
         after,
         output,
@@ -137,18 +170,17 @@ pub(super) fn bind(
         || after.time_selection.is_some()
         || before.dimension.is_some()
         || after.dimension.is_some()
-        || before.functional
-        || after.functional
+        || before.functional != after.functional
     {
         return Err(failed(
             "statement_diff_selection",
-            "comparison sources must ask the same native sequence-selected trunk statement at ordered frontiers",
+            "comparison sources must ask the same sequence-selected trunk statement and valuation measure at ordered frontiers",
         ));
     }
     if before.registry_digest != after.registry_digest {
         return Err(failed(
             "registry_closure",
-            "comparison sources require the same authenticated four-registry closure; cross-epoch comparison is unsupported",
+            "comparison sources require the same authenticated registry closure; cross-epoch comparison is unsupported",
         ));
     }
     Ok(())
@@ -167,6 +199,12 @@ pub(super) fn replay(
     after_bytes: &[u8],
 ) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
     bind(before_certificate, after_certificate)?;
+    if request.functional != before_certificate.functional {
+        return Err(failed(
+            "statement_diff_selection",
+            "comparison family changes its source measure",
+        ));
+    }
     if before.definition_digest != after.definition_digest
         || before.definition_name != after.definition_name
         || before.definition_version != after.definition_version
@@ -230,15 +268,47 @@ pub(super) fn replay(
             })
         })
         .collect();
+    let valuation = if request.functional {
+        let [base_unit] = before.units.as_slice() else {
+            return Err(failed(
+                "statement_diff_selection",
+                "functional comparison must have one retained base unit",
+            ));
+        };
+        StatementDiffValuation::Functional {
+            base_unit: *base_unit,
+            book_parameters_source: super::functional::BOOK_PARAMETERS_SOURCE,
+        }
+    } else {
+        StatementDiffValuation::Native
+    };
+    let source_domain = if request.functional {
+        FUNCTIONAL_SOURCE_DOMAIN
+    } else {
+        SOURCE_DOMAIN
+    };
+    // Functional certificates wrap the canonical statement. The comparison
+    // commits that inner statement under its own valuation-specific domain.
+    let before_bytes = if request.functional {
+        super::functional::statement_bytes(before_bytes)?
+    } else {
+        before_bytes
+    };
+    let after_bytes = if request.functional {
+        super::functional::statement_bytes(after_bytes)?
+    } else {
+        after_bytes
+    };
     let result = VerifiedStatementDiff {
+        valuation,
         before_known_at: before_certificate.known_at,
         after_known_at: after_certificate.known_at,
         before_digest: hash_parts(
-            SOURCE_DOMAIN,
+            source_domain,
             &[&(before_bytes.len() as u32).to_le_bytes(), before_bytes],
         ),
         after_digest: hash_parts(
-            SOURCE_DOMAIN,
+            source_domain,
             &[&(after_bytes.len() as u32).to_le_bytes(), after_bytes],
         ),
         before,
@@ -267,7 +337,19 @@ fn encode(
 ) -> Result<Vec<u8>, ReportError> {
     // Bound the full encoding before allocation. A bridge carries three
     // amount vectors per line and both sides of every mapping change.
-    let mut size = 4 + OUTPUT_FORMAT.len() + 16 + 16 + 8 + 8 + 32 * 3 + 4 * 3;
+    let functional = match report.valuation {
+        StatementDiffValuation::Native => None,
+        StatementDiffValuation::Functional { base_unit, .. } => Some(base_unit),
+    };
+    let output_format = if functional.is_some() {
+        FUNCTIONAL_OUTPUT_FORMAT
+    } else {
+        OUTPUT_FORMAT
+    };
+    let mut size = 4 + output_format.len() + 16 + 16 + 8 + 8 + 32 * 3 + 4 * 3;
+    if functional.is_some() {
+        size += 8 + FUNCTIONAL_VALUATION_BASIS.len();
+    }
     let mut charge = |bytes: usize| -> Result<(), ReportError> {
         size = size
             .checked_add(bytes)
@@ -302,8 +384,11 @@ fn encode(
         }
     }
     let mut w = Writer::default();
-    w.bytes(OUTPUT_FORMAT)
-        .fixed(book)
+    w.bytes(output_format);
+    if let Some(unit) = functional {
+        w.u32(unit).bytes(FUNCTIONAL_VALUATION_BASIS);
+    }
+    w.fixed(book)
         .fixed(branch)
         .u64(report.before_known_at)
         .u64(report.after_known_at)

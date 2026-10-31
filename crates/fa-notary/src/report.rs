@@ -185,7 +185,8 @@ pub fn assemble_with_registries(
     )
 }
 
-/// Package a replayed functional trial balance or financial statement with its
+/// Package a replayed functional trial balance, financial statement or
+/// two-source statement comparison with its
 /// original six-registry closure, exact historical version-2 BookSpec, and every authenticated Rate
 /// document cited at or before known-at. The facade must govern every Rate read.
 /// This profile supports sequence-selected trunk reports under SpotClose,
@@ -218,7 +219,8 @@ pub fn assemble_functional_with_registries(
         "fx_laws",
         "rounding_laws",
     ];
-    if !functional::certificate(certificate, journal, known_at)
+    if !(functional::certificate(certificate, journal, known_at)
+        || functional::comparison_certificate(certificate, journal, known_at))
         || registries
             .iter()
             .map(|(name, _)| name.as_str())
@@ -657,10 +659,11 @@ fn assemble_inner(
                 || statement_diff_certificate(certificate))
         || major == 3
             && (functional::certificate(certificate, journal, known_at)
+                || functional::comparison_certificate(certificate, journal, known_at)
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native statement diff, v5 functional statement, v10 functional trial balance, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff, v5 functional statement, v10 functional trial balance, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -913,6 +916,68 @@ mod format_tests {
             assert!(!statement_diff_certificate(&valid[..end]));
         }
         assert!(!certificate_format(&valid, b"fa:report-certificate:v4"));
+    }
+
+    #[test]
+    fn functional_comparison_routing_requires_v5_sources_in_one_ordered_book_prefix() {
+        let journal =
+            Journal::from_records(fa_model::Id128([3; 16]), CommitSeq(12), Vec::new()).unwrap();
+        let source = |version: u8, book: [u8; 16], branch: [u8; 16], at: u64, selector: u8| {
+            let mut w = Writer::new();
+            w.fixed(format!("fa:report-certificate:v{version}").as_bytes())
+                .str("fa-fold-over-prefix")
+                .str("embedded-owner")
+                .str("fa:functional-statement:v1")
+                .fixed(&book)
+                .fixed(&branch)
+                .u64(at)
+                .u8(selector);
+            w.finish().unwrap()
+        };
+        let wrap = |before: &[u8], after: &[u8]| {
+            let mut w = Writer::new();
+            w.bytes(b"fa:functional-statement-diff-certificate:v1")
+                .u128(7)
+                .fixed(&[8; 32])
+                .bytes(before)
+                .bytes(after);
+            w.finish().unwrap()
+        };
+        let before = source(5, [3; 16], [0; 16], 8, 3);
+        let after = source(5, [3; 16], [0; 16], 9, 3);
+        let valid = wrap(&before, &after);
+        assert!(functional::comparison_certificate(
+            &valid,
+            &journal,
+            CommitSeq(9)
+        ));
+        assert!(!statement_diff_certificate(&valid));
+        assert!(!functional::comparison_certificate(
+            &valid,
+            &journal,
+            CommitSeq(10)
+        ));
+        for wrong in [
+            source(4, [3; 16], [0; 16], 8, 3),
+            source(50, [3; 16], [0; 16], 8, 3),
+            source(5, [4; 16], [0; 16], 8, 3),
+            source(5, [3; 16], [1; 16], 8, 3),
+            source(5, [3; 16], [0; 16], 8, 2),
+            source(5, [3; 16], [0; 16], 10, 3),
+        ] {
+            assert!(!functional::comparison_certificate(
+                &wrap(&wrong, &after),
+                &journal,
+                CommitSeq(9)
+            ));
+        }
+        for end in 0..valid.len() {
+            assert!(!functional::comparison_certificate(
+                &valid[..end],
+                &journal,
+                CommitSeq(9)
+            ));
+        }
     }
 
     #[test]

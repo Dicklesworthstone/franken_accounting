@@ -4,6 +4,145 @@
 use super::*;
 
 #[test]
+fn functional_comparison_exports_replay_both_original_rate_closures_and_fixed_frontiers() {
+    let mut fixture = Fixture::new();
+    fixture.post(b"comparison-original-january", day(1, 5), 10_000, 11);
+    let before = fixture.book.head().unwrap();
+    fixture.post(b"comparison-later-february", day(2, 5), 20_000, 12);
+    average_post(&mut fixture);
+    let after = fixture.book.head().unwrap();
+    let mut comparisons = Vec::new();
+    for definition in ["balance-sheet", "income-statement"] {
+        let certified = fixture
+            .book
+            .certify_functional_statement_diff(
+                PRINCIPAL,
+                &producer(),
+                &fa::StatementDiffRequest {
+                    selection: statement_selection(definition, true),
+                    before,
+                    after: Some(after),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let line = if definition == "balance-sheet" {
+            "assets"
+        } else {
+            "net_income"
+        };
+        let change = certified
+            .report
+            .lines()
+            .iter()
+            .find(|row| row.code == line)
+            .unwrap();
+        assert_eq!(
+            change.before,
+            if definition == "balance-sheet" {
+                vec![11_000, 11_000]
+            } else {
+                vec![0, 11_000]
+            }
+        );
+        assert_eq!(
+            change.after,
+            if definition == "balance-sheet" {
+                vec![41_000, 11_000]
+            } else {
+                vec![30_000, 11_000]
+            }
+        );
+        assert_eq!(change.delta, vec![30_000, 0]);
+        comparisons.push(certified);
+    }
+    fixture.rate(day(1, 5), 99, "Unused quote after both comparison sources");
+    fixture.post(b"comparison-future-backdate", day(1, 20), 2_000, 13);
+    let state = checkpoint(&mut fixture.book);
+    let head = fixture.book.head().unwrap();
+    let key = fixture.book.checkpoint_public_key();
+    for certified in comparisons {
+        let c = &certified.certificate;
+        let produced = fixture
+            .book
+            .produce_statement_diff_bundle(PRINCIPAL, &producer(), Some(state), c)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let again = fixture
+            .book
+            .produce_statement_diff_bundle(PRINCIPAL, &producer(), Some(state), c)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(produced.bundle.bytes, again.bundle.bytes);
+        assert_eq!(produced.receipt, again.receipt);
+        assert_eq!(
+            produced.documents.len(),
+            3,
+            "one original rate on the earlier side, three on the later side"
+        );
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            None,
+            Some(&produced.receipt),
+            Some(c.digest()),
+        )
+        .unwrap();
+        assert_eq!(verified.output, c.output());
+        assert_eq!(verified.certificate_digest, *c.digest());
+        assert_eq!(verified.known_at, after.0);
+        assert!(verified.functional_statement.is_none());
+        let diff = verified.statement_diff.unwrap();
+        assert!(
+            matches!(diff.valuation,fa_verify::report::StatementDiffValuation::Functional {base_unit,..} if base_unit==fixture.usd.0)
+        );
+        assert_eq!(diff.before_known_at, before.0);
+        assert_eq!(diff.after_known_at, after.0);
+        for (actual, expected) in diff.lines.iter().zip(certified.report.lines()) {
+            assert_eq!(actual.before, expected.before);
+            assert_eq!(actual.after, expected.after);
+            assert_eq!(actual.delta, expected.delta);
+        }
+        for pin in [&c.sources().0.digest, &c.sources().1.digest] {
+            assert_eq!(
+                fa_verify::report::verify_report_expected(
+                    &produced.bundle.bytes,
+                    &[key],
+                    None,
+                    None,
+                    Some(pin)
+                )
+                .unwrap_err()
+                .predicate,
+                "recipient_certificate"
+            );
+        }
+        assert!(
+            fixture
+                .book
+                .produce_statement_diff_bundle(PRINCIPAL, &cap(&["read"]), Some(state), c)
+                .unwrap()
+                .is_err()
+        );
+        let mut tampered = produced.bundle.bytes.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &tampered,
+                &[key],
+                None,
+                None,
+                Some(c.digest())
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(fixture.book.head().unwrap(), head);
+}
+
+#[test]
 fn functional_statement_exports_reproduce_comparative_columns_after_later_backdates() {
     let mut fixture = Fixture::new();
     fixture.post(b"statement-export-january", day(1, 5), 10_000, 11);

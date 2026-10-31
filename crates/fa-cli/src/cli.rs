@@ -2381,14 +2381,14 @@ fn correction_draft_only(verb: &str, args: &Args) -> bool {
 }
 
 /// A restored intrinsic close can append a retained intent to its owner's
-/// otherwise empty draft. This control-only append does not publish the close;
-/// promotion independently requires a Human holding both Approve and Close.
+/// otherwise empty draft or case scenario. This control-only append does not
+/// publish the close; promotion or approved case Post independently admits it.
 /// The handler validates the review, digest and incompatible modes before it
 /// plans anything, and the kernel admits only a complete singleton close.
 fn closing_draft_only(verb: &str, args: &Args) -> bool {
     verb == "close"
         && args.positional.get(1).map(String::as_str) == Some("year-end")
-        && args.flag("--draft").is_some()
+        && (args.flag("--draft").is_some() || args.flag("--scenario").is_some())
         && args.flag("--review").is_some()
         && args.flag("--digest").is_some()
 }
@@ -25023,6 +25023,33 @@ mod tests {
             (vec!["--draft", "annual"], true),
             (vec!["--review", "aa", "--draft", "annual"], true),
             (vec!["--yes"], true),
+        ] {
+            let argv: Vec<String> = ["close", "year-end"]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_string)
+                .collect();
+            let parsed = crate::args::parse(&argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert_eq!(
+                needs_command_time_evidence("close", &parsed),
+                needs_tick,
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_case_reclose_scenario_append_needs_no_publication_tick() {
+        let reg = verbs::registry().expect("verbs.toml");
+        for (flags, needs_tick) in [
+            (
+                vec!["--review", "aa", "--digest", "bb", "--scenario", "reclose"],
+                false,
+            ),
+            (vec!["--case-review", "--review-out", "review"], false),
+            (vec!["--scenario", "reclose"], true),
+            (vec!["--review", "aa", "--scenario", "reclose"], true),
+            (vec!["--case-review"], true),
         ] {
             let argv: Vec<String> = ["close", "year-end"]
                 .into_iter()

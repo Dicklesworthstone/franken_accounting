@@ -150,12 +150,22 @@ fn source_digest(
     sources: &[(&Record, &[u64])],
     spec: &[u8],
 ) -> [u8; 32] {
+    source_digest_in_state(version, route, sources, spec, 1)
+}
+
+fn source_digest_in_state(
+    version: u16,
+    route: &Record,
+    sources: &[(&Record, &[u64])],
+    spec: &[u8],
+    state: u8,
+) -> [u8; 32] {
     let mut w = Writer::default();
     w.fixed(&BOOK)
         .i32(1970)
         .i32(0)
         .i32(364)
-        .u8(1)
+        .u8(state)
         .u128(handle(route).0)
         .fixed(&framed_hash(
             b"fa:closing-routes:v1",
@@ -200,6 +210,190 @@ fn source_digest(
         },
         &[&w.buf],
     )
+}
+
+fn case_member(record: Record, ordinal: u32, plan: u128, source: [u8; 32]) -> Record {
+    let info = metadata::entry_info(&record.bytes[..record.len], &record.envelope).unwrap();
+    let mut basis = info.year_end_close_basis.unwrap().to_vec();
+    let end = basis.len();
+    basis[end - 32..].copy_from_slice(&source);
+    let mut member = Writer::default();
+    member.u16(1).u32(ordinal).u128(plan);
+    let mut w = Writer::default();
+    w.fixed(&record.bytes[..record.len - basis.len() - 10])
+        .count(2)
+        .u16(12)
+        .bytes(&basis)
+        .u16(23)
+        .bytes(&member.buf);
+    finish(w, record.envelope.commit_seq)
+}
+
+fn case_post(seq: u64, ordinal: u32, plan: u128, member: u128, digest: [u8; 32]) -> Record {
+    let case = framed_hash(b"fa:vid:case:v1", &[&BOOK, &ordinal.to_le_bytes()]);
+    let mut case_id = [0; 16];
+    case_id.copy_from_slice(&case[..16]);
+    let mut body = Writer::default();
+    body.u16(1).count(1).u128(plan).u128(member).fixed(&digest);
+    let mut w = prefix(30, 364);
+    w.buf[2..4].copy_from_slice(&1u16.to_le_bytes());
+    w.count(0)
+        .u8(1)
+        .u8(3)
+        .u128(u128::from_le_bytes(case_id))
+        .u8(4)
+        .u8(5)
+        .count(1)
+        .u8(0)
+        .u128(member)
+        .u16(0)
+        .count(0)
+        .u8(0)
+        .bytes(&[19; 32])
+        .u8(3)
+        .u16(17)
+        .fixed(&framed_hash(b"fa:case-posted:v1", &[&body.buf]))
+        .u128(PRINCIPAL)
+        .u8(0)
+        .count(0)
+        .count(0)
+        .u8(0)
+        .count(0)
+        .count(0)
+        .count(1)
+        .u16(24)
+        .bytes(&body.buf);
+    let mut record = finish(w, seq);
+    record.envelope.within_commit_ordinal = 1;
+    record
+}
+
+fn locked_case_history() -> (Vec<Record>, Vec<RateFixture>) {
+    let (mut records, rates) = history();
+    records.push(entry(
+        10,
+        1,
+        10,
+        b"later-case-sale",
+        &pair_to("1000", "4000", 50, 55),
+        Some((1, &rates[0], None)),
+        None,
+        None,
+    ));
+    records.extend([
+        transition(11, 1, 2),
+        transition(12, 2, 3),
+        transition(13, 3, 4),
+    ]);
+    let sources: &[(&Record, &[u64])] = &[
+        (&records[5], &[1]),
+        (&records[7], &[0]),
+        (&records[8], &[0, 2]),
+        (&records[9], &[1]),
+    ];
+    let source = source_digest_in_state(2, &records[3], sources, &book(&[]), 4);
+    let closing = case_member(
+        close(
+            14,
+            13,
+            2,
+            b"locked-reclose",
+            &pair_to("4000", "3000", 50, 55),
+            &records[3],
+            sources,
+            &book(&[]),
+        ),
+        1,
+        44,
+        source,
+    );
+    let post = case_post(
+        14,
+        1,
+        44,
+        handle(&closing).0,
+        closing.envelope.record_digest,
+    );
+    records.extend([closing, post]);
+    (records, rates)
+}
+
+#[test]
+fn locked_case_reclose_preserves_carrying_totals_and_binds_its_atomic_post() {
+    let (records, rates) = locked_case_history();
+    let (report, output) = replay(&records, &rates).unwrap();
+    assert_eq!(
+        (
+            net(&report, "1000"),
+            net(&report, "3000"),
+            net(&report, "4000")
+        ),
+        (45, -45, 0)
+    );
+    assert_eq!(report.entries, 5);
+    assert_eq!(
+        verify_packed(&records, 14, &rates, &output).unwrap().output,
+        output
+    );
+}
+
+#[test]
+fn locked_case_close_rejects_missing_or_forged_post_and_monetary_siblings() {
+    let (records, rates) = locked_case_history();
+    let closing = &records[13];
+    let id = handle(closing).0;
+    let digest = closing.envelope.record_digest;
+    let (_, output) = replay(&records, &rates).unwrap();
+    let without_post = &records[..14];
+    assert_eq!(
+        replay(without_post, &rates).unwrap_err().predicate,
+        "functional_closing"
+    );
+    // Removing both pieces of case evidence does not turn a Locked close
+    // into an ordinary one, even when its source and balanced amounts match.
+    let info = metadata::entry_info(&closing.bytes[..closing.len], &closing.envelope).unwrap();
+    let basis = info.year_end_close_basis.unwrap();
+    let membership = info.case_member.unwrap();
+    let mut unclaimed = Writer::default();
+    unclaimed
+        .fixed(&closing.bytes[..closing.len - basis.len() - membership.len() - 16])
+        .count(1)
+        .u16(12)
+        .bytes(basis);
+    let mut ordinary = records[..13].to_vec();
+    ordinary.push(finish(unclaimed, 14));
+    assert_eq!(
+        replay(&ordinary, &rates).unwrap_err().predicate,
+        "functional_closing"
+    );
+    for forged in [
+        case_post(14, 2, 44, id, digest),
+        case_post(14, 1, 45, id, digest),
+        case_post(14, 1, 44, id + 1, digest),
+        case_post(14, 1, 44, id, [42; 32]),
+        promotion(14, 2),
+    ] {
+        let mut bad = without_post.to_vec();
+        bad.push(forged);
+        assert!(verify_packed(&bad, 14, &rates, &output).is_err());
+    }
+    let mut extra = records.clone();
+    let mut sibling = entry(
+        14,
+        1,
+        10,
+        b"unreviewed-sibling",
+        &pair_to("1000", "4000", 50, 55),
+        Some((1, &rates[0], None)),
+        None,
+        None,
+    );
+    sibling.envelope.within_commit_ordinal = 2;
+    extra.push(sibling);
+    assert_eq!(
+        replay(&extra, &rates).unwrap_err().predicate,
+        "functional_closing"
+    );
 }
 
 fn pair_to(debit: &'static str, credit: &'static str, native: i128, base: i128) -> Vec<TestLeg> {
