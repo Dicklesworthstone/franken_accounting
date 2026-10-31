@@ -3932,6 +3932,31 @@ fn xbrl_equity_uses_historical_roles_and_rejects_resealed_attribution() -> std::
             "noncontrolling_accounts=\"33303030\"",
         )
         .replace(&digest(b"33313030"), &digest(b"33303030"));
+    // V2 also binds the equity attribution into the activity/role metadata.
+    // Repair that public self-hash too; only book-backed role history is the
+    // authority that should reject this otherwise consistent forgery.
+    let income = fa_formats::xbrl::read_xbrl_income_attribution(&xml)
+        .unwrap()
+        .unwrap();
+    let income_digest = |accounts: &[u8]| {
+        let equity = fa_model::domain_digest(
+            b"fa:xbrl-equity-attribution:v1",
+            &[&coordinate.certificate_digest, accounts],
+        );
+        fa_model::domain_digest(
+            b"fa:xbrl-income-attribution:v2",
+            &[
+                &coordinate.certificate_digest,
+                &equity,
+                b"",
+                &income.activity_digest,
+            ],
+        )
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+    };
+    let comment = comment.replace(&income_digest(b"33313030"), &income_digest(b"33303030"));
     let altered_xml =
         write_xbrl_instance_xml(&altered).replacen('\n', &format!("\n{comment}\n"), 1);
     assert!(verify_format_journal_xbrl_xml(&altered_xml).is_ok());

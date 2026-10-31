@@ -124,4 +124,28 @@
     <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_NetIncomeLoss" xlink:to="loc_EQ_Revenues" weight="1" order="10"/>
     <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_EQ_NetIncomeLoss" xlink:to="loc_EQ_OperatingExpenses" weight="-1" order="20"/>
   </link:calculationLink>
+  <!-- 5. V2 activity excludes Closing transfers and their verified reversals.
+       ProfitLoss includes NCI; NetIncomeLoss is attributable to the parent.
+       Preserve all preceding roles for historical export reproduction. -->
+  <link:calculationLink xlink:type="extended" xlink:role="http://frankenaccounting.org/role/TypeLevelStatementsActivityV2">
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Liabilities" xlink:label="loc_A2_Liabilities"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquity" xlink:label="loc_A2_ParentEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_MinorityInterest" xlink:label="loc_A2_MinorityInterest"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" xlink:label="loc_A2_TotalEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesAndStockholdersEquity" xlink:label="loc_A2_LiabilitiesAndEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Revenues" xlink:label="loc_A2_Revenues"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_OperatingExpenses" xlink:label="loc_A2_OperatingExpenses"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_ProfitLoss" xlink:label="loc_A2_GroupProfit"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_NetIncomeLossAttributableToNoncontrollingInterest" xlink:label="loc_A2_NciIncome"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_NetIncomeLoss" xlink:label="loc_A2_ParentIncome"/>
+
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_TotalEquity" xlink:to="loc_A2_ParentEquity" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_TotalEquity" xlink:to="loc_A2_MinorityInterest" weight="1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_LiabilitiesAndEquity" xlink:to="loc_A2_Liabilities" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_LiabilitiesAndEquity" xlink:to="loc_A2_TotalEquity" weight="1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_GroupProfit" xlink:to="loc_A2_Revenues" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_GroupProfit" xlink:to="loc_A2_OperatingExpenses" weight="-1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_ParentIncome" xlink:to="loc_A2_GroupProfit" weight="1" order="10"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_A2_ParentIncome" xlink:to="loc_A2_NciIncome" weight="-1" order="20"/>
+  </link:calculationLink>
 </link:linkbase>

@@ -624,6 +624,41 @@ fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() 
             .all(|totals| *totals == (0, 0))
     );
 
+    // XBRL's cumulative income uses this same lineage law through an as-of
+    // cutoff, retaining separate pending columns and the historical pin.
+    let through = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let cumulative = fa_registers::activity_as_of_excluding_classes(
+        &h.db,
+        &h.book,
+        through,
+        None,
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert!(cumulative.activity);
+    assert_eq!(cumulative.effective_through, Some(through));
+    assert_eq!(cumulative.rows, filtered.rows);
+    assert_eq!(cumulative.unit_totals, filtered.unit_totals);
+    assert_eq!(cumulative.pending_unit_totals, filtered.pending_unit_totals);
+    let cumulative_before = fa_registers::activity_as_of_excluding_classes(
+        &h.db,
+        &h.book,
+        through,
+        Some(before_reversal),
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(cumulative_before.rows, historical.rows);
+    let too_early = fa_registers::activity_as_of_excluding_classes(
+        &h.db,
+        &h.book,
+        DateDay::from_ymd(2026, 3, 14).unwrap(),
+        None,
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert!(too_early.rows.is_empty());
+
     // Functional income must apply the same policy through both reversals;
     // filtering only the visible Reversal class would reintroduce the expense.
     let functional = fold_period_functional_excluding_classes(

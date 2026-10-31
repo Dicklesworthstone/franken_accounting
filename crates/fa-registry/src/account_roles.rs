@@ -197,7 +197,7 @@ mod tests {
         let nci = roles
             .get("noncontrolling_interest_income")
             .expect("nci income");
-        assert!(nci.consumers.is_empty() && nci.verbs == vec!["consolidate"]);
+        assert!(nci.consumers.is_empty() && nci.verbs == vec!["consolidate", "export", "verify"]);
         assert!(nci.admits("Expense") && !nci.admits("Equity"));
         assert_eq!(
             roles.get("intercompany").map(|r| r.verbs.clone()),

@@ -3343,6 +3343,18 @@ fn income_activity_refuses_visible_migration_in_a_closing_period() {
         matches!(refused, fa_registers::RegisterError::InvalidSelection(ref why)
         if why.contains("migration entry") && why.contains("FY2025-CLOSE"))
     );
+    let as_of_refused = fa_registers::activity_as_of_excluding_classes(
+        &k.db,
+        &k.book,
+        DateDay::from_ymd(2025, 12, 31).unwrap(),
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .expect_err("cumulative XBRL income must refuse the same ambiguous Closing-period migration");
+    assert!(matches!(
+        as_of_refused, fa_registers::RegisterError::InvalidSelection(ref why)
+            if why.contains("migration entry") && why.contains("FY2025-CLOSE")
+    ));
     let functional_refused = fold_period_functional_excluding_classes(
         &k.db,
         &k.book,

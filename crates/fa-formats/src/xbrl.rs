@@ -7,6 +7,9 @@
 //! fixed-scale integer arithmetic. A failed calculation check is a
 //! statement-definition or concept-mapping defect and fails the gate.
 
+mod activity;
+pub use activity::{XbrlIncomeAttribution, XbrlReportInputs, read_xbrl_income_attribution};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::AccountType;
@@ -287,6 +290,31 @@ impl StatementXbrlMapping {
                 ),
             ],
         }
+    }
+
+    /// Income activity with the NCI allocation presented separately. FASB's
+    /// Other Comprehensive Income implementation guide identifies ProfitLoss
+    /// as group profit, NetIncomeLoss as parent profit, and the NCI amount as
+    /// a debit-normal attribution, not an operating expense.
+    pub fn us_gaap_income_activity() -> Self {
+        let mut mapping = Self::us_gaap_type_level_income_statement();
+        mapping.mapping_id = "fa_xbrl_us_gaap_income_activity_v2".into();
+        mapping.role_uri = activity::INCOME_ROLE.into();
+        mapping.bindings.extend([
+            XbrlConceptBinding {
+                line_code: "group_profit".into(),
+                concept: "us-gaap:ProfitLoss".into(),
+                period_type: XbrlPeriodType::Duration,
+                balance_side: Some(XbrlBalanceSide::Credit),
+            },
+            XbrlConceptBinding {
+                line_code: "noncontrolling_income".into(),
+                concept: "us-gaap:NetIncomeLossAttributableToNoncontrollingInterest".into(),
+                period_type: XbrlPeriodType::Duration,
+                balance_side: Some(XbrlBalanceSide::Debit),
+            },
+        ]);
+        mapping
     }
 
     /// US-GAAP small-company classified Balance Sheet concept mapping (`StatementOfFinancialPositionClassified`).
@@ -1456,24 +1484,39 @@ pub fn write_format_journal_xbrl_xml_with_equity(
     attribution: &XbrlEquityAttribution,
 ) -> Result<String, FormatError> {
     attribution.validate(journal)?;
-    write_format_journal_xbrl_profile(journal, Some(attribution))
+    write_format_journal_xbrl_profile(journal, Some(attribution), None)
+}
+
+/// Export v2 using independently selected historical income activity.
+/// Closing transfers remain in balance-sheet stock but cannot erase revenue
+/// and expense activity. The published default and equity-v1 writers retain
+/// their exact encodings for callers and historical export verification.
+pub fn write_format_journal_xbrl_xml_with_activity(
+    journal: &FormatJournal,
+    inputs: &XbrlReportInputs,
+) -> Result<String, FormatError> {
+    inputs.validate(journal)?;
+    write_format_journal_xbrl_profile(journal, Some(&inputs.equity), Some(inputs))
 }
 
 /// Reproduce the historical type-level encoding when verifying an existing
-/// export. New exports use the attributed profile, including no-role books.
+/// export. New CLI exports use the explicitly versioned activity profile.
 pub fn write_legacy_format_journal_xbrl_xml(
     journal: &FormatJournal,
 ) -> Result<String, FormatError> {
-    write_format_journal_xbrl_profile(journal, None)
+    write_format_journal_xbrl_profile(journal, None, None)
 }
 
 fn write_format_journal_xbrl_profile(
     journal: &FormatJournal,
     attribution: Option<&XbrlEquityAttribution>,
+    activity: Option<&XbrlReportInputs>,
 ) -> Result<String, FormatError> {
     let unit_catalog = UnitCatalog::embedded()?;
     let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
-    let role = if attribution.is_some() {
+    let role = if activity.is_some() {
+        activity::INCOME_ROLE
+    } else if attribution.is_some() {
         EQUITY_ROLE
     } else {
         "http://frankenaccounting.org/role/TypeLevelStatements"
@@ -1539,6 +1582,11 @@ fn write_format_journal_xbrl_profile(
         }
     }
 
+    let income_totals = activity
+        .map(|input| input.totals(journal))
+        .transpose()?
+        .unwrap_or_default();
+    units_seen.extend(income_totals.keys().copied());
     let mut bs_lines = Vec::new();
     let mut is_lines = Vec::new();
     for uid in units_seen {
@@ -1610,10 +1658,40 @@ fn write_format_journal_xbrl_profile(
             });
         }
 
+        let (income_revenue, income_expense, parent_income) = if activity.is_some() {
+            let (income_revenue, income_expense, nci_income) =
+                income_totals.get(&uid).copied().unwrap_or_default();
+            let group_profit = income_revenue.checked_sub(income_expense).ok_or_else(|| {
+                FormatError::Overflow {
+                    format: "xbrl_income_activity_v2",
+                    detail: "group profit subtraction overflow".into(),
+                }
+            })?;
+            let parent_income =
+                group_profit
+                    .checked_sub(nci_income)
+                    .ok_or_else(|| FormatError::Overflow {
+                        format: "xbrl_income_activity_v2",
+                        detail: "parent profit subtraction overflow".into(),
+                    })?;
+            for (code, value) in [
+                ("group_profit", group_profit),
+                ("noncontrolling_income", nci_income),
+            ] {
+                is_lines.push(EvaluatedStatementLine {
+                    code: code.into(),
+                    unit_id: uid,
+                    amounts: vec![value],
+                });
+            }
+            (income_revenue, income_expense, parent_income)
+        } else {
+            (revenue, expense, unclosed_earnings)
+        };
         for (code, val) in [
-            ("revenue", revenue),
-            ("expense", expense),
-            ("net_income", unclosed_earnings),
+            ("revenue", income_revenue),
+            ("expense", income_expense),
+            ("net_income", parent_income),
         ] {
             is_lines.push(EvaluatedStatementLine {
                 code: code.into(),
@@ -1636,12 +1714,17 @@ fn write_format_journal_xbrl_profile(
         lines: is_lines,
     };
 
-    let bs_mapping = if attribution.is_some() {
+    let mut bs_mapping = if attribution.is_some() {
         StatementXbrlMapping::us_gaap_attributed_balance_sheet()
     } else {
         StatementXbrlMapping::us_gaap_type_level_balance_sheet()
     };
-    let mut is_mapping = StatementXbrlMapping::us_gaap_type_level_income_statement();
+    bs_mapping.role_uri = role.into();
+    let mut is_mapping = if activity.is_some() {
+        StatementXbrlMapping::us_gaap_income_activity()
+    } else {
+        StatementXbrlMapping::us_gaap_type_level_income_statement()
+    };
     is_mapping.role_uri = role.into();
     let (bs_inst, _) = export_statement_lines_to_xbrl(
         &bs_stmt,
@@ -1685,13 +1768,16 @@ fn write_format_journal_xbrl_profile(
     let _ = validate_calculation_linkbase_detailed(&combined, &linkbase, Some(&schema))?;
 
     let mut xml = write_xbrl_instance_xml(&combined);
-    let equity_metadata = attribution.map_or_else(String::new, |roles| {
+    let mut equity_metadata = attribution.map_or_else(String::new, |roles| {
         format!(
             " equity_profile=\"{EQUITY_PROFILE}\" noncontrolling_accounts=\"{}\" equity_attribution_digest=\"{}\"",
             roles.encoded_accounts(),
             hex_encode(&roles.digest(&journal.coordinate)),
         )
     });
+    if let Some(activity) = activity {
+        equity_metadata.push_str(&activity.metadata(&journal.coordinate)?);
+    }
     let cert_comment = format!(
         "<!-- fa:xbrl-coordinate book_name=\"{}\" base_unit=\"{}\" base_unit_scale=\"{}\" effective_through=\"{}\" known_at_seq=\"{}\" entry_count=\"{}\" content_digest=\"{}\" certificate_digest=\"{}\"{equity_metadata} -->\n",
         xml_escape(&journal.coordinate.book_name),
@@ -1709,15 +1795,20 @@ fn write_format_journal_xbrl_profile(
     Ok(xml)
 }
 
-/// Extract and verify the [`ExportCoordinate`] embedded in an XBRL instance XML document
-/// produced by [`write_format_journal_xbrl_xml`].
+/// Validate a published XBRL profile's canonical XML, taxonomy calculations,
+/// coordinate and attribution metadata integrity. These checks do not prove
+/// historical roles or complete income activity: book-backed verification
+/// independently reconstructs the selected sources and compares exact bytes.
 pub fn verify_format_journal_xbrl_xml(
     xml: &str,
 ) -> Result<(ExportCoordinate, XbrlValidationReport), FormatError> {
     let attribution = read_xbrl_equity_attribution(xml)?;
+    let income_attribution = read_xbrl_income_attribution(xml)?;
     let instance = read_xbrl_instance_xml(xml)?;
     let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
-    let linkbase = XbrlCalculationLinkbase::embedded_for_role(if attribution.is_some() {
+    let linkbase = XbrlCalculationLinkbase::embedded_for_role(if income_attribution.is_some() {
+        activity::INCOME_ROLE
+    } else if attribution.is_some() {
         EQUITY_ROLE
     } else {
         "http://frankenaccounting.org/role/TypeLevelStatements"
@@ -1785,7 +1876,7 @@ pub fn verify_format_journal_xbrl_xml(
         account_scope: None,
     };
     coordinate.verify(&content_digest)?;
-    if let Some(attribution) = attribution {
+    if let Some(attribution) = &attribution {
         let declared: [u8; 32] = hex_decode(
             "xbrl_equity_attribution_v1",
             &attr("equity_attribution_digest")?,
@@ -1795,6 +1886,12 @@ pub fn verify_format_journal_xbrl_xml(
                 "equity attribution digest differs from its coordinate",
             ));
         }
+    }
+    if let Some(income) = income_attribution {
+        let equity = attribution
+            .as_ref()
+            .ok_or_else(|| equity_error("income activity profile has no equity attribution"))?;
+        income.verify(xml, &coordinate, equity)?;
     }
     Ok((coordinate, report))
 }
@@ -2053,6 +2150,8 @@ mod tests {
             "us-gaap:OperatingIncomeLoss",
             "us-gaap:IncomeTaxExpenseBenefit",
             "us-gaap:NetIncomeLoss",
+            "us-gaap:ProfitLoss",
+            "us-gaap:NetIncomeLossAttributableToNoncontrollingInterest",
         ]
         .into_iter()
         .collect();
@@ -2075,6 +2174,7 @@ mod tests {
             StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
             StatementXbrlMapping::us_gaap_attributed_balance_sheet(),
             StatementXbrlMapping::us_gaap_type_level_income_statement(),
+            StatementXbrlMapping::us_gaap_income_activity(),
             StatementXbrlMapping::us_gaap_small_company_balance_sheet(),
             StatementXbrlMapping::us_gaap_small_company_income_statement(),
         ] {

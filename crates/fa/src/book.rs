@@ -3940,6 +3940,17 @@ impl Book {
         with_store!(&self.store, core => core.format_journal(&self.purposes(), effective_through, known_at))
     }
 
+    /// Historical role attribution and Closing-excluded income activity for
+    /// XBRL v2. Current whole-book read authority precedes source observation.
+    pub fn xbrl_report_inputs(
+        &self,
+        effective_through: fa_time::DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_formats::xbrl::XbrlReportInputs> {
+        with_store!(&self.store, core => core.xbrl_report_inputs(&self.purposes(), effective_through, known_at, capability))
+    }
+
     /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4):
     /// the known-at of the certificate its first StatementIssuance issued,
     /// else its first Lock transition.

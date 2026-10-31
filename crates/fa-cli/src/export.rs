@@ -296,12 +296,16 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if chunks == 1 { "it" } else { "them" },
         ));
     }
-    let equity = if format == "xbrl" {
-        Some(xbrl_equity_attribution(&book, &journal, &capability)?)
+    let activity = if format == "xbrl" {
+        Some(book.xbrl_report_inputs(
+            journal.coordinate.effective_through,
+            Some(fgdb_types::CommitSeq(journal.coordinate.known_at_seq)),
+            &capability,
+        )??)
     } else {
         None
     };
-    let files = render_files(format, &journal, equity.as_ref())?;
+    let files = render_files(format, &journal, None, activity.as_ref())?;
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()
         .map_err(|e| Fail::Internal(e.into()))?
@@ -462,6 +466,7 @@ fn render_files(
     format: &str,
     journal: &fa_formats::FormatJournal,
     equity: Option<&fa_formats::xbrl::XbrlEquityAttribution>,
+    activity: Option<&fa_formats::xbrl::XbrlReportInputs>,
 ) -> Result<Vec<ExportFile>, Fail> {
     let written = |e: fa_formats::FormatError| Fail::Internal(format!("{format} writer: {e}"));
     Ok(match format {
@@ -505,12 +510,17 @@ fn render_files(
         }],
         "xbrl" => vec![ExportFile {
             name: "instance.xbrl",
-            content: match equity {
-                Some(attribution) => fa_formats::xbrl::write_format_journal_xbrl_xml_with_equity(
-                    journal,
-                    attribution,
-                ),
-                None => fa_formats::xbrl::write_legacy_format_journal_xbrl_xml(journal),
+            content: match (activity, equity) {
+                (Some(inputs), _) => {
+                    fa_formats::xbrl::write_format_journal_xbrl_xml_with_activity(journal, inputs)
+                }
+                (None, Some(attribution)) => {
+                    fa_formats::xbrl::write_format_journal_xbrl_xml_with_equity(
+                        journal,
+                        attribution,
+                    )
+                }
+                (None, None) => fa_formats::xbrl::write_legacy_format_journal_xbrl_xml(journal),
             }
             .map_err(written)?,
         }],
@@ -1051,9 +1061,24 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         }
         None => {}
     }
-    // Legacy exports retain their original mapping. Current exports are
-    // re-rendered from the book's own role history, never the delivered list.
+    // Each published profile retains its original mapping. V2 independently
+    // reselects activity and both role sets from the saved journal prefix;
+    // delivered role claims and activity digests are never source authority.
+    let activity = if format == "xbrl"
+        && fa_formats::xbrl::read_xbrl_income_attribution(first)
+            .map_err(unread)?
+            .is_some()
+    {
+        Some(book.xbrl_report_inputs(
+            coordinate.effective_through,
+            Some(fgdb_types::CommitSeq(coordinate.known_at_seq)),
+            &capability,
+        )??)
+    } else {
+        None
+    };
     let equity = if format == "xbrl"
+        && activity.is_none()
         && fa_formats::xbrl::read_xbrl_equity_attribution(first)
             .map_err(unread)?
             .is_some()
@@ -1062,7 +1087,7 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     } else {
         None
     };
-    let expected = render_files(format, &journal, equity.as_ref())?;
+    let expected = render_files(format, &journal, equity.as_ref(), activity.as_ref())?;
     for (file, found) in expected.iter().zip(&contents) {
         if file.content != *found {
             let line = file

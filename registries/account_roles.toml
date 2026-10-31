@@ -111,7 +111,7 @@ name = "noncontrolling_interest_income"
 account_types = ["Expense"]
 meaning = "Net income attributable to noncontrolling interests (ASC 810-10-45-20): consolidation charges the minority's share of a partly owned subsidiary's post-acquisition earnings here, so the net income that remains is the parent's."
 consumers = []
-verbs = ["consolidate"]
+verbs = ["consolidate", "export", "verify"]
 
 [[role]]
 name = "retained_earnings"
