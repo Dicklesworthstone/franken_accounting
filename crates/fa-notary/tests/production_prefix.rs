@@ -134,3 +134,76 @@ fn reuse_verifies_the_whole_balance_not_just_a_parseable_prefix() {
         .unwrap();
     assert!(verify_prefix_with_records(&legacy, &checkpoint).is_err());
 }
+
+/// fa-model's own `IntakeSource` encodings inside ImportRun controls (tag 1
+/// upload, 2 connector, 3 email, 4 scan). A whole-prefix evidence
+/// production selects control entries too, so fa-verify must skip each
+/// source exactly; an import run cites no document.
+#[test]
+fn whole_prefix_evidence_production_reads_import_runs_of_every_intake_source() {
+    use fa_model::{ControlKind, ControlPayload, EntryClass, EntryOrigin, IntakeSource};
+    use fa_verify::evidence::inventory::production::prefix::verify_evidence_prefix_for;
+    let posting = source_entry();
+    let sources = [
+        IntakeSource::Upload { principal: VId(7) },
+        IntakeSource::Connector {
+            name: "plaid".into(),
+            version: "2026.10".into(),
+        },
+        IntakeSource::Email {
+            message_id: "<statement@bank.example>".into(),
+        },
+        IntakeSource::Scan {
+            device: "scanner-3".into(),
+        },
+    ];
+    let mut records = vec![(VId(1), posting.clone(), CommitSeq(1))];
+    for (n, source) in (0u8..).zip(sources) {
+        let mut run = posting.proposal.clone();
+        run.class = EntryClass::IMPORT_CONTROL;
+        run.legs = Vec::new();
+        run.unit_totals = Vec::new();
+        run.base_totals = None;
+        run.effective_period = None;
+        run.evidence = Vec::new();
+        run.control = Some(ControlPayload::ImportRun {
+            source,
+            document_count: 1,
+            byte_count: 64,
+            oids_root: [n; 32],
+            receipt_hash: [0x40 + n; 32],
+        });
+        run.origin = EntryOrigin::Control {
+            control_kind: ControlKind::IMPORT_RUN,
+            spec_body_digest: [0x40 + n; 32],
+        };
+        run.idempotency_key = format!("import-run-{n}").into_bytes();
+        let seq = 2 + u64::from(n);
+        records.push((
+            VId(u128::from(seq)),
+            run.seal(Vec::new(), None).unwrap(),
+            CommitSeq(seq),
+        ));
+    }
+    let journal = Journal::from_records(Id128([0x5a; 16]), CommitSeq(5), records).unwrap();
+    let state = AccumulatorState::of_journal(&journal, None);
+    let checkpoint = fa_verify::verify_state(&state.canonical_bytes().unwrap())
+        .unwrap()
+        .checkpoint;
+    let prefix = journal.prefix_proof_with_records().unwrap().unwrap();
+    let whole = ProductionScope {
+        first_seq: 0,
+        known_at: 5,
+        account: None,
+        effective_days: None,
+    };
+    let produced = verify_evidence_prefix_for(&prefix, &checkpoint, &whole).unwrap();
+    assert_eq!(produced.entries.len(), 5);
+    assert_eq!(
+        produced.entries[0].citations.len(),
+        posting.proposal.evidence.len()
+    );
+    for run in &produced.entries[1..] {
+        assert!(run.citations.is_empty(), "an import run cites no document");
+    }
+}
