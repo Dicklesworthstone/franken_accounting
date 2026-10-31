@@ -269,6 +269,7 @@ impl Snapshot {
                     external_ids: BTreeMap::new(),
                     relationships: Vec::new(),
                     events: BTreeMap::new(),
+                    deposit_profiles: Vec::new(),
                 }
             }
             Err(e) => return Err(e.into()),

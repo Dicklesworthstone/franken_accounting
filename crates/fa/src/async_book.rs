@@ -805,6 +805,39 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Journal a deposit's Part 370 participant profile from its valid-from
+    /// date (plan §15.6 workflow 3, bead `fa-p370`).
+    pub async fn record_deposit_profile(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::DepositProfileSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "record deposit profile {} {} from {}",
+                spec.capacity.code(),
+                spec.product.code(),
+                spec.valid_from
+            ),
+        )?;
+        Ok(fa_journal::record_deposit_profile(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            spec.valid_from,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record_event(
         &mut self,

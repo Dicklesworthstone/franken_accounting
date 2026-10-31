@@ -1182,6 +1182,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &["instrument", "profile", "junk.json"],
+            &[Op::SchemaChange],
+            Reaches,
+        ),
+        row(
             &["entity", "add", "junk.json"],
             &[Op::SchemaChange],
             Reaches,

@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use fa_model::deposit::SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE;
 use fa_model::limits::{MAX_EVIDENCE_PER_ENTRY, MAX_EXTERNAL_ID_BYTES};
 use fa_model::rea::{
     MAX_EVENT_PARTICIPANTS, MAX_EVENT_RESOURCE_LABEL_BYTES, MAX_EVENT_RESOURCES,
@@ -18,12 +19,13 @@ use fa_model::rea::{
 };
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, EventSpec,
-    ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec, LEGAL_ENTITY_DIMENSION,
-    LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct, PARTY_DIMENSION,
-    PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec, ReaControlOp,
-    RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid, entry_mirrors, entry_vid,
-    event_vid, external_id_vid, instrument_vid, legal_entity_vid, party_value_vid, party_vid,
+    ControlKind, ControlPayload, DepositProfileSpec, Entry, EntryClass, EntryOrigin, EntryPayload,
+    Erasable, EventSpec, ExternalId, ExternalIdBinding, Id128, InstrumentKind, InstrumentSpec,
+    LEGAL_ENTITY_DIMENSION, LEGAL_ENTITY_DIMENSION_CODE, LegalEntityFullSpec, OwnershipPct,
+    PARTY_DIMENSION, PARTY_DIMENSION_CODE, PartyIdentifierUpdate, PartyKind, PartySpec,
+    ReaControlOp, RelationshipKind, RelationshipSpec, dimension_vid, entity_value_vid,
+    entry_mirrors, entry_vid, event_vid, external_id_vid, instrument_vid, legal_entity_vid,
+    party_value_vid, party_vid,
 };
 use fa_money::UnitId;
 use fa_policy::Capability;
@@ -126,6 +128,15 @@ pub struct EventRow {
     pub control_entry: VId,
 }
 
+/// A journaled deposit participant profile (`SchemaChange` `kind = 23`,
+/// plan §15.6 workflow 3, bead `fa-p370`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DepositProfileRow {
+    pub spec: DepositProfileSpec,
+    pub recorded_at: CommitSeq,
+    pub control_entry: VId,
+}
+
 /// One party/entity reached by [`ReaSnapshot::related_as_of`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelatedPartyHit {
@@ -147,9 +158,22 @@ pub struct ReaSnapshot {
     pub external_ids: BTreeMap<VId, ExternalIdRow>,
     pub relationships: Vec<RelationshipRow>,
     pub events: BTreeMap<VId, EventRow>,
+    /// In recorded order.
+    pub deposit_profiles: Vec<DepositProfileRow>,
 }
 
 impl ReaSnapshot {
+    /// The profile describing `deposit` on `day`: of those valid from that
+    /// day or earlier, the latest valid-from date, and at one date the one
+    /// recorded last (a later record corrects an earlier one).
+    #[must_use]
+    pub fn deposit_profile_on(&self, deposit: VId, day: DateDay) -> Option<&DepositProfileRow> {
+        self.deposit_profiles
+            .iter()
+            .filter(|p| p.spec.instrument == deposit && p.spec.valid_from <= day)
+            .max_by_key(|p| (p.spec.valid_from, p.recorded_at, p.control_entry))
+    }
+
     /// Code of a `Party`, `LegalEntity`, `Instrument`, or `Event` vertex in this snapshot, if present.
     #[must_use]
     pub fn endpoint_code(&self, vid: VId) -> Option<&str> {
@@ -950,6 +974,21 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
             "mirror a leaf account under the summary",
         )));
     }
+    if spec.kind == InstrumentKind::Deposit
+        && fa_model::AccountType(acct.account_type) != fa_model::AccountType::LIABILITY
+    {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "deposit `{}` mirrors `{}`, which is not a Liability: a deposit is the book's liability to its depositors",
+                spec.code, acct.code
+            ),
+            "plan §15.6 workflow 3 (Instrument { kind: Deposit } liabilities)",
+            "mirror the deposit to a Liability leaf, one per deposit account",
+        )));
+    }
     let unit_ok = match acct.unit_policy {
         UnitPolicy::Single(u) => u == spec.unit,
         UnitPolicy::AnyCurrency => matches!(unit_def.kind, fa_money::UnitKind::Currency { .. }),
@@ -1617,6 +1656,182 @@ pub async fn record_relationship<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// Journal a deposit's participant profile (`SchemaChange` `kind = 23`,
+/// plan §15.6 workflow 3, bead `fa-p370`): its capacity, product, primary
+/// customer, optional accrued-interest leaf and complete participant set,
+/// from `spec.valid_from`. The instrument is a recorded `Deposit`, every
+/// participant a recorded `Party`, and an interest leaf a Liability leaf
+/// other than the deposit's own. The control entry is the whole record; it
+/// changes no account and no balance.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_deposit_profile<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    spec: &DepositProfileSpec,
+    principal_ref: VId,
+    effective_date: DateDay,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+) -> Outcome<ReaControlRecorded> {
+    if let Some(refusal) = admit_schema_change(db, book, principal_ref, capability)? {
+        return Ok(Err(refusal));
+    }
+    let structure = |message: String, fix: &str| {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            message,
+            "plan §15.6 workflow 3 (FDIC Part 370: deposit capacities and participants)",
+            fix.to_string(),
+        )
+    };
+    if let Err(field) = spec.check() {
+        return Ok(Err(structure(
+            format!("the deposit profile breaks `{field}`"),
+            "name at least one owner; owner shares in basis points sum to exactly 10000; other roles carry no share; only a REV or IRR owner names its beneficiaries; the primary customer is an owner; each (party, role) once",
+        )));
+    }
+
+    let canonical_bytes = spec.encode().map_err(fa_model::EntryError::from)?;
+    let proposal = schema_control_proposal(
+        book,
+        SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE,
+        canonical_bytes,
+        principal_ref,
+        effective_date,
+        idempotency_key,
+        description,
+    );
+    let proposal_digest = proposal.proposal_digest()?;
+    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let evid = entry_vid(
+        book.book_id,
+        &principal_ref.0.to_le_bytes(),
+        idempotency_key,
+    );
+
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        return check_rea_idempotency(book, &row, spec.instrument, &proposal, &proposal_digest);
+    }
+    let instrument = match txn.vertex(db, spec.instrument)? {
+        Some(row) if row.labels.contains(&label::INSTRUMENT) => InstrumentSpec::decode(&bytes(
+            &row,
+            property::FA_PAYLOAD,
+            "instrument._fa_payload",
+        )?)
+        .map_err(|e| corrupt(format!("instrument {:032x}: {e}", spec.instrument.0)))?,
+        _ => {
+            txn.abort();
+            return Ok(Err(structure(
+                format!(
+                    "deposit profile names {:032x}, which is not an instrument in this book",
+                    spec.instrument.0
+                ),
+                "record the deposit first (fa instrument add with \"kind\": \"Deposit\")",
+            )));
+        }
+    };
+    if instrument.kind != InstrumentKind::Deposit {
+        txn.abort();
+        return Ok(Err(structure(
+            format!(
+                "instrument `{}` is a {}, not a Deposit: only a deposit has Part 370 participants",
+                instrument.code,
+                instrument.kind.name()
+            ),
+            "name a Deposit instrument",
+        )));
+    }
+    for p in &spec.participants {
+        let is_party = txn
+            .vertex(db, p.party)?
+            .is_some_and(|row| row.labels.contains(&label::PARTY));
+        if !is_party {
+            txn.abort();
+            return Ok(Err(structure(
+                format!(
+                    "deposit `{}` names participant {:032x}, which is not a Party in this book",
+                    instrument.code, p.party.0
+                ),
+                "record each participant first (fa party add)",
+            )));
+        }
+    }
+    if let Some(interest) = spec.interest_account {
+        let account = match txn.vertex(db, interest)? {
+            Some(row) if row.labels.contains(&label::ACCOUNT) => AccountRow::decode(&row)?,
+            _ => {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::UNKNOWN_ACCOUNT,
+                    exit::REFUSAL,
+                    format!(
+                        "deposit `{}` names interest account {:032x}, which does not exist in this book",
+                        instrument.code, interest.0
+                    ),
+                    "plan §15.6 workflow 3 (accrued interest is a Liability leaf's register)",
+                    "open the interest Liability leaf first, or omit interest_account",
+                )));
+            }
+        };
+        let unit_ok = match account.unit_policy {
+            UnitPolicy::Single(u) => u == instrument.unit,
+            UnitPolicy::AnyCurrency | UnitPolicy::AnyUnit => true,
+        };
+        if interest == instrument.mirrors_account
+            || !account.is_leaf
+            || fa_model::AccountType(account.account_type) != fa_model::AccountType::LIABILITY
+            || !unit_ok
+        {
+            txn.abort();
+            return Ok(Err(structure(
+                format!(
+                    "deposit `{}` names interest account `{}`, which is not a Liability leaf in the deposit's unit apart from the deposit's own leaf",
+                    instrument.code, account.code
+                ),
+                "name a separate Liability leaf for the deposit's accrued interest, or omit interest_account",
+            )));
+        }
+    }
+
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    if let Err(e) = txn.write_ordered(db, vec![batch]) {
+        txn.abort();
+        return Err(e.into());
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(ReaControlRecorded {
+            recorded_at: seq,
+            control_entry: evid,
+            target_vid: spec.instrument,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!(
+                    "a concurrent commit invalidated record_deposit_profile's witness: {detail}"
+                ),
+                "FG-LAW-FCW-01 (first committer wins)",
+                "retry record_deposit_profile against the new frontier",
+            )))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Journal an update to a `Party`'s identifiers (e.g. bank routing/account
 /// metadata, `SchemaChange` `kind = 10`, plan §4.5, §14.4 BEC vector, bead `fa-l2h`).
 #[allow(clippy::too_many_arguments)]
@@ -2277,6 +2492,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     let mut external_ids: BTreeMap<VId, ExternalIdRow> = BTreeMap::new();
     let mut relationships: Vec<RelationshipRow> = Vec::new();
     let mut events: BTreeMap<VId, EventRow> = BTreeMap::new();
+    let mut deposit_profiles: Vec<DepositProfileRow> = Vec::new();
 
     let register_ext = |target_vid: VId,
                         target_code: &str,
@@ -2477,6 +2693,34 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                     return Err(corrupt(format!("duplicate Event {:032x}", vid.0)));
                 }
             }
+            // The kernel admitted it against a recorded Deposit and recorded
+            // parties; replay re-checks both from the declarations before it.
+            ReaControlOp::RecordDepositProfile(spec) => {
+                if !instruments
+                    .get(&spec.instrument)
+                    .is_some_and(|i| i.kind == InstrumentKind::Deposit)
+                {
+                    return Err(corrupt(format!(
+                        "deposit profile {:032x} names {:032x}, which is not a recorded Deposit",
+                        control_vid.0, spec.instrument.0
+                    )));
+                }
+                if let Some(p) = spec
+                    .participants
+                    .iter()
+                    .find(|p| !parties.contains_key(&p.party))
+                {
+                    return Err(corrupt(format!(
+                        "deposit profile {:032x} names {:032x}, which is not a recorded Party",
+                        control_vid.0, p.party.0
+                    )));
+                }
+                deposit_profiles.push(DepositProfileRow {
+                    spec,
+                    recorded_at: created_at,
+                    control_entry: control_vid,
+                });
+            }
         }
     }
 
@@ -2556,5 +2800,6 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
         external_ids,
         relationships,
         events,
+        deposit_profiles,
     })
 }

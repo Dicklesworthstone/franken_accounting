@@ -1342,6 +1342,21 @@ impl Book {
         )))
     }
 
+    /// Journal a deposit's Part 370 participant profile (`SchemaChange`
+    /// `kind = 23`, plan §15.6 workflow 3, bead `fa-p370`).
+    pub fn record_deposit_profile(
+        &mut self,
+        spec: &fa_model::DepositProfileSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_deposit_profile(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
     /// Journal and materialize an REA economic `Event` vertex (`SchemaChange` `kind = 11`,
     /// plan §4.1 `Event`, §4.5, FA-INV-05, bead `fa-f3bo`).
     #[allow(clippy::too_many_arguments)]
@@ -3957,6 +3972,18 @@ impl Book {
         known_at: Option<CommitSeq>,
     ) -> Result<fa_formats::FormatJournal, BookError> {
         with_store!(&self.store, core => core.format_journal(&self.purposes(), effective_through, known_at))
+    }
+
+    /// The FDIC Part 370 input snapshot at end of day `as_of`, as known at
+    /// `known_at`, under whole-book read authority (plan §15.6 workflow 3,
+    /// bead `fa-p370`; [`crate::part370`]).
+    pub fn part370_book(
+        &self,
+        as_of: fa_time::DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_formats::part370::Part370BankBook> {
+        with_store!(&self.store, core => core.part370_book(&self.purposes(), as_of, known_at, capability))
     }
 
     /// Historical role attribution and Closing-excluded income activity for

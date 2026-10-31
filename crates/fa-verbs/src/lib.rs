@@ -813,9 +813,16 @@ impl Registry {
                     v.name
                 ));
             }
+            // A subcommand starts with a letter and may carry digits after
+            // it: plan §15.6.3 names the FDIC export `fa export part370`.
+            let ok_subcommand = |w: &str| {
+                w.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                    && w.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            };
             let subs: BTreeSet<_> = v.subcommands.iter().collect();
             if subs.len() != v.subcommands.len()
-                || !v.subcommands.iter().all(|s| ok_word(s.as_str()))
+                || !v.subcommands.iter().all(|s| ok_subcommand(s.as_str()))
             {
                 return Err(format!("verbs.toml: verb {}: bad subcommands", v.name));
             }
@@ -2077,6 +2084,32 @@ mod bound_tests {
     fn planted(from: &str, to: &str) -> Result<Registry, String> {
         assert_eq!(SOURCE.matches(from).count(), 1, "anchor {from:?}");
         Registry::parse(&SOURCE.replacen(from, to, 1))
+    }
+
+    /// A subcommand starts with a lowercase letter; digits may follow
+    /// (`fa export part370`, plan §15.6.3). A leading digit, an uppercase
+    /// letter or another character is still refused.
+    #[test]
+    fn a_subcommand_may_carry_digits_after_its_first_letter() {
+        let reg = Registry::parse(SOURCE).expect("the embedded registry");
+        assert!(
+            reg.verb("export")
+                .is_some_and(|v| v.subcommands.iter().any(|s| s == "part370"))
+        );
+        let anchor = "subcommands = [\"ads\", \"saft\", \"csv-gl\", \"beancount\", \"hledger\", \"ndjson\", \"xbrl\", \"warehouse\", \"part370\"]";
+        for bad in ["370part", "Part370", "part_370", ""] {
+            // Added beside part370, so every rule naming part370 still
+            // holds and only the new name can be refused.
+            let error = planted(
+                anchor,
+                &anchor.replace("\"part370\"]", &format!("\"part370\", \"{bad}\"]")),
+            )
+            .expect_err(bad);
+            assert!(
+                error.contains("verb export: bad subcommands"),
+                "{bad}: {error}"
+            );
+        }
     }
 
     #[test]

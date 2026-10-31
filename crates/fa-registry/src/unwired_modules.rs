@@ -199,14 +199,14 @@ mod tests {
     #[test]
     fn the_embedded_registry_loads_with_unique_rows() {
         let r = UnwiredModules::embedded().expect("unwired_modules.toml");
-        assert!(!r.unwired.is_empty());
         assert!(!r.verification.is_empty());
-        assert!(
-            r.unwired
-                .iter()
-                .any(|u| u.path == "fa_formats::part370" && u.owner_bead == "fa-p370")
-        );
+        // fa export part370 reaches fa_formats::part370 (fa-p370): a row
+        // naming it would be stale wiring debt.
+        assert!(r.unwired.iter().all(|u| u.path != "fa_formats::part370"));
         let parsed = UnwiredModules::from_text(ROW).expect("one row");
+        assert_eq!(parsed.unwired.len(), 1);
+        assert_eq!(parsed.unwired[0].path, "fa_x::y");
+        assert_eq!(parsed.unwired[0].owner_bead, "fa-abc");
         assert_eq!(parsed.unwired[0].expires, "2026-11-21");
     }
 

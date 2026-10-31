@@ -1197,6 +1197,40 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
     );
     run_ok(&["party", "add", &customer]);
 
+    // A depositor's account for Part 370 (WF-FDIC-03): a Deposit on its own
+    // Liability leaf with a single-owner profile, funded in March, so the
+    // export reads a real account, customer and balance.
+    let deposits_leaf = write_file(
+        dir,
+        "deposits.json",
+        r#"{"code":"2800","name":"Customer deposits","type":"Liability","unit":"USD","parent":"2"}"#,
+    );
+    run_ok(&["chart", "open", &deposits_leaf, "--opened", "2026-01-01"]);
+    let bank = write_file(
+        dir,
+        "bank.json",
+        r#"{"code":"ACME-BANK","kind":"Bank","name":"Acme Scoreboard Bank"}"#,
+    );
+    run_ok(&["party", "add", &bank]);
+    let depositor = write_file(
+        dir,
+        "depositor.json",
+        r#"{"code":"DEPOSITOR-1","kind":"Customer","name":"Dana Q Depositor","identifiers":{"given_name":"Dana","middle_name":"Q","family_name":"Depositor","tax_id":"999-02-0001","tax_id_type":"S","country":"US"}}"#,
+    );
+    run_ok(&["party", "add", &depositor]);
+    let deposit = write_file(
+        dir,
+        "deposit.json",
+        r#"{"code":"DEP-1","name":"Checking","kind":"Deposit","unit":"USD","held_at":"ACME-BANK","mirrors":"2800"}"#,
+    );
+    run_ok(&["instrument", "add", &deposit]);
+    let profile = write_file(
+        dir,
+        "deposit-profile.json",
+        r#"{"instrument":"DEP-1","capacity":"SGL","product":"DDA","primary":"DEPOSITOR-1","valid_from":"2026-01-01","participants":[{"party":"DEPOSITOR-1","role":"owner","ownership_bps":10000}]}"#,
+    );
+    run_ok(&["instrument", "profile", &profile]);
+
     let sale_1 = write_file(
         dir,
         "sale1.json",

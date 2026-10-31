@@ -89,6 +89,7 @@ pub mod ledger_diff;
 pub mod lots_certificate;
 pub mod matching;
 pub mod outcome_recovery;
+pub mod part370;
 pub mod plan_warnings;
 pub mod procedure_certificate;
 pub mod production;

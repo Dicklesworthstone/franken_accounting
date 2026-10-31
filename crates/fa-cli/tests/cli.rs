@@ -17,6 +17,8 @@ use fa_cli::verbs::registry;
 
 #[path = "cli/lot_disposal.rs"]
 mod lot_disposal;
+#[path = "cli/part370.rs"]
+mod part370;
 #[path = "cli/proportional_post.rs"]
 mod proportional_post;
 
@@ -12143,6 +12145,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["instrument", "add", &account]).0, 0);
     assert_eq!(run(true, &["instrument", "list"]).0, 0);
+    // A book without deposits exports an empty Part 370 package (the
+    // contents are tests/cli/part370.rs's).
+    assert_eq!(
+        run(true, &["export", "part370", "--as-of", "2026-03-31"]).0,
+        0
+    );
     // A retained statement is matched to an actual cash leg. The exact
     // emitted command is independently confirmed and inventoried afterward.
     assert_eq!(run(true, &["entity", "list"]).0, 0);

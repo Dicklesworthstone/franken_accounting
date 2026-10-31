@@ -295,6 +295,52 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
         });
     }
 
+    // The files are pipe-delimited lines with no escaping: a field holding
+    // a delimiter or a line break would shift every later column.
+    let delimited = |value: &str, field: &'static str, context: &str| {
+        if value.contains(['|', '\n', '\r']) {
+            return Err(FormatError::Parse {
+                format: "fdic_part370_v1",
+                detail: format!(
+                    "`{field}` on {context} holds a `|` or a line break, which the pipe-delimited file cannot carry"
+                ),
+            });
+        }
+        Ok(())
+    };
+    for c in &book.customers {
+        let context = format!("customer {}", c.cs_unique_id);
+        for (value, field) in [
+            (&c.cs_unique_id, "CS_Unique_ID"),
+            (&c.first_name, "CS_First_Name"),
+            (&c.middle_name, "CS_Middle_Name"),
+            (&c.last_name, "CS_Last_Name"),
+            (&c.name_suffix, "CS_Name_Suffix"),
+            (&c.entity_name, "CS_Entity_Name"),
+            (&c.tax_id, "CS_Tax_ID"),
+            (&c.tax_id_type, "CS_Tax_ID_Type"),
+            (&c.street_address_1, "CS_Street_Address_1"),
+            (&c.city, "CS_City"),
+            (&c.state, "CS_State"),
+            (&c.postal_code, "CS_Postal_Code"),
+            (&c.country, "CS_Country"),
+        ] {
+            delimited(value, field, &context)?;
+        }
+    }
+    for a in &book.accounts {
+        let context = format!("account {}", a.dp_acct_id);
+        delimited(&a.dp_acct_id, "DP_Acct_Identifier", &context)?;
+        delimited(&a.prod_cat, "DP_Prod_Cat", &context)?;
+        delimited(&a.unit_code, "DP_Currency", &context)?;
+    }
+    for p in &book.pending_items {
+        let context = format!("pending item {}", p.pending_id);
+        delimited(&p.pending_id, "PD_Pending_ID", &context)?;
+        delimited(&p.hold_reason, "PD_Hold_Reason", &context)?;
+        delimited(&p.unit_code, "PD_Currency", &context)?;
+    }
+
     let mut customer_ids = BTreeSet::new();
     let mut sorted_customers = book.customers.clone();
     sorted_customers.sort_by(|a, b| a.cs_unique_id.cmp(&b.cs_unique_id));
@@ -458,16 +504,46 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
         uninsured_mantissa: i128,
     }
 
+    // An account's principal and interest is allocated among its edges by
+    // the registered LargestRemainder law (allocation_laws.toml id 1 v1) on
+    // the owners' basis points (others weigh 0), in (account, customer)
+    // order: the allocable shares sum to the account exactly, never losing
+    // a unit to truncation.
+    let mut weights: BTreeMap<&str, Vec<u128>> = BTreeMap::new();
+    for edge in &sorted_participants {
+        let weight = if edge.participant_role == Part370ParticipantRole::Own {
+            u128::from(edge.ownership_pct_bps)
+        } else {
+            0
+        };
+        weights
+            .entry(edge.dp_acct_id.as_str())
+            .or_default()
+            .push(weight);
+    }
+    let mut shares_by_account: BTreeMap<&str, std::vec::IntoIter<i128>> = BTreeMap::new();
+    for (acct, w) in weights {
+        let total_pi = account_map.get(acct).map_or(0, |entry| entry.2);
+        let shares =
+            fa_money::largest_remainder(fa_money::Amount::new(fa_money::UnitId(0), total_pi), &w)
+                .map_err(|e| FormatError::Overflow {
+                format: "fdic_part370_v1",
+                detail: format!("allocating account {acct} under LargestRemainder: {e:?}"),
+            })?;
+        let shares: Vec<i128> = shares.into_iter().map(|a| a.mantissa).collect();
+        shares_by_account.insert(acct, shares.into_iter());
+    }
+
     let mut participant_rows = Vec::with_capacity(sorted_participants.len());
     for edge in &sorted_participants {
-        let &(acct, orc, total_pi) = account_map.get(&edge.dp_acct_id).unwrap();
-        let allocable = total_pi
-            .checked_mul(i128::from(edge.ownership_pct_bps))
+        let &(acct, orc, _) = account_map.get(&edge.dp_acct_id).unwrap();
+        let allocable = shares_by_account
+            .get_mut(edge.dp_acct_id.as_str())
+            .and_then(Iterator::next)
             .ok_or_else(|| FormatError::Overflow {
                 format: "fdic_part370_v1",
-                detail: "allocable share multiplication overflow".into(),
-            })?
-            / 10_000;
+                detail: format!("no allocated share for account {}", edge.dp_acct_id),
+            })?;
 
         let cap_multiplier: i128 = match orc {
             Part370OrcCode::Rev | Part370OrcCode::Irr => {
@@ -926,5 +1002,67 @@ mod tests {
         book2.accounts[0].dp_right_capacity = Some(String::new());
         let err2 = generate_part370_bundle(&book2).unwrap_err();
         assert!(err2.to_string().contains("DP_Right_Capacity"));
+    }
+
+    /// Owner shares that do not divide the account evenly are allocated
+    /// under LargestRemainder: the allocable shares sum to the account's
+    /// principal and interest exactly (truncation lost a cent here).
+    #[test]
+    fn owner_shares_conserve_the_account_under_largest_remainder() {
+        let mut book = fixture_part370_bank_book();
+        // DEP-2001: 100.01 USD among three joint owners, 3333/3333/3334 bps.
+        book.accounts[2].current_balance_mantissa = 10_001;
+        book.participants.retain(|p| p.dp_acct_id != "DEP-2001");
+        for (customer, bps) in [
+            ("CUST-001", 3_333),
+            ("CUST-002", 3_333),
+            ("CUST-003", 3_334),
+        ] {
+            book.participants.push(Part370AccountParticipantEdge {
+                dp_acct_id: "DEP-2001".into(),
+                cs_unique_id: customer.into(),
+                ap_right_capacity: Some("JNT".into()),
+                participant_role: Part370ParticipantRole::Own,
+                ownership_pct_bps: bps,
+                beneficiary_count: 0,
+            });
+        }
+        let bundle = generate_part370_bundle(&book).unwrap();
+        let shares: Vec<&str> = bundle
+            .account_participant_file
+            .lines()
+            .filter(|l| l.starts_with("DEP-2001|"))
+            .map(|l| l.split('|').nth(6).unwrap())
+            .collect();
+        assert_eq!(shares, ["33.33", "33.33", "33.35"]);
+    }
+
+    /// A delimiter or line break inside a field would shift every later
+    /// column of its line, so it is refused naming the field and record.
+    #[test]
+    fn a_field_holding_the_delimiter_or_a_line_break_is_refused() {
+        for (edit, field, record) in [
+            (
+                (|b: &mut Part370BankBook| b.customers[2].entity_name = "Apex | Sons".into())
+                    as fn(&mut Part370BankBook),
+                "CS_Entity_Name",
+                "customer CUST-003",
+            ),
+            (
+                |b: &mut Part370BankBook| b.customers[0].street_address_1 = "100 Oak\nSt".into(),
+                "CS_Street_Address_1",
+                "customer CUST-001",
+            ),
+            (
+                |b: &mut Part370BankBook| b.pending_items[0].hold_reason = "court\rorder".into(),
+                "PD_Hold_Reason",
+                "pending item PND-9001",
+            ),
+        ] {
+            let mut book = fixture_part370_bank_book();
+            edit(&mut book);
+            let msg = generate_part370_bundle(&book).unwrap_err().to_string();
+            assert!(msg.contains(field) && msg.contains(record), "{msg}");
+        }
     }
 }

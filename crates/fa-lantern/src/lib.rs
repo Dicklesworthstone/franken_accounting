@@ -1336,6 +1336,7 @@ mod tests {
                 external_ids: std::collections::BTreeMap::new(),
                 relationships: Vec::new(),
                 events: std::collections::BTreeMap::new(),
+                deposit_profiles: Vec::new(),
             },
             attestations: std::collections::BTreeMap::new(),
             documents: std::collections::BTreeMap::new(),

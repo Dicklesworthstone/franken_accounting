@@ -26,6 +26,7 @@ pub mod asset_cost;
 pub mod bank_csv;
 pub mod canon;
 pub mod closing;
+pub mod deposit;
 pub mod entry;
 pub mod erasable;
 pub mod ids;
@@ -45,6 +46,9 @@ pub use account::AccountType;
 pub use asset_cost::{AssetChargeBasis, AssetCostKind, AssetScheduleSpec};
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
 pub use closing::YearEndCloseBasis;
+pub use deposit::{
+    DepositCapacity, DepositParticipant, DepositProduct, DepositProfileSpec, DepositRole,
+};
 pub use entry::{
     BaseTotals, ControlKind, ControlPayload, Disposition, Entry, EntryClass, EntryError,
     EntryOrigin, EntryPayload, EvidenceRef, ExternalId, IntakeSource, LegPayload, Pending,

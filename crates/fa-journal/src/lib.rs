@@ -202,10 +202,11 @@ pub use production::{
 };
 pub use proportional::{PreparedProportionalPost, prepare_proportional_post};
 pub use rea::{
-    DIMENSION_KIND_PARTY, EventRow, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,
-    ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, bind_external_id,
-    create_instrument, create_legal_entity, create_party, read_rea_at, record_event,
-    record_relationship, relationship_edge_id, update_party_identifiers,
+    DIMENSION_KIND_PARTY, DepositProfileRow, EventRow, ExternalIdRow, InstrumentRow,
+    LegalEntityRow, PartyRow, ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow,
+    bind_external_id, create_instrument, create_legal_entity, create_party, read_rea_at,
+    record_deposit_profile, record_event, record_relationship, relationship_edge_id,
+    update_party_identifiers,
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,

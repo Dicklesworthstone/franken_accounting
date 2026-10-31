@@ -26,12 +26,6 @@
 
 schema_version = 1
 
-[[unwired]]
-path = "fa_formats::part370"
-owner_bead = "fa-p370"
-reason = "FDIC Part 370 files need ORC capacity codes on account-participant edges, which the REA model does not carry; no fa export part370."
-expires = "2026-11-21"
-
 [[verification]]
 path = "fa_formats::conformance"
 consumer = "crates/fa-formats/tests/formats_conformance.rs"

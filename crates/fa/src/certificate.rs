@@ -2301,7 +2301,10 @@ fn statement_chart_additions<V: Vfs + Clone>(
                 kind: 1,
                 canonical_bytes,
             }) => canonical_bytes,
-            Some(ControlPayload::SchemaChange { kind: 2..=11, .. }) => continue,
+            Some(ControlPayload::SchemaChange {
+                kind: 2..=11 | fa_model::deposit::SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE,
+                ..
+            }) => continue,
             Some(ControlPayload::SchemaChange {
                 kind: 12 | 14..=20, ..
             }) => {

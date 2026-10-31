@@ -319,10 +319,9 @@ ordinal = 3
 vision_row = "VC-23"
 description = "Export FDIC Part 370 deposit insurance determination files (`fa export part370`)"
 argv = ["export", "part370", "--as-of", "2026-03-31", "--book", "{book}", "--json"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-p370"
+expected = "works"
+expected_exit = 0
+expected_event = "part370_exported"
 
 # ---- Workflow 5: trustee-receiver-takeover (§15.6.4) ------------------------
 
