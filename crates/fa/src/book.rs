@@ -1921,6 +1921,21 @@ impl Book {
         with_store!(&self.store, core => core.case(&self.purposes(), ordinal))
     }
 
+    /// Fixed original-reporting-versus-Post questions for a correction case,
+    /// including the source evidence and the opening balance sheet.
+    pub fn case_statement_diff_requests(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        ordinal: u32,
+        audience: Option<fa_journal::IssuedTo>,
+    ) -> Outcome<Vec<crate::CaseStatementDiffRequest>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.case_statement_diff_requests(
+            &purposes, principal, capability, ordinal, audience,
+        )))
+    }
+
     /// Every restatement case of the book, by ordinal.
     pub fn cases(&self) -> Result<Vec<fa_journal::CaseView>, BookError> {
         with_store!(&self.store, core => core.cases(&self.purposes()))
