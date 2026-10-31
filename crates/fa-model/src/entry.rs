@@ -46,10 +46,11 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// prior-period-adjustment source period. Minor 4 admits allocated FX carrying
 /// values and their exact settlement releases; minor 5 admits law-bound lot
 /// disposal and its recorded-version account policy; minor 6 admits
-/// source-bound finite asset charges and their exact reversals. A writer may
+/// source-bound finite asset charges and their exact reversals. Minor 7 binds
+/// case disclosures to their immutable Post and retained statement comparisons. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 6;
+pub const SCHEMA_MINOR: u16 = 7;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -193,11 +194,13 @@ pub const CASE_MEMBER_EXTENSION: u16 = 23;
 /// `CaseControl` Post record names — `u16 version ‖ list(u128 plan ‖ u128
 /// entry ‖ [32] entry digest)`, in manifest order.
 pub const CASE_POSTED_EXTENSION: u16 = 24;
-/// Extension tag 25, `fa:case-disclosure:v1` (bead fa-75j4): on a
+/// Extension tag 25, `fa:case-disclosure:v1|v2` (beads fa-75j4, fa-0hs4.7): on a
 /// `CaseControl` Disclose record, the Disclosure document the case is
 /// disclosed in and the Reviewed attestation over it — `u16 version ‖
-/// [32] document oid ‖ u128 attestation`.
+/// [32] document oid ‖ u128 attestation`. Version 2 appends the committed Post
+/// entry/sequence and a bounded sorted list of statement comparison digests.
 pub const CASE_DISCLOSURE_EXTENSION: u16 = 25;
+pub const CASE_DISCLOSURE_SCHEMA_MINOR: u16 = 7;
 /// Extension tag 26, `fa:documentation-completion:v1` (plan §11.12, AS
 /// 1215.15, bead fa-zgn): on an `EngagementControl` Complete record, the
 /// report release date and the documentation completion date — `u16
@@ -1903,6 +1906,19 @@ impl EntryPayload {
         if let Some((_, bytes)) = self
             .extensions
             .iter()
+            .find(|(tag, _)| *tag == CASE_DISCLOSURE_EXTENSION)
+            && bytes.starts_with(&2u16.to_le_bytes())
+            && (self.schema_minor < CASE_DISCLOSURE_SCHEMA_MINOR
+                || self.class != EntryClass::CASE_CONTROL)
+        {
+            return Err(invalid(
+                "extensions.case_disclosure",
+                "a version-2 disclosure requires CaseControl at schema minor 7 or later",
+            ));
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
             .find(|(t, _)| *t == OBLIGATION_MATURITY_EXTENSION)
         {
             crate::obligation::validate_terms(bytes, &self.legs)
@@ -3004,6 +3020,51 @@ mod tests {
                 credits: 120_000
             }]
         );
+    }
+
+    #[test]
+    fn disclosure_comparison_binding_requires_its_registered_minor_and_control_class() {
+        let mut record = proposal(Vec::new());
+        record.class = EntryClass::CASE_CONTROL;
+        record.origin = EntryOrigin::Control {
+            control_kind: ControlKind::CASE_TRANSITION,
+            spec_body_digest: [5; 32],
+        };
+        record.control = Some(ControlPayload::LifecycleTransition {
+            object_ref: VId(1),
+            from: 5,
+            to: 6,
+            proof_refs: Vec::new(),
+            reason_code: 0,
+        });
+        let mut writer = Writer::new();
+        writer
+            .u16(2)
+            .fixed(&[3; 32])
+            .u128(77)
+            .u128(99)
+            .u64(50)
+            .list(&[[4; 32]], |writer, digest| {
+                writer.fixed(digest);
+            });
+        record.extensions = vec![(CASE_DISCLOSURE_EXTENSION, writer.finish().unwrap())];
+        record.schema_minor = CASE_DISCLOSURE_SCHEMA_MINOR;
+        assert!(record.validate().is_ok());
+        let bytes = record
+            .clone()
+            .seal(Vec::new(), None)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert_eq!(Entry::decode(&bytes).unwrap().proposal, record);
+        record.schema_minor -= 1;
+        assert!(
+            record.validate().is_err(),
+            "v2 cannot impersonate an older minor"
+        );
+        record.schema_minor = CASE_DISCLOSURE_SCHEMA_MINOR;
+        record.class = EntryClass::POLICY_CONTROL;
+        assert!(record.validate().is_err(), "v2 is bound to CaseControl");
     }
 
     #[test]

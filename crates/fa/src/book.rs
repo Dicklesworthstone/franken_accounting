@@ -1887,18 +1887,22 @@ impl Book {
     /// document of this book over which a principal other than its uploader
     /// has recorded a Reviewed attestation ([`Book::record_review`]). Both
     /// are read as point witnesses in the record's transaction; anything
-    /// else is FA-REF-179.
+    /// else is FA-REF-179. Every expected original-report-to-Post statement
+    /// comparison must be retained and supplied explicitly. Each exact question
+    /// and both sources are validated before publication (FA-REF-203 otherwise).
+    #[allow(clippy::too_many_arguments)]
     pub fn disclose_case(
         &mut self,
         capability: fa_journal::Capability,
         ordinal: u32,
         document: fa_model::Oid,
+        comparisons: &[[u8; 32]],
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CaseRecorded> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.disclose_case(
-            &purposes, capability, ordinal, document, effective_date, idempotency_key,
+            &purposes, capability, ordinal, document, comparisons, effective_date, idempotency_key,
         )))
     }
 

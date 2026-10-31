@@ -11411,6 +11411,180 @@ fn aggregate_plan_invalidated_by_intervening_metadata_without_rebasing() {
 }
 
 #[test]
+fn raw_case_disclosure_requires_comparisons_and_the_exact_post_witness() {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let request = CaseRequest {
+        capability: Capability::embedded(PRINCIPAL, &["restate", "read"]).unwrap(),
+        effective_date: h.day(),
+        description: h
+            .proposal(Vec::new(), b"disclosure-test", EntryClass::CASE_CONTROL)
+            .description,
+        idempotency_key: b"raw-disclosure".to_vec(),
+    };
+    let opened = h
+        .runtime
+        .block_on(open_case(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            CaseBody {
+                book_id: h.book.book_id,
+                ordinal: 0,
+                kind: CaseKind::Revision,
+                periods: vec![h.march.clone()],
+                narrative: None,
+                determination: None,
+            },
+            request.clone(),
+        ))
+        .unwrap()
+        .unwrap();
+
+    // Deliberately plant an adversarial Posted mirror and a syntactically
+    // complete Post control. This is NOT a valid accounting lifecycle or a
+    // producer success fixture. Even that mirror must not bypass the raw
+    // journal API's independently checked disclosure evidence.
+    let mut proposal = h.proposal(Vec::new(), b"planted-post", EntryClass::CASE_CONTROL);
+    proposal.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    proposal.evidence.clear();
+    proposal.origin = EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::CASE_TRANSITION,
+        spec_body_digest: [7; 32],
+    };
+    proposal.control = Some(ControlPayload::LifecycleTransition {
+        object_ref: opened.case.vid,
+        from: 4,
+        to: 5,
+        proof_refs: Vec::new(),
+        reason_code: 0,
+    });
+    proposal.extensions = vec![(
+        fa_model::entry::CASE_POSTED_EXTENSION,
+        vec![1, 0, 0, 0, 0, 0],
+    )];
+    let entry = proposal.seal(Vec::new(), None).unwrap();
+    let post_vid = VId(0xCA5E_0001);
+    let mut planted = fgdb::WriteBatch::new(relation::IN_CASE);
+    planted.set_vertex_property(
+        opened.case.vid,
+        property::STATE,
+        Some(CanonicalScalar::Int(5)),
+    );
+    planted.create_vertex(
+        post_vid,
+        vec![fa_model::symbols::label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    h.write_raw(planted);
+    let post = DisclosurePost {
+        entry: post_vid,
+        recorded_at: h.db.frontier().unwrap(),
+    };
+    // Framing-only evidence cannot pass retention/replay. It lets this raw
+    // admission test reach the missing-root and Post witnesses without making
+    // any claim that an arbitrary synthetic amount is a certified statement.
+    let token = |anchor: DisclosurePost, marker: u128| {
+        let source = |at: u64| {
+            let mut w = fa_model::Writer::new();
+            w.fixed(b"fa:report-certificate:v4")
+                .str("fa-fold-over-prefix")
+                .str("embedded-owner")
+                .str("fa:statement:v1")
+                .fixed(&h.book.book_id.0)
+                .fixed(&Id128::TRUNK.0)
+                .u64(at)
+                .u8(2)
+                .bytes(b"opaque definition")
+                .u32(1)
+                .str(&h.march)
+                .u32(0)
+                .fixed(&[1; 32])
+                .fixed(&[2; 32])
+                .u64(1)
+                .u32(7);
+            for _ in 0..7 {
+                w.bytes(b"opaque native proof");
+            }
+            w.bytes(b"opaque statement")
+                .fixed(&[3; 32])
+                .u8(0)
+                .fixed(&[4; 32]);
+            w.finish().unwrap()
+        };
+        let before = anchor.recorded_at.0 - 1;
+        let mut output = fa_model::Writer::new();
+        output
+            .bytes(b"fa:statement-diff:v1")
+            .fixed(&h.book.book_id.0)
+            .fixed(&Id128::TRUNK.0)
+            .u64(before)
+            .u64(anchor.recorded_at.0);
+        let mut outer = fa_model::Writer::new();
+        outer
+            .bytes(b"fa:statement-diff-certificate:v1")
+            .u128(marker)
+            .fixed(&[5; 32])
+            .bytes(&source(before))
+            .bytes(&source(anchor.recorded_at.0))
+            .bytes(&output.finish().unwrap());
+        let mut bytes = outer.finish().unwrap();
+        let digest = fa_model::domain_digest(b"fa:statement-diff-certificate-digest:v1", &[&bytes]);
+        bytes.extend_from_slice(&digest);
+        validate_disclosure_comparison(h.book.book_id, anchor, digest, &bytes).unwrap()
+    };
+    let wrong_sequence = DisclosurePost {
+        recorded_at: fgdb_types::CommitSeq(post.recorded_at.0 + 1),
+        ..post
+    };
+    let wrong_entry = DisclosurePost {
+        entry: opened.control_entry,
+        ..post
+    };
+    for (anchor, comparisons, contains) in [
+        (post, Vec::new(), "nonempty"),
+        (post, vec![token(post, 1)], "not retained"),
+        (
+            wrong_sequence,
+            vec![token(wrong_sequence, 1)],
+            "does not belong",
+        ),
+        (wrong_entry, vec![token(wrong_entry, 1)], "does not belong"),
+        (post, vec![token(wrong_entry, 1)], "another book or Post"),
+        (
+            post,
+            (0..fa_journal::case::MAX_DISCLOSURE_COMPARISONS)
+                .map(|index| token(post, index as u128))
+                .collect(),
+            "12 KiB",
+        ),
+    ] {
+        let head = h.db.frontier().unwrap();
+        let refusal = h
+            .runtime
+            .block_on(disclose_case(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                1,
+                Oid([8; 32]),
+                anchor,
+                &comparisons,
+                request.clone(),
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-203", exit::REFUSAL),
+            "{refusal:?}"
+        );
+        assert!(refusal.message.contains(contains), "{refusal:?}");
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+}
+
+#[test]
 fn year_end_close_closed_reclose_survives_review_then_exact_approval() {
     let (mut h, _) = year_end_close_fixture();
     h.post(h.request(h.invoice(20_000, b"closed-income"), &["post"]))

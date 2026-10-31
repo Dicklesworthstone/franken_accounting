@@ -95,10 +95,10 @@ pub use carrying::{
 };
 pub use case::{
     CaseApproval, CaseBody, CaseKind, CaseManifest, CaseMember, CaseRecorded, CaseRequest,
-    CaseState, CaseTransition, CaseView, Determination, Disclosure, ManifestEntry, PostedEntry,
-    Rehearsal, approve_case, case_manifest, close_case, derive_member, determine_case,
-    disclose_case, list_cases, open_case, post_case, post_case_with_crash, posting_class,
-    read_case, rehearse_case,
+    CaseState, CaseTransition, CaseView, Determination, Disclosure, DisclosurePost, ManifestEntry,
+    PostedEntry, Rehearsal, ValidatedDisclosureComparison, approve_case, case_manifest, close_case,
+    derive_member, determine_case, disclose_case, list_cases, open_case, post_case,
+    post_case_with_crash, posting_class, read_case, rehearse_case, validate_disclosure_comparison,
 };
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,

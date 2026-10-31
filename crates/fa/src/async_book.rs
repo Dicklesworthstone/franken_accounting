@@ -1334,11 +1334,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ))));
         }
         let source = artifact.source_certificate();
-        let crate::ReportSelection::Statement(selection) = &source.selection else {
-            return Ok(Ok(Err(format!(
-                "certificate {hex} certifies a {} report, not a statement",
-                source.selection.output_format()
-            ))));
+        let selection = match &source.selection {
+            crate::ReportSelection::Statement(selection)
+            | crate::ReportSelection::FunctionalStatement(selection) => selection,
+            _ => {
+                return Ok(Ok(Err(format!(
+                    "certificate {hex} certifies a {} report, not a supported native or functional statement",
+                    source.selection.output_format()
+                ))));
+            }
         };
         if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
             return Ok(Ok(Err(format!(
@@ -1709,16 +1713,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     /// Disclose case `ordinal` (Posted → Disclosed) in `document`
     /// ([`crate::Book::disclose_case`] states the contract).
+    #[allow(clippy::too_many_arguments)]
     pub async fn disclose_case(
         &mut self,
         cx: &PurposeContexts,
         capability: fa_journal::Capability,
         ordinal: u32,
         document: fa_model::Oid,
+        comparisons: &[[u8; 32]],
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CaseRecorded> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
+        let (post, validated) = match self
+            .validate_case_disclosure_comparisons(cx, &capability, ordinal, comparisons)
+            .await?
+        {
+            Ok(validated) => validated,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let description = format!("disclose case {ordinal}");
         let req = self.case_request(
             cx,
@@ -1727,10 +1740,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &description,
             idempotency_key,
         )?;
-        Ok(
-            fa_journal::disclose_case(&mut self.db, cx, &self.context, ordinal, document, req)
-                .await?,
+        Ok(fa_journal::disclose_case(
+            &mut self.db,
+            cx,
+            &self.context,
+            ordinal,
+            document,
+            post,
+            &validated,
+            req,
         )
+        .await?)
     }
 
     /// Close case `ordinal` (Disclosed → Closed).

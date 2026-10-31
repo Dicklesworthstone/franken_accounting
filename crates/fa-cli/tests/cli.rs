@@ -5189,26 +5189,35 @@ fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> s
 /// - The same intent posted outside the case is refused (FA-REF-178).
 #[test]
 fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()> {
-    revision_case_statement_comparison(false, false)
+    revision_case_statement_comparison(false, false, false)
 }
 
 /// The original reporting closure can precede other postings. A restatement
 /// comparison must include those intervening changes, not only Post's delta.
 #[test]
 fn a_case_compares_first_issued_statements_with_its_fixed_post() -> std::io::Result<()> {
-    revision_case_statement_comparison(true, false)
+    revision_case_statement_comparison(true, false, false)
 }
 
 #[test]
 fn a_case_without_issuance_compares_first_lock_with_its_fixed_post() -> std::io::Result<()> {
-    revision_case_statement_comparison(false, true)
+    revision_case_statement_comparison(false, true, false)
+}
+
+#[test]
+fn a_case_preserves_functional_issuance_valuations_in_its_statement_comparisons()
+-> std::io::Result<()> {
+    revision_case_statement_comparison(true, false, true)
 }
 
 fn revision_case_statement_comparison(
     issued_before_post: bool,
     locked_before_post: bool,
+    functional: bool,
 ) -> std::io::Result<()> {
-    let dir = tmp(if issued_before_post {
+    let dir = tmp(if functional {
+        "revision-functional-issued"
+    } else if issued_before_post {
         "revision-issued"
     } else if locked_before_post {
         "revision-locked"
@@ -5229,7 +5238,11 @@ fn revision_case_statement_comparison(
     let chart = write(
         &dir,
         "chart.json",
-        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+        if functional {
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"},{"code":"1100","name":"Euro cash","type":"Asset","unit":"EUR"},{"code":"6200","name":"Euro expense","type":"Expense","unit":"EUR"}]}"#
+        } else {
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#
+        },
     );
     ok(&["chart", "import", &chart, "--json"]);
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
@@ -5249,6 +5262,30 @@ fn revision_case_statement_comparison(
         "--json",
     ]);
     let target = field(&out, "vid").unwrap_or_default().to_string();
+    if functional {
+        let quote = write(
+            &dir,
+            "original-quote.json",
+            r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"6","rate_den":"5","rounding":"HalfEven","as_of":"2026-03-16","retrieved_at_ns":1773619200000000000,"purpose":"spot_close","source":"retained original invoice quote"}"#,
+        );
+        let rate = doc(&ok(&["fx", "rate", "add", "--from-json", &quote, "--json"]));
+        let foreign = write(
+            &dir,
+            "foreign-expense.json",
+            &format!(
+                r#"{{"effective_date":"2026-03-16","idempotency_key":"foreign-expense","legs":[{{"side":"debit","account":"6200","amount":"100.00 EUR"}},{{"side":"credit","account":"1100","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+                text(&rate, "oid")
+            ),
+        );
+        ok(&[
+            "post",
+            "--intent",
+            &foreign,
+            "--evidence",
+            &evidence,
+            "--json",
+        ]);
+    }
     let issue_certificate = |key: &str, certificate: &str| {
         let planned = doc(&ok(&[
             "statement",
@@ -5301,6 +5338,9 @@ fn revision_case_statement_comparison(
         if issued_before_post {
             statement.extend(["--compare", "FY2026-P02"]);
         }
+        if functional {
+            statement.push("--functional");
+        }
         let certified = ok(&statement);
         let certificate = format!("C:{}", field(&certified, "oid").unwrap());
         let at = field(&certified, "known_at").unwrap().parse().unwrap();
@@ -5309,11 +5349,24 @@ fn revision_case_statement_comparison(
     };
     let mut originally_reported = issued_before_post.then(|| {
         let at = issue_statement("original-statements");
+        if functional {
+            // Importing a new quote never reprices the issued statement or
+            // its case comparison. The EUR100 expense keeps its USD120
+            // carrying amount on both sides of the eventual comparison.
+            let quote = write(
+                &dir,
+                "later-quote.json",
+                r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"9","rate_den":"1","rounding":"HalfEven","as_of":"2026-03-16","retrieved_at_ns":1773705600000000000,"purpose":"spot_close","source":"later quote must not reprice retained entries"}"#,
+            );
+            ok(&["fx", "rate", "add", "--from-json", &quote, "--json"]);
+        }
         // A later publication may reuse the original frontier but introduce
-        // another comparative layout. It is not part of the first issuance:
-        // neither its January comparative nor its selector may leak into
-        // the original balance sheet or move the opening before January.
-        let later_layout = ok(&[
+        // another comparative layout and the opposite valuation basis. It
+        // is not part of the first issuance: neither its January comparative
+        // nor its selector may leak into the original balance sheet or move
+        // the opening before January.
+        let original_at = at.to_string();
+        let mut later_layout_args = vec![
             "statement",
             "balance-sheet",
             "--for",
@@ -5321,10 +5374,14 @@ fn revision_case_statement_comparison(
             "--compare",
             "FY2026-P01",
             "--as-known-at",
-            &at.to_string(),
+            &original_at,
             "--certify",
             "--json",
-        ]);
+        ];
+        if !functional {
+            later_layout_args.push("--functional");
+        }
+        let later_layout = ok(&later_layout_args);
         let certificate = format!("C:{}", field(&later_layout, "oid").unwrap());
         assert_eq!(int(&doc(&later_layout), "known_at"), Some(at));
         issue_certificate("later-layout", &certificate);
@@ -5558,6 +5615,12 @@ fn revision_case_statement_comparison(
         .map(doc)
         .collect();
     assert_eq!(bases.len(), 3, "{compared}");
+    assert!(
+        bases
+            .iter()
+            .all(|basis| basis.get("functional") == Some(&Json::Bool(functional))),
+        "the first issuance fixes the comparison's valuation basis: {compared}"
+    );
     assert_eq!(
         text(&bases[0], "basis"),
         if issued_before_post {
@@ -5617,6 +5680,23 @@ fn revision_case_statement_comparison(
     );
     let after = int(&data(&diffs[0]), "after_known_at");
     for d in &diffs {
+        assert_eq!(
+            data(d).get("functional"),
+            Some(&Json::Bool(functional)),
+            "{d:?}"
+        );
+        assert_eq!(
+            text(&data(d), "valuation_basis"),
+            if functional {
+                "retained-base-amounts"
+            } else {
+                "native-amounts"
+            },
+            "{d:?}"
+        );
+        if functional {
+            assert_eq!(text(&data(d), "base_unit"), "USD", "{d:?}");
+        }
         assert_eq!(int(&data(d), "after_known_at"), after, "{d:?}");
         if let Some(originally_reported) = originally_reported {
             assert_eq!(
@@ -5643,7 +5723,9 @@ fn revision_case_statement_comparison(
         .find(|line| {
             arr(line, "after").iter().any(|a| {
                 a.as_str()
-                    == Some(if issued_before_post {
+                    == Some(if functional {
+                        "1147.00 USD"
+                    } else if issued_before_post {
                         "1027.00 USD"
                     } else {
                         "1020.00 USD"
@@ -5652,6 +5734,14 @@ fn revision_case_statement_comparison(
         })
         .cloned()
         .unwrap_or(Json::Null);
+    if functional {
+        assert!(
+            arr(&expense, "before")
+                .iter()
+                .any(|amount| amount.as_str() == Some("1120.00 USD")),
+            "original USD1000 plus EUR100 at its retained 6/5 quote: {diffs:?}"
+        );
+    }
     assert!(
         arr(&expense, "delta").iter().any(|d| d.as_str()
             == Some(if issued_before_post {
@@ -6211,18 +6301,50 @@ fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() ->
     ok(&[
         "document", "attest", "review", &note_oid, "--as", "reviewer", "--json",
     ]);
-    let disclosed = doc(&ok(&[
-        "case",
-        "disclose",
-        "1",
-        "--document",
-        &note_oid,
-        "--json",
-    ]));
+    let comparison_digests: Vec<_> = certified
+        .iter()
+        .map(|event| {
+            event
+                .get("certificate")
+                .and_then(Json::as_str)
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    let mut disclose_args = vec!["case", "disclose", "1", "--document", &note_oid, "--json"];
+    let (code, out) = run(&disclose_args);
+    assert_eq!(code, 3, "missing comparisons: {out}");
+    assert!(out.contains("FA-REF-203"), "{out}");
+    for digest in &comparison_digests {
+        disclose_args.extend(["--certificate", digest]);
+    }
+    let mut tampered = comparison_digests[0].clone().into_bytes();
+    tampered[0] = if tampered[0] == b'0' { b'1' } else { b'0' };
+    let tampered = String::from_utf8(tampered).unwrap();
+    let mut bad_args = disclose_args.clone();
+    bad_args[7] = &tampered;
+    let (code, out) = run(&bad_args);
+    assert_eq!(code, 3, "tampered comparison: {out}");
+    assert!(out.contains("FA-REF-203"), "{out}");
+    let disclosed = doc(&ok(&disclose_args));
     assert_eq!(
         disclosed.get("case").map(|c| text(c, "state")),
         Some("Disclosed"),
         "{disclosed:?}"
+    );
+    let binding = disclosed.get("case").unwrap().get("disclosure").unwrap();
+    let mut expected = comparison_digests.clone();
+    expected.sort();
+    let bound: Vec<_> = arr(binding, "comparisons")
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(bound, expected);
+    assert_eq!(text(binding, "post").len(), 32);
+    assert!(int(binding, "posted_at").is_some());
+    assert_eq!(
+        doc(&ok(&disclose_args)).get("already_recorded"),
+        Some(&Json::Bool(true))
     );
     let status = original_status();
     let superseding = arr(&status, "cases");
@@ -12455,7 +12577,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let (code, out) = run(true, &["case", "post", "2"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
-    let (code, out) = run(true, &["case", "diff", "2", "--statements"]);
+    let (code, out) = run(true, &["case", "diff", "2", "--statements", "--certify"]);
     assert_eq!(code, 0, "{out}");
     let statement_bases: Vec<_> = out
         .lines()
@@ -12463,6 +12585,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .map(doc)
         .collect();
     assert_eq!(statement_bases.len(), 3, "{out}");
+    let disclosure_comparisons: Vec<String> = out
+        .lines()
+        .filter(|line| field(line, "event") == Some("statement_diff"))
+        .map(|line| field(line, "certificate").unwrap().to_string())
+        .collect();
+    assert_eq!(disclosure_comparisons.len(), 3, "{out}");
     assert!(
         statement_bases.iter().all(|basis| {
             text(basis, "basis") == "first-issuance"
@@ -12567,14 +12695,18 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(code, 0, "{out}");
     let note_oid = field(&out, "oid").unwrap_or_default().to_string();
-    let (code, out) = run(true, &["case", "disclose", "2", "--document", &note_oid]);
+    let mut disclose_args = vec!["case", "disclose", "2", "--document", &note_oid];
+    for digest in &disclosure_comparisons {
+        disclose_args.extend(["--certificate", digest]);
+    }
+    let (code, out) = run(true, &disclose_args);
     assert_eq!(code, 3, "an unreviewed disclosure is refused: {out}");
     assert!(out.contains("FA-REF-179"), "{out}");
     assert_eq!(
         run(true, &["attest", "review", &note_oid, "--as", "reviewer"]).0,
         0
     );
-    let (code, out) = run(true, &["case", "disclose", "2", "--document", &note_oid]);
+    let (code, out) = run(true, &disclose_args);
     assert_eq!(code, 0, "{out}");
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Disclosed", "{out}");

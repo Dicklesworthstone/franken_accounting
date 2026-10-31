@@ -768,7 +768,17 @@ fn restatement_cases() -> Result<(), String> {
     ok(&[
         "document", "attest", "review", &note_oid, "--as", "reviewer",
     ])?;
-    ok(&["case", "disclose", "1", "--document", &note_oid])?;
+    let mut comparison_digests: Vec<String> = certified_diffs
+        .iter()
+        .map(|line| text(line, "certificate"))
+        .collect();
+    comparison_digests.sort();
+    comparison_digests.dedup();
+    let mut disclosure_args = vec!["case", "disclose", "1", "--document", &note_oid];
+    for digest in &comparison_digests {
+        disclosure_args.extend(["--certificate", digest.as_str()]);
+    }
+    ok(&disclosure_args)?;
     let closed = first(&ok(&["case", "close", "1"])?);
     if case_state(&closed) != "Closed" {
         return Err(format!("the case did not close: {closed:?}"));

@@ -49,6 +49,9 @@ pub struct CaseStatementDiffRequest {
     pub case: u32,
     pub period: String,
     pub opening: bool,
+    /// Preserve the originally issued statement's retained functional amounts.
+    /// With no issuance, the comparison uses native units.
+    pub functional: bool,
     pub basis: CaseStatementBasis,
     /// The period whose original reporting event supplies the earlier
     /// frontier. An otherwise unreported opening statement uses the earliest
@@ -184,8 +187,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// correction-only fallback. Restatements and retrospective policy changes
     /// require a real original-reporting closure. An unreported opening period
     /// uses the earliest affected period's original reporting frontier.
-    /// The first issuance's native definition and its complete period/comparative
-    /// selection are preserved. Later issuances cannot introduce another layout
+    /// The first issuance's definition, native or functional valuation basis,
+    /// and complete period/comparative selection are preserved. Later issuances cannot introduce another layout
     /// into that original reporting closure, even if certified at the same
     /// frontier. The opening statement alone derives a new
     /// single-period stock question. Every `after` is Post, never HEAD.
@@ -288,7 +291,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let mut requests = Vec::new();
         for source in &selected {
             match self
-                .native_case_statement_requests(cx, principal, capability, ordinal, source.clone())
+                .reported_case_statement_requests(
+                    cx,
+                    principal,
+                    capability,
+                    ordinal,
+                    source.clone(),
+                )
                 .await?
             {
                 Ok(mut next) => requests.append(&mut next),
@@ -349,7 +358,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             };
             match self
-                .native_case_statement_requests(cx, principal, capability, ordinal, source)
+                .reported_case_statement_requests(cx, principal, capability, ordinal, source)
                 .await?
             {
                 Ok(mut opening) => requests.append(&mut opening),
@@ -359,7 +368,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(Ok(requests))
     }
 
-    async fn native_case_statement_requests(
+    async fn reported_case_statement_requests(
         &self,
         cx: &PurposeContexts,
         principal: VId,
@@ -403,6 +412,52 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ),
             CaseStatementBasis::FirstLock { .. } | CaseStatementBasis::BeforePost => None,
         };
+        let issued_selection = if let Some(issued) = original {
+            let artifact = match self
+                .read_report_artifact(cx, principal, capability, &issued.issuance.certificate)
+                .await?
+            {
+                Ok(artifact) => artifact,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let source = artifact.source_certificate();
+            let (selection, functional) = match &source.selection {
+                ReportSelection::Statement(selection) => (selection, false),
+                ReportSelection::FunctionalStatement(selection) => (selection, true),
+                _ => {
+                    return Err(KernelError::Corrupt(
+                        "issued case source is not a supported native or functional statement"
+                            .into(),
+                    )
+                    .into());
+                }
+            };
+            if artifact.family() != crate::ReportArtifactFamily::Native
+                || source.book_id != self.context().book_id
+                || source.branch_id != Id128::TRUNK
+                || source.known_at != issued.issuance.certified_at
+                || selection.definition.name() != issued.issuance.definition_name
+                || selection.definition.version() != issued.issuance.definition_version
+                || selection.definition.digest().map_err(KernelError::from)?
+                    != issued.issuance.definition_digest
+                || !selection
+                    .periods
+                    .iter()
+                    .chain(&selection.comparative)
+                    .any(|code| code == &basis_period)
+            {
+                return Err(KernelError::Corrupt(
+                    "issued case source does not match its issuance".into(),
+                )
+                .into());
+            }
+            Some(((**selection).clone(), functional))
+        } else {
+            None
+        };
+        let functional = issued_selection
+            .as_ref()
+            .is_some_and(|(_, functional)| *functional);
         let mut names = vec!["balance-sheet".to_string(), "income-statement".to_string()];
         if let Some(issued) = original
             && !names.contains(&issued.issuance.definition_name)
@@ -411,43 +466,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let mut requests = Vec::new();
         for name in names {
-            let mut selection = if let Some(issued) =
-                original.filter(|record| record.issuance.definition_name == name)
+            let mut selection = if let Some((selection, _)) = issued_selection
+                .as_ref()
+                .filter(|(selection, _)| selection.definition.name() == name)
             {
-                let artifact = match self
-                    .read_report_artifact(cx, principal, capability, &issued.issuance.certificate)
-                    .await?
-                {
-                    Ok(artifact) => artifact,
-                    Err(refusal) => return Ok(Err(refusal)),
-                };
-                let source = artifact.source_certificate();
-                let ReportSelection::Statement(selection) = &source.selection else {
-                    return Err(KernelError::Corrupt(
-                        "issued case source is not a native statement".into(),
-                    )
-                    .into());
-                };
-                if artifact.family() != crate::ReportArtifactFamily::Native
-                    || source.book_id != self.context().book_id
-                    || source.branch_id != Id128::TRUNK
-                    || source.known_at != issued.issuance.certified_at
-                    || selection.definition.name() != name.as_str()
-                    || selection.definition.version() != issued.issuance.definition_version
-                    || selection.definition.digest().map_err(KernelError::from)?
-                        != issued.issuance.definition_digest
-                    || !selection
-                        .periods
-                        .iter()
-                        .chain(&selection.comparative)
-                        .any(|code| code == &basis_period)
-                {
-                    return Err(KernelError::Corrupt(
-                        "issued case source does not match its issuance".into(),
-                    )
-                    .into());
-                }
-                (**selection).clone()
+                selection.clone()
             } else {
                 StatementSelection {
                     definition: StatementDefinition::embedded(&name).map_err(KernelError::from)?,
@@ -466,6 +489,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 case: ordinal,
                 period: period.clone(),
                 opening,
+                functional,
                 basis: basis.clone(),
                 basis_period: basis_period.clone(),
                 request: StatementDiffRequest {
@@ -476,5 +500,168 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             });
         }
         Ok(Ok(requests))
+    }
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Validate the complete fixed set before a disclosure writes anything.
+    /// The kernel separately witnesses the retained artifacts and immutable
+    /// Post. This layer owns statement selection and independent replay of
+    /// both historical sources; a digest alone is never that verdict.
+    pub(crate) async fn validate_case_disclosure_comparisons(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_policy::Capability,
+        ordinal: u32,
+        comparisons: &[[u8; 32]],
+    ) -> Outcome<(
+        fa_journal::DisclosurePost,
+        Vec<fa_journal::ValidatedDisclosureComparison>,
+    )> {
+        use fa_journal::case::{MAX_DISCLOSURE_COMPARISONS, comparison_refused};
+        let principal = capability.holder();
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Restate,
+            "disclosing a restatement case",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let selected = match self
+            .case_statement_diff_requests(cx, principal, capability, ordinal, None)
+            .await?
+        {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if comparisons.is_empty() || comparisons.len() > MAX_DISCLOSURE_COMPARISONS {
+            return Ok(Err(comparison_refused(format!(
+                "a disclosure requires 1..={MAX_DISCLOSURE_COMPARISONS} retained statement comparison digests",
+            ))));
+        }
+        let mut digests = comparisons.to_vec();
+        digests.sort();
+        if digests.iter().any(|digest| *digest == [0; 32])
+            || digests.windows(2).any(|pair| pair[0] == pair[1])
+        {
+            return Ok(Err(comparison_refused(
+                "duplicate or zero disclosure comparison digest",
+            )));
+        }
+        // An original issued selection can cover more than one affected
+        // period. Bind that identical question once, regardless of producer.
+        let mut expected = Vec::<CaseStatementDiffRequest>::new();
+        for selection in selected {
+            if !expected.iter().any(|prior| {
+                prior.functional == selection.functional && prior.request == selection.request
+            }) {
+                expected.push(selection);
+            }
+        }
+        if digests.len() != expected.len() {
+            return Ok(Err(comparison_refused(format!(
+                "case {ordinal} needs {} distinct fixed statement comparisons; {} were supplied",
+                expected.len(),
+                digests.len(),
+            ))));
+        }
+        let post = self.query(cx, |db, book| {
+            let authority = match fa_journal::policy::admit_reads(db, book, principal, capability)?
+            {
+                Ok(authority) => authority,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = authority.whole_book(db.frontier().map_err(KernelError::from)?) {
+                return Ok(Err(refusal));
+            }
+            let view = fa_journal::read_case(db, book, ordinal)?
+                .ok_or_else(|| KernelError::Corrupt("validated case vanished".into()))?;
+            let post = view
+                .transitions
+                .iter()
+                .find(|transition| transition.to == CaseState::Posted)
+                .ok_or_else(|| KernelError::Corrupt("validated case Post vanished".into()))?;
+            Ok(Ok(fa_journal::DisclosurePost {
+                entry: post.control_entry,
+                recorded_at: post.recorded_at,
+            }))
+        })?;
+        let post = match post {
+            Ok(post) => post,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut matched = vec![false; expected.len()];
+        let mut validated = Vec::with_capacity(digests.len());
+        for digest in &digests {
+            let artifact = match self
+                .read_report_artifact(cx, principal, capability, digest)
+                .await?
+            {
+                Ok(artifact) => artifact,
+                Err(refusal) => {
+                    return Ok(Err(comparison_refused(format!(
+                        "comparison {} cannot be read: {}",
+                        fa_journal::evidence::hex(digest),
+                        refusal.message,
+                    ))));
+                }
+            };
+            let bytes = match artifact.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(comparison_refused(refusal.message))),
+            };
+            let certificate = match crate::StatementDiffCertificate::decode(&bytes) {
+                Ok(certificate) => certificate,
+                Err(refusal) => {
+                    return Ok(Err(comparison_refused(format!(
+                        "disclosure artifact is not a statement comparison: {}",
+                        refusal.message,
+                    ))));
+                }
+            };
+            let request = match certificate.request() {
+                Ok(request) => request,
+                Err(refusal) => return Ok(Err(comparison_refused(refusal.message))),
+            };
+            let Some(index) = expected.iter().enumerate().find_map(|(index, expected)| {
+                (!matched[index]
+                    && expected.functional == certificate.uses_functional_valuations()
+                    && expected.request == request)
+                    .then_some(index)
+            }) else {
+                return Ok(Err(comparison_refused(format!(
+                    "comparison {} is extra, repeats a question, or changes the case's original definition, periods, valuation basis or fixed frontiers",
+                    fa_journal::evidence::hex(digest),
+                ))));
+            };
+            if let Err(refusal) = self
+                .replay_report_artifact_for_with_history(
+                    cx,
+                    principal,
+                    capability,
+                    &bytes,
+                    Some(digest),
+                    crate::ReportArtifactExpectation::AsSupplied,
+                )
+                .await?
+            {
+                return Ok(Err(comparison_refused(format!(
+                    "comparison {} does not replay: {}",
+                    fa_journal::evidence::hex(digest),
+                    refusal.message,
+                ))));
+            }
+            match fa_journal::validate_disclosure_comparison(
+                self.context().book_id,
+                post,
+                *digest,
+                &bytes,
+            ) {
+                Ok(comparison) => validated.push(comparison),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+            matched[index] = true;
+        }
+        Ok(Ok((post, validated)))
     }
 }

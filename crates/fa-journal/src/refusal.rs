@@ -292,6 +292,8 @@ pub mod code {
     /// A case's disclosure is not a reviewed Disclosure document of this
     /// book (plan §8.3, §9.3).
     pub const CASE_DISCLOSURE: &str = "FA-REF-179";
+    /// A disclosure's exact retained statement comparisons do not match its case.
+    pub const CASE_STATEMENT_DIFF: &str = "FA-REF-203";
     /// A prior-period adjustment lacks its earlier period or does not
     /// route its cumulative effect through retained earnings.
     pub const PRIOR_PERIOD_ADJUSTMENT: &str = "FA-REF-202";

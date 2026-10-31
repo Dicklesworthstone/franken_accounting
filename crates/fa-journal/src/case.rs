@@ -48,7 +48,7 @@
 //!   PolicyChangeRetrospective case's entries are Restatement entries
 //!   (`a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli`).
 //! - **Disclose** (`Posted → Disclosed`) journals extension 25
-//!   `fa:case-disclosure:v1`: the Disclosure document the case is disclosed
+//!   `fa:case-disclosure:v2`: the Disclosure document the case is disclosed
 //!   in and the Reviewed attestation over it, which a principal other than
 //!   the document's uploader recorded (plan §9.3); both are point witnesses.
 //! - **Close** (`Disclosed → Closed`) is the case's last record.
@@ -83,6 +83,9 @@ use crate::policy::{capability_witness, refusal as denial, steward};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, PeriodRow, bytes, edge_id, prop, scalar_bytes};
 
+mod comparison;
+pub use comparison::{ValidatedDisclosureComparison, validate_disclosure_comparison};
+
 /// Canonical bytes of a case body (extension 19): `u16 version ‖
 /// book_id[16] ‖ u32 ordinal ‖ u8 kind ‖ list(str period) ‖ opt oid
 /// narrative ‖ opt (i32 day ‖ oid authority)`.
@@ -111,8 +114,15 @@ const MEMBER_KEY_DOMAIN: &[u8] = b"fa:case-member-key:v1";
 const POST_BATCH_KEY_DOMAIN: &[u8] = b"fa:case-post-batch-key:v1";
 const POSTED_DOMAIN: &[u8] = b"fa:case-posted:v1";
 /// Canonical bytes of a disclosure (extension 25).
-pub const DISCLOSURE_VERSION: u16 = 1;
-const DISCLOSURE_DOMAIN: &[u8] = b"fa:case-disclosure:v1";
+pub const DISCLOSURE_VERSION: u16 = 2;
+const DISCLOSURE_DOMAIN: &[u8] = b"fa:case-disclosure:v2";
+/// Document and review consume two of the lifecycle's bounded proof refs.
+pub const MAX_DISCLOSURE_COMPARISONS: usize = fa_model::limits::MAX_PROOF_REFS - 2;
+/// A 12 KiB payload leaves room for byte-scalar expansion and the fixed
+/// Entry mirrors within the pinned substrate's 16 KiB encoded vertex row.
+/// The full entry (both copies of the digests and sealed description) is
+/// priced before opening the publication transaction.
+const MAX_DISCLOSURE_ENTRY_BYTES: usize = 12 * 1024;
 const CLOSE_DOMAIN: &[u8] = b"fa:case-close:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:case-record-key:v1";
 
@@ -2424,37 +2434,108 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
     }))
 }
 
-/// A case's disclosure (extension 25): the Disclosure document it is
-/// disclosed in and the Reviewed attestation over that document.
+/// The immutable Post whose effects a disclosure compares. Recorded time is
+/// read from the committed Post, never assigned by the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisclosurePost {
+    pub entry: VId,
+    pub recorded_at: CommitSeq,
+}
+
+/// A case's disclosure (extension 25). Version 2 also binds its immutable
+/// Post and the exact retained comparison artifacts. Historical version 1
+/// records have neither; decoding never invents that missing evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Disclosure {
     pub document: Oid,
     pub attestation: VId,
+    pub post: Option<DisclosurePost>,
+    pub comparisons: Vec<[u8; 32]>,
 }
 
 impl Disclosure {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
         let mut w = Writer::with_capacity(52);
-        w.u16(DISCLOSURE_VERSION)
+        let version = if self.post.is_some() {
+            DISCLOSURE_VERSION
+        } else {
+            1
+        };
+        if (self.post.is_none() && !self.comparisons.is_empty())
+            || (self.post.is_some() && !valid_comparisons(&self.comparisons))
+        {
+            return Err(KernelError::Corrupt(
+                "invalid case disclosure comparison set".into(),
+            ));
+        }
+        w.u16(version)
             .fixed(&self.document.0)
             .u128(self.attestation.0);
+        if let Some(post) = self.post {
+            if post.recorded_at.0 == 0 {
+                return Err(KernelError::Corrupt(
+                    "case disclosure Post has sequence zero".into(),
+                ));
+            }
+            w.u128(post.entry.0)
+                .u64(post.recorded_at.0)
+                .list(&self.comparisons, |w, digest| {
+                    w.fixed(digest);
+                });
+        }
         Ok(w.finish()?)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
         let mut r = Reader::new(bytes);
-        if r.u16("case.disclosure.version").map_err(decode)? != DISCLOSURE_VERSION {
+        let version = r.u16("case.disclosure.version").map_err(decode)?;
+        if version != 1 && version != DISCLOSURE_VERSION {
             return Err(KernelError::Corrupt(
                 "unsupported case disclosure version".into(),
             ));
         }
-        let disclosure = Self {
+        let mut disclosure = Self {
             document: Oid(r.fixed("case.disclosure.document").map_err(decode)?),
             attestation: VId(r.u128("case.disclosure.attestation").map_err(decode)?),
+            post: None,
+            comparisons: Vec::new(),
         };
+        if version == DISCLOSURE_VERSION {
+            disclosure.post = Some(DisclosurePost {
+                entry: VId(r.u128("case.disclosure.post").map_err(decode)?),
+                recorded_at: CommitSeq(r.u64("case.disclosure.posted_at").map_err(decode)?),
+            });
+            disclosure.comparisons = r
+                .list(
+                    MAX_DISCLOSURE_COMPARISONS,
+                    "case.disclosure.comparisons",
+                    |r| r.fixed("case.disclosure.comparison"),
+                )
+                .map_err(decode)?;
+        }
         r.finish().map_err(decode)?;
+        if disclosure.canonical_bytes()? != bytes {
+            return Err(KernelError::Corrupt("noncanonical case disclosure".into()));
+        }
         Ok(disclosure)
     }
+}
+
+fn valid_comparisons(comparisons: &[[u8; 32]]) -> bool {
+    !comparisons.is_empty()
+        && comparisons.len() <= MAX_DISCLOSURE_COMPARISONS
+        && comparisons.iter().all(|digest| *digest != [0; 32])
+        && comparisons.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+pub fn comparison_refused(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::CASE_STATEMENT_DIFF,
+        exit::REFUSAL,
+        message,
+        "plan §8.3 (a disclosure binds replayed original-report-to-Post statement comparisons)",
+        "run `fa case diff <case> --statements --certify --json`, then supply every returned comparison digest with `fa case disclose <case> --document <oid> --certificate <digest>` (repeat --certificate); preserve the fixed Post and original reporting basis",
+    )
 }
 
 fn disclosure_refused(message: impl Into<String>) -> Refusal {
@@ -2463,19 +2544,76 @@ fn disclosure_refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message.into(),
         "plan §8.3 (Disclosed: the disclosure document is attested), §9.3",
-        "record the disclosure with `fa document add <file> --kind Disclosure`, have a principal other than its uploader attest it with `fa attest review <oid>`, then `fa case disclose <case> --document <oid>`",
+        "record the disclosure with `fa document add <file> --kind Disclosure`, have another principal attest it with `fa attest review <oid>`, obtain every comparison with `fa case diff <case> --statements --certify --json`, then `fa case disclose <case> --document <oid> --certificate <digest>` (repeat --certificate for the complete set)",
     )
 }
 
-/// Inside `txn`: `disclosure` names a verified Disclosure document of this
-/// book and the Reviewed attestation over it (its identity is derived from
-/// the document, plan §9.3), both read as point witnesses.
+/// Inside `txn`: witness the case's exact Post, the immutable retained roots
+/// whose complete comparison envelopes were validated, and a verified
+/// Disclosure document with its independently Reviewed attestation.
 fn witness_disclosure<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
+    ordinal: u32,
     disclosure: &Disclosure,
 ) -> Outcome<()> {
+    let Some(post) = disclosure.post else {
+        return Ok(Err(comparison_refused(
+            "new disclosures require a fixed Post and comparison certificates",
+        )));
+    };
+    let Some(row) = txn.vertex(db, post.entry)? else {
+        return Ok(Err(comparison_refused(
+            "the disclosure's Post entry is absent",
+        )));
+    };
+    let (entry, recorded_at) = crate::post::entry_of(&row)?;
+    if recorded_at != post.recorded_at
+        || entry.proposal.book_id != book.book_id
+        || entry.proposal.branch_id != Id128::TRUNK
+        || entry.proposal.class != EntryClass::CASE_CONTROL
+        || !matches!(&entry.proposal.control, Some(ControlPayload::LifecycleTransition {
+            object_ref, from, to, ..
+        }) if *object_ref == restatement_case_vid(book.book_id, ordinal)
+            && *from == CaseState::Approved.tag() && *to == CaseState::Posted.tag())
+        || !entry
+            .proposal
+            .extensions
+            .iter()
+            .any(|(tag, _)| *tag == fa_model::entry::CASE_POSTED_EXTENSION)
+    {
+        return Ok(Err(comparison_refused(
+            "the disclosure's Post does not belong to this case at its recorded sequence",
+        )));
+    }
+    // Retention admits a complete replayed artifact. This kernel checks the
+    // immutable storage witnesses and case anchor; the facade additionally
+    // validates every exact statement question and replays both sources.
+    for digest in &disclosure.comparisons {
+        let vid = fa_model::report_certificate_vid(book.book_id, digest);
+        let Some(row) = txn.vertex(db, vid)? else {
+            return Ok(Err(comparison_refused(format!(
+                "comparison {} is not retained in this book",
+                hex(digest)
+            ))));
+        };
+        if row.labels.as_slice() != [label::CERTIFICATE]
+            || prop(&row, property::BOOK_ID)
+                != Some(&scalar_bytes("certificate book", book.book_id.0.to_vec())?)
+            || prop(&row, property::FA_DIGEST)
+                != Some(&scalar_bytes("certificate digest", digest.to_vec())?)
+            || row.created_at <= post.recorded_at
+            || db
+                .vertex_at(vid, CommitSeq(row.created_at.0 - 1))?
+                .is_some()
+        {
+            return Ok(Err(comparison_refused(format!(
+                "comparison {} is not an original retained certificate after this Post",
+                hex(digest)
+            ))));
+        }
+    }
     let oid = &disclosure.document;
     let record = match witness_document(txn, db, oid, "disclosure")? {
         Ok(record) => record,
@@ -2611,12 +2749,15 @@ where
 /// Disclose case `ordinal` (Posted → Disclosed) in `document`: a Disclosure
 /// document of this book that a principal other than its uploader has
 /// reviewed (plan §8.3 "the disclosure document is attested").
+#[allow(clippy::too_many_arguments)]
 pub async fn disclose_case<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     ordinal: u32,
     document: Oid,
+    post: DisclosurePost,
+    comparisons: &[ValidatedDisclosureComparison],
     req: CaseRequest,
 ) -> Outcome<CaseRecorded> {
     if ordinal == 0 {
@@ -2625,25 +2766,61 @@ pub async fn disclose_case<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit(db, book, &req.capability, Act::Disclose)? {
         return Ok(Err(r));
     }
+    if comparisons.len() > MAX_DISCLOSURE_COMPARISONS {
+        return Ok(Err(comparison_refused("too many disclosure comparisons")));
+    }
+    if comparisons
+        .iter()
+        .any(|comparison| !comparison.matches(book.book_id, post))
+    {
+        return Ok(Err(comparison_refused(
+            "a comparison was validated for another book or Post",
+        )));
+    }
+    let mut comparisons: Vec<_> = comparisons
+        .iter()
+        .map(|comparison| *comparison.digest())
+        .collect();
+    comparisons.sort();
+    if !valid_comparisons(&comparisons) {
+        return Ok(Err(comparison_refused(
+            "disclosure requires a nonempty bounded set of distinct nonzero comparison digests",
+        )));
+    }
     let disclosure = Disclosure {
         document,
         attestation: crate::attestation::review_vid(book.book_id, &document),
+        post: Some(post),
+        comparisons,
     };
     let bytes = disclosure.canonical_bytes()?;
-    let proposal = record_proposal(
+    let mut proof_refs = vec![
+        TypedRef::Object(disclosure.document),
+        TypedRef::Vertex(disclosure.attestation),
+    ];
+    proof_refs.extend(
+        disclosure
+            .comparisons
+            .iter()
+            .map(|digest| TypedRef::Object(Oid(*digest))),
+    );
+    let mut proposal = record_proposal(
         book,
         &req,
         Act::Disclose,
         restatement_case_vid(book.book_id, ordinal),
         CaseState::Posted.tag(),
         CaseState::Disclosed,
-        vec![
-            TypedRef::Object(disclosure.document),
-            TypedRef::Vertex(disclosure.attestation),
-        ],
+        proof_refs,
         domain_digest(DISCLOSURE_DOMAIN, &[&bytes]),
         Some((fa_model::entry::CASE_DISCLOSURE_EXTENSION, bytes)),
     );
+    proposal.schema_minor = fa_model::entry::CASE_DISCLOSURE_SCHEMA_MINOR;
+    if proposal.clone().seal(Vec::new(), None)?.encode()?.len() > MAX_DISCLOSURE_ENTRY_BYTES {
+        return Ok(Err(comparison_refused(
+            "the complete disclosure entry exceeds the 12 KiB native payload bound; its comparison set cannot be truncated",
+        )));
+    }
     transition(
         db,
         ctx,
@@ -2653,7 +2830,7 @@ pub async fn disclose_case<V: asupersync::fs::Vfs + Clone>(
         Act::Disclose,
         (CaseState::Posted, CaseState::Disclosed),
         proposal,
-        |txn, db| witness_disclosure(txn, db, book, &disclosure),
+        |txn, db| witness_disclosure(txn, db, book, ordinal, &disclosure),
     )
     .await
 }
@@ -2862,6 +3039,18 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
             state.name()
         )));
     }
+    if let Some(anchor) = disclosure.as_ref().and_then(|disclosure| disclosure.post)
+        && !transitions.iter().any(|transition| {
+            transition.to == CaseState::Posted
+                && transition.control_entry == anchor.entry
+                && transition.recorded_at == anchor.recorded_at
+        })
+    {
+        return Err(KernelError::Corrupt(format!(
+            "case {} disclosure names a different Post",
+            body.ordinal,
+        )));
+    }
     Ok(CaseView {
         vid,
         body,
@@ -2878,6 +3067,75 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disclosure_versions_preserve_legacy_bytes_and_bind_the_post_and_comparisons() {
+        let mut legacy = vec![1, 0];
+        legacy.extend_from_slice(&[3; 32]);
+        legacy.extend_from_slice(&77u128.to_le_bytes());
+        let decoded = Disclosure::decode(&legacy).unwrap();
+        assert_eq!(decoded.post, None);
+        assert!(decoded.comparisons.is_empty());
+        assert_eq!(decoded.canonical_bytes().unwrap(), legacy);
+
+        let disclosure = Disclosure {
+            document: Oid([3; 32]),
+            attestation: VId(77),
+            post: Some(DisclosurePost {
+                entry: VId(99),
+                recorded_at: CommitSeq(50),
+            }),
+            comparisons: vec![[4; 32], [5; 32]],
+        };
+        let encoded = disclosure.canonical_bytes().unwrap();
+        let mut expected = vec![2, 0];
+        expected.extend_from_slice(&[3; 32]);
+        expected.extend_from_slice(&77u128.to_le_bytes());
+        expected.extend_from_slice(&99u128.to_le_bytes());
+        expected.extend_from_slice(&50u64.to_le_bytes());
+        expected.extend_from_slice(&2u32.to_le_bytes());
+        expected.extend_from_slice(&[4; 32]);
+        expected.extend_from_slice(&[5; 32]);
+        assert_eq!(encoded, expected, "independent little-endian wire vector");
+        assert_eq!(Disclosure::decode(&encoded).unwrap(), disclosure);
+        for invalid in [
+            Disclosure {
+                comparisons: Vec::new(),
+                ..disclosure.clone()
+            },
+            Disclosure {
+                comparisons: vec![[4; 32], [4; 32]],
+                ..disclosure.clone()
+            },
+            Disclosure {
+                comparisons: vec![[5; 32], [4; 32]],
+                ..disclosure.clone()
+            },
+            Disclosure {
+                comparisons: vec![[0; 32]],
+                ..disclosure.clone()
+            },
+            Disclosure {
+                comparisons: vec![[4; 32]; MAX_DISCLOSURE_COMPARISONS + 1],
+                ..disclosure.clone()
+            },
+            Disclosure {
+                post: None,
+                ..disclosure.clone()
+            },
+        ] {
+            assert!(invalid.canonical_bytes().is_err(), "{invalid:?}");
+        }
+        let mut bad_count = encoded.clone();
+        bad_count[74..78].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Disclosure::decode(&bad_count).is_err());
+        let mut truncated = encoded.clone();
+        truncated.pop();
+        assert!(Disclosure::decode(&truncated).is_err());
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(Disclosure::decode(&trailing).is_err());
+    }
 
     fn body() -> CaseBody {
         CaseBody {

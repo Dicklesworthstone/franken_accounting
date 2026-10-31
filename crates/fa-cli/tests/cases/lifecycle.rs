@@ -22,7 +22,8 @@
 //! the post by its poster, `fa case diff --statements --certify` and each
 //! restated target's lineage), `case_disclose` (an unreviewed twin first, refused
 //! FA-REF-179, then a reviewed Disclosure copy of the case's disclosure
-//! stub) and `case_close`. `fa case` takes the book's number for a case,
+//! stub, both naming the complete retained statement comparison set) and
+//! `case_close`. `fa case` takes the book's number for a case,
 //! not its label: `case_open` logs the map (`CASES <variant>
 //! <case>=<number>`). A refused case step leaves the case where it is, and
 //! the case's generated read-back row reports its state.
@@ -794,16 +795,42 @@ impl<'c> BookRun<'c> {
             ));
             return;
         };
+        let Some(Ok(compared)) = self.case_statement_diffs.get(&case.id) else {
+            self.fail(format!(
+                "expected retained statement comparisons before disclosing case {} observed none",
+                case.id
+            ));
+            return;
+        };
+        let comparisons: Option<Vec<String>> = compared
+            .observations
+            .iter()
+            .filter(|observation| observation.event == "statement_diff")
+            .map(|observation| observation.certificate.clone())
+            .collect();
+        let Some(mut comparisons) = comparisons.filter(|comparisons| !comparisons.is_empty())
+        else {
+            self.fail(format!(
+                "expected every statement comparison of case {} to carry a retained certificate",
+                case.id
+            ));
+            return;
+        };
+        comparisons.sort();
+        comparisons.dedup();
         let Some(unreviewed) = self.disclosure_copy(step, doc, "unreviewed-twin") else {
             return;
         };
-        let args = vec![
+        let mut args = vec![
             s("case"),
             s("disclose"),
             n.clone(),
             s("--document"),
             unreviewed,
         ];
+        for digest in &comparisons {
+            args.extend([s("--certificate"), format!("C:{digest}")]);
+        }
         let twin = self.call(step.seq, &case.id, "case", as_principal(step, args));
         let Some(oid) = self.disclosure_copy(step, doc, "disclosure") else {
             return;
@@ -823,7 +850,10 @@ impl<'c> BookRun<'c> {
                 self.lines.push(reproduce(&review));
             }
         }
-        let args = vec![s("case"), s("disclose"), n, s("--document"), oid.clone()];
+        let mut args = vec![s("case"), s("disclose"), n, s("--document"), oid.clone()];
+        for digest in &comparisons {
+            args.extend([s("--certificate"), format!("C:{digest}")]);
+        }
         let call = self.call(step.seq, &case.id, "case", as_principal(step, args));
         if call.exit != 0 {
             self.lines.push(reproduce(&call));

@@ -145,9 +145,10 @@ pub(crate) fn superseding_cases<'a>(
         let mut previous_at = None;
         let mut body = None;
         let mut posted = BTreeSet::new();
+        let mut post_anchor = None;
         let mut disclosure_document = None;
         let mut disclosure_digest = None;
-        for (at, _, entry) in transitions {
+        for (at, vid, entry) in transitions {
             let Some(ControlPayload::LifecycleTransition {
                 from,
                 to,
@@ -189,6 +190,10 @@ pub(crate) fn superseding_cases<'a>(
                 body = Some(opened);
             }
             if *to == CaseState::Posted.tag() {
+                post_anchor = Some(fa_journal::DisclosurePost {
+                    entry: vid,
+                    recorded_at: at,
+                });
                 let bytes = extension(entry, CASE_POSTED_EXTENSION)
                     .ok_or_else(|| corrupt("the Post record omits its committed members"))?;
                 let declared = posted_entries(bytes)?;
@@ -227,9 +232,15 @@ pub(crate) fn superseding_cases<'a>(
                 let disclosure = Disclosure::decode(bytes)?;
                 if !proof_refs.contains(&TypedRef::Object(disclosure.document))
                     || !proof_refs.contains(&TypedRef::Vertex(disclosure.attestation))
+                    || disclosure
+                        .post
+                        .is_some_and(|post| Some(post) != post_anchor)
+                    || disclosure.comparisons.iter().any(|digest| {
+                        !proof_refs.contains(&TypedRef::Object(fa_model::Oid(*digest)))
+                    })
                 {
                     return Err(corrupt(
-                        "the Disclose record does not cite its document and review",
+                        "the Disclose record does not bind its document, review, Post and comparisons",
                     ));
                 }
                 disclosure_document = Some(disclosure.document);
@@ -380,6 +391,8 @@ mod tests {
         let disclosure = Disclosure {
             document: Oid([3; 32]),
             attestation: VId(77),
+            post: None,
+            comparisons: Vec::new(),
         };
         vec![
             (

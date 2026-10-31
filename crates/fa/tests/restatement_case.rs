@@ -59,6 +59,80 @@ fn day(year: i32, month: u8, day: u8) -> DateDay {
     DateDay::from_ymd(year, month, day).unwrap()
 }
 
+fn retain_case_comparisons(book: &mut Book, ordinal: u32) -> Vec<[u8; 32]> {
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
+    let requests = book
+        .case_statement_diff_requests(PRINCIPAL, &capability, ordinal, None)
+        .unwrap()
+        .unwrap();
+    let mut digests = Vec::new();
+    for request in requests {
+        let certificate = if request.functional {
+            book.certify_functional_statement_diff(PRINCIPAL, &capability, &request.request)
+        } else {
+            book.certify_statement_diff(PRINCIPAL, &capability, &request.request)
+        }
+        .unwrap()
+        .unwrap()
+        .certificate;
+        let digest = *certificate.digest();
+        book.retain_report_artifact(
+            PRINCIPAL,
+            &capability,
+            &certificate.canonical_bytes().unwrap(),
+            Some(&digest),
+        )
+        .unwrap()
+        .unwrap();
+        digests.push(digest);
+    }
+    digests.sort();
+    digests.dedup();
+    digests
+}
+
+fn issue_original_case_statement(book: &mut Book, period: &str) {
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce", "close"]).unwrap();
+    let certificate = book
+        .certify_statement(
+            fa::StatementSelection {
+                definition: fa::StatementDefinition::embedded("balance-sheet").unwrap(),
+                periods: vec![period.into()],
+                comparative: Vec::new(),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    book.retain_certificate(PRINCIPAL, &capability, &certificate)
+        .unwrap()
+        .unwrap();
+    let plan = book
+        .plan_statement_issuance(
+            &capability,
+            &certificate.digest,
+            Some(period),
+            fa_journal::IssuedTo::Auditor,
+            None,
+            day(2026, 1, 10),
+            b"original-case-statement",
+        )
+        .unwrap()
+        .unwrap();
+    let approval = book
+        .approve(
+            Capability::embedded(VId(9), &["approve"]).unwrap(),
+            plan.proposal_digest(book.context()).unwrap(),
+        )
+        .unwrap()
+        .unwrap()
+        .approval();
+    book.issue_statements(&capability, plan, vec![approval])
+        .unwrap()
+        .unwrap();
+}
+
 fn book(seed: u8) -> (Book, Oid, Oid) {
     let units = UnitRegistry::embedded().unwrap();
     let book_id = Id128([seed; 16]);
@@ -592,6 +666,7 @@ fn a_rehearsed_case_is_approved_under_dual_control() {
 #[test]
 fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     let (mut book, narrative, authority) = book(0xcb);
+    issue_original_case_statement(&mut book, "FY2025-P12");
     let book_id = book.context().book_id;
     let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
     let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
@@ -1020,6 +1095,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     // fa-75j4 slice 5: disclosed in a Disclosure document a principal other
     // than its uploader reviewed, then closed, each once.
     let closer = Capability::embedded(PRINCIPAL, &["restate", "read"]).unwrap();
+    let comparisons = retain_case_comparisons(&mut book, 1);
     assert_eq!(
         book.close_case(closer.clone(), 1, date, b"early")
             .unwrap()
@@ -1029,7 +1105,14 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         "a Posted case is not closed"
     );
     let invoice = book
-        .disclose_case(closer.clone(), 1, receipt.oid(), date, b"invoice")
+        .disclose_case(
+            closer.clone(),
+            1,
+            receipt.oid(),
+            &comparisons,
+            date,
+            b"invoice",
+        )
         .unwrap()
         .unwrap_err();
     assert_eq!(invoice.code, code::CASE_DISCLOSURE, "{invoice:?}");
@@ -1045,7 +1128,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     book.add_document(&note).unwrap().unwrap();
     let head = book.head().unwrap();
     let unreviewed = book
-        .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
+        .disclose_case(closer.clone(), 1, note.oid(), &comparisons, date, b"note")
         .unwrap()
         .unwrap_err();
     assert_eq!(unreviewed.code, code::CASE_DISCLOSURE, "{unreviewed:?}");
@@ -1061,13 +1144,173 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     )
     .unwrap()
     .unwrap();
+    // Every comparison is mandatory and must answer the exact original
+    // statement question at the immutable case Post. A valid but unrelated
+    // retained report is no disclosure evidence for this case.
+    let mut tampered = comparisons.clone();
+    tampered[0][0] ^= 1;
+    let mut duplicated = comparisons.clone();
+    duplicated[1] = duplicated[0];
+    let mut extra = comparisons.clone();
+    extra.push([0xfe; 32]);
+    for (key, supplied) in [
+        (b"no-comparisons".as_slice(), Vec::new()),
+        (b"missing-comparison".as_slice(), comparisons[1..].to_vec()),
+        (b"tampered-comparison".as_slice(), tampered),
+        (b"duplicate-comparison".as_slice(), duplicated),
+        (b"extra-comparison".as_slice(), extra),
+    ] {
+        let head = book.head().unwrap();
+        let refusal = book
+            .disclose_case(closer.clone(), 1, note.oid(), &supplied, date, key)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::CASE_STATEMENT_DIFF, "{refusal:?}");
+        assert_eq!(
+            book.head().unwrap(),
+            head,
+            "invalid comparison set writes nothing"
+        );
+    }
+    let original_artifact = book
+        .read_report_artifact(PRINCIPAL, &read, &comparisons[0])
+        .unwrap()
+        .unwrap();
+    let original_artifact =
+        fa::StatementDiffCertificate::decode(&original_artifact.canonical_bytes().unwrap())
+            .unwrap();
+    let original_request = original_artifact.request().unwrap();
+    for wrong_coordinate in [false, true] {
+        let mut request = original_request.clone();
+        if wrong_coordinate {
+            request.after = Some(book.head().unwrap());
+        } else {
+            request.selection.periods = vec!["FY2025-P10".into()];
+            request.selection.comparative.clear();
+        }
+        let wrong = book
+            .certify_statement_diff(PRINCIPAL, &read, &request)
+            .unwrap()
+            .unwrap()
+            .certificate;
+        book.retain_report_artifact(
+            PRINCIPAL,
+            &read,
+            &wrong.canonical_bytes().unwrap(),
+            Some(wrong.digest()),
+        )
+        .unwrap()
+        .unwrap();
+        let mut supplied = comparisons.clone();
+        supplied[0] = *wrong.digest();
+        let head = book.head().unwrap();
+        let refusal = book
+            .disclose_case(
+                closer.clone(),
+                1,
+                note.oid(),
+                &supplied,
+                date,
+                b"wrong-question",
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::CASE_STATEMENT_DIFF, "{refusal:?}");
+        assert_eq!(book.head().unwrap(), head);
+    }
+    let wrong_measure = book
+        .certify_functional_statement_diff(PRINCIPAL, &read, &original_request)
+        .unwrap()
+        .unwrap()
+        .certificate;
+    book.retain_report_artifact(
+        PRINCIPAL,
+        &read,
+        &wrong_measure.canonical_bytes().unwrap(),
+        Some(wrong_measure.digest()),
+    )
+    .unwrap()
+    .unwrap();
+    let mut supplied = comparisons.clone();
+    supplied[0] = *wrong_measure.digest();
+    let head = book.head().unwrap();
+    let refusal = book
+        .disclose_case(
+            closer.clone(),
+            1,
+            note.oid(),
+            &supplied,
+            date,
+            b"wrong-measure",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, code::CASE_STATEMENT_DIFF, "{refusal:?}");
+    assert_eq!(book.head().unwrap(), head);
+    let denied = book
+        .disclose_case(
+            Capability::embedded(PRINCIPAL, &["restate"]).unwrap(),
+            1,
+            note.oid(),
+            &[[0; 32]],
+            date,
+            b"no-read",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        denied.code, "FA-REF-011",
+        "authorization precedes malformed digests: {denied:?}"
+    );
+    assert_eq!(book.head().unwrap(), head);
     let disclosed = book
-        .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
+        .disclose_case(closer.clone(), 1, note.oid(), &comparisons, date, b"note")
         .unwrap()
         .unwrap();
     assert_eq!(disclosed.case.state, CaseState::Disclosed);
     let disclosure = disclosed.case.disclosure.unwrap();
     assert_eq!(disclosure.document, note.oid());
+    assert_eq!(disclosure.comparisons, comparisons);
+    assert_eq!(disclosure.post.unwrap().entry, posted.control_entry);
+    assert_eq!(disclosure.post.unwrap().recorded_at, posted.recorded_at);
+    let disclosed_state = book
+        .checkpoint(PRINCIPAL, &read)
+        .unwrap()
+        .unwrap()
+        .checkpoint
+        .checkpoint
+        .body
+        .state_oid;
+    let comparison_bundle = book
+        .produce_statement_diff_bundle(PRINCIPAL, &read, Some(disclosed_state), &original_artifact)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &comparison_bundle.bundle.bytes,
+        &[book.checkpoint_public_key()],
+        None,
+        Some(&comparison_bundle.receipt),
+        Some(original_artifact.digest()),
+    )
+    .expect(
+        "a cited comparison recomputes offline under the checkpoint including its v2 disclosure",
+    );
+    assert_eq!(verified.output, original_artifact.output());
+    let mut tampered_bundle = comparison_bundle.bundle.bytes.clone();
+    let middle = tampered_bundle.len() / 2;
+    tampered_bundle[middle] ^= 1;
+    assert!(
+        fa_verify::report::verify_report_expected(
+            &tampered_bundle,
+            &[book.checkpoint_public_key()],
+            None,
+            Some(&comparison_bundle.receipt),
+            Some(original_artifact.digest()),
+        )
+        .is_err(),
+        "one changed bundle byte cannot verify as the disclosed comparison"
+    );
     let (disclose_entry, _) = book.read_entry(disclosed.control_entry).unwrap().unwrap();
     expected_case.disclosure_document = Some(note.oid());
     expected_case.disclosure_digest = Some(disclose_entry.entry_digest);
@@ -1115,7 +1358,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         "current disclosure attribution does not rewrite the historical report"
     );
     let again = book
-        .disclose_case(closer.clone(), 1, note.oid(), date, b"note")
+        .disclose_case(closer.clone(), 1, note.oid(), &comparisons, date, b"note")
         .unwrap()
         .unwrap();
     assert!(again.already_recorded);
@@ -2226,8 +2469,16 @@ fn a_policy_change_retrospective_case_restates_a_locked_periods_posting_under_in
     )
     .unwrap()
     .unwrap();
+    let comparisons = retain_case_comparisons(&mut book, 1);
     let disclosed = book
-        .disclose_case(closer.clone(), 1, note.oid(), date, b"pcr-disclose")
+        .disclose_case(
+            closer.clone(),
+            1,
+            note.oid(),
+            &comparisons,
+            date,
+            b"pcr-disclose",
+        )
         .unwrap()
         .unwrap();
     assert_eq!(disclosed.case.state, CaseState::Disclosed);
