@@ -196,6 +196,245 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
 }
 
 #[test]
+fn typed_due_dates_drive_receivable_and_payable_aging_without_guessing() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "typed-due-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&fixture.book, &["chart", "import", &chart]);
+    for (verb, party, kind, control_flag, account, line_flag, line_account, debit) in [
+        (
+            "invoice",
+            "C-17",
+            "Customer",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            true,
+        ),
+        (
+            "bill",
+            "V-17",
+            "Vendor",
+            "--payable",
+            "2000",
+            "--expense",
+            "6000",
+            false,
+        ),
+    ] {
+        let party_file = write(
+            &fixture.dir,
+            &format!("{party}.json"),
+            &format!(r#"{{"code":"{party}","kind":"{kind}","name":"{party}"}}"#),
+        );
+        ok(&fixture.book, &["party", "add", &party_file]);
+        let arguments = vec![
+            verb,
+            "--party",
+            party,
+            "--number",
+            "DUE-1",
+            "--date",
+            "2026-03-01",
+            control_flag,
+            account,
+            line_flag,
+            line_account,
+            "--line",
+            r#"qty=3 unit_price="6.25 USD""#,
+            "--line",
+            r#"amount="6.25 USD""#,
+            "--due-date",
+            "2026-03-31",
+            "--evidence",
+            &evidence,
+        ];
+        let before = fixture.head();
+        let mut preview = arguments.clone();
+        preview.push("--dry-run");
+        let planned = ok(&fixture.book, &preview);
+        assert_eq!(text(&planned, "event"), "plan");
+        assert_eq!(
+            fixture.head(),
+            before,
+            "{verb} dry run must not publish maturity or money"
+        );
+        let posted = ok(&fixture.book, &arguments);
+        let after = fixture.head();
+        let retry = ok(&fixture.book, &arguments);
+        assert_eq!(text(&posted, "vid"), text(&retry, "vid"));
+        assert_eq!(fixture.head(), after, "{verb} exact retry is one entry");
+        let position = arguments
+            .iter()
+            .position(|value| *value == "--due-date")
+            .unwrap();
+        let mut changed_maturity = arguments.clone();
+        changed_maturity[position + 1] = "2026-04-30";
+        let (code, error) = run(&fixture.book, &changed_maturity);
+        assert_eq!(
+            code,
+            6,
+            "a changed due date is a different retained intent: {}",
+            error.render()
+        );
+        assert_eq!(fixture.head(), after);
+        let mut malformed = arguments.clone();
+        malformed[position + 1] = "not-a-date";
+        let mut duplicate = arguments.clone();
+        duplicate.extend(["--due-date", "2026-04-30"]);
+        for refused in [malformed, duplicate] {
+            let (code, error) = run(&fixture.book, &refused);
+            assert_eq!(code, 2, "{}", error.render());
+            assert!(error.render().contains("--due-date"), "{}", error.render());
+            assert_eq!(fixture.head(), after);
+        }
+        let metadata = certify(
+            &fixture,
+            &[
+                "gl",
+                "aging",
+                "--basis",
+                "due-date",
+                "--account",
+                account,
+                "--as-of",
+                "2026-04-01",
+            ],
+        );
+        let certificate =
+            fa::DueDateAgingCertificate::decode(&unhex(text(&metadata, "bytes"))).unwrap();
+        let locator = format!("C:{}", text(&metadata, "oid"));
+        let state = fixture.checkpoint();
+        let signed = exported(
+            &fixture.book,
+            &["signed-checkpoint", "--state", text(&state, "oid")],
+        );
+        let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+            .try_into()
+            .unwrap();
+        let produced = ok(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        let verified = fa_verify::report::verify_report_expected(
+            &bytes(&produced),
+            &[key],
+            None,
+            Some(&unhex(text(&produced, "receipt"))),
+            Some(certificate.digest()),
+        )
+        .unwrap();
+        let report = verified.due_date_aging.unwrap();
+        assert_eq!(
+            report.items.len(),
+            1,
+            "{verb} carries one explicit full-total installment"
+        );
+        assert!(report.unscheduled.is_empty());
+        assert_eq!(
+            (report.items[0].open, report.items[0].days_past_due),
+            (2_500, 1)
+        );
+        assert_eq!(report.items[0].item.debit, debit);
+        assert_eq!(
+            (
+                report.totals[0].amounts.debits,
+                report.totals[0].amounts.credits
+            ),
+            if debit { (2_500, 0) } else { (0, 2_500) }
+        );
+        let rec_metadata = certify(
+            &fixture,
+            &[
+                "gl",
+                "aging",
+                "--basis",
+                "due-date",
+                "--reconcile",
+                "--account",
+                account,
+                "--as-of",
+                "2026-04-01",
+            ],
+        );
+        let reconciliation =
+            fa::DueDateAgingReconciliationCertificate::decode(&unhex(text(&rec_metadata, "bytes")))
+                .unwrap();
+        let rec_at = reconciliation.aging_source().source().known_at.0;
+        let request = format!(
+            r#"{{"kind":"due-date-aging-reconciliation","account":"{account}","through":"2026-04-01","known_at":{rec_at},"buckets":[0,30,60,90]}}"#
+        );
+        let rec_locator = format!("C:{}", text(&rec_metadata, "oid"));
+        let state = fixture.checkpoint();
+        let produced = ok(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &rec_locator,
+                "--expect",
+                &request,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        let verified = fa_verify::report::verify_report_expected(
+            &bytes(&produced),
+            &[key],
+            None,
+            Some(&unhex(text(&produced, "receipt"))),
+            Some(reconciliation.digest()),
+        )
+        .unwrap();
+        let control = verified.due_date_aging_reconciliation.unwrap();
+        assert!(control.is_reconciled());
+        assert_eq!(control.rows.len(), 1);
+        let net = if debit { 2_500 } else { -2_500 };
+        assert_eq!(
+            (control.rows[0].posted_net, control.rows[0].open_net),
+            (net, net)
+        );
+        ok(
+            &fixture.book,
+            &["reverse", text(&posted, "vid"), "--reason", "WrongAccount"],
+        );
+        let reversed = ok(
+            &fixture.book,
+            &[
+                "gl",
+                "aging",
+                "--basis",
+                "due-date",
+                "--account",
+                account,
+                "--as-of",
+                "2026-04-01",
+            ],
+        );
+        assert_eq!(text(&reversed, "event"), "due_date_aging");
+        for field in ["items", "unscheduled", "totals"] {
+            assert!(
+                get(&reversed, field).as_arr().unwrap().is_empty(),
+                "{verb}: reversed {field}"
+            );
+        }
+    }
+}
+
+#[test]
 fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();

@@ -265,10 +265,10 @@ example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
 name = "invoice"
-summary = "Post a customer invoice (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, debiting the receivable for the party and crediting each line's revenue account. No posting rule or tax is inferred."
+summary = "Post a customer invoice (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, debiting the receivable for the party and crediting each line's revenue account. An explicit --due-date YYYY-MM-DD journals one contractual maturity for the exact total (extension 33 v2). No due date, posting rule or tax is inferred."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--due-date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned", "scenario_run"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -278,10 +278,10 @@ example = "fa invoice --party ACME-CUST-17 --number 10442 --date 2026-03-14 --re
 
 [[verb]]
 name = "bill"
-summary = "Post a vendor bill (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, crediting the payable for the party and debiting each line's expense account. No posting rule or tax is inferred."
+summary = "Post a vendor bill (plan §15.3, Appendix B): typed sugar over fa post that builds the Original entry from its lines, crediting the payable for the party and debiting each line's expense account. An explicit --due-date YYYY-MM-DD journals one contractual maturity for the exact total (extension 33 v1). No due date, posting rule or tax is inferred."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--due-date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned", "scenario_run"]
 exits = [0, 2, 3, 4, 5, 6, 7]
@@ -4941,7 +4941,7 @@ name = "invoice"
 verb = "invoice"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--due-date", "--receivable", "--revenue", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--receivable", "--line"]
 dont = ["Don't add a tax line here: there is no tax law yet; post tax explicitly with fa_post_post.", "Don't invent an invoice number: use the document's own number (or a key), so a retry returns the recorded entry."]
@@ -4954,7 +4954,7 @@ name = "bill"
 verb = "bill"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--due-date", "--payable", "--expense", "--line", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--payable", "--line"]
 dont = ["Don't add a tax line here: there is no tax law yet.", "Don't post a bill without its evidence: cite the vendor's document."]

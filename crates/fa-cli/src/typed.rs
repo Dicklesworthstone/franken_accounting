@@ -80,9 +80,16 @@ impl Kind {
         }
     }
 
+    const fn maturity_field(self) -> &'static str {
+        match self {
+            Self::Invoice => "receivable_maturity",
+            Self::Bill => "obligation_maturity",
+        }
+    }
+
     fn example(self) -> String {
         format!(
-            "fa {} --party <code> --number <document number> --date YYYY-MM-DD {} <code> {} <code> --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' [--line ...] [--evidence <oid>] [--dry-run] --json",
+            "fa {} --party <code> --number <document number> --date YYYY-MM-DD {} <code> {} <code> --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' [--line ...] [--due-date YYYY-MM-DD] [--evidence <oid>] [--dry-run] --json",
             self.verb(),
             self.control_flag(),
             self.line_flag()
@@ -578,6 +585,7 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
         "--party",
         "--number",
         "--date",
+        "--due-date",
         "--key",
         "--description",
         "--entity",
@@ -595,6 +603,11 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
     let date = args.require("--date", "YYYY-MM-DD")?;
     fa_time::DateDay::parse(date)
         .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
+    let due_date = args.flag("--due-date");
+    if let Some(due_date) = due_date {
+        fa_time::DateDay::parse(due_date)
+            .map_err(|e| usage(format!("--due-date: {e}"), "--due-date YYYY-MM-DD"))?;
+    }
     let control = args.require(kind.control_flag(), "<account code>")?;
     let default_account = args.flag(kind.line_flag());
     let number = args.flag("--number");
@@ -722,13 +735,29 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
         },
         str::to_string,
     );
-    let doc = obj(vec![
+    let mut fields = vec![
         ("effective_date", s(date)),
         ("description", s(description)),
         ("idempotency_key", s(key)),
         ("legs", Json::Arr(legs)),
-    ]);
-    post_document(ctx, args, None, doc)
+    ];
+    if let Some(due_date) = due_date {
+        fields.push((
+            kind.maturity_field(),
+            Json::Arr(vec![obj(vec![
+                ("ordinal", Json::Int(0)),
+                ("status", s("contractual")),
+                (
+                    "installments",
+                    Json::Arr(vec![obj(vec![
+                        ("due_date", s(due_date)),
+                        ("amount", s(total)),
+                    ])]),
+                ),
+            ])]),
+        ));
+    }
+    post_document(ctx, args, None, obj(fields))
 }
 
 fn capitalized(word: &str) -> String {
