@@ -15133,6 +15133,9 @@ fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         } else {
             let mut sub = args.clone();
             sub.positional = vec!["verify".to_string(), target.to_string()];
+            if target != "registers" {
+                sub.switches.retain(|s| s != "--require-materialized");
+            }
             if by_period {
                 sub.flags.insert("--period".to_string(), periods.clone());
             }
@@ -15180,7 +15183,13 @@ fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "run each failing target alone for its finding: {}",
                 failed
                     .iter()
-                    .map(|t| format!("fa verify {t} --json"))
+                    .map(|t| {
+                        if *t == "registers" && args.switch("--require-materialized") {
+                            format!("fa verify {t} --require-materialized --json")
+                        } else {
+                            format!("fa verify {t} --json")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join("; ")
             )),
@@ -15295,6 +15304,12 @@ fn verify_fx_conversion(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
+    if args.switch("--require-materialized") && !matches!(target, Some("book" | "registers")) {
+        return Err(usage(
+            "--require-materialized is supported only by verify book and verify registers",
+            "fa verify book --require-materialized, or fa verify registers --period <code> --require-materialized",
+        ));
+    }
     if args.flag("--as-known-at").is_some()
         && !matches!(
             target,
@@ -15422,6 +15437,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut actions = Vec::new();
             let mut repairs = Vec::new();
             let mut failing: Vec<&str> = Vec::new();
+            let mut maintenance: Vec<&str> = Vec::new();
             let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
             for (p, v) in periods.iter().zip(book.verify_registers_each(&codes)?) {
                 let v = match v {
@@ -15457,6 +15473,12 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 if !v.is_green() {
                     failing.push(p.as_str());
                     repairs.push(format!("--period {p}"));
+                }
+                if args.switch("--require-materialized")
+                    && v.is_green()
+                    && (v.cache_status != fa_registers::CacheStatus::Verified || v.stale)
+                {
+                    maintenance.push(p.as_str());
                 }
                 if v.is_green() && v.stale {
                     if v.cache_status == fa_registers::CacheStatus::Verified {
@@ -15512,6 +15534,27 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         Json::Arr(v.projection_errors.iter().map(s).collect()),
                     ),
                 ]));
+            }
+            if all_green && !maintenance.is_empty() {
+                return Err(Fail::Verification {
+                    message: format!(
+                        "register caches are uninitialized or stale in {}",
+                        maintenance.join(", ")
+                    ),
+                    detail: Json::Arr(details),
+                    cite: Some(
+                        "--require-materialized (operator requires initialized, current register caches)"
+                            .into(),
+                    ),
+                    fix: Some(format!(
+                        "initialize or advance the selected caches with the same --book: {}",
+                        maintenance
+                            .iter()
+                            .map(|p| format!("fa registers advance --period {p} --json"))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )),
+                });
             }
             if all_green {
                 out.event_with_actions(

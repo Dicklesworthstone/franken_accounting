@@ -5136,9 +5136,97 @@ fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> s
     let verdict = doc(out.lines().last().unwrap());
     assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
 
+    // An operator can require maintained caches without changing the normal
+    // journal-integrity verdict. The whole-book driver must pass this switch
+    // only to its register target and must still execute every other target.
+    for args in [
+        &[
+            "verify",
+            "registers",
+            "--period",
+            "FY2026-P03",
+            "--require-materialized",
+            "--json",
+        ][..],
+        &["verify", "book", "--require-materialized", "--json"][..],
+    ] {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 8, "args={args:?}\n{out}\n{err}");
+        assert!(
+            format!("{out}{err}").contains("register caches are uninitialized or stale in "),
+            "{out}{err}"
+        );
+        if args[1] == "book" {
+            let event = out
+                .lines()
+                .find(|l| field(l, "event") == Some("book_verification"))
+                .expect("whole-book verification completed");
+            for target in arr(&doc(event), "targets") {
+                assert_eq!(
+                    text(target, "verdict"),
+                    if text(target, "target") == "registers" {
+                        "fail"
+                    } else {
+                        "pass"
+                    },
+                    "{out}{err}"
+                );
+            }
+        }
+    }
+
     // Materialize March only, then damage one of its stored cells. April
     // stays uninitialized; the failure names March alone.
     ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
+    ok(&[
+        "verify",
+        "registers",
+        "--period",
+        "FY2026-P03",
+        "--require-materialized",
+        "--json",
+    ]);
+    let later = write(
+        &dir,
+        "later-april.json",
+        r#"{"effective_date":"2026-04-16","idempotency_key":"later-april","legs":[{"side":"debit","account":"6000","amount":"2.00 USD"},{"side":"credit","account":"1000","amount":"2.00 USD"}]}"#,
+    );
+    ok(&[
+        "post",
+        "--intent",
+        &later,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let (out, _) = ok(&["verify", "registers", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(
+        arr(&doc(out.lines().last().unwrap()), "periods")[0].get("stale"),
+        Some(&Json::Bool(true)),
+        "{out}"
+    );
+    let (code, out, err) = run(&[
+        "verify",
+        "registers",
+        "--period",
+        "FY2026-P03",
+        "--require-materialized",
+        "--json",
+    ]);
+    assert_eq!(code, 8, "{out}{err}");
+    assert!(
+        format!("{out}{err}").contains("register caches are uninitialized or stale in FY2026-P03"),
+        "{out}{err}"
+    );
+    ok(&["registers", "advance", "--period", "FY2026-P03", "--json"]);
+    ok(&[
+        "verify",
+        "registers",
+        "--period",
+        "FY2026-P03",
+        "--require-materialized",
+        "--json",
+    ]);
     let runtime = RuntimeBuilder::new().build().unwrap();
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -5169,6 +5257,15 @@ fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> s
     for args in [
         &["verify", "registers", "--fiscal-year", "2026", "--json"][..],
         &["verify", "book", "--json"][..],
+        &[
+            "verify",
+            "registers",
+            "--fiscal-year",
+            "2026",
+            "--require-materialized",
+            "--json",
+        ][..],
+        &["verify", "book", "--require-materialized", "--json"][..],
     ] {
         let (code, out, err) = run(args);
         assert_eq!(code, 8, "args={args:?}\n{out}\n{err}");
@@ -5179,6 +5276,29 @@ fn verify_book_passes_unmaterialized_periods_and_names_only_drifting_ones() -> s
             .and_then(|rest| rest.split([';', '"']).next())
             .unwrap_or_else(|| panic!("names the drifting periods: {message}"));
         assert_eq!(failing.trim(), "FY2026-P03", "{message}");
+    }
+    ok(&[
+        "registers",
+        "materialize",
+        "--fiscal-year",
+        "2026",
+        "--yes",
+        "--json",
+    ]);
+    ok(&["verify", "book", "--require-materialized", "--json"]);
+
+    let absent = dir.join("invalid-target-book");
+    for target in ["periods", "replay"] {
+        let (code, out, err) = fa(
+            Some(&absent),
+            &["verify", target, "--require-materialized", "--json"],
+        );
+        assert_eq!(code, 2, "{out}{err}");
+        assert!(
+            format!("{out}{err}").contains("supported only by verify book and verify registers"),
+            "{out}{err}"
+        );
+        assert!(!absent.exists());
     }
     Ok(())
 }
