@@ -1,4 +1,7 @@
-//! Ed25519 signing (RFC 8032 §5.1.5–§5.1.6), the interim signer.
+//! Ed25519 signing (RFC 8032 §5.1.5–§5.1.6), the interim signer, and
+//! strict verification (§5.1.7) for the producer's own callers: the
+//! kernel's check of a principal's signed approval (bead fa-kae) through
+//! fa-policy's verifier trait. fa-verify keeps its own verifier.
 //!
 //! Interim (Appendix H R-SIGN): fgdb-crypto ships no signature scheme at the
 //! pinned revision (upstream request: frankengraphdb#3). When it does,
@@ -470,22 +473,142 @@ impl core::fmt::Display for KeyError {
 /// canonical curve point whose order is not small (`[8]A` is not the
 /// identity). The producer's own boundary, written apart from fa-verify's.
 pub fn check_public_key(public_key: &[u8; 32]) -> Result<(), KeyError> {
-    let t = tables();
-    let x0 = public_key[31] >> 7;
-    let mut yb = *public_key;
-    yb[31] &= 0x7f;
-    let y = Fe::from_canonical_bytes(&yb).ok_or(KeyError::NotAPoint)?;
-    let a = recover(&t.d, &t.sqrt_m1, y, x0).ok_or(KeyError::NotAPoint)?;
-    let mut eight = a;
-    for _ in 0..3 {
-        eight = eight.add(&eight, &t.d2);
-    }
-    let identity = eight.x.to_bytes() == [0; 32] && eight.y.to_bytes() == eight.z.to_bytes();
-    if identity {
+    trusted_point(tables(), public_key).map(|_| ())
+}
+
+/// The point a trusted public key encodes: canonical and not small-order.
+fn trusted_point(t: &Tables, public_key: &[u8; 32]) -> Result<Point, KeyError> {
+    let a = decode_point(t, public_key).ok_or(KeyError::NotAPoint)?;
+    if a.has_small_order(&t.d2) {
         Err(KeyError::SmallOrder)
     } else {
-        Ok(())
+        Ok(a)
     }
+}
+
+/// §5.1.3: the point a canonical encoding names, or `None`. Public data.
+fn decode_point(t: &Tables, encoded: &[u8; 32]) -> Option<Point> {
+    let x0 = encoded[31] >> 7;
+    let mut yb = *encoded;
+    yb[31] &= 0x7f;
+    let y = Fe::from_canonical_bytes(&yb)?;
+    recover(&t.d, &t.sqrt_m1, y, x0)
+}
+
+impl Point {
+    /// −P = (−x, y, z, −t).
+    fn neg(&self) -> Point {
+        Point {
+            x: self.x.neg(),
+            y: self.y,
+            z: self.z,
+            t: self.t.neg(),
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        self.x.to_bytes() == [0; 32] && self.y.to_bytes() == self.z.to_bytes()
+    }
+
+    /// `[8]P` is the identity: P lies in the torsion subgroup.
+    fn has_small_order(&self, d2: &Fe) -> bool {
+        let mut eight = *self;
+        for _ in 0..3 {
+            eight = eight.add(&eight, d2);
+        }
+        eight.is_identity()
+    }
+
+    /// `[k]P` by double-and-add, most significant bit first. Variable
+    /// time: for public points and scalars only.
+    fn mul_public(&self, k: &[u8; 32], d2: &Fe) -> Point {
+        let mut acc = IDENTITY;
+        for bit in (0..256).rev() {
+            acc = acc.add(&acc, d2);
+            if (k[bit / 8] >> (bit % 8)) & 1 == 1 {
+                acc = acc.add(self, d2);
+            }
+        }
+        acc
+    }
+}
+
+/// Why a signature does not verify (RFC 8032 §5.1.7, strict).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignatureError {
+    /// The public key is not a trusted key ([`check_public_key`]).
+    PublicKey(KeyError),
+    /// R is not the canonical encoding of a curve point.
+    R,
+    /// R is a small-order point.
+    SmallOrderR,
+    /// S is not below the group order L.
+    S,
+    /// `[8][S]B ≠ [8]R + [8][k]A`.
+    Equation,
+}
+
+impl core::fmt::Display for SignatureError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::PublicKey(e) => e.fmt(f),
+            Self::R => {
+                f.write_str("the signature's R is not the canonical encoding of a curve point")
+            }
+            Self::SmallOrderR => f.write_str("the signature's R is a small-order point"),
+            Self::S => f.write_str("the signature's S is not below the group order"),
+            Self::Equation => {
+                f.write_str("the signature does not satisfy the verification equation")
+            }
+        }
+    }
+}
+
+/// RFC 8032 §5.1.7 for pure Ed25519 (no context, no prehash), as strict as
+/// fa-verify's: the key and R are canonical points of non-small order, S is
+/// below L, and the cofactored equation `[8][S]B = [8]R + [8][k]A` holds.
+/// Every input is public, so this runs in variable time. It shares no
+/// arithmetic with fa-verify's verifier, its differential oracle.
+pub fn verify(
+    public_key: &[u8; 32],
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), SignatureError> {
+    let t = tables();
+    let a = trusted_point(t, public_key).map_err(SignatureError::PublicKey)?;
+    let mut r_bytes = [0u8; 32];
+    r_bytes.copy_from_slice(&signature[..32]);
+    let mut s_bytes = [0u8; 32];
+    s_bytes.copy_from_slice(&signature[32..]);
+    let r = decode_point(t, &r_bytes).ok_or(SignatureError::R)?;
+    if r.has_small_order(&t.d2) {
+        return Err(SignatureError::SmallOrderR);
+    }
+    if !below_l(&limbs(&s_bytes)) {
+        return Err(SignatureError::S);
+    }
+    let k = le_bytes(&reduce_512(&sha512(&[&r_bytes, public_key, message])));
+    let mut check = mul_base(&s_bytes)
+        .add(&r.neg(), &t.d2)
+        .add(&a.mul_public(&k, &t.d2).neg(), &t.d2);
+    for _ in 0..3 {
+        check = check.add(&check, &t.d2);
+    }
+    if check.is_identity() {
+        Ok(())
+    } else {
+        Err(SignatureError::Equation)
+    }
+}
+
+/// `s < L`, comparing limbs from the most significant.
+fn below_l(s: &[u64; 4]) -> bool {
+    for (limb, l) in s.iter().rev().zip(L.iter().rev()) {
+        if limb != l {
+            return limb < l;
+        }
+    }
+    false
 }
 
 /// An Ed25519 signing key: the clamped secret scalar and the nonce prefix
@@ -797,5 +920,117 @@ pub(crate) mod tests {
             mul_add_mod_l(&l_minus_1, &[1, 0, 0, 0], &[1, 0, 0, 0]),
             [0; 4]
         );
+    }
+
+    /// fa-verify's verdict kind for the same input, in this module's terms.
+    fn oracle(pk: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> Result<(), SignatureError> {
+        use fa_verify::ed25519::SignatureError as V;
+        fa_verify::ed25519::verify(pk, msg, sig).map_err(|e| match e {
+            V::PublicKey => SignatureError::PublicKey(KeyError::NotAPoint),
+            V::SmallOrderKey => SignatureError::PublicKey(KeyError::SmallOrder),
+            V::R => SignatureError::R,
+            V::SmallOrderR => SignatureError::SmallOrderR,
+            V::S => SignatureError::S,
+            V::Equation => SignatureError::Equation,
+        })
+    }
+
+    /// RFC 8032 §7.1's four vectors verify, and one changed bit anywhere
+    /// in the message, R, S or the key does not.
+    #[test]
+    fn rfc8032_vectors_verify_and_any_changed_bit_does_not() {
+        for (_, pk, msg, sig) in RFC8032 {
+            let (pk, msg, sig) = (unhex::<32>(pk), bytes(msg), unhex::<64>(sig));
+            assert_eq!(verify(&pk, &msg, &sig), Ok(()), "vector {}", hex(&pk));
+            let mut longer = msg.clone();
+            longer.push(0);
+            assert_eq!(verify(&pk, &longer, &sig), Err(SignatureError::Equation));
+            for byte in [0, 17, 31, 32, 50, 63] {
+                let mut bad = sig;
+                bad[byte] ^= 0x04;
+                let found = verify(&pk, &msg, &bad);
+                assert!(found.is_err(), "signature byte {byte} changed");
+                assert_eq!(found, oracle(&pk, &msg, &bad), "signature byte {byte}");
+            }
+            let mut other = pk;
+            other[3] ^= 0x01;
+            let found = verify(&other, &msg, &sig);
+            assert!(found.is_err());
+            assert_eq!(found, oracle(&other, &msg, &sig));
+        }
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Strictness, each refusal named: S = L and S ≥ 2^253 are not below
+    /// L; a small-order R or key is refused even where the cofactored
+    /// equation would hold; a non-canonical key is not a point.
+    #[test]
+    fn non_canonical_and_small_order_inputs_are_refused_by_name() {
+        let key = SigningKey::from_seed(&[0x24; 32]);
+        let pk = key.public_key();
+        let sig = key.sign(b"strict");
+        assert_eq!(verify(&pk, b"strict", &sig), Ok(()));
+        let mut s_is_l = sig;
+        s_is_l[32..].copy_from_slice(&le_bytes(&L));
+        assert_eq!(verify(&pk, b"strict", &s_is_l), Err(SignatureError::S));
+        // S + L names the same scalar mod L: malleable, so refused.
+        let mut s_plus_l = sig;
+        let mut wide = [0u64; 4];
+        let mut carry = 0u128;
+        for ((w, s), l) in wide.iter_mut().zip(limbs(&sig[32..])).zip(L) {
+            let v = u128::from(s) + u128::from(l) + carry;
+            *w = v as u64;
+            carry = v >> 64;
+        }
+        s_plus_l[32..].copy_from_slice(&le_bytes(&wide));
+        assert_eq!(verify(&pk, b"strict", &s_plus_l), Err(SignatureError::S));
+        for torsion in torsion_encodings() {
+            let mut small_r = sig;
+            small_r[..32].copy_from_slice(&torsion);
+            assert_eq!(
+                verify(&pk, b"strict", &small_r),
+                Err(SignatureError::SmallOrderR)
+            );
+            assert_eq!(
+                verify(&torsion, b"strict", &sig),
+                Err(SignatureError::PublicKey(KeyError::SmallOrder))
+            );
+            assert_eq!(
+                oracle(&torsion, b"strict", &small_r),
+                verify(&torsion, b"strict", &small_r)
+            );
+        }
+        let mut p = [0xffu8; 32];
+        p[0] = 0xed;
+        p[31] = 0x7f;
+        assert_eq!(
+            verify(&p, b"strict", &sig),
+            Err(SignatureError::PublicKey(KeyError::NotAPoint))
+        );
+    }
+
+    /// Signer → this verifier and fa-verify's agree, verdict for verdict,
+    /// over many keys and messages, with each signature also corrupted.
+    #[test]
+    fn signer_and_both_verifiers_agree_across_keys_and_messages() {
+        for n in 0u8..48 {
+            let mut seed = [0u8; 32];
+            for (i, b) in seed.iter_mut().enumerate() {
+                *b = (i as u8).wrapping_mul(29) ^ n.wrapping_mul(71);
+            }
+            let key = SigningKey::from_seed(&seed);
+            let pk = key.public_key();
+            let msg: Vec<u8> = (0..usize::from(n) * 3).map(|i| (i as u8) ^ n).collect();
+            let sig = key.sign(&msg);
+            assert_eq!(verify(&pk, &msg, &sig), Ok(()), "key {n}");
+            assert_eq!(oracle(&pk, &msg, &sig), Ok(()), "key {n}");
+            let mut bad = sig;
+            bad[usize::from(n) % 64] ^= 1 << (n % 8);
+            assert_eq!(verify(&pk, &msg, &bad), oracle(&pk, &msg, &bad), "key {n}");
+            assert!(verify(&pk, &msg, &bad).is_err(), "key {n}");
+        }
     }
 }
