@@ -133,6 +133,8 @@ pub(crate) struct StatedAccount {
     pub(crate) name: String,
     pub(crate) account_type: String,
     pub(crate) side: String,
+    /// Present only when the extract explicitly carries versioned role metadata.
+    pub(crate) roles: Option<Vec<String>>,
 }
 
 /// What an extract states, read by its own format's reader: its coordinate,
@@ -769,6 +771,7 @@ fn ads_chart(chart: &str, escaped: bool) -> Result<Vec<StatedAccount>, String> {
                 name,
                 account_type,
                 side,
+                roles: None,
             })
         })
         .collect()
@@ -839,7 +842,11 @@ pub(crate) fn chart_matches(
         let agrees = row.code == account.code
             && row.name == account.name
             && type_name.is_some_and(|name| row.account_type == name)
-            && row.side == side;
+            && row.side == side
+            && row
+                .roles
+                .as_ref()
+                .is_none_or(|roles| *roles == account.roles);
         if !agrees {
             return Err(format!(
                 "{} row `{}` is not the proven declaration of account {} ({}, {}, {side})",
@@ -1179,6 +1186,7 @@ mod tests {
                     name: name.into(),
                     account_type,
                     normal_balance,
+                    roles: Vec::new(),
                 },
             )
         })

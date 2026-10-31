@@ -11,7 +11,9 @@
 //! applies ([`crate::ads`]): the transactions are exactly the proven entries
 //! the export selects, the assertions exactly their refold, and the chart
 //! exactly the one the proven entries declare. Descriptions and memos are not
-//! judged, as in ADS. Anything outside the profile (an unknown element, an
+//! judged, as in ADS. Optional `AccountRolesV1` claims are checked against the
+//! retained assignment/removal controls; legacy rows without that extension
+//! make no role claim. Anything outside the profile (an unknown element, an
 //! entity other than the five XML ones, a comment, mixed content) is refused,
 //! never skipped.
 
@@ -376,6 +378,7 @@ fn accounts(chart: &Node) -> Result<Vec<StatedAccount>, String> {
                 "AccountDescription",
                 "AccountType",
                 "NormalSide",
+                "AccountRolesV1",
             ])?;
             let (code, name, account_type, normal) = (
                 a.text_of("AccountID")?,
@@ -383,12 +386,33 @@ fn accounts(chart: &Node) -> Result<Vec<StatedAccount>, String> {
                 a.text_of("AccountType")?,
                 side(a, "NormalSide")?,
             );
+            let roles = a
+                .optional("AccountRolesV1")?
+                .map(|node| {
+                    let value = leaf(node)?;
+                    let roles: Vec<_> = value.split(',').map(str::to_string).collect();
+                    if roles.iter().any(|role| {
+                        role.is_empty()
+                            || role.len() > 64
+                            || !role.bytes().all(|byte| {
+                                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                            })
+                    }) || roles.windows(2).any(|pair| pair[0] >= pair[1])
+                    {
+                        return Err(
+                            "AccountRolesV1 must name sorted unique canonical roles".to_string()
+                        );
+                    }
+                    Ok(roles)
+                })
+                .transpose()?;
             Ok(StatedAccount {
                 line: format!("{code}|{name}|{account_type}|{normal}"),
                 code: code.to_string(),
                 name: name.to_string(),
                 account_type: account_type.to_string(),
                 side: normal.to_string(),
+                roles,
             })
         })
         .collect()
@@ -496,6 +520,61 @@ mod tests {
         assert_eq!(chart[0].side, "D");
         let balances = stated.balances.unwrap();
         assert_eq!((balances[0].side.as_str(), balances[0].scale), ("D", None));
+    }
+
+    #[test]
+    fn versioned_role_claims_are_canonical_and_match_the_proven_chart() {
+        let good = file(LINE).replace(
+            "</NormalSide>",
+            "</NormalSide><AccountRolesV1>cash,receivable</AccountRolesV1>",
+        );
+        let chart = stated(&read(&good).unwrap()).unwrap().chart.unwrap();
+        assert_eq!(chart[0].roles.as_deref().unwrap(), ["cash", "receivable"]);
+        let declared = std::collections::BTreeMap::from([(
+            0,
+            crate::report::DeclaredAccount {
+                code: "1000".into(),
+                name: "Cash & equivalents".into(),
+                account_type: 1,
+                normal_balance: 0,
+                roles: vec!["cash".into(), "receivable".into()],
+            },
+        )]);
+        assert_eq!(
+            ads::chart_matches(&chart, &declared, &[], None, &PARTS),
+            Ok(1)
+        );
+        let changed = good.replace("cash,receivable", "payable");
+        let changed = stated(&read(&changed).unwrap()).unwrap().chart.unwrap();
+        assert!(ads::chart_matches(&changed, &declared, &[], None, &PARTS).is_err());
+        for roles in [
+            "",
+            "cash,cash",
+            "receivable,cash",
+            ",cash",
+            "Cash",
+            "<Role>cash</Role>",
+        ] {
+            let malformed = good.replace("cash,receivable", roles);
+            assert!(
+                stated(&read(&malformed).unwrap()).unwrap().chart.is_err(),
+                "{roles}"
+            );
+        }
+        for malformed in [
+            good.replace("AccountRolesV1", "AccountRolesV2"),
+            good.replace(
+                "</AccountRolesV1>",
+                "</AccountRolesV1><AccountRolesV1>cash</AccountRolesV1>",
+            ),
+        ] {
+            assert!(stated(&read(&malformed).unwrap()).unwrap().chart.is_err());
+        }
+        let legacy = stated(&read(&file(LINE)).unwrap()).unwrap().chart.unwrap();
+        assert!(
+            legacy[0].roles.is_none(),
+            "legacy chart rows make no role claim"
+        );
     }
 
     #[test]

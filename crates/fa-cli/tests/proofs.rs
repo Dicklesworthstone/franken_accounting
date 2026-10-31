@@ -2189,6 +2189,70 @@ fn a_migrated_books_extracts_verify_offline() {
     .expect("a well-formed bundle");
     assert!(judged.verified(), "{:?}", judged.failures);
     assert_eq!(judged.entries, report.entries);
+    let xml = std::fs::read_to_string(saft.join("SAF-T.xml")).unwrap();
+    assert!(xml.contains("<AccountRolesV1>cash</AccountRolesV1>"));
+    let forged = xml.replacen(
+        "<AccountRolesV1>cash</AccountRolesV1>",
+        "<AccountRolesV1>receivable</AccountRolesV1>",
+        1,
+    );
+    let rejected = fa_verify::saft::verify_saft(
+        &forged,
+        &std::fs::read(saft.join("SAFT_Proof.fab")).unwrap(),
+        &[saft_key],
+        Some(&std::fs::read(saft.join("SAFT_Proof.receipt")).unwrap()),
+    )
+    .unwrap();
+    assert!(!rejected.verified());
+    assert!(
+        rejected
+            .failures
+            .iter()
+            .any(|why| why.contains("proven declaration")),
+        "{:?}",
+        rejected.failures
+    );
+    // A later removal changes only the later prefix's role claims. A forged
+    // reintroduction of the old role cannot borrow its earlier assignment.
+    ok(&book, &["chart", "role", "1010", "cash", "--remove"]);
+    ok(&book, &["checkpoint", "create", "--grant", "witness"]);
+    let removed = dir.join("saft-role-removed");
+    ok(
+        &book,
+        &[
+            "export",
+            "saft",
+            "--as-of",
+            "2026-12-31",
+            "--out",
+            removed.to_str().unwrap(),
+            "--with-proofs",
+        ],
+    );
+    let removed_xml = std::fs::read_to_string(removed.join("SAF-T.xml")).unwrap();
+    let removed_bundle = std::fs::read(removed.join("SAFT_Proof.fab")).unwrap();
+    let removed_receipt = std::fs::read(removed.join("SAFT_Proof.receipt")).unwrap();
+    let verify_removed = |xml: &str| {
+        fa_verify::saft::verify_saft(xml, &removed_bundle, &[saft_key], Some(&removed_receipt))
+            .unwrap()
+    };
+    let judged = verify_removed(&removed_xml);
+    assert!(judged.verified(), "{:?}", judged.failures);
+    let mut stale_role = removed_xml;
+    let account = stale_role.find("<AccountID>1010</AccountID>").unwrap();
+    let end =
+        account + stale_role[account..].find("</NormalSide>").unwrap() + "</NormalSide>".len();
+    stale_role.insert_str(end, "<AccountRolesV1>cash</AccountRolesV1>");
+    let rejected = verify_removed(&stale_role);
+    assert!(!rejected.verified());
+    assert!(
+        rejected
+            .failures
+            .iter()
+            .any(|why| why.contains("proven declaration")),
+        "{:?}",
+        rejected.failures
+    );
 }
 
 #[test]

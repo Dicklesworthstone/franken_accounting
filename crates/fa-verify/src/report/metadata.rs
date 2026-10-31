@@ -454,6 +454,7 @@ pub(crate) struct DeclaredAccount {
     pub account_type: u8,
     /// 0 debit, 1 credit.
     pub normal_balance: u8,
+    pub roles: Vec<String>,
 }
 
 /// The chart the authenticated entry records declare through `known_at`
@@ -466,12 +467,48 @@ pub(crate) fn declared_chart<'a>(
     known_at: u64,
 ) -> Result<BTreeMap<u128, DeclaredAccount>, ReportError> {
     let mut schema = Schema::default();
+    let mut role_controls = Vec::new();
     for (envelope, proposal) in records {
         if envelope.kind != crate::envelope::KIND_ENTRY || envelope.commit_seq > known_at {
             continue;
         }
-        if let Some((kind, body)) = entry_info(proposal, envelope)?.schema {
+        let info = entry_info(proposal, envelope)?;
+        if let Some((kind, body)) = info.schema {
             schema.apply(kind, body, book, envelope.commit_seq)?;
+            if kind == 16 {
+                const FORMAT: &[u8] = b"fa:account-role:v1";
+                let mut r = Reader::new(body);
+                if r.fixed::<{ FORMAT.len() }>("account_role.format")?
+                    .as_slice()
+                    != FORMAT
+                {
+                    return Err(failed(
+                        "account_metadata",
+                        "unsupported account-role control",
+                    ));
+                }
+                let account = r.u128("account_role.account")?;
+                let role = text(&mut r, 64, "account_role.name")?.to_string();
+                let assigned = r.present("account_role.assigned")?;
+                r.finish("account-role control")?;
+                role_controls.push((envelope.commit_seq, info.identity, account, role, assigned));
+            }
+        }
+    }
+    role_controls.sort();
+    let mut roles: BTreeMap<u128, BTreeSet<String>> = BTreeMap::new();
+    for (_, _, account, role, assigned) in role_controls {
+        if !schema.accounts.contains_key(&account) {
+            return Err(failed(
+                "account_metadata",
+                "account role names an absent account",
+            ));
+        }
+        let active = roles.entry(account).or_default();
+        if assigned {
+            active.insert(role);
+        } else {
+            active.remove(&role);
         }
     }
     Ok(schema
@@ -485,6 +522,7 @@ pub(crate) fn declared_chart<'a>(
                     name: a.name,
                     account_type: a.account_type,
                     normal_balance: a.normal_balance,
+                    roles: roles.remove(&vid).unwrap_or_default().into_iter().collect(),
                 },
             )
         })
