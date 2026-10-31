@@ -5,6 +5,8 @@
 # committee's "proper accounting" sentence (NFS-PROPER) says they should have been booked: no
 # asset, no equity. Its certified statement diff is E-T-03's read. Quarters 2000Q1-2001Q3; every
 # quarter through 2001Q2 is locked before the case.
+# E3's second slice adds the reserve-release override the indictment charges (RR1e, its amount
+# the synthetic RR-AMT) and E-P-01, its first refusals by entry class and period state at commit.
 
 [book]
 variant = "native"
@@ -102,6 +104,11 @@ label = "examiner-witness"
 profile = "Human"
 grants = ["read", "witness"]
 
+[[principal]]
+label = "senior-executive-1"
+profile = "Human"
+grants = ["read", "post"]
+
 [[account]]
 code = "1100"
 name_fact = "NFS1"
@@ -115,6 +122,24 @@ code = "3100"
 name_fact = "NFS1"
 type = "Equity"
 role = "contributed_capital"
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+# The reserve account RR1 names, and the earnings account its release credits (a declared
+# default: the quote names only the reserve).
+[[account]]
+code = "2400"
+name_fact = "RR1e"
+type = "Liability"
+role = ""
+opened = "1999-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "5100"
+name_fact = "RR1e"
+type = "Expense"
+role = ""
 opened = "1999-12-31"
 role_map_rule = "role_map"
 
@@ -133,6 +158,12 @@ reviewed_by = "case-second-reader"
 [[document]]
 id = "DOC-PH-NFS2e"
 stub_of = "placeholder:NFS2e"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-RR1e"
+stub_of = "placeholder:RR1e"
 grade = "AgentUpload"
 reviewed_by = "case-second-reader"
 
@@ -190,6 +221,37 @@ account = "3100"
 side = "Cr"
 amount_literal = "828000000.00"
 amount_rule = "value:NFS2#1"
+unit = "USD"
+
+# RR1e: the release from the reserve into the second quarter's earnings, booked after the
+# quarter ended but into it. One entry stands for the charged entries; its class and the
+# period's state at commit are E-P-01's branches.
+[[intent]]
+id = "RR1e"
+fact = "RR1e"
+class = "Original"
+principal = "senior-executive-1"
+effective_date = "2000-06-30"
+memo = "the release from a reserve account into the second quarter's earnings (RR1e)"
+evidence = "DOC-PH-RR1e"
+idempotency_key = "enr-native-rr1e"
+
+[[leg]]
+intent = "RR1e"
+ordinal = 0
+account = "2400"
+side = "Dr"
+amount_literal = "2000000.00"
+amount_rule = "value:RR-AMT#1"
+unit = "USD"
+
+[[leg]]
+intent = "RR1e"
+ordinal = 1
+account = "5100"
+side = "Cr"
+amount_literal = "2000000.00"
+amount_rule = "value:RR-AMT#1"
 unit = "USD"
 
 [[intent]]
@@ -270,6 +332,18 @@ attribute = "evidence_attached"
 rule = "evidence_minimum"
 values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
 
+[[branch_class]]
+id = "bc-entry-class"
+attribute = "entry_class"
+rule = "entry_class_admission"
+values = ["Original", "Adjusting"]
+
+[[branch_class]]
+id = "bc-period-state"
+attribute = "period_state_at_commit"
+rule = "period_state_admission"
+values = ["Open", "SoftClosed", "Closed", "Locked"]
+
 [[default]]
 attribute = "evidence_attached"
 rule = "placeholder_reviewed"
@@ -289,6 +363,26 @@ rationale = "the 10-Q (filed 2001-11-19) is the later restating filing that prin
 attribute = "reason"
 rule = "WrongAccount"
 rationale = "the committee: the proper accounting would have been to show the notes receivable as a reduction to shareholders' equity (NFS-PROPER); the amounts were right and the accounts wrong, and a restatement is never Fraud (K-REASON)"
+
+[[default]]
+attribute = "entry_class"
+rule = "Original"
+rationale = "the indictment charges entries made in Enron's books and records; Original is the class such an entry posts under (plan §2.6 rule 2)"
+
+[[default]]
+attribute = "period_state_at_commit"
+rule = "Open"
+rationale = "the indictment dates the entries after the second quarter ended and gives no close or report date for it: the book posts the entry while 2000Q2 is Open (plan §2.6 rule 2)"
+
+[[default]]
+attribute = "acting_principal"
+rule = "role_of_record"
+rationale = "RR2 says a senior Enron executive released the reserve into earnings; that role (senior-executive-1, grants read and post) books RR1e"
+
+[[default]]
+attribute = "approval_encoding"
+rule = "none"
+rationale = "the indictment states no approval of the entries; the Adjusting-in-Closed cell with a second principal's approval is E3b's"
 
 [[step]]
 seq = 1
@@ -344,77 +438,82 @@ ref = "NFS2e"
 
 [[step]]
 seq = 10
-kind = "period_close"
-ref = "2000Q1"
-principal = "case-closer-1"
+kind = "intent"
+ref = "RR1e"
 
 [[step]]
 seq = 11
+kind = "period_close"
+ref = "2000Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 12
 kind = "period_lock"
 ref = "2000Q1"
 principal = "case-closer-1"
 approvers = ["case-approver-1"]
 
 [[step]]
-seq = 12
+seq = 13
 kind = "period_close"
 ref = "2000Q2"
 principal = "case-closer-1"
-
-[[step]]
-seq = 13
-kind = "period_lock"
-ref = "2000Q2"
-principal = "case-closer-1"
-approvers = ["case-approver-1"]
 
 [[step]]
 seq = 14
-kind = "period_close"
-ref = "2000Q3"
+kind = "period_lock"
+ref = "2000Q2"
 principal = "case-closer-1"
+approvers = ["case-approver-1"]
 
 [[step]]
 seq = 15
+kind = "period_close"
+ref = "2000Q3"
+principal = "case-closer-1"
+
+[[step]]
+seq = 16
 kind = "period_lock"
 ref = "2000Q3"
 principal = "case-closer-1"
 approvers = ["case-approver-1"]
 
 [[step]]
-seq = 16
+seq = 17
 kind = "period_close"
 ref = "2000Q4"
 principal = "case-closer-1"
-
-[[step]]
-seq = 17
-kind = "period_lock"
-ref = "2000Q4"
-principal = "case-closer-1"
-approvers = ["case-approver-1"]
 
 [[step]]
 seq = 18
+kind = "period_lock"
+ref = "2000Q4"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 19
 kind = "period_close"
 ref = "2001Q1"
 principal = "case-closer-1"
 
 [[step]]
-seq = 19
+seq = 20
 kind = "period_lock"
 ref = "2001Q1"
 principal = "case-closer-1"
 approvers = ["case-approver-1"]
 
 [[step]]
-seq = 20
+seq = 21
 kind = "period_close"
 ref = "2001Q2"
 principal = "case-closer-1"
 
 [[step]]
-seq = 21
+seq = 22
 kind = "period_lock"
 ref = "2001Q2"
 principal = "case-closer-1"
@@ -424,70 +523,70 @@ approvers = ["case-approver-1"]
 # it the runner cosigns the restated book with --previous, which must extend it.
 
 [[step]]
-seq = 22
+seq = 23
 kind = "checkpoint"
 ref = "as-booked"
 principal = "examiner-witness"
 
 [[step]]
-seq = 23
+seq = 24
 kind = "checkpoint_witness"
 ref = "as-booked"
 
 [[step]]
-seq = 24
+seq = 25
 kind = "case_open"
 ref = "enr-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 25
+seq = 26
 kind = "case_determine"
 ref = "enr-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 26
+seq = 27
 kind = "scenario_fork"
 ref = "restate-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 27
+seq = 28
 kind = "scenario_run"
 ref = "restate-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 28
+seq = 29
 kind = "scenario_diff"
 ref = "restate-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 29
+seq = 30
 kind = "case_rehearse"
 ref = "enr-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 30
+seq = 31
 kind = "case_approve"
 ref = "enr-raptor"
 
 [[step]]
-seq = 31
+seq = 32
 kind = "case_post"
 ref = "enr-raptor"
 
 [[step]]
-seq = 32
+seq = 33
 kind = "case_disclose"
 ref = "enr-raptor"
 principal = "case-poster-1"
 
 [[step]]
-seq = 33
+seq = 34
 kind = "case_close"
 ref = "enr-raptor"
 principal = "case-poster-1"

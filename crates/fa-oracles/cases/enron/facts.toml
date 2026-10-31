@@ -4437,6 +4437,18 @@ provenance = "synthetic"
 reason = "the indictment states the amount only as millions of dollars (p.13)"
 discipline = "no amount-reading procedure carries a claim on this entry"
 
+# RR-AMT: a synthetic amount of the order the indictment states ("millions of dollars");
+# no procedure reads it.
+[[value]]
+fact = "RR-AMT"
+ordinal = 1
+literal = "2,000,000"
+rule = "scale"
+param = 0
+value = "200000000"
+unit = "USD"
+precision = 0
+
 [[value]]
 fact = "RR1"
 ordinal = 1

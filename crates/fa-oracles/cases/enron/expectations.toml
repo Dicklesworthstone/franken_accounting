@@ -563,3 +563,82 @@ read_target = "total_equity"
 read_coordinate = "2001Q2"
 read_selector = "case:enr-raptor"
 published = "N3-RAPTOR-EQ-2001Q2"
+
+# E-P-01 (plan §7.2a): the reserve-release override's first refusals by entry class and period
+# state at commit, on RR1e, from admissibility.toml (Appendix C) and its principal's grants (read
+# and post): `refuse` is FA-REF-010; a `with:post_softclosed` or `with:post_closed` cell needs a
+# capability that principal lacks, FA-REF-011. No class, state, document or approval is sourced, so
+# no cell is record-consistent and none is the default; the Locked column is unconstrained (no
+# 2000Q2 report or lock date is sourced).
+[[expectation]]
+id = "E-P-01"
+type = "P"
+book_variant = "native"
+statement_template = "P.branch_table"
+basis = ["RR1", "RR1e", "RR2"]
+intent = "RR1e"
+refusal = "FA-REF-010"
+law_row = "admissibility.toml#Original/Closed"
+attribute = "period_state_at_commit"
+reference_verdict = "FA-REF-010"
+
+[[target]]
+expectation = "E-P-01"
+fact = "RR1e"
+branch_attrs = ["entry_class", "period_state_at_commit"]
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Original", "Open"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Original", "SoftClosed"]
+expect = "FA-REF-011"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Original", "Closed"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Original", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Adjusting", "Open"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Adjusting", "SoftClosed"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Adjusting", "Closed"]
+expect = "FA-REF-011"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "E-P-01"
+target = "RR1e"
+cell = ["Adjusting", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false

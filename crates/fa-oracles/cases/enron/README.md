@@ -4,7 +4,7 @@
 
 Case `enron` (letter E), version 1. Scope: the sources ledger of the Enron case (six public-record sources and the assurance each filer row carries); the consolidated balance sheet at December 31, 2000 as the FY2000 10-K prints it and as the Q3-2001 10-Q restates it, every line and the printed totals they foot to; and the restatement bridges from the as-filed figures to the 8-K's restated FY1999 net income, total assets and equity, and to the 10-Q's restated net income (FY1998-FY2000) and total assets, debt and equity (FY1997-FY2000).
 
-Claimed rows: `E-R-01`, `E-R-02`, `E-T-01`, `E-T-02`, `E-T-03`, `E-T-04`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
+Claimed rows: `E-P-01`, `E-R-01`, `E-R-02`, `E-T-01`, `E-T-02`, `E-T-03`, `E-T-04`, `E-T-05`. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.
 
 ## What the record says
 
@@ -528,11 +528,14 @@ Opened 2000-01-01 in USD, on the `custom` calendar.
 |---|---|---|
 | `1100` | Asset | `NFS1` |
 | `3100` | Equity | `NFS1` |
+| `2400` | Liability | `RR1e` |
+| `5100` | Expense | `RR1e` |
 
 | Intent | Fact | Class | Effective |
 |---|---|---|---|
 | `NFS1` | `NFS1` | Original | 2000-06-30 |
 | `NFS2e` | `NFS2e` | Original | 2001-03-31 |
+| `RR1e` | `RR1e` | Original | 2000-06-30 |
 | `delta-NFS1` | `derived:negate` | Restatement | 2000-06-30 |
 | `delta-NFS2e` | `derived:negate` | Restatement | 2001-03-31 |
 
@@ -541,6 +544,7 @@ Opened 2000-01-01 in USD, on the `custom` calendar.
 | `DOC-ENR-10Q` | `SRC-ENR-003` | AgentUpload |
 | `DOC-PH-NFS1` | `placeholder:NFS1` | AgentUpload |
 | `DOC-PH-NFS2e` | `placeholder:NFS2e` | AgentUpload |
+| `DOC-PH-RR1e` | `placeholder:RR1e` | AgentUpload |
 
 Declared defaults (each an encoding choice the record does not fix):
 
@@ -550,6 +554,10 @@ Declared defaults (each an encoding choice the record does not fix):
 | `effective_date` | `reporting_period_last_day` | the committee gives the months (April 2000, March 2001), not the days: each entry is effective on its quarter's last day, which every day of the month shares a quarter with |
 | `case_determination_date` | `restating_filing_date` | the 10-Q (filed 2001-11-19) is the later restating filing that prints the Raptor equity adjustment line E-T-03 compares (plan §2.6); §7.1 has no Item 4.02 8-K row |
 | `reason` | `WrongAccount` | the committee: the proper accounting would have been to show the notes receivable as a reduction to shareholders' equity (NFS-PROPER); the amounts were right and the accounts wrong, and a restatement is never Fraud (K-REASON) |
+| `entry_class` | `Original` | the indictment charges entries made in Enron's books and records; Original is the class such an entry posts under (plan §2.6 rule 2) |
+| `period_state_at_commit` | `Open` | the indictment dates the entries after the second quarter ended and gives no close or report date for it: the book posts the entry while 2000Q2 is Open (plan §2.6 rule 2) |
+| `acting_principal` | `role_of_record` | RR2 says a senior Enron executive released the reserve into earnings; that role (senior-executive-1, grants read and post) books RR1e |
+| `approval_encoding` | `none` | the indictment states no approval of the entries; the Adjusting-in-Closed cell with a second principal's approval is E3b's |
 
 ## Findings, refusals, tie-outs and read-backs
 
@@ -663,6 +671,23 @@ Sources: `SRC-ENR-005` (the committee found).
 | `N3-RAPTOR-EQ-2001Q1` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,total_equity,2001Q1,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
 | `N3-RAPTOR-TA-2001Q2` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,assets,2001Q2,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
 | `N3-RAPTOR-EQ-2001Q2` | `default` | T | PASS | record-consistent | kind=delta read=case-diff,total_equity,2001Q2,case=enr-raptor value=-1000000000.00 contrib=holds outsider=replay:verified append_only=ok |
+
+### `E-P-01`: first refusal at commit (P.branch_table)
+
+Given the documented entry `RR1`, `RR1e`, `RR2` posted on the book `native`, with `period_state_at_commit` in each cell below, the kernel's first refusal is the one each row lists. The record fixes none of these cells, so no row is the record's; the law row the table turns on is admissibility.toml#Original/Closed (`FA-REF-010`).
+
+Sources: `SRC-ENR-001` (the indictment charges).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `RR1e` | `entry_class=Original,period_state_at_commit=Open` | P | PASS | unconstrained | state=Open refusal=admitted exit=0 record_consistent=false commit_agrees=ok ref=agree |
+| `RR1e` | `entry_class=Adjusting,period_state_at_commit=Open` | P | PASS | unconstrained | state=Open refusal=admitted exit=0 record_consistent=false ref=agree |
+| `RR1e` | `entry_class=Original,period_state_at_commit=SoftClosed` | P | PASS | unconstrained | state=SoftClosed refusal=FA-REF-011 exit=7 record_consistent=false commit_agrees=ok ref=agree |
+| `RR1e` | `entry_class=Adjusting,period_state_at_commit=SoftClosed` | P | PASS | unconstrained | state=SoftClosed refusal=admitted exit=0 record_consistent=false ref=agree |
+| `RR1e` | `entry_class=Original,period_state_at_commit=Closed` | P | PASS | unconstrained | state=Closed refusal=FA-REF-010 exit=7 record_consistent=false commit_agrees=ok ref=agree |
+| `RR1e` | `entry_class=Adjusting,period_state_at_commit=Closed` | P | PASS | unconstrained | state=Closed refusal=FA-REF-011 exit=7 record_consistent=false ref=agree |
+| `RR1e` | `entry_class=Original,period_state_at_commit=Locked` | P | PASS | unconstrained | state=Locked refusal=FA-REF-010 exit=7 record_consistent=false ref=agree |
+| `RR1e` | `entry_class=Adjusting,period_state_at_commit=Locked` | P | PASS | unconstrained | state=Locked refusal=FA-REF-010 exit=7 record_consistent=false ref=agree |
 
 ## Restatement cases
 

@@ -6,10 +6,14 @@
 //! no fact) need no quote; the word check runs on a present quote, and a
 //! quote-less fact rests on its receipt's `scope_ok`. A fact under a
 //! rangeless scheme is listed `range=none`: its dates were not range-checked.
+//! An intent on a native or migration book that cites a `scheme:` fact
+//! directly fails too: a scheme-level quote backs an entry only through an
+//! interpretation.
 
 use std::collections::BTreeSet;
 
 use super::super::Case;
+use super::super::book::VariantKind;
 use super::super::fact::LiteralRule;
 use super::super::scope::{self as words, Scope};
 use super::{CheckReport, Context, FACTS};
@@ -70,6 +74,39 @@ pub fn check(cx: &Context<'_>) -> CheckReport {
         });
         for p in problems {
             r.fail(FACTS, f.line, &f.id, p);
+        }
+    }
+    // An intent on an entry-level book (native or migration) posts one
+    // entry, and a scheme-level quote backs an entry only through an
+    // interpretation (§2.1): such an intent citing a `scheme:` fact directly
+    // is refused. A statement or ledger book posts the figures its filing
+    // prints, under their contexts' scopes.
+    for book in case
+        .books
+        .values()
+        .filter(|b| matches!(b.kind, VariantKind::Native | VariantKind::Migration))
+    {
+        let file = format!("books/{}.toml", book.stem);
+        for it in &book.intents {
+            let Some(s) = case
+                .facts
+                .iter()
+                .find(|f| f.id == it.fact)
+                .and_then(|f| f.sourced())
+            else {
+                continue;
+            };
+            if s.about_scope.starts_with("scheme:") {
+                r.fail(
+                    &file,
+                    it.line,
+                    &it.id,
+                    format!(
+                        "intent {} cites {} directly, whose scope `{}` is scheme-level; a scheme backs an entry only through an interpretation",
+                        it.id, it.fact, s.about_scope
+                    ),
+                );
+            }
         }
     }
     r.finish()
