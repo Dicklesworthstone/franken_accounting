@@ -1931,13 +1931,18 @@ Any changed positional schema or existing field type requires its explicit break
 **Open-item maturity (extension 33, `fa-0hs4.13`).** Its retained body is
 `u16 version ‖ list(u16 leg_ordinal ‖ u8 status [‖ u16 reason_code for Disputed]
 ‖ list(i32 due_day ‖ positive i128 amount))`. Version 1 retains its historical
-credit-obligation-only admission; version 2 admits debit-receivable terms.
+credit-obligation-only admission; version 2 admits either debit-receivable or
+credit-obligation terms, with the referenced leg determining the side.
 Both require sorted unique leg ordinals, sorted unique installment dates and
 exact coverage of the original leg in its native unit. Contractual terms have
 at least one installment; MissingMaturity has none; disputed terms stay
-explicitly unscheduled. One extension declares one side contract; mixed-side
-terms are unsupported. Intent fields `obligation_maturity` (v1) and
-`receivable_maturity` (v2) are mutually exclusive. Proposal and entry digests
+explicitly unscheduled. Intent field `obligation_maturity` retains v1 for
+credit-only declarations and selects v2 when any named leg is a debit;
+mixed-side v2 declarations remain exact per leg. The mutually exclusive
+`receivable_maturity` spelling always selects v2 and requires every named leg
+to be a debit. Typed `invoice` and `bill` verbs accept optional `--due-date`
+and record one contractual installment covering the exact control-leg total;
+omitting it leaves maturity undeclared. Proposal and entry digests
 bind the complete versioned terms. Due-date aging and its independent portable
 verifier consume both versions and relieve earliest installments under the
 historical application fold. Liability solvency continues to select credit

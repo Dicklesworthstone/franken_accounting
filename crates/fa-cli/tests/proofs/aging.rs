@@ -86,19 +86,46 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
         .unwrap();
     let checkpoint = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
     let before = fixture.head();
-    let mut original_bundle = None;
-    for source in [locator.as_str(), certificate_path.to_str().unwrap()] {
-        let produced = ok(
+    let expected = format!(
+        r#"{{"kind":"aging","account":"1000","through":"2026-03-31","known_at":{known_at},"buckets":[0,30]}}"#
+    );
+    for (wrong, expected_exit) in [
+        (expected.replace("1000", "4000"), 8),
+        (expected.replace("aging", "due-date-aging"), 2),
+    ] {
+        let (exit, error) = run(
             &fixture.book,
             &[
                 "bundle",
                 "produce",
                 "--certificate",
-                source,
+                &locator,
+                "--expect",
+                &wrong,
                 "--state",
                 text(&state, "oid"),
             ],
         );
+        assert_eq!(exit, expected_exit, "{}", error.render());
+        assert_eq!(fixture.head(), before);
+    }
+    let mut original_bundle = None;
+    for (source, pin) in [
+        (locator.as_str(), None),
+        (certificate_path.to_str().unwrap(), Some(expected.as_str())),
+    ] {
+        let mut arguments = vec![
+            "bundle",
+            "produce",
+            "--certificate",
+            source,
+            "--state",
+            text(&state, "oid"),
+        ];
+        if let Some(pin) = pin {
+            arguments.extend(["--expect", pin]);
+        }
+        let produced = ok(&fixture.book, &arguments);
         assert_eq!(text(&produced, "scope"), "report");
         assert!(text(&produced, "verify").contains(&format!(
             "--expect {}",
@@ -451,14 +478,28 @@ fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
         &["post", "--intent", &invoice, "--evidence", &evidence],
     );
     let at_invoice = fixture.head();
+    // The general spelling selects v2 for debit terms too. The explicit
+    // receivable spelling still refuses credits, and the durable v1 format
+    // remains credit-only (checked below by tampering the portable prefix).
+    let general = write(
+        &fixture.dir,
+        "general-debit-maturity.json",
+        &invoice_text.replace("receivable_maturity", "obligation_maturity"),
+    );
+    let retried = ok(
+        &fixture.book,
+        &["post", "--intent", &general, "--evidence", &evidence],
+    );
+    assert_eq!(text(&retried, "vid"), text(&posted, "vid"));
+    assert_eq!(
+        fixture.head(),
+        at_invoice,
+        "both spellings encode the same intent"
+    );
     for (name, text) in [
         (
             "wrong-side",
             invoice_text.replace("\"ordinal\":0", "\"ordinal\":1"),
-        ),
-        (
-            "legacy-debit",
-            invoice_text.replace("receivable_maturity", "obligation_maturity"),
         ),
         (
             "wrong-total",
@@ -528,8 +569,16 @@ fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
         let expected = format!(
             r#"{{"kind":"due-date-aging","account":"1200","through":"{cutoff}","known_at":{at},"buckets":[0,30,60,90]}}"#
         );
-        let replayed = ok(&fixture.book, &["replay", &locator, "--expect", &expected]);
-        assert_eq!(text(&replayed, "family"), "due-date-aging");
+        let replayed = receivable_events(&fixture, &["replay", &locator, "--expect", &expected], 0);
+        assert_eq!(
+            replayed
+                .iter()
+                .map(|event| text(event, "event"))
+                .collect::<Vec<_>>(),
+            ["due_date_aging", "report_replayed"]
+        );
+        let replayed = receivable_event(&replayed, "report_replayed");
+        assert_eq!(text(replayed, "family"), "due-date-aging");
         let produced = ok(
             &fixture.book,
             &[
@@ -537,6 +586,8 @@ fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
                 "produce",
                 "--certificate",
                 &locator,
+                "--expect",
+                &expected,
                 "--state",
                 text(&state, "oid"),
             ],
@@ -575,6 +626,44 @@ fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
             (10_000, 2_500, 7_500)
         );
         assert!(report.unscheduled.is_empty());
+        let before = fixture.head();
+        for (wrong, exit) in [
+            (expected.replace("1200", "1000"), 8),
+            (expected.replace(cutoff, "2026-04-02"), 8),
+            (
+                expected.replace(
+                    &format!("\"known_at\":{at}"),
+                    &format!("\"known_at\":{}", at - 1),
+                ),
+                8,
+            ),
+            (expected.replace("[0,30,60,90]", "[0,30]"), 8),
+            (expected.replace("due-date-aging", "aging"), 2),
+        ] {
+            let bundle_path = fixture.dir.join(format!("wrong-{cutoff}-{exit}.fab"));
+            let receipt_path = fixture.dir.join(format!("wrong-{cutoff}-{exit}.receipt"));
+            let (code, error) = run(
+                &fixture.book,
+                &[
+                    "bundle",
+                    "produce",
+                    "--certificate",
+                    &locator,
+                    "--expect",
+                    &wrong,
+                    "--state",
+                    text(&state, "oid"),
+                    "--out",
+                    bundle_path.to_str().unwrap(),
+                    "--receipt-out",
+                    receipt_path.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(code, exit, "{}", error.render());
+            assert!(!bundle_path.exists());
+            assert!(!receipt_path.exists());
+            assert_eq!(fixture.head(), before);
+        }
         let mut damaged = bytes(&produced);
         let mut versioned = fa_model::obligation::InlineObligationTerms::encode_receivable_list(&[
             fa_model::obligation::InlineObligationTerms {

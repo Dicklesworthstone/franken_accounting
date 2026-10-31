@@ -277,6 +277,28 @@ fn reconciliation_bundle_expectation_kind(
     reconciliation_request(&doc, book)
 }
 
+/// Optional recipient question for plain aging exports, checked against the
+/// artifact's basis before the producer replays the fixed scope and prefix.
+pub(crate) fn aging_bundle_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    family: ReportArtifactFamily,
+) -> Result<Option<fa::AgingRequest>, Fail> {
+    match (family, parse(args, book, principal, capability)?) {
+        (_, Expected::AsSupplied) => Ok(None),
+        (ReportArtifactFamily::EffectiveDateAging, Expected::Aging(request))
+        | (ReportArtifactFamily::DueDateAging, Expected::DueDateAging(request)) => {
+            Ok(Some(request))
+        }
+        _ => Err(invalid(format!(
+            "{} export requires a matching aging basis in --expect",
+            family.name()
+        ))),
+    }
+}
+
 /// Use the recipient's independently retained scope and original-leg decisions.
 /// The certificate being exported never supplies its own expected inputs.
 pub(crate) fn split_cash_flow_bundle_expectation(

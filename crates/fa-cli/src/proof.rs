@@ -926,14 +926,16 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if args.flag("--expect").is_some()
             && !matches!(
                 artifact.family(),
-                fa::ReportArtifactFamily::AgingReconciliation
+                fa::ReportArtifactFamily::EffectiveDateAging
+                    | fa::ReportArtifactFamily::DueDateAging
+                    | fa::ReportArtifactFamily::AgingReconciliation
                     | fa::ReportArtifactFamily::DueDateAgingReconciliation
                     | fa::ReportArtifactFamily::SplitCashFlow
                     | fa::ReportArtifactFamily::IndirectCashFlow
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging reconciliation, split cash-flow or indirect cash-flow certificate",
+                "--expect on bundle produce applies only to an aging, aging reconciliation, split cash-flow or indirect cash-flow certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -957,6 +959,20 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             fa::ReportArtifactFamily::EffectiveDateAging => {
                 let certificate = fa::AgingCertificate::decode(&bytes)?;
+                if let Some(expected) = crate::notary::aging_bundle_expectation(
+                    args,
+                    &book,
+                    principal,
+                    &capability,
+                    artifact.family(),
+                )? {
+                    book.replay_effective_date_aging_for(
+                        principal,
+                        &capability,
+                        &certificate,
+                        &expected,
+                    )??;
+                }
                 book.produce_aging_bundle(principal, &capability, state, &certificate)??
             }
             fa::ReportArtifactFamily::Lots => {
@@ -974,6 +990,20 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             fa::ReportArtifactFamily::DueDateAging => {
                 let certificate = fa::DueDateAgingCertificate::decode(&bytes)?;
+                if let Some(expected) = crate::notary::aging_bundle_expectation(
+                    args,
+                    &book,
+                    principal,
+                    &capability,
+                    artifact.family(),
+                )? {
+                    book.replay_due_date_aging_for(
+                        principal,
+                        &capability,
+                        &certificate,
+                        &expected,
+                    )??;
+                }
                 book.produce_due_date_aging_bundle(principal, &capability, state, &certificate)??
             }
             fa::ReportArtifactFamily::AgingReconciliation => {

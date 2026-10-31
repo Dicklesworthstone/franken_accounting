@@ -936,9 +936,9 @@ fn due_date_terms_are_authenticated_and_cannot_be_removed_from_a_valid_bundle() 
 fn due_date_malformed_maturity_records_fail_closed_even_with_a_trusted_prefix() {
     for (name, bytes) in [
         ("debit", terms(0, 1, 0, &[(30, 100)])),
-        ("receivable version on credit", {
+        ("unsupported version", {
             let mut bytes = terms(1, 1, 0, &[(30, 100)]);
-            bytes[..2].copy_from_slice(&2_u16.to_le_bytes());
+            bytes[..2].copy_from_slice(&3_u16.to_le_bytes());
             bytes
         }),
         ("missing leg", terms(2, 1, 0, &[(30, 100)])),
@@ -977,6 +977,48 @@ fn due_date_malformed_maturity_records_fail_closed_even_with_a_trusted_prefix() 
             verify(&f, 3, &expected).unwrap_err().predicate,
             "obligation_terms",
             "{name}"
+        );
+    }
+}
+
+#[test]
+fn due_date_v2_payable_terms_recompute_the_same_exact_schedule_as_v1() {
+    for version in [1_u16, 2] {
+        let mut f = fixture();
+        let mut bytes = terms(1, 1, 0, &[(30, 30), (60, 70)]);
+        bytes[..2].copy_from_slice(&version.to_le_bytes());
+        f.records[2] = extend(
+            posting(
+                1,
+                3,
+                b"due-invoice",
+                &[leg("1000", true, 100), leg("3000", false, 100)],
+                None,
+                None,
+            ),
+            &bytes,
+        )
+        .0;
+        let correct = expected(
+            &f,
+            3,
+            30,
+            invoice_item(&f, false, None),
+            &[(30, 30, 0, 0), (60, 70, 0, 0)],
+            false,
+        );
+        verify(&f, 3, &correct).expect("both wire versions admit the exact payable schedule");
+        let wrong = expected(
+            &f,
+            3,
+            30,
+            invoice_item(&f, false, None),
+            &[(30, 100, 0, 0)],
+            false,
+        );
+        assert_eq!(
+            verify(&f, 3, &wrong).unwrap_err().predicate,
+            "report_recomputation"
         );
     }
 }

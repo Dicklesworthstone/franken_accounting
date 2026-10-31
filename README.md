@@ -495,6 +495,11 @@ credit legs and receivable debit legs declare `obligation_maturity` on their
 posting intent. Credit-only declarations retain the original extension 33 v1
 bytes; a declaration naming a debit leg selects v2. Installment amounts are exact
 and use the named leg's unit, totaling that leg's amount.
+The explicit `receivable_maturity` spelling always selects v2 and requires
+debit legs; supply only one of the two fields. Typed `fa invoice` and `fa bill`
+accept `--due-date YYYY-MM-DD` for one installment covering the complete invoice
+or bill total. Omitting it leaves the item unscheduled rather than inferring
+terms from its posting date.
 For example, an invoice intent whose first leg debits receivables by 100.00 USD
 can carry:
 
@@ -522,6 +527,12 @@ and unscheduled amounts to their native control balance; its retained
 certificate also replays and verifies offline. Due-date JSONL workpaper export
 remains unsupported; effective-date certificates retain their existing formats
 and behavior.
+
+For plain effective-date or due-date aging, `bundle produce --expect '<request
+JSON>'` checks the independently retained request before exporting. A different
+basis, account, cutoff, recorded prefix or set of buckets is refused before
+output files are created. The exported verifier command pins the complete outer
+certificate, including the aging basis and terms.
 
 Roll-forward lead schedules can also be delivered as independently verifiable
 bundles. For example, a cash lead schedule at one fixed recorded frontier:
@@ -1444,7 +1455,7 @@ fa chart import --template us-gaap-smb --book acme.fabook
 fa triage --book acme.fabook --json
 
 # A typed invoice, rehearsed: the plan shows the legs its lines derive (available today, as are `fa bill` and `--draft`; the caller names the accounts: no Canon rule or tax yet, fa-i7e / fa-c34).
-fa invoice --party ACME-CUST-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 \
+fa invoice --party ACME-CUST-17 --number 10442 --date 2026-03-14 --due-date 2026-04-13 --receivable 1200 --revenue 4000 \
    --line 'qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets' \
    --evidence <document-oid> --dry-run --plan-out inv-10442.plan --book acme.fabook --json
 #  → plan: legs (1200-AR 1,250.00 D for ACME-CUST-17 / 4000-Revenue 1,250.00 C), period FY2026-P03 Open → Admit,
