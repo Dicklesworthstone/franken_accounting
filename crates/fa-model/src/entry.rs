@@ -3607,10 +3607,14 @@ mod tests {
             rounding_law: fa_money::RoundingLaw::HalfEven,
         };
         let mut p = proposal(two_legs());
+        // Exercise the additive upgrade from an older frame. The general
+        // fixture tracks the current minor, which can already exceed the
+        // disposal format's minimum after another extension is introduced.
+        p.schema_minor = LOT_DISPOSAL_SCHEMA_MINOR - 1;
         let before = p.proposal_digest().unwrap();
         p.set_lot_disposal_basis(&basis).unwrap();
         assert_eq!(p.schema_minor, LOT_DISPOSAL_SCHEMA_MINOR);
-        assert_eq!(p.lot_disposal_basis().unwrap(), Some(basis));
+        assert_eq!(p.lot_disposal_basis().unwrap(), Some(basis.clone()));
         assert_ne!(p.proposal_digest().unwrap(), before);
         let sealed = p.clone().seal(Vec::new(), None).unwrap();
         assert_eq!(Entry::decode(&sealed.encode().unwrap()).unwrap(), sealed);
@@ -3622,6 +3626,11 @@ mod tests {
                 ..
             })
         ));
+        let mut current = proposal(two_legs());
+        let minor = current.schema_minor;
+        current.set_lot_disposal_basis(&basis).unwrap();
+        assert_eq!(current.schema_minor, minor.max(LOT_DISPOSAL_SCHEMA_MINOR));
+        assert_eq!(current.lot_disposal_basis().unwrap(), Some(basis));
         p.schema_minor = LOT_DISPOSAL_SCHEMA_MINOR;
         p.class = EntryClass::REVALUATION;
         assert!(matches!(

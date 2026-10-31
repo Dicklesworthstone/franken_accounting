@@ -470,8 +470,8 @@ fn receivable_v2_replays_debit_installments_and_rejects_removed_or_retyped_terms
 
         // Repair every outer/source binding after removing the original
         // maturity. The same claimed scheduled output must still fail.
-        let mut removed = records.clone();
-        removed[2] = posting(1, 3, b"receivable-due", &invoice_legs, None, None).0;
+        let mut removed = schema();
+        removed.push(posting(1, 3, b"receivable-due", &invoice_legs, None, None).0);
         let (native, anchor, _) = pack(&removed, 3, &source);
         let (bundle, pin) = wrap(&native, cutoff, BOUNDS, &output(&expected));
         assert_eq!(
@@ -485,12 +485,14 @@ fn receivable_v2_replays_debit_installments_and_rejects_removed_or_retyped_terms
         // even under a freshly trusted prefix and repaired output digest.
         let mut wrong_side = maturity.clone();
         wrong_side[..2].copy_from_slice(&1_u16.to_le_bytes());
-        let mut retyped = records.clone();
-        retyped[2] = extend(
-            posting(1, 3, b"receivable-due", &invoice_legs, None, None),
-            &wrong_side,
-        )
-        .0;
+        let mut retyped = schema();
+        retyped.push(
+            extend(
+                posting(1, 3, b"receivable-due", &invoice_legs, None, None),
+                &wrong_side,
+            )
+            .0,
+        );
         let (native, anchor, _) = pack(&retyped, 3, &source);
         let (bundle, pin) = wrap(&native, cutoff, BOUNDS, &output(&expected));
         assert_eq!(
