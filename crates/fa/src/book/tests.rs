@@ -4235,6 +4235,71 @@ fn checkpoint_requires_its_holder_witness_authority_and_current_capability() {
 }
 
 #[test]
+fn register_maintenance_with_caller_context_preserves_cancellation_and_exact_folds() {
+    let (mut book, usd, day, _) = certified_fixture();
+    let principal = VId(1);
+    let capability = maintenance_capability(principal);
+    let period = "FY2026-P03";
+    let (runtime, root) = Book::runtime_and_root().unwrap();
+    let expected = book.fold_period(period).unwrap();
+    assert_eq!(expected.entries, 1);
+    assert_eq!(expected.cells.len(), 2);
+    let first = runtime
+        .block_on(book.advance_registers_with(&root, principal, &capability, period))
+        .unwrap()
+        .unwrap();
+    assert!(first.wrote);
+    assert_eq!(first.fold, expected);
+    assert!(book.verify_registers(period).unwrap().is_green());
+
+    post_rent(
+        &mut book,
+        usd,
+        principal,
+        day,
+        b"after-maintenance",
+        150_000,
+    )
+    .unwrap()
+    .unwrap();
+    let expected = book.fold_period(period).unwrap();
+    assert_eq!(expected.entries, 2);
+    let before = book.head().unwrap();
+    let lagged = book.verify_registers(period).unwrap();
+    assert!(lagged.stale);
+    assert!(lagged.lag_entries > 0);
+
+    let cancelled = runtime.request_cx_with_budget(Budget::INFINITE);
+    cancelled.cancel_with(CancelKind::User, Some("stop serving register maintenance"));
+    assert!(matches!(
+        runtime.block_on(book.advance_registers_with(&cancelled, principal, &capability, period)),
+        Err(BookError::Context(_))
+    ));
+    assert_eq!(book.head().unwrap(), before);
+    assert_eq!(book.verify_registers(period).unwrap(), lagged);
+    assert_eq!(book.fold_period(period).unwrap(), expected);
+
+    let resumed = runtime
+        .block_on(book.advance_registers_with(&root, principal, &capability, period))
+        .unwrap()
+        .unwrap();
+    assert!(resumed.wrote);
+    assert_eq!(resumed.fold, expected);
+    let verified = book.verify_registers(period).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.verified_through, Some(resumed.through));
+    let published_at = book.head().unwrap();
+    let repeated = runtime
+        .block_on(book.advance_registers_with(&root, principal, &capability, period))
+        .unwrap()
+        .unwrap();
+    assert!(!repeated.wrote);
+    assert_eq!(repeated.fold, expected);
+    assert_eq!(book.head().unwrap(), published_at);
+    assert!(book.latest_tick().unwrap().is_none());
+}
+
+#[test]
 fn register_maintenance_requires_explicit_current_whole_book_authority() {
     use fa_policy::{Op, Profile, possession_digest};
 

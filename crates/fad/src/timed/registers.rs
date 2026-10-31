@@ -111,13 +111,15 @@ impl RegisterBook for Book {
 
     async fn advance(
         &mut self,
-        _cx: &Cx,
+        cx: &Cx,
         capability: &Capability,
         period: &str,
     ) -> Result<Publication, String> {
-        let result = Book::advance_registers(self, capability.holder(), capability, period)
-            .map_err(|e| e.to_string())?
-            .map_err(|refusal| refusal.to_string())?;
+        let result =
+            Book::advance_registers_with(self, cx, capability.holder(), capability, period)
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|refusal| refusal.to_string())?;
         Ok(Publication {
             through: result.through.0,
             published_at: result.published_at.0,

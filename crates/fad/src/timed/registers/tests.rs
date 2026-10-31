@@ -165,6 +165,80 @@ fn maintenance_service_authority_is_narrow_and_pinned_to_the_first_real_book() {
     .expect("lab completed");
 }
 
+#[test]
+fn production_adapter_preserves_caller_cancellation_before_native_maintenance() {
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_money::UnitRegistry;
+    use fa_time::FiscalCalendar;
+    use fgdb_types::VId;
+
+    let mut book = Book::create_memory(
+        BookKeys::for_development(183),
+        BookSpec {
+            book_id: Id128([183; 16]),
+            name: "Production maintenance cancellation".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("production-maintenance", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(183),
+    )
+    .unwrap();
+    let principal = VId(1);
+    book.create_periods(
+        2026,
+        principal,
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let period = "FY2026-P03";
+    let capability = Capability::embedded(principal, &["read", "verify", "maintain"]).unwrap();
+    let before = book.head().unwrap();
+    let uninitialized = book.verify_registers(period).unwrap();
+    assert_eq!(uninitialized.verified_through, None);
+    let expected = book.fold_period(period).unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cancelled = runtime.request_cx_with_budget(Budget::INFINITE);
+    cancelled.cancel_with(
+        CancelKind::User,
+        Some("stop the production maintenance region"),
+    );
+
+    // Call the real Book adapter directly: a scheduler's early checkpoint
+    // must not hide an adapter which substitutes the book's private context.
+    runtime
+        .block_on(RegisterBook::advance(
+            &mut book,
+            &cancelled,
+            &capability,
+            period,
+        ))
+        .expect_err("cancelled production maintenance must publish nothing");
+    assert_eq!(book.head().unwrap(), before);
+    assert_eq!(book.verify_registers(period).unwrap(), uninitialized);
+
+    let live = runtime.request_cx_with_budget(Budget::INFINITE);
+    let publication = runtime
+        .block_on(RegisterBook::advance(&mut book, &live, &capability, period))
+        .unwrap();
+    assert!(publication.wrote);
+    assert_eq!(publication.through, before.0);
+    assert!(book.head().unwrap() > before);
+    let verified = book.verify_registers(period).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(
+        verified.verified_through.map(|seq| seq.0),
+        Some(publication.through)
+    );
+    assert_eq!(book.fold_period(period).unwrap(), expected);
+    assert!(book.latest_tick().unwrap().is_none());
+}
+
 fn publication(through: u64) -> Publication {
     Publication {
         through,
