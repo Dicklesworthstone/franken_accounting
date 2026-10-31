@@ -15,7 +15,7 @@
 
 > <!-- fa-verified-status -->Verified at 331a5507ee28 (2026-10-30): UNRUN
 
-> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and `--certify` retains a certificate that `fa replay` reproduces byte for byte; a token with any scope caveat is refused every query before the book opens, and per-row procedure CALLs inside a pipeline are still open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
+> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` now combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and refuses two-stage certification. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -1645,9 +1645,40 @@ fa rule test sale_with_tax.rule --golden rules/sale_with_tax/golden --book acme.
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
+The profile also runs a bounded per-row open-item procedure. It reads the
+matched values, folds the journal at the same recorded prefix and explicit
+civil-date cutoff, then resumes native GQL filtering and projection:
+
 ```gql
--- fa query runs the profile's native reads today (example above); this query also needs a CALL inside its MATCH
--- pipeline (fa.open_amount), which this build refuses with the admissible form: target, later fa-5c1 slices.
+MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}),
+      (l)-[:IN_UNIT]->(u:Unit)
+CALL fa.open_amount(l) YIELD open, age_days
+WHERE age_days > 90
+RETURN a.code AS account, u.code AS unit, SUM(open) AS exposure
+ORDER BY account, unit
+EFFECTIVE AT '2026-03-31' AS KNOWN AT 120
+```
+
+`open` is the live posted residual after settlements and reversals at that
+coordinate; `age_days` counts from the item's effective date. Pending holds,
+reversed entries and unfinalized migration chunks yield `NULL` for both
+fields. An age predicate excludes those non-items, as does `WHERE open IS NOT
+NULL`. An unfiltered amount aggregate refuses a null instead of silently
+dropping it. Amounts remain exact and retain their leg's native unit; group
+by unit or pin one unit before aggregation.
+
+This form accepts one call after `MATCH`/`WHERE`, followed by `WHERE`,
+`RETURN`, `ORDER BY`, `SKIP` and `LIMIT`. It requires `EFFECTIVE AT` and admits
+at most 10,000 source rows and one 64 KiB continuation parameter. Narrow the
+pre-call pattern or filter when either bound is exceeded; a later `LIMIT`
+cannot reduce the source work. Values outside the exact native decimal
+range refuse. The two-stage pipeline is interactive: `--certify`,
+`--certificate-out` and `EXPLAIN (CERTIFICATE)` refuse. Certified open-items
+and aging reports remain the retained-proof workflows.
+
+```gql
+-- Target: correlated valid-time graph selection still needs later fa-5c1 slices.
+-- The bounded open_amount form above is available with an explicit civil-date cutoff.
 MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}), (l)-[:FOR]->(:DimensionValue)<-[:IS]-(p:Party)
 WHERE EXISTS { MATCH (p)-[:RELATED_TO|OWNS|CONTROLS*1..3]-(:LegalEntity {code:'ACME'}) EFFECTIVE AT l.effective_date }
 FOR PERIOD 'FY2025' AS KNOWN AT '2026-02-01T00:00:00Z'

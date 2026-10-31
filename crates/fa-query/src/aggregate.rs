@@ -92,6 +92,14 @@ pub(crate) fn plan(
     lexed: &Lexed<'_>,
     spans: &[(usize, usize)],
 ) -> Result<(usize, String, Aggregation), Refusal> {
+    plan_with_amount_aliases(lexed, spans, &[])
+}
+
+pub(crate) fn plan_with_amount_aliases(
+    lexed: &Lexed<'_>,
+    spans: &[(usize, usize)],
+    amounts: &[&str],
+) -> Result<(usize, String, Aggregation), Refusal> {
     let returns: Vec<usize> = (0..lexed.tokens.len())
         .filter(|&i| lexed.root(i) && lexed.word(i, "RETURN"))
         .collect();
@@ -106,8 +114,8 @@ pub(crate) fn plan(
     let r = *r;
     for k in 0..lexed.tokens.len() {
         let amount = lexed.kind(k) == Some(Kind::Word)
-            && lexed.punct(k + 1, '.')
-            && law::AMOUNTS.contains(&lexed.str(k + 2));
+            && ((lexed.punct(k + 1, '.') && law::AMOUNTS.contains(&lexed.str(k + 2)))
+                || (amounts.contains(&lexed.str(k)) && !(k > 0 && lexed.punct(k - 1, '.'))));
         if amount && k < r && law::aggregated(lexed, k) {
             return Err(refused(
                 lexed,
@@ -194,8 +202,9 @@ pub(crate) fn plan(
                     Value::Aggregate {
                         function: f,
                         native: Some(native.len() - 1),
-                        amount: args.len() == 3
-                            && law::AMOUNTS.contains(&lexed.str(args.start + 2)),
+                        amount: (args.len() == 3
+                            && law::AMOUNTS.contains(&lexed.str(args.start + 2)))
+                            || (args.len() == 1 && amounts.contains(&lexed.str(args.start))),
                     }
                 } else {
                     return Err(refused(

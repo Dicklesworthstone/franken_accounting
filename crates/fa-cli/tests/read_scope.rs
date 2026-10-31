@@ -1188,6 +1188,42 @@ fn an_account_scoped_token_is_refused_every_query_before_the_book_is_opened() {
     assert_eq!(rows, json::parse(r#"[["4000"]]"#).unwrap());
 }
 
+#[test]
+fn per_row_open_amount_uses_the_existing_query_authority_boundary() {
+    let f = Fixture::new();
+    let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1000'}) CALL fa.open_amount(l) YIELD open, age_days WHERE age_days >= 20 RETURN a.code AS account, open, age_days EFFECTIVE AT '2026-03-31'";
+    let (reader, _) = f.issue_ops("pipeline-reader", &["read", "produce"], &[]);
+    let rows = f.rows(&["--token", &reader, "query", statement]);
+    assert_eq!(rows, json::parse(r#"[["1000","5",21]]"#).unwrap());
+
+    let (scoped, _) = f.issue("pipeline-scoped", &["--account", "1000"]);
+    for statement in [statement.to_string(), statement.replace("'1000'", "'4000'")] {
+        let (exit, event) = f.run(&["--token", &scoped, "query", &statement]);
+        assert_eq!(exit, 7, "{event:?}");
+        assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011");
+        assert!(text(data(&event), "message").contains("reaches the whole book"));
+        assert_eq!(
+            event.get("book"),
+            Some(&Json::Null),
+            "scope denied before book open"
+        );
+        assert_eq!(event.get("coordinate"), Some(&Json::Null));
+    }
+
+    let (exit, event) = f.run(&["--token", &reader, "query", statement, "--certify"]);
+    assert_eq!(exit, 3, "{event:?}");
+    assert_eq!(text(data(&event), "refusal_id"), "FA-REF-188");
+    assert!(text(data(&event), "message").contains("two native stages"));
+    let (exit, event) = f.run(&[
+        "--token",
+        &reader,
+        "query",
+        &format!("EXPLAIN (CERTIFICATE) {statement}"),
+    ]);
+    assert_eq!(exit, 3, "{event:?}");
+    assert_eq!(text(data(&event), "refusal_id"), "FA-REF-188");
+}
+
 /// A pinned auditor reads a complete historical ledger prefix under current
 /// authority. Output selectors cannot widen account or date caveats, and
 /// certificate retention remains a separately admitted operation.

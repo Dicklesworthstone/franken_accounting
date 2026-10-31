@@ -1,8 +1,13 @@
 //! Profile queries over the book's graph (plan §15.5, bead fa-5c1): a
-//! statement [`fa_query`] compiled is run as one native read at one
-//! recorded sequence through the substrate's certified execution, so the
+//! statement [`fa_query`] compiled is run at one recorded sequence through
+//! the substrate's certified native execution, so the
 //! same statement at the same sequence returns the same rows and the same
 //! result digest.
+//! A per-row `fa.open_amount` call derives historical residuals between two
+//! native reads. Its continuation keeps native GQL's row semantics; the
+//! two-stage interactive result is not a v1 query certificate. Non-items
+//! (including Pending legs) yield NULL, which a native `open IS NOT NULL`
+//! or age predicate may exclude before an exact aggregate.
 //!
 //! The rows are the graph as recorded at that sequence: every committed
 //! vertex and edge, pending holds and staged migration chunks included. A
@@ -26,6 +31,7 @@ use crate::{AsyncBook, BookError};
 
 mod aggregate;
 mod certificate;
+mod pipeline;
 
 pub use certificate::{
     CertifiedQuery, QUERY_CERTIFICATE_FORMAT, QueryCertificate, QueryCertificateStatus,
@@ -149,7 +155,7 @@ fn decimal(canonical: &str) -> String {
 /// One query's result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryRows {
-    /// The native statement that ran.
+    /// The native statement that ran, or both stages of a per-row procedure.
     pub statement: String,
     pub known_at: CommitSeq,
     pub columns: Vec<String>,
@@ -409,6 +415,9 @@ fn execute<V: Vfs + Clone>(
         None => native,
     };
     let statement = native.statement(seq.0);
+    if let Some(procedure) = native.open_amount() {
+        return pipeline::execute(db, cx, book, native, procedure, seq);
+    }
     let (result, certificate) = match db.execute_certified(
         cx,
         &statement,

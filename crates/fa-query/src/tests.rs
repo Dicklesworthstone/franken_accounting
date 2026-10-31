@@ -442,7 +442,7 @@ fn branches_procedures_and_certificates() {
         ),
         (
             "MATCH (l:Leg) CALL fa.open_amount(l) RETURN l",
-            "CALL stands alone",
+            "a pipeline CALL",
         ),
         ("EXPLAIN MATCH (a:Account) RETURN a", "EXPLAIN takes"),
         (
@@ -460,6 +460,142 @@ fn branches_procedures_and_certificates() {
     ] {
         let r = refused(text);
         assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+}
+
+#[test]
+fn per_row_open_amount_keeps_the_source_and_native_continuation_at_one_prefix() {
+    let (profile, native) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}) \
+         CALL fa.open_amount(l) YIELD open, age_days \
+         WHERE age_days > 90 RETURN a.code AS account, open, age_days \
+         ORDER BY age_days DESC LIMIT 20 \
+         FOR PERIOD 'FY2026-P03' EFFECTIVE AT '2026-03-31' AS KNOWN AT 42",
+    );
+    assert_eq!(profile.known_at, KnownAt::Seq(42));
+    let call = native.open_amount().unwrap();
+    assert_eq!(
+        call.effective_through(),
+        DateDay::parse("2026-03-31").unwrap()
+    );
+    assert_eq!(call.input_columns(), 2);
+    assert_eq!(call.columns(), ["account", "open", "age_days"]);
+    assert_eq!(call.parameter(), "__fa_rows");
+    assert!(
+        native
+            .statement(42)
+            .contains("FOR SYSTEM_TIME AS OF SEQ 42")
+    );
+    assert!(
+        native
+            .statement(42)
+            .contains("__fa_period.code = 'FY2026-P03'")
+    );
+    assert!(native.statement(42).contains("l._fa_effective_day <="));
+    assert!(
+        native
+            .statement(42)
+            .ends_with("RETURN l AS __fa_c0, a.code AS __fa_c1")
+    );
+    assert!(!native.statement(42).contains("age_days >"));
+    assert_eq!(
+        call.statement(42),
+        "UNWIND $__fa_rows AS __fa_row FOR SYSTEM_TIME AS OF SEQ 42 WITH __fa_row.c0 AS __fa_c0, __fa_row.c1 AS __fa_c1, __fa_row.open AS open, __fa_row.age_days AS age_days WHERE age_days > 90 RETURN __fa_c1 AS account, open, age_days ORDER BY age_days DESC LIMIT 20"
+    );
+    let (_, ranged) = native_for_open_amount_range();
+    let bound = ranged.bind_period_range(100, 200);
+    assert_eq!(ranged.open_amount(), bound.open_amount());
+    assert!(!bound.period_range());
+}
+
+fn native_for_open_amount_range() -> (Profiled, Native) {
+    native(
+        "MATCH (l:Leg) CALL fa.open_amount(l) YIELD open, age_days RETURN open FOR PERIOD 'A'..'B' EFFECTIVE AT '2026-03-31'",
+    )
+}
+
+#[test]
+fn yielded_open_amount_keeps_its_unit_and_exact_aggregation_contract() {
+    let (_, query) = native(
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) \
+         CALL fa.open_amount(l) YIELD open, age_days WHERE age_days > 30 \
+         RETURN u.code AS unit, SUM(open) AS exposure, AVG(open) AS average \
+         ORDER BY unit EFFECTIVE AT '2026-03-31'",
+    );
+    let aggregation = query.aggregation().unwrap();
+    assert_eq!(
+        aggregation
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["unit", "exposure", "average"]
+    );
+    assert!(matches!(
+        aggregation.columns[1].value,
+        Value::Aggregate {
+            function: Function::Sum,
+            amount: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        aggregation.columns[2].value,
+        Value::Aggregate {
+            function: Function::Avg,
+            amount: true,
+            ..
+        }
+    ));
+    assert!(!query.open_amount().unwrap().statement(3).contains("SUM("));
+    for suffix in [
+        "RETURN SUM(open)",
+        "WHERE open > 0 RETURN open",
+        "RETURN open ORDER BY open",
+        "RETURN u.code, SUM(open) AS total ORDER BY total",
+    ] {
+        let text = format!(
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) CALL fa.open_amount(l) YIELD open, age_days {suffix} EFFECTIVE AT '2026-03-31'"
+        );
+        assert_eq!(refused(&text).law, Law::Amount, "{text}");
+    }
+    let (_, pinned) = native(
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code:'USD'}) CALL fa.open_amount(l) YIELD open, age_days RETURN SUM(open) AS exposure ORDER BY exposure EFFECTIVE AT '2026-03-31'",
+    );
+    assert!(pinned.aggregation().is_some());
+    let (_, nullable) = native(
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) CALL fa.open_amount(l) YIELD open, age_days WHERE open IS NOT NULL RETURN u.code, SUM(open) EFFECTIVE AT '2026-03-31'",
+    );
+    assert!(nullable.aggregation().is_some());
+}
+
+#[test]
+fn a_pipeline_refuses_unbound_calls_ambiguous_names_and_unsupported_shapes() {
+    let good = "MATCH (l:Leg) CALL fa.open_amount(l) YIELD open, age_days RETURN open EFFECTIVE AT '2026-03-31'";
+    for text in [
+        good.replace("EFFECTIVE AT '2026-03-31'", ""),
+        good.replace(
+            "EFFECTIVE AT '2026-03-31'",
+            "EFFECTIVE BETWEEN '2026-03-01' AND '2026-03-31'",
+        ),
+        good.replace("fa.open_amount(l)", "fa.open_amount(m)"),
+        good.replace("(l:Leg)", "(l:Account)"),
+        good.replace("fa.open_amount(l)", "fa.lineage_net(l)"),
+        good.replace("YIELD open, age_days", "YIELD open AS amount, age_days"),
+        good.replace("RETURN open", "WITH open RETURN open"),
+        good.replace("RETURN open", "MATCH (x:Account) RETURN open"),
+        good.replace(
+            "RETURN open",
+            "CALL fa.open_amount(l) YIELD open, age_days RETURN open",
+        ),
+        good.replace("RETURN open", "RETURN *"),
+        good.replace("RETURN open", "RETURN open AS l ORDER BY l"),
+        good.replace("RETURN open", "RETURN l.amount AS open"),
+        good.replace("RETURN open", "RETURN l.amount AS `open`"),
+        good.replace("MATCH (l:Leg)", "MATCH (l:Leg), (open:Account)"),
+        format!("EXPLAIN (CERTIFICATE) {good}"),
+    ] {
+        assert_eq!(refused(&text).law, Law::Profile, "{text}");
     }
 }
 

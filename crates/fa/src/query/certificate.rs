@@ -125,7 +125,12 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
         }
     }
     match profiled.selection {
-        Selection::Native(native) => Ok((native, profiled.period)),
+        Selection::Native(native) if native.open_amount().is_none() => {
+            Ok((native, profiled.period))
+        }
+        Selection::Native(_) => Err(invalid(
+            "a v1 query certificate cannot bind both native stages of a per-row procedure",
+        )),
         Selection::TrialBalance
         | Selection::ExplainBalance { .. }
         | Selection::Statement { .. }
@@ -420,6 +425,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "fa query \"CALL fa.trial_balance FOR PERIOD '<code>'\" --certify, which is fa tb --certify (likewise fa explain balance, fa statement and fa open-items)",
             )));
         };
+        if native.open_amount().is_some() {
+            return Ok(Err(Refusal::new(
+                code::QUERY_PROFILE,
+                exit::REFUSAL,
+                "a per-row procedure has two native stages and is not a v1 query certificate",
+                super::CITE,
+                "run the pipeline without --certify; certify the historical aging or open-items report separately",
+            )));
+        }
         let requested = match profiled.known_at {
             KnownAt::Head => None,
             KnownAt::Seq(seq) => Some(CommitSeq(seq)),

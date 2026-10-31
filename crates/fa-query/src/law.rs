@@ -366,6 +366,15 @@ fn refused(lexed: &Lexed<'_>, i: usize, message: String, fix: &str) -> Refusal {
 /// Check the amount law. `Ok(true)`: the statement aggregates an amount,
 /// which the profile computes itself ([`crate::aggregate`]).
 pub(crate) fn check(lexed: &Lexed<'_>) -> Result<bool, Refusal> {
+    check_with_amount_aliases(lexed, &[])
+}
+
+/// Procedure yields retain the unit provenance of their source leg. The
+/// alias is an amount even though its spelling has no `.amount` property.
+pub(crate) fn check_with_amount_aliases(
+    lexed: &Lexed<'_>,
+    amounts: &[(&str, &str)],
+) -> Result<bool, Refusal> {
     let regions = clauses(lexed);
     let facts = facts(lexed, &regions);
     let mut sums_amounts = false;
@@ -424,6 +433,21 @@ pub(crate) fn check(lexed: &Lexed<'_>) -> Result<bool, Refusal> {
                         pin: facts.pinned(name).cloned(),
                         start: k,
                         end: k + 3,
+                    });
+                } else if let Some((_, source)) = amounts.iter().find(|(alias, _)| *alias == name)
+                    && !lexed.punct(k + 1, '.')
+                    && !lexed.punct(k + 1, '(')
+                    && !(k > 0 && lexed.word(k - 1, "AS"))
+                {
+                    if lexed.word(k + 1, "IS") {
+                        continue;
+                    }
+                    sums_amounts |= aggregated(lexed, k);
+                    references.push(Reference {
+                        var: Some((*source).to_string()),
+                        pin: facts.pinned(source).cloned(),
+                        start: k,
+                        end: k + 1,
                     });
                 } else if let Some(pin) = aliases.get(name)
                     && !lexed.punct(k + 1, '.')
