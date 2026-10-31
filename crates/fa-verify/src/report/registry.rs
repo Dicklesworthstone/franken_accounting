@@ -523,6 +523,7 @@ pub(super) struct FunctionalRegistry {
     pub units: BTreeMap<u32, FunctionalUnit>,
     /// Complete immutable unit definitions used by carrying-close sources.
     pub unit_table_digest: [u8; 32],
+    pub spot_carrying: bool,
 }
 fn text_array(row: &Table, key: &str) -> Result<Vec<String>, ReportError> {
     let Some(Value::Array(values)) = row.get(key) else {
@@ -616,7 +617,18 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             "fiscal_year_source_prefix",
             ["Closing", "Reversal"].as_slice(),
         ),
+        (
+            11,
+            "settlement_spot_carrying",
+            "SettlementSpotCarrying",
+            "Settlement",
+            "entry_effective_date",
+            ["Original", "Adjusting", "Reversal"].as_slice(),
+        ),
     ] {
+        // Older retained registry closures precede the additive law11. They
+        // stay readable, but cannot authorize a claim under that newer law.
+        if id == 11 && !laws.iter().any(|row| matches!(row.get("id"), Some(Value::Int(11)))) { continue; }
         let row = laws
             .iter()
             .find(|row| {
@@ -630,7 +642,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             || string(row, "date_selector")? != date
             || string(row, "rounding_law")? != if id == 8 { "None" } else { "HalfEven" }
             || string(row, "residual_mode")?
-                != if matches!(id, 2 | 8) {
+                != if matches!(id, 2 | 8 | 11) {
                     "none"
                 } else {
                     "designated_leg"
@@ -719,7 +731,9 @@ pub(super) fn verify_functional(
     units(&docs[2])?;
     functional_laws(&docs[4])?;
     functional_rounding(&docs[5])?;
-    functional_definitions(&docs[2])
+    let mut definitions = functional_definitions(&docs[2])?;
+    definitions.spot_carrying = rows(&docs[4], "law")?.iter().any(|row| matches!(row.get("id"), Some(Value::Int(11))));
+    Ok(definitions)
 }
 
 fn functional_definitions(doc: &Document) -> Result<FunctionalRegistry, ReportError> {
@@ -739,6 +753,7 @@ fn functional_definitions(doc: &Document) -> Result<FunctionalRegistry, ReportEr
     Ok(FunctionalRegistry {
         units: definitions,
         unit_table_digest: functional_unit_table_digest(doc)?,
+        spot_carrying: false,
     })
 }
 

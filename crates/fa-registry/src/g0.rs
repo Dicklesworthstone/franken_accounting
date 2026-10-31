@@ -2391,6 +2391,14 @@ impl FxLaws {
                     "settlement_and_settled_item_dates",
                     ["Original", "Adjusting", "Reversal"].as_slice(),
                 ),
+                (
+                    11,
+                    "settlement_spot_carrying",
+                    "SettlementSpotCarrying",
+                    "Settlement",
+                    "entry_effective_date",
+                    ["Original", "Adjusting", "Reversal"].as_slice(),
+                ),
             ] {
                 if !carrying_close
                     && (id == expected_id || code == expected_code || name == expected_name)
@@ -2529,10 +2537,11 @@ impl FxLaws {
                 meaning,
             });
         }
-        if laws.len() != 10 {
+        let expected_count = 10 + usize::from(seen_codes.contains("settlement_spot_carrying"));
+        if laws.len() != expected_count {
             return Err(invalid(
                 R,
-                format!("expected 10 [[law]] rows, found {}", laws.len()),
+                format!("expected {expected_count} [[law]] rows, found {}", laws.len()),
             ));
         }
         for required_code in [
@@ -2918,7 +2927,7 @@ mod tests {
         assert_eq!(tracing_laws.replenishment_modes.len(), 2);
 
         let fx_laws = FxLaws::embedded(&classes).expect("fx_laws.toml");
-        assert_eq!(fx_laws.laws.len(), 10);
+        assert_eq!(fx_laws.laws.len(), 11);
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");

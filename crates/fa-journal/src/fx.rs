@@ -70,10 +70,11 @@ pub enum FxLawId {
     YearEndCloseCarrying = 8,
     PeriodEndItemRevaluation = 9,
     SettlementAllocatedCarrying = 10,
+    SettlementSpotCarrying = 11,
 }
 
 impl FxLawId {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::SpotClose,
         Self::PeriodEndRevaluation,
         Self::PeriodAverage,
@@ -83,6 +84,7 @@ impl FxLawId {
         Self::YearEndCloseCarrying,
         Self::PeriodEndItemRevaluation,
         Self::SettlementAllocatedCarrying,
+        Self::SettlementSpotCarrying,
     ];
 
     #[must_use]
@@ -107,6 +109,7 @@ impl FxLawId {
             Self::YearEndCloseCarrying => "YearEndCloseCarrying",
             Self::PeriodEndItemRevaluation => "PeriodEndItemRevaluation",
             Self::SettlementAllocatedCarrying => "SettlementAllocatedCarrying",
+            Self::SettlementSpotCarrying => "SettlementSpotCarrying",
         }
     }
 
@@ -121,7 +124,7 @@ impl FxLawId {
             | Self::TranslationCurrentRate
             | Self::RemeasurementTemporal => Some(FxRatePurpose::PeriodClose),
             Self::PeriodAverage => Some(FxRatePurpose::PeriodAverage),
-            Self::SettlementCarryingBasis | Self::SettlementAllocatedCarrying => {
+            Self::SettlementCarryingBasis | Self::SettlementAllocatedCarrying | Self::SettlementSpotCarrying => {
                 Some(FxRatePurpose::Settlement)
             }
             Self::YearEndCloseCarrying => None,
@@ -402,9 +405,9 @@ pub fn value_proposal(
     law: FxLawId,
     rate_docs: &[FxRateDocument],
 ) -> Result<EntryPayload, Refusal> {
-    if !matches!(law, FxLawId::SpotClose | FxLawId::PeriodAverage) {
+    if !matches!(law, FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying) {
         return Err(fx_structure(
-            "value_proposal supports SpotClose and PeriodAverage; use plan_revaluation or plan_realized_fx_settlement for the other laws",
+            "value_proposal supports SpotClose, PeriodAverage and SettlementSpotCarrying; use the source-bound planners for other laws",
         ));
     }
     if rate_docs.is_empty() {
@@ -429,6 +432,9 @@ pub fn value_proposal(
         law,
         rate_docs,
     )?;
+    if law == FxLawId::SettlementSpotCarrying && computed.residual.is_some() {
+        return Err(fx_structure("SettlementSpotCarrying permits no residual absorption; use an explicit conversion route"));
+    }
 
     for (leg, base_amt) in proposal.legs.iter_mut().zip(computed.base_amounts) {
         leg.base_amount = Some(base_amt);
@@ -912,6 +918,7 @@ pub(crate) fn admit_structure(
             law,
             FxLawId::SettlementCarryingBasis
                 | FxLawId::SettlementAllocatedCarrying
+                | FxLawId::SettlementSpotCarrying
                 | FxLawId::YearEndCloseCarrying
         ) && leg.amount.unit != spec.base_unit
             && base_amt.mantissa == 0;
@@ -1111,7 +1118,7 @@ fn verify_claim(
             claim.law.version(),
         ))));
     }
-    let rounding_law = matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage)
+    let rounding_law = matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying)
         .then_some(law.rounding_law.as_str());
     let average_as_of = if claim.law == FxLawId::PeriodAverage {
         Some(valuation_period.end.pred()?)
@@ -1247,7 +1254,10 @@ fn verify_claim(
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
 
     match claim.law {
-        FxLawId::SpotClose | FxLawId::PeriodAverage => {
+        FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying => {
+            if claim.law == FxLawId::SettlementSpotCarrying && proposal.base_totals.as_ref().is_some_and(|totals| totals.residual.is_some()) {
+                return Ok(Err(fx_structure("SettlementSpotCarrying permits no residual absorption")));
+            }
             let computed = match compute_entity_valuations(
                 &mut budget,
                 &valuation.legs,
@@ -1593,6 +1603,7 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
                 | FxLawId::RemeasurementTemporal
                 | FxLawId::SettlementCarryingBasis
                 | FxLawId::SettlementAllocatedCarrying
+                | FxLawId::SettlementSpotCarrying
                 | FxLawId::YearEndCloseCarrying
         )
     {
@@ -1704,7 +1715,7 @@ fn compute_entity_valuations(
                 law.name()
             )));
         }
-        if law == FxLawId::SpotClose && doc.as_of != effective_date {
+        if matches!(law, FxLawId::SpotClose | FxLawId::SettlementSpotCarrying) && doc.as_of != effective_date {
             return Err(fx_structure(format!(
                 "SpotClose rate document as_of {} does not match entry effective_date {}",
                 doc.as_of.render(),
