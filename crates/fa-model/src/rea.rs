@@ -12,6 +12,7 @@ use fgdb_delta_types::RelationId;
 use fgdb_types::VId;
 
 use crate::canon::{DecodeError, EncodeError, Reader, Writer, strictly_ascending};
+use crate::deposit::{DepositProfileSpec, SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE};
 use crate::entry::{EvidenceRef, ExternalId};
 use crate::erasable::{Erasable, SealKey};
 use crate::ids::{Oid, domain_digest};
@@ -104,6 +105,9 @@ pub enum InstrumentKind {
     Lease = 6,
     Contract = 7,
     CustodyWallet = 8,
+    /// The book's own liability to its depositors (plan §15.6 workflow 3),
+    /// mirrored by a Liability leaf; its participants are a deposit profile.
+    Deposit = 9,
 }
 
 impl InstrumentKind {
@@ -123,6 +127,7 @@ impl InstrumentKind {
             6 => Self::Lease,
             7 => Self::Contract,
             8 => Self::CustodyWallet,
+            9 => Self::Deposit,
             _ => return None,
         })
     }
@@ -138,6 +143,7 @@ impl InstrumentKind {
             Self::Lease => "Lease",
             Self::Contract => "Contract",
             Self::CustodyWallet => "CustodyWallet",
+            Self::Deposit => "Deposit",
         }
     }
 }
@@ -892,7 +898,7 @@ impl EventSpec {
     }
 }
 
-/// Decoded REA schema-change control operation (`kind = 5..=11`).
+/// Decoded REA schema-change control operation (`kind = 5..=11`, `23`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReaControlOp {
     CreateParty(PartySpec),
@@ -902,12 +908,13 @@ pub enum ReaControlOp {
     RecordRelationship(RelationshipSpec),
     UpdatePartyIdentifiers(PartyIdentifierUpdate),
     RecordEvent(EventSpec),
+    RecordDepositProfile(DepositProfileSpec),
 }
 
 impl ReaControlOp {
     #[must_use]
     pub const fn is_rea_schema_change_kind(kind: u16) -> bool {
-        matches!(kind, 5..=11)
+        matches!(kind, 5..=11 | SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE)
     }
 
     pub fn decode(kind: u16, bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -929,6 +936,9 @@ impl ReaControlOp {
                 PartyIdentifierUpdate::decode(bytes).map(Self::UpdatePartyIdentifiers)
             }
             SCHEMA_CHANGE_RECORD_EVENT => EventSpec::decode(bytes).map(Self::RecordEvent),
+            SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE => {
+                DepositProfileSpec::decode(bytes).map(Self::RecordDepositProfile)
+            }
             _ => {
                 let r = Reader::new(bytes);
                 Err(r.invalid("rea.schema_change_kind"))
@@ -1041,6 +1051,11 @@ impl ReaControlOp {
                         w.fixed(&e.document_oid.0).fixed(&e.doc_commit).u8(e.role);
                     });
                 pairs(&mut w, &ids(&s.external_ids, key)?);
+            }
+            // No sealed field: its canonical bytes are its transcript.
+            Self::RecordDepositProfile(s) => {
+                w.u16(SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE)
+                    .bytes(&s.encode().ok()?);
             }
         }
         w.finish().ok()

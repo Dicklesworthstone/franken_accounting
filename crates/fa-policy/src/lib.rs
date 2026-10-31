@@ -15,6 +15,8 @@
 //! - [`admit`] — pre-observation admission, expiry, op requirements, and
 //!   the scope caveats' reach.
 //! - [`approval`] — the `fa:approval:v1` object and its binding law.
+//! - [`principal_key`] — principals' signing-key chains and signed
+//!   approvals (plan §14.5 non-repudiation, bead fa-kae).
 //! - [`sod`] — the SoD predicate over `sod_policy.toml` rows.
 //! - [`denial`] — typed denials with code, exit, cite, and fix.
 
@@ -27,6 +29,7 @@ pub mod capability;
 pub mod decision;
 pub mod denial;
 pub mod op;
+pub mod principal_key;
 pub mod sod;
 
 pub use admit::{
@@ -46,6 +49,7 @@ pub use decision::{
 };
 pub use denial::Denial;
 pub use op::Op;
+pub use principal_key::{ApprovalSignature, PrincipalKey, SignatureVerifier};
 pub use sod::{
     Approver, AuthorityGraph, AuthorityVertex, CachedJudgment, ConservedRightsPool,
     DECISION_CLOSURE_DOMAIN, DecisionClosure, EMPTINESS_WITNESS_DOMAIN, EmptinessWitness,

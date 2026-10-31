@@ -412,15 +412,17 @@ fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
         }
         11 => {}
         13 => {
+            // The intake source as fa-model encodes it: 1 upload principal,
+            // 2 connector name and version, 3 email message id, 4 scanner.
             match r.u8("control.intake_source")? {
-                0 => {
+                1 => {
                     r.u128("control.upload_principal")?;
                 }
-                1 => {
+                2 => {
                     r.bytes(256, "control.connector_name")?;
                     r.bytes(256, "control.connector_version")?;
                 }
-                2 | 3 => {
+                3 | 4 => {
                     r.bytes(256, "control.intake_text")?;
                 }
                 tag => return Err(r.error("control.intake_source", Reason::BadTag(tag))),
@@ -1167,14 +1169,16 @@ mod tests {
             .fixed(&[2; 32])
             .fixed(&[3; 32]);
         controls.push(w.buf);
-        for source in 0..=3 {
+        // Intake sources as fa-model's IntakeSource::encode numbers them:
+        // 1 upload principal, 2 connector, 3 email, 4 scanner.
+        for source in 1..=4 {
             let mut w = Writer::default();
             w.u8(1).u8(13).u8(source);
             match source {
-                0 => {
+                1 => {
                     w.u128(7);
                 }
-                1 => {
+                2 => {
                     w.bytes(b"connector").bytes(b"v1");
                 }
                 _ => {

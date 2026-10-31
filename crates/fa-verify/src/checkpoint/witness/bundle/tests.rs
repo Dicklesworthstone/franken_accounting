@@ -66,6 +66,7 @@ fn bundle(bytes: &[u8]) -> Vec<u8> {
         documents: 0,
         inline: 0,
         balances: vec![],
+        approvals: None,
     };
     let mut w = Writer::default();
     w.bytes(BUNDLE_FORMAT)

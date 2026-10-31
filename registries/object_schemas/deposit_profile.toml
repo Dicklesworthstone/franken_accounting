@@ -1,0 +1,148 @@
+# =============================================================================
+# registries/object_schemas/deposit_profile.toml — Deposit participant profile
+# (plan §15.6 workflow 3, FDIC 12 CFR Part 370; bead `fa-p370`)
+# =============================================================================
+#
+# RecordDepositProfile journals one Deposit instrument's complete Part 370
+# profile from valid_from. The control entry is the whole record: it changes
+# no account and no balance, and replay re-checks that the instrument is a
+# recorded Deposit and every participant a recorded Party. A later profile
+# takes over from its own valid_from; at one valid_from the profile recorded
+# last corrects the earlier one (selection by valid_from, then recorded
+# sequence).
+#
+# Canonical bytes (fa-model::deposit::DepositProfileSpec):
+#   u128 instrument, u8 product, u8 capacity, u128 primary_party,
+#   option<u128> interest_account, list<participant>, i32 valid_from
+#   participant: u128 party, u8 role, u32 ownership_bps, u32 beneficiary_count
+# Participants are strictly ascending by (party, role). Decode refuses an
+# incomplete set: no owner; an owner share outside 1..=10000; owner shares
+# not summing to exactly 10000; a share on a non-owner; a beneficiary count
+# except on a REV or IRR owner (where it is required); a primary party that
+# is not an owner; unknown tags; trailing bytes.
+
+schema_version = 1
+name = "DepositProfile"
+owner = "fa-model::deposit::DepositProfileSpec"
+major = 1
+minor = 0
+schema_change_kind = 23
+externally_verifiable = false
+
+fields = ["instrument:u128", "product:u8", "capacity:u8", "primary_party:u128", "interest_account:option<u128>", "participants:list<deposit_participant>", "valid_from:i32"]
+participant_fields = ["party:u128", "role:u8", "ownership_bps:u32", "beneficiary_count:u32"]
+
+[[capacity]]
+id = 1
+code = "SGL"
+description = "Single accounts (12 CFR § 330.6)."
+
+[[capacity]]
+id = 2
+code = "JNT"
+description = "Joint accounts (12 CFR § 330.9)."
+
+[[capacity]]
+id = 3
+code = "REV"
+description = "Revocable trust accounts (12 CFR § 330.10); owners name their unique eligible beneficiaries."
+
+[[capacity]]
+id = 4
+code = "IRR"
+description = "Irrevocable trust accounts (12 CFR § 330.13); owners name their unique eligible beneficiaries."
+
+[[capacity]]
+id = 5
+code = "CRA"
+description = "Certain retirement accounts (12 CFR § 330.14(b)(2))."
+
+[[capacity]]
+id = 6
+code = "EBP"
+description = "Employee benefit plan accounts (12 CFR § 330.14)."
+
+[[capacity]]
+id = 7
+code = "BUS"
+description = "Business or organization accounts (12 CFR § 330.11)."
+
+[[capacity]]
+id = 8
+code = "GOV1"
+description = "Official custodian of in-state time and savings deposits (12 CFR § 330.15)."
+
+[[capacity]]
+id = 9
+code = "GOV2"
+description = "Official custodian of in-state demand deposits (12 CFR § 330.15)."
+
+[[capacity]]
+id = 10
+code = "GOV3"
+description = "Official custodian out of state (12 CFR § 330.15)."
+
+[[capacity]]
+id = 11
+code = "MSA"
+description = "Mortgage servicing accounts (12 CFR § 330.7(d))."
+
+[[capacity]]
+id = 12
+code = "ANC"
+description = "Depository institution as trustee of an irrevocable trust (12 CFR § 330.12)."
+
+[[capacity]]
+id = 13
+code = "PBA"
+description = "Public bond accounts (12 CFR § 330.15(c))."
+
+[[capacity]]
+id = 14
+code = "BIA"
+description = "Custodian accounts for American Indians (12 CFR § 330.7(e))."
+
+[[product]]
+id = 1
+code = "DDA"
+description = "Demand deposit account."
+
+[[product]]
+id = 2
+code = "NOW"
+description = "Negotiable order of withdrawal account."
+
+[[product]]
+id = 3
+code = "MMDA"
+description = "Money market deposit account."
+
+[[product]]
+id = 4
+code = "SAV"
+description = "Other savings account."
+
+[[product]]
+id = 5
+code = "CD"
+description = "Time deposit."
+
+[[role]]
+id = 1
+code = "OWN"
+name = "owner"
+
+[[role]]
+id = 2
+code = "BEN"
+name = "beneficiary"
+
+[[role]]
+id = 3
+code = "AGT"
+name = "agent"
+
+[[role]]
+id = 4
+code = "TST"
+name = "trustee"

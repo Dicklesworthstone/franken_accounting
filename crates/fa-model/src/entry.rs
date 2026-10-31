@@ -518,6 +518,9 @@ impl ControlKind {
     pub const RECURRING_SCHEDULE: Self = Self(18);
     /// A Canon rule version activated from a date (plan §10.3, fa-c34).
     pub const RULE_ACTIVATION: Self = Self(19);
+    /// One generation of a principal's signing-key chain (plan §14.5,
+    /// fa-kae).
+    pub const PRINCIPAL_KEY: Self = Self(20);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -602,6 +605,11 @@ impl ControlKind {
         (
             Self::RULE_ACTIVATION,
             "rule_activation",
+            EntryClass::POLICY_CONTROL,
+        ),
+        (
+            Self::PRINCIPAL_KEY,
+            "principal_key",
             EntryClass::POLICY_CONTROL,
         ),
     ];

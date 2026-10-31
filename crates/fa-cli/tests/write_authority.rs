@@ -637,6 +637,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Approve],
             Reaches,
         ),
+        row(
+            &["principal", "key", "add", "--sign-key", "principal.key"],
+            &[Op::Approve],
+            Reaches,
+        ),
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
         row(&["period", "open", "FY2026-P04"], &[Op::Close], Reaches),
         row(
@@ -1178,6 +1183,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &["instrument", "add", "junk.json"],
+            &[Op::SchemaChange],
+            Reaches,
+        ),
+        row(
+            &["instrument", "profile", "junk.json"],
             &[Op::SchemaChange],
             Reaches,
         ),

@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 
 use fa_model::{
+    DepositCapacity, DepositParticipant, DepositProduct, DepositProfileSpec, DepositRole,
     ExternalId, ExternalIdBinding, InstrumentKind, InstrumentSpec, LegalEntityFullSpec,
     OwnershipPct, PartyKind, PartySpec, RelationshipKind, RelationshipSpec, account_vid,
 };
@@ -21,7 +22,7 @@ use crate::cli::{Ctx, Fail, Out, date_flag, parse_json, untrusted_text_json, usa
 use crate::json::{Json, obj, s};
 
 const PARTY_EXAMPLE: &str = "fa party add <party.json|-> | fa party relate <from> <to> --kind owns|controls|related --basis <code> --valid-from YYYY-MM-DD [--valid-to YYYY-MM-DD] [--pct <num>/<den>] | fa party bind <code> --external-id <system>:<id> | fa party ownership <owner> <target> --as-of YYYY-MM-DD | fa party list";
-const INSTRUMENT_EXAMPLE: &str = "fa instrument add <instrument.json|-> | fa instrument list";
+const INSTRUMENT_EXAMPLE: &str = "fa instrument add <instrument.json|-> | fa instrument profile <profile.json|-> | fa instrument list";
 const ENTITY_EXAMPLE: &str = "fa entity add <entity.json|-> | fa entity list";
 
 pub(crate) fn party_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -53,9 +54,10 @@ pub(crate) fn entity_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 pub(crate) fn instrument_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
         Some("add") => instrument_add(ctx, args),
+        Some("profile") => instrument_profile(ctx, args),
         Some("list") => instrument_list(ctx, args),
         _ => Err(usage(
-            "instrument has the subcommands add and list",
+            "instrument has the subcommands add, profile and list",
             INSTRUMENT_EXAMPLE,
         )),
     }
@@ -351,6 +353,132 @@ fn instrument_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let date = date_flag(args, DateDay(0))?;
     let recorded = book.create_instrument(&spec, who, date, key.as_bytes(), &capability)??;
     emit_recorded(&ctx.out, &book, "instrument", &code, &recorded)
+}
+
+/// A deposit's FDIC Part 370 profile (plan §15.6 workflow 3, bead
+/// `fa-p370`): its ownership right and capacity, product category, primary
+/// customer, optional accrued-interest leaf and complete participant set,
+/// from `valid_from`. The kernel judges the set as a whole.
+fn instrument_profile(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "{\"instrument\": \"DEP-1001\", \"capacity\": \"JNT\", \"product\": \"MMDA\", \"primary\": \"CUST-001\", \"interest_account\": \"2101\", \"valid_from\": \"2026-01-01\", \"participants\": [{\"party\": \"CUST-001\", \"role\": \"owner\", \"ownership_bps\": 5000}, {\"party\": \"CUST-002\", \"role\": \"owner\", \"ownership_bps\": 5000}]}";
+    let doc = read_object(
+        ctx,
+        args,
+        &[
+            "instrument",
+            "capacity",
+            "product",
+            "primary",
+            "interest_account",
+            "valid_from",
+            "participants",
+        ],
+        FIX,
+    )?;
+    let instrument = required(&doc, "instrument", FIX)?.to_string();
+    let capacity_code = required(&doc, "capacity", FIX)?;
+    let capacity = DepositCapacity::from_code(capacity_code).ok_or_else(|| {
+        let codes: Vec<&str> = DepositCapacity::ALL.iter().map(|c| c.code()).collect();
+        usage(
+            format!(
+                "`capacity` `{capacity_code}` is not a Part 370 ownership right and capacity code"
+            ),
+            format!("capacity: {}", codes.join("|")),
+        )
+    })?;
+    let product_code = required(&doc, "product", FIX)?;
+    let product = DepositProduct::from_code(product_code).ok_or_else(|| {
+        let codes: Vec<&str> = DepositProduct::ALL.iter().map(|p| p.code()).collect();
+        usage(
+            format!("`product` `{product_code}` is not a deposit product category"),
+            format!("product: {}", codes.join("|")),
+        )
+    })?;
+    let primary = required(&doc, "primary", FIX)?;
+    let valid_from = optional_date(&doc, "valid_from", FIX)?
+        .ok_or_else(|| usage("`valid_from` is required (YYYY-MM-DD)", FIX))?;
+    let interest = match doc.get("interest_account") {
+        None | Some(Json::Null) => None,
+        Some(Json::Str(code)) if !code.is_empty() => Some(code.clone()),
+        Some(_) => {
+            return Err(usage("`interest_account` is an account code, or null", FIX));
+        }
+    };
+    let Some(rows) = doc.get("participants").and_then(Json::as_arr) else {
+        return Err(usage("`participants` is a list of objects", FIX));
+    };
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["schema_change"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
+    let book_id = book.context().book_id;
+    let count = |row: &Json, field: &str| -> Result<u32, Fail> {
+        match row.get(field) {
+            None | Some(Json::Null) => Ok(0),
+            Some(Json::Int(n)) => u32::try_from(*n)
+                .map_err(|_| usage(format!("`{field}` must be a non-negative integer"), FIX)),
+            Some(_) => Err(usage(format!("`{field}` must be an integer"), FIX)),
+        }
+    };
+    let mut participants = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Json::Obj(fields) = row else {
+            return Err(usage("each participant is an object", FIX));
+        };
+        if let Some((field, _)) = fields.iter().find(|(f, _)| {
+            !["party", "role", "ownership_bps", "beneficiaries"].contains(&f.as_str())
+        }) {
+            return Err(usage(
+                format!("participant: unknown field `{field}`"),
+                "participant fields: party, role, ownership_bps, beneficiaries",
+            ));
+        }
+        let role_name = required(row, "role", FIX)?;
+        let role = DepositRole::from_name(role_name).ok_or_else(|| {
+            usage(
+                format!(
+                    "participant role `{role_name}` is not owner, beneficiary, agent or trustee"
+                ),
+                FIX,
+            )
+        })?;
+        participants.push(DepositParticipant {
+            party: party_ref(&book, required(row, "party", FIX)?)?,
+            role,
+            ownership_bps: count(row, "ownership_bps")?,
+            beneficiary_count: count(row, "beneficiaries")?,
+        });
+    }
+    participants.sort_by_key(|p| (p.party, p.role));
+    let interest_account = match interest {
+        None => None,
+        Some(code) => {
+            if !book.accounts()?.iter().any(|a| a.code == code) {
+                return Err(usage(
+                    format!("no account `{code}` in this book"),
+                    "interest_account: the Liability leaf accruing this deposit's interest (fa chart list --json)",
+                ));
+            }
+            Some(account_vid(book_id, &code))
+        }
+    };
+    let spec = DepositProfileSpec {
+        instrument: fa_model::instrument_vid(book_id, &instrument),
+        product,
+        capacity,
+        primary_party: party_ref(&book, primary)?,
+        interest_account,
+        participants,
+        valid_from,
+    };
+    let key = args.flag("--key").map_or_else(
+        || format!("deposit-profile:{instrument}:{valid_from}"),
+        str::to_string,
+    );
+    let recorded = book.record_deposit_profile(&spec, who, key.as_bytes(), &capability)??;
+    emit_recorded(&ctx.out, &book, "deposit_profile", &instrument, &recorded)
 }
 
 fn party_relate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

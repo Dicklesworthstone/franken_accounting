@@ -70,6 +70,12 @@
 //! hold the documents each entry's own evidence list cites (no events,
 //! rules, approvals, supplemental evidence or attestations); there are no
 //! redacted views, register cells, statements, certificates or findings.
+//! A bundle whose in-scope entries cite an approval is version 1.1 (bead
+//! fa-kae): after the balances it carries each cited approval's stored
+//! record, ascending by identity, and every key generation in the prefix of
+//! each principal with a signed approval among them, each with its
+//! inclusion path, ascending by leaf. Any other bundle stays 1.0, byte for
+//! byte.
 //! The facade's detached receipt carries the checkpoint's authenticated
 //! TimeEvidence reference, when present. It names the observation within the
 //! covered prefix, not a newly asserted physical production timestamp; later
@@ -94,9 +100,11 @@ use crate::{code, scope};
 
 pub const BUNDLE_FORMAT: &[u8] = b"fa:bundle:v1";
 pub const BUNDLE_DIGEST_DOMAIN: &[u8] = b"fa:bundle:v1";
-/// The fa-verify format a bundle targets.
+/// The fa-verify format a bundle targets: 1.0, or 1.1 when its in-scope
+/// entries cite an approval.
 pub const FORMAT_MAJOR: u16 = 1;
 pub const FORMAT_MINOR: u16 = 0;
+pub const FORMAT_MINOR_APPROVALS: u16 = 1;
 pub const RECEIPT_FORMAT: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_DIGEST_DOMAIN: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_SIGNATURE_DOMAIN: &[u8] = b"fa:production-receipt-signature:v1";
@@ -244,7 +252,15 @@ impl Manifest<'_> {
     }
 
     /// The text `fa-verify` regenerates and compares byte for byte.
-    fn markdown(&self, entries: usize, documents: usize, inline: usize, balances: usize) -> String {
+    /// `approvals` is version 1.1's (records, signed records, key records).
+    fn markdown(
+        &self,
+        entries: usize,
+        documents: usize,
+        inline: usize,
+        balances: usize,
+        approvals: Option<(usize, usize, usize)>,
+    ) -> String {
         let (scope, label, meaning) = match self.scope {
             Scope::Prefix => (
                 "every leaf of the journal prefix".to_string(),
@@ -278,10 +294,19 @@ impl Manifest<'_> {
                 String::from_utf8_lossy(BALANCE_FOLD_DOMAIN)
             )
         };
+        let (minor, approvals) = match approvals {
+            None => (FORMAT_MINOR, String::new()),
+            Some((records, signed, keys)) => (
+                FORMAT_MINOR_APPROVALS,
+                format!(
+                    "- Approvals: {records} cited, {signed} signed, with {keys} principal key records\n"
+                ),
+            ),
+        };
         format!(
             "# FrankenAccounting evidence bundle\n\
              \n\
-             - Format: fa:bundle:v1, for fa-verify format {FORMAT_MAJOR}.{FORMAT_MINOR}\n\
+             - Format: fa:bundle:v1, for fa-verify format {FORMAT_MAJOR}.{minor}\n\
              - Book: {}\n\
              - Branch: {}\n\
              - Known at: commit sequence {} ({} journal leaves)\n\
@@ -291,6 +316,7 @@ impl Manifest<'_> {
              - Entries: {entries}, with their payloads\n\
              - Documents: {documents} cited, {inline} included\n\
              - Balances: {balances}{laws}\n\
+             {approvals}\
              \n\
              Verify: fa-verify bundle <this file> --key <the book's checkpoint public key> [--receipt <its production receipt>]\n\
              \n\
@@ -461,8 +487,10 @@ struct InScope {
 
 /// The scope `request` names over `journal`, or its refusal (FA-REF-129 when
 /// `request.balances` exceeds 4096, FA-REF-126 for an index scope other than
-/// one account, FA-REF-120 for a named entry outside the prefix).
-fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
+/// one account, FA-REF-120 for a named entry outside the prefix). A caller
+/// that reads only the indices passes `prove: false`, which skips building
+/// a prefix scope's proof (the other scopes' refusals need theirs).
+fn in_scope(journal: &Journal, request: &BundleRequest, prove: bool) -> Outcome<InScope> {
     if request.balances.len() > MAX_BUNDLE_BALANCES {
         return Ok(Err(balance_limit(request.balances.len())));
     }
@@ -471,7 +499,11 @@ fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
             (0..journal.leaves.len())
                 .filter(|i| journal.leaves[*i].envelope.is_entry())
                 .collect(),
-            journal.prefix_proof()?,
+            if prove {
+                journal.prefix_proof()?
+            } else {
+                Vec::new()
+            },
             Vec::new(),
         ),
         BundleScope::Index(req) => {
@@ -539,7 +571,7 @@ fn in_scope(journal: &Journal, request: &BundleRequest) -> Outcome<InScope> {
 /// The scope is refused here exactly as `assemble` refuses it, so nothing
 /// is read for a bundle that cannot be produced.
 pub fn cited_documents(journal: &Journal, request: &BundleRequest) -> Outcome<Vec<Oid>> {
-    let scope = match in_scope(journal, request)? {
+    let scope = match in_scope(journal, request, false)? {
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -559,17 +591,54 @@ pub fn cited_documents(journal: &Journal, request: &BundleRequest) -> Outcome<Ve
     Ok(Ok(out))
 }
 
+/// The approvals the bundle `request`'s in-scope entries cite, ascending
+/// and distinct: the records the producer reads before assembling (format
+/// 1.1, bead fa-kae). The scope is refused here exactly as `assemble`
+/// refuses it.
+pub fn cited_approvals(journal: &Journal, request: &BundleRequest) -> Outcome<Vec<VId>> {
+    let scope = match in_scope(journal, request, false)? {
+        Ok(scope) => scope,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let mut out = BTreeSet::new();
+    for i in &scope.indices {
+        let leaf = journal
+            .leaves
+            .get(*i)
+            .ok_or_else(|| corrupt("an in-scope leaf outside the prefix"))?;
+        out.extend(approvals_of(&leaf.payload)?);
+    }
+    Ok(Ok(out.into_iter().collect()))
+}
+
+fn approvals_of(payload: &[u8]) -> Result<Vec<VId>, KernelError> {
+    Ok(Entry::decode(payload)?
+        .approvals
+        .iter()
+        .map(|a| a.approval_vid)
+        .collect())
+}
+
 /// Assemble the bundle `request` asks for over `journal`, against the
 /// checkpoint `checkpoint` stands for (the caller has recomputed both from
 /// the journal; [`crate::bundle_basis`]). `documents` holds what the
 /// producing capability read of each document [`cited_documents`] names.
+/// A scope whose entries cite an approval needs [`assemble_with_runs`] and
+/// the approval records.
 pub fn assemble(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
     request: &BundleRequest,
     documents: &BTreeMap<Oid, DocumentRead>,
 ) -> Outcome<Bundle> {
-    assemble_with_runs(journal, checkpoint, request, documents, &BTreeMap::new())
+    assemble_with_runs(
+        journal,
+        checkpoint,
+        request,
+        documents,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
 }
 
 /// [`assemble`], with the migration run bodies its balances need (read with
@@ -579,13 +648,16 @@ pub fn assemble(
 /// other in v1: the bundle itself carries every payload those proofs'
 /// selection rests on. An account or entries bundle cannot, so its balances
 /// are payload-complete v3, carrying every prefix record; the facade admits
-/// whole-book read before assembling any bundle.
+/// whole-book read before assembling any bundle. `approvals` holds the
+/// stored record of each approval [`cited_approvals`] names; a cited one
+/// that is absent is refused.
 pub fn assemble_with_runs(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
     request: &BundleRequest,
     documents: &BTreeMap<Oid, DocumentRead>,
     run_bodies: &BTreeMap<VId, fa_journal::migration::RunBody>,
+    approvals: &BTreeMap<VId, Vec<u8>>,
 ) -> Outcome<Bundle> {
     let statement = journal.statement();
     if checkpoint.checkpoint.body.statement != statement {
@@ -597,7 +669,7 @@ pub fn assemble_with_runs(
         indices,
         proof,
         leaves,
-    } = match in_scope(journal, request)? {
+    } = match in_scope(journal, request, true)? {
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -635,6 +707,31 @@ pub fn assemble_with_runs(
         }
     }
 
+    // Format 1.1: the approvals the in-scope entries cite, and every key
+    // generation in the prefix of each principal that signed one of them.
+    let mut cited = BTreeSet::new();
+    for (_, _, payload, _) in &entries {
+        cited.extend(approvals_of(payload)?);
+    }
+    let mut records: Vec<&[u8]> = Vec::with_capacity(cited.len());
+    let mut signers = BTreeSet::new();
+    let mut signed = 0;
+    for vid in &cited {
+        let Some(record) = approvals.get(vid) else {
+            return Err(corrupt(format!(
+                "cited approval {:032x} was not read for this bundle",
+                vid.0
+            )));
+        };
+        if let Some(principal) = fa_journal::principal_key::approval_signer(record)? {
+            signers.insert(principal);
+            signed += 1;
+        }
+        records.push(record);
+    }
+    let keys = key_leaves(journal, statement.book_id, &signers)?;
+    let approval_counts = (!cited.is_empty()).then_some((records.len(), signed, keys.len()));
+
     let scope = match &request.scope {
         BundleScope::Prefix => Scope::Prefix,
         BundleScope::Index(ScopeRequest::Account { account, from, to }) => Scope::Account {
@@ -661,14 +758,25 @@ pub fn assemble_with_runs(
         .flat_map(|e| &e.3)
         .filter(|s| s.inline.is_some())
         .count();
-    let markdown = manifest.markdown(entries.len(), documents, inline, balances.len());
+    let markdown = manifest.markdown(
+        entries.len(),
+        documents,
+        inline,
+        balances.len(),
+        approval_counts,
+    );
 
     let mut w = Writer::with_capacity(
         4096 + proof.len()
             + entries.iter().map(|e| e.2.len() + 64).sum::<usize>()
             + balances.iter().map(Vec::len).sum::<usize>(),
     );
-    w.bytes(BUNDLE_FORMAT).u16(FORMAT_MAJOR).u16(FORMAT_MINOR);
+    let minor = if approval_counts.is_some() {
+        FORMAT_MINOR_APPROVALS
+    } else {
+        FORMAT_MINOR
+    };
+    w.bytes(BUNDLE_FORMAT).u16(FORMAT_MAJOR).u16(minor);
     manifest.encode(&mut w);
     w.bytes(&checkpoint.bytes);
     match request.scope {
@@ -699,12 +807,62 @@ pub fn assemble_with_runs(
             .u16(BALANCE_FOLD_VERSION)
             .bytes(proof);
     });
+    if approval_counts.is_some() {
+        w.list(&records, |w, record| {
+            w.bytes(record);
+        });
+        let mut leaves = Vec::with_capacity(keys.len());
+        for (i, path) in &keys {
+            let leaf = journal
+                .leaves
+                .get(*i)
+                .ok_or_else(|| corrupt("a key leaf outside the prefix"))?;
+            let proposal_len = u32::try_from(leaf.proposal_len)
+                .map_err(|_| corrupt("proposal longer than u32::MAX bytes"))?;
+            leaves.push((*i as u64, leaf, path.as_slice(), proposal_len));
+        }
+        w.list(&leaves, |w, (index, leaf, path, proposal_len)| {
+            w.u64(*index)
+                .bytes(&leaf.envelope_bytes)
+                .list(path, |w, d| {
+                    w.fixed(d);
+                })
+                .u32(*proposal_len)
+                .bytes(&leaf.payload);
+        });
+    }
     w.str(&markdown);
     let bytes = w.finish().map_err(encode_failed)?;
     Ok(Ok(Bundle {
         digest: bundle_digest(&bytes),
         bytes,
     }))
+}
+
+/// The leaf of every key generation `journal` holds for each of `signers`,
+/// ascending by leaf, with its inclusion path.
+fn key_leaves(
+    journal: &Journal,
+    book: fa_model::Id128,
+    signers: &BTreeSet<VId>,
+) -> Result<Vec<(usize, Vec<Digest>)>, KernelError> {
+    let wanted: BTreeSet<VId> = signers
+        .iter()
+        .flat_map(|principal| fa_journal::principal_key::chain_vids(book, *principal))
+        .collect();
+    let mut out = Vec::new();
+    if wanted.is_empty() {
+        return Ok(out);
+    }
+    for (i, leaf) in journal.leaves.iter().enumerate() {
+        if wanted.contains(&leaf.vid) {
+            let path = journal
+                .leaf_path(i)
+                .ok_or_else(|| corrupt("inclusion path outside the tree"))?;
+            out.push((i, path));
+        }
+    }
+    Ok(out)
 }
 
 /// The fields a production receipt signs.

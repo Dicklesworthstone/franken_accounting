@@ -86,6 +86,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("close", crate::closing::close_cmd),
     ("approve", approve_cmd),
     ("capability", capability_cmd),
+    ("principal", crate::principal::principal_cmd),
     ("draft", draft_cmd),
     ("scenario", crate::scenario::scenario_cmd),
     ("branch", crate::scenario::branch_cmd),
@@ -1195,6 +1196,12 @@ impl Ctx<'_> {
 
     pub(crate) fn authority(&self) -> Option<&LaunchAuthority> {
         self.authority.as_ref()
+    }
+
+    /// This command runs inside `fad`, on a client's behalf. A principal's
+    /// signing key is the client's and is never read here (plan §14.5).
+    pub(crate) fn routed_through_daemon(&self) -> bool {
+        self.daemon_files.is_some()
     }
 
     /// A bound host reuses the launch capability verbatim. The handler's
@@ -5675,9 +5682,13 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
     })?;
     let digest = parse_digest(text, "--proposal")?;
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["approve"])?;
     let mut book = ctx.books.open(args)?;
-    let approved = book.approve(capability, digest)??;
+    let approved = match &key {
+        Some(key) => book.approve_signed(capability, digest, key)??,
+        None => book.approve(capability, digest)??,
+    };
     emit_approved(&ctx.out, &book, approved)
 }
 
@@ -10853,8 +10864,12 @@ fn approve_allocation_review_bytes(
     bytes: &[u8],
     digest: [u8; 32],
 ) -> Result<(), Fail> {
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["read", "approve"])?;
     let mut book = ctx.books.open(args)?;
+    if let Some(key) = key {
+        book.sign_approvals_with(key);
+    }
     let approved = if bytes.starts_with(b"FA-BAL-REVIEW\0") {
         let review = BalanceAllocationReview::decode(bytes).map_err(|e| {
             usage(
@@ -10881,8 +10896,12 @@ fn approve_settlement_review_bytes(
     bytes: &[u8],
     digest: [u8; 32],
 ) -> Result<(), Fail> {
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["read", "approve"])?;
     let mut book = ctx.books.open(args)?;
+    if let Some(key) = key {
+        book.sign_approvals_with(key);
+    }
     let approved = if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0") {
         let review = SettlementGroupReview::decode(bytes).map_err(|e| {
             usage(

@@ -116,6 +116,10 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     /// post checks only the commits since the last (fa-rcw1). Bound to `db`'s
     /// own committed prefix by its Chronicle markers.
     carried: fa_journal::CarriedHistory,
+    /// The client's principal key, when this handle signs every approval it
+    /// records ([`Self::sign_approvals_with`], plan §14.5, fa-kae). Held only
+    /// for the handle's life; never journaled.
+    approval_key: Option<fa_notary::SigningKey>,
 }
 
 /// Borrow the exact certificate being exported while sharing its native
@@ -229,6 +233,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
+            approval_key: None,
         })
     }
 
@@ -284,6 +289,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
+            approval_key: None,
         })
     }
 }
@@ -805,6 +811,39 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Journal a deposit's Part 370 participant profile from its valid-from
+    /// date (plan §15.6 workflow 3, bead `fa-p370`).
+    pub async fn record_deposit_profile(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &fa_model::DepositProfileSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::ReaControlRecorded> {
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "record deposit profile {} {} from {}",
+                spec.capacity.code(),
+                spec.product.code(),
+                spec.valid_from
+            ),
+        )?;
+        Ok(fa_journal::record_deposit_profile(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            spec.valid_from,
+            idempotency_key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record_event(
         &mut self,
@@ -1008,6 +1047,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         proposal_digest: [u8; 32],
     ) -> Outcome<fa_journal::Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
+        if let Some(key) = self.approval_key.take() {
+            let signed = self
+                .approve_signed(cx, capability, proposal_digest, &key)
+                .await;
+            self.approval_key = Some(key);
+            return signed;
+        }
         Ok(fa_journal::record_approval(
             &mut self.db,
             cx,
@@ -1019,6 +1065,154 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             },
         )
         .await?)
+    }
+
+    /// Sign every approval this handle records with `key`, the client's
+    /// principal key (plan §14.5, fa-kae): proposal approvals and every
+    /// review approval (allocation, balance allocation, settlement and
+    /// settlement group), which all record through [`Self::approve`]. The
+    /// key lives as long as this handle and is never journaled.
+    pub fn sign_approvals_with(&mut self, key: fa_notary::SigningKey) {
+        self.approval_key = Some(key);
+    }
+
+    /// [`Self::approve`] as a principal that signs with `key` (plan §14.5,
+    /// fa-kae). The approval is built at the current policy epoch and its
+    /// digest signed here, by the client; the kernel checks the signature
+    /// against the principal's current key inside the approval's
+    /// transaction. A key the principal has not registered is refused.
+    pub async fn approve_signed(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let principal = capability.holder();
+        let (epoch, generation) = self.query(cx, |db, context| {
+            let chain = fa_journal::read_principal_keys(db, context, principal)?;
+            Ok((
+                fa_journal::security_policy_epoch(db)?,
+                chain.last().map_or(0, |g| g.key.generation),
+            ))
+        })?;
+        let unsigned = fa_journal::ApprovalRequest {
+            capability: capability.clone(),
+            approved_proposal_digest: proposal_digest,
+            role: 0,
+        };
+        // A capability that cannot approve is refused by the kernel, which
+        // names the missing op; there is nothing to sign.
+        let Ok(Ok(approval)) = fa_policy::Approval::by(
+            &capability,
+            fa_policy::Op::Approve,
+            self.context.book_id,
+            proposal_digest,
+            epoch,
+            0,
+        ) else {
+            return Ok(
+                fa_journal::record_approval(&mut self.db, cx, &self.context, unsigned).await?,
+            );
+        };
+        let digest = approval
+            .digest()
+            .map_err(|e| BookError::Kernel(fa_journal::KernelError::Model(e.into())))?;
+        let signature = fa_policy::ApprovalSignature {
+            scheme: fa_policy::principal_key::SCHEME_ED25519,
+            generation,
+            key_id: fa_policy::principal_key::key_id(&key.public_key()),
+            bytes: key.sign(&fa_policy::principal_key::approval_message(&digest)),
+        };
+        Ok(fa_journal::record_signed_approval(
+            &mut self.db,
+            cx,
+            &self.context,
+            unsigned,
+            Some(fa_journal::SignedBy {
+                signature,
+                verifier: &crate::book::PRINCIPAL_SIGNATURES,
+            }),
+        )
+        .await?)
+    }
+
+    /// Register `key` as the next generation of the capability holder's
+    /// signing-key chain (plan §14.5, fa-kae), endorsed by `endorse` (the
+    /// current key) when the chain already has one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_principal_key(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        key: &fa_notary::SigningKey,
+        endorse: Option<&fa_notary::SigningKey>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::KeyRegistered> {
+        let principal = capability.holder();
+        let public_key = key.public_key();
+        let chain = self.query(cx, |db, context| {
+            Ok(fa_journal::read_principal_keys(db, context, principal)?)
+        })?;
+        // A key the chain already holds is a retry of its own generation,
+        // resubmitted with the endorsement it was recorded with; any other
+        // key is the chain's next generation.
+        let existing = chain.iter().find(|g| g.key.public_key == public_key);
+        let generation = match existing {
+            Some(g) => g.key.generation,
+            None => u32::try_from(chain.len()).map_err(|_| {
+                BookError::Kernel(fa_journal::KernelError::Corrupt(
+                    "a principal key chain beyond u32".into(),
+                ))
+            })?,
+        };
+        let message = fa_policy::principal_key::registration_message(
+            self.context.book_id,
+            principal,
+            generation,
+            &public_key,
+        );
+        let registered = fa_policy::PrincipalKey {
+            book_id: self.context.book_id,
+            principal,
+            generation,
+            public_key,
+            possession: key.sign(&message),
+            endorsement: match (endorse, existing) {
+                (Some(current), _) => Some(current.sign(&message)),
+                (None, Some(g)) => g.key.endorsement,
+                (None, None) => None,
+            },
+        };
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::register_principal_key(
+            &mut self.db,
+            cx,
+            &self.context,
+            fa_journal::PrincipalKeyRequest {
+                capability,
+                key: registered,
+                effective_date,
+                idempotency_key: idempotency_key.to_vec(),
+                description,
+                verifier: &crate::book::PRINCIPAL_SIGNATURES,
+            },
+        )
+        .await?)
+    }
+
+    /// `principal`'s signing-key chain as the journal records it.
+    pub fn principal_keys(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+    ) -> Result<Vec<fa_journal::KeyGeneration>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_principal_keys(db, context, principal)?)
+        })
     }
 
     pub async fn revoke_capability(
@@ -2982,6 +3176,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                approval_key: None,
             },
             map,
         )))
@@ -3022,6 +3217,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                approval_key: None,
             },
             rehearsal,
         )))
@@ -3071,6 +3267,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                approval_key: None,
             },
             map,
             entries,
@@ -5095,12 +5292,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        // The approvals the in-scope entries cite ride the bundle (format
+        // 1.1, fa-kae): whole-book read, admitted above, covers them.
+        let cited_approvals = match fa_notary::bundle::cited_approvals(&journal, request)? {
+            Ok(cited) => cited,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let approvals = self.query(cx, |db, _book| {
+            Ok(fa_journal::policy::approval_records(db, &cited_approvals)?)
+        })?;
         let bundle = match fa_notary::bundle::assemble_with_runs(
             &journal,
             &checkpoint,
             request,
             &documents,
             &run_bodies,
+            &approvals,
         )? {
             Ok(bundle) => bundle,
             Err(refusal) => return Ok(Err(refusal)),

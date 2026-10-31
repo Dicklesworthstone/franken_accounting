@@ -564,29 +564,7 @@ pub fn cited_documents(proposal: &[u8]) -> Result<Vec<[u8; 32]>, DecodeError> {
     if r.present("entry.control")? {
         skip_control(&mut r)?;
     }
-    let n = r.count(MAX_ENVELOPE_LIST, 4 + 16 + 16, "entry.unit_totals")?;
-    for _ in 0..n {
-        r.u32("unit_total.unit_id")?;
-        r.i128("unit_total.debits")?;
-        r.i128("unit_total.credits")?;
-    }
-    if r.present("entry.base_totals")? {
-        r.u32("base_totals.unit_id")?;
-        r.i128("base_totals.debits")?;
-        r.i128("base_totals.credits")?;
-        oid(&mut r, "base_totals.fx_law_oid")?;
-        let n = r.count(MAX_ENVELOPE_LIST, 32, "base_totals.rate_doc_oids")?;
-        for _ in 0..n {
-            oid(&mut r, "base_totals.rate_doc_oid")?;
-        }
-        if r.present("base_totals.residual")? {
-            r.u16("residual.leg_ordinal")?;
-            amount(&mut r, "residual.amount")?;
-        }
-    }
-    r.bytes(MAX_FIELD_BYTES, "entry.idempotency_key")?;
-    skip_origin(&mut r)?;
-    r.u128("entry.principal_ref")?;
+    skip_to_principal(&mut r)?;
     opt_u128(&mut r, "entry.session_ref")?;
     let n = r.count(MAX_ENVELOPE_LIST, 32 + 32 + 1, "entry.evidence")?;
     let mut commits = Vec::with_capacity(n);
@@ -598,6 +576,115 @@ pub fn cited_documents(proposal: &[u8]) -> Result<Vec<[u8; 32]>, DecodeError> {
     commits.sort_unstable();
     commits.dedup();
     Ok(commits)
+}
+
+/// The fields between an `fa:entry:v1` proposal's control payload and its
+/// principal reference, skipped exactly; returns `principal_ref`.
+fn skip_to_principal(r: &mut Reader<'_>) -> Result<u128, DecodeError> {
+    let n = r.count(MAX_ENVELOPE_LIST, 4 + 16 + 16, "entry.unit_totals")?;
+    for _ in 0..n {
+        r.u32("unit_total.unit_id")?;
+        r.i128("unit_total.debits")?;
+        r.i128("unit_total.credits")?;
+    }
+    if r.present("entry.base_totals")? {
+        r.u32("base_totals.unit_id")?;
+        r.i128("base_totals.debits")?;
+        r.i128("base_totals.credits")?;
+        oid(r, "base_totals.fx_law_oid")?;
+        let n = r.count(MAX_ENVELOPE_LIST, 32, "base_totals.rate_doc_oids")?;
+        for _ in 0..n {
+            oid(r, "base_totals.rate_doc_oid")?;
+        }
+        if r.present("base_totals.residual")? {
+            r.u16("residual.leg_ordinal")?;
+            amount(r, "residual.amount")?;
+        }
+    }
+    r.bytes(MAX_FIELD_BYTES, "entry.idempotency_key")?;
+    skip_origin(r)?;
+    r.u128("entry.principal_ref")
+}
+
+/// `PolicyControl`, the class a principal-key generation is journaled in.
+const CLASS_POLICY_CONTROL: u16 = 18;
+const CONTROL_SCHEMA_CHANGE: u8 = 1;
+const SCHEMA_CHANGE_PRINCIPAL_KEY: u16 = 24;
+/// An entry cites at most this many approvals.
+const MAX_ENTRY_APPROVALS: usize = 256;
+
+/// A principal-key generation (a PolicyControl `SchemaChange` of kind 24)
+/// in an `fa:entry:v1` proposal.
+pub(crate) struct KeyControl<'a> {
+    /// The control's canonical bytes: the key generation's body.
+    pub canonical: &'a [u8],
+    /// The principal that recorded it.
+    pub principal_ref: u128,
+}
+
+/// The principal-key generation `proposal` carries, or `None` for any other
+/// proposal. Nothing about the key itself is judged here.
+pub(crate) fn principal_key_control(
+    proposal: &[u8],
+) -> Result<Option<KeyControl<'_>>, DecodeError> {
+    let mut r = Reader::new(proposal);
+    let prefix = read_proposal_prefix(&mut r)?;
+    if prefix.class != CLASS_POLICY_CONTROL || !r.present("entry.control")? {
+        return Ok(None);
+    }
+    if r.u8("control.tag")? != CONTROL_SCHEMA_CHANGE {
+        return Ok(None);
+    }
+    let kind = r.u16("control.kind")?;
+    let canonical = r.bytes(MAX_FIELD_BYTES, "control.canonical_bytes")?;
+    if kind != SCHEMA_CHANGE_PRINCIPAL_KEY {
+        return Ok(None);
+    }
+    let principal_ref = skip_to_principal(&mut r)?;
+    Ok(Some(KeyControl {
+        canonical,
+        principal_ref,
+    }))
+}
+
+/// The approvals an entry's envelope cites: `(approval vid, approved
+/// digest)`, in order.
+pub(crate) type CitedApprovals = Vec<(u128, [u8; 32])>;
+
+/// The proposal digest of an `fa:entry:v1` payload and the approvals its
+/// envelope cites. Read after [`check_record`] authenticated the payload;
+/// no digest is checked here.
+pub(crate) fn entry_approvals(
+    payload: &[u8],
+    proposal_len: usize,
+) -> Result<([u8; 32], CitedApprovals), RecordError> {
+    let n = payload.len();
+    if proposal_len > n || n - proposal_len < 64 {
+        return Err(RecordError::Split);
+    }
+    let approvals =
+        read_envelope_approvals(&payload[proposal_len..n - 64]).map_err(RecordError::Decode)?;
+    let mut proposal_digest = [0u8; 32];
+    proposal_digest.copy_from_slice(&payload[n - 64..n - 32]);
+    Ok((proposal_digest, approvals))
+}
+
+/// `opt(plan_certificate) ‖ list(u128 approval vid ‖ [32] approved digest)`.
+fn read_envelope_approvals(envelope: &[u8]) -> Result<CitedApprovals, DecodeError> {
+    let mut r = Reader::new(envelope);
+    if r.present("entry.plan_certificate")? {
+        oid(&mut r, "entry.plan_certificate")?;
+    }
+    let count = r.count(MAX_ENTRY_APPROVALS, 16 + 32, "entry.approvals")?;
+    let mut approvals = Vec::with_capacity(count);
+    for _ in 0..count {
+        approvals.push((
+            r.u128("entry.approval.vid")?,
+            r.fixed("entry.approval.approved_digest")?,
+        ));
+    }
+    r.finish("entry envelope")?;
+    Ok(approvals)
 }
 
 /// Recompute the record digest of an `fa:entry:v1` payload whose proposal

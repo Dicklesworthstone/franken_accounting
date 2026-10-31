@@ -420,6 +420,7 @@ fn empty_bundle(new: &Artifact) -> Vec<u8> {
         documents: 0,
         inline: 0,
         balances: vec![],
+        approvals: None,
     };
     let mut w = Wire::default();
     w.bytes(BUNDLE_FORMAT)

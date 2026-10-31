@@ -113,6 +113,10 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // launch template or issued-token ceiling holds witness.
             || (e.verb == "checkpoint"
                 && matches!(e.subcommand.as_deref(), Some("witness" | "witness-key")))
+            // fa-kae: a principal's signing key is made, read and held by
+            // the client on the host, never by fad or an MCP session (plan
+            // §14.5); a keyed principal's MCP approvals are refused.
+            || (e.verb == "principal" && e.subcommand.as_deref() == Some("key"))
             // fa-6l9: a production writes its volume (load files and
             // natives) into a new host directory, like `fa demo init`; MCP
             // output is inline only. Its profiles stay MCP tools.

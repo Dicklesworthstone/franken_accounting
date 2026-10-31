@@ -4,14 +4,14 @@
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
-- **Total workflow steps:** 33 (`works`: **32** [96%], `refused`: **0**, `absent`: **1**)
+- **Total workflow steps:** 33 (`works`: **33** [100%], `refused`: **0**, `absent`: **0**)
 
 | Workflow | Plan Ref | Reader | Works | Refused | Absent | Total | Delivery % |
 |---|---|---|---:|---:|---:|---:|---:|
 | `readme-quick` (README Quick Example) | README.md §Quick example | Agent / Operator | 12 | 0 | 0 | 12 | 100% |
 | `agent-closes-month` (The agent closes a month) | §15.6.1 | AI Agent + Controller | 4 | 0 | 0 | 4 | 100% |
 | `cpa-audits-fy2025` (The CPA audits FY2025) | §15.6.2 | External CPA / Auditor | 4 | 0 | 0 | 4 | 100% |
-| `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 2 | 0 | 1 | 3 | 66% |
+| `fdic-examiner-positions` (The FDIC examiner needs close-of-business positions) | §15.6.3 | FDIC Examiner / Receiver | 3 | 0 | 0 | 3 | 100% |
 | `trustee-receiver-takeover` (The trustee or receiver takes over) | §15.6.4 | Bankruptcy Trustee / Receiver | 2 | 0 | 0 | 2 | 100% |
 | `litigation-consultant-damages` (The litigation consultant computes but-for damages) | §15.6.5 | Litigation Consultant / Expert Witness | 5 | 0 | 0 | 5 | 100% |
 | `investigator-traces-funds` (The investigator traces funds) | §15.6.6 | Forensic Investigator | 3 | 0 | 0 | 3 | 100% |
@@ -42,7 +42,7 @@
 | `WF-CPA-04` | `VC-20` | `cpa-audits-fy2025` | `works` | `0` | `proof_exported` | `—` | Export signed transparency checkpoint (`fa proof signed-checkpoint`) |
 | `WF-FDIC-01` | `VC-21` | `fdic-examiner-positions` | `works` | `0` | `trial_balance` | `—` | Trial balance as of an effective date and known-at sequence (`fa tb --as-of --as-known-at`) |
 | `WF-FDIC-02` | `VC-22` | `fdic-examiner-positions` | `works` | `0` | `trial_balance` | `—` | Replay a certified trial balance byte-for-byte (`fa replay`) |
-| `WF-FDIC-03` | `VC-23` | `fdic-examiner-positions` | `absent` | `2` | `error` | `fa-p370` | Export FDIC Part 370 deposit insurance determination files (`fa export part370`) |
+| `WF-FDIC-03` | `VC-23` | `fdic-examiner-positions` | `works` | `0` | `part370_exported` | `—` | Export FDIC Part 370 deposit insurance determination files (`fa export part370`) |
 | `WF-TRT-01` | `VC-24` | `trustee-receiver-takeover` | `works` | `0` | `legal_hold_placed` | `—` | Place a legal hold on a document (`fa document hold place`) |
 | `WF-TRT-02` | `VC-25` | `trustee-receiver-takeover` | `works` | `0` | `receivership_forked` | `—` | Fork a receivership branch on the appointing order: a book-scope legal hold over the pre-appointment trunk and the `receivership` scenario at the appointment (`fa book fork receivership`) |
 | `WF-LCD-01` | `VC-26` | `litigation-consultant-damages` | `works` | `0` | `scenario_forked` | `—` | Fork a counterfactual scenario (`fa scenario fork`; materialized as a scratch replay until substrate branches ship) |

@@ -1207,9 +1207,10 @@ mod tests {
             .to_string();
         assert!(err.contains("FA-REF-999"), "{err}");
 
-        let missing_bead = SCOREBOARD.replace("bead = \"fa-p370\"", "");
+        // G1-04 is an absent gate criterion; its bead names the owner.
+        let missing_bead = SCOREBOARD.replace("bead = \"fa-nl7\"", "");
         let err = Scoreboard::parse(&missing_bead, &exits, &refusals)
-            .expect_err("absent step without bead must fail")
+            .expect_err("absent criterion without bead must fail")
             .to_string();
         assert!(err.contains("requires `bead`"), "{err}");
 

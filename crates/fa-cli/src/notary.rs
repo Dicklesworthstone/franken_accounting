@@ -1680,24 +1680,7 @@ fn witness_key(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let out = args.require("--out", "a new file for the witness key")?;
-    if out.is_empty() || out == "-" {
-        return Err(usage(
-            "--out names a new key file; a secret is never written to stdout",
-            EXAMPLE,
-        ));
-    }
-    let mut seed = [0u8; 32];
-    fa::book::Entropy::production()
-        .fill(&mut seed)
-        .map_err(|e| Fail::Environment(format!("entropy for a witness key: {e:?}")))?;
-    let public = fa::SigningKey::from_seed(&seed).public_key();
-    crate::cli::write_new_output_file(
-        &ctx.files,
-        out,
-        format!("{}\n", hex(&seed)).as_bytes(),
-        "witness key",
-        "--out",
-    )?;
+    let public = write_new_key_file(&ctx.files, out, "witness key", EXAMPLE)?;
     let key_id = fa::signer_key_id(&public);
     ctx.out.event(
         "witness_key_created",
@@ -1714,9 +1697,54 @@ fn witness_key(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-/// A witness key file: one line of 64 hex characters (the Ed25519 seed),
-/// mode at most 0600 and owned by the caller, checked before it is read.
+/// A new Ed25519 key from the operating system's entropy: its 32-byte seed
+/// written as 64 hex characters to the new 0600 file `out`, never to
+/// stdout. Returns the public key.
+pub(crate) fn write_new_key_file(
+    files: &Files,
+    out: &str,
+    what: &str,
+    example: &str,
+) -> Result<[u8; 32], Fail> {
+    if out.is_empty() || out == "-" {
+        return Err(usage(
+            "--out names a new key file; a secret is never written to stdout",
+            example,
+        ));
+    }
+    let mut seed = [0u8; 32];
+    fa::book::Entropy::production()
+        .fill(&mut seed)
+        .map_err(|e| Fail::Environment(format!("entropy for a {what}: {e:?}")))?;
+    let public = fa::SigningKey::from_seed(&seed).public_key();
+    crate::cli::write_new_output_file(
+        files,
+        out,
+        format!("{}\n", hex(&seed)).as_bytes(),
+        what,
+        "--out",
+    )?;
+    Ok(public)
+}
+
+/// A witness key file ([`load_key_file`]).
 fn load_witness_key(files: &Files, path: &str) -> Result<fa::SigningKey, Fail> {
+    load_key_file(
+        files,
+        path,
+        "a witness key file",
+        "create one with fa checkpoint witness-key --out <new file>",
+    )
+}
+
+/// An Ed25519 key file: one line of 64 hex characters (the seed), mode at
+/// most 0600 and owned by the caller, checked before it is read.
+pub(crate) fn load_key_file(
+    files: &Files,
+    path: &str,
+    what: &str,
+    fix: &str,
+) -> Result<fa::SigningKey, Fail> {
     let resolved = files.resolve(path);
     fa::book::BookKeys::check_permissions(&resolved)?;
     let text = files.read_text(path)?;
@@ -1733,8 +1761,8 @@ fn load_witness_key(files: &Files, path: &str) -> Result<fa::SigningKey, Fail> {
     seed.map(|seed| fa::SigningKey::from_seed(&seed))
         .ok_or_else(|| {
             usage(
-                format!("{path} is not a witness key file (one line of 64 hex characters)"),
-                "create one with fa checkpoint witness-key --out <new file>",
+                format!("{path} is not {what} (one line of 64 hex characters)"),
+                fix,
             )
         })
 }

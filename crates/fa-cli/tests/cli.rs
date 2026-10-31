@@ -17,6 +17,10 @@ use fa_cli::verbs::registry;
 
 #[path = "cli/lot_disposal.rs"]
 mod lot_disposal;
+#[path = "cli/part370.rs"]
+mod part370;
+#[path = "cli/principal_key.rs"]
+mod principal_key;
 #[path = "cli/proportional_post.rs"]
 mod proportional_post;
 
@@ -11260,6 +11264,29 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(false, &["checkpoint", "witness-key", "--out", &witness_key]).0,
         0
     );
+    // fa-kae: a principal's signing key, and its registration by a principal
+    // of its own (the operator's later approvals here stay unsigned).
+    let principal_key = dir.join("principal.key").display().to_string();
+    assert_eq!(
+        run(false, &["principal", "key", "new", "--out", &principal_key]).0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "principal",
+                "key",
+                "add",
+                "--sign-key",
+                &principal_key,
+                "--as",
+                "key-holder"
+            ]
+        )
+        .0,
+        0
+    );
     let cosigned = dir.join("cosigned.cp").display().to_string();
     assert_eq!(
         run(
@@ -12143,6 +12170,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["instrument", "add", &account]).0, 0);
     assert_eq!(run(true, &["instrument", "list"]).0, 0);
+    // A book without deposits exports an empty Part 370 package (the
+    // contents are tests/cli/part370.rs's).
+    assert_eq!(
+        run(true, &["export", "part370", "--as-of", "2026-03-31"]).0,
+        0
+    );
     // A retained statement is matched to an actual cash leg. The exact
     // emitted command is independently confirmed and inventoried afterward.
     assert_eq!(run(true, &["entity", "list"]).0, 0);

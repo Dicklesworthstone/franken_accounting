@@ -53,6 +53,7 @@ pub mod period_history;
 pub mod plan;
 pub mod policy;
 pub mod post;
+pub mod principal_key;
 pub mod production;
 pub mod projections;
 pub mod proportional;
@@ -185,14 +186,18 @@ pub use plan::{
 };
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,
-    PolicyActivated, RevocationRequest, Revoked, activate_policy, activation_proposal,
-    issuance_vid, issue_capability, list_issued, read_issued, record_approval, revoke_capability,
-    security_policy_epoch,
+    PolicyActivated, RevocationRequest, Revoked, SignedBy, activate_policy, activation_proposal,
+    issuance_vid, issue_capability, list_issued, read_issued, record_approval,
+    record_signed_approval, revoke_capability, security_policy_epoch,
 };
 pub use post::{
     Capability, CarriedHistory, PostPreparation, PostRequest, Posted, PreparedPost,
     decide_admissibility_cell, explain_entry_lineage, post, post_carrying, post_replacement_pair,
     prepare_post, superseded_by,
+};
+pub use principal_key::{
+    KeyGeneration, KeyRegistered, PrincipalKeyRequest, principal_key_vid, read_principal_keys,
+    register_principal_key,
 };
 pub use production::{
     BatesRange, ExhibitMarkedOutcome, Produced, ProducedDocument, ProducedRange, ProductionOpened,
@@ -202,10 +207,11 @@ pub use production::{
 };
 pub use proportional::{PreparedProportionalPost, prepare_proportional_post};
 pub use rea::{
-    DIMENSION_KIND_PARTY, EventRow, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,
-    ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow, bind_external_id,
-    create_instrument, create_legal_entity, create_party, read_rea_at, record_event,
-    record_relationship, relationship_edge_id, update_party_identifiers,
+    DIMENSION_KIND_PARTY, DepositProfileRow, EventRow, ExternalIdRow, InstrumentRow,
+    LegalEntityRow, PartyRow, ReaControlRecorded, ReaSnapshot, RelatedPartyHit, RelationshipRow,
+    bind_external_id, create_instrument, create_legal_entity, create_party, read_rea_at,
+    record_deposit_profile, record_event, record_relationship, relationship_edge_id,
+    update_party_identifiers,
 };
 pub use redaction::{
     DocumentRead, RedactedView, ViewChunk, ViewDerived, derive_redacted_view, read_document_for,
