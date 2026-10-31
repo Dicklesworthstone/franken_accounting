@@ -1112,6 +1112,20 @@ fn verify_report_with_lots_input(
                 "recipient unit identifiers differ from the authenticated complete registry universe",
             ));
         }
+        let class_limit = registry::entry_class_limit(&inputs)?;
+        // A checkpoint may extend beyond this report's historical cut. Its
+        // later records still undergo full envelope derivation, but a newly
+        // registered inert control cannot change the earlier registry closure.
+        if prefix.envelopes.iter().any(|envelope| {
+            envelope.kind == crate::envelope::KIND_ENTRY
+                && envelope.commit_seq <= cert.known_at
+                && envelope.class > class_limit
+        }) {
+            return Err(failed(
+                "registry_closure",
+                "an entry class is absent from the authenticated historical registry",
+            ));
+        }
         (units, reasons)
     } else {
         (

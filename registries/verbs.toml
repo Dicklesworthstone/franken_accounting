@@ -169,14 +169,14 @@ example = "fa calendar periods --fiscal-year 2026 --book ./books/myco --json"
 
 [[verb]]
 name = "close"
-summary = "Prepare an intrinsic year-end close for an independently promoted draft or an approved Locked-period case, inspect routes, or publish a reviewed native close."
+summary = "Execute reviewed close tasks with durable dependency readiness and atomic completion; prepare year-end closes, inspect routes, and rehearse drafts."
 writes = true
-subcommands = ["map","routes","year-end","dry-run"]
-flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year","--period","--key","--description","--evidence","--approval","--review","--review-out","--digest","--plan-out","--grant","--draft","--scenario","--certificate-out"]
+subcommands = ["map","routes","year-end","dry-run","start","status","step"]
+flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year","--period","--key","--description","--evidence","--approval","--review","--review-out","--digest","--plan-out","--grant","--draft","--scenario","--certificate-out","--run","--tasks","--task","--plan","--reason"]
 switches = ["--dry-run","--review-only","--case-review","--certify"]
-events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","draft_planned","scenario_run","posted","recorded","plan","draft_diff","report_certificate"]
+events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","draft_planned","scenario_run","posted","recorded","plan","draft_diff","report_certificate","close_run","close_task_recorded","close_task_planned"]
 exits = [0,2,3,4,5,6,7,8]
-usage = ["close dry-run --period <code> --draft <name> [--certify | --certificate-out <new-file>]   (rehearse the exact retained plans as one atomic scratch batch; show stock trial-balance changes, posted and pending separately; real trunk and draft state remain unchanged)","Draft rehearsal preserves original planner capabilities, approvals and publication coordinates. CLI review and retained-locator replay require current whole-book read authority. --certify retains a complete replayable review under read and produce; fa replay C:<oid> reproduces its selected source prefix after later plans, promotion or discard. This supplied-draft review does not generate close tasks or issue statements; unsupported draft member classes refuse.","close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--draft <empty-owned-draft> | --dry-run [--plan-out <new-file>] | --yes]","A non-posting --review-only or --review-out derives the complete source-bound close under current whole-book read and post. The sealed review preserves the exact PostIntent and intrinsic basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Restore the unchanged review with its independently retained digest and cite each required approval. Relevant source, period or routing changes require a new review; approval and draft-control publications alone do not.","For Agent preparation, restore the reviewed close with --draft naming an otherwise empty owned draft. The draft holds exactly one intrinsic Closing intent; mixing entries, a second close, --dry-run, --plan-out or new review generation refuses. close dry-run rehearses its unchanged reviewed effects. An independent Human promotes with approve and close (fa draft promote <name> --grant close --yes); every planner still needs current read and post. Review or rehearsal never grants the Agent close or trunk posting authority.","A native --dry-run plan still requires read, post and close and writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances in both native units and functional currency; a reclose includes prior Closing legs and transfers only the residual. A zero native balance with a nonzero functional balance still needs a close; a residual of zero in both bases publishes no entry.","Foreign-currency closing preserves the exact retained functional amounts under YearEndCloseCarrying, without selecting a new rate. Review residuals show native net and base_net; each proposed valued leg shows base_amount. The Equity destination must accept the native units being transferred. Unvalued foreign activity, general dimensions and balance-limited accounts refuse. Undimensioned and legal-entity balances are supported. Closed periods retain their independent approval requirement. Locked periods require the dedicated case route below; the full CloseRun and CloseTask DAG remain unavailable.", "close year-end --fiscal-year N --period FY<N>-CLOSE --key K --case-review --review-out <new-file>   (or --review-only; derive an incremental Locked-period reclose under current whole-book read, post and restate. Prepare and retain the review before forking the scenario so its source prefix is part of that fork. Corrections must already be committed; no money is posted by preparation.)", "close year-end --review <file|-|hex> --digest <review_digest> --scenario <empty-owned-scenario>   (restore the exact review into a dedicated singleton scenario under read, post and restate; no --approval, --draft or native planning flags. Rehearse and certify the scenario, open a Restatement case for the Locked closing period, attach the retained certificate with case rehearse, obtain its two independent manifest approvals, and post through case post. That atomic publication binds the Closing entry to the existing Case Post. Mixed correction/Closing scenarios and stale source history refuse, including later equal-and-opposite postings. Review and rehearsal alone never authorize a Locked close.)"]
+usage = ["close start --run <name> --period <code> --tasks <JSON-file|-|inline-array> [--description TEXT]   (replay retained draft reviews and journal an immutable dependency graph under current read and close authority; no draft is promoted)","Task objects name id, optional depends_on IDs, and exactly one certificate (C:<retained-draft-diff-digest>) or transition (soft-close, close, lock). Example: [{\"id\":\"accruals\",\"certificate\":\"C:<digest>\"},{\"id\":\"finish\",\"depends_on\":[\"accruals\"],\"transition\":\"close\"}]. At most 16 tasks; cycles, changed draft membership, duplicate drafts and unsupported actions refuse. An optional period task is terminal and depends transitively on every other task.","close status --run <name>   (read durable completion, receipts and dependency readiness after restart; a ready task still needs current authority and native revalidation)","close step --run <name> --task <draft-task> --as <independent-controller> --yes   (promote the unchanged reviewed draft and record task completion in one transaction; original planner authority and approvals remain mandatory)","close step --run <name> --task <period-task> --key K --reason <registered-name|code> --dry-run [--plan-out <new-file>]   (prepare the ready task's native period plan without writing; approve proposal_digest independently, then execute with --plan <file|-> [--approval <vid>]... --yes)","A completed task retries to its original receipt without repeating its effect. An incomplete task never resumes from an uncommitted completion flag. Completion covers the declared reviewed drafts and optional period transition; automatic bank, accrual, depreciation, revaluation and statement-package task generation is not implemented. Missing or drifted reviews refuse rather than silently running a replacement plan.","close dry-run --period <code> --draft <name> [--certify | --certificate-out <new-file>]   (rehearse the exact retained plans as one atomic scratch batch; show stock trial-balance changes, posted and pending separately; real trunk and draft state remain unchanged)","Draft rehearsal preserves original planner capabilities, approvals and publication coordinates. CLI review and retained-locator replay require current whole-book read authority. --certify retains a complete replayable review under read and produce; fa replay C:<oid> reproduces its selected source prefix after later plans, promotion or discard. This supplied-draft review does not generate close tasks or issue statements; unsupported draft member classes refuse.","close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--draft <empty-owned-draft> | --dry-run [--plan-out <new-file>] | --yes]","A non-posting --review-only or --review-out derives the complete source-bound close under current whole-book read and post. The sealed review preserves the exact PostIntent and intrinsic basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Restore the unchanged review with its independently retained digest and cite each required approval. Relevant source, period or routing changes require a new review; approval and draft-control publications alone do not.","For Agent preparation, restore the reviewed close with --draft naming an otherwise empty owned draft. The draft holds exactly one intrinsic Closing intent; mixing entries, a second close, --dry-run, --plan-out or new review generation refuses. close dry-run rehearses its unchanged reviewed effects. An independent Human promotes with approve and close (fa draft promote <name> --grant close --yes); every planner still needs current read and post. Review or rehearsal never grants the Agent close or trunk posting authority.","A native --dry-run plan still requires read, post and close and writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances in both native units and functional currency; a reclose includes prior Closing legs and transfers only the residual. A zero native balance with a nonzero functional balance still needs a close; a residual of zero in both bases publishes no entry.","Foreign-currency closing preserves the exact retained functional amounts under YearEndCloseCarrying, without selecting a new rate. Review residuals show native net and base_net; each proposed valued leg shows base_amount. The Equity destination must accept the native units being transferred. Unvalued foreign activity, general dimensions and balance-limited accounts refuse. Undimensioned and legal-entity balances are supported. Closed periods retain their independent approval requirement. Locked periods require the dedicated case route below.","close year-end --fiscal-year N --period FY<N>-CLOSE --key K --case-review --review-out <new-file>   (or --review-only; derive an incremental Locked-period reclose under current whole-book read, post and restate. Prepare and retain the review before forking the scenario so its source prefix is part of that fork. Corrections must already be committed; no money is posted by preparation.)","close year-end --review <file|-|hex> --digest <review_digest> --scenario <empty-owned-scenario>   (restore the exact review into a dedicated singleton scenario under read, post and restate; no --approval, --draft or native planning flags. Rehearse and certify the scenario, open a Restatement case for the Locked closing period, attach the retained certificate with case rehearse, obtain its two independent manifest approvals, and post through case post. That atomic publication binds the Closing entry to the existing Case Post. Mixed correction/Closing scenarios and stale source history refuse, including later equal-and-opposite postings. Review and rehearsal alone never authorize a Locked close.)"]
 example = "fa close year-end --fiscal-year 2026 --period FY2026-CLOSE --key close-2026 --review-only --book ./books/myco --json"
 
 [[verb]]
@@ -1223,6 +1223,12 @@ verb = "close"
 subcommand = "year-end"
 condition = "always"
 safe = "prepare the exact closing proposal with --review-only, or rehearse its native posting with --dry-run; inspect the nominal residuals and obtain any required independent approval before committing"
+
+[[dangerous]]
+verb = "close"
+subcommand = "step"
+condition = "always"
+safe = "inspect close status --run <name>; period tasks require a reviewed close step --dry-run plan and its independent approvals, while draft tasks bind the retained rehearsal certificate"
 
 [[dangerous]]
 verb = "fx"
@@ -4218,6 +4224,16 @@ subcommand = "map"
 reason = "host-only: changing the reviewed Revenue/Expense-to-Equity routing map requires schema_change, which neither launch-bound MCP templates nor their issued tokens may hold (plan §7.5/§15.4 registered exclusion)"
 
 [[mcp.excluded]]
+verb = "close"
+subcommand = "start"
+reason = "host-only: creating a close execution graph requires Close authority; a launch-bound session can rehearse its owned drafts and inspect run status but cannot authorize trunk close execution"
+
+[[mcp.excluded]]
+verb = "close"
+subcommand = "step"
+reason = "host-only: execution requires current Close authority and independent draft-promotion or period-transition approval; publication requires explicit operator confirmation"
+
+[[mcp.excluded]]
 verb = "capability"
 subcommand = "issue"
 reason = "host-only: issuing authority needs --grant issue_capability and writes the holder's secret token file on the host; a bound MCP session never issues capabilities (plan §14.2/§15.4 registered exclusion, fa-v62)"
@@ -5406,6 +5422,18 @@ mistakes = ["Passing a date or period code as fiscal_year; supply a year such as
 # ---- fa.evidence ------------------------------------------------------------
 
 [[mcp.tool]]
+cluster = "fa.close"
+name = "status"
+verb = "close"
+subcommands = ["status"]
+positionals = []
+flags = ["--run"]
+switches = []
+required = ["--run"]
+dont = ["Readiness is derived from durable completion receipts and declared dependencies. A ready task still needs current execution authority and native revalidation.", "A completed draft task means its exact reviewed effects and receipt were published atomically. It does not certify that undeclared close work, statement issuance or attestations are complete."]
+mistakes = ["Treating a run's completion as a financial statement opinion or permission to change its immutable task definition.", "Attempting to execute or mark a task complete through this read-only tool; the host's close step publishes the real effect and receipt together."]
+
+[[mcp.tool]]
 cluster = "fa.evidence"
 name = "import_document"
 verb = "document"
@@ -5685,6 +5713,39 @@ name = "close_verified"
 book = true
 doc = "Verification refolded native and retained functional nominal balances at the latest Closing and at the selected prefix. Success requires nominal_zero_at_close=true in both bases and needs_reclose=false. Missing closing evidence, invalid closing balances or later native or functional residuals instead produce an exit-8 verification error carrying the same detail."
 fields = ["fiscal_year:int","known_at:seq","base_unit:string","valuation_basis:string","latest_close:hex?","last_closed_at:seq?","nominal_zero_at_close:bool?","needs_reclose:bool","residuals:[closing_residual]"]
+
+[[event]]
+name = "close_run"
+book = true
+doc = "An immutable close execution graph and its durable current task state. Readiness follows declared dependencies; current execution authority and native posting laws are checked again when a ready task executes."
+fields = ["run:close_run_summary"]
+
+[[event]]
+name = "close_task_recorded"
+book = true
+doc = "A real draft promotion or period transition and the task completion record share one native commit. An admitted exact retry returns the original receipt without executing the task again."
+fields = ["run:close_run_summary","task:string","receipt:close_task_receipt","already_recorded:bool"]
+
+[[event]]
+name = "close_task_planned"
+book = true
+doc = "A ready period task's exact native transition plan, prepared without publishing the transition or task completion. Independent approvals bind proposal_digest; execute the unchanged bytes with close step --plan."
+fields = ["run:string","task:string","period:string","from:string","to:string","proposal_digest:hex","bytes:hex","file:string?"]
+
+[[shape]]
+name = "close_run_summary"
+doc = "One book and period's immutable reviewed task graph, folded from journal controls after current whole-book read admission. complete covers exactly its declared tasks."
+fields = ["vid:hex","name:string","period:string","owner:hex","opened_at:seq","complete:bool","tasks:[close_task_status]"]
+
+[[shape]]
+name = "close_task_status"
+doc = "A reviewed draft promotion or final period transition, its immutable dependency IDs, readiness and optional original completion receipt."
+fields = ["vid:hex","id:string","kind:string","draft:string?","certificate:string?","transition:string?","depends_on:[string]","ready:bool","completion:close_task_receipt?"]
+
+[[shape]]
+name = "close_task_receipt"
+doc = "Immutable completion record and the real effect published in the same native transaction, with the executing principal and native recorded sequence."
+fields = ["record:hex","effect:hex","recorded_at:seq","principal:hex"]
 
 [[shape]]
 name = "closing_route"
@@ -6214,8 +6275,24 @@ ops = ["read", "schema_change"]
 
 [[bound]]
 verbs = ["close"]
-subcommands = ["routes", "dry-run"]
+subcommands = ["routes", "dry-run", "status"]
 ops = ["read"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["start"]
+ops = ["read", "close"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["step"]
+when_any = ["--dry-run", "--plan-out", "--plan"]
+ops = ["read", "close"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["step"]
+ops = ["read", "close", "approve"]
 
 [[bound]]
 verbs = ["close"]

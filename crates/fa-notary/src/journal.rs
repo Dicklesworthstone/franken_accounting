@@ -131,6 +131,7 @@ pub fn is_undated(class: EntryClass) -> bool {
             | EntryClass::ISSUANCE_CONTROL
             | EntryClass::ENGAGEMENT_CONTROL
             | EntryClass::CASE_CONTROL
+            | EntryClass::CLOSE_CONTROL
     )
 }
 

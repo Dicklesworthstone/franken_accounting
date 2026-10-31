@@ -85,6 +85,11 @@ pub const MAX_STATEMENT_DEFINITION_PLAN_BYTES: usize =
 /// report, including both stock and period activity attribution. Inherited and
 /// zero-cancelled buckets count; an exhausted budget refuses the entire report.
 pub const MAX_CONSOLIDATION_NCI_ATTRIBUTION_CELLS: usize = 2_000_000;
+/// Bounded immutable close graph; its control and task projections must also
+/// satisfy the substrate's independent transaction and row limits.
+pub const MAX_CLOSE_RUN_TASKS: usize = 16;
+pub const MAX_CLOSE_RUN_TEXT_BYTES: usize = 128;
+pub const MAX_CLOSE_RUN_BYTES: usize = 12 * 1024;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -154,6 +159,9 @@ pub const ALL: &[(&str, u64)] = &[
         "max_consolidation_nci_attribution_cells",
         MAX_CONSOLIDATION_NCI_ATTRIBUTION_CELLS as u64,
     ),
+    ("max_close_run_tasks", MAX_CLOSE_RUN_TASKS as u64),
+    ("max_close_run_text_bytes", MAX_CLOSE_RUN_TEXT_BYTES as u64),
+    ("max_close_run_bytes", MAX_CLOSE_RUN_BYTES as u64),
 ];
 
 #[cfg(test)]

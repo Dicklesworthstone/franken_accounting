@@ -13,6 +13,13 @@ externally_verifiable = true
 variant_tags = ["0:PeriodTransition", "1:SchemaChange", "2:PolicyActivation", "3:LifecycleTransition", "4:TimeTick", "5:SweepCursor", "6:ScheduleCancelled", "7:CapabilityEvent", "8:HoldEvent", "9:ErasureCut", "10:MigrationControl", "11:ReservationRelease", "13:ImportRun"]
 
 [[decision]]
+field = "LifecycleTransition.CloseControl"
+appendix_a = "CloseRun and CloseTask lifecycle (plan §7.5)"
+code_type = "EntryClass::CLOSE_CONTROL=31; ControlKind::CLOSE_TRANSITION=21; LifecycleTransition tag 3"
+rationale = "OpenRun is CloseRun state 0->1 with immutable CloseRunBody in extension 40. A completed CloseTask is state 0->1 with proof refs to its native effects; the final task also publishes CloseRun state 1->2. The origin's spec_body_digest always binds the same run definition. No new ControlPayload discriminant is invented. Every record has no legs, no effective period and no posting-date mirror; native task effects retain their own typed controls and approvals."
+tracking_bead = "fa-4o0"
+
+[[decision]]
 field = "SchemaChange.kind=22"
 appendix_a = "Acquisition-bound finite asset schedules (plan §10.2, Appendix B)"
 code_type = "fa-model::asset_cost::AssetScheduleSpec; ASSET_SCHEDULE=22"

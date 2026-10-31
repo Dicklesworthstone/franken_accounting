@@ -270,6 +270,16 @@ name = "CaseControl"
 kind = "control"
 supersession = "none"
 
+# A CloseRun and its CloseTask completion records (plan §7.5): book-scoped
+# and undated, with no legs. Open retains extension 40's immutable reviewed
+# task graph. CompleteTask and Complete publish alongside native draft or
+# period effects, which retain their own admissibility and approvals.
+[[class]]
+tag = 31
+name = "CloseControl"
+kind = "control"
+supersession = "none"
+
 # ---- Control kinds (fa-g23) ---------------------------------------------------
 # `EntryOrigin::Control.control_kind`: the act that minted a control record. It
 # is durable in every control record's origin, so it is registered here rather
@@ -403,3 +413,9 @@ id = 20
 name = "principal_key"
 class = "PolicyControl"
 minted_by = "fa-journal policy::register_principal_key"
+
+[[control_kind]]
+id = 21
+name = "close_transition"
+class = "CloseControl"
+minted_by = "fa-journal close_run::open_close_run and native task completion"

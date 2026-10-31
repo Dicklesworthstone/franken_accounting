@@ -193,7 +193,7 @@ pub(super) fn replay(
     let mut identities = BTreeMap::new();
     for (&index, info) in infos {
         let envelope = &envelopes[index];
-        if !(1..=30).contains(&envelope.class) {
+        if !(1..=31).contains(&envelope.class) {
             return Err(failed(
                 "registry_closure",
                 "entry class is outside the authenticated vocabulary",

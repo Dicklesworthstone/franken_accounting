@@ -334,7 +334,7 @@ fn replay_inner(
     let mut details = BTreeMap::new();
     for &index in &selected {
         let class = envelopes[index].class;
-        if !(1..=30).contains(&class) || (class >= 16 && !legs[index].is_empty()) {
+        if !(1..=31).contains(&class) || (class >= 16 && !legs[index].is_empty()) {
             return Err(failed(
                 "registry_closure",
                 "unsupported entry class or control carrying legs",

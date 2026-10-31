@@ -1615,6 +1615,78 @@ impl Book {
         with_store!(&self.store, core => core.issued_capability(&self.purposes(), commitment))
     }
 
+    pub(crate) fn start_reviewed_close_run(
+        &mut self,
+        capability: fa_journal::Capability,
+        name: &str,
+        period: &str,
+        tasks: Vec<crate::ReviewedCloseTask>,
+        description: &str,
+    ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.start_close_run(
+            &purposes, capability, name, period, tasks, description,
+        )))
+    }
+
+    /// Journal an immutable close graph. Applications selecting retained
+    /// review certificates should use [`Book::start_close_run`].
+    pub fn create_close_run(
+        &mut self,
+        definition: &fa_journal::close_run::CloseRunDefinition,
+        capability: &fa_journal::Capability,
+        description: &str,
+    ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_close_run(
+            &purposes, definition, capability, description,
+        )))
+    }
+
+    /// Durable task state and dependency readiness under current authority.
+    pub fn close_run_status(
+        &mut self,
+        name: &str,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Option<fa_journal::close_run::CloseRunView>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_run_status(&purposes, name, capability)))
+    }
+
+    /// Prepare the exact period-transition proposal for a ready close task.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_close_task_transition(
+        &mut self,
+        name: &str,
+        task: &str,
+        capability: &fa_journal::Capability,
+        reason_code: u16,
+        key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::TransitionPlan> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.plan_close_task_transition(
+            &purposes, name, task, capability, reason_code, key, description,
+        )))
+    }
+
+    /// Publish one ready task with its durable completion in the same commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_close_task(
+        &mut self,
+        name: &str,
+        task: &str,
+        capability: fa_journal::Capability,
+        description: &str,
+        transition_plan: Option<fa_journal::TransitionPlan>,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.execute_close_task(
+            &purposes, name, task, capability, description, transition_plan, approvals,
+        )))
+    }
+
     /// Open the draft `name` owned by the capability's holder (plan §15.2,
     /// fa-s7x). An Agent works on its draft; trunk changes only when a
     /// Human holding `approve` promotes it.
@@ -6499,8 +6571,10 @@ impl Book {
     }
 
     /// Run a compiled profile query at `known_at` (`fa query`; see
-    /// [`crate::query`]): one certified native read of the graph as recorded
-    /// at that sequence. With `period`, the period must exist there.
+    /// [`crate::query`]): native execution over one recorded prefix. A bounded
+    /// open-amount pipeline combines its source read and historical fold with
+    /// a native continuation; it cannot produce a v1 query certificate.
+    /// With `period`, the period must exist there.
     pub fn query_native(
         &self,
         native: &crate::NativeQuery,

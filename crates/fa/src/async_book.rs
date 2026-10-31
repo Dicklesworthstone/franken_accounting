@@ -1318,6 +1318,320 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    async fn prepare_close_history(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        writing: bool,
+    ) -> Outcome<()> {
+        if let Err(denial) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if writing {
+            return self
+                .prepare_source_history(
+                    cx,
+                    capability.holder(),
+                    capability,
+                    fa_policy::Op::Close,
+                    &[],
+                )
+                .await;
+        }
+        if let Err(denial) =
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id)
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        })? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        })
+    }
+
+    /// Replay one retained review after current whole-book Read and Close
+    /// admission. The caller supplies the certificate identity, never its
+    /// result: both the native trunk and the complete scratch output replay.
+    async fn replay_close_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        digest: &[u8; 32],
+        period: &str,
+    ) -> Outcome<(fa_journal::DraftRehearsalSource, Vec<fa_model::EntryRef>)> {
+        use crate::draft_review::{check_replay, invalid};
+        let artifact = match self
+            .read_report_artifact(cx, capability.holder(), capability, digest)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if artifact.family() != crate::ReportArtifactFamily::DraftDiff {
+            return Ok(Err(invalid(
+                "a close draft task requires a retained draft diff certificate",
+            )));
+        }
+        let bytes = match artifact.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let certificate = match crate::DraftDiffCertificate::decode(&bytes) {
+            Ok(certificate) => certificate,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if certificate.digest() != digest
+            || certificate.period() != period
+            || certificate.source().body.book_id != self.context.book_id
+        {
+            return Ok(Err(invalid(
+                "the retained draft review does not select this exact book, certificate and close period",
+            )));
+        }
+        let keys = BookKeys::generate(&self.entropy)?;
+        let target = Database::open_memory(&cx.commit(), keys.inner.clone()).await?;
+        let entropy = match &self.entropy {
+            Entropy::Production(_) => Entropy::production(),
+            Entropy::Deterministic(_) => {
+                let mut seed = [0; 8];
+                self.entropy.fill(&mut seed)?;
+                Entropy::deterministic(u64::from_le_bytes(seed))
+            }
+        };
+        let (scratch, rehearsal) = match self
+            .rehearse_draft_into(
+                cx,
+                target,
+                &keys,
+                capability,
+                fa_journal::DraftRehearsalRequest {
+                    name: certificate.name().into(),
+                    known_at: certificate.known_at(),
+                },
+                entropy,
+            )
+            .await?
+        {
+            Ok(rehearsal) => rehearsal,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let trunk = match self.replay_report(cx, certificate.trunk())? {
+            Ok(crate::ReportOutput::TrialBalance(trunk)) => trunk,
+            Ok(_) => return Ok(Err(invalid("draft source replay is not a trial balance"))),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let draft = scratch.trial_balance_at(cx, &[period.to_string()], None)?;
+        let report = match check_replay(&certificate, &rehearsal, &trunk, &draft) {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((rehearsal.source, report.entries)))
+    }
+
+    /// Resolve retained reviews and execute their complete historical replay
+    /// before creating one immutable close graph. No monetary task runs here.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_close_run(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        name: &str,
+        period: &str,
+        tasks: Vec<crate::ReviewedCloseTask>,
+        description: &str,
+    ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
+            return Ok(Err(refusal));
+        }
+        if tasks.is_empty() || tasks.len() > fa_model::limits::MAX_CLOSE_RUN_TASKS {
+            return Ok(Err(crate::draft_review::invalid(
+                "a close graph needs a bounded nonempty task list",
+            )));
+        }
+        let mut definition = fa_journal::CloseRunDefinition {
+            name: name.into(),
+            period: period.into(),
+            tasks: Vec::with_capacity(tasks.len()),
+        };
+        for task in tasks {
+            let action = match task.action {
+                crate::ReviewedCloseAction::PeriodTransition(transition) => {
+                    fa_journal::CloseTaskAction::PeriodTransition(transition)
+                }
+                crate::ReviewedCloseAction::DraftCertificate(digest) => {
+                    let (source, expected_entries) = match self
+                        .replay_close_draft(cx, &capability, &digest, period)
+                        .await?
+                    {
+                        Ok(reviewed) => reviewed,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    };
+                    fa_journal::CloseTaskAction::PromoteDraft {
+                        source,
+                        certificate_digest: digest,
+                        expected_entries,
+                    }
+                }
+            };
+            definition.tasks.push(fa_journal::CloseTaskDefinition {
+                id: task.id,
+                depends_on: task.depends_on,
+                action,
+            });
+        }
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::create_close_run(
+            &mut self.db,
+            cx,
+            &self.context,
+            &definition,
+            &capability,
+            description,
+        )
+        .await?)
+    }
+
+    /// Journal an immutable close graph only after every supplied source and
+    /// effect list agrees with the full replay of its retained certificate.
+    pub async fn create_close_run(
+        &mut self,
+        cx: &PurposeContexts,
+        definition: &fa_journal::close_run::CloseRunDefinition,
+        capability: &fa_journal::Capability,
+        description: &str,
+    ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        if let Err(refusal) = self.prepare_close_history(cx, capability, true).await? {
+            return Ok(Err(refusal));
+        }
+        if definition.tasks.is_empty()
+            || definition.tasks.len() > fa_model::limits::MAX_CLOSE_RUN_TASKS
+        {
+            return Ok(Err(crate::draft_review::invalid(
+                "a close graph needs a bounded nonempty task list",
+            )));
+        }
+        for task in &definition.tasks {
+            if let fa_journal::CloseTaskAction::PromoteDraft {
+                source,
+                certificate_digest,
+                expected_entries,
+            } = &task.action
+            {
+                let (verified_source, verified_entries) = match self
+                    .replay_close_draft(cx, capability, certificate_digest, &definition.period)
+                    .await?
+                {
+                    Ok(reviewed) => reviewed,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                if source != &verified_source || expected_entries != &verified_entries {
+                    return Ok(Err(crate::draft_review::invalid(
+                        "the close task source or effects do not match its fully replayed retained certificate",
+                    )));
+                }
+            }
+        }
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::close_run::create_close_run(
+            &mut self.db,
+            cx,
+            &self.context,
+            definition,
+            capability,
+            description,
+        )
+        .await?)
+    }
+
+    /// Read durable completion and dependency readiness under current
+    /// whole-book authority, including after reopening the book.
+    pub async fn close_run_status(
+        &mut self,
+        cx: &PurposeContexts,
+        name: &str,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Option<fa_journal::close_run::CloseRunView>> {
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::close_run_status(
+                db, cx, book, name, capability,
+            )?)
+        })
+    }
+
+    /// Prepare a ready period task's native proposal for independent review.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn plan_close_task_transition(
+        &mut self,
+        cx: &PurposeContexts,
+        name: &str,
+        task: &str,
+        capability: &fa_journal::Capability,
+        reason_code: u16,
+        key: &[u8],
+        description: &str,
+    ) -> Outcome<fa_journal::TransitionPlan> {
+        if let Err(refusal) = self.prepare_close_history(cx, capability, true).await? {
+            return Ok(Err(refusal));
+        }
+        let description = self.seal_text(cx, description)?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::plan_close_task_transition(
+                db,
+                cx,
+                book,
+                name,
+                task,
+                capability,
+                reason_code,
+                key,
+                description,
+            )?)
+        })
+    }
+
+    /// Execute one ready task and atomically journal its completion receipt.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_close_task(
+        &mut self,
+        cx: &PurposeContexts,
+        name: &str,
+        task: &str,
+        capability: fa_journal::Capability,
+        description: &str,
+        transition_plan: Option<fa_journal::TransitionPlan>,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
+            return Ok(Err(refusal));
+        }
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::close_run::execute_close_task(
+            &mut self.db,
+            cx,
+            &self.context,
+            name,
+            task,
+            fa_journal::close_run::CloseTaskRequest {
+                capability,
+                description,
+                transition_plan,
+                approvals,
+            },
+        )
+        .await?)
+    }
+
     fn draft_request(
         &self,
         cx: &PurposeContexts,

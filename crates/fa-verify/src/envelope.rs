@@ -51,9 +51,9 @@ pub const REGISTER_CELL_DOMAIN: &[u8] = b"fa:register-cell:v1";
 /// `PolicyControl`, `TimeControl`, `SweepControl`, `ScheduleControl`,
 /// `ImportControl`, `HoldControl`, `DraftControl`, `ScenarioControl`,
 /// `ProductionControl`, `IssuanceControl`, `EngagementControl`,
-/// `CaseControl`; `registries/entry_classes.toml`): their envelopes carry no
+/// `CaseControl`, `CloseControl`; `registries/entry_classes.toml`): their envelopes carry no
 /// effective day. Every other class is period-scoped and carries one.
-pub const UNDATED_CLASSES: [u16; 13] = [17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30];
+pub const UNDATED_CLASSES: [u16; 14] = [17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31];
 
 /// Bounds for the selection lists (`max_legs_per_entry` bounds both).
 pub const MAX_ENVELOPE_LIST: usize = 4096;
@@ -288,16 +288,16 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
     let branch_id = r.fixed("entry.branch_id")?;
     let class = r.u16("entry.class")?;
     // The supported native registry assigns posting classes 1..=15 and
-    // control classes 16..=30. Validate this vocabulary while deriving every
+    // control classes 16..=31. Validate this vocabulary while deriving every
     // record, before a report can exclude its date, prefix or retired state.
     if class == 0 {
         return Err(r.error("entry.class", Reason::BadTag(0)));
     }
-    if class > 30 {
+    if class > 31 {
         return Err(r.error(
             "entry.class",
             Reason::TooLong {
-                max: 30,
+                max: 31,
                 actual: usize::from(class),
             },
         ));

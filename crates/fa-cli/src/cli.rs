@@ -1370,6 +1370,7 @@ fn needs_command_time_evidence(verb: &str, args: &Args) -> bool {
                 && !closing_draft_only(verb, args)
                 && args.flag("--plan-out").is_none()
         }
+        ("close", Some("step")) => !close_task_plan_only(verb, args),
         ("statement", Some("issue")) => !args.switch("--dry-run") && args.flag("--plan").is_some(),
         ("schedule", Some("sweep")) => !args.switch("--dry-run"),
         _ => false,
@@ -2340,6 +2341,16 @@ fn period_plan_only(verb: &str, args: &Args) -> bool {
         && args.flag_all("--approval").is_empty()
 }
 
+/// Only the concrete close-task period planner can bypass publication
+/// confirmation. It returns its exact native plan before any task executes.
+fn close_task_plan_only(verb: &str, args: &Args) -> bool {
+    verb == "close"
+        && args.positional.get(1).map(String::as_str) == Some("step")
+        && (args.flag("--plan-out").is_some() || args.switch("--dry-run"))
+        && args.flag("--plan").is_none()
+        && args.flag_all("--approval").is_empty()
+}
+
 /// These concrete handlers prepare and abort the real posting transaction.
 /// No other verb may use a dry-run flag to bypass its confirmation gate.
 fn post_plan_only(verb: &str, args: &Args) -> bool {
@@ -2513,6 +2524,7 @@ pub fn bound_command_admissible(
         .filter(|v| !v.subcommands.is_empty())
         .and_then(|_| args.positional.get(1).map(String::as_str));
     if !period_plan_only(verb, args)
+        && !close_task_plan_only(verb, args)
         && !post_plan_only(verb, args)
         && !correction_draft_only(verb, args)
         && !closing_draft_only(verb, args)
@@ -2701,6 +2713,13 @@ enum HostPath {
 /// left out; an output flag is listed whatever its value.
 fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a str, HostPath)> {
     let mut paths = Vec::new();
+    if verb == "close"
+        && let Some(value) = args.flag("--tasks")
+        && value != "-"
+        && !value.trim_start().starts_with('[')
+    {
+        paths.push(("--tasks", value, HostPath::Content));
+    }
     for flag in [
         "--plan-out",
         "--certificate-out",
@@ -3041,6 +3060,7 @@ fn gate_from_argv(
     let mut rows = reg.dangerous_for(&verb.name, sub).peekable();
     // Planning commits nothing: the commit from the plan is what confirms.
     if period_plan_only(&verb.name, args)
+        || close_task_plan_only(&verb.name, args)
         || post_plan_only(&verb.name, args)
         || correction_draft_only(&verb.name, args)
         || closing_draft_only(&verb.name, args)

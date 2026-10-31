@@ -72,6 +72,8 @@ const CASE_TRANSITIONS: &[&str] = &[
     "Disclose",
     "Close",
 ];
+/// Reviewed task graph and native effect completion (plan §7.5).
+const CLOSE_TRANSITIONS: &[&str] = &["Open", "CompleteTask", "Complete"];
 const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "SchemaControl",
     "PolicyControl",
@@ -87,6 +89,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "IssuanceControl",
     "EngagementControl",
     "CaseControl",
+    "CloseControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
 const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
@@ -354,6 +357,7 @@ impl SodPolicy {
                         "IssuanceControl" => ISSUANCE_TRANSITIONS,
                         "EngagementControl" => ENGAGEMENT_TRANSITIONS,
                         "CaseControl" => CASE_TRANSITIONS,
+                        "CloseControl" => CLOSE_TRANSITIONS,
                         other => {
                             return Err(invalid(
                                 R,

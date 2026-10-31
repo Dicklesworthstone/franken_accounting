@@ -11,6 +11,8 @@ use fa_cli::json::{self, Json};
 
 #[path = "closing/case.rs"]
 mod case;
+#[path = "closing/run.rs"]
+mod close_run;
 #[path = "closing/draft_review.rs"]
 mod draft_review;
 #[path = "closing/equity_certificate.rs"]

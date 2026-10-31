@@ -47,10 +47,11 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// values and their exact settlement releases; minor 5 admits law-bound lot
 /// disposal and its recorded-version account policy; minor 6 admits
 /// source-bound finite asset charges and their exact reversals. Minor 7 binds
-/// case disclosures to their immutable Post and retained statement comparisons. A writer may
+/// case disclosures to their immutable Post and retained statement comparisons.
+/// Minor 8 admits the immutable reviewed CloseRun task graph. A writer may
 /// emit any minor ≤ this; bytes at a higher minor decode with their unknown
 /// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 7;
+pub const SCHEMA_MINOR: u16 = 8;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -268,6 +269,10 @@ pub const LOT_DISPOSAL_SCHEMA_MINOR: u16 = 5;
 /// acquisition schedule. Only Adjusting charges and exact Reversals carry it.
 pub const ASSET_CHARGE_EXTENSION: u16 = 39;
 pub const ASSET_CHARGE_SCHEMA_MINOR: u16 = 6;
+/// Extension tag 40, the bounded immutable `fa:close-run:v1` definition on
+/// a CloseControl Open record. Native task effects are separate controls.
+pub const CLOSE_RUN_EXTENSION: u16 = 40;
+pub const CLOSE_RUN_SCHEMA_MINOR: u16 = 8;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -342,6 +347,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     PRIOR_PERIOD_ADJUSTMENT_EXTENSION,
     LOT_DISPOSAL_EXTENSION,
     ASSET_CHARGE_EXTENSION,
+    CLOSE_RUN_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -406,6 +412,9 @@ impl EntryClass {
     /// Determine, and the later Rehearse, Approve, Post, Disclose, Close.
     /// Book-scoped, undated; the case makes a material correction legal.
     pub const CASE_CONTROL: Self = Self(30);
+    /// A close run and its task completion history (plan §7.5).
+    /// Book-scoped, undated; native posting and period controls carry effects.
+    pub const CLOSE_CONTROL: Self = Self(31);
 
     /// `(tag, name, is_control)` for every registered class.
     pub const ALL: &[(u16, &str, bool)] = &[
@@ -439,6 +448,7 @@ impl EntryClass {
         (28, "IssuanceControl", true),
         (29, "EngagementControl", true),
         (30, "CaseControl", true),
+        (31, "CloseControl", true),
     ];
 
     #[must_use]
@@ -521,6 +531,7 @@ impl ControlKind {
     /// One generation of a principal's signing-key chain (plan §14.5,
     /// fa-kae).
     pub const PRINCIPAL_KEY: Self = Self(20);
+    pub const CLOSE_TRANSITION: Self = Self(21);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -611,6 +622,11 @@ impl ControlKind {
             Self::PRINCIPAL_KEY,
             "principal_key",
             EntryClass::POLICY_CONTROL,
+        ),
+        (
+            Self::CLOSE_TRANSITION,
+            "close_transition",
+            EntryClass::CLOSE_CONTROL,
         ),
     ];
 
@@ -1909,6 +1925,47 @@ impl EntryPayload {
             return Err(invalid(
                 "extensions.event_ref",
                 "fa:event-ref:v1 requires 48 bytes (event_vid u128 LE || event_digest [u8; 32])",
+            ));
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == CLOSE_RUN_EXTENSION)
+        {
+            if self.schema_minor < CLOSE_RUN_SCHEMA_MINOR || self.class != EntryClass::CLOSE_CONTROL
+            {
+                return Err(invalid(
+                    "extensions.close_run",
+                    "a close-run definition requires CloseControl at schema minor 8 or later",
+                ));
+            }
+            let body = crate::close_run::CloseRunBody::decode(bytes).map_err(|_| {
+                invalid(
+                    "extensions.close_run",
+                    "invalid immutable close-run task graph",
+                )
+            })?;
+            if body.book_id != self.book_id
+                || !matches!(
+                    &self.control,
+                    Some(ControlPayload::LifecycleTransition {
+                        object_ref,
+                        from: 0,
+                        to: 1,
+                        ..
+                    }) if *object_ref == crate::ids::close_run_vid(body.book_id, &body.name)
+                )
+            {
+                return Err(invalid(
+                    "extensions.close_run",
+                    "the graph belongs to this book and its own OpenRun transition",
+                ));
+            }
+        }
+        if self.class == EntryClass::CLOSE_CONTROL && self.schema_minor < CLOSE_RUN_SCHEMA_MINOR {
+            return Err(invalid(
+                "class",
+                "CloseControl requires schema minor 8 or later",
             ));
         }
         if let Some((_, bytes)) = self

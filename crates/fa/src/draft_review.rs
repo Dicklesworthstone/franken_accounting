@@ -70,7 +70,7 @@ pub struct DraftDiff {
     pub rows: Vec<DraftDiffRow>,
 }
 
-fn invalid(message: impl Into<String>) -> Refusal {
+pub(crate) fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
         crate::certificate::code::CERTIFICATE_INVALID,
         exit::VERIFICATION,
@@ -474,6 +474,33 @@ fn assemble(
     Ok(report)
 }
 
+/// Shared native replay comparison for synchronous reports and asynchronous
+/// close admission. Neither path may validate only a certificate container
+/// or its selected EntryRefs while ignoring the complete certified output.
+pub(crate) fn check_replay(
+    certificate: &DraftDiffCertificate,
+    rehearsal: &DraftRehearsal,
+    trunk: &TrialBalance,
+    draft: &TrialBalance,
+) -> Result<DraftDiff, Refusal> {
+    certificate.validate()?;
+    if rehearsal.source != certificate.source {
+        return Err(invalid(
+            "the complete historical draft source differs from the certified witness",
+        ));
+    }
+    let report = assemble(rehearsal, trunk, draft, certificate.period())?;
+    if report.seq_map_digest != certificate.seq_map_digest
+        || report.rehearsal_known_at != certificate.rehearsal_known_at
+        || report.canonical_bytes()? != certificate.output
+    {
+        return Err(invalid(
+            "the atomic draft rehearsal does not reproduce the certified map, head and complete output",
+        ));
+    }
+    Ok(report)
+}
+
 impl Book {
     /// Rehearse the complete currently open draft as one atomic batch and
     /// compare one period's stock balances. This publishes nothing on trunk.
@@ -593,34 +620,13 @@ impl Book {
             Ok(rehearsal) => rehearsal,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if rehearsal.source != certificate.source {
-            return Ok(Err(invalid(
-                "the complete historical draft source differs from the certified witness",
-            )));
-        }
         let trunk = match self.replay_report(&certificate.trunk)? {
             Ok(ReportOutput::TrialBalance(trunk)) => trunk,
             Ok(_) => return Ok(Err(invalid("draft source replay is not a trial balance"))),
             Err(refusal) => return Ok(Err(refusal)),
         };
         let draft = scratch.trial_balance_at(&[certificate.period().to_string()], None)?;
-        let report = match assemble(&rehearsal, &trunk, &draft, certificate.period()) {
-            Ok(report) => report,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let output = match report.canonical_bytes() {
-            Ok(output) => output,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        if report.seq_map_digest != certificate.seq_map_digest
-            || report.rehearsal_known_at != certificate.rehearsal_known_at
-            || output != certificate.output
-        {
-            return Ok(Err(invalid(
-                "the atomic draft rehearsal does not reproduce the certified map, head and complete output",
-            )));
-        }
-        Ok(Ok(report))
+        Ok(check_replay(certificate, &rehearsal, &trunk, &draft))
     }
 
     /// Reperform the complete historical review before retaining its original

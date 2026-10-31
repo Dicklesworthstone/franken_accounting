@@ -87,6 +87,7 @@ symbols!(
         (STATEMENT_DEFINITION, "StatementDefinition", 59),
         (LOT_POLICY, "LotPolicy", 60),
         (ASSET_SCHEDULE, "AssetSchedule", 61),
+        (CLOSE_TASK, "CloseTask", 62),
     ]
 );
 
@@ -198,6 +199,7 @@ symbols!(
         (CHECKPOINTS, "CHECKPOINTS", 35),
         (IN_MIGRATION_RUN, "IN_MIGRATION_RUN", 36),
         (IN_BATCH, "IN_BATCH", 37),
+        (DEPENDS_ON, "DEPENDS_ON", 38),
     ]
 );
 
@@ -271,19 +273,43 @@ impl SymbolTable {
         h.finalize()
     }
 
-    /// Prove the digest of a literal label-ID prefix of this table. Every
-    /// property and relation binding must be unchanged; every retained label
-    /// keeps its exact name and ID. This is a bounded compatibility profile,
-    /// not a decoder for arbitrary prior registries or a symbol migration.
+    /// Prove the digest of a literal label-ID prefix of this table, including
+    /// the explicit release before CloseTask=62 / DEPENDS_ON=38. Every
+    /// property and earlier relation binding stays unchanged; every retained
+    /// label keeps its exact name and ID. This is a bounded compatibility
+    /// profile, not a decoder for arbitrary registries or a symbol migration.
     ///
     /// The caller must authenticate `original` against the book's native
     /// creation record before treating a match as historical evidence. A
     /// mutable digest that happens to match a prefix is not that evidence.
     ///
-    /// There is at most one existing-format hash per label, with no search
-    /// over subsets or combinations of the other symbol namespaces.
+    /// There are at most two existing-format hashes per label, for the
+    /// current and pre-close relation tables. There is no search over
+    /// arbitrary subsets of the other symbol namespaces.
     #[must_use]
     pub fn matches_label_prefix_digest(&self, original: Digest) -> bool {
+        if self.matches_literal_label_prefix_digest(original) {
+            return true;
+        }
+        // The close-graph release adds exactly CloseTask=62 and
+        // DEPENDS_ON=38. Preserve the existing literal-label-prefix proof
+        // for books born before this pair, without relaxing any old relation
+        // or property binding. In particular, arbitrary relation prefixes
+        // and a CloseTask label without its registered relation are refused.
+        if self.labels.get("CloseTask") != Some(&label::CLOSE_TASK.0)
+            || self.relations.get("DEPENDS_ON") != Some(&relation::DEPENDS_ON.0)
+        {
+            return false;
+        }
+        let mut before_close = self.clone();
+        before_close
+            .labels
+            .retain(|_, id| *id < label::CLOSE_TASK.0);
+        before_close.relations.remove("DEPENDS_ON");
+        before_close.matches_literal_label_prefix_digest(original)
+    }
+
+    fn matches_literal_label_prefix_digest(&self, original: Digest) -> bool {
         if self.digest() == original {
             return true;
         }
@@ -440,5 +466,35 @@ mod tests {
             assert!(!current.matches_label_prefix_digest(incompatible.digest()));
         }
         assert!(!current.matches_label_prefix_digest(Digest([0xa5; 32])));
+    }
+
+    #[test]
+    fn close_graph_release_preserves_only_the_literal_pre_release_symbol_table() {
+        let current = SymbolTable::compiled();
+        let mut previous = current.clone();
+        previous.labels.remove("CloseTask");
+        previous.relations.remove("DEPENDS_ON");
+        assert!(current.matches_label_prefix_digest(previous.digest()));
+        for ceiling in [43, 46, 60] {
+            let mut earlier = previous.clone();
+            earlier.labels.retain(|_, id| *id <= ceiling);
+            assert!(current.matches_label_prefix_digest(earlier.digest()));
+        }
+        let mut missing_old_relation = previous.clone();
+        missing_old_relation.relations.remove("IN_BATCH");
+        let mut reassigned_relation = previous.clone();
+        reassigned_relation.relations.insert("POSTS_TO".into(), 38);
+        let mut changed_property = previous.clone();
+        changed_property.properties.insert("amount".into(), 69);
+        let mut incomplete_release = previous;
+        incomplete_release.labels.insert("CloseTask".into(), 62);
+        for incompatible in [
+            missing_old_relation,
+            reassigned_relation,
+            changed_property,
+            incomplete_release,
+        ] {
+            assert!(!current.matches_label_prefix_digest(incompatible.digest()));
+        }
     }
 }

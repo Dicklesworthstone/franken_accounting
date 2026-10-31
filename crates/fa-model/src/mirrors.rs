@@ -14,7 +14,7 @@ use fa_time::DateDay;
 use fgdb_delta_types::PropertyKeyId;
 use fgdb_types::{CanonicalDecimal, CanonicalScalar};
 
-use crate::entry::{Entry, EntryOrigin, LegPayload};
+use crate::entry::{Entry, EntryClass, EntryOrigin, LegPayload};
 use crate::symbols::property;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,15 +89,17 @@ pub fn entry_mirrors(entry: &Entry) -> Result<Vec<(PropertyKeyId, CanonicalScala
             bytes("proposal_digest", entry.proposal_digest.to_vec())?,
         ),
     ];
-    // PeriodCreation is a new Book-scoped control, with no posting date.
+    // PeriodCreation and CloseControl are Book-scoped, with no posting date.
     // The v1 container's reserved zero scalar is not a temporal mirror.
-    if !matches!(
-        p.origin,
-        EntryOrigin::Control {
-            control_kind: crate::ControlKind::PERIOD_CREATION,
-            ..
-        }
-    ) {
+    if p.class != EntryClass::CLOSE_CONTROL
+        && !matches!(
+            p.origin,
+            EntryOrigin::Control {
+                control_kind: crate::ControlKind::PERIOD_CREATION,
+                ..
+            }
+        )
+    {
         props.push((
             property::FA_EFFECTIVE_DAY,
             CanonicalScalar::Int(i64::from(p.effective_date.0)),

@@ -560,3 +560,13 @@ name = "LotPolicy"
 [[label]]
 id = 61
 name = "AssetSchedule"
+
+# One immutable task body and its journal-derived completion projection.
+[[label]]
+id = 62
+name = "CloseTask"
+
+# CloseTask -> prerequisite CloseTask, within the same CloseRun.
+[[relation]]
+id = 38
+name = "DEPENDS_ON"

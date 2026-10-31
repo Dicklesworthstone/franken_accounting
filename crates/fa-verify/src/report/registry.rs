@@ -224,7 +224,7 @@ fn account_types(doc: &Document) -> Result<(), ReportError> {
     }
     Ok(())
 }
-fn entry_classes(doc: &Document) -> Result<(), ReportError> {
+fn entry_classes(doc: &Document) -> Result<u16, ReportError> {
     let names = [
         "Original",
         "Pending",
@@ -256,9 +256,12 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
         "IssuanceControl",
         "EngagementControl",
         "CaseControl",
+        "CloseControl",
     ];
     let values = rows(doc, "class")?;
-    if values.len() != names.len()
+    // Class 31 is an additive book-scoped control. Historical thirty-class
+    // registries keep their original semantics and remain verifiable.
+    if !matches!(values.len(), 30 | 31)
         || doc.root.len() != 1
         || doc.named_tables != 0
         || doc.arrays.len() != 2
@@ -304,7 +307,7 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
             || name.is_empty()
             || !ids.insert(id)
             || !control_names.insert(name)
-            || !names[15..].contains(&string(row, "class")?)
+            || !names[15..values.len()].contains(&string(row, "class")?)
             || string(row, "minted_by")?.is_empty()
         {
             return Err(invalid("ambiguous or unsupported control-kind registry"));
@@ -314,7 +317,11 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
         (1, "chart_install", "SchemaControl"),
         (9, "migration_run", "MigrationControl"),
         (13, "period_creation", "SchemaControl"),
+        (21, "close_transition", "CloseControl"),
     ] {
+        if id == 21 && values.len() == 30 {
+            continue;
+        }
         let found: Vec<_> = controls
             .iter()
             .filter(|row| matches!(row.get("id"), Some(Value::Int(actual)) if *actual == id))
@@ -328,8 +335,21 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
             ));
         }
     }
-    Ok(())
+    Ok(values.len() as u16)
 }
+
+/// Called after the registry closure is authenticated. A legacy registry
+/// cannot authorize a newly introduced entry class merely because the
+/// verifier now understands it.
+pub(super) fn entry_class_limit(inputs: &[(&str, &[u8])]) -> Result<u16, ReportError> {
+    let bytes = inputs
+        .iter()
+        .find(|(name, _)| *name == "entry_classes")
+        .map(|(_, bytes)| *bytes)
+        .ok_or_else(|| invalid("report omits its entry-class registry"))?;
+    entry_classes(&document(bytes)?)
+}
+
 fn units(doc: &Document) -> Result<Vec<u32>, ReportError> {
     let rows = rows(doc, "unit")?;
     if rows.is_empty()

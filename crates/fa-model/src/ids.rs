@@ -189,6 +189,21 @@ pub fn draft_vid(book: Id128, name: &str) -> VId {
     derive_vid(b"fa:vid:draft:v1", &[&book.0, name.as_bytes()])
 }
 
+/// One named immutable close-run definition per book (plan §7.5).
+#[must_use]
+pub fn close_run_vid(book: Id128, name: &str) -> VId {
+    derive_vid(b"fa:vid:close-run:v1", &[&book.0, name.as_bytes()])
+}
+
+/// A task identity is scoped by both its book and its containing run.
+#[must_use]
+pub fn close_task_vid(book: Id128, run_name: &str, task_id: &str) -> VId {
+    derive_vid(
+        b"fa:vid:close-task:v1",
+        &[&book.0, run_name.as_bytes(), task_id.as_bytes()],
+    )
+}
+
 /// `vid(Scenario) = H("fa:vid:scenario:v1" ‖ book ‖ name)` (plan §15.2,
 /// bead fa-k07b): one scenario per name in a book.
 #[must_use]

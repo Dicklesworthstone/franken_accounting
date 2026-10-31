@@ -27,6 +27,7 @@ pub mod blob;
 pub mod carrying;
 pub mod case;
 pub mod chart;
+pub mod close_run;
 pub mod closing;
 pub mod custody;
 pub mod dimension;
@@ -104,6 +105,11 @@ pub use case::{
 pub use chart::{
     AccountEffectivity, AccountLifecycleRecorded, ChartSnapshot, close_account, open_account,
     promote_to_summary,
+};
+pub use close_run::{
+    CloseRunDefinition, CloseRunView, CloseTaskAction, CloseTaskDefinition, CloseTaskReceipt,
+    CloseTaskRecorded, CloseTaskRequest, CloseTaskView, close_run_status, create_close_run,
+    execute_close_task, plan_close_task_transition,
 };
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use disposal::{LotDisposalRequest, PreparedLotDisposal, prepare_lot_disposal};

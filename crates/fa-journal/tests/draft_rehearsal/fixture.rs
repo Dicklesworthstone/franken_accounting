@@ -33,7 +33,7 @@ pub(super) struct TargetStorage {
 }
 
 pub(super) struct Harness {
-    runtime: Runtime,
+    pub(super) runtime: Runtime,
     root: Cx,
     pub(super) db: Database<MemVfs>,
     pub(super) book: BookContext,

@@ -626,6 +626,134 @@ fn replace_registry_field(bytes: &mut Vec<u8>, old: &[u8], new: &[u8]) {
 }
 
 #[test]
+fn close_controls_require_the_selected_registry_without_invalidating_older_reports() {
+    let definition = definition(true);
+    let expected = expected(true);
+    let mut records = history();
+    records.pop().unwrap(); // Replace the later backdated posting with an inert control.
+    let mut control = Writer::default();
+    control
+        .u16(1)
+        .u16(8)
+        .fixed(&BOOK)
+        .fixed(&[0; 16])
+        .u16(31)
+        .i32(0)
+        .u8(0);
+    erasable(&mut control);
+    control
+        .u8(0)
+        .count(0)
+        .u8(1)
+        .u8(3) // LifecycleTransition: a completed run, with no monetary legs.
+        .u128(42)
+        .u8(1)
+        .u8(2)
+        .count(0)
+        .u16(0)
+        .count(0)
+        .u8(0)
+        .bytes(b"completed-close-run")
+        .u8(3)
+        .u16(21)
+        .fixed(&[1; 32])
+        .u128(PRINCIPAL)
+        .u8(0)
+        .count(0)
+        .count(0)
+        .u8(0)
+        .count(0)
+        .count(0)
+        .count(0);
+    let len = control.buf.len();
+    let proposal = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&control.buf]);
+    let digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal, &[]]);
+    control.fixed(&proposal).fixed(&digest);
+    let envelope = envelope_of_entry(&control.buf, len, 10, 0).unwrap();
+    assert_eq!(envelope.effective_day, None);
+    records.push(Record {
+        bytes: control.buf,
+        len,
+        envelope,
+    });
+
+    let legacy = registries();
+    for known_at in [9, 10] {
+        let (bytes, anchor, trusted) = pack_at(
+            &records,
+            &definition,
+            &output_bytes(&expected, &definition, known_at),
+            &legacy,
+            closure(&legacy),
+            known_at,
+        );
+        let result = verify_statement_fixture(&bytes, anchor, trusted);
+        if known_at == 9 {
+            assert_eq!(result.unwrap().statement, Some(expected.clone()));
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.predicate, "registry_closure");
+            assert!(error.detail.contains("historical registry"));
+        }
+    }
+
+    // Append the new class and its exact control origin to the independently
+    // encoded legacy registry. The old classes and their laws remain byte exact.
+    let mut current = legacy;
+    let bytes = &mut current[1].1;
+    let array_header = |name: &str, count: u64| {
+        [
+            (name.len() as u64).to_le_bytes().as_slice(),
+            name.as_bytes(),
+            &count.to_le_bytes(),
+        ]
+        .concat()
+    };
+    replace_registry_field(
+        bytes,
+        &array_header("class", 30),
+        &array_header("class", 31),
+    );
+    let class = [
+        4u64.to_le_bytes().to_vec(),
+        registry_text_field("kind", "control"),
+        registry_text_field("name", "CloseControl"),
+        registry_text_field("supersession", "none"),
+        registry_field("tag", 2, &31i128.to_le_bytes()),
+    ]
+    .concat();
+    replace_registry_field(
+        bytes,
+        &array_header("control_kind", 18),
+        &[class, array_header("control_kind", 19)].concat(),
+    );
+    bytes.extend_from_slice(
+        &[
+            4u64.to_le_bytes().to_vec(),
+            registry_text_field("class", "CloseControl"),
+            registry_field("id", 2, &21i128.to_le_bytes()),
+            registry_text_field("minted_by", "CloseRun"),
+            registry_text_field("name", "close_transition"),
+        ]
+        .concat(),
+    );
+    let (bytes, anchor, trusted) = pack_at(
+        &records,
+        &definition,
+        &output_bytes(&expected, &definition, 10),
+        &current,
+        closure(&current),
+        10,
+    );
+    assert_eq!(
+        verify_statement_fixture(&bytes, anchor, trusted)
+            .unwrap()
+            .statement,
+        Some(expected)
+    );
+}
+
+#[test]
 fn resealed_entry_laws_and_ambiguous_control_kinds_are_refused_after_authentication() {
     let mut changes = vec![
         (
