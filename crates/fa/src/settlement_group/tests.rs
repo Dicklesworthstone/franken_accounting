@@ -12,7 +12,9 @@ use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb::MemVfs;
 
-use crate::{BookKeys, Entropy};
+use crate::{BookKeys, Entropy, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
+use fa_money::RoundingLaw;
+use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 
 const BOOK: Id128 = Id128([0x76; 16]);
 const PRINCIPAL: VId = VId(7);
@@ -193,6 +195,50 @@ impl Harness {
             .entry_ref()
     }
 
+    fn value(
+        &mut self,
+        proposal: EntryPayload,
+        law: FxLawId,
+        numerator: u128,
+        denominator: u128,
+    ) -> EntryPayload {
+        let cx = self.cx();
+        let rate = FxRateDocument::new(
+            FxRateTerms {
+                base_unit: self.usd,
+                quote_unit: self.eur,
+                rate_num: numerator,
+                rate_den: denominator,
+                rounding: RoundingLaw::HalfEven,
+            },
+            proposal.effective_date,
+            1_767_571_200_000_000_000,
+            if law == FxLawId::SpotClose {
+                FxRatePurpose::SpotClose
+            } else {
+                FxRatePurpose::Settlement
+            },
+            "explicit retained EUR fixture quote",
+        )
+        .unwrap();
+        let oid = self
+            .runtime
+            .block_on(self.book.upload_fx_rate(&cx, &cap(), &rate))
+            .unwrap()
+            .unwrap()
+            .oid;
+        let stripped = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        self.runtime
+            .block_on(
+                self.book
+                    .value_fx_proposal(&cx, &cap(), proposal, law, &[oid], &mut budget),
+            )
+            .unwrap()
+            .unwrap()
+    }
+
     fn invoice(&mut self, key: &str, amount: i128) -> EntryRef {
         self.post(self.proposal(
             key,
@@ -300,23 +346,27 @@ impl Harness {
 fn fixture() -> (Harness, EntryRef, EntryRef, SettlementGroupRequest) {
     let mut h = Harness::new();
     let invoice = h.invoice("usd-invoice", 100);
-    let bill = h.post(h.proposal(
+    let bill = h.proposal(
         "eur-bill",
         vec![
             leg(Side::Debit, "cash", h.eur, 70),
             leg(Side::Credit, "payable", h.eur, 70),
         ],
-    ));
+    );
+    let bill = h.value(bill, FxLawId::SpotClose, 1, 1);
+    let bill = h.post(bill);
+    let proposal = h.proposal(
+        "group-payment",
+        vec![
+            leg(Side::Debit, "cash", h.usd, 125),
+            leg(Side::Credit, "receivable", h.usd, 125),
+            leg(Side::Debit, "payable", h.eur, 60),
+            leg(Side::Credit, "cash", h.eur, 60),
+        ],
+    );
+    let proposal = h.value(proposal, FxLawId::SettlementSpotCarrying, 1, 1);
     let request = SettlementGroupRequest {
-        proposal: h.proposal(
-            "group-payment",
-            vec![
-                leg(Side::Debit, "cash", h.usd, 125),
-                leg(Side::Credit, "receivable", h.usd, 125),
-                leg(Side::Debit, "payable", h.eur, 60),
-                leg(Side::Credit, "cash", h.eur, 60),
-            ],
-        ),
+        proposal,
         payments: vec![
             SettlementLegSelection {
                 payment_leg: 2,
@@ -333,11 +383,8 @@ fn fixture() -> (Harness, EntryRef, EntryRef, SettlementGroupRequest) {
 
 /// The capability gap these original EUR fixtures expose (fa-pvt7): since 7df9b1ac3
 /// a foreign-currency applying leg must carry its source-bound
-/// RemainingCarryingValue basis, and no carrying-aware group path exists
-/// yet (one foreign application goes through `prepare_fx_settlement`). A
-/// group applying a EUR bill in this USD book is therefore refused FA-REF-071
-/// at planning, and nothing is published. The positive EUR group tests stay
-/// in place until the carrying-aware group path satisfies their expectations.
+/// RemainingCarryingValue basis. A raw group applying a EUR bill without
+/// retained valuation evidence must still refuse FA-REF-071 and publish nothing.
 #[test]
 fn foreign_currency_application_in_a_group_is_refused_without_its_carrying_basis() {
     let mut h = Harness::new();
@@ -444,6 +491,84 @@ fn mixed_native_units_and_debit_credit_applications_publish_as_one_entry() {
     assert_eq!(h.open(posted.entry_ref(), 1), 25);
     assert_eq!(h.open(posted.entry_ref(), 2), 0);
     assert!(h.book.verify_open_items(&cx).unwrap().is_green());
+    assert!(h.book.verify_fx_conversions(&cx, None).unwrap().is_green());
+}
+
+#[test]
+fn foreign_spot_group_refuses_changed_quote_without_publishing_native_half() {
+    let (mut h, invoice, bill, mut request) = fixture();
+    request.proposal.base_totals = None;
+    for leg in &mut request.proposal.legs {
+        leg.base_amount = None;
+    }
+    // Drop only the former Rate citation; the business evidence is retained.
+    request
+        .proposal
+        .evidence
+        .retain(|evidence| evidence.role != 3);
+    request.proposal = h.value(request.proposal, FxLawId::SettlementSpotCarrying, 2, 1);
+    let at = h.head();
+    let cx = h.cx();
+    let refused = h
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group(&cx, request, Vec::new(), &cap()),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-071");
+    assert!(refused.message.contains("RemainingCarryingValue"));
+    assert_eq!(h.head(), at);
+    assert_eq!(h.open(invoice, 0), 100);
+    assert_eq!(h.open(bill, 1), 70);
+}
+
+#[test]
+fn foreign_spot_group_records_partial_relief_separately_from_complete_payment_leg() {
+    let (mut h, invoice, bill, mut request) = fixture();
+    let proposal = h.proposal(
+        "overpayment-group",
+        vec![
+            leg(Side::Debit, "cash", h.usd, 125),
+            leg(Side::Credit, "receivable", h.usd, 125),
+            leg(Side::Debit, "payable", h.eur, 80),
+            leg(Side::Credit, "cash", h.eur, 80),
+        ],
+    );
+    request.proposal = h.value(proposal, FxLawId::SettlementSpotCarrying, 1, 1);
+    let plan = h.plan(request);
+    let posted = h.commit(plan);
+    assert_eq!(h.open(invoice, 0), 0);
+    assert_eq!(h.open(bill, 1), 0);
+    assert_eq!(h.open(posted.entry_ref(), 2), 10);
+    let cx = h.cx();
+    let item = h
+        .book
+        .query(&cx, |db, book| {
+            Ok(fa_journal::carrying::open_item_carrying_at(
+                db,
+                &cx,
+                book,
+                bill,
+                1,
+                h.head(),
+            )?)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.applied_native, Amount::new(h.eur, 70));
+    assert_eq!(item.applied_base, Amount::new(h.usd, 70));
+    assert_eq!(item.open_base, Amount::new(h.usd, 0));
+    assert!(h.book.verify_fx_conversions(&cx, None).unwrap().is_green());
+    let h = h.reopen();
+    assert_eq!(h.open(posted.entry_ref(), 2), 10);
+    assert!(
+        h.book
+            .verify_fx_conversions(&h.cx(), None)
+            .unwrap()
+            .is_green()
+    );
 }
 
 #[test]
@@ -471,6 +596,102 @@ fn portable_group_plan_retries_after_reopen_without_spending_again() {
     assert_eq!(h.head(), head);
     assert_eq!(h.open(invoice, 0), 0);
     assert_eq!(h.open(bill, 1), 10);
+}
+
+#[test]
+fn foreign_spot_group_final_rounding_and_later_reversal_restore_recorded_relief() {
+    let mut h = Harness::new();
+    let source = h.proposal(
+        "rounding-source",
+        vec![
+            leg(Side::Debit, "cash", h.eur, 3),
+            leg(Side::Credit, "payable", h.eur, 3),
+        ],
+    );
+    let source = h.value(source, FxLawId::SpotClose, 2, 3);
+    let source = h.post(source);
+    let request = |h: &mut Harness, key: &str, amount| {
+        let proposal = h.proposal(
+            key,
+            vec![
+                leg(Side::Debit, "payable", h.eur, amount),
+                leg(Side::Credit, "cash", h.eur, amount),
+            ],
+        );
+        SettlementGroupRequest {
+            proposal: h.value(proposal, FxLawId::SettlementSpotCarrying, 2, 3),
+            payments: vec![SettlementLegSelection {
+                payment_leg: 0,
+                targets: vec![(source.vid, 1)],
+            }],
+        }
+    };
+    let first = request(&mut h, "first-rounded", 1);
+    let plan = h.plan(first);
+    h.commit(plan);
+    assert_eq!(h.open(source, 1), 2);
+    // A one-cent partial relief now rounds to zero from the remaining
+    // pool, while the immutable quote rounds it to one. Refuse the mismatch.
+    let second = request(&mut h, "wrong-rounded", 1);
+    let at = h.head();
+    let cx = h.cx();
+    let refusal = h
+        .runtime
+        .block_on(
+            h.book
+                .plan_settlement_group(&cx, second, Vec::new(), &cap()),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-071");
+    assert_eq!(h.head(), at);
+    let final_payment = request(&mut h, "final-rounded", 2);
+    let plan = h.plan(final_payment);
+    let posted = h.commit(plan).entry_ref();
+    assert_eq!(h.open(source, 1), 0);
+    let mut undo = h
+        .book
+        .read_entry(&cx, posted.vid)
+        .unwrap()
+        .unwrap()
+        .0
+        .proposal;
+    undo.class = EntryClass::REVERSAL;
+    undo.effective_date = day("2026-03-21");
+    undo.effective_period = None;
+    undo.idempotency_key = b"undo-final-rounded".to_vec();
+    for leg in &mut undo.legs {
+        leg.side = if leg.side == Side::Debit {
+            Side::Credit
+        } else {
+            Side::Debit
+        };
+        leg.settles.clear();
+    }
+    undo.unit_totals = EntryPayload::fold_unit_totals(&undo.legs).unwrap();
+    undo.supersession = vec![fa_model::Supersession {
+        target: posted,
+        kind: fa_model::SupersessionKind::Reverses,
+        reason_code: 1,
+    }];
+    h.post(undo);
+    assert_eq!(h.open(source, 1), 2);
+    let item = h
+        .book
+        .query(&cx, |db, book| {
+            Ok(fa_journal::carrying::open_item_carrying_at(
+                db,
+                &cx,
+                book,
+                source,
+                1,
+                h.head(),
+            )?)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.open_base, Amount::new(h.usd, 1));
+    assert!(h.book.verify_fx_conversions(&cx, None).unwrap().is_green());
 }
 
 #[test]
@@ -555,11 +776,29 @@ fn complete_entry_balance_and_evidence_laws_remain_kernel_enforced() {
     balance.proposal.unit_totals = EntryPayload::fold_unit_totals(&balance.proposal.legs).unwrap();
     let mut evidence = base;
     evidence.proposal.evidence.clear();
+    // A valued EUR entry without its Rate citation is refused by the
+    // earlier commitment check. Retain the generic empty-evidence control
+    // independently, without weakening either precise refusal.
+    let mut minimum = SettlementGroupRequest {
+        proposal: h.proposal(
+            "no-business-evidence",
+            vec![
+                leg(Side::Debit, "cash", h.usd, 60),
+                leg(Side::Credit, "receivable", h.usd, 60),
+            ],
+        ),
+        payments: vec![SettlementLegSelection {
+            payment_leg: 1,
+            targets: vec![(invoice.vid, 0)],
+        }],
+    };
+    minimum.proposal.evidence.clear();
     let at = h.head();
     let cx = h.cx();
     for (request, code) in [
         (balance, fa_journal::refusal::code::UNBALANCED),
-        (evidence, fa_journal::refusal::code::EVIDENCE_MINIMUM),
+        (evidence, fa_journal::refusal::code::EVIDENCE_COMMIT),
+        (minimum, fa_journal::refusal::code::EVIDENCE_MINIMUM),
     ] {
         let prepared = h.prepare(request);
         let refusal = h

@@ -399,6 +399,17 @@ fn definitions() -> registry::FunctionalRegistry {
         .collect();
     registry::verify_functional(&inputs, &closure(&docs)).unwrap()
 }
+fn spot_definitions() -> registry::FunctionalRegistry {
+    let mut docs = registries();
+    docs[4].1 = registry::spot_law_fixture(&docs[4].1);
+    let inputs: Vec<_> = docs
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let definitions = registry::verify_functional(&inputs, &closure(&docs)).unwrap();
+    assert!(definitions.spot_carrying);
+    definitions
+}
 fn replay_fixture(
     records: &[Record],
     selected: Selection,
@@ -416,6 +427,25 @@ fn replay_migration_fixture(
     spec: &[u8],
     rates: &[RateFixture],
     bodies: &[(u64, &[u8])],
+) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
+    replay_registry_fixture(
+        records,
+        selected,
+        known_at,
+        spec,
+        rates,
+        bodies,
+        &definitions(),
+    )
+}
+fn replay_registry_fixture(
+    records: &[Record],
+    selected: Selection,
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    bodies: &[(u64, &[u8])],
+    definitions: &registry::FunctionalRegistry,
 ) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
     let envelopes: Vec<_> = records
         .iter()
@@ -479,7 +509,7 @@ fn replay_migration_fixture(
     .map_err(|error| failed("migration_visibility", error.to_string()))?;
     replay(
         &cert,
-        &definitions(),
+        definitions,
         spec,
         &documents,
         &schema,
@@ -1093,6 +1123,32 @@ fn registry_semantic_changes_refuse_even_under_a_new_matching_closure() {
         .position(|window| window == needle)
         .unwrap();
     bytes[offset] = b'X';
+    let inputs: Vec<_> = docs
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    assert_eq!(
+        registry::verify_functional(&inputs, &closure(&docs))
+            .err()
+            .unwrap()
+            .predicate,
+        "registry_closure"
+    );
+}
+
+#[test]
+fn spot_carrying_law_requires_exact_registered_semantics_under_resealed_closure() {
+    assert!(!definitions().spot_carrying);
+    assert!(spot_definitions().spot_carrying);
+    let mut docs = registries();
+    docs[4].1 = registry::spot_law_fixture(&docs[4].1);
+    let needle = b"settlement_spot_carrying";
+    let at = docs[4]
+        .1
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap();
+    docs[4].1[at] = b'X';
     let inputs: Vec<_> = docs
         .iter()
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))

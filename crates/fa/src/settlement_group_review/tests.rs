@@ -13,7 +13,12 @@ use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb::MemVfs;
 use fgdb_types::context::PurposeContexts;
 
-use crate::{AsyncBook, BookKeys, Entropy, PostPlan, SettlementPostRequest};
+use crate::{
+    AsyncBook, BookKeys, Entropy, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, PostPlan,
+    SettlementPostRequest,
+};
+use fa_money::RoundingLaw;
+use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 
 const BOOK: Id128 = Id128([0x79; 16]);
 const PRINCIPAL: VId = VId(7);
@@ -190,6 +195,43 @@ impl Harness {
             .unwrap()
             .entry_ref()
     }
+    fn value(&mut self, proposal: EntryPayload, law: FxLawId) -> EntryPayload {
+        let cx = self.cx();
+        let rate = FxRateDocument::new(
+            FxRateTerms {
+                base_unit: self.usd,
+                quote_unit: self.eur,
+                rate_num: 1,
+                rate_den: 1,
+                rounding: RoundingLaw::HalfEven,
+            },
+            proposal.effective_date,
+            1_767_571_200_000_000_000,
+            if law == FxLawId::SpotClose {
+                FxRatePurpose::SpotClose
+            } else {
+                FxRatePurpose::Settlement
+            },
+            "explicit retained EUR group review quote",
+        )
+        .unwrap();
+        let oid = self
+            .runtime
+            .block_on(self.book.upload_fx_rate(&cx, &cap(), &rate))
+            .unwrap()
+            .unwrap()
+            .oid;
+        let stripped = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        self.runtime
+            .block_on(
+                self.book
+                    .value_fx_proposal(&cx, &cap(), proposal, law, &[oid], &mut budget),
+            )
+            .unwrap()
+            .unwrap()
+    }
     fn invoice(&mut self, key: &str, amount: i128) -> EntryRef {
         self.post(self.proposal(
             key,
@@ -274,24 +316,28 @@ struct Fixture {
 fn fixture() -> Fixture {
     let mut h = Harness::new();
     let invoice = h.invoice("invoice", 100);
-    let bill = h.post(h.proposal(
+    let bill = h.proposal(
         "bill",
         vec![
             leg(Side::Debit, "cash", h.eur, 70),
             leg(Side::Credit, "payable", h.eur, 70),
         ],
-    ));
+    );
+    let bill = h.value(bill, FxLawId::SpotClose);
+    let bill = h.post(bill);
     let unused = h.invoice("unused", 90);
+    let proposal = h.proposal(
+        "group",
+        vec![
+            leg(Side::Debit, "cash", h.usd, 60),
+            leg(Side::Credit, "receivable", h.usd, 60),
+            leg(Side::Debit, "payable", h.eur, 80),
+            leg(Side::Credit, "cash", h.eur, 80),
+        ],
+    );
+    let proposal = h.value(proposal, FxLawId::SettlementSpotCarrying);
     let request = SettlementGroupRequest {
-        proposal: h.proposal(
-            "group",
-            vec![
-                leg(Side::Debit, "cash", h.usd, 60),
-                leg(Side::Credit, "receivable", h.usd, 60),
-                leg(Side::Debit, "payable", h.eur, 80),
-                leg(Side::Credit, "cash", h.eur, 80),
-            ],
-        ),
+        proposal,
         payments: vec![
             SettlementLegSelection {
                 payment_leg: 2,

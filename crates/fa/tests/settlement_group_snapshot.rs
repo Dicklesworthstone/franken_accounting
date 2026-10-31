@@ -6,14 +6,17 @@ use std::path::Path;
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa::{
-    AsyncBook, BookKeys, Entropy, MAX_SETTLEMENT_GROUP_LEGS, PostPlan, SettlementGroupRequest,
-    SettlementLegSelection, SettlementPostRequest,
+    AsyncBook, BookKeys, Entropy, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms,
+    MAX_SETTLEMENT_GROUP_LEGS, PostPlan, SettlementGroupRequest, SettlementLegSelection,
+    SettlementPostRequest,
 };
 use fa_journal::{AccountSpec, BookSpec, Document, PostRequest, Posted, UnitPolicy};
 use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, Id128, LegPayload, Oid,
     account_vid,
 };
+use fa_money::RoundingLaw;
+use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_policy::Capability;
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
@@ -193,12 +196,49 @@ impl Harness {
             .unwrap()
             .entry_ref()
     }
+    fn value(&mut self, proposal: EntryPayload, law: FxLawId) -> EntryPayload {
+        let cx = self.cx();
+        let rate = FxRateDocument::new(
+            FxRateTerms {
+                base_unit: self.usd,
+                quote_unit: self.eur,
+                rate_num: 1,
+                rate_den: 1,
+                rounding: RoundingLaw::HalfEven,
+            },
+            proposal.effective_date,
+            1_767_571_200_000_000_000,
+            if law == FxLawId::SpotClose {
+                FxRatePurpose::SpotClose
+            } else {
+                FxRatePurpose::Settlement
+            },
+            "explicit retained EUR shared snapshot quote",
+        )
+        .unwrap();
+        let oid = self
+            .runtime
+            .block_on(self.book.upload_fx_rate(&cx, &cap(), &rate))
+            .unwrap()
+            .unwrap()
+            .oid;
+        let stripped = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        self.runtime
+            .block_on(
+                self.book
+                    .value_fx_proposal(&cx, &cap(), proposal, law, &[oid], &mut budget),
+            )
+            .unwrap()
+            .unwrap()
+    }
 }
 
 // Distinct accounts, currencies and sides deliberately share ONE source entry.
 fn fixture(amount: i128) -> (Harness, EntryRef, SettlementGroupRequest) {
     let mut h = Harness::new();
-    let source = h.post(h.proposal(
+    let source = h.proposal(
         "source",
         vec![
             leg(Side::Debit, "receivable", h.usd, amount),
@@ -206,17 +246,21 @@ fn fixture(amount: i128) -> (Harness, EntryRef, SettlementGroupRequest) {
             leg(Side::Debit, "cash", h.eur, 70),
             leg(Side::Credit, "payable", h.eur, 70),
         ],
-    ));
+    );
+    let source = h.value(source, FxLawId::SpotClose);
+    let source = h.post(source);
+    let proposal = h.proposal(
+        "payment",
+        vec![
+            leg(Side::Debit, "cash", h.usd, amount + 25),
+            leg(Side::Credit, "receivable", h.usd, amount + 25),
+            leg(Side::Debit, "payable", h.eur, 60),
+            leg(Side::Credit, "cash", h.eur, 60),
+        ],
+    );
+    let proposal = h.value(proposal, FxLawId::SettlementSpotCarrying);
     let request = SettlementGroupRequest {
-        proposal: h.proposal(
-            "payment",
-            vec![
-                leg(Side::Debit, "cash", h.usd, amount + 25),
-                leg(Side::Credit, "receivable", h.usd, amount + 25),
-                leg(Side::Debit, "payable", h.eur, 60),
-                leg(Side::Credit, "cash", h.eur, 60),
-            ],
-        ),
+        proposal,
         payments: vec![
             SettlementLegSelection {
                 payment_leg: 2,

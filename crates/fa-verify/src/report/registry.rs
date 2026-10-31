@@ -525,6 +525,83 @@ pub(super) struct FunctionalRegistry {
     pub unit_table_digest: [u8; 32],
     pub spot_carrying: bool,
 }
+
+/// Add an independently encoded additive row to the retained legacy fixture.
+/// Its old rows remain byte-for-byte unchanged, including their negative controls.
+#[cfg(test)]
+pub(super) fn spot_law_fixture(bytes: &[u8]) -> Vec<u8> {
+    let mut r = Cursor {
+        bytes,
+        at: MAGIC.len(),
+    };
+    r.table().unwrap();
+    let tables = r.count(256, 16).unwrap();
+    for _ in 0..tables {
+        r.text().unwrap();
+        r.table().unwrap();
+    }
+    let arrays = r.count(256, 16).unwrap();
+    for _ in 0..arrays {
+        let name = r.text().unwrap();
+        let count_at = r.at;
+        let count = r.count(4096, 8).unwrap();
+        for _ in 0..count {
+            r.table().unwrap();
+        }
+        if name != "law" {
+            continue;
+        }
+        fn text(out: &mut Vec<u8>, value: &str) {
+            out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut row = 12_u64.to_le_bytes().to_vec();
+        text(&mut row, "admitted_classes");
+        row.push(4);
+        row.extend_from_slice(&3_u64.to_le_bytes());
+        for value in ["Original", "Adjusting", "Reversal"] {
+            row.push(1);
+            text(&mut row, value);
+        }
+        for (key, value) in [
+            ("code", "settlement_spot_carrying"),
+            ("date_selector", "entry_effective_date"),
+        ] {
+            text(&mut row, key);
+            row.push(1);
+            text(&mut row, value);
+        }
+        text(&mut row, "id");
+        row.push(2);
+        row.extend_from_slice(&11_i128.to_le_bytes());
+        for (key, value) in [
+            (
+                "meaning",
+                "Same-unit settlement: current quote equals remaining carrying relief, with no residual absorption",
+            ),
+            ("name", "SettlementSpotCarrying"),
+            ("rate_purpose", "Settlement"),
+            ("residual_mode", "none"),
+            ("rounding_law", "HalfEven"),
+            ("standard_ref", "plan 5.2 and 5.7"),
+            ("status", "live"),
+        ] {
+            text(&mut row, key);
+            row.push(1);
+            text(&mut row, value);
+        }
+        text(&mut row, "version");
+        row.push(2);
+        row.extend_from_slice(&1_i128.to_le_bytes());
+        let mut result = bytes[..count_at].to_vec();
+        result.extend_from_slice(&((count + 1) as u64).to_le_bytes());
+        result.extend_from_slice(&bytes[count_at + 8..r.at]);
+        result.extend_from_slice(&row);
+        result.extend_from_slice(&bytes[r.at..]);
+        return result;
+    }
+    panic!("legacy FX fixture has no law table");
+}
 fn text_array(row: &Table, key: &str) -> Result<Vec<String>, ReportError> {
     let Some(Value::Array(values)) = row.get(key) else {
         return Err(invalid(format!("registry field {key} must be an array")));
@@ -628,7 +705,13 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
     ] {
         // Older retained registry closures precede the additive law11. They
         // stay readable, but cannot authorize a claim under that newer law.
-        if id == 11 && !laws.iter().any(|row| matches!(row.get("id"), Some(Value::Int(11)))) { continue; }
+        if id == 11
+            && !laws
+                .iter()
+                .any(|row| matches!(row.get("id"), Some(Value::Int(11))))
+        {
+            continue;
+        }
         let row = laws
             .iter()
             .find(|row| {
@@ -732,7 +815,9 @@ pub(super) fn verify_functional(
     functional_laws(&docs[4])?;
     functional_rounding(&docs[5])?;
     let mut definitions = functional_definitions(&docs[2])?;
-    definitions.spot_carrying = rows(&docs[4], "law")?.iter().any(|row| matches!(row.get("id"), Some(Value::Int(11))));
+    definitions.spot_carrying = rows(&docs[4], "law")?
+        .iter()
+        .any(|row| matches!(row.get("id"), Some(Value::Int(11))));
     Ok(definitions)
 }
 

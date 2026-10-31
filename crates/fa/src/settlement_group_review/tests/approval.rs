@@ -156,8 +156,25 @@ fn independent_approver_without_post_authority_records_one_full_proposal_approva
         "approval is not a payment"
     );
     let head = h.head();
+    // Removing the only foreign application invalidates the named carrying
+    // law before approval binding is reached. Preserve that exact refusal.
     let mut partial = review.proposal().clone();
     partial.legs[2].settles.clear();
+    let denied = h
+        .book
+        .plan(
+            &cx,
+            PostIntent::new(partial, vec![approved]).unwrap(),
+            &cap(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(denied.code, fa_journal::refusal::code::SETTLE_SHAPE);
+    assert_eq!(h.head(), head);
+    // Removing only the native application still satisfies the FX law,
+    // but the whole-proposal approval must not authorize that substitution.
+    let mut partial = review.proposal().clone();
+    partial.legs[1].settles.clear();
     let denied = h
         .book
         .plan(
@@ -261,14 +278,16 @@ fn changed_first_or_later_allocation_never_publishes_a_partial_group_approval() 
         } = fixture();
         let cx = h.cx();
         if change_later_leg {
+            let proposal = h.proposal(
+                "competing-eur",
+                vec![
+                    leg(Side::Debit, "payable", h.eur, 5),
+                    leg(Side::Credit, "cash", h.eur, 5),
+                ],
+            );
+            let proposal = h.value(proposal, FxLawId::SettlementSpotCarrying);
             let request = SettlementPostRequest {
-                proposal: h.proposal(
-                    "competing-eur",
-                    vec![
-                        leg(Side::Debit, "payable", h.eur, 5),
-                        leg(Side::Credit, "cash", h.eur, 5),
-                    ],
-                ),
+                proposal,
                 payment_leg: 0,
                 targets: vec![(bill.vid, 1)],
             };

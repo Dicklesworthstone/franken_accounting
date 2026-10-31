@@ -251,6 +251,133 @@ fn totals(report: &VerifiedFunctionalTrialBalance, code: &str) -> (i128, i128) {
         })
 }
 
+fn spot_legs(source: &Record, complete: i128, applied: i128, base: i128) -> Vec<AppliedLeg> {
+    let (identity, digest) = handle(source);
+    let mut legs = vec![
+        leg("1100", false, 1, complete, base),
+        leg("1000", true, 1, complete, base),
+    ];
+    legs[0].applications.push(Application {
+        identity,
+        digest,
+        ordinal: 0,
+        unit: 1,
+        amount: applied,
+    });
+    legs
+}
+fn replay_spot(
+    records: &[Record],
+    rates: &[RateFixture],
+) -> Result<VerifiedFunctionalTrialBalance, ReportError> {
+    replay_registry_fixture(
+        records,
+        Selection::AsOf(58),
+        records.iter().map(|r| r.envelope.commit_seq).max().unwrap(),
+        &book(&[]),
+        rates,
+        &[],
+        &spot_definitions(),
+    )
+    .map(|(report, _)| report)
+}
+
+#[test]
+fn spot_carrying_partial_remainder_final_and_later_undo_use_recorded_quote() {
+    let (mut records, rates, source) = history(100, 150, (3, 2), (3, 2));
+    // The complete 80 EUR leg is valued at 120 USD minor units. Only
+    // 70 EUR is applied: its relief is 105, leaving an unapplied 10 EUR.
+    let first_legs = spot_legs(&source, 80, 70, 120);
+    let first = application_entry(
+        6,
+        1,
+        20,
+        b"spot-partial",
+        &first_legs,
+        (11, &rates[1], None),
+        None,
+    );
+    records.push(first.clone());
+    assert_eq!(
+        totals(&replay_spot(&records, &rates).unwrap(), "1100"),
+        (150, 120)
+    );
+    let final_legs = spot_legs(&source, 30, 30, 45);
+    let final_payment = application_entry(
+        7,
+        1,
+        20,
+        b"spot-final",
+        &final_legs,
+        (11, &rates[1], None),
+        None,
+    );
+    records.push(final_payment);
+    assert_eq!(
+        totals(&replay_spot(&records, &rates).unwrap(), "1100"),
+        (150, 165)
+    );
+    records.push(application_entry(
+        8,
+        4,
+        22,
+        b"spot-undo",
+        &swapped(&first_legs),
+        (11, &rates[1], None),
+        Some(&first),
+    ));
+    assert_eq!(
+        totals(&replay_spot(&records, &rates).unwrap(), "1100"),
+        (270, 165)
+    );
+    // An old authenticated closure remains usable for old laws, but cannot
+    // authorize this new law just because its numeric identifier is known.
+    assert!(!definitions().spot_carrying);
+    assert_eq!(
+        replay_settlements(&records, &rates).unwrap_err().predicate,
+        "supported_report"
+    );
+}
+
+#[test]
+fn spot_carrying_resealed_wrong_relief_quote_date_and_source_are_refused() {
+    for (spot, settlement, date, complete, applied, recorded) in [
+        ((3, 2), (2, 1), 20, 80, 70, 160), // correctly quoted cash, wrong carrying relief
+        ((3, 2), (3, 2), 20, 80, 70, 119), // wrong full-leg valuation
+        ((3, 2), (3, 2), 21, 80, 70, 120), // current quote is not effective on this day
+        ((3, 2), (3, 2), 20, 80, 81, 120), // application exceeds complete leg
+        ((3, 2), (3, 2), 20, 101, 101, 152), // source capacity exceeded
+    ] {
+        let (mut records, rates, source) = history(100, 150, spot, settlement);
+        records.push(application_entry(
+            6,
+            1,
+            date,
+            b"forged-spot",
+            &spot_legs(&source, complete, applied, recorded),
+            (11, &rates[1], None),
+            None,
+        ));
+        assert!(
+            replay_spot(&records, &rates).is_err(),
+            "accepted {settlement:?}/{date}/{complete}/{applied}/{recorded}"
+        );
+    }
+    let (mut records, rates, source) = history(100, 150, (3, 2), (3, 2));
+    let mut legs = spot_legs(&source, 80, 70, 120);
+    legs[0].applications[0].digest[0] ^= 1;
+    records.push(application_entry(
+        6,
+        1,
+        20,
+        b"forged-source",
+        &legs,
+        (11, &rates[1], None),
+        None,
+    ));
+    assert!(replay_spot(&records, &rates).is_err());
+}
+
 #[test]
 fn partial_zero_and_final_relief_recompute_remaining_native_and_base() {
     let (mut records, rates, source) = history(3, 2, (2, 3), (1, 1));

@@ -330,14 +330,27 @@ fn compute(
         .base
         .as_ref()
         .ok_or_else(|| failed("functional_valuation", "missing claim"))?;
-    let law = if claim.law == law_oid(1) { 1 } else if claim.law == law_oid(11) { 11 } else { 3 };
+    let law = if claim.law == law_oid(1) {
+        1
+    } else if claim.law == law_oid(11) {
+        11
+    } else {
+        3
+    };
     let mut by_quote = BTreeMap::new();
     for oid in &claim.rates {
         let rate = rates
             .get(oid)
             .ok_or_else(|| failed("functional_rates", "missing cited Rate"))?;
         if rate.base != base_unit
-            || rate.purpose != if law == 1 { 1 } else if law == 11 { 4 } else { 3 }
+            || rate.purpose
+                != if law == 1 {
+                    1
+                } else if law == 11 {
+                    4
+                } else {
+                    3
+                }
             || rate.date != if law == 3 { period_end } else { effective }
             || by_quote.insert(rate.quote, rate).is_some()
         {
@@ -349,7 +362,10 @@ fn compute(
     }
     let base_scale = registry.units[&base_unit].scale;
     if law == 11 && (!registry.spot_carrying || claim.residual.is_some()) {
-        return Err(failed("functional_valuation", "SettlementSpotCarrying requires its registered v1 law and no residual absorption"));
+        return Err(failed(
+            "functional_valuation",
+            "SettlementSpotCarrying requires its registered v1 law and no residual absorption",
+        ));
     }
     let mut groups: BTreeMap<(Option<String>, u32), Vec<usize>> = BTreeMap::new();
     let mut expected = Vec::with_capacity(legs.len());
@@ -483,7 +499,17 @@ pub(super) fn verify_history(
                     "Migration valuations require the registered SpotClose law",
                 ));
             }
-            if ![law_oid(1), law_oid(2), law_oid(3), law_oid(4), law_oid(8), law_oid(11)].contains(&claim.law) || claim.law == law_oid(11) && !registry.spot_carrying {
+            if ![
+                law_oid(1),
+                law_oid(2),
+                law_oid(3),
+                law_oid(4),
+                law_oid(8),
+                law_oid(11),
+            ]
+            .contains(&claim.law)
+                || claim.law == law_oid(11) && !registry.spot_carrying
+            {
                 return Err(failed(
                     "supported_report",
                     "functional replay supports SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis v1 and YearEndCloseCarrying; translation and item-allocation laws require their own source proofs",

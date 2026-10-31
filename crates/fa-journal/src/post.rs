@@ -3528,6 +3528,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     | crate::fx::FxLawId::RemeasurementTemporal
                     | crate::fx::FxLawId::SettlementCarryingBasis
                     | crate::fx::FxLawId::SettlementAllocatedCarrying
+                    | crate::fx::FxLawId::SettlementSpotCarrying
                     | crate::fx::FxLawId::YearEndCloseCarrying
             ) =>
         {

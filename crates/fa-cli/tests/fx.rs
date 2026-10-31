@@ -403,6 +403,172 @@ fn settlement_fixture() -> (Fixture, String, String) {
 }
 
 #[test]
+fn same_unit_foreign_and_native_group_use_retained_quotes_and_exact_cold_retry() {
+    let f = Fixture::new();
+    let chart = f.file(
+        "native-receivable.json",
+        r#"{"accounts":[{"code":"1300","name":"USD Receivable","type":"Asset","unit":"USD"}]}"#,
+    );
+    ok(&f.book, &["chart", "import", &chart]);
+    let spot = f.rate(
+        "same-unit-source",
+        "spot_close",
+        "2026-03-05",
+        "3",
+        "2",
+        "HalfEven",
+    );
+    let settlement = f.rate(
+        "same-unit-payment",
+        "settlement",
+        "2026-03-05",
+        "3",
+        "2",
+        "HalfEven",
+    );
+    let changed = f.rate(
+        "changed-payment",
+        "settlement",
+        "2026-03-05",
+        "2",
+        "1",
+        "HalfEven",
+    );
+    let foreign = f.file("same-unit-invoice.json", &format!(r#"{{"effective_date":"2026-03-05","idempotency_key":"same-unit-invoice","legs":[{{"side":"debit","account":"1200","amount":"70.00 EUR"}},{{"side":"credit","account":"4000","amount":"70.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#, text(data(&spot), "oid")));
+    let foreign = f.post(&foreign);
+    let native = f.file("native-invoice.json", r#"{"effective_date":"2026-03-05","idempotency_key":"native-invoice","legs":[{"side":"debit","account":"1300","amount":"50.00 USD"},{"side":"credit","account":"4100","amount":"50.00 USD"}]}"#);
+    let native = f.post(&native);
+    let intent = |key: &str, rate: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"{key}","evidence":["{}"],"legs":[{{"side":"debit","account":"1000","amount":"80.00 EUR"}},{{"side":"credit","account":"1200","amount":"80.00 EUR"}},{{"side":"debit","account":"1100","amount":"60.00 USD"}},{{"side":"credit","account":"1300","amount":"60.00 USD"}}],"payments":[{{"payment_leg":1,"targets":[{{"entry":"{}","ordinal":0}}]}},{{"payment_leg":3,"targets":[{{"entry":"{}","ordinal":0}}]}}],"fx":{{"law":"SettlementSpotCarrying","rates":["D:{rate}"]}}}}"#,
+            f.evidence,
+            text(data(&foreign), "vid"),
+            text(data(&native), "vid")
+        )
+    };
+    let bad = f.file(
+        "same-unit-bad.json",
+        &intent("changed-quote", text(data(&changed), "oid")),
+    );
+    let before = head(&f.book);
+    let (status, refused) = run(&f.book, &["settle", "--intent", &bad], None);
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-071");
+    assert_eq!(head(&f.book), before);
+    let path = f.file(
+        "same-unit-group.json",
+        &intent("same-unit-group", text(data(&settlement), "oid")),
+    );
+    let plan = f.dir.join("same-unit.plan").display().to_string();
+    ok(
+        &f.book,
+        &[
+            "settle",
+            "--intent",
+            &path,
+            "--dry-run",
+            "--plan-out",
+            &plan,
+        ],
+    );
+    assert_eq!(head(&f.book), before);
+    let posted = ok(&f.book, &["commit", "--plan", &plan, "--grant", "read"]);
+    let after = head(&f.book);
+    assert_eq!(after, before + 1);
+    let entry = f.entry(text(data(&posted), "vid"));
+    assert_eq!(entry.proposal.legs.len(), 4);
+    assert_eq!(entry.proposal.legs[1].amount.mantissa, 8_000);
+    assert_eq!(entry.proposal.legs[1].settles[0].amount.mantissa, 7_000);
+    assert_eq!(entry.proposal.legs[1].base_amount.unwrap().mantissa, 12_000);
+    assert_eq!(entry.proposal.legs[3].settles[0].amount.mantissa, 5_000);
+    let retry = ok(&f.book, &["commit", "--plan", &plan, "--grant", "read"]);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&f.book), after);
+    let verified = ok(&f.book, &["verify", "fx-conversion"]);
+    assert_eq!(integer(data(&verified), "valued_entries"), 2);
+    assert_eq!(
+        integer(
+            data(&verified).get("by_law").unwrap(),
+            "SettlementSpotCarrying"
+        ),
+        1
+    );
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            text(data(&posted), "vid"),
+            "--reason",
+            "WrongAccount",
+        ],
+    );
+    ok(&f.book, &["verify", "fx-conversion"]);
+    let items = ok(&f.book, &["open-items"]);
+    for (source, open) in [(&foreign, "70.00 EUR"), (&native, "50.00 USD")] {
+        let item = rows(data(&items), "items")
+            .iter()
+            .find(|item| {
+                text(item, "entry") == text(data(source), "vid") && integer(item, "ordinal") == 0
+            })
+            .unwrap();
+        assert_eq!(text(item, "open"), open);
+    }
+    // The dependency-free verifier gets only the produced artifacts and
+    // an independently selected book key and certificate digest.
+    let certificate_path = f.dir.join("same-unit.certificate");
+    let (status, _) = run_many(
+        &f.book,
+        &[
+            "tb",
+            "--functional",
+            "--activity",
+            "--period",
+            "FY2026-P03",
+            "--certificate-out",
+            certificate_path.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(status, 0);
+    let certificate =
+        fa::ReportCertificate::decode(&std::fs::read(&certificate_path).unwrap()).unwrap();
+    let keys = BookKeys::load(&f.book.join("book.keys")).unwrap();
+    let key = {
+        let book = Book::open_dir(&f.book, keys, Entropy::production()).unwrap();
+        book.checkpoint_public_key()
+    };
+    ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let bundle = f.dir.join("same-unit.fab");
+    let receipt = f.dir.join("same-unit.receipt");
+    ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            certificate_path.to_str().unwrap(),
+            "--out",
+            bundle.to_str().unwrap(),
+            "--receipt-out",
+            receipt.to_str().unwrap(),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &std::fs::read(&bundle).unwrap(),
+        &[key],
+        None,
+        Some(&std::fs::read(&receipt).unwrap()),
+        Some(&certificate.digest),
+    )
+    .unwrap();
+    assert_eq!(verified.output, certificate.output);
+    assert!(verified.functional_trial_balance.is_some());
+}
+
+#[test]
 fn foreign_receipt_relief_is_derived_partial_final_reversed_and_retry_safe() {
     let (f, invoice, rate) = settlement_fixture();
     let receipt_args = |number: &str, foreign: &str, cash: &str| -> Vec<String> {

@@ -22,7 +22,7 @@ use crate::notary;
 const RATE_USAGE: &str = "fa fx rate add --from-json rate.json (or - for stdin); rate_num and rate_den are positive decimal integer strings, base_unit is the book's functional currency, quote_unit is the foreign currency";
 const ACTIVITY_USAGE: &str = "fa tb --functional --activity --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]";
 const STOCK_USAGE: &str = "fa tb --functional (--period FY2026-P03 | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]; add --activity with one --period for period movement";
-const INTENT_USAGE: &str = r#""fx":{"law":"SpotClose","rates":["D:<retained Rate document oid>"]}; current SpotClose and PeriodAverage laws require HalfEven. SpotClose as_of equals effective_date; PeriodAverage as_of is the posting period's last included day. Base amounts are calculated from retained evidence"#;
+const INTENT_USAGE: &str = r#""fx":{"law":"SpotClose","rates":["D:<retained Rate document oid>"]}; SpotClose, PeriodAverage and SettlementSpotCarrying require HalfEven. SpotClose and SettlementSpotCarrying as_of equal effective_date; PeriodAverage as_of is the posting period's last included day. SettlementSpotCarrying uses Settlement quotes, permits no absorbed residual, and requires exact agreement with each foreign application's remaining carrying relief. Base amounts are calculated from retained evidence"#;
 
 /// Embedded owners acquire the read operation needed to resolve retained source
 /// bytes, including the source history named by a disposal review.
@@ -285,9 +285,10 @@ pub(crate) fn value_intent(
     let law = match required_string(fx, "law", "intent.fx", INTENT_USAGE)? {
         "SpotClose" => FxLawId::SpotClose,
         "PeriodAverage" => FxLawId::PeriodAverage,
+        "SettlementSpotCarrying" => FxLawId::SettlementSpotCarrying,
         _ => {
             return Err(usage(
-                "intent.fx.law must be SpotClose or PeriodAverage",
+                "intent.fx.law must be SpotClose, PeriodAverage or SettlementSpotCarrying",
                 INTENT_USAGE,
             ));
         }

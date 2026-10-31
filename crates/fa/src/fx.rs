@@ -306,9 +306,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if proposal.book_id != self.context().book_id {
             return Ok(Err(invalid("the FX proposal names a different book")));
         }
-        if !matches!(law, FxLawId::SpotClose | FxLawId::PeriodAverage) {
+        if !matches!(
+            law,
+            FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementSpotCarrying
+        ) {
             return Ok(Err(invalid(
-                "this valuation path supports only SpotClose and PeriodAverage",
+                "this valuation path supports SpotClose, PeriodAverage and SettlementSpotCarrying; carrying agreement is checked by the posting kernel",
             )));
         }
         if proposal.base_totals.is_some()

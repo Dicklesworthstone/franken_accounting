@@ -939,6 +939,21 @@ functional-currency cash and the fully applied foreign control leg, plus
 `"fx":{"law":"SettlementCarryingBasis","rates":["D:<rate-oid>"],"conversion_account":"2990","realized_fx_account":"4900"}`.
 Each target must already exist. Base amounts come from retained history and
 the selected Settlement Rate; caller-supplied base amounts remain refused.
+
+For same-unit foreign cash, a mixed native/foreign `fa settle` group can instead
+declare `"fx":{"law":"SettlementSpotCarrying","rates":["D:<rate-oid>"]}`.
+Keep its complete native legs and `payments` selections; each foreign applying
+leg names one original SpotClose/PeriodAverage target. Retained Settlement
+quotes must be dated exactly at the payment's effective date. The kernel values
+all complete legs independently and checks that the applied portion's quoted
+base amount equals its journal-derived RemainingCarryingValue relief. An
+unapplied remainder stays visible separately. No residual is absorbed and no
+FX difference leg is inferred: changed carrying rates or allocated revaluations
+require the explicit conversion/release path. Reviews, approvals, saved plans,
+retries and independent functional-report verification use the same law.
+This v1 profile cannot use a payment leg with outgoing applications as a new
+foreign carrying source.
+
 For an embedded owner, retain the same Read and Post grants on both calls:
 
 ```bash

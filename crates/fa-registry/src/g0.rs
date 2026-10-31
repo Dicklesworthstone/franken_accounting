@@ -2541,7 +2541,10 @@ impl FxLaws {
         if laws.len() != expected_count {
             return Err(invalid(
                 R,
-                format!("expected {expected_count} [[law]] rows, found {}", laws.len()),
+                format!(
+                    "expected {expected_count} [[law]] rows, found {}",
+                    laws.len()
+                ),
             ));
         }
         for required_code in [
@@ -2997,6 +3000,14 @@ mod tests {
                 "settlement_and_settled_item_dates",
                 "[\"Original\", \"Adjusting\", \"Reversal\"]",
             ),
+            (
+                11,
+                "settlement_spot_carrying",
+                "SettlementSpotCarrying",
+                "Settlement",
+                "entry_effective_date",
+                "[\"Original\", \"Adjusting\", \"Reversal\"]",
+            ),
         ] {
             let row = registry.laws.iter().find(|law| law.id == id).unwrap();
             assert_eq!(
@@ -3022,7 +3033,12 @@ mod tests {
                 (
                     "date_selector",
                     format!("\"{date}\""),
-                    "\"entry_effective_date\"".into(),
+                    if date == "entry_effective_date" {
+                        "\"period_end_date\""
+                    } else {
+                        "\"entry_effective_date\""
+                    }
+                    .into(),
                 ),
                 ("rounding_law", "\"HalfEven\"".into(), "\"HalfUp\"".into()),
                 (

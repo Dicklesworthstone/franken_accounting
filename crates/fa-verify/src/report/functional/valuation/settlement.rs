@@ -133,7 +133,11 @@ impl History<'_> {
             || reference.unit != leg.unit
             || reference.amount <= 0
             || reference.amount > leg.mantissa
-            || reference.amount != leg.mantissa && self.parsed[&entry].base.as_ref().is_none_or(|claim| claim.law != law_oid(11))
+            || reference.amount != leg.mantissa
+                && self.parsed[&entry]
+                    .base
+                    .as_ref()
+                    .is_none_or(|claim| claim.law != law_oid(11))
         {
             return Err(invalid(
                 "application must fully name a matching posted target from an earlier publication",
@@ -165,11 +169,26 @@ impl History<'_> {
     }
 
     fn ranges(&self, index: usize) -> Result<Vec<std::ops::Range<usize>>, ReportError> {
-        if self.parsed[&index].base.as_ref().is_some_and(|claim| claim.law == law_oid(11)) {
-            let ranges: Vec<_> = self.parsed[&index].details.iter().zip(&self.legs[index]).enumerate()
-                .filter(|(_, (detail, leg))| leg.unit != self.spec.base && !detail.settlements.is_empty())
-                .map(|(ordinal, _)| ordinal..ordinal + 1).collect();
-            if ranges.is_empty() { return Err(invalid("SettlementSpotCarrying requires a foreign application")); }
+        if self.parsed[&index]
+            .base
+            .as_ref()
+            .is_some_and(|claim| claim.law == law_oid(11))
+        {
+            let ranges: Vec<_> = self.parsed[&index]
+                .details
+                .iter()
+                .zip(&self.legs[index])
+                .enumerate()
+                .filter(|(_, (detail, leg))| {
+                    leg.unit != self.spec.base && !detail.settlements.is_empty()
+                })
+                .map(|(ordinal, _)| ordinal..ordinal + 1)
+                .collect();
+            if ranges.is_empty() {
+                return Err(invalid(
+                    "SettlementSpotCarrying requires a foreign application",
+                ));
+            }
             return Ok(ranges);
         }
         let mut starts = Vec::new();
@@ -330,25 +349,69 @@ impl History<'_> {
         })
     }
 
-    fn spot_component(&self, index: usize, ordinal: usize, target: Target, carrying: &Carrying) -> Result<Effect, ReportError> {
+    fn spot_component(
+        &self,
+        index: usize,
+        ordinal: usize,
+        target: Target,
+        carrying: &Carrying,
+    ) -> Result<Effect, ReportError> {
         let entry = &self.parsed[&index];
         let claim = entry.base.as_ref().expect("spot claim checked");
         let leg = &self.legs[index][ordinal];
-        let [reference] = entry.details[ordinal].settlements.as_slice() else { return Err(invalid("spot application needs one target")); };
-        let date = effective(&self.envelopes[index])?;
-        let mut quotes = claim.rates.iter().map(|oid| &self.rates[oid]).filter(|rate| rate.quote == leg.unit);
-        let Some(rate) = quotes.next() else { return Err(invalid("spot application has no retained quote")); };
-        if quotes.next().is_some() || rate.purpose != 4 || rate.date != date || rate.base != self.spec.base
-            || claim.residual.is_some() || date < carrying.latest_effective
-            || reference.amount > carrying.native || carrying.native <= 0
-        { return Err(invalid("spot application quote, chronology or remaining native amount differs")); }
-        let expected = if reference.amount == carrying.native { carrying.base } else {
-            super::super::arithmetic::convert(carrying.base, 0, 0, reference.amount as u128, carrying.native as u128)?
+        let [reference] = entry.details[ordinal].settlements.as_slice() else {
+            return Err(invalid("spot application needs one target"));
         };
-        let recorded = super::super::arithmetic::convert(reference.amount,
-            self.registry.units[&leg.unit].scale, self.registry.units[&self.spec.base].scale, rate.numerator, rate.denominator)?;
-        if recorded != expected { return Err(invalid("spot quote relief differs from RemainingCarryingValue; explicit FX effects are required")); }
-        Ok(Effect { target, native: reference.amount, base: recorded })
+        let date = effective(&self.envelopes[index])?;
+        let mut quotes = claim
+            .rates
+            .iter()
+            .map(|oid| &self.rates[oid])
+            .filter(|rate| rate.quote == leg.unit);
+        let Some(rate) = quotes.next() else {
+            return Err(invalid("spot application has no retained quote"));
+        };
+        if quotes.next().is_some()
+            || rate.purpose != 4
+            || rate.date != date
+            || rate.base != self.spec.base
+            || claim.residual.is_some()
+            || date < carrying.latest_effective
+            || reference.amount > carrying.native
+            || carrying.native <= 0
+        {
+            return Err(invalid(
+                "spot application quote, chronology or remaining native amount differs",
+            ));
+        }
+        let expected = if reference.amount == carrying.native {
+            carrying.base
+        } else {
+            super::super::arithmetic::convert(
+                carrying.base,
+                0,
+                0,
+                reference.amount as u128,
+                carrying.native as u128,
+            )?
+        };
+        let recorded = super::super::arithmetic::convert(
+            reference.amount,
+            self.registry.units[&leg.unit].scale,
+            self.registry.units[&self.spec.base].scale,
+            rate.numerator,
+            rate.denominator,
+        )?;
+        if recorded != expected {
+            return Err(invalid(
+                "spot quote relief differs from RemainingCarryingValue; explicit FX effects are required",
+            ));
+        }
+        Ok(Effect {
+            target,
+            native: reference.amount,
+            base: recorded,
+        })
     }
 }
 
@@ -465,6 +528,16 @@ pub(super) fn verify(
         if !matches!(envelopes[index].class, 1 | 3 | 7) {
             return Err(invalid(
                 "entry class cannot originate SettlementCarryingBasis",
+            ));
+        }
+        if parsed[&index]
+            .base
+            .as_ref()
+            .is_some_and(|claim| claim.law == law_oid(11))
+            && !matches!(envelopes[index].class, 1 | 3)
+        {
+            return Err(invalid(
+                "entry class cannot originate SettlementSpotCarrying",
             ));
         }
         let mut seen = BTreeSet::new();
