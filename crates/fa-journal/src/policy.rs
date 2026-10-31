@@ -116,6 +116,36 @@ pub fn approval_vid(book: Id128, approver: VId, approved_digest: &[u8; 32], epoc
     VId(u128::from_le_bytes(lo))
 }
 
+/// The stored record (`_fa_payload`) of each approval in `vids`, read at
+/// head: an approval is immutable, so its record is the one every entry
+/// citing it cited. A vid that is not an approval is corruption, since only
+/// committed entries' citations are passed here.
+pub fn approval_records<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    vids: &[VId],
+) -> Result<std::collections::BTreeMap<VId, Vec<u8>>, KernelError> {
+    let mut out = std::collections::BTreeMap::new();
+    for vid in vids {
+        let row = db
+            .vertex(*vid)?
+            .filter(|row| row.labels.contains(&label::APPROVAL))
+            .ok_or_else(|| {
+                KernelError::Corrupt(format!(
+                    "cited approval {:032x} is not an approval vertex",
+                    vid.0
+                ))
+            })?;
+        let Some(CanonicalScalar::Bytes(bytes)) = prop(&row, property::FA_PAYLOAD) else {
+            return Err(KernelError::Corrupt(format!(
+                "approval {:032x} carries no _fa_payload bytes",
+                vid.0
+            )));
+        };
+        out.insert(*vid, bytes.as_slice().to_vec());
+    }
+    Ok(out)
+}
+
 fn epoch_from(scalar: Option<&CanonicalScalar>) -> Result<u64, KernelError> {
     match scalar {
         None => Ok(0),

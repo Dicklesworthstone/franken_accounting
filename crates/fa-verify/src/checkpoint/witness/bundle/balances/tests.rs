@@ -103,6 +103,7 @@ fn bundle(cp: &[u8], proofs: &[Vec<u8>], prefix: bool) -> Vec<u8> {
         documents: 0,
         inline: 0,
         balances: vec![(FOLD_DOMAIN.to_vec(), FOLD_VERSION); proofs.len()],
+        approvals: None,
     };
     let mut w = Writer::default();
     w.bytes(BUNDLE_FORMAT)

@@ -48,6 +48,7 @@ fn filtered(checkpoint: &[u8], balances: &[&[u8]]) -> Vec<u8> {
             .iter()
             .map(|_| (FOLD_DOMAIN.to_vec(), FOLD_VERSION))
             .collect(),
+        approvals: None,
     };
     let mut w = Writer::default();
     w.bytes(BUNDLE_FORMAT)
@@ -89,6 +90,7 @@ fn prefix_with_records(p: &Parsed<'_>, indexes: &[usize], corrupt: Option<usize>
             .iter()
             .map(|b| (b.domain.to_vec(), b.version))
             .collect(),
+        approvals: None,
     };
     let mut w = Writer::default();
     w.bytes(BUNDLE_FORMAT)

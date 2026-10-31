@@ -3375,8 +3375,18 @@ impl Harness {
         }
         let runs = fa_notary::migration_balance::bundle_run_bodies(&self.db, &journal, request)
             .expect("kernel")?;
-        fa_notary::bundle::assemble_with_runs(&journal, &checkpoint, request, &documents, &runs)
-            .expect("kernel")
+        let cited = fa_notary::bundle::cited_approvals(&journal, request).expect("kernel")?;
+        let approvals =
+            fa_journal::policy::approval_records(&self.db, &cited).expect("approval records");
+        fa_notary::bundle::assemble_with_runs(
+            &journal,
+            &checkpoint,
+            request,
+            &documents,
+            &runs,
+            &approvals,
+        )
+        .expect("kernel")
     }
 
     fn receipt(&self, bundle: &fa_notary::Bundle, at: CommitSeq) -> Vec<u8> {
@@ -3794,6 +3804,7 @@ impl Cut {
                 .iter()
                 .map(|(d, v, _)| (d.clone(), *v))
                 .collect(),
+            approvals: None,
         };
         self.md = fa_verify::bundle::manifest_md(manifest, &summary).into_bytes();
         self

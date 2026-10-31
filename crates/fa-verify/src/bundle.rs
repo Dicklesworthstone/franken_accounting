@@ -4,7 +4,9 @@
 //! ```text
 //! bundle   = bytes("fa:bundle:v1") ‖ format_major u16 ‖ format_minor u16
 //!          ‖ manifest ‖ bytes(TransparencyCheckpoint) ‖ completeness proof
-//!          ‖ list(entry) ‖ list(balance) ‖ bytes(manifest_md)
+//!          ‖ list(entry) ‖ list(balance)
+//!          ‖ [format 1.1 only: list(bytes(approval record)) ‖ list(key leaf)]
+//!          ‖ bytes(manifest_md)
 //! manifest = book_id [16] ‖ branch_id [16] ‖ through_seq u64 ‖ leaf_count u64
 //!          ‖ checkpoint_oid [32]
 //!          ‖ scope:        1 Prefix
@@ -39,8 +41,11 @@
 //! detached receipt, which signs the body's digest.
 //!
 //! `format_major.format_minor` is the fa-verify format the bundle targets;
-//! this verifier implements 1.0 and refuses any other version before it
-//! reads further ([`BundleError::Version`]). Each balance names the
+//! this verifier implements 1.0 and 1.1 and refuses any other version
+//! before it reads further ([`BundleError::Version`]). A producer writes
+//! 1.1 exactly when the in-scope entries cite an approval: 1.1 adds those
+//! approvals' records and their signers' key generations, checked as the
+//! `approvals` module states. Each balance names the
 //! register fold law its claim is defined under, and a law this verifier
 //! does not implement is a typed failure of that balance
 //! ([`VerifyError::FoldLaw`]), never a recomputation under another law.
@@ -66,13 +71,15 @@
 //! [`verify_bundle`] grades every predicate on its own — the checkpoint's
 //! signature, the manifest, the completeness of the in-scope set, the
 //! entry set, each record, each entry's document closure, each document
-//! stub's public commitment, each balance, and the receipt — as pass,
-//! fail, or unrun when a predicate it rests on failed. There is no
-//! bundle-wide success bit.
+//! stub's public commitment, each balance, in 1.1 the cited approvals, each
+//! key record, each key chain and each approval's signature, and the
+//! receipt — as pass, fail, or unrun when a predicate it rests on failed.
+//! There is no bundle-wide success bit.
 //!
 //! Version 1.0 carries a subset of Appendix A's bundle, by name: closures
 //! hold the documents an entry's own evidence list cites (no events,
-//! rules, approvals, supplemental evidence or attestations); there are no
+//! rules, approvals, supplemental evidence or attestations; 1.1 adds the
+//! cited approvals and nothing else); there are no
 //! redaction contracts, register cells, statements, certificates or
 //! findings. A receipt can bind the checkpoint prefix's retained TimeEvidence;
 //! this does not attest the physical UTC time of production. `scope_label` and `bundle_digest` are
@@ -96,9 +103,11 @@ use crate::verify_balance;
 
 pub const BUNDLE_FORMAT: &[u8] = b"fa:bundle:v1";
 pub const BUNDLE_DIGEST_DOMAIN: &[u8] = b"fa:bundle:v1";
-/// The fa-verify format this verifier implements.
+/// The fa-verify formats this verifier implements: 1.0, and 1.1, which
+/// adds the approvals the in-scope entries cite.
 pub const FORMAT_MAJOR: u16 = 1;
 pub const FORMAT_MINOR: u16 = 0;
+pub const FORMAT_MINOR_APPROVALS: u16 = 1;
 pub const RECEIPT_FORMAT: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_DIGEST_DOMAIN: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_SIGNATURE_DOMAIN: &[u8] = b"fa:production-receipt-signature:v1";
@@ -198,6 +207,17 @@ pub struct Summary {
     pub inline: u64,
     /// The fold law of each balance, in body order.
     pub balances: Vec<(Vec<u8>, u16)>,
+    /// Format 1.1's approval section; `None` in 1.0.
+    pub approvals: Option<ApprovalSummary>,
+}
+
+/// What a 1.1 bundle carries for its cited approvals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ApprovalSummary {
+    pub records: u64,
+    /// Records in the signed (version 2) form.
+    pub signed: u64,
+    pub key_records: u64,
 }
 
 /// The civil date of a day count since 1970-01-01 (proleptic Gregorian).
@@ -249,6 +269,12 @@ pub fn manifest_md(m: &Manifest, summary: &Summary) -> String {
             .collect();
         format!(", under register fold {}", named.join("; "))
     };
+    let approvals = summary.approvals.map_or_else(String::new, |a| {
+        format!(
+            "- Approvals: {} cited, {} signed, with {} principal key records\n",
+            a.records, a.signed, a.key_records
+        )
+    });
     format!(
         "# FrankenAccounting evidence bundle\n\
          \n\
@@ -262,6 +288,7 @@ pub fn manifest_md(m: &Manifest, summary: &Summary) -> String {
          - Entries: {}, with their payloads\n\
          - Documents: {} cited, {} included\n\
          - Balances: {}{laws}\n\
+         {approvals}\
          \n\
          Verify: fa-verify bundle <this file> --key <the book's checkpoint public key> [--receipt <its production receipt>]\n\
          \n\
@@ -314,7 +341,7 @@ impl fmt::Display for BundleError {
             Self::Format => write!(f, "not an `fa:bundle:v1` evidence bundle"),
             Self::Version { major, minor } => write!(
                 f,
-                "the bundle targets fa-verify format {major}.{minor}; this verifier implements {FORMAT_MAJOR}.{FORMAT_MINOR} only — use a verifier that implements {major}.{minor}"
+                "the bundle targets fa-verify format {major}.{minor}; this verifier implements {FORMAT_MAJOR}.{FORMAT_MINOR} and {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS} only — use a verifier that implements {major}.{minor}"
             ),
             Self::Decode(e) => write!(f, "{e}"),
             Self::TrustedKey {
@@ -418,6 +445,10 @@ struct Parsed<'a> {
     proof: ProofSection<'a>,
     entries: Vec<Item<'a>>,
     balances: Vec<BalanceItem<'a>>,
+    /// Format 1.1: the cited approvals' stored records, in file order.
+    approvals: Vec<&'a [u8]>,
+    /// Format 1.1: their signers' key generations.
+    key_leaves: Vec<approvals::KeyLeaf<'a>>,
     manifest_md: &'a [u8],
 }
 
@@ -501,7 +532,7 @@ fn parse(bundle: &[u8]) -> Result<Parsed<'_>, BundleError> {
     }
     let major = r.u16("bundle.format_major")?;
     let minor = r.u16("bundle.format_minor")?;
-    if (major, minor) != (FORMAT_MAJOR, FORMAT_MINOR) {
+    if major != FORMAT_MAJOR || !matches!(minor, FORMAT_MINOR | FORMAT_MINOR_APPROVALS) {
         return Err(BundleError::Version { major, minor });
     }
     let manifest = read_manifest(&mut r)?;
@@ -545,6 +576,14 @@ fn parse(bundle: &[u8]) -> Result<Parsed<'_>, BundleError> {
             proof: r.bytes(UNBOUNDED, "balance.proof")?,
         });
     }
+    let (approvals, key_leaves) = if minor == FORMAT_MINOR_APPROVALS {
+        (
+            approvals::read_approvals(&mut r)?,
+            approvals::read_key_leaves(&mut r)?,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let manifest_md = r.bytes(MAX_MANIFEST_MD_BYTES, "bundle.manifest_md")?;
     r.finish("bundle")?;
     Ok(Parsed {
@@ -554,6 +593,8 @@ fn parse(bundle: &[u8]) -> Result<Parsed<'_>, BundleError> {
         proof,
         entries,
         balances,
+        approvals,
+        key_leaves,
         manifest_md,
     })
 }
@@ -893,6 +934,15 @@ pub(crate) fn verify_bundle_observing(
             .iter()
             .map(|b| (b.domain.to_vec(), b.version))
             .collect(),
+        approvals: (p.format.1 == FORMAT_MINOR_APPROVALS).then(|| ApprovalSummary {
+            records: p.approvals.len() as u64,
+            signed: p
+                .approvals
+                .iter()
+                .filter(|r| approvals::is_signed(r))
+                .count() as u64,
+            key_records: p.key_leaves.len() as u64,
+        }),
     };
     let mut checks = Vec::new();
 
@@ -955,6 +1005,10 @@ pub(crate) fn verify_bundle_observing(
         && matches!(&entry_set, Grade::Pass)
         && signed.is_some()
         && scoped.is_some();
+    // The approvals the in-scope entries cite are authenticated only when
+    // the entry set and every one of its records are.
+    let mut citations_authenticated = matches!(&entry_set, Grade::Pass);
+    let mut citing: Vec<approvals::Citing> = Vec::new();
     checks.push(check(
         "entries",
         scope_label,
@@ -983,6 +1037,19 @@ pub(crate) fn verify_bundle_observing(
             },
         };
         full_prefix_payloads &= matches!(&record, Grade::Pass);
+        if p.format.1 == FORMAT_MINOR_APPROVALS {
+            let cited = matches!(record, Grade::Pass)
+                .then(|| crate::envelope::entry_approvals(item.record, item.proposal_len).ok())
+                .flatten();
+            match cited {
+                Some((proposal_digest, cited)) => citing.push(approvals::Citing {
+                    leaf_index: item.leaf_index,
+                    proposal_digest,
+                    approvals: cited,
+                }),
+                None => citations_authenticated = false,
+            }
+        }
         let closure = if matches!(record, Grade::Pass) {
             closure_grade(item)
         } else {
@@ -1046,6 +1113,16 @@ pub(crate) fn verify_bundle_observing(
             subject
         };
         checks.push(check("recomputation", "recomputation", subject, grade));
+    }
+
+    if p.format.1 == FORMAT_MINOR_APPROVALS {
+        checks.extend(approvals::approval_checks(
+            &p.manifest.book_id,
+            signed.as_ref(),
+            citations_authenticated.then_some(citing.as_slice()),
+            &p.approvals,
+            &p.key_leaves,
+        ));
     }
 
     let receipt = receipt.map(|bytes| receipt_grade(bytes, &digest, trusted_keys));
@@ -1114,14 +1191,14 @@ mod tests {
         v2.extend_from_slice(&0u16.to_le_bytes());
         let e = verify_bundle(&v2, &[], None).unwrap_err();
         assert_eq!(e, BundleError::Version { major: 2, minor: 0 });
-        assert!(e.to_string().contains("implements 1.0 only"), "{e}");
-        let mut v1_1 = v2.clone();
-        v1_1.truncate(v1_1.len() - 4);
-        v1_1.extend_from_slice(&1u16.to_le_bytes());
-        v1_1.extend_from_slice(&1u16.to_le_bytes());
+        assert!(e.to_string().contains("implements 1.0 and 1.1 only"), "{e}");
+        let mut v1_2 = v2.clone();
+        v1_2.truncate(v1_2.len() - 4);
+        v1_2.extend_from_slice(&1u16.to_le_bytes());
+        v1_2.extend_from_slice(&2u16.to_le_bytes());
         assert_eq!(
-            verify_bundle(&v1_1, &[], None).unwrap_err(),
-            BundleError::Version { major: 1, minor: 1 }
+            verify_bundle(&v1_2, &[], None).unwrap_err(),
+            BundleError::Version { major: 1, minor: 2 }
         );
     }
 
@@ -1136,6 +1213,8 @@ mod tests {
         assert!(e.contains("`fa:register-fold:v2` version 2 only"), "{e}");
     }
 }
+
+mod approvals;
 
 #[cfg(test)]
 mod balance_assurance;

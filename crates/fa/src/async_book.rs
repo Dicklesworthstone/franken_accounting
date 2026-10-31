@@ -5292,12 +5292,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        // The approvals the in-scope entries cite ride the bundle (format
+        // 1.1, fa-kae): whole-book read, admitted above, covers them.
+        let cited_approvals = match fa_notary::bundle::cited_approvals(&journal, request)? {
+            Ok(cited) => cited,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let approvals = self.query(cx, |db, _book| {
+            Ok(fa_journal::policy::approval_records(db, &cited_approvals)?)
+        })?;
         let bundle = match fa_notary::bundle::assemble_with_runs(
             &journal,
             &checkpoint,
             request,
             &documents,
             &run_bodies,
+            &approvals,
         )? {
             Ok(bundle) => bundle,
             Err(refusal) => return Ok(Err(refusal)),

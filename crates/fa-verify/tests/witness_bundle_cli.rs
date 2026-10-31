@@ -54,6 +54,7 @@ fn bundle(checkpoint: &[u8]) -> Vec<u8> {
         documents: 0,
         inline: 0,
         balances: vec![],
+        approvals: None,
     };
     let mut out = Vec::new();
     bytes(&mut out, BUNDLE_FORMAT);

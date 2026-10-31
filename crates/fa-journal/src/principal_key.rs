@@ -21,7 +21,7 @@ use fa_model::{
     ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, entry_mirrors,
 };
 use fa_policy::principal_key::{KeyError, MAX_KEY_GENERATIONS, PrincipalKey, SignatureVerifier};
-use fa_policy::{Capability, Intent, Op};
+use fa_policy::{Approval, Capability, Intent, Op};
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
 use fgdb_crypto::Hasher;
@@ -50,6 +50,23 @@ pub fn principal_key_vid(book: Id128, principal: VId, generation: u32) -> VId {
     let mut lo = [0u8; 16];
     lo.copy_from_slice(&d.0[..16]);
     VId(u128::from_le_bytes(lo))
+}
+
+/// The identity of every generation `principal`'s chain may hold, from
+/// generation 0 to the chain bound.
+#[must_use]
+pub fn chain_vids(book: Id128, principal: VId) -> Vec<VId> {
+    (0..MAX_KEY_GENERATIONS)
+        .map(|generation| principal_key_vid(book, principal, generation))
+        .collect()
+}
+
+/// The principal whose key signed the stored approval `record`, or `None`
+/// for an unsigned record.
+pub fn approval_signer(record: &[u8]) -> Result<Option<VId>, KernelError> {
+    let (approval, signature) =
+        Approval::decode_record(record).map_err(|e| KernelError::Model(e.into()))?;
+    Ok(signature.map(|_| approval.principal))
 }
 
 /// One journaled generation of a principal's key chain.

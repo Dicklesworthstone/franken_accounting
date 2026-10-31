@@ -75,6 +75,7 @@ fn bundle(cells: &[BalanceScope]) -> Vec<u8> {
         documents: 0,
         inline: 0,
         balances: vec![(FOLD_DOMAIN.to_vec(), FOLD_VERSION); cells.len()],
+        approvals: None,
     };
     let mut prefix = Vec::new();
     bytes(&mut prefix, fa_verify::proof::PREFIX_FORMAT);
