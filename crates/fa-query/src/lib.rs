@@ -31,6 +31,9 @@
 //! - `CALL fa.access_log` and `CALL fa.access_log('<reader>')`, the runtime
 //!   graph's AccessEvents (`fa access log`) at the head: a read-only bound
 //!   session's own query is among them, recorded before it observed;
+//! - one `CALL fa.open_amount(l) YIELD open, age_days` inside a MATCH
+//!   pipeline with an explicit `EFFECTIVE AT` cutoff: source values and a
+//!   native row continuation, with unit provenance retained for exact sums;
 //! - `EXPLAIN (CERTIFICATE)` leading the statement: the caller certifies the
 //!   result, as `fa query --certify` does.
 //!
@@ -43,6 +46,9 @@
 mod aggregate;
 mod law;
 mod lex;
+mod pipeline;
+
+pub use pipeline::OpenAmount;
 
 pub use aggregate::{Aggregation, Column, Function, Value};
 
@@ -180,10 +186,12 @@ pub struct Native {
     /// `FOR PERIOD '<from>'..'<through>'`: the filter waits for the range's
     /// day bounds ([`Native::bind_period_range`]).
     period_range: bool,
+    open_amount: Option<OpenAmount>,
 }
 
 impl Native {
-    /// The native statement at `known_at`.
+    /// The native source statement at `known_at`. With [`Self::open_amount`],
+    /// the caller derives per-row values before running its continuation.
     #[must_use]
     pub fn statement(&self, known_at: u64) -> String {
         format!(
@@ -220,6 +228,7 @@ impl Native {
                 .replacen(RANGE_END, &end.to_string(), 1),
             aggregation: self.aggregation.clone(),
             period_range: false,
+            open_amount: self.open_amount.clone(),
         }
     }
 
@@ -256,6 +265,14 @@ impl Native {
     #[must_use]
     pub fn aggregation(&self) -> Option<&Aggregation> {
         self.aggregation.as_ref()
+    }
+
+    /// A pure per-row open-item procedure between this native source read
+    /// and a second native continuation. The caller folds the historical
+    /// journal once, supplies the derived rows, and runs that continuation.
+    #[must_use]
+    pub fn open_amount(&self) -> Option<&OpenAmount> {
+        self.open_amount.as_ref()
     }
 }
 
@@ -1054,6 +1071,9 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
             "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs",
         ));
     }
+    if let Some(call) = (1..lexed.tokens.len()).find(|&i| lexed.root(i) && lexed.word(i, "CALL")) {
+        return pipeline::compile(lexed, selectors, call);
+    }
     let tail = (1..lexed.tokens.len())
         .find(|&i| {
             lexed.root(i)
@@ -1069,14 +1089,6 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
                 "end it with RETURN <expressions>",
             )
         })?;
-    if let Some(call) = (1..lexed.tokens.len()).find(|&i| lexed.root(i) && lexed.word(i, "CALL")) {
-        return Err(Refusal::new(
-            Law::Profile,
-            lexed.tokens[call].start,
-            "CALL stands alone in this build: CALL fa.trial_balance; no procedure runs inside a MATCH pipeline yet",
-            "CALL fa.trial_balance FOR PERIOD '<code>'; Lantern procedures: fa procedure run <id>",
-        ));
-    }
     let spans = &selectors.spans;
     let (cut, returned, aggregation) = if law::check(lexed)? {
         let (cut, returned, plan) = aggregate::plan(lexed, spans)?;
@@ -1198,6 +1210,7 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
             .period
             .as_deref()
             .is_some_and(|code| code.contains("..")),
+        open_amount: None,
     })
 }
 
