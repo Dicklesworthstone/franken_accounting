@@ -741,6 +741,11 @@ fn due_date_terms_are_authenticated_and_cannot_be_removed_from_a_valid_bundle() 
 fn due_date_malformed_maturity_records_fail_closed_even_with_a_trusted_prefix() {
     for (name, bytes) in [
         ("debit", terms(0, 1, 0, &[(30, 100)])),
+        ("receivable version on credit", {
+            let mut bytes = terms(1, 1, 0, &[(30, 100)]);
+            bytes[..2].copy_from_slice(&2_u16.to_le_bytes());
+            bytes
+        }),
         ("missing leg", terms(2, 1, 0, &[(30, 100)])),
         ("wrong sum", terms(1, 1, 0, &[(30, 99)])),
         ("zero amount", terms(1, 1, 0, &[(30, 0), (60, 100)])),

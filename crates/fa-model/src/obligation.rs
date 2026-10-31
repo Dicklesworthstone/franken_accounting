@@ -99,12 +99,17 @@ impl InlineObligationTerms {
         w.finish()
     }
 
-    /// Decodes the extension's bytes. Every installment amount is positive.
+    /// Decodes either version's rows. Every installment amount is positive;
+    /// validate the original bytes against the legs to enforce their side.
     ///
     /// # Errors
     /// Malformed or non-canonical bytes, another version, an unknown status
     /// or a non-positive amount.
     pub fn decode_list(bytes: &[u8]) -> Result<Vec<Self>, DecodeError> {
+        Self::decode_versioned(bytes).map(|(_, terms)| terms)
+    }
+
+    fn decode_versioned(bytes: &[u8]) -> Result<(u16, Vec<Self>), DecodeError> {
         let mut r = Reader::new(bytes);
         let version = r.u16("obligation_terms.version")?;
         if !matches!(version, OBLIGATION_TERMS_VERSION | RECEIVABLE_TERMS_VERSION) {
@@ -139,7 +144,7 @@ impl InlineObligationTerms {
             })
         })?;
         r.finish()?;
-        Ok(list)
+        Ok((version, list))
     }
 
     /// The `(tag, bytes)` pair to put in `EntryPayload::extensions`.
@@ -181,10 +186,8 @@ pub fn validate_terms(
     bytes: &[u8],
     legs: &[LegPayload],
 ) -> Result<(), (&'static str, &'static str)> {
-    let terms = InlineObligationTerms::decode_list(bytes)
+    let (version, terms) = InlineObligationTerms::decode_versioned(bytes)
         .map_err(|_| ("extensions.obligation_maturity", "does not decode"))?;
-    // Decoding established the two-byte version and its admitted domain.
-    let version = u16::from_le_bytes([bytes[0], bytes[1]]);
     if InlineObligationTerms::encode_version(&terms, version)
         .ok()
         .as_deref()
