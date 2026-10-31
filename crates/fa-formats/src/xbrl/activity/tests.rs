@@ -34,9 +34,9 @@ fn fixture(
         } else {
             Side::Credit
         },
-    
-                roles: Vec::new(),
-            })
+
+        roles: Vec::new(),
+    })
     .collect();
     let leg = |account: &str, side, amount| FormatLeg {
         account_code: account.into(),

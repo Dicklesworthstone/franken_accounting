@@ -132,7 +132,9 @@ pub fn read_xbrl_equity_attribution(
             }
             let bytes = item
                 .as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     let hi = (pair[0] as char).to_digit(16);
                     let lo = (pair[1] as char).to_digit(16);
@@ -2350,9 +2352,9 @@ mod tests {
                     name: code.into(),
                     account_type,
                     normal_side,
-                
-                roles: Vec::new(),
-            })
+
+                    roles: Vec::new(),
+                })
                 .collect(),
                 entries,
                 Vec::new(),
@@ -2462,9 +2464,9 @@ mod tests {
                     name: code.into(),
                     account_type,
                     normal_side,
-                
-                roles: Vec::new(),
-            })
+
+                    roles: Vec::new(),
+                })
                 .collect(),
                 dates
                     .iter()
@@ -2735,6 +2737,4 @@ mod tests {
             Err(FormatError::Parse { .. })
         ));
     }
-
-    #[test]
 }

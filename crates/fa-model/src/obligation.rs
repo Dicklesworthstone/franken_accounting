@@ -356,7 +356,6 @@ mod tests {
         validate_terms(&bytes, &legs()).map_err(|(_, why)| why)
     }
 
-
     #[test]
     fn receivable_v2_preserves_the_credit_only_v1_contract_and_exact_totals() {
         let terms = vec![term(
@@ -384,7 +383,8 @@ mod tests {
             vec![installment(100, 300)],
         )];
         let forced = InlineObligationTerms::encode_receivable_list(&credit_only).unwrap();
-        let historical = InlineObligationTerms::encode_list_for_legs(&credit_only, &legs()).unwrap();
+        let historical =
+            InlineObligationTerms::encode_list_for_legs(&credit_only, &legs()).unwrap();
         assert_eq!(&forced[..2], &RECEIVABLE_TERMS_VERSION.to_le_bytes());
         assert_eq!(&historical[..2], &OBLIGATION_TERMS_VERSION.to_le_bytes());
         assert_eq!(&forced[2..], &historical[2..]);

@@ -247,7 +247,9 @@ pub fn read_xbrl_income_attribution(
             }
             let bytes = item
                 .as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     match (
                         (pair[0] as char).to_digit(16),

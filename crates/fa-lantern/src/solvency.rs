@@ -2548,7 +2548,6 @@ fn receivable_maturity_never_becomes_a_debt_or_an_assumed_cash_receipt() {
     ));
 }
 
-
 #[cfg(test)]
 #[test]
 fn debit_maturity_is_neither_a_liability_nor_a_forecast_inflow() {
