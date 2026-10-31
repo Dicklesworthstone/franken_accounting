@@ -130,12 +130,16 @@ The embedded API's `Book::advance_registers(period)` consumes new committed entr
 
 Authorized embedded readers use `Book::read_scope` before reading. Its
 `trial_balance_served` and `period_activity_served` methods return the report
-and its actual maintenance cursor/tail or literal fallback reason. The global
+and its actual maintenance cursor/tail or literal fallback reason; their
+`_at` variants accept an explicit historical recorded sequence. The global
 delta window requires whole-book authority; narrower admitted reports fold
 literally without exposing that window's metadata. The existing scope methods
-also use maintained cells for HEAD when authority and resident history permit;
-an explicit known-at sequence remains a literal historical read. These reads
-load no history, repair no cache and preserve the same capability caveats.
+also use maintained cells for HEAD or an explicit known-at sequence when
+authority and resident history permit. Historical authority is admitted at the
+selected sequence before its cache or tail is inspected, including when a
+known-at caveat excludes HEAD. These reads load no history, repair no cache and
+preserve the same capability caveats. Uncertified CLI period-stock and activity
+reports also disclose the actual serving basis for historical selections.
 
 `fad serve --book ./books/acme --register-period FY2026-P03` selects native
 register maintenance without granting System authority. It attempts one selected

@@ -2536,7 +2536,16 @@ fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pin
         args.extend(["--as-known-at", &before]);
         let historical = doc(&ok(&args));
         assert_eq!(int(&historical, "known_at"), Some(posted_at[0]));
-        assert_eq!(historical.get("served"), Some(&Json::Null));
+        let serving = historical.get("served").expect("historical serving basis");
+        assert_eq!(serving.get("mode").and_then(Json::as_str), Some("literal"));
+        assert!(
+            serving
+                .get("reason")
+                .and_then(Json::as_str)
+                .unwrap()
+                .contains("selected snapshot"),
+            "the snapshot precedes the first cache: {historical:?}"
+        );
         assert!(historical.render().contains("\"debits\":\"10.00 USD\""));
         assert!(historical.render().contains("\"credits\":\"10.00 USD\""));
     }
@@ -2577,6 +2586,29 @@ fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pin
     );
     assert!(restricted.render().contains("\"debits\":\"12.00 USD\""));
     assert!(restricted.render().contains("\"credits\":\"12.00 USD\""));
+    let selected = posted_at[1].to_string();
+    let historical = doc(&ok(&[
+        "--token",
+        "march.token",
+        "tb",
+        "--activity",
+        "--period",
+        period,
+        "--as-known-at",
+        &selected,
+    ]));
+    assert_eq!(int(&historical, "known_at"), Some(posted_at[1]));
+    let served = historical.get("served").unwrap();
+    assert_eq!(served.get("mode").and_then(Json::as_str), Some("literal"));
+    assert!(
+        served
+            .get("reason")
+            .and_then(Json::as_str)
+            .unwrap()
+            .contains("`periods` caveat")
+    );
+    assert!(historical.render().contains("\"debits\":\"12.00 USD\""));
+    assert!(historical.render().contains("\"credits\":\"12.00 USD\""));
     for args in [
         vec!["--token", "march.token", "tb", "--period", period],
         vec![

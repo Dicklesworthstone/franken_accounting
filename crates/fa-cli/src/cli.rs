@@ -12697,9 +12697,10 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         out.time_selection(certified.certificate.time_selection.as_ref());
         (certified.report, Some(certified.certificate), None)
     } else {
-        // A head read is answered from maintained registers plus the exact
-        // tail when they can serve it, and says how it was served (fa-715,
-        // plan §17). Loading the delta window is only preparation: a
+        // An admitted read is answered from maintained registers plus the
+        // exact tail when they can serve its selected prefix, and says how
+        // it was served (fa-715, plan §17). Loading the head window is only
+        // preparation; historical reads use their own retained state. A
         // capability that cannot load it reads the journal literally, and
         // the disclosure names its refusal.
         let window = if known_at.is_none() && !matches!(selection, TrialBalanceSelection::AsOf(_)) {
@@ -12740,10 +12741,16 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 (book.balance_as_of(*day, known_at)?, None, None)
             }
             (TrialBalanceSelection::Periods(periods), None) => {
-                (book.trial_balance_at(periods, known_at)?, None, None)
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .trial_balance_served_at(periods, Some(admitted_at))??;
+                (report, None, Some(served))
             }
             (TrialBalanceSelection::Activity(periods), None) => {
-                (book.period_activity(periods, known_at)?, None, None)
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .period_activity_served_at(periods, Some(admitted_at))??;
+                (report, None, Some(served))
             }
         }
     };
@@ -14697,7 +14704,7 @@ pub(crate) fn render_trial_balance(
     )
 }
 
-/// How a head read was answered (`tb_served`, plan §17): maintained cells
+/// How a selected-prefix read was answered (`tb_served`, plan §17): maintained cells
 /// at their cursors plus the exact tail, or the literal journal fold and why.
 fn served_json(served: &fa_registers::Served) -> Json {
     match served {
