@@ -11,7 +11,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa access log [--since <seq>] [--reader <principal name>] --json";
+const EXAMPLE: &str = "fa access log [--since <exclusive-seq>] [--through <inclusive-seq>] [--reader <principal name>] --json";
 
 pub(crate) fn access_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
@@ -37,6 +37,21 @@ fn log(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?),
     };
+    let through = match args.flag("--through") {
+        None => None,
+        Some(raw) => Some(CommitSeq(raw.parse::<u64>().map_err(|_| {
+            usage(
+                format!("--through `{raw}` must be a recorded sequence"),
+                "--through 100",
+            )
+        })?)),
+    };
+    if through.is_some_and(|through| through.0 < since.0) {
+        return Err(usage(
+            "--through must be greater than or equal to --since",
+            EXAMPLE,
+        ));
+    }
     let principal = args.flag("--reader");
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
@@ -48,15 +63,26 @@ fn log(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let mut events = book.access_log(since)?;
+    if let Some(through) = through {
+        events.retain(|event| event.recorded_at <= through);
+    }
     if let Some(name) = principal {
         let vid = principal_vid(name);
         events.retain(|e| e.record.principal == vid);
     }
-    let mut human = format!(
-        "{} access event(s) recorded after sequence {}",
-        events.len(),
-        since.0
-    );
+    let mut human = match through {
+        Some(through) => format!(
+            "{} access event(s) recorded in ({}, {}]",
+            events.len(),
+            since.0,
+            through.0
+        ),
+        None => format!(
+            "{} access event(s) recorded after sequence {}",
+            events.len(),
+            since.0
+        ),
+    };
     let rows = events
         .iter()
         .map(|e| {
@@ -82,6 +108,10 @@ fn log(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "access_log",
         vec![
             ("since", Json::Int(i128::from(since.0))),
+            (
+                "through",
+                through.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
             ("reader", principal.map_or(Json::Null, s)),
             (
                 "count",

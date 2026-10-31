@@ -13,7 +13,7 @@
 //!    errors).
 //! 2. A versioned, canonically encoded `AuthenticatedObligationSchedule`
 //!    (`fa:solvency-obligation-schedule:v1`) and per-entry inline maturity
-//!    extension (`fa:obligation-maturity:v1`) carrying contractual installment
+//!    extension (`fa:obligation-maturity:v1|v2`) carrying contractual installment
 //!    maturity dates, exact outstanding amounts, settlement targets, off-ledger
 //!    commitments, expected inflows, and document `EvidenceRef`s.
 //! 3. Schedule completeness verification against the snapshot's open liability
@@ -45,7 +45,7 @@ pub const OBLIGATION_SCHEDULE_DOMAIN: &[u8] = b"fa:solvency-obligation-schedule:
 /// Domain tag for per-unit cash-flow solvency certificate closure digests.
 pub const SOLVENCY_CLOSURE_DOMAIN: &[u8] = b"fa:solvency-cash-flow-closure:v1";
 
-/// Entry extension 33, `fa:obligation-maturity:v1`: the per-entry inline
+/// Entry extension 33, `fa:obligation-maturity:v1|v2`: the per-entry inline
 /// obligation maturity terms, registered and validated by fa-model.
 pub const OBLIGATION_MATURITY_EXT_TAG: u16 = fa_model::entry::OBLIGATION_MATURITY_EXTENSION;
 
@@ -334,7 +334,9 @@ fn validate_evidence_refs(
 }
 
 /// Extract an `AuthenticatedObligationSchedule` from inline
-/// `fa:obligation-maturity:v1` entry extensions when present on the snapshot.
+/// `fa:obligation-maturity:v1|v2` entry extensions when present on the snapshot.
+/// Debit-side receivable schedules are deliberately excluded: their maturity
+/// neither creates a liability nor guarantees an expected cash inflow.
 pub fn schedule_from_inline_extensions(
     procedure: &str,
     snapshot: &Snapshot,
@@ -350,6 +352,14 @@ pub fn schedule_from_inline_extensions(
             if *tag != OBLIGATION_MATURITY_EXT_TAG {
                 continue;
             }
+            any_inline = true;
+            fa_model::obligation::validate_terms(bytes, &e.entry.proposal.legs).map_err(
+                |(field, why)| LanternError::Parameter {
+                    procedure: procedure.into(),
+                    name: "obligation_schedule".into(),
+                    message: format!("inline maturity on entry {:032x}: {field} {why}", e.vid.0),
+                },
+            )?;
             let decoded = InlineObligationTerms::decode_list(bytes)?;
             for item in decoded {
                 let idx = usize::from(item.ordinal);
@@ -363,13 +373,9 @@ pub fn schedule_from_inline_extensions(
                         ),
                     });
                 };
-                // Debit maturity v2 describes a counterparty's obligation to
-                // this book. It is neither our liability nor an authenticated
-                // forecast inflow for this solvency procedure.
                 if leg.side != Side::Credit {
                     continue;
                 }
-                any_inline = true;
                 let entity = crate::projection::scoped_entity(&scope, leg)?;
                 let mut evidence_refs = e.entry.proposal.evidence.clone();
                 if evidence_refs.is_empty() {
@@ -1059,7 +1065,7 @@ pub fn evaluate_cash_flow_solvency(
 }
 
 /// Unscheduled fallback used only when no authenticated maturity schedule or
-/// inline `fa:obligation-maturity:v1` terms are supplied. Explicitly labels the
+/// inline `fa:obligation-maturity:v1|v2` terms are supplied. Explicitly labels the
 /// finding `maturity_basis=unscheduled_book_liability_screen` so missing
 /// maturity is never presented as a contractual maturity-schedule conclusion.
 pub(crate) fn run_unscheduled_book_screen(
@@ -2421,6 +2427,130 @@ fn make_posting(
 
 #[cfg(test)]
 #[test]
+fn receivable_maturity_never_becomes_a_debt_or_an_assumed_cash_receipt() {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, cash_vid, ap_vid, doc_oid) = test_fixture(as_of);
+    let ar_vid = account_vid(book.book_id, "1100");
+    let usd = book.units.lookup("USD").unwrap();
+    snapshot.accounts.insert(
+        ar_vid,
+        AccountRow {
+            vid: ar_vid,
+            code: "1100".into(),
+            name: "Accounts Receivable".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            created_at: CommitSeq(1),
+            limit: None,
+        },
+    );
+    // A balanced mixed book has 100 cash, 600 receivable and 700 payable.
+    // Both contractual schedules mature inside the same 30-day horizon.
+    let legs = vec![
+        LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 100)),
+        LegPayload::simple(Side::Debit, ar_vid, Amount::new(usd, 600)),
+        LegPayload::simple(Side::Credit, ap_vid, Amount::new(usd, 700)),
+    ];
+    let terms = vec![
+        InlineObligationTerms {
+            ordinal: 1,
+            status: ObligationStatus::Contractual,
+            installments: vec![ObligationInstallment {
+                due_date: day(2026, 5, 20),
+                amount: 600,
+            }],
+        },
+        InlineObligationTerms {
+            ordinal: 2,
+            status: ObligationStatus::Contractual,
+            installments: vec![ObligationInstallment {
+                due_date: day(2026, 5, 20),
+                amount: 700,
+            }],
+        },
+    ];
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(10),
+        day(2026, 4, 1),
+        EntryClass::ORIGINAL,
+        legs.clone(),
+        vec![InlineObligationTerms::to_extension_for_legs(&terms, &legs).unwrap()],
+        doc_oid,
+    ));
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    let schedule = schedule_from_inline_extensions(procedure, &snapshot, as_of)
+        .unwrap()
+        .unwrap();
+    assert_eq!(schedule.obligations.len(), 1);
+    assert_eq!(schedule.obligations[0].account, ap_vid);
+    assert_eq!(schedule.obligations[0].ordinal, 2);
+    assert!(schedule.expected_inflows.is_empty());
+    let mut meter = Meter::new(procedure, None, None);
+    let report =
+        evaluate_cash_flow_solvency(procedure, &snapshot, &book, 30, &schedule, &mut meter)
+            .unwrap();
+    let unit = &report.units[&(usd.0, None)];
+    assert_eq!(unit.liquid_cash, 100);
+    assert_eq!(unit.maturing_obligations, 700);
+    assert_eq!(unit.expected_inflows, 0);
+    assert_eq!(unit.shortfall, 600);
+
+    // An independently supplied schedule also cannot classify a receivable
+    // as a liability, even when it carries genuine maturity and evidence.
+    let mut forged = schedule.clone();
+    let mut receivable = forged.obligations[0].clone();
+    receivable.ordinal = 1;
+    receivable.account = ar_vid;
+    receivable.installments[0].amount = 600;
+    forged.obligations.push(receivable);
+    assert!(matches!(
+        evaluate_cash_flow_solvency(
+            procedure,
+            &snapshot,
+            &book,
+            30,
+            &forged,
+            &mut meter,
+        ),
+        Err(LanternError::Parameter { message, .. })
+            if message.contains("does not match any liability leg")
+    ));
+
+    // Having an AR schedule does not excuse an omitted AP schedule.
+    *snapshot.entries.last_mut().unwrap() = make_posting(
+        &book,
+        VId(10),
+        day(2026, 4, 1),
+        EntryClass::ORIGINAL,
+        legs.clone(),
+        vec![InlineObligationTerms::to_extension_for_legs(&terms[..1], &legs).unwrap()],
+        doc_oid,
+    );
+    let incomplete = schedule_from_inline_extensions(procedure, &snapshot, as_of)
+        .unwrap()
+        .unwrap();
+    assert!(incomplete.obligations.is_empty());
+    assert!(incomplete.expected_inflows.is_empty());
+    assert!(matches!(
+        evaluate_cash_flow_solvency(
+            procedure,
+            &snapshot,
+            &book,
+            30,
+            &incomplete,
+            &mut meter,
+        ),
+        Err(LanternError::Parameter { message, .. })
+            if message.contains("incomplete obligation schedule")
+    ));
+}
+
+
+#[cfg(test)]
+#[test]
 fn debit_maturity_is_neither_a_liability_nor_a_forecast_inflow() {
     let as_of = day(2026, 4, 30);
     let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
@@ -2449,11 +2579,14 @@ fn debit_maturity_is_neither_a_liability_nor_a_forecast_inflow() {
         document,
     ));
     let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
-    assert!(
-        schedule_from_inline_extensions(procedure, &snapshot, as_of)
-            .unwrap()
-            .is_none()
-    );
+    // A debit-only extension is not a liability. The schedule object still
+    // exists so a later omitted payable is an incomplete schedule, matching
+    // the receivable-only refusal, rather than a missing extension.
+    let debit_only = schedule_from_inline_extensions(procedure, &snapshot, as_of)
+        .unwrap()
+        .unwrap();
+    assert!(debit_only.obligations.is_empty());
+    assert!(debit_only.expected_inflows.is_empty());
     snapshot.entries.push(make_posting(
         &book,
         VId(11),

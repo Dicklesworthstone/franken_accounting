@@ -1,10 +1,14 @@
-//! `obligation_maturity` on an entry intent (plan §11.6, bead fa-5dpd): when the
-//! obligations an entry books on its credit legs fall due. They are
-//! journaled with the entry as extension 33 (`fa:obligation-maturity:v1`),
-//! which the kernel validates against the legs, so `solvency.cash_flow_test`
-//! counts a debt by when it is due rather than when it was booked.
-//! `receivable_maturity` uses extension 33 v2 for debit items; the two
-//! declarations are mutually exclusive and retain distinct side contracts.
+//! `obligation_maturity` on an entry intent (plan §11.6, beads fa-5dpd and
+//! fa-0hs4.13): contractual maturity on payable credit legs and receivable
+//! debit legs. Extension 33 retains v1 bytes for credit-only declarations;
+//! declarations naming a debit leg use v2. The kernel validates the terms
+//! against the legs; due-date aging preserves both sides, while the
+//! cash-flow solvency procedure considers only liabilities.
+//!
+//! `receivable_maturity` is the explicit debit-only spelling of the same
+//! extension. It always records version 2, refuses a credit leg, and cannot
+//! be combined with `obligation_maturity`. Credit-only `obligation_maturity`
+//! keeps the historical v1 bytes.
 
 use fa::Book;
 use fa_model::EntryPayload;
@@ -12,15 +16,15 @@ use fa_model::entry::{EXTENSIONS_MINOR, OBLIGATION_MATURITY_EXTENSION};
 use fa_model::obligation::{
     InlineObligationTerms, ObligationInstallment, ObligationStatus, validate_terms,
 };
-use fa_money::Amount;
+use fa_money::{Amount, Side};
 use fa_time::DateDay;
 
 use crate::cli::{Fail, usage};
 use crate::json::Json;
 
-pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of a credit leg (v1). Use receivable_maturity instead for debit legs (v2), never both fields. Status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
+pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of a payable credit leg or a receivable debit leg. Credit-only schedules stay extension 33 v1; naming a debit leg selects v2. "receivable_maturity" is debit legs only and always v2. Never supply both fields. Status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
 
-/// The intent's `obligation_maturity`, if any, as the proposal's extension 33.
+/// The intent's maturity, if any, as the proposal's extension 33.
 pub(crate) fn declare_terms(
     book: &Book,
     doc: &Json,
@@ -55,7 +59,9 @@ pub(crate) fn declare_terms(
                 .map_err(|_| usage(format!("{what}: ordinal {n} is out of range"), USAGE))?,
             _ => {
                 return Err(usage(
-                    format!("{what}: ordinal must be a 0-based leg index"),
+                    format!(
+                        "{what}: ordinal must be the 0-based index of the payable or receivable leg"
+                    ),
                     USAGE,
                 ));
             }
@@ -66,6 +72,12 @@ pub(crate) fn declare_terms(
                 USAGE,
             ));
         };
+        if receivable && leg.side != Side::Debit {
+            return Err(usage(
+                format!("{what}: receivable_maturity requires a debit leg"),
+                USAGE,
+            ));
+        }
         let leg_unit = leg.amount.unit;
         let status = match item.get("status").and_then(Json::as_str) {
             Some("contractual") => ObligationStatus::Contractual,
@@ -139,10 +151,11 @@ pub(crate) fn declare_terms(
     terms.sort_by_key(|term| term.ordinal);
     let bytes = if receivable {
         InlineObligationTerms::encode_receivable_list(&terms)
+            .map_err(|e| usage(format!("{field}: {e:?}"), USAGE))?
     } else {
-        InlineObligationTerms::encode_list(&terms)
-    }
-    .map_err(|e| usage(format!("{field}: {e:?}"), USAGE))?;
+        InlineObligationTerms::encode_list_for_legs(&terms, &proposal.legs)
+            .map_err(|e| usage(format!("obligation_maturity: {e:?}"), USAGE))?
+    };
     validate_terms(&bytes, &proposal.legs)
         .map_err(|(field, why)| usage(format!("{field} {why}"), USAGE))?;
     proposal.schema_minor = proposal.schema_minor.max(EXTENSIONS_MINOR);

@@ -25,7 +25,7 @@
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason, Writer};
 
-mod access;
+pub(crate) mod access;
 mod reconciled;
 
 /// Record kinds covered by the accumulator (plan §13.2, bead `fa-va02`):

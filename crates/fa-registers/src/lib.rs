@@ -2246,6 +2246,40 @@ pub fn period_activity_excluding_classes<V: asupersync::fs::Vfs + Clone>(
     )
 }
 
+/// Cumulative activity through a civil date, using the same accounting-class
+/// and verified reversal-lineage policy as period activity. Unlike stock,
+/// this can exclude Closing transfers without erasing the income they close.
+/// The caller must admit the complete as-of scope before calling this fold.
+pub fn activity_as_of_excluding_classes<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    day: DateDay,
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+) -> Result<TrialBalance, RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
+    let mut periods = BTreeSet::new();
+    for row in db.vertices_at(seq)? {
+        if row.labels.contains(&label::PERIOD) {
+            let period = PeriodRow::decode(&row)?;
+            if period.calendar_id == book.calendar.id && period.start <= day {
+                periods.insert(period.code);
+            }
+        }
+    }
+    let mut activity = report_at(
+        db,
+        book,
+        periods.into_iter().collect(),
+        seq,
+        Some(day),
+        excluded_classes,
+        None,
+    )?;
+    activity.activity = true;
+    Ok(activity)
+}
+
 /// The legs a dimension-filtered report folds (plan §4.1, bead fa-ficc):
 /// those tagging `dimension` with one of `values`, typically a value and
 /// its descendants.

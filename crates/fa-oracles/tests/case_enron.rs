@@ -1445,3 +1445,65 @@ fn enron_e2a_range_rule_example() {
         assert!(eval(planted).is_err(), "{planted}");
     }
 }
+
+/// E-P-01 (plan §7.2a): RR1e's intent cites the two-reader interpretation,
+/// never the scheme-level RR1 itself (§2.1: a scheme backs an entry only
+/// through an interpretation). A copy whose intent cites RR1 directly fails
+/// K-SCOPE, naming the intent.
+#[test]
+fn enron_e3_rr1e_cites_the_interpretation() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    let rr1e = case.books["native"]
+        .intents
+        .iter()
+        .find(|i| i.id == "RR1e")
+        .expect("RR1e's intent");
+    assert_eq!(rr1e.fact, "RR1e");
+    assert_ne!(report(&case, "K-SCOPE").verdict, Verdict::Fail);
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "books/native.toml",
+        "id = \"RR1e\"\nfact = \"RR1e\"\n",
+        "fact = \"RR1e\"",
+        "fact = \"RR1\"",
+    );
+    let planted = load_copy(&files).expect("the planted copy loads");
+    let scope = report(&planted, "K-SCOPE");
+    assert_eq!(scope.verdict, Verdict::Fail);
+    assert!(
+        scope
+            .failures
+            .iter()
+            .any(|f| f.row == "RR1e" && f.reason.contains("scheme-level")),
+        "{}",
+        scope.render(Some("enron"))
+    );
+}
+
+/// No E-P-01 cell is record-consistent, so the row renders as a branch
+/// table, whose sentence says the record fixes none of its cells. A copy
+/// rendering it as `P.first_refusal`, whose sentence names the record's
+/// cell, is refused at load.
+#[test]
+fn enron_e3_p01_is_a_branch_table() {
+    let case = load_copy(&enron()).expect("the committed case loads");
+    let set = case.expectations.as_ref().expect("expectations");
+    let row = set.get("E-P-01").expect("E-P-01");
+    assert_eq!(row.fields.str("statement_template"), Some("P.branch_table"));
+    let mut files = enron();
+    edit_row(
+        &mut files,
+        "expectations.toml",
+        "id = \"E-P-01\"\n",
+        "statement_template = \"P.branch_table\"",
+        "statement_template = \"P.first_refusal\"",
+    );
+    let errors = load_copy(&files).expect_err("a first-refusal sentence with no record cell");
+    assert!(
+        errors.iter().any(|e| e.kind == LoadErrorKind::UnknownValue
+            && e.row.as_deref() == Some("E-P-01")
+            && e.detail.contains("no cell is record-consistent")),
+        "{errors:#?}"
+    );
+}

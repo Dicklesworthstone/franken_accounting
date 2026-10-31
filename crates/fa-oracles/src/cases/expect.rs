@@ -1066,6 +1066,37 @@ impl<'a> Check<'a, '_> {
                 self.push(line, target, LoadErrorKind::DuplicateId, format!("{exp}'s target {target} marks {n} cells `default`; a declared default selects one"));
             }
         }
+        // A P row's sentence names the record's cell (`P.first_refusal`)
+        // only when the record fixes one; a branch table whose cells the
+        // record leaves open renders as `P.branch_table`.
+        for e in set.expectations.iter().filter(|e| e.kind == E::P) {
+            let cells: Vec<_> = set
+                .branch_cells
+                .iter()
+                .filter(|c| c.expectation == e.id)
+                .collect();
+            let record = cells
+                .iter()
+                .any(|c| c.fields.bool("record_consistent") == Some(true));
+            let template = e.fields.str("statement_template").unwrap_or_default();
+            let why = match template {
+                "P.first_refusal" if !cells.is_empty() && !record => Some(
+                    "no cell is record-consistent, so no row is the record's: the row is a `P.branch_table`",
+                ),
+                "P.branch_table" if cells.is_empty() || record => {
+                    Some("a `P.branch_table` is a table of cells none of which the record fixes")
+                }
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.push(
+                    e.fields.line,
+                    &e.id,
+                    LoadErrorKind::UnknownValue,
+                    format!("`statement_template = \"{template}\"`: {why}"),
+                );
+            }
+        }
         let mut note_ids = BTreeSet::new();
         for n in &set.notes {
             if !note_ids.insert(n.id.as_str()) {

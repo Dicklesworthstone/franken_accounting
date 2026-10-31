@@ -7,6 +7,9 @@
 //! fixed-scale integer arithmetic. A failed calculation check is a
 //! statement-definition or concept-mapping defect and fails the gate.
 
+mod activity;
+pub use activity::{XbrlIncomeAttribution, XbrlReportInputs, read_xbrl_income_attribution};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::AccountType;
@@ -26,6 +29,133 @@ pub const EMBEDDED_US_GAAP_2026_SMALL_COMPANY_XSD: &str =
 /// Vendored US-GAAP 2026 small-company calculation linkbase (`us_gaap_2026_small_company_cal.xml`).
 pub const EMBEDDED_US_GAAP_2026_SMALL_COMPANY_CAL_XML: &str =
     include_str!("../corpora/us_gaap_2026_small_company_cal.xml");
+
+const EQUITY_PROFILE: &str = "parent-minority-v1";
+const EQUITY_ROLE: &str = "http://frankenaccounting.org/role/TypeLevelStatementsEquityV2";
+
+/// The accounts assigned the registered `noncontrolling_interest` role at
+/// the journal's recorded coordinate. Account codes and names never imply
+/// this attribution. The caller supplies the historical, authorized role fold.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct XbrlEquityAttribution {
+    pub noncontrolling_accounts: BTreeSet<String>,
+}
+
+impl XbrlEquityAttribution {
+    fn encoded_accounts(&self) -> String {
+        self.noncontrolling_accounts
+            .iter()
+            .map(|code| hex_encode(code.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn digest(&self, coordinate: &ExportCoordinate) -> [u8; 32] {
+        fa_model::domain_digest(
+            b"fa:xbrl-equity-attribution:v1",
+            &[
+                &coordinate.certificate_digest,
+                self.encoded_accounts().as_bytes(),
+            ],
+        )
+    }
+
+    fn validate(&self, journal: &FormatJournal) -> Result<(), FormatError> {
+        for code in &self.noncontrolling_accounts {
+            let account = journal
+                .accounts
+                .iter()
+                .find(|account| account.code == *code)
+                .ok_or_else(|| FormatError::UnknownAccount {
+                    format: "xbrl_equity_attribution_v1",
+                    account_code: code.clone(),
+                })?;
+            if account.account_type != AccountType::EQUITY {
+                return Err(equity_error(format!(
+                    "noncontrolling interest account {code:?} is not an Equity account"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn equity_error(detail: impl Into<String>) -> FormatError {
+    FormatError::Parse {
+        format: "xbrl_equity_attribution_v1",
+        detail: detail.into(),
+    }
+}
+
+fn coordinate_comment(xml: &str) -> Result<&str, FormatError> {
+    let mut comments = xml
+        .lines()
+        .filter(|line| line.trim().starts_with("<!-- fa:xbrl-coordinate "));
+    let comment = comments
+        .next()
+        .ok_or_else(|| equity_error("missing fa:xbrl-coordinate certificate comment"))?;
+    if comments.next().is_some() {
+        return Err(equity_error(
+            "multiple fa:xbrl-coordinate certificate comments",
+        ));
+    }
+    Ok(comment)
+}
+
+/// Read the export's declared equity profile. This is content, not authority:
+/// verification against a book must obtain its own role fold at the saved
+/// coordinate. `None` identifies the historical type-level encoding.
+pub fn read_xbrl_equity_attribution(
+    xml: &str,
+) -> Result<Option<XbrlEquityAttribution>, FormatError> {
+    let comment = coordinate_comment(xml)?;
+    let Some(profile) = extract_xml_attr(comment, "equity_profile") else {
+        if extract_xml_attr(comment, "noncontrolling_accounts").is_some()
+            || extract_xml_attr(comment, "equity_attribution_digest").is_some()
+        {
+            return Err(equity_error("equity metadata has no versioned profile"));
+        }
+        return Ok(None);
+    };
+    if profile != EQUITY_PROFILE {
+        return Err(equity_error(format!(
+            "unsupported equity profile {profile:?}"
+        )));
+    }
+    let encoded = extract_xml_attr(comment, "noncontrolling_accounts")
+        .ok_or_else(|| equity_error("missing noncontrolling_accounts"))?;
+    let mut attribution = XbrlEquityAttribution::default();
+    if !encoded.is_empty() {
+        for item in encoded.split(',') {
+            if item.is_empty() || !item.len().is_multiple_of(2) || !item.is_ascii() {
+                return Err(equity_error("noncanonical noncontrolling account encoding"));
+            }
+            let bytes = item
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| {
+                    let hi = (pair[0] as char).to_digit(16);
+                    let lo = (pair[1] as char).to_digit(16);
+                    match (hi, lo) {
+                        (Some(hi), Some(lo)) => Ok((hi * 16 + lo) as u8),
+                        _ => Err(equity_error("noncontrolling account is not hex")),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let code = String::from_utf8(bytes)
+                .map_err(|_| equity_error("noncontrolling account is not UTF-8"))?;
+            if !attribution.noncontrolling_accounts.insert(code) {
+                return Err(equity_error("duplicate noncontrolling account"));
+            }
+        }
+    }
+    if attribution.encoded_accounts() != encoded {
+        return Err(equity_error(
+            "noncontrolling accounts are not canonically ordered",
+        ));
+    }
+    Ok(Some(attribution))
+}
 
 /// XBRL 2.1 period type for a monetary taxonomy concept (`instant` or `duration`, plan §12.6, `fa-faim`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -95,11 +225,6 @@ impl StatementXbrlMapping {
                     XbrlBalanceSide::Credit,
                 ),
                 b(
-                    "noncontrolling_interest",
-                    "us-gaap:MinorityInterest",
-                    XbrlBalanceSide::Credit,
-                ),
-                b(
                     "unclosed_earnings",
                     "us-gaap:RetainedEarningsAccumulatedDeficit",
                     XbrlBalanceSide::Credit,
@@ -116,6 +241,25 @@ impl StatementXbrlMapping {
                 ),
             ],
         }
+    }
+
+    /// Parent equity includes the unclosed earnings; minority equity is a
+    /// separate registered-role fold. Unclosed earnings alone are not an
+    /// accumulated retained-earnings balance and have no standalone fact here.
+    pub fn us_gaap_attributed_balance_sheet() -> Self {
+        let mut mapping = Self::us_gaap_type_level_balance_sheet();
+        mapping.mapping_id = "fa_xbrl_us_gaap_attributed_balance_sheet_v1".into();
+        mapping.role_uri = EQUITY_ROLE.into();
+        mapping
+            .bindings
+            .retain(|binding| binding.line_code != "unclosed_earnings");
+        mapping.bindings.push(XbrlConceptBinding {
+            line_code: "noncontrolling_interest".into(),
+            concept: "us-gaap:MinorityInterest".into(),
+            period_type: XbrlPeriodType::Instant,
+            balance_side: Some(XbrlBalanceSide::Credit),
+        });
+        mapping
     }
 
     /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Income Statement.
@@ -146,6 +290,31 @@ impl StatementXbrlMapping {
                 ),
             ],
         }
+    }
+
+    /// Income activity with the NCI allocation presented separately. FASB's
+    /// Other Comprehensive Income implementation guide identifies ProfitLoss
+    /// as group profit, NetIncomeLoss as parent profit, and the NCI amount as
+    /// a debit-normal attribution, not an operating expense.
+    pub fn us_gaap_income_activity() -> Self {
+        let mut mapping = Self::us_gaap_type_level_income_statement();
+        mapping.mapping_id = "fa_xbrl_us_gaap_income_activity_v2".into();
+        mapping.role_uri = activity::INCOME_ROLE.into();
+        mapping.bindings.extend([
+            XbrlConceptBinding {
+                line_code: "group_profit".into(),
+                concept: "us-gaap:ProfitLoss".into(),
+                period_type: XbrlPeriodType::Duration,
+                balance_side: Some(XbrlBalanceSide::Credit),
+            },
+            XbrlConceptBinding {
+                line_code: "noncontrolling_income".into(),
+                concept: "us-gaap:NetIncomeLossAttributableToNoncontrollingInterest".into(),
+                period_type: XbrlPeriodType::Duration,
+                balance_side: Some(XbrlBalanceSide::Debit),
+            },
+        ]);
+        mapping
     }
 
     /// US-GAAP small-company classified Balance Sheet concept mapping (`StatementOfFinancialPositionClassified`).
@@ -1303,30 +1472,76 @@ pub fn export_statement_lines_to_xbrl(
 /// the calculation linkbase, and emit a deterministic XBRL 2.1 instance XML document
 /// carrying the [`ExportCoordinate`] certificate (`fa export xbrl`, bead `fa-faim`).
 pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, FormatError> {
-    journal
-        .coordinate
-        .verify(&FormatJournal::compute_content_digest(
-            &journal.accounts,
-            &journal.entries,
-            &journal.assertions,
-        ))?;
+    let noncontrolling_accounts = journal
+        .accounts
+        .iter()
+        .filter(|account| {
+            account
+                .roles
+                .iter()
+                .any(|role| role == "noncontrolling_interest")
+        })
+        .map(|account| account.code.clone())
+        .collect::<BTreeSet<_>>();
+    write_format_journal_xbrl_xml_with_equity(
+        journal,
+        &XbrlEquityAttribution {
+            noncontrolling_accounts,
+        },
+    )
+}
+
+/// Export parent and noncontrolling equity separately under the supplied
+/// historical role selection. The selection and its coordinate-bound digest
+/// are retained in the export. Its digest is not a signature or proof that
+/// a caller's role declarations were authorized.
+pub fn write_format_journal_xbrl_xml_with_equity(
+    journal: &FormatJournal,
+    attribution: &XbrlEquityAttribution,
+) -> Result<String, FormatError> {
+    attribution.validate(journal)?;
+    write_format_journal_xbrl_profile(journal, Some(attribution), None)
+}
+
+/// Export v2 using independently selected historical income activity.
+/// Closing transfers remain in balance-sheet stock but cannot erase revenue
+/// and expense activity. The published default and equity-v1 writers retain
+/// their exact encodings for callers and historical export verification.
+pub fn write_format_journal_xbrl_xml_with_activity(
+    journal: &FormatJournal,
+    inputs: &XbrlReportInputs,
+) -> Result<String, FormatError> {
+    inputs.validate(journal)?;
+    write_format_journal_xbrl_profile(journal, Some(&inputs.equity), Some(inputs))
+}
+
+/// Reproduce the historical type-level encoding when verifying an existing
+/// export. New CLI exports use the explicitly versioned activity profile.
+pub fn write_legacy_format_journal_xbrl_xml(
+    journal: &FormatJournal,
+) -> Result<String, FormatError> {
+    write_format_journal_xbrl_profile(journal, None, None)
+}
+
+fn write_format_journal_xbrl_profile(
+    journal: &FormatJournal,
+    attribution: Option<&XbrlEquityAttribution>,
+    activity: Option<&XbrlReportInputs>,
+) -> Result<String, FormatError> {
     let unit_catalog = UnitCatalog::embedded()?;
     let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
-    let linkbase = XbrlCalculationLinkbase::embedded_for_role(
-        "http://frankenaccounting.org/role/TypeLevelStatements",
-    )?;
+    let role = if activity.is_some() {
+        activity::INCOME_ROLE
+    } else if attribution.is_some() {
+        EQUITY_ROLE
+    } else {
+        "http://frankenaccounting.org/role/TypeLevelStatements"
+    };
+    let linkbase = XbrlCalculationLinkbase::embedded_for_role(role)?;
 
     let mut acct_type_by_code: BTreeMap<&str, AccountType> = BTreeMap::new();
-    let mut minority_accounts = BTreeSet::new();
     for acc in &journal.accounts {
         acct_type_by_code.insert(acc.code.as_str(), acc.account_type);
-        if acc
-            .roles
-            .iter()
-            .any(|role| role == "noncontrolling_interest")
-        {
-            minority_accounts.insert(acc.code.as_str());
-        }
     }
 
     let balances = journal.fold_balances()?;
@@ -1372,17 +1587,22 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
                 format: "xbrl_gl_instance_v1",
                 detail: "account type summation overflow".into(),
             })?;
-        if minority_accounts.contains(code.as_str()) {
-            let minority = minority_sums.entry(uid.0).or_insert(0);
+        if attribution.is_some_and(|roles| roles.noncontrolling_accounts.contains(code)) {
+            let minority = minority_sums.entry(uid.0).or_default();
             *minority = minority
                 .checked_add(natural)
                 .ok_or_else(|| FormatError::Overflow {
-                    format: "xbrl_gl_instance_v1",
-                    detail: "noncontrolling interest summation overflow".into(),
+                    format: "xbrl_equity_attribution_v1",
+                    detail: "noncontrolling equity summation overflow".into(),
                 })?;
         }
     }
 
+    let income_totals = activity
+        .map(|input| input.totals(journal))
+        .transpose()?
+        .unwrap_or_default();
+    units_seen.extend(income_totals.keys().copied());
     let mut bs_lines = Vec::new();
     let mut is_lines = Vec::new();
     for uid in units_seen {
@@ -1407,16 +1627,6 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
                     format: "xbrl_gl_instance_v1",
                     detail: "total equity overflow".into(),
                 })?;
-        let minority = minority_sums.get(&uid).copied().unwrap_or(0);
-        // Unclosed income belongs to the parent in this profile: attribution
-        // of income to noncontrolling interests is a separate intent contract.
-        let parent_equity =
-            total_equity
-                .checked_sub(minority)
-                .ok_or_else(|| FormatError::Overflow {
-                    format: "xbrl_gl_instance_v1",
-                    detail: "parent equity overflow".into(),
-                })?;
         let liabilities_and_equity =
             liabilities
                 .checked_add(total_equity)
@@ -1425,10 +1635,26 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
                     detail: "liabilities and equity overflow".into(),
                 })?;
 
+        let minority = minority_sums.get(&uid).copied().unwrap_or_default();
+        let parent_equity =
+            total_equity
+                .checked_sub(minority)
+                .ok_or_else(|| FormatError::Overflow {
+                    format: "xbrl_equity_attribution_v1",
+                    detail: "parent equity subtraction overflow".into(),
+                })?;
+
         for (code, val) in [
             ("assets", assets),
             ("liabilities", liabilities),
-            ("equity", parent_equity),
+            (
+                "equity",
+                if attribution.is_some() {
+                    parent_equity
+                } else {
+                    equity
+                },
+            ),
             ("unclosed_earnings", unclosed_earnings),
             ("total_equity", total_equity),
             ("liabilities_and_equity", liabilities_and_equity),
@@ -1439,7 +1665,8 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
                 amounts: vec![val],
             });
         }
-        if !minority_accounts.is_empty() {
+
+        if attribution.is_some_and(|roles| !roles.noncontrolling_accounts.is_empty()) {
             bs_lines.push(EvaluatedStatementLine {
                 code: "noncontrolling_interest".into(),
                 unit_id: uid,
@@ -1447,10 +1674,40 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
             });
         }
 
+        let (income_revenue, income_expense, parent_income) = if activity.is_some() {
+            let (income_revenue, income_expense, nci_income) =
+                income_totals.get(&uid).copied().unwrap_or_default();
+            let group_profit = income_revenue.checked_sub(income_expense).ok_or_else(|| {
+                FormatError::Overflow {
+                    format: "xbrl_income_activity_v2",
+                    detail: "group profit subtraction overflow".into(),
+                }
+            })?;
+            let parent_income =
+                group_profit
+                    .checked_sub(nci_income)
+                    .ok_or_else(|| FormatError::Overflow {
+                        format: "xbrl_income_activity_v2",
+                        detail: "parent profit subtraction overflow".into(),
+                    })?;
+            for (code, value) in [
+                ("group_profit", group_profit),
+                ("noncontrolling_income", nci_income),
+            ] {
+                is_lines.push(EvaluatedStatementLine {
+                    code: code.into(),
+                    unit_id: uid,
+                    amounts: vec![value],
+                });
+            }
+            (income_revenue, income_expense, parent_income)
+        } else {
+            (revenue, expense, unclosed_earnings)
+        };
         for (code, val) in [
-            ("revenue", revenue),
-            ("expense", expense),
-            ("net_income", unclosed_earnings),
+            ("revenue", income_revenue),
+            ("expense", income_expense),
+            ("net_income", parent_income),
         ] {
             is_lines.push(EvaluatedStatementLine {
                 code: code.into(),
@@ -1473,9 +1730,21 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
         lines: is_lines,
     };
 
+    let mut bs_mapping = if attribution.is_some() {
+        StatementXbrlMapping::us_gaap_attributed_balance_sheet()
+    } else {
+        StatementXbrlMapping::us_gaap_type_level_balance_sheet()
+    };
+    bs_mapping.role_uri = role.into();
+    let mut is_mapping = if activity.is_some() {
+        StatementXbrlMapping::us_gaap_income_activity()
+    } else {
+        StatementXbrlMapping::us_gaap_type_level_income_statement()
+    };
+    is_mapping.role_uri = role.into();
     let (bs_inst, _) = export_statement_lines_to_xbrl(
         &bs_stmt,
-        &StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
+        &bs_mapping,
         &journal.coordinate.book_name,
         &unit_catalog,
         &schema,
@@ -1483,7 +1752,7 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
     )?;
     let (mut is_inst, _) = export_statement_lines_to_xbrl(
         &is_stmt,
-        &StatementXbrlMapping::us_gaap_type_level_income_statement(),
+        &is_mapping,
         &journal.coordinate.book_name,
         &unit_catalog,
         &schema,
@@ -1515,8 +1784,18 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
     let _ = validate_calculation_linkbase_detailed(&combined, &linkbase, Some(&schema))?;
 
     let mut xml = write_xbrl_instance_xml(&combined);
+    let mut equity_metadata = attribution.map_or_else(String::new, |roles| {
+        format!(
+            " equity_profile=\"{EQUITY_PROFILE}\" noncontrolling_accounts=\"{}\" equity_attribution_digest=\"{}\"",
+            roles.encoded_accounts(),
+            hex_encode(&roles.digest(&journal.coordinate)),
+        )
+    });
+    if let Some(activity) = activity {
+        equity_metadata.push_str(&activity.metadata(&journal.coordinate)?);
+    }
     let cert_comment = format!(
-        "<!-- fa:xbrl-coordinate book_name=\"{}\" base_unit=\"{}\" base_unit_scale=\"{}\" effective_through=\"{}\" known_at_seq=\"{}\" entry_count=\"{}\" content_digest=\"{}\" certificate_digest=\"{}\" -->\n",
+        "<!-- fa:xbrl-coordinate book_name=\"{}\" base_unit=\"{}\" base_unit_scale=\"{}\" effective_through=\"{}\" known_at_seq=\"{}\" entry_count=\"{}\" content_digest=\"{}\" certificate_digest=\"{}\"{equity_metadata} -->\n",
         xml_escape(&journal.coordinate.book_name),
         xml_escape(&journal.coordinate.base_unit_code),
         journal.coordinate.base_unit_scale,
@@ -1532,16 +1811,24 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
     Ok(xml)
 }
 
-/// Extract and verify the [`ExportCoordinate`] embedded in an XBRL instance XML document
-/// produced by [`write_format_journal_xbrl_xml`].
+/// Validate a published XBRL profile's canonical XML, taxonomy calculations,
+/// coordinate and attribution metadata integrity. These checks do not prove
+/// historical roles or complete income activity: book-backed verification
+/// independently reconstructs the selected sources and compares exact bytes.
 pub fn verify_format_journal_xbrl_xml(
     xml: &str,
 ) -> Result<(ExportCoordinate, XbrlValidationReport), FormatError> {
+    let attribution = read_xbrl_equity_attribution(xml)?;
+    let income_attribution = read_xbrl_income_attribution(xml)?;
     let instance = read_xbrl_instance_xml(xml)?;
     let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
-    let linkbase = XbrlCalculationLinkbase::embedded_for_role(
-        "http://frankenaccounting.org/role/TypeLevelStatements",
-    )?;
+    let linkbase = XbrlCalculationLinkbase::embedded_for_role(if income_attribution.is_some() {
+        activity::INCOME_ROLE
+    } else if attribution.is_some() {
+        EQUITY_ROLE
+    } else {
+        "http://frankenaccounting.org/role/TypeLevelStatements"
+    })?;
     let report = validate_calculation_linkbase_detailed(&instance, &linkbase, Some(&schema))?;
 
     let stripped_xml: String = xml
@@ -1556,13 +1843,7 @@ pub fn verify_format_journal_xbrl_xml(
         });
     }
 
-    let comment_line = xml
-        .lines()
-        .find(|l| l.trim().starts_with("<!-- fa:xbrl-coordinate "))
-        .ok_or_else(|| FormatError::Parse {
-            format: "xbrl_gl_instance_v1",
-            detail: "missing fa:xbrl-coordinate certificate comment".into(),
-        })?;
+    let comment_line = coordinate_comment(xml)?;
     let attr = |name: &str| -> Result<String, FormatError> {
         extract_xml_attr(comment_line, name)
             .map(xml_unescape)
@@ -1611,6 +1892,23 @@ pub fn verify_format_journal_xbrl_xml(
         account_scope: None,
     };
     coordinate.verify(&content_digest)?;
+    if let Some(attribution) = &attribution {
+        let declared: [u8; 32] = hex_decode(
+            "xbrl_equity_attribution_v1",
+            &attr("equity_attribution_digest")?,
+        )?;
+        if declared != attribution.digest(&coordinate) {
+            return Err(equity_error(
+                "equity attribution digest differs from its coordinate",
+            ));
+        }
+    }
+    if let Some(income) = income_attribution {
+        let equity = attribution
+            .as_ref()
+            .ok_or_else(|| equity_error("income activity profile has no equity attribution"))?;
+        income.verify(xml, &coordinate, equity)?;
+    }
     Ok((coordinate, report))
 }
 
@@ -1623,238 +1921,6 @@ impl XbrlFact {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn equity_journal(classified: bool, income: i128) -> FormatJournal {
-        use crate::{FormatAccount, FormatEntry, FormatLeg};
-        use fa_model::EntryClass;
-        use fa_money::{Amount, Side};
-
-        let day = DateDay::from_ymd(2026, 3, 31).unwrap();
-        let (usd, scale) = UnitCatalog::embedded().unwrap().lookup_code("USD").unwrap();
-        let leg = |code: &str, side, amount| FormatLeg {
-            account_code: code.into(),
-            side,
-            amount: Amount::new(usd, amount),
-            unit_code: "USD".into(),
-            unit_scale: scale,
-            memo: None,
-        };
-        let mut entries = vec![FormatEntry {
-            entry_id: "capital".into(),
-            effective_date: day,
-            recorded_seq: 1,
-            class: EntryClass::ORIGINAL,
-            description: "parent and minority capital".into(),
-            migrated_from: None,
-            legs: vec![
-                leg("1000", Side::Debit, 100_000),
-                leg("3000", Side::Credit, 60_000),
-                leg("3100", Side::Credit, 40_000),
-            ],
-        }];
-        if income != 0 {
-            let (asset_side, revenue_side) = if income > 0 {
-                (Side::Debit, Side::Credit)
-            } else {
-                (Side::Credit, Side::Debit)
-            };
-            entries.push(FormatEntry {
-                entry_id: "income".into(),
-                effective_date: day,
-                recorded_seq: 2,
-                class: EntryClass::ORIGINAL,
-                description: "unclosed parent income or reversal".into(),
-                migrated_from: None,
-                legs: vec![
-                    leg("1000", asset_side, income.checked_abs().unwrap()),
-                    leg("4000", revenue_side, income.checked_abs().unwrap()),
-                ],
-            });
-        }
-        FormatJournal::new(
-            "parent-and-minority",
-            "USD",
-            scale,
-            day,
-            entries.len() as u64,
-            [
-                ("1000", AccountType::ASSET, Side::Debit),
-                ("3000", AccountType::EQUITY, Side::Credit),
-                ("3100", AccountType::EQUITY, Side::Credit),
-                ("4000", AccountType::REVENUE, Side::Credit),
-            ]
-            .into_iter()
-            .map(|(code, account_type, normal_side)| FormatAccount {
-                code: code.into(),
-                name: code.into(),
-                account_type,
-                normal_side,
-                roles: if classified && code == "3100" {
-                    vec!["noncontrolling_interest".into()]
-                } else {
-                    Vec::new()
-                },
-            })
-            .collect(),
-            entries,
-            Vec::new(),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn noncontrolling_interest_is_not_parent_equity() {
-        for (classified, parent, minority) in [(true, 60_000, Some(40_000)), (false, 100_000, None)]
-        {
-            let xml = write_format_journal_xbrl_xml(&equity_journal(classified, 0)).unwrap();
-            let instance = read_xbrl_instance_xml(&xml).unwrap();
-            let value = |concept: &str| {
-                instance
-                    .facts
-                    .iter()
-                    .find(|f| f.concept == concept)
-                    .map(|f| f.mantissa)
-            };
-            assert_eq!(value("us-gaap:StockholdersEquity"), Some(parent));
-            assert_eq!(value("us-gaap:MinorityInterest"), minority);
-            assert_eq!(
-                value(
-                    "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
-                ),
-                Some(100_000)
-            );
-            assert_eq!(
-                value("us-gaap:LiabilitiesAndStockholdersEquity"),
-                Some(100_000)
-            );
-            let (_, report) = verify_format_journal_xbrl_xml(&xml).unwrap();
-            assert_eq!(report.checks_passed, 3);
-            if classified {
-                let mut tampered = instance;
-                tampered
-                    .facts
-                    .iter_mut()
-                    .find(|f| f.concept == "us-gaap:MinorityInterest")
-                    .unwrap()
-                    .mantissa += 1;
-                let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
-                let linkbase = XbrlCalculationLinkbase::embedded_for_role(
-                    "http://frankenaccounting.org/role/TypeLevelStatements",
-                )
-                .unwrap();
-                assert!(matches!(
-                    validate_calculation_linkbase_detailed(&tampered, &linkbase, Some(&schema)),
-                    Err(FormatError::XbrlCalculationInconsistency { .. })
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn parent_equity_includes_unclosed_income_and_roles_are_coordinate_bound() {
-        for income in [2_500, -2_500] {
-            let journal = equity_journal(true, income);
-            let xml = write_format_journal_xbrl_xml(&journal).unwrap();
-            let instance = read_xbrl_instance_xml(&xml).unwrap();
-            assert_eq!(
-                instance
-                    .facts
-                    .iter()
-                    .find(|f| f.concept == "us-gaap:StockholdersEquity")
-                    .unwrap()
-                    .mantissa,
-                60_000 + income
-            );
-            verify_format_journal_xbrl_xml(&xml).unwrap();
-            let mut omitted_income = instance;
-            omitted_income
-                .facts
-                .iter_mut()
-                .find(|fact| fact.concept == "us-gaap:StockholdersEquity")
-                .unwrap()
-                .mantissa = 60_000;
-            let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
-            let linkbase = XbrlCalculationLinkbase::embedded_for_role(
-                "http://frankenaccounting.org/role/TypeLevelStatements",
-            )
-            .unwrap();
-            assert!(matches!(
-                validate_calculation_linkbase_detailed(&omitted_income, &linkbase, Some(&schema)),
-                Err(FormatError::XbrlCalculationInconsistency { .. })
-            ));
-            let mut substituted = journal;
-            substituted
-                .accounts
-                .iter_mut()
-                .find(|a| a.code == "3100")
-                .unwrap()
-                .roles
-                .clear();
-            assert!(matches!(
-                write_format_journal_xbrl_xml(&substituted),
-                Err(FormatError::CertificateMismatch { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn minority_partition_is_per_unit_and_rejects_a_non_equity_role() {
-        use fa_money::Amount;
-
-        let mut journal = equity_journal(true, 0);
-        let (eur, _) = UnitCatalog::embedded().unwrap().lookup_code("EUR").unwrap();
-        let mut euro = journal.entries[0].clone();
-        euro.entry_id = "euro-capital".into();
-        euro.recorded_seq = 2;
-        for leg in &mut euro.legs {
-            leg.amount = Amount::new(eur, leg.amount.mantissa.checked_mul(2).unwrap());
-            leg.unit_code = "EUR".into();
-        }
-        journal.entries.push(euro);
-        let c = &journal.coordinate;
-        let journal = FormatJournal::new(
-            &c.book_name,
-            &c.base_unit_code,
-            c.base_unit_scale,
-            c.effective_through,
-            2,
-            journal.accounts,
-            journal.entries,
-            Vec::new(),
-        )
-        .unwrap();
-        let xml = write_format_journal_xbrl_xml(&journal).unwrap();
-        let instance = read_xbrl_instance_xml(&xml).unwrap();
-        for (unit, parent, minority) in [("USD", 60_000, 40_000), ("EUR", 120_000, 80_000)] {
-            for (concept, expected) in [
-                ("us-gaap:StockholdersEquity", parent),
-                ("us-gaap:MinorityInterest", minority),
-            ] {
-                assert_eq!(
-                    instance
-                        .facts
-                        .iter()
-                        .find(|f| f.concept == concept && f.unit_code == unit)
-                        .unwrap()
-                        .mantissa,
-                    expected
-                );
-            }
-        }
-        verify_format_journal_xbrl_xml(&xml).unwrap();
-        let mut wrong_type = journal;
-        wrong_type
-            .accounts
-            .iter_mut()
-            .find(|a| a.code == "1000")
-            .unwrap()
-            .roles
-            .push("noncontrolling_interest".into());
-        assert!(matches!(
-            wrong_type.fold_balances(),
-            Err(FormatError::Parse { .. })
-        ));
-    }
 
     #[test]
     fn us_gaap_small_company_fixture_validates_against_vendored_taxonomy_and_planted_mapping_error_fails()
@@ -2100,6 +2166,8 @@ mod tests {
             "us-gaap:OperatingIncomeLoss",
             "us-gaap:IncomeTaxExpenseBenefit",
             "us-gaap:NetIncomeLoss",
+            "us-gaap:ProfitLoss",
+            "us-gaap:NetIncomeLossAttributableToNoncontrollingInterest",
         ]
         .into_iter()
         .collect();
@@ -2120,7 +2188,9 @@ mod tests {
 
         for mapping in [
             StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
+            StatementXbrlMapping::us_gaap_attributed_balance_sheet(),
             StatementXbrlMapping::us_gaap_type_level_income_statement(),
+            StatementXbrlMapping::us_gaap_income_activity(),
             StatementXbrlMapping::us_gaap_small_company_balance_sheet(),
             StatementXbrlMapping::us_gaap_small_company_income_statement(),
         ] {
@@ -2219,6 +2289,153 @@ mod tests {
     }
 
     #[test]
+    fn noncontrolling_interest_is_not_parent_equity() {
+        use crate::{FormatAccount, FormatEntry, FormatLeg};
+        use fa_model::EntryClass;
+        use fa_money::{Amount, Side};
+
+        let day = DateDay::from_ymd(2026, 3, 31).unwrap();
+        let (usd, scale) = UnitCatalog::embedded().unwrap().lookup_code("USD").unwrap();
+        let journal = |earnings: i128| {
+            let leg = |code: &str, side, amount| FormatLeg {
+                account_code: code.into(),
+                side,
+                amount: Amount::new(usd, amount),
+                unit_code: "USD".into(),
+                unit_scale: scale,
+                memo: None,
+            };
+            let mut entries = vec![FormatEntry {
+                entry_id: "opening".into(),
+                effective_date: day,
+                recorded_seq: 1,
+                class: EntryClass::ORIGINAL,
+                description: "capital".into(),
+                migrated_from: None,
+                legs: vec![
+                    leg("1000", Side::Debit, 100_000),
+                    leg("3000", Side::Credit, 60_000),
+                    leg("3100", Side::Credit, 40_000),
+                ],
+            }];
+            if earnings != 0 {
+                entries.push(FormatEntry {
+                    entry_id: "income".into(),
+                    effective_date: day,
+                    recorded_seq: 2,
+                    class: EntryClass::ORIGINAL,
+                    description: "unclosed income".into(),
+                    migrated_from: None,
+                    legs: vec![
+                        leg("1000", Side::Debit, earnings),
+                        leg("4000", Side::Credit, earnings),
+                    ],
+                });
+            }
+            FormatJournal::new(
+                "parent and minority",
+                "USD",
+                scale,
+                day,
+                2,
+                [
+                    ("1000", AccountType::ASSET, Side::Debit),
+                    ("3000", AccountType::EQUITY, Side::Credit),
+                    ("3100", AccountType::EQUITY, Side::Credit),
+                    ("4000", AccountType::REVENUE, Side::Credit),
+                ]
+                .into_iter()
+                .map(|(code, account_type, normal_side)| FormatAccount {
+                    code: code.into(),
+                    name: code.into(),
+                    account_type,
+                    normal_side,
+                
+                roles: Vec::new(),
+            })
+                .collect(),
+                entries,
+                Vec::new(),
+            )
+            .unwrap()
+        };
+        let attribution = XbrlEquityAttribution {
+            noncontrolling_accounts: BTreeSet::from(["3100".into()]),
+        };
+        let fact = |xml: &str, concept: &str| {
+            read_xbrl_instance_xml(xml)
+                .unwrap()
+                .facts
+                .into_iter()
+                .find(|fact| fact.concept == concept)
+                .map(|fact| fact.mantissa)
+        };
+        for earnings in [0, 20_000] {
+            let journal = journal(earnings);
+            let xml = write_format_journal_xbrl_xml_with_equity(&journal, &attribution).unwrap();
+            assert_eq!(
+                fact(&xml, "us-gaap:StockholdersEquity"),
+                Some(60_000 + earnings)
+            );
+            assert_eq!(fact(&xml, "us-gaap:MinorityInterest"), Some(40_000));
+            assert_eq!(
+                fact(
+                    &xml,
+                    "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+                ),
+                Some(100_000 + earnings)
+            );
+            assert_eq!(
+                fact(&xml, "us-gaap:LiabilitiesAndStockholdersEquity"),
+                Some(100_000 + earnings)
+            );
+            assert_eq!(
+                fact(&xml, "us-gaap:RetainedEarningsAccumulatedDeficit"),
+                None
+            );
+            let (coordinate, checks) = verify_format_journal_xbrl_xml(&xml).unwrap();
+            assert_eq!(coordinate, journal.coordinate);
+            assert_eq!(checks.checks_passed, 3);
+            assert_eq!(
+                read_xbrl_equity_attribution(&xml).unwrap(),
+                Some(attribution.clone())
+            );
+
+            // Without journaled attribution all equity belongs to the parent;
+            // no account code or label is treated as a minority-interest hint.
+            let unclassified = write_format_journal_xbrl_xml(&journal).unwrap();
+            assert_eq!(
+                fact(&unclassified, "us-gaap:StockholdersEquity"),
+                Some(100_000 + earnings)
+            );
+            assert_eq!(fact(&unclassified, "us-gaap:MinorityInterest"), None);
+            assert!(verify_format_journal_xbrl_xml(&unclassified).is_ok());
+
+            // The previous durable profile is still reproducible and verifiable,
+            // with its original type-level semantics rather than new facts.
+            let legacy = write_legacy_format_journal_xbrl_xml(&journal).unwrap();
+            assert_eq!(read_xbrl_equity_attribution(&legacy).unwrap(), None);
+            assert_eq!(fact(&legacy, "us-gaap:StockholdersEquity"), Some(100_000));
+            assert!(verify_format_journal_xbrl_xml(&legacy).is_ok());
+
+            let altered = xml.replace(
+                "noncontrolling_accounts=\"33313030\"",
+                "noncontrolling_accounts=\"33303030\"",
+            );
+            assert!(verify_format_journal_xbrl_xml(&altered).is_err());
+            let unknown = xml.replace("parent-minority-v1", "parent-minority-v999");
+            assert!(verify_format_journal_xbrl_xml(&unknown).is_err());
+        }
+        let journal = journal(0);
+        for invalid in ["9999", "1000"] {
+            let bad = XbrlEquityAttribution {
+                noncontrolling_accounts: BTreeSet::from([invalid.into()]),
+            };
+            assert!(write_format_journal_xbrl_xml_with_equity(&journal, &bad).is_err());
+        }
+    }
+
+    #[test]
     fn cumulative_export_duration_covers_prior_year_and_preserves_same_year_and_empty_bytes() {
         use crate::{FormatAccount, FormatEntry, FormatLeg};
         use fa_model::EntryClass;
@@ -2245,8 +2462,9 @@ mod tests {
                     name: code.into(),
                     account_type,
                     normal_side,
-                    roles: Vec::new(),
-                })
+                
+                roles: Vec::new(),
+            })
                 .collect(),
                 dates
                     .iter()
@@ -2287,9 +2505,9 @@ mod tests {
             assert_eq!(coordinate, journal.coordinate);
             assert_eq!(report.checks_passed, 3);
 
-            // Pin the complete existing body for same-year and empty exports,
-            // including concept/context spelling, ordering and exact amounts.
-            // Cross-year pins the extended lower bound and both entries' amounts.
+            // Pin the corrected parent-equity body, including concept/context
+            // spelling, ordering and exact amounts. Cross-year also pins the
+            // extended lower bound and both entries' amounts.
             let expected = XbrlInstance {
                 entity_identifier: "xbrl-cumulative-interval".into(),
                 period_start: Some(start.into()),
@@ -2298,7 +2516,6 @@ mod tests {
                     ("us-gaap:Assets", earnings, false),
                     ("us-gaap:Liabilities", 0, false),
                     ("us-gaap:StockholdersEquity", earnings, false),
-                    ("us-gaap:RetainedEarningsAccumulatedDeficit", earnings, false),
                     (
                         "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
                         earnings,
@@ -2331,4 +2548,193 @@ mod tests {
             assert_eq!(body, write_xbrl_instance_xml(&expected));
         }
     }
+
+    /// Local role fold: a journal that already carries the registered
+    /// noncontrolling_interest role splits parent equity without a second
+    /// attribution argument. Explicit with_equity remains the historical API.
+    fn equity_journal(classified: bool, income: i128) -> FormatJournal {
+        use crate::{FormatAccount, FormatEntry, FormatLeg};
+        use fa_model::EntryClass;
+        use fa_money::{Amount, Side};
+
+        let day = DateDay::from_ymd(2026, 3, 31).unwrap();
+        let (usd, scale) = UnitCatalog::embedded().unwrap().lookup_code("USD").unwrap();
+        let leg = |code: &str, side, amount| FormatLeg {
+            account_code: code.into(),
+            side,
+            amount: Amount::new(usd, amount),
+            unit_code: "USD".into(),
+            unit_scale: scale,
+            memo: None,
+        };
+        let mut entries = vec![FormatEntry {
+            entry_id: "capital".into(),
+            effective_date: day,
+            recorded_seq: 1,
+            class: EntryClass::ORIGINAL,
+            description: "parent and minority capital".into(),
+            migrated_from: None,
+            legs: vec![
+                leg("1000", Side::Debit, 100_000),
+                leg("3000", Side::Credit, 60_000),
+                leg("3100", Side::Credit, 40_000),
+            ],
+        }];
+        if income != 0 {
+            let (asset_side, revenue_side) = if income > 0 {
+                (Side::Debit, Side::Credit)
+            } else {
+                (Side::Credit, Side::Debit)
+            };
+            entries.push(FormatEntry {
+                entry_id: "income".into(),
+                effective_date: day,
+                recorded_seq: 2,
+                class: EntryClass::ORIGINAL,
+                description: "unclosed parent income or reversal".into(),
+                migrated_from: None,
+                legs: vec![
+                    leg("1000", asset_side, income.checked_abs().unwrap()),
+                    leg("4000", revenue_side, income.checked_abs().unwrap()),
+                ],
+            });
+        }
+        FormatJournal::new(
+            "parent-and-minority",
+            "USD",
+            scale,
+            day,
+            entries.len() as u64,
+            [
+                ("1000", AccountType::ASSET, Side::Debit),
+                ("3000", AccountType::EQUITY, Side::Credit),
+                ("3100", AccountType::EQUITY, Side::Credit),
+                ("4000", AccountType::REVENUE, Side::Credit),
+            ]
+            .into_iter()
+            .map(|(code, account_type, normal_side)| FormatAccount {
+                code: code.into(),
+                name: code.into(),
+                account_type,
+                normal_side,
+                roles: if classified && code == "3100" {
+                    vec!["noncontrolling_interest".into()]
+                } else {
+                    Vec::new()
+                },
+            })
+            .collect(),
+            entries,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn parent_equity_includes_unclosed_income_and_roles_are_coordinate_bound() {
+        for income in [2_500, -2_500] {
+            let journal = equity_journal(true, income);
+            let xml = write_format_journal_xbrl_xml(&journal).unwrap();
+            let instance = read_xbrl_instance_xml(&xml).unwrap();
+            assert_eq!(
+                instance
+                    .facts
+                    .iter()
+                    .find(|f| f.concept == "us-gaap:StockholdersEquity")
+                    .unwrap()
+                    .mantissa,
+                60_000 + income
+            );
+            verify_format_journal_xbrl_xml(&xml).unwrap();
+            let mut omitted_income = instance;
+            omitted_income
+                .facts
+                .iter_mut()
+                .find(|fact| fact.concept == "us-gaap:StockholdersEquity")
+                .unwrap()
+                .mantissa = 60_000;
+            let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
+            let linkbase = XbrlCalculationLinkbase::embedded_for_role(
+                "http://frankenaccounting.org/role/TypeLevelStatements",
+            )
+            .unwrap();
+            assert!(matches!(
+                validate_calculation_linkbase_detailed(&omitted_income, &linkbase, Some(&schema)),
+                Err(FormatError::XbrlCalculationInconsistency { .. })
+            ));
+            let mut substituted = journal;
+            substituted
+                .accounts
+                .iter_mut()
+                .find(|a| a.code == "3100")
+                .unwrap()
+                .roles
+                .clear();
+            assert!(matches!(
+                write_format_journal_xbrl_xml(&substituted),
+                Err(FormatError::CertificateMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn minority_partition_is_per_unit_and_rejects_a_non_equity_role() {
+        use fa_money::Amount;
+
+        let mut journal = equity_journal(true, 0);
+        let (eur, _) = UnitCatalog::embedded().unwrap().lookup_code("EUR").unwrap();
+        let mut euro = journal.entries[0].clone();
+        euro.entry_id = "euro-capital".into();
+        euro.recorded_seq = 2;
+        for leg in &mut euro.legs {
+            leg.amount = Amount::new(eur, leg.amount.mantissa.checked_mul(2).unwrap());
+            leg.unit_code = "EUR".into();
+        }
+        journal.entries.push(euro);
+        let c = &journal.coordinate;
+        let journal = FormatJournal::new(
+            &c.book_name,
+            &c.base_unit_code,
+            c.base_unit_scale,
+            c.effective_through,
+            2,
+            journal.accounts,
+            journal.entries,
+            Vec::new(),
+        )
+        .unwrap();
+        let xml = write_format_journal_xbrl_xml(&journal).unwrap();
+        let instance = read_xbrl_instance_xml(&xml).unwrap();
+        for (unit, parent, minority) in [("USD", 60_000, 40_000), ("EUR", 120_000, 80_000)] {
+            for (concept, expected) in [
+                ("us-gaap:StockholdersEquity", parent),
+                ("us-gaap:MinorityInterest", minority),
+            ] {
+                assert_eq!(
+                    instance
+                        .facts
+                        .iter()
+                        .find(|f| f.concept == concept && f.unit_code == unit)
+                        .unwrap()
+                        .mantissa,
+                    expected
+                );
+            }
+        }
+        verify_format_journal_xbrl_xml(&xml).unwrap();
+        let mut wrong_type = journal;
+        wrong_type
+            .accounts
+            .iter_mut()
+            .find(|a| a.code == "1000")
+            .unwrap()
+            .roles
+            .push("noncontrolling_interest".into());
+        assert!(matches!(
+            wrong_type.fold_balances(),
+            Err(FormatError::Parse { .. })
+        ));
+    }
+
+    #[test]
 }

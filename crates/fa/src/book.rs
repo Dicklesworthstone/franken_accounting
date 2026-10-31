@@ -3940,6 +3940,17 @@ impl Book {
         with_store!(&self.store, core => core.format_journal(&self.purposes(), effective_through, known_at))
     }
 
+    /// Historical role attribution and Closing-excluded income activity for
+    /// XBRL v2. Current whole-book read authority precedes source observation.
+    pub fn xbrl_report_inputs(
+        &self,
+        effective_through: fa_time::DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_formats::xbrl::XbrlReportInputs> {
+        with_store!(&self.store, core => core.xbrl_report_inputs(&self.purposes(), effective_through, known_at, capability))
+    }
+
     /// Where `AS ORIGINALLY REPORTED` pins `period_code`'s reads (plan §7.4):
     /// the known-at of the certificate its first StatementIssuance issued,
     /// else its first Lock transition.
@@ -4650,6 +4661,22 @@ impl Book {
     ) -> Outcome<fa_registers::Advance> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.advance_registers(&purposes, principal, capability, period_code)))
+    }
+
+    /// [`Book::advance_registers`] under the caller's serving context. Timed
+    /// maintenance awaits the existing native publication without starting a
+    /// nested runtime or replacing the serving region's cancellation/budget.
+    pub async fn advance_registers_with(
+        &mut self,
+        cx: &Cx,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_code: &str,
+    ) -> Outcome<fa_registers::Advance> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.advance_registers(
+            &purposes, principal, capability, period_code
+        ).await)
     }
 
     /// Replace native posted/pending period registers and their maintenance

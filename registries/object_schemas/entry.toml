@@ -19,9 +19,9 @@ extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-d
 
 [[decision]]
 field = "extensions.33"
-appendix_a = "Versioned credit-obligation and debit-receivable maturity (plan §11.6–§11.7)"
-code_type = "fa-model::obligation::InlineObligationTerms; OBLIGATION_MATURITY_EXTENSION=33; minimum schema minor 1"
-rationale = "Version 1 admits credit-leg obligations and keeps its original bytes and refusal domain. Version 2 admits debit-leg receivables with the identical positional fields: u16 version, list(u16 ordinal, u8 status, disputed-only u16 reason, list(i32 due day, positive i128 native amount)). Ordinals and installment dates are strictly increasing; contractual schedules are nonempty and cover the leg exactly; missing maturity has no installments. One extension carries one side contract, never a mixed inferred schedule. Entry/proposal digests bind the version and every term. Native and independent due-date aging read both versions; liability solvency selects only credit obligations and never promotes debit terms into forecast inflows."
+appendix_a = "Contractual maturity for obligations and receivable due-date aging (plan §11.6–11.7)"
+code_type = "fa-model::obligation::InlineObligationTerms; OBLIGATION_MATURITY_EXTENSION=33; wire versions 1 and 2"
+rationale = "The original version-1 bytes retain their credit-only meaning. Version 2 admits either debit receivables or credit obligations with ordered unique leg ordinals, explicit contractual/disputed/missing status, and positive date-ordered installments totaling each named leg exactly. Credit-only encoders retain v1 bytes; debit declarations select v2, and the proposal digest authenticates the version and terms. Historical aging selects the authenticated prefix before reading terms, relieves earliest installments by exact recorded applications, and preserves missing or disputed terms as unscheduled. The independent verifier decodes both versions and refuses downgraded v1 debit terms, incomplete schedules and unknown versions. The liability-only cash-flow solvency schedule filters out debit terms without inferring cash inflows."
 tracking_bead = "fa-0hs4.13"
 
 [[decision]]

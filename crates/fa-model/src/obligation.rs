@@ -1,13 +1,15 @@
-//! Maturity terms on posted open items (plan §11.6–§11.7, beads fa-5dpd,
-//! fa-0hs4.13): entry extension 33. Version 1 names credit obligations;
-//! version 2 names debit receivables. The historical v1 contract is unchanged.
+//! Contractual maturity terms on posted open items (plan §11.6, beads
+//! fa-5dpd / fa-0hs4.13): entry extension 33.
 //!
-//! An entry that books an obligation may declare, per credit leg, when it
-//! falls due: a contractual installment schedule, a dispute, or that its
-//! maturity is unknown. `solvency.cash_flow_test` reads the terms of the
-//! obligations open at its as-of date, so a debt is counted by when it is
-//! due rather than when it was booked. The terms are part of the proposal,
-//! so its digest, the approvals over it and the journal cover them.
+//! Version 1 declares when credit-side obligations fall due. Version 2
+//! also admits debit-side receivable terms; the referenced leg fixes the
+//! side, amount and unit. Both carry a contractual installment schedule,
+//! a dispute, or explicitly unknown maturity. Due-date aging reads either
+//! side; `solvency.cash_flow_test` selects credit obligations and never
+//! treats a receivable schedule as a debt or an expected cash receipt.
+//! The terms are part of the proposal, so its digest, the approvals over
+//! it and the journal cover them. Version 1 bytes retain their original
+//! credit-only meaning.
 //!
 //! Bytes: `u16 version ‖ list(u16 leg ordinal ‖ u8 status [‖ u16 reason
 //! code when Disputed] ‖ list(i32 due day ‖ i128 amount))`.
@@ -18,9 +20,10 @@ use crate::canon::{DecodeError, EncodeError, Reader, Writer};
 use crate::entry::LegPayload;
 use fa_money::Side;
 
-/// Historical credit-obligation encoding.
+/// The original, credit-only version. Existing payable encoders keep these
+/// bytes so unchanged proposals retain their identities and approvals.
 pub const OBLIGATION_TERMS_VERSION: u16 = 1;
-/// Debit-receivable encoding, with the same fields and exact schedule law.
+/// The version admitting maturity on either debit or credit open items.
 pub const RECEIVABLE_TERMS_VERSION: u16 = 2;
 
 /// The most terms (one per leg) and installments (per term) one entry may
@@ -36,12 +39,12 @@ pub struct ObligationInstallment {
     pub amount: i128,
 }
 
-/// How an obligation's maturity is known.
+/// How an obligation's or receivable's maturity is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObligationStatus {
     /// Its contractual maturity schedule is known and complete.
     Contractual,
-    /// The liability is disputed, with a reason code.
+    /// The claim or obligation is disputed, with a reason code.
     Disputed { reason_code: u16 },
     /// Its maturity is unknown, so no complete maturity-based cash-flow
     /// solvency conclusion can rest on it.
@@ -60,8 +63,8 @@ impl ObligationStatus {
     }
 }
 
-/// The maturity terms of one leg of the entry that carries them. The
-/// enclosing encoding fixes its side: v1 credit, v2 debit.
+/// The maturity terms of one leg of the entry that carries them. Version 1
+/// admits credit legs only; version 2 admits either side.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlineObligationTerms {
     /// The leg's position in the entry's `legs`.
@@ -71,21 +74,45 @@ pub struct InlineObligationTerms {
 }
 
 impl InlineObligationTerms {
-    /// The extension's canonical bytes.
+    /// The original credit-only extension's canonical bytes.
     ///
     /// # Errors
     /// The encoder's bounds.
     pub fn encode_list(terms: &[Self]) -> Result<Vec<u8>, EncodeError> {
-        Self::encode_version(terms, OBLIGATION_TERMS_VERSION)
+        Self::encode_list_version(terms, OBLIGATION_TERMS_VERSION)
     }
 
-    /// Encode debit-receivable terms as v2. This does not reinterpret v1
-    /// credit-obligation bytes; admission still checks every leg and total.
+    /// Canonical bytes for these terms and their posting legs. Credit-only
+    /// schedules retain version 1 bytes; a named debit leg selects version 2.
+    /// Encoding does not replace [`validate_terms`]: absent ordinals, malformed
+    /// schedules and non-positive target amounts still need admission checks.
+    ///
+    /// # Errors
+    /// The encoder's bounds.
+    pub fn encode_list_for_legs(
+        terms: &[Self],
+        legs: &[LegPayload],
+    ) -> Result<Vec<u8>, EncodeError> {
+        let version = if terms.iter().any(|term| {
+            legs.get(usize::from(term.ordinal))
+                .is_some_and(|leg| leg.side == Side::Debit)
+        }) {
+            RECEIVABLE_TERMS_VERSION
+        } else {
+            OBLIGATION_TERMS_VERSION
+        };
+        Self::encode_list_version(terms, version)
+    }
+
+    /// Force extension 33 version 2. `encode_list_for_legs` still emits version
+    /// 1 for a credit-only schedule so existing payable proposals keep their
+    /// bytes. Callers that explicitly asked for receivable maturity use this
+    /// entry point; admission still checks every leg and total.
     pub fn encode_receivable_list(terms: &[Self]) -> Result<Vec<u8>, EncodeError> {
-        Self::encode_version(terms, RECEIVABLE_TERMS_VERSION)
+        Self::encode_list_version(terms, RECEIVABLE_TERMS_VERSION)
     }
 
-    fn encode_version(terms: &[Self], version: u16) -> Result<Vec<u8>, EncodeError> {
+    fn encode_list_version(terms: &[Self], version: u16) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
         w.u16(version).list(terms, |w, item| {
             w.u16(item.ordinal).u8(item.status.tag());
@@ -99,20 +126,19 @@ impl InlineObligationTerms {
         w.finish()
     }
 
-    /// Decodes either version's rows. Every installment amount is positive;
-    /// validate the original bytes against the legs to enforce their side.
+    /// Decodes the extension's bytes. Every installment amount is positive.
     ///
     /// # Errors
-    /// Malformed or non-canonical bytes, another version, an unknown status
+    /// Malformed or non-canonical bytes, an unsupported version, an unknown status
     /// or a non-positive amount.
     pub fn decode_list(bytes: &[u8]) -> Result<Vec<Self>, DecodeError> {
-        Self::decode_versioned(bytes).map(|(_, terms)| terms)
+        Self::decode_list_versioned(bytes).map(|(_, terms)| terms)
     }
 
-    fn decode_versioned(bytes: &[u8]) -> Result<(u16, Vec<Self>), DecodeError> {
+    fn decode_list_versioned(bytes: &[u8]) -> Result<(u16, Vec<Self>), DecodeError> {
         let mut r = Reader::new(bytes);
         let version = r.u16("obligation_terms.version")?;
-        if !matches!(version, OBLIGATION_TERMS_VERSION | RECEIVABLE_TERMS_VERSION) {
+        if version != OBLIGATION_TERMS_VERSION && version != RECEIVABLE_TERMS_VERSION {
             return Err(r.invalid("obligation_terms.version"));
         }
         let list = r.list(MAX_OBLIGATION_TERMS, "obligation_terms.items", |r| {
@@ -158,7 +184,24 @@ impl InlineObligationTerms {
         ))
     }
 
-    /// Version 2 terms for debit receivables, under extension 33.
+    /// The versioned `(tag, bytes)` pair for maturity terms over these legs.
+    /// Credit-only callers retain the original extension bytes.
+    ///
+    /// # Errors
+    /// The encoder's bounds.
+    pub fn to_extension_for_legs(
+        terms: &[Self],
+        legs: &[LegPayload],
+    ) -> Result<(u16, Vec<u8>), EncodeError> {
+        Ok((
+            crate::entry::OBLIGATION_MATURITY_EXTENSION,
+            Self::encode_list_for_legs(terms, legs)?,
+        ))
+    }
+
+    /// Version 2 terms under extension 33, including a debit-only receivable
+    /// schedule. Credit-only callers that want the historical bytes use
+    /// [`Self::to_extension`] instead.
     pub fn to_receivable_extension(terms: &[Self]) -> Result<(u16, Vec<u8>), EncodeError> {
         Ok((
             crate::entry::OBLIGATION_MATURITY_EXTENSION,
@@ -169,8 +212,9 @@ impl InlineObligationTerms {
 
 /// The structural law of an entry's obligation terms against its legs:
 /// - the bytes decode and re-encode to themselves;
-/// - terms are strictly ascending by leg ordinal, and each names a credit
-///   leg in v1 or a debit leg in v2;
+/// - terms are strictly ascending by leg ordinal and name existing legs;
+/// - version 1 names credit legs only; version 2 admits either side and
+///   requires a positive target amount, including for unscheduled terms;
 /// - MissingMaturity declares no installment;
 /// - any other status with installments declares them strictly ascending by
 ///   due date, totalling exactly the leg's amount, so the schedule covers
@@ -186,9 +230,9 @@ pub fn validate_terms(
     bytes: &[u8],
     legs: &[LegPayload],
 ) -> Result<(), (&'static str, &'static str)> {
-    let (version, terms) = InlineObligationTerms::decode_versioned(bytes)
+    let (version, terms) = InlineObligationTerms::decode_list_versioned(bytes)
         .map_err(|_| ("extensions.obligation_maturity", "does not decode"))?;
-    if InlineObligationTerms::encode_version(&terms, version)
+    if InlineObligationTerms::encode_list_version(&terms, version)
         .ok()
         .as_deref()
         != Some(bytes)
@@ -214,19 +258,16 @@ pub fn validate_terms(
                 "names a leg ordinal the entry does not have",
             ));
         };
-        let expected_side = if version == RECEIVABLE_TERMS_VERSION {
-            Side::Debit
-        } else {
-            Side::Credit
-        };
-        if leg.side != expected_side {
+        if version == OBLIGATION_TERMS_VERSION && leg.side != Side::Credit {
             return Err((
                 "extensions.obligation_maturity",
-                if version == RECEIVABLE_TERMS_VERSION {
-                    "names a credit leg; receivable maturity v2 requires a debit leg"
-                } else {
-                    "names a debit leg; an obligation is booked on a credit leg"
-                },
+                "names a debit leg; an obligation is booked on a credit leg",
+            ));
+        }
+        if version == RECEIVABLE_TERMS_VERSION && leg.amount.mantissa <= 0 {
+            return Err((
+                "extensions.obligation_maturity",
+                "maturity terms require a positive target leg amount",
             ));
         }
         if term.status == ObligationStatus::MissingMaturity {
@@ -315,6 +356,7 @@ mod tests {
         validate_terms(&bytes, &legs()).map_err(|(_, why)| why)
     }
 
+
     #[test]
     fn receivable_v2_preserves_the_credit_only_v1_contract_and_exact_totals() {
         let terms = vec![term(
@@ -323,22 +365,32 @@ mod tests {
             vec![installment(100, 300), installment(130, 200)],
         )];
         let v1 = InlineObligationTerms::encode_list(&terms).unwrap();
-        assert_eq!(&v1[..2], &1_u16.to_le_bytes());
+        assert_eq!(&v1[..2], &OBLIGATION_TERMS_VERSION.to_le_bytes());
         assert!(validate_terms(&v1, &legs()).is_err_and(|(_, why)| why.contains("debit leg")));
         let (tag, v2) = InlineObligationTerms::to_receivable_extension(&terms).unwrap();
         assert_eq!(tag, crate::entry::OBLIGATION_MATURITY_EXTENSION);
-        assert_eq!(&v2[..2], &2_u16.to_le_bytes());
+        assert_eq!(&v2[..2], &RECEIVABLE_TERMS_VERSION.to_le_bytes());
         assert_eq!(&v1[2..], &v2[2..], "only the explicit side version changes");
         assert_eq!(InlineObligationTerms::decode_list(&v2).unwrap(), terms);
         assert_eq!(validate_terms(&v2, &legs()), Ok(()));
 
-        let mut wrong_side = terms.clone();
-        wrong_side[0].ordinal = 1;
-        wrong_side[0].installments = vec![installment(100, 300)];
-        let wrong_side = InlineObligationTerms::encode_receivable_list(&wrong_side).unwrap();
-        assert!(
-            validate_terms(&wrong_side, &legs()).is_err_and(|(_, why)| why.contains("credit leg"))
-        );
+        // A credit-only schedule keeps v1 from the leg-directed encoder, while
+        // the receivable entry point forces v2 and still admits the credit leg.
+        // One extension can therefore carry both sides. Stamping v1 onto the
+        // debit schedule remains a refusal.
+        let credit_only = vec![term(
+            1,
+            ObligationStatus::Contractual,
+            vec![installment(100, 300)],
+        )];
+        let forced = InlineObligationTerms::encode_receivable_list(&credit_only).unwrap();
+        let historical = InlineObligationTerms::encode_list_for_legs(&credit_only, &legs()).unwrap();
+        assert_eq!(&forced[..2], &RECEIVABLE_TERMS_VERSION.to_le_bytes());
+        assert_eq!(&historical[..2], &OBLIGATION_TERMS_VERSION.to_le_bytes());
+        assert_eq!(&forced[2..], &historical[2..]);
+        assert_eq!(validate_terms(&forced, &legs()), Ok(()));
+        assert_eq!(validate_terms(&historical, &legs()), Ok(()));
+
         let mut wrong_total = terms.clone();
         wrong_total[0].installments[1].amount += 1;
         let wrong_total = InlineObligationTerms::encode_receivable_list(&wrong_total).unwrap();
@@ -358,6 +410,101 @@ mod tests {
         let mut unknown = v2;
         unknown[..2].copy_from_slice(&3_u16.to_le_bytes());
         assert!(InlineObligationTerms::decode_list(&unknown).is_err());
+    }
+
+    #[test]
+    fn payable_terms_keep_their_original_v1_bytes() {
+        let terms = [term(
+            1,
+            ObligationStatus::Contractual,
+            vec![installment(100, 300)],
+        )];
+        // Fixed v1 vector, independent of both encoder entry points: version,
+        // term count, ordinal, status, installment count, date and i128 amount.
+        let expected = [
+            1, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 100, 0, 0, 0, 44, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+        ];
+        assert_eq!(
+            InlineObligationTerms::encode_list(&terms).unwrap(),
+            expected
+        );
+        assert_eq!(
+            InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap(),
+            expected
+        );
+        assert_eq!(validate_terms(&expected, &legs()), Ok(()));
+    }
+
+    #[test]
+    fn receivable_terms_use_v2_without_reinterpreting_v1() {
+        let terms = vec![
+            term(
+                0,
+                ObligationStatus::Contractual,
+                vec![installment(100, 200), installment(130, 300)],
+            ),
+            term(
+                1,
+                ObligationStatus::Contractual,
+                vec![installment(120, 300)],
+            ),
+        ];
+        let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap();
+        assert_eq!(&bytes[..2], &RECEIVABLE_TERMS_VERSION.to_le_bytes());
+        assert_eq!(InlineObligationTerms::decode_list(&bytes).unwrap(), terms);
+        assert_eq!(validate_terms(&bytes, &legs()), Ok(()));
+        assert_eq!(
+            InlineObligationTerms::to_extension_for_legs(&terms, &legs())
+                .unwrap()
+                .1,
+            bytes
+        );
+
+        let mut legacy = bytes.clone();
+        legacy[..2].copy_from_slice(&OBLIGATION_TERMS_VERSION.to_le_bytes());
+        assert!(validate_terms(&legacy, &legs()).is_err_and(|(_, why)| why.contains("debit leg")));
+
+        let mut unknown = bytes;
+        unknown[..2].copy_from_slice(&3u16.to_le_bytes());
+        assert!(InlineObligationTerms::decode_list(&unknown).is_err());
+        assert!(validate_terms(&unknown, &legs()).is_err());
+    }
+
+    #[test]
+    fn receivable_terms_enforce_exact_totals_and_positive_targets() {
+        let mut terms = vec![term(
+            0,
+            ObligationStatus::Contractual,
+            vec![installment(100, 499)],
+        )];
+        let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap();
+        assert!(
+            validate_terms(&bytes, &legs()).is_err_and(|(_, why)| why.contains("total exactly"))
+        );
+
+        terms[0].installments[0].amount = 500;
+        let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap();
+        assert_eq!(validate_terms(&bytes, &legs()), Ok(()));
+        for target_amount in [0, -500] {
+            let mut targets = legs();
+            targets[0].amount.mantissa = target_amount;
+            assert!(
+                validate_terms(&bytes, &targets)
+                    .is_err_and(|(_, why)| why.contains("positive target"))
+            );
+        }
+
+        // Unknown maturity cannot be used to attach a schedule to a zero leg.
+        terms[0].status = ObligationStatus::MissingMaturity;
+        terms[0].installments.clear();
+        let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap();
+        assert_eq!(validate_terms(&bytes, &legs()), Ok(()));
+        let mut zero = legs();
+        zero[0].amount.mantissa = 0;
+        assert!(
+            validate_terms(&bytes, &zero).is_err_and(|(_, why)| why.contains("positive target"))
+        );
     }
 
     /// Two credit legs, one with a two-installment schedule and one disputed,
@@ -421,5 +568,58 @@ mod tests {
         .unwrap();
         assert!(InlineObligationTerms::decode_list(&zero).is_err());
         assert!(validate_terms(&zero, &legs()).is_err());
+    }
+
+    #[test]
+    fn receivable_terms_pin_v2_bytes_and_refuse_incomplete_schedules() {
+        let due = vec![term(
+            0,
+            ObligationStatus::Contractual,
+            vec![installment(100, 500)],
+        )];
+        let (tag, bytes) = InlineObligationTerms::to_extension_for_legs(&due, &legs()).unwrap();
+        assert_eq!(tag, crate::entry::OBLIGATION_MATURITY_EXTENSION);
+        // Fixed v2 transcript: one term, debit leg 0, contractual, one
+        // installment, day 100, amount 500. Only its explicit wire version
+        // distinguishes it from the legacy credit-only codec.
+        assert_eq!(
+            bytes,
+            [
+                2, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 0, 0, 0, 244, 1, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+            ]
+        );
+        assert_eq!(InlineObligationTerms::decode_list(&bytes).unwrap(), due);
+        assert_eq!(validate_terms(&bytes, &legs()), Ok(()));
+        let legacy = InlineObligationTerms::to_extension(&due).unwrap().1;
+        assert_eq!(&legacy[2..], &bytes[2..]);
+        assert_eq!(
+            validate_terms(&legacy, &legs()),
+            Err((
+                "extensions.obligation_maturity",
+                "names a debit leg; an obligation is booked on a credit leg",
+            ))
+        );
+        for terms in [
+            vec![term(0, ObligationStatus::Contractual, Vec::new())],
+            vec![term(
+                0,
+                ObligationStatus::Contractual,
+                vec![installment(100, 499)],
+            )],
+            vec![term(
+                0,
+                ObligationStatus::Contractual,
+                vec![installment(100, 250), installment(100, 250)],
+            )],
+            vec![term(
+                0,
+                ObligationStatus::MissingMaturity,
+                vec![installment(100, 500)],
+            )],
+        ] {
+            let bytes = InlineObligationTerms::encode_list_for_legs(&terms, &legs()).unwrap();
+            assert!(validate_terms(&bytes, &legs()).is_err());
+        }
     }
 }

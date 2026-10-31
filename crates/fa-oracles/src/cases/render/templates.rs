@@ -22,7 +22,7 @@ pub const SLOTS: [(&str, &str); 14] = [
 ];
 
 /// Every template id's text.
-pub const TEXTS: [(&str, &str); 17] = [
+pub const TEXTS: [(&str, &str); 18] = [
     (
         "D.detection",
         "Given the documented entries {inputs} encoded as the book `{variant}` posts them, procedure `{procedure}` v{version} reports a finding citing each of them.",
@@ -34,6 +34,10 @@ pub const TEXTS: [(&str, &str); 17] = [
     (
         "P.first_refusal",
         "Given the documented entry {inputs} posted on the book `{variant}`, with `{attribute}` in each cell below, the kernel's first refusal is the one each row lists; on the record's cell the authored first refusal is `{refusal}` ({law_row}).",
+    ),
+    (
+        "P.branch_table",
+        "Given the documented entry {inputs} posted on the book `{variant}`, with `{attribute}` in each cell below, the kernel's first refusal is the one each row lists. The record fixes none of these cells, so no row is the record's; the law row the table turns on is {law_row} (`{refusal}`).",
     ),
     (
         "T.bridge",

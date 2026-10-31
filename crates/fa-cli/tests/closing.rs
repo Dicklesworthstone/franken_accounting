@@ -15,6 +15,8 @@ mod draft_review;
 mod equity_certificate;
 #[path = "closing/functional.rs"]
 mod functional;
+#[path = "closing/xbrl.rs"]
+mod xbrl;
 
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let result = Command::new(env!("CARGO_BIN_EXE_fa"))

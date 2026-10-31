@@ -27,9 +27,87 @@ use fa_time::DateDay;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{AsyncBook, BookError};
+use crate::{AsyncBook, BookError, Outcome};
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// XBRL v2 supplements stock with the income statement's accounting-class
+    /// law. The same admitted prefix supplies its activity and account roles;
+    /// no labels, mutable balances or caller-authored reversal hints decide.
+    pub fn xbrl_report_inputs(
+        &self,
+        cx: &PurposeContexts,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_formats::xbrl::XbrlReportInputs> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let chart = fa_journal::chart::read_at(db, book, at)?;
+            let roles = fa_journal::account_roles_at(db, book, at)?;
+            let codes_for = |role: &str| -> Result<std::collections::BTreeSet<String>, BookError> {
+                let members = roles.accounts_with(role);
+                let codes = chart
+                    .accounts()
+                    .values()
+                    .filter(|account| members.contains(&account.vid))
+                    .map(|account| account.code.clone())
+                    .collect::<std::collections::BTreeSet<_>>();
+                if codes.len() != members.len() {
+                    return Err(KernelError::Corrupt(format!(
+                        "XBRL role {role} names an account absent from the historical chart"
+                    ))
+                    .into());
+                }
+                Ok(codes)
+            };
+            let definition = fa_statements::StatementDefinition::embedded("income-statement")
+                .map_err(|error| KernelError::Corrupt(format!("income statement: {error}")))?;
+            let activity = fa_registers::activity_as_of_excluding_classes(
+                db,
+                book,
+                effective_through,
+                Some(at),
+                definition.excluded_classes(),
+            )?;
+            let mut balances = BTreeMap::new();
+            for row in activity.rows {
+                // Pending columns are separate from posted activity. A
+                // pending-only foreign unit need not occur in FormatJournal,
+                // which deliberately omits unresolved holds altogether.
+                if (row.debits == 0 && row.credits == 0)
+                    || !matches!(
+                        row.account_type,
+                        AccountType::REVENUE | AccountType::EXPENSE
+                    )
+                {
+                    continue;
+                }
+                let unit = book
+                    .units
+                    .get(fa_money::UnitId(row.unit_id))
+                    .ok_or_else(|| {
+                        KernelError::Corrupt("XBRL activity names an unregistered unit".into())
+                    })?;
+                let net = row
+                    .debits
+                    .checked_sub(row.credits)
+                    .ok_or(fa_registers::RegisterError::Overflow)?;
+                balances.insert((row.code, unit.code.clone()), net);
+            }
+            Ok(Ok(fa_formats::xbrl::XbrlReportInputs {
+                equity: fa_formats::xbrl::XbrlEquityAttribution {
+                    noncontrolling_accounts: codes_for("noncontrolling_interest")?,
+                },
+                noncontrolling_income_accounts: codes_for("noncontrolling_interest_income")?,
+                known_at_seq: at.0,
+                effective_through,
+                income_balances: balances,
+            }))
+        })
+    }
     /// The committed journal at `(known_at, effective_through)` as one
     /// interop [`FormatJournal`] carrying its export coordinate certificate.
     pub fn format_journal(

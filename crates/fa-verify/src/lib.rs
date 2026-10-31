@@ -54,6 +54,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod access_log;
 pub mod ads;
 pub mod balance;
 pub mod balance_request;
@@ -76,6 +77,9 @@ pub mod sha512;
 pub mod state;
 pub mod tree;
 
+pub use access_log::{
+    AccessLogError, AccessLogRequest, VerifiedAccessEvent, VerifiedAccessLog, verify_access_log,
+};
 pub use balance::{Balance, BalanceClaim};
 pub use balance_request::{
     BalanceAmounts, BalanceExpectation, BalanceExpectationError, BalanceScope, verify_balance_for,

@@ -489,19 +489,39 @@ fa-verify report payables-due.fab --key <trusted-checkpoint-public-key> \
   --receipt payables-due.receipt --json
 ```
 
-Each installment is aged from the maturity terms journaled with its entry
-(extension 33), with partial payments relieving the earliest installment first.
+Each installment is aged from the maturity terms journaled with its entry,
+with partial payments relieving the earliest installment first. Both payable
+credit legs and receivable debit legs declare `obligation_maturity` on their
+posting intent. Credit-only declarations retain the original extension 33 v1
+bytes; a declaration naming a debit leg selects v2. Installment amounts are exact
+and use the named leg's unit, totaling that leg's amount.
+For example, an invoice intent whose first leg debits receivables by 100.00 USD
+can carry:
+
+```json
+"obligation_maturity": [
+  {"ordinal": 0, "status": "contractual", "installments": [
+    {"due_date": "2026-03-31", "amount": "60.00 USD"},
+    {"due_date": "2026-04-30", "amount": "40.00 USD"}
+  ]}
+]
+```
+
+After a 25.00 USD receipt applies to that leg, aging at April 1 reports
+35.00 USD one day past due and 40.00 USD not yet due. Receivable terms do not
+enter the liability schedule used by `solvency.cash_flow_test`.
 Items without contractual terms, including disputed or missing maturity, remain
-in explicit `unscheduled` detail and totals. Current maturity admission supports
-credit legs; receivable debit legs therefore remain unscheduled. The certificate
+in explicit `unscheduled` detail and totals. The certificate
 binds the due-date basis, cutoff, bucket bounds, installment detail and complete
 application history. It replays at its original recorded prefix after later
 postings, and `--from-source C:<open-items-certificate>` reuses a saved prefix.
 The `report_certificate` event supplies a replay command with independently
 retainable `--expect` JSON of kind `due-date-aging`. MCP accepts `basis: "due-date"`
-with `certify: true` through `fa_proof_gl`. Due-date control reconciliation and
-JSONL workpaper export remain unsupported; effective-date certificates retain
-their existing formats and behavior.
+with `certify: true` through `fa_proof_gl`. Add `--reconcile` to bind the scheduled
+and unscheduled amounts to their native control balance; its retained
+certificate also replays and verifies offline. Due-date JSONL workpaper export
+remains unsupported; effective-date certificates retain their existing formats
+and behavior.
 
 Roll-forward lead schedules can also be delivered as independently verifiable
 bundles. For example, a cash lead schedule at one fixed recorded frontier:

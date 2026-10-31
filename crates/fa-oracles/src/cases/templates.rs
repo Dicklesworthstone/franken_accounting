@@ -8,10 +8,11 @@
 //! the ids of its own prefix.
 
 /// Every template id.
-pub const TEMPLATE_IDS: [&str; 17] = [
+pub const TEMPLATE_IDS: [&str; 18] = [
     "D.detection",
     "D.restates_characterization",
     "P.first_refusal",
+    "P.branch_table",
     "T.bridge",
     "T.footing",
     "T.per_account",

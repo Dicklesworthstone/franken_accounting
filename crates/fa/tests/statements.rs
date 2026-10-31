@@ -1596,3 +1596,68 @@ fn functional_income_preserves_actual_closing_source_reversals_and_closing_perio
         ReportOutput::FunctionalStatement(Box::new(certified.statement))
     );
 }
+
+#[test]
+fn xbrl_activity_omits_foreign_pending_only_rows_and_requires_read_authority() {
+    let mut fixture = Fixture::new(0xe8);
+    let through = day(2026, 3, 31);
+    fixture.transfer(
+        day(2026, 3, 15),
+        b"xbrl-posted-sale",
+        fixture.usd,
+        ("1000", "4000"),
+        10_000,
+    );
+    let mut pending = fixture.proposal(
+        day(2026, 3, 15),
+        b"xbrl-pending-jpy",
+        EntryClass::PENDING,
+        fixture.legs(fixture.jpy, ("6000", "1000"), 7_000),
+    );
+    pending.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    fixture.commit(pending);
+    let at = fixture.book.head().unwrap();
+    let reader = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let inputs = fixture
+        .book
+        .xbrl_report_inputs(through, Some(at), &reader)
+        .unwrap()
+        .unwrap();
+    assert_eq!(inputs.known_at_seq, at.0);
+    assert_eq!(
+        inputs.income_balances,
+        std::collections::BTreeMap::from([(("4000".into(), "USD".into()), -10_000),])
+    );
+    let journal = fixture.book.format_journal(through, Some(at)).unwrap();
+    assert!(
+        journal
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.legs)
+            .all(|leg| leg.unit_code == "USD")
+    );
+    let xml =
+        fa_formats::xbrl::write_format_journal_xbrl_xml_with_activity(&journal, &inputs).unwrap();
+    let instance = fa_formats::xbrl::read_xbrl_instance_xml(&xml).unwrap();
+    assert!(instance.facts.iter().all(|fact| fact.unit_code == "USD"));
+    assert_eq!(
+        instance
+            .facts
+            .iter()
+            .find(|fact| fact.concept == "us-gaap:ProfitLoss")
+            .unwrap()
+            .mantissa,
+        10_000
+    );
+    let denied = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let refusal = fixture
+        .book
+        .xbrl_report_inputs(through, Some(at), &denied)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::CAPABILITY);
+}

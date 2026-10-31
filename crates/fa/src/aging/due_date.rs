@@ -8,8 +8,9 @@
 //! This separate format preserves effective-date aging v1 bytes. The unsigned
 //! certificate requires current read authority and original retained history
 //! for local replay; its digest alone is not a signature or proof of economic
-//! truth. Extension 33 v1 binds credit obligations and v2 debit receivables;
-//! missing terms remain explicitly unscheduled on either side.
+//! truth. Extension 33 v1 retains its credit-only maturity contract; v2 also
+//! admits contractual terms on debit receivables. A missing due date remains
+//! unscheduled on either side and is never inferred from the posting date.
 
 use asupersync::fs::Vfs;
 use fa_journal::{KernelError, Refusal, exit};

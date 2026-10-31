@@ -302,11 +302,26 @@ fn token_reads_are_recorded_before_observation_even_when_the_holder_can_write() 
         text(&events[3], "request_digest")
     );
 
-    // Filters: by principal, and after a sequence.
+    // Filters: by principal and by a reproducible recorded interval.
     assert_eq!(number(&f.log(&["--reader", "preparer-1"]), "count"), 1);
     assert_eq!(number(&f.log(&["--reader", "auditor-1"]), "count"), 3);
-    let after = number(&events[2], "recorded_at").to_string();
+    let first = number(&events[0], "recorded_at").to_string();
+    let through = number(&events[2], "recorded_at").to_string();
+    let after = through.clone();
     assert_eq!(number(&f.log(&["--since", &after]), "count"), 1);
+    let bounded = f.log(&["--since", &first, "--through", &through]);
+    assert_eq!(number(&bounded, "count"), 2, "{bounded:?}");
+    assert_eq!(number(&bounded, "since"), number(&events[0], "recorded_at"));
+    assert_eq!(
+        number(&bounded, "through"),
+        number(&events[2], "recorded_at")
+    );
+    let exact = f.log(&["--through", &through]);
+    assert_eq!(number(&exact, "count"), 3, "{exact:?}");
+    assert_eq!(
+        exact.get("through"),
+        Some(&Json::Int(number(&events[2], "recorded_at")))
+    );
 
     // Reading the log under the read-only token records that read too, and
     // the answer includes it.
@@ -321,8 +336,13 @@ fn token_reads_are_recorded_before_observation_even_when_the_holder_can_write() 
         .unwrap();
     assert_eq!(text(last, "command"), "access log");
 
-    // Planted negative: a bad --since is usage and records nothing.
+    // Planted negatives: malformed and inverted bounds are usage errors and
+    // are rejected before a book read can be recorded.
     let (code, _) = f.run(&["access", "log", "--since", "soon"]);
+    assert_eq!(code, 2);
+    let (code, _) = f.run(&["access", "log", "--through", "later"]);
+    assert_eq!(code, 2);
+    let (code, _) = f.run(&["access", "log", "--since", "10", "--through", "9"]);
     assert_eq!(code, 2);
     assert_eq!(number(&f.log(&[]), "count"), 5);
 }

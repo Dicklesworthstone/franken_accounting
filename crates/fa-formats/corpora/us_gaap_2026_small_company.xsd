@@ -56,4 +56,6 @@
   <xs:element id="us-gaap_OperatingIncomeLoss" name="OperatingIncomeLoss" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
   <xs:element id="us-gaap_IncomeTaxExpenseBenefit" name="IncomeTaxExpenseBenefit" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="duration" nillable="true"/>
   <xs:element id="us-gaap_NetIncomeLoss" name="NetIncomeLoss" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_ProfitLoss" name="ProfitLoss" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="duration" nillable="true"/>
+  <xs:element id="us-gaap_NetIncomeLossAttributableToNoncontrollingInterest" name="NetIncomeLossAttributableToNoncontrollingInterest" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="debit" xbrli:periodType="duration" nillable="true"/>
 </xs:schema>

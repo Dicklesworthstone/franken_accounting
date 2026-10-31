@@ -1328,6 +1328,22 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
                 "matrix-close",
                 "--review-only",
             ],
+            // Preparing a closing draft for review needs read and post
+            // (d83f19076); closing the year needs close as well (below).
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
+            &[
+                "close",
+                "year-end",
+                "--fiscal-year",
+                "2026",
+                "--period",
+                "FY2026-CLOSE",
+                "--key",
+                "matrix-close-year",
+            ],
             &[Op::Read, Op::Post, Op::Close],
             Reaches,
         ),

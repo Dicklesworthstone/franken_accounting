@@ -154,10 +154,16 @@ fn decode_terms(bytes: &[u8], legs: &[Leg]) -> Result<Vec<(u16, Terms)>, ReportE
         let leg = legs
             .get(usize::from(ordinal))
             .ok_or_else(|| failed("obligation_terms", "maturity terms name an absent leg"))?;
-        if leg.debit != (version == 2) || leg.mantissa <= 0 {
+        if version == 1 && leg.debit {
             return Err(failed(
                 "obligation_terms",
-                "maturity requires a positive leg of its declared side (v1 credit, v2 debit)",
+                "maturity version 1 requires a credit leg",
+            ));
+        }
+        if leg.mantissa <= 0 {
+            return Err(failed(
+                "obligation_terms",
+                "maturity requires a positive leg amount",
             ));
         }
         let unscheduled = match r.u8("maturity.status")? {
@@ -581,4 +587,158 @@ fn encode(report: &VerifiedDueDateAging) -> Result<Vec<u8>, ReportError> {
         ));
     }
     Ok(w.buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leg(debit: bool, mantissa: i128) -> Leg {
+        Leg {
+            debit,
+            account: 1,
+            unit: 1,
+            mantissa,
+        }
+    }
+
+    // Encode the documented wire fields directly, without the producer's
+    // model or encoder. The outsider verifier must enforce its own contract.
+    fn scheduled_terms(version: u16, terms: &[(u16, &[(i32, i128)])]) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.u16(version).count(terms.len());
+        for (ordinal, installments) in terms {
+            w.u16(*ordinal).u8(1).count(installments.len());
+            for &(due_date, amount) in *installments {
+                w.i32(due_date).i128(amount);
+            }
+        }
+        w.buf
+    }
+
+    #[test]
+    fn maturity_v1_payable_installments_remain_readable() {
+        let installments = [(100, 40), (120, 60)];
+        let bytes = scheduled_terms(1, &[(1, &installments)]);
+        let terms = decode_terms(&bytes, &[leg(true, 100), leg(false, 100)]).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].0, 1);
+        assert_eq!(terms[0].1.unscheduled, None);
+        assert_eq!(terms[0].1.installments, installments);
+    }
+
+    #[test]
+    fn maturity_v1_refuses_debit_terms() {
+        let bytes = scheduled_terms(1, &[(0, &[(100, 100)])]);
+        let error = decode_terms(&bytes, &[leg(true, 100)]).unwrap_err();
+        assert_eq!(error.predicate, "obligation_terms");
+    }
+
+    #[test]
+    fn maturity_v2_accepts_receivable_and_payable_installments() {
+        let receivable = [(100, 40), (120, 60)];
+        let payable = [(110, 100)];
+        let bytes = scheduled_terms(2, &[(0, &receivable), (1, &payable)]);
+        let terms = decode_terms(&bytes, &[leg(true, 100), leg(false, 100)]).unwrap();
+        assert_eq!(terms.len(), 2);
+        assert_eq!(terms[0].0, 0);
+        assert_eq!(terms[0].1.unscheduled, None);
+        assert_eq!(terms[0].1.installments, receivable);
+        assert_eq!(terms[1].0, 1);
+        assert_eq!(terms[1].1.unscheduled, None);
+        assert_eq!(terms[1].1.installments, payable);
+    }
+
+    #[test]
+    fn maturity_v2_debit_cannot_be_downgraded_to_v1() {
+        let mut bytes = scheduled_terms(2, &[(0, &[(100, 100)])]);
+        let legs = [leg(true, 100)];
+        assert!(decode_terms(&bytes, &legs).is_ok());
+        bytes[..2].copy_from_slice(&1_u16.to_le_bytes());
+        let error = decode_terms(&bytes, &legs).unwrap_err();
+        assert_eq!(error.predicate, "obligation_terms");
+    }
+
+    #[test]
+    fn maturity_rejects_nonpositive_legs_even_without_installments() {
+        for (version, debit) in [(1, false), (2, false), (2, true)] {
+            let mut w = Writer::default();
+            w.u16(version).count(1).u16(0).u8(3).count(0);
+            let terms = decode_terms(&w.buf, &[leg(debit, 100)]).unwrap();
+            assert_eq!(
+                terms[0].1.unscheduled,
+                Some(VerifiedUnscheduled::MissingMaturity)
+            );
+            assert!(terms[0].1.installments.is_empty());
+            // MissingMaturity has no schedule whose total could accidentally
+            // mask a missing positive-leg check.
+            for amount in [0, -1, i128::MIN] {
+                let error = decode_terms(&w.buf, &[leg(debit, amount)]).unwrap_err();
+                assert_eq!(error.predicate, "obligation_terms");
+            }
+        }
+    }
+
+    #[test]
+    fn maturity_installments_must_exactly_cover_each_leg() {
+        for (version, debit) in [(1, false), (2, false), (2, true)] {
+            for installments in [[(100, 40), (120, 59)], [(100, 40), (120, 61)]] {
+                let bytes = scheduled_terms(version, &[(0, &installments)]);
+                let error = decode_terms(&bytes, &[leg(debit, 100)]).unwrap_err();
+                assert_eq!(error.predicate, "obligation_terms");
+            }
+        }
+    }
+
+    #[test]
+    fn maturity_rejects_installment_total_overflow() {
+        let installments = [(100, i128::MAX), (120, 1)];
+        for (version, debit) in [(1, false), (2, false), (2, true)] {
+            let bytes = scheduled_terms(version, &[(0, &installments)]);
+            let error = decode_terms(&bytes, &[leg(debit, i128::MAX)]).unwrap_err();
+            assert_eq!(error.predicate, "exact_arithmetic");
+        }
+    }
+
+    #[test]
+    fn maturity_requires_positive_installments_and_strict_date_order() {
+        for (version, debit) in [(1, false), (2, false), (2, true)] {
+            for installments in [
+                [(120, 40), (100, 60)],
+                [(100, 40), (100, 60)],
+                [(100, 0), (120, 100)],
+                [(100, -1), (120, 101)],
+            ] {
+                let bytes = scheduled_terms(version, &[(0, &installments)]);
+                let error = decode_terms(&bytes, &[leg(debit, 100)]).unwrap_err();
+                assert_eq!(error.predicate, "obligation_terms");
+            }
+        }
+    }
+
+    #[test]
+    fn maturity_requires_unique_ordered_existing_leg_ordinals() {
+        let installments = [(100, 100)];
+        let legs = [leg(false, 100), leg(false, 100)];
+        for version in [1, 2] {
+            for ordinals in [&[1_u16, 0][..], &[0, 0][..], &[2][..]] {
+                let terms: Vec<_> = ordinals
+                    .iter()
+                    .map(|&ordinal| (ordinal, installments.as_slice()))
+                    .collect();
+                let bytes = scheduled_terms(version, &terms);
+                let error = decode_terms(&bytes, &legs).unwrap_err();
+                assert_eq!(error.predicate, "obligation_terms");
+            }
+        }
+    }
+
+    #[test]
+    fn maturity_refuses_unknown_wire_versions() {
+        for version in [0, 3, u16::MAX] {
+            let bytes = scheduled_terms(version, &[(0, &[(100, 100)])]);
+            let error = decode_terms(&bytes, &[leg(false, 100)]).unwrap_err();
+            assert_eq!(error.predicate, "obligation_terms");
+        }
+    }
 }

@@ -99,9 +99,6 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("defer", crate::typed::defer_cmd),
     ("batch", crate::typed::batch_cmd),
     ("post-reserve", crate::typed::post_reserve_cmd),
-    ("dispose", crate::disposal::dispose_cmd),
-    ("depreciate", crate::asset::depreciate),
-    ("amortize", crate::asset::amortize),
     ("void-reserve", crate::typed::void_reserve_cmd),
     ("replace", crate::typed::replace_cmd),
     ("commit", commit_cmd),
@@ -162,6 +159,9 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("help", help_cmd),
     ("demo", demo_cmd),
     ("schedule", crate::recurring::schedule_cmd),
+    ("dispose", crate::disposal::dispose_cmd),
+    ("depreciate", crate::asset::depreciate),
+    ("amortize", crate::asset::amortize),
 ];
 
 /// The registered verbs this build can dispatch (the parity tests compare
