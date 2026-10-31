@@ -116,6 +116,10 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     /// post checks only the commits since the last (fa-rcw1). Bound to `db`'s
     /// own committed prefix by its Chronicle markers.
     carried: fa_journal::CarriedHistory,
+    /// The client's principal key, when this handle signs every approval it
+    /// records ([`Self::sign_approvals_with`], plan §14.5, fa-kae). Held only
+    /// for the handle's life; never journaled.
+    approval_key: Option<fa_notary::SigningKey>,
 }
 
 /// Borrow the exact certificate being exported while sharing its native
@@ -229,6 +233,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
+            approval_key: None,
         })
     }
 
@@ -284,6 +289,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
+            approval_key: None,
         })
     }
 }
@@ -1041,6 +1047,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         proposal_digest: [u8; 32],
     ) -> Outcome<fa_journal::Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
+        if let Some(key) = self.approval_key.take() {
+            let signed = self
+                .approve_signed(cx, capability, proposal_digest, &key)
+                .await;
+            self.approval_key = Some(key);
+            return signed;
+        }
         Ok(fa_journal::record_approval(
             &mut self.db,
             cx,
@@ -1052,6 +1065,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             },
         )
         .await?)
+    }
+
+    /// Sign every approval this handle records with `key`, the client's
+    /// principal key (plan §14.5, fa-kae): proposal approvals and every
+    /// review approval (allocation, balance allocation, settlement and
+    /// settlement group), which all record through [`Self::approve`]. The
+    /// key lives as long as this handle and is never journaled.
+    pub fn sign_approvals_with(&mut self, key: fa_notary::SigningKey) {
+        self.approval_key = Some(key);
     }
 
     /// [`Self::approve`] as a principal that signs with `key` (plan §14.5,
@@ -3154,6 +3176,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                approval_key: None,
             },
             map,
         )))
@@ -3194,6 +3217,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                approval_key: None,
             },
             rehearsal,
         )))
@@ -3243,6 +3267,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                approval_key: None,
             },
             map,
             entries,

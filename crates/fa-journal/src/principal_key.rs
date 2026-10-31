@@ -134,7 +134,7 @@ pub(crate) fn key_refusal(error: &KeyError, signature: bool) -> Refusal {
             exit::SAFETY,
             error.to_string(),
             CITE,
-            "approve the proposal with fa approve --proposal <digest> --sign-key <the principal's current key file>, never routed through fad; a principal with no registered key approves without --sign-key. A keyed principal's review approvals (fa approve --review) cannot be signed yet (fa-kae)",
+            "approve with --sign-key <the principal's current key file> (fa approve --proposal or --review, fa allocate approve, fa settle approve), never routed through fad; a principal with no registered key approves without --sign-key",
         )
     } else {
         Refusal::new(

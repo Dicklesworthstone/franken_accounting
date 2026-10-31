@@ -188,7 +188,7 @@ flags = ["--proposal", "--review", "--digest", "--grant", "--sign-key"]
 switches = []
 events = ["approved"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["approve --proposal <proposal_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal. A principal that registered a signing key (fa principal key add) must sign: --sign-key names its current key file, read by the client and never routed through fad, and the approval stores the Ed25519 signature over its digest; plan §14.5)", "approve --review <file|-|hex> --digest <review_digest> [--as <principal>] [--grant <op>]...   (verifies the review artifact's digest and records an approval of its sealed proposal_digest)"]
+usage = ["approve --proposal <proposal_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal. A principal that registered a signing key (fa principal key add) must sign: --sign-key names its current key file, read by the client and never routed through fad, and the approval stores the Ed25519 signature over its digest; plan §14.5)", "approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (verifies the review artifact's digest and records an approval of its sealed proposal_digest)"]
 example = "fa approve --proposal <proposal_digest> --as controller --book ./books/myco --json"
 
 [[verb]]
@@ -212,7 +212,7 @@ flags = ["--out", "--sign-key", "--endorse-key", "--date", "--key", "--descripti
 switches = []
 events = ["principal_key_created", "principal_key_registered"]
 exits = [0, 2, 4, 5, 6, 7]
-usage = ["principal key new --out <new key file>   (a new Ed25519 key from the operating system's entropy: its seed as 64 hex characters in a new 0600 file, never stdout; no book is opened)", "principal key add --sign-key <key file> [--endorse-key <current key file>] [--as <principal>] [--date YYYY-MM-DD] [--key K] [--description <text>]   (journals the key as the next generation of the acting principal's chain: only the principal itself registers, holding approve; the key proves possession by signing the registration, and a rotation is endorsed by the current key. From then on fa approve --proposal ... --sign-key <current key file> signs each approval and an unsigned one is refused FA-REF-205. Both commands read or write a secret on the host: neither runs through fad nor over MCP)"]
+usage = ["principal key new --out <new key file>   (a new Ed25519 key from the operating system's entropy: its seed as 64 hex characters in a new 0600 file, never stdout; no book is opened)", "principal key add --sign-key <key file> [--endorse-key <current key file>] [--as <principal>] [--date YYYY-MM-DD] [--key K] [--description <text>]   (journals the key as the next generation of the acting principal's chain: only the principal itself registers, holding approve; the key proves possession by signing the registration, and a rotation is endorsed by the current key. From then on --sign-key <current key file> signs each of its approvals (fa approve --proposal or --review, fa allocate approve, fa settle approve) and an unsigned one is refused FA-REF-205. Both commands read or write a secret on the host: neither runs through fad nor over MCP)"]
 example = "fa principal key add --sign-key ./keys/controller.key --as controller --book ./books/myco --json"
 
 [[verb]]
@@ -464,11 +464,11 @@ name = "allocate"
 summary = "Allocate an explicit total or a journal-derived period balance across account and dimension cells under a registered allocation law, with review artifacts, independent approvals, and dry-run plans."
 writes = true
 subcommands = []
-flags = ["--intent", "--review", "--review-out", "--digest", "--period", "--evidence", "--approval", "--plan-out", "--grant"]
+flags = ["--intent", "--review", "--review-out", "--digest", "--period", "--evidence", "--approval", "--plan-out", "--grant", "--sign-key"]
 switches = ["--dry-run", "--review-only", "--approve"]
 events = ["posted", "recorded", "plan", "allocation_reviewed", "approved"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["allocate --intent <alloc.json|-> [--period <code>] [--evidence <oid>]... [--approval <vid>]... [--dry-run [--plan-out <new-file>]] [--review-only | --review-out <new-file>]", "allocate approve --review <file|-|hex> --digest <review_digest> [--as <principal>] [--grant <op>]...", "allocate --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]", "An allocation intent names source (account code) and supplies either total + source_side (debit|credit), or source_period/--period to fold that source cell's net period balance. Top-level dimensions identify the source and provide the default for targets. Each target may supply dimensions: {cost_center: ENG, project: P7} or the numeric dimension/value array. Omitted target dimensions inherit the source; an explicit empty set clears them. Distinct cells may use the same account; duplicate target cells and the exact source cell refuse. A pro-rata recipient may name an unambiguous target account or {account: 6100, dimensions: {cost_center: SALES}}. The canonical driver binds every destination and is auto-imported when preparing a native plan."]
+usage = ["allocate --intent <alloc.json|-> [--period <code>] [--evidence <oid>]... [--approval <vid>]... [--dry-run [--plan-out <new-file>]] [--review-only | --review-out <new-file>]", "allocate approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...", "allocate --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]", "An allocation intent names source (account code) and supplies either total + source_side (debit|credit), or source_period/--period to fold that source cell's net period balance. Top-level dimensions identify the source and provide the default for targets. Each target may supply dimensions: {cost_center: ENG, project: P7} or the numeric dimension/value array. Omitted target dimensions inherit the source; an explicit empty set clears them. Distinct cells may use the same account; duplicate target cells and the exact source cell refuse. A pro-rata recipient may name an unambiguous target account or {account: 6100, dimensions: {cost_center: SALES}}. The canonical driver binds every destination and is auto-imported when preparing a native plan."]
 example = "fa allocate --intent alloc.json --book ./books/myco --json"
 
 [[verb]]
@@ -476,11 +476,11 @@ name = "settle"
 summary = "Post a single-leg or multi-leg open-item settlement under an explicit matching policy (SpecificId, Fifo, Lifo) or reviewed settlement artifact, with optional review artifacts, independent approvals, and dry-run plans."
 writes = true
 subcommands = []
-flags = ["--intent", "--review", "--review-out", "--digest", "--evidence", "--approval", "--plan-out", "--grant"]
+flags = ["--intent", "--review", "--review-out", "--digest", "--evidence", "--approval", "--plan-out", "--grant", "--sign-key"]
 switches = ["--dry-run", "--review-only", "--approve"]
 events = ["posted", "recorded", "plan", "settlement_reviewed", "approved"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["settle --intent <settle.json|-> [--evidence <oid>]... [--approval <vid>]... [--dry-run [--plan-out <new-file>]] [--review-only | --review-out <new-file>]", "settle approve --review <file|-|hex> --digest <review_digest> [--as <principal>] [--grant <op>]...", "settle --review <file|-|hex> [--digest <review_digest>] [--approval <vid>]... [--dry-run [--plan-out <new-file>]]", "Single-leg intents name `payment_account`, `settlement_account`, `payment_side`, `amount`, and `policy` (`SpecificId`, `Fifo`, `Lifo`) with optional `on_account_account`. Multi-leg intents name `legs` and `applications` (`payment_leg`, `policy`, `on_account_account`)."]
+usage = ["settle --intent <settle.json|-> [--evidence <oid>]... [--approval <vid>]... [--dry-run [--plan-out <new-file>]] [--review-only | --review-out <new-file>]", "settle approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...", "settle --review <file|-|hex> [--digest <review_digest>] [--approval <vid>]... [--dry-run [--plan-out <new-file>]]", "Single-leg intents name `payment_account`, `settlement_account`, `payment_side`, `amount`, and `policy` (`SpecificId`, `Fifo`, `Lifo`) with optional `on_account_account`. Multi-leg intents name `legs` and `applications` (`payment_leg`, `policy`, `on_account_account`)."]
 example = "fa settle --intent settle.json --book ./books/myco --json"
 
 [[verb]]

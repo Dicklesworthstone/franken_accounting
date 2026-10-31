@@ -148,9 +148,11 @@ fn a_keyed_principal_signs_its_approvals_and_rotates_only_with_endorsement() -> 
             &first,
         ],
     );
+    // A review approval takes the key too; here the review itself is judged
+    // (signed review approvals: allocation_dimensions.rs).
     refused(
         &book,
-        "a signed review approval",
+        "a signed approval of no review",
         &[
             "approve",
             "--review",
@@ -161,7 +163,7 @@ fn a_keyed_principal_signs_its_approvals_and_rotates_only_with_endorsement() -> 
             &first,
         ],
         2,
-        "not supported yet",
+        "unrecognized review artifact format",
     );
 
     // Rotation: the current key must endorse the next one.

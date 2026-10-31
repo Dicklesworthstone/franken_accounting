@@ -5658,12 +5658,6 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(review_arg) = args.flag("--review") {
-        if args.flag("--sign-key").is_some() {
-            return Err(usage(
-                "--sign-key signs a proposal approval; a signed review approval is not supported yet (fa-kae)",
-                "fa approve --proposal <proposal_digest> --sign-key <key file>",
-            ));
-        }
         if args.flag("--proposal").is_some() {
             return Err(usage(
                 "supply either --proposal <digest> or --review <file|-|hex> --digest <64-hex>, not both",
@@ -10870,8 +10864,12 @@ fn approve_allocation_review_bytes(
     bytes: &[u8],
     digest: [u8; 32],
 ) -> Result<(), Fail> {
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["read", "approve"])?;
     let mut book = ctx.books.open(args)?;
+    if let Some(key) = key {
+        book.sign_approvals_with(key);
+    }
     let approved = if bytes.starts_with(b"FA-BAL-REVIEW\0") {
         let review = BalanceAllocationReview::decode(bytes).map_err(|e| {
             usage(
@@ -10898,8 +10896,12 @@ fn approve_settlement_review_bytes(
     bytes: &[u8],
     digest: [u8; 32],
 ) -> Result<(), Fail> {
+    let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
     let capability = ctx.capability(args, &["read", "approve"])?;
     let mut book = ctx.books.open(args)?;
+    if let Some(key) = key {
+        book.sign_approvals_with(key);
+    }
     let approved = if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0") {
         let review = SettlementGroupReview::decode(bytes).map_err(|e| {
             usage(

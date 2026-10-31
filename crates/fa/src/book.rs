@@ -1535,6 +1535,12 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
     }
 
+    /// Sign every approval this handle records with `key`, the client's
+    /// principal key ([`AsyncBook::sign_approvals_with`]).
+    pub fn sign_approvals_with(&mut self, key: fa_notary::SigningKey) {
+        with_store!(&mut self.store, core => core.sign_approvals_with(key))
+    }
+
     /// Register `key` as the next generation of the capability holder's
     /// signing-key chain, endorsed by its current key when it has one
     /// ([`AsyncBook::register_principal_key`]).

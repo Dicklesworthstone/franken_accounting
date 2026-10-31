@@ -1287,7 +1287,7 @@ name = "APPROVAL_SIGNATURE"
 owners = ["fa-journal"]
 exit = "safety"
 cite = "plan §14.5 (a principal cannot later deny an approval it signed): once a principal registers a signing key, every approval it records carries that key's Ed25519 signature over the approval digest (bead fa-kae)"
-fix = "approve the proposal with fa approve --proposal <digest> --sign-key <the principal's current key file>, never routed through fad; a principal with no registered key approves without --sign-key. A keyed principal's review approvals (fa approve --review) cannot be signed yet (fa-kae)"
+fix = "approve with --sign-key <the principal's current key file> (fa approve --proposal or --review, fa allocate approve, fa settle approve), never routed through fad; a principal with no registered key approves without --sign-key"
 
 # ---- Proof export (145–146) ---
 [[refusal]]

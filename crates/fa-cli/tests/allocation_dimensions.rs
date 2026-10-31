@@ -552,3 +552,87 @@ fn zero_share_destinations_still_require_existing_and_mandatory_dimension_values
         f.assert_cell("SHARED", "100.00 USD", "0.00 USD");
     }
 }
+
+/// fa-kae: once the reviewing controller registers a signing key, its review
+/// approval must be signed (FA-REF-205 otherwise), and the signed approval
+/// plans the reviewed allocation exactly as an unsigned one did.
+#[test]
+fn a_keyed_controllers_review_approval_is_signed_and_plans_the_allocation() {
+    let f = Fixture::new();
+    let intent = f.allocation(
+        "rent-signed",
+        r#""total":"100.00 USD","source_side":"credit""#,
+        r#""method":"largest_remainder""#,
+        TARGETS,
+    );
+    let (review, path) = f.review("signed", &intent);
+    let digest = text(&review, "review_digest").to_string();
+    let key = f.dir.join("controller.key").display().to_string();
+    ok(&f.book, &["principal", "key", "new", "--out", &key]);
+    let registered = ok(
+        &f.book,
+        &[
+            "principal",
+            "key",
+            "add",
+            "--sign-key",
+            &key,
+            "--as",
+            "controller",
+        ],
+    );
+    assert_eq!(integer(&registered, "generation"), 0);
+    let before = f.head();
+    let (code, refusal) = run(
+        &f.book,
+        &[
+            "allocate",
+            "approve",
+            "--review",
+            &path,
+            "--digest",
+            &digest,
+            "--as",
+            "controller",
+        ],
+    );
+    assert_eq!(code, 7, "{}", refusal.render());
+    assert!(
+        refusal.render().contains("FA-REF-205"),
+        "{}",
+        refusal.render()
+    );
+    assert_eq!(f.head(), before, "a refused approval writes nothing");
+    let approved = ok(
+        &f.book,
+        &[
+            "allocate",
+            "approve",
+            "--review",
+            &path,
+            "--digest",
+            &digest,
+            "--as",
+            "controller",
+            "--sign-key",
+            &key,
+        ],
+    );
+    let plan = ok(
+        &f.book,
+        &[
+            "allocate",
+            "--review",
+            &path,
+            "--digest",
+            &digest,
+            "--approval",
+            text(&approved, "approval_vid"),
+            "--dry-run",
+        ],
+    );
+    let legs = get(&plan, "legs").as_arr().unwrap();
+    assert_eq!(legs.len(), 3);
+    f.assert_dimensions(&legs[1], "ENG");
+    f.assert_dimensions(&legs[2], "SALES");
+}
