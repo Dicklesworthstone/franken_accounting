@@ -5,6 +5,16 @@
 # here. No float parsing is permitted in any format reader or writer; amounts
 # are exact fixed-scale `fa_money::Amount` integers at the unit's registered
 # scale.
+#
+# Additive account-role extension v1 (fa-yugf.99): canonical role names are
+# sorted/deduplicated per account. ADS carries account_roles_version = 1 and
+# [[account_role]] records (UTF-8 hex account code, role); SAF-T uses optional
+# AccountRolesV1, CSV a fa_account_roles_v1 comment, and Beancount/hledger
+# fa_roles_v1 metadata, each with comma-separated registered role names.
+# Roles enter the journal digest after its v1 body under the domain
+# fa:formats:account-roles:v1, with length-prefixed account/role counts and
+# strings. Role-free journals keep their original digest and metadata bytes.
+# These are this repository's extensions, not external standards conformance.
 
 schema_version = 1
 
@@ -100,7 +110,7 @@ oracle_tool = "none"
 round_trip_identity = false
 certified_coordinate = true
 plan_ref = "§12.1, §16.3"
-summary = "XBRL instance and calculation-linkbase validation format for financial statements."
+summary = "XBRL instance with exact calculation checks against this repository's linkbase. Registered noncontrolling_interest equity is emitted as MinorityInterest, separate from parent StockholdersEquity (including unclosed earnings), and their sum is total equity. External taxonomy conformance remains fa-ipom."
 
 [[format]]
 id = 8

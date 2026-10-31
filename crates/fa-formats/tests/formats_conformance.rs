@@ -60,42 +60,49 @@ fn sample_multi_unit_journal() -> FormatJournal {
             name: "Operating Cash".to_owned(),
             account_type: AccountType::ASSET,
             normal_side: Side::Debit,
+            roles: Vec::new(),
         },
         FormatAccount {
             code: "1010".to_owned(),
             name: "Euro Treasury Cash".to_owned(),
             account_type: AccountType::ASSET,
             normal_side: Side::Debit,
+            roles: Vec::new(),
         },
         FormatAccount {
             code: "1200".to_owned(),
             name: "Accounts Receivable".to_owned(),
             account_type: AccountType::ASSET,
             normal_side: Side::Debit,
+            roles: Vec::new(),
         },
         FormatAccount {
             code: "2000".to_owned(),
             name: "Accounts Payable".to_owned(),
             account_type: AccountType::LIABILITY,
             normal_side: Side::Credit,
+            roles: Vec::new(),
         },
         FormatAccount {
             code: "3000".to_owned(),
             name: "Contributed Capital".to_owned(),
             account_type: AccountType::EQUITY,
             normal_side: Side::Credit,
+            roles: Vec::new(),
         },
         FormatAccount {
             code: "4000".to_owned(),
             name: "Product Revenue".to_owned(),
             account_type: AccountType::REVENUE,
             normal_side: Side::Credit,
+            roles: Vec::new(),
         },
         FormatAccount {
             code: "5000".to_owned(),
             name: "Cloud Hosting Expense".to_owned(),
             account_type: AccountType::EXPENSE,
             normal_side: Side::Debit,
+            roles: Vec::new(),
         },
     ];
 
@@ -439,6 +446,115 @@ fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negati
     let ndjson = write_ndjson_gl_stream(&journal).expect("write_ndjson_gl_stream");
     let streamed_rows = verify_ndjson_gl_stream(&ndjson).expect("verify_ndjson_gl_stream");
     assert_eq!(streamed_rows, 8);
+}
+
+#[test]
+fn account_roles_survive_every_journal_round_trip_and_substitution_is_refused() {
+    let original = sample_multi_unit_journal();
+    let mut accounts = original.accounts.clone();
+    accounts
+        .iter_mut()
+        .find(|a| a.code == "3000")
+        .unwrap()
+        .roles = vec![
+        "contributed_capital".into(),
+        "noncontrolling_interest".into(),
+    ];
+    let c = &original.coordinate;
+    let classified = FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        accounts,
+        original.entries.clone(),
+        original.assertions.clone(),
+    )
+    .unwrap();
+    assert_ne!(classified.coordinate.content_digest, c.content_digest);
+    assert_eq!(
+        classified.fold_balances().unwrap(),
+        original.fold_balances().unwrap()
+    );
+    let units = UnitCatalog::embedded().unwrap();
+    let ads = write_ads_package(&classified).unwrap();
+    let saft = write_saft_xml(&classified).unwrap();
+    let csv = write_csv_gl(&classified);
+    let bean = write_beancount(&classified);
+    for (format, restored) in [
+        ("ads", read_ads_package(&ads, &units).unwrap()),
+        ("saft", read_saft_xml(&saft, &units).unwrap()),
+        ("csv", read_csv_gl(&csv, &units).unwrap()),
+        ("beancount", read_beancount(&bean, &units).unwrap()),
+    ] {
+        assert_eq!(restored.accounts, classified.accounts, "{format}");
+        verify_round_trip_identity(format, &classified, &restored).unwrap();
+    }
+    // hledger carries neither leg memos, migration sources nor assertions.
+    // Test full identity on its own representable profile, retaining every
+    // role and amount; the four richer profiles above keep all their fields.
+    let mut entries = classified.entries.clone();
+    for entry in &mut entries {
+        entry.migrated_from = None;
+        for leg in &mut entry.legs {
+            leg.memo = None;
+        }
+    }
+    let c = &classified.coordinate;
+    let hledger_profile = FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        classified.accounts.clone(),
+        entries,
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        hledger_profile.fold_balances().unwrap(),
+        classified.fold_balances().unwrap()
+    );
+    let hledger = write_hledger(&hledger_profile);
+    let restored = read_hledger(&hledger, &units).unwrap();
+    assert_eq!(restored.accounts, classified.accounts);
+    verify_round_trip_identity("hledger", &hledger_profile, &restored).unwrap();
+    let mut substituted = ads;
+    substituted.certificate_toml = substituted
+        .certificate_toml
+        .replace("noncontrolling_interest", "retained_earnings");
+    assert!(read_ads_package(&substituted, &units).is_err());
+    assert!(
+        read_saft_xml(
+            &saft.replace("noncontrolling_interest", "retained_earnings"),
+            &units
+        )
+        .is_err()
+    );
+    assert!(
+        read_csv_gl(
+            &csv.replace("noncontrolling_interest", "retained_earnings"),
+            &units
+        )
+        .is_err()
+    );
+    assert!(
+        read_beancount(
+            &bean.replace("noncontrolling_interest", "retained_earnings"),
+            &units
+        )
+        .is_err()
+    );
+    // hledger's reader does not carry the producer's original coordinate, so
+    // the independent round-trip comparison must reject a changed role set.
+    let changed = read_hledger(
+        &hledger.replace("noncontrolling_interest", "retained_earnings"),
+        &units,
+    )
+    .unwrap();
+    assert!(verify_round_trip_identity("hledger", &hledger_profile, &changed).is_err());
 }
 
 #[test]

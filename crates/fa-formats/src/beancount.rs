@@ -110,6 +110,9 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
             escape_quotes(&acct.name),
             format_account_type(acct.account_type),
         ));
+        if !acct.roles.is_empty() {
+            out.push_str(&format!("  fa_roles_v1: \"{}\"\n", acct.roles.join(",")));
+        }
     }
     out.push('\n');
 
@@ -242,6 +245,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
             let mut code = from_beancount_account_name(bc_acct)?;
             let mut name = code.clone();
             let mut acct_type = infer_account_type_from_beancount(bc_acct)?;
+            let mut roles = Vec::new();
             i += 1;
             while i < lines.len() && (lines[i].starts_with("  ") || lines[i].starts_with('\t')) {
                 let meta = lines[i].trim();
@@ -252,6 +256,8 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                 } else if let Some(v) = meta.strip_prefix("fa_type:") {
                     let t_str = unquote(FMT, v.trim())?;
                     acct_type = parse_account_type(FMT, &t_str)?;
+                } else if let Some(v) = meta.strip_prefix("fa_roles_v1:") {
+                    roles.extend(unquote(FMT, v.trim())?.split(',').map(str::to_owned));
                 }
                 i += 1;
             }
@@ -260,6 +266,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                 name,
                 account_type: acct_type,
                 normal_side: normal_side_for_type(acct_type),
+                roles,
             });
             continue;
         }
@@ -456,9 +463,14 @@ pub fn write_hledger(journal: &FormatJournal) -> String {
         acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
         let hl_acct = to_beancount_account_name(acct.account_type, &acct.code);
         out.push_str(&format!(
-            "account {hl_acct}  ; fa_code:{} fa_type:{} fa_name:{}\n",
+            "account {hl_acct}  ; fa_code:{} fa_type:{}{} fa_name:{}\n",
             acct.code,
             format_account_type(acct.account_type),
+            if acct.roles.is_empty() {
+                String::new()
+            } else {
+                format!(" fa_roles_v1:{}", acct.roles.join(","))
+            },
             acct.name
         ));
     }
@@ -539,6 +551,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
             let mut code = from_beancount_account_name(acct_tok)?;
             let mut acct_type = infer_account_type_from_beancount(acct_tok)?;
             let mut name = code.clone();
+            let mut roles = Vec::new();
             if let Some(c) = comment_opt {
                 if let Some((_, after_name)) = c.split_once("fa_name:") {
                     name = after_name.trim().to_owned();
@@ -548,6 +561,8 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                         code = v.to_owned();
                     } else if let Some(v) = tok.strip_prefix("fa_type:") {
                         acct_type = parse_account_type(FMT, v)?;
+                    } else if let Some(v) = tok.strip_prefix("fa_roles_v1:") {
+                        roles.extend(v.split(',').map(str::to_owned));
                     }
                 }
             }
@@ -556,6 +571,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                 name,
                 account_type: acct_type,
                 normal_side: normal_side_for_type(acct_type),
+                roles,
             });
             i += 1;
             continue;

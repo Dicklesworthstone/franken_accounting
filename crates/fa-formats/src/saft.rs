@@ -71,6 +71,12 @@ pub fn write_saft_xml(journal: &FormatJournal) -> Result<String, FormatError> {
             format_account_type(acct.account_type)
         ));
         xml.push_str(&format!("        <NormalSide>{side_str}</NormalSide>\n"));
+        if !acct.roles.is_empty() {
+            xml.push_str(&format!(
+                "        <AccountRolesV1>{}</AccountRolesV1>\n",
+                xml_escape(&acct.roles.join(",")),
+            ));
+        }
         xml.push_str("      </Account>\n");
     }
     xml.push_str("    </GeneralLedgerAccounts>\n");
@@ -224,6 +230,10 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
             name,
             account_type,
             normal_side,
+            roles: extract_all_blocks(acct_block, "AccountRolesV1")
+                .into_iter()
+                .flat_map(|text| text.split(',').map(xml_unescape))
+                .collect(),
         });
     }
 

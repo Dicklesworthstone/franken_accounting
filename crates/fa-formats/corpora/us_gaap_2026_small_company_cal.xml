@@ -85,6 +85,7 @@
   <link:calculationLink xlink:type="extended" xlink:role="http://frankenaccounting.org/role/TypeLevelStatements">
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_Liabilities" xlink:label="loc_TL_Liabilities"/>
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquity" xlink:label="loc_TL_StockholdersEquity"/>
+    <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_MinorityInterest" xlink:label="loc_TL_MinorityInterest"/>
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_RetainedEarningsAccumulatedDeficit" xlink:label="loc_TL_RetainedEarningsAccumulatedDeficit"/>
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" xlink:label="loc_TL_TotalEquity"/>
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_LiabilitiesAndStockholdersEquity" xlink:label="loc_TL_LiabilitiesAndEquity"/>
@@ -92,9 +93,9 @@
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_OperatingExpenses" xlink:label="loc_TL_OperatingExpenses"/>
     <link:loc xlink:type="locator" xlink:href="us_gaap_2026_small_company.xsd#us-gaap_NetIncomeLoss" xlink:label="loc_TL_NetIncomeLoss"/>
 
-    <!-- TotalEquity = StockholdersEquity + RetainedEarningsAccumulatedDeficit -->
+    <!-- TotalEquity = StockholdersEquity (including unclosed income) + MinorityInterest -->
     <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_TotalEquity" xlink:to="loc_TL_StockholdersEquity" weight="1" order="10"/>
-    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_TotalEquity" xlink:to="loc_TL_RetainedEarningsAccumulatedDeficit" weight="1" order="20"/>
+    <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_TotalEquity" xlink:to="loc_TL_MinorityInterest" weight="1" order="20"/>
 
     <!-- LiabilitiesAndStockholdersEquity = Liabilities + TotalEquity -->
     <link:calculationArc xlink:type="arc" xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item" xlink:from="loc_TL_LiabilitiesAndEquity" xlink:to="loc_TL_Liabilities" weight="1" order="10"/>

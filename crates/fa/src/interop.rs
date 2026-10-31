@@ -53,6 +53,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             // A historical export must not load or decode today's chart
             // before discarding accounts created beyond its admitted pin.
             let chart = fa_journal::chart::read_at(db, book, seq)?;
+            let roles = fa_journal::account_role::account_roles_at(db, book, seq)?;
+            let mut roles_by_account: BTreeMap<VId, Vec<String>> = BTreeMap::new();
+            for control in roles.assigned() {
+                roles_by_account
+                    .entry(control.spec.account)
+                    .or_default()
+                    .push(control.spec.role.clone());
+            }
             let mut historical_accounts: Vec<_> = chart.accounts().values().cloned().collect();
             historical_accounts.sort_by(|left, right| left.code.cmp(&right.code));
             for row in historical_accounts {
@@ -66,6 +74,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     } else {
                         Side::Credit
                     },
+                    roles: roles_by_account.remove(&row.vid).unwrap_or_default(),
                 });
             }
             let key = &book.seal_key;

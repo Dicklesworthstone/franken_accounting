@@ -1498,6 +1498,55 @@ fn run_seeds_parallel(seeds: &[u64], workers: usize, f: impl Fn(usize, u64) + Sy
     });
 }
 
+/// fa-yugf.99: assigning and later removing a role cannot change exports
+/// selected before the corresponding journaled control.
+#[test]
+fn format_export_roles_follow_the_selected_known_at_prefix() {
+    let mut fixture = setup_book(0x9900_0000_0000_0001, 0x99);
+    let through = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let account = account_vid(fixture.book_id, "3000");
+    let schema = Capability::embedded(fixture.principal, &["schema_change"]).unwrap();
+    let before = fixture.book.head().unwrap();
+    let mut role = fa::account_role::AccountRoleSpec {
+        account,
+        role: "noncontrolling_interest".into(),
+        assigned: true,
+    };
+    fixture
+        .book
+        .record_account_role(&role, fixture.principal, b"export-role-assign", &schema)
+        .unwrap()
+        .unwrap();
+    let assigned = fixture.book.head().unwrap();
+    role.assigned = false;
+    fixture
+        .book
+        .record_account_role(&role, fixture.principal, b"export-role-remove", &schema)
+        .unwrap()
+        .unwrap();
+    for (pin, expected) in [
+        (Some(before), Vec::<String>::new()),
+        (Some(assigned), vec!["noncontrolling_interest".into()]),
+        (None, Vec::new()),
+    ] {
+        let journal = fixture.book.format_journal(through, pin).unwrap();
+        assert_eq!(
+            journal
+                .accounts
+                .iter()
+                .find(|a| a.code == "3000")
+                .unwrap()
+                .roles,
+            expected
+        );
+        let xml = fa_formats::xbrl::write_format_journal_xbrl_xml(&journal).unwrap();
+        assert_eq!(
+            xml.contains("<us-gaap:MinorityInterest "),
+            !expected.is_empty()
+        );
+    }
+}
+
 /// fa-eid6 (plan §16.6: export then import is the identity on folds): a
 /// 500-entry, two-currency book's interop journal survives every format's
 /// writer and reader, and refolds to the book's trial balance, over 30

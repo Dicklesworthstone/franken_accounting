@@ -44,6 +44,13 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
             format_account_type(acct.account_type),
             side_s
         ));
+        if !acct.roles.is_empty() {
+            out.push_str(&format!(
+                "# fa_account_roles_v1|{}|{}\n",
+                acct.code,
+                acct.roles.join(","),
+            ));
+        }
     }
     for asrt in &journal.assertions {
         let side_s = match asrt.side {
@@ -166,7 +173,23 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
                 name: parts[1].to_owned(),
                 account_type,
                 normal_side,
+                roles: Vec::new(),
             });
+            continue;
+        }
+        if let Some(meta) = line.strip_prefix("# fa_account_roles_v1|") {
+            let (code, roles) = meta.split_once('|').ok_or_else(|| FormatError::Parse {
+                format: FMT_CSV,
+                detail: "invalid account roles v1 metadata".into(),
+            })?;
+            let account = accounts
+                .iter_mut()
+                .find(|account| account.code == code)
+                .ok_or_else(|| FormatError::UnknownAccount {
+                    format: FMT_CSV,
+                    account_code: code.to_owned(),
+                })?;
+            account.roles.extend(roles.split(',').map(str::to_owned));
             continue;
         }
         if let Some(asrt_meta) = line.strip_prefix("# fa_assertion|") {

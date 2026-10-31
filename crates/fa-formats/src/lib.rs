@@ -371,6 +371,9 @@ pub struct FormatAccount {
     pub name: String,
     pub account_type: AccountType,
     pub normal_side: Side,
+    /// Registered roles held at the export's known-at prefix, in lexical order.
+    /// The optional v1 role extension leaves role-free historical bytes intact.
+    pub roles: Vec<String>,
 }
 
 /// Canonical posting leg in an interop journal.
@@ -443,6 +446,10 @@ impl FormatJournal {
         mut assertions: Vec<FormatAssertion>,
     ) -> Result<Self, FormatError> {
         accounts.sort_by(|a, b| a.code.cmp(&b.code));
+        for account in &mut accounts {
+            account.roles.sort();
+            account.roles.dedup();
+        }
         assertions.sort_by(|a, b| {
             (a.as_of, &a.account_code, &a.unit_code).cmp(&(b.as_of, &b.account_code, &b.unit_code))
         });
@@ -592,12 +599,56 @@ impl FormatJournal {
             h.update(&asrt.amount.unit.0.to_le_bytes());
             h.update(&asrt.amount.mantissa.to_le_bytes());
         }
+        // An additive, domain-separated extension binds the role set.
+        // No extension is emitted for the historical role-free representation.
+        let classified: Vec<_> = accounts.iter().filter(|a| !a.roles.is_empty()).collect();
+        if !classified.is_empty() {
+            h.update(b"fa:formats:account-roles:v1");
+            h.update(&(classified.len() as u64).to_le_bytes());
+            for account in classified {
+                h.update(&(account.code.len() as u64).to_le_bytes());
+                h.update(account.code.as_bytes());
+                h.update(&(account.roles.len() as u64).to_le_bytes());
+                for role in &account.roles {
+                    h.update(&(role.len() as u64).to_le_bytes());
+                    h.update(role.as_bytes());
+                }
+            }
+        }
         h.finalize().0
     }
 
     /// Verify every entry's per-unit double-entry balance (`FA-INV-01`) and
     /// compute exact signed `(Dr - Cr)` balances per `(account_code, unit_code)`.
     pub fn fold_balances(&self) -> Result<BTreeMap<(String, String), i128>, FormatError> {
+        if self
+            .accounts
+            .iter()
+            .any(|account| !account.roles.is_empty())
+        {
+            let registry =
+                fa_registry::account_roles::AccountRoles::embedded().map_err(|error| {
+                    FormatError::Parse {
+                        format: "FormatJournal",
+                        detail: format!("account roles registry: {error}"),
+                    }
+                })?;
+            for account in &self.accounts {
+                for role in &account.roles {
+                    if !registry.get(role).is_some_and(|definition| {
+                        definition.admits(format_account_type(account.account_type))
+                    }) {
+                        return Err(FormatError::Parse {
+                            format: "FormatJournal",
+                            detail: format!(
+                                "account {} has an unregistered or type-incompatible role {role}",
+                                account.code
+                            ),
+                        });
+                    }
+                }
+            }
+        }
         let known_accounts: std::collections::BTreeSet<&str> =
             self.accounts.iter().map(|a| a.code.as_str()).collect();
         let mut balances: BTreeMap<(String, String), i128> = BTreeMap::new();

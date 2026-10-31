@@ -211,6 +211,22 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
             cert.push_str(&format!("account_scope = \"{code}\"\n"));
         }
     }
+    if journal
+        .accounts
+        .iter()
+        .any(|account| !account.roles.is_empty())
+    {
+        cert.push_str("account_roles_version = 1\n");
+        for account in &journal.accounts {
+            for role in &account.roles {
+                cert.push_str(&format!(
+                    "\n[[account_role]]\naccount_code_utf8_hex = \"{}\"\nrole = \"{}\"\n",
+                    hex_encode(account.code.as_bytes()),
+                    role,
+                ));
+            }
+        }
+    }
 
     Ok(AdsPackage {
         chart_of_accounts: chart,
@@ -378,7 +394,36 @@ pub fn read_ads_package(
             name: cols[1].to_owned(),
             account_type,
             normal_side,
+            roles: Vec::new(),
         });
+    }
+    if let Some(rows) = cert_doc.arrays.get("account_role") {
+        if cert_doc
+            .root
+            .get("account_roles_version")
+            .and_then(|v| v.as_int())
+            != Some(1)
+        {
+            return Err(text_error("unsupported ADS account roles version"));
+        }
+        for row in rows {
+            let code = decode_hex_text(
+                row.get("account_code_utf8_hex")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| text_error("missing account role code"))?,
+            )?;
+            let role = row
+                .get("role")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| text_error("missing account role name"))?;
+            let account = accounts
+                .iter_mut()
+                .find(|account| account.code == code)
+                .ok_or_else(|| text_error("account role names an absent account"))?;
+            account.roles.push(role.to_owned());
+        }
+    } else if cert_doc.root.contains_key("account_roles_version") {
+        return Err(text_error("account roles version without account roles"));
     }
 
     let mut entries: Vec<FormatEntry> = Vec::new();
