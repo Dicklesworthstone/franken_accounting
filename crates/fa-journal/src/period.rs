@@ -1364,6 +1364,44 @@ pub async fn transition_planned<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
+    transition_planned_in(db, ctx, book, plan, t, capability, approvals, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn transition_planned_for_close<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &TransitionPlan,
+    t: PeriodTransition,
+    capability: &Capability,
+    approvals: &[ApprovalRef],
+    completion: &crate::close_run::TaskCompletion,
+) -> Outcome<Transitioned> {
+    transition_planned_in(
+        db,
+        ctx,
+        book,
+        plan,
+        t,
+        capability,
+        approvals,
+        Some(completion),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transition_planned_in<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    plan: &TransitionPlan,
+    t: PeriodTransition,
+    capability: &Capability,
+    approvals: &[ApprovalRef],
+    completion: Option<&crate::close_run::TaskCompletion>,
+) -> Outcome<Transitioned> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(refusal) = admit_transition(
         db,
@@ -1431,7 +1469,25 @@ pub async fn transition_planned<V: asupersync::fs::Vfs + Clone>(
         approvals,
         Some(plan),
     )? {
-        Ok(prepared) => {
+        Ok(mut prepared) => {
+            if let Some(completion) = completion {
+                let PreparedTransitionState::Staged(staged) = &mut prepared.state else {
+                    return Ok(Err(invalidated_plan(
+                        "the native transition was already committed outside this close task; completion cannot be attached retrospectively",
+                    )));
+                };
+                if let Err(refusal) = completion.stage(
+                    &mut staged.txn,
+                    &mut staged.template_tracker,
+                    db,
+                    book,
+                    staged.control_entry,
+                    None,
+                )? {
+                    prepared.abort();
+                    return Ok(Err(refusal));
+                }
+            }
             let mut result = prepared.commit(db, ctx).await?;
             if let Ok(recorded) = &mut result
                 && recorded.already_recorded

@@ -1,0 +1,46 @@
+# Immutable reviewed close graph and its derived task projections (plan §7.5).
+schema_version = 1
+name = "CloseRun"
+owner = "fa_model::close_run::CloseRunBody"
+major = 1
+minor = 0
+externally_verifiable = false
+body_digest_domain = "fa:close-run:v1"
+task_digest_domain = "fa:close-task:v1"
+identity_domain = "fa:vid:close-run:v1"
+task_identity_domain = "fa:vid:close-task:v1"
+entry_class = "CloseControl"
+control_kind = "close_transition"
+extension_tag = 40
+entry_schema_minor = 8
+max_tasks = 16
+max_text_bytes = 128
+max_body_bytes = 12288
+run_fields = ["version:u16=1", "book_id:bytes16", "name:string", "period:string", "owner:u128", "tasks:list<CloseTask>"]
+task_fields = ["version:u16=1", "id:string", "depends_on:list<string>", "action:u8", "action_fields"]
+action_tags = ["0:PromoteDraft", "1:PeriodTransition"]
+draft_fields = ["draft:u128", "name:string", "owner:u128", "source_known_at:u64", "source_digest:bytes32", "certificate_digest:bytes32", "entries_digest:bytes32", "entry_count:u32"]
+period_fields = ["to:u8=2|3|4"]
+
+# Integers use fixed little-endian widths. Strings and lists use u32 lengths;
+# tasks are encoded inline. Tasks and dependency ids are strictly ascending.
+# Ids are nonempty and unique, prerequisites exist in the same run, and the
+# graph is acyclic. The run and every task body reject unknown versions,
+# unknown actions, empty drafts, excess sizes, truncation and trailing bytes.
+# The period action only targets SoftClosed, Closed or Locked. The kernel
+# limits it to one terminal task depending transitively on every other task.
+#
+# The run body and each task body have separate domain-separated commitments.
+# Identity uses the book+run name; a task adds its local id with length framing.
+# CloseTask -> prerequisite edges use DEPENDS_ON. Immutable lifecycle controls
+# are authoritative; state and graph vertices are replayable projections.
+# Open and execution require current whole-book Read and Close authority;
+# status requires Read. The underlying native operation retains ordinary
+# posting/period laws and approval requirements. Completion records publish
+# atomically with their exact effects, and retries recheck current authority.
+#
+# The recorded draft certificate is actually retained and replayed by the
+# facade; the kernel binds its immutable digest and native reviewed effects.
+# This schema does not attest that arbitrary Canon/procedure tasks executed,
+# that a draft certificate is a signature, or that portable monetary reports
+# independently establish the close workflow's admission predicates.

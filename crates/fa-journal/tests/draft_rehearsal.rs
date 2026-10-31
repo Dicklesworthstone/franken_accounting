@@ -24,6 +24,9 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 mod fixture;
 use fixture::*;
 
+#[path = "draft_rehearsal/close_run.rs"]
+mod close_run_tests;
+
 #[test]
 fn atomic_draft_batch_preserves_dependencies_replay_and_retry_after_promotion() {
     let mut h = Harness::new(None);

@@ -68,6 +68,7 @@ pub mod cash_flow_policy;
 pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
+pub mod close_run;
 pub mod consolidation;
 pub mod custom_statement;
 pub mod dimension;
@@ -118,6 +119,8 @@ pub mod upload;
 
 #[cfg(test)]
 mod period_history_tests;
+
+pub use close_run::{ReviewedCloseAction, ReviewedCloseTask};
 
 pub use aging::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,

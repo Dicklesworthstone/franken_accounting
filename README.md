@@ -15,7 +15,7 @@
 
 > <!-- fa-verified-status -->Verified at 331a5507ee28 (2026-10-30): UNRUN
 
-> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` now combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and refuses two-stage certification. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
+> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` now combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and refuses two-stage certification. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`. Reviewed CloseRuns now bind a bounded task DAG, execute unchanged draft promotions and an optional final period transition, and commit each effect with its completion receipt; `close status` survives restart and exact retries do not repeat effects. Automatic task generation, whole-run rehearsal and statement packages remain open (`fa-4o0`). Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -408,6 +408,64 @@ later matching and reconciliation. Layouts support signed amounts or separate
 debit/credit columns, explicit date formats, and dot or comma decimals. See
 [declared CSV layouts](docs/bank_csv_layouts.md) for a complete example and the
 inline MCP form. Omitting `--layout` keeps the canonical twelve-column parser.
+
+### Reviewed close runs
+
+An existing draft can become a durable close task after its complete rehearsal
+has been certified. The run retains the exact source and effects, checks its
+dependency graph, and publishes a task's native effect and completion receipt
+in the same transaction. Restarting the process resumes from those journaled
+receipts. An exact retry returns its original receipt without posting again.
+
+First prepare the actual drafts, then retain their reviews for the selected
+period:
+
+```bash
+fa close dry-run --period FY2026-P03 --draft accruals-march --certify --json
+fa close dry-run --period FY2026-P03 --draft reclasses-march --certify --json
+```
+
+Use each returned certificate's full `oid` in `close-tasks.json`:
+
+```json
+[
+  {"id":"accruals","certificate":"C:<accrual-review-digest>"},
+  {"id":"reclasses","depends_on":["accruals"],"certificate":"C:<reclassification-review-digest>"},
+  {"id":"finish","depends_on":["reclasses"],"transition":"close"}
+]
+```
+
+The controller must hold current Read and Close authority, and each draft
+promotion additionally requires Approve and a principal distinct from its
+preparer. Every original planner's authority, evidence and approvals are
+checked again by the native posting kernel.
+
+```bash
+fa close start --run march --period FY2026-P03 --tasks close-tasks.json --as controller --json
+fa close status --run march --json
+fa close step --run march --task accruals --as controller --yes --json
+fa close step --run march --task reclasses --as controller --yes --json
+fa close step --run march --task finish --key march-close --reason Scheduled \
+  --as controller --dry-run --plan-out march-close.plan --json
+fa close step --run march --task finish --plan march-close.plan --as controller --yes --json
+```
+
+Period tasks use the ordinary period law. Open-to-Closed requires no separate
+approver in the current registry; Closed-to-Locked requires an independent
+approval of the exact returned `proposal_digest`. Supply that approval with
+`--approval <vid>` when executing its unchanged plan. A run supports at most
+16 tasks and at most one terminal period transition, which must depend on
+every other declared task. Agent readers can inspect readiness through the
+registered `fa_close_status` MCP tool.
+
+The supported tasks execute already reviewed drafts and a final SoftClose,
+Close or Lock. The system does not yet generate the complete bank, accrual,
+depreciation, revaluation, allocation or statement-package checklist. Each
+draft is rehearsed independently; if an earlier task invalidates a later
+task's reviewed source or effects, that later task remains incomplete and
+refuses execution. Completion covers exactly the declared tasks. It does not
+assert that all possible close work or financial-statement attestations are
+complete.
 
 ### Certified reports and replay
 

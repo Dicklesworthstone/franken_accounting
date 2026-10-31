@@ -374,3 +374,12 @@ class = "CaseControl"
 requirement = "control_record"
 min_documents = 0
 kinds = "any"
+
+# A close's reviewed graph retains its draft rehearsal certificates. Native
+# effect EntryRefs are the completion records' proof refs; the kernel checks
+# those effects in the same atomic publication, without inventing documents.
+[[minimum]]
+class = "CloseControl"
+requirement = "control_record"
+min_documents = 0
+kinds = "any"

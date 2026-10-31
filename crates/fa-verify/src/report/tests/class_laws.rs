@@ -27,7 +27,7 @@ fn reclassified(mut original: Record, class: u16) -> Record {
 
 #[test]
 fn resealed_unknown_classes_are_refused_even_when_reports_exclude_the_record() {
-    for class in [0, 31, 256, 999, u16::MAX] {
+    for class in [0, 32, 256, 999, u16::MAX] {
         for amount in [0, 100] {
             for (known_at, day) in [(3, 10), (3, 40), (2, 10)] {
                 let mut records = schema();
@@ -54,7 +54,7 @@ fn resealed_unknown_classes_are_refused_even_when_reports_exclude_the_record() {
 
 #[test]
 fn resealed_monetary_controls_are_refused_before_date_or_prefix_selection() {
-    for class in 16..=30 {
+    for class in 16..=31 {
         for (known_at, day) in [(3, 10), (3, 40), (2, 10)] {
             let mut records = schema();
             records.push(reclassified(

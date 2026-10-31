@@ -169,3 +169,15 @@ value = 66880
 [[limit]]
 name = "max_consolidation_nci_attribution_cells"
 value = 2000000
+
+# The canonical immutable close graph. Encoded Entry and native transaction
+# bounds apply independently to the graph and its completion publications.
+[[limit]]
+name = "max_close_run_tasks"
+value = 16
+[[limit]]
+name = "max_close_run_text_bytes"
+value = 128
+[[limit]]
+name = "max_close_run_bytes"
+value = 12288

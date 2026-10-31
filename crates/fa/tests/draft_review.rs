@@ -477,3 +477,110 @@ fn replay_and_retention_refuse_rehashed_source_map_or_output_substitution() {
     );
     assert_eq!(f.book.head().unwrap(), head);
 }
+
+#[test]
+fn raw_close_creation_replays_the_exact_retained_review_before_publishing() {
+    use fa_journal::close_run::{CloseRunDefinition, CloseTaskAction, CloseTaskDefinition};
+
+    let mut f = Fixture::new();
+    let old = f
+        .book
+        .certify_draft_diff(REVIEWER, &producer(), DRAFT, PERIOD)
+        .unwrap()
+        .unwrap();
+    f.book
+        .retain_draft_diff(REVIEWER, &producer(), &old.certificate)
+        .unwrap()
+        .unwrap();
+    f.plan(999, b"additional-reviewed-expense");
+    let current = f
+        .book
+        .certify_draft_diff(REVIEWER, &producer(), DRAFT, PERIOD)
+        .unwrap()
+        .unwrap();
+    f.book
+        .retain_draft_diff(REVIEWER, &producer(), &current.certificate)
+        .unwrap()
+        .unwrap();
+    assert_ne!(old.certificate.digest(), current.certificate.digest());
+    assert_ne!(old.report.entries, current.report.entries);
+    let closer = cap(REVIEWER, &["read", "close"]);
+    let definition = CloseRunDefinition {
+        name: "raw-library-close".into(),
+        period: PERIOD.into(),
+        tasks: vec![CloseTaskDefinition {
+            id: "expenses".into(),
+            depends_on: Vec::new(),
+            action: CloseTaskAction::PromoteDraft {
+                source: current.certificate.source().clone(),
+                certificate_digest: *current.certificate.digest(),
+                expected_entries: current.report.entries.clone(),
+            },
+        }],
+    };
+    let before = f.book.head().unwrap();
+    for substitute in ["certificate", "source", "effects"] {
+        let mut changed = definition.clone();
+        let CloseTaskAction::PromoteDraft {
+            source,
+            certificate_digest,
+            expected_entries,
+        } = &mut changed.tasks[0].action
+        else {
+            panic!("draft task");
+        };
+        match substitute {
+            "certificate" => *certificate_digest = *old.certificate.digest(),
+            "source" => *source = old.certificate.source().clone(),
+            "effects" => *expected_entries = old.report.entries.clone(),
+            _ => unreachable!(),
+        }
+        let refusal = f
+            .book
+            .create_close_run(&changed, &closer, "reviewed expenses")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            refusal.message.contains("review") || refusal.message.contains("certificate"),
+            "{substitute}: {refusal:?}"
+        );
+        assert_eq!(
+            f.book.head().unwrap(),
+            before,
+            "{substitute}: no run or partial receipt is published"
+        );
+        assert!(
+            f.book
+                .close_run_status(&definition.name, &closer)
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    // Both certificates are real, retained and individually replayable. Only
+    // the one proving this complete source and these exact effects is legal.
+    let run = f
+        .book
+        .create_close_run(&definition, &closer, "reviewed expenses")
+        .unwrap()
+        .unwrap();
+    assert!(!run.complete);
+    assert_eq!(run.tasks.len(), 1);
+    assert!(run.tasks[0].ready);
+    assert!(run.tasks[0].completion.is_none());
+    let created = f.book.head().unwrap();
+    assert!(created > before);
+    assert_eq!(
+        f.book
+            .create_close_run(&definition, &closer, "exact retry")
+            .unwrap()
+            .unwrap(),
+        run
+    );
+    assert_eq!(
+        f.book.head().unwrap(),
+        created,
+        "a checked retry publishes nothing"
+    );
+}

@@ -25,6 +25,7 @@ pub mod account;
 pub mod asset_cost;
 pub mod bank_csv;
 pub mod canon;
+pub mod close_run;
 pub mod closing;
 pub mod deposit;
 pub mod entry;
@@ -45,6 +46,7 @@ pub use access_event::{AccessEvent, AccessRecord};
 pub use account::AccountType;
 pub use asset_cost::{AssetChargeBasis, AssetCostKind, AssetScheduleSpec};
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
+pub use close_run::{CloseRunBody, CloseTaskBody, CloseTaskBodyAction};
 pub use closing::YearEndCloseBasis;
 pub use deposit::{
     DepositCapacity, DepositParticipant, DepositProduct, DepositProfileSpec, DepositRole,
@@ -59,13 +61,13 @@ pub use erasable::{Canonical, Erasable, EraseError, SealKey};
 pub use ids::{
     ApprovalRef, DIMENSION_KINDS, DimensionKind, EntryRef, Id128, LEGAL_ENTITY_DIMENSION,
     LEGAL_ENTITY_DIMENSION_CODE, Oid, PARTY_DIMENSION, PARTY_DIMENSION_CODE, PeriodRef, TypedRef,
-    access_event_vid, account_vid, bates_range_vid, dimension_kind, dimension_kind_of,
-    dimension_value_vid, dimension_vid, domain_digest, draft_vid, engagement_vid, entity_value_vid,
-    entry_vid, event_vid, external_id_vid, instrument_vid, intent_outcome_vid, legal_entity_vid,
-    migration_entry_vid, migration_run_vid, party_value_vid, party_vid, period_vid, principal_vid,
-    production_profile_vid, proposed_adjustment_vid, report_certificate_vid, restatement_case_vid,
-    rule_name_vid, rule_version_vid, scenario_vid, statement_definition_vid,
-    statement_issuance_vid, unit_vid,
+    access_event_vid, account_vid, bates_range_vid, close_run_vid, close_task_vid, dimension_kind,
+    dimension_kind_of, dimension_value_vid, dimension_vid, domain_digest, draft_vid,
+    engagement_vid, entity_value_vid, entry_vid, event_vid, external_id_vid, instrument_vid,
+    intent_outcome_vid, legal_entity_vid, migration_entry_vid, migration_run_vid, party_value_vid,
+    party_vid, period_vid, principal_vid, production_profile_vid, proposed_adjustment_vid,
+    report_certificate_vid, restatement_case_vid, rule_name_vid, rule_version_vid, scenario_vid,
+    statement_definition_vid, statement_issuance_vid, unit_vid,
 };
 pub use lot_disposal::{LotDisposalBasis, LotPolicy};
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};

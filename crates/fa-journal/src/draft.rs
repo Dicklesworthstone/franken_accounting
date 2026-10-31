@@ -1536,6 +1536,28 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     name: &str,
     req: DraftRequest,
 ) -> Outcome<DraftPromoted> {
+    promote_draft_in(db, ctx, book, name, req, None).await
+}
+
+pub(crate) async fn promote_draft_for_close<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    name: &str,
+    req: DraftRequest,
+    completion: &crate::close_run::TaskCompletion,
+) -> Outcome<DraftPromoted> {
+    promote_draft_in(db, ctx, book, name, req, Some(completion)).await
+}
+
+async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    name: &str,
+    req: DraftRequest,
+    completion: Option<&crate::close_run::TaskCompletion>,
+) -> Outcome<DraftPromoted> {
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
     }
@@ -1576,6 +1598,12 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     }
     match (view.state, &view.closed) {
         (DraftState::Promoted, Some(closure)) => {
+            if completion.is_some() {
+                return Ok(Err(usage(
+                    "the draft was already promoted outside this close task",
+                    "inspect the original promotion; a close receipt cannot be attached after its effect",
+                )));
+            }
             let Some((outcome, entries)) = closure.promoted.clone() else {
                 return Err(KernelError::Corrupt(format!(
                     "promoted draft `{name}` has no recorded promotion outcome"
@@ -1721,6 +1749,13 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         in_case.add_edge(edge_id(relation::IN_CASE, v, draft), v, draft, vec![]);
     }
     txn.write(db, in_case)?;
+    if let Some(completion) = completion
+        && let Err(refusal) =
+            completion.stage(txn, tracker, db, book, evid, Some(&promoted_entries))?
+    {
+        staged.abort();
+        return Ok(Err(refusal));
+    }
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         staged.abort();
         return Ok(Err(denial(&d)));
@@ -1741,6 +1776,17 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         recorded_at: posted.recorded_at,
         already_recorded: posted.already_recorded,
     }))
+}
+
+/// The CloseRun coordinator has already admitted current whole-book Read
+/// and Close authority before asking for the original complete draft source.
+pub(crate) fn capture_close_source<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    request: &DraftRehearsalRequest,
+) -> Outcome<(DraftRehearsalSource, DraftView)> {
+    rehearsal::capture(db, cx, book, request)
 }
 
 /// The draft `name` as its records state it at the head.

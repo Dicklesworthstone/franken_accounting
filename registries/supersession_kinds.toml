@@ -256,3 +256,9 @@ class = "CaseControl"
 reversible = "no"
 why = "CaseControl records are a restatement case's journaled life cycle, with no legs; a transition is never withdrawn"
 corrective_route = "move the case on along its life cycle, or open a new case for a different correction with `fa case open`; the earlier records stay on record"
+
+[[target_class]]
+class = "CloseControl"
+reversible = "no"
+why = "CloseControl records retain an immutable reviewed graph and its completed native effects; a completed task is never withdrawn"
+corrective_route = "make the lawful correction through its native posting or period operation and create a new reviewed close run; the original run remains recorded"

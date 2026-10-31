@@ -860,6 +860,44 @@ agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.3 (Closed: the case's last transition)"
 
+# The graph coordinates reviewed native effects; each effect retains its
+# ordinary approvals and independence law in the same publication.
+[[rule]]
+name = "close-run-open"
+class = "CloseControl"
+transition = "Open"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.5 (immutable reviewed close task graph)"
+
+[[rule]]
+name = "close-run-complete-task"
+class = "CloseControl"
+transition = "CompleteTask"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.5 (task completion bound to its native effects and prerequisites)"
+
+[[rule]]
+name = "close-run-complete"
+class = "CloseControl"
+transition = "Complete"
+preparer_op = "close"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.5 (run completion requires every declared task)"
+
 # Monthly fixed-entry schedules bind the complete template, cadence and
 # execution capability to an independent approval. Stopping future effects
 # requires current post authority and ownership or approve, checked by kernel.

@@ -30,6 +30,8 @@
 # These rows do not block period transitions; the pre_opening rule above
 # still narrows legacy special periods to Migration alone.
 # Control classes are not period-scoped.
+# CloseControl is book-scoped under its explicit Close-authority SoD rows;
+# its native task effects still obey their original posting/period laws.
 
 schema_version = 1
 

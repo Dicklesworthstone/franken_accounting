@@ -381,7 +381,7 @@ fn verify_mirrors<V: Vfs + Clone>(
     Ok(())
 }
 
-fn capture<V: Vfs + Clone>(
+pub(super) fn capture<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
