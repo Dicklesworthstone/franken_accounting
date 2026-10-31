@@ -1093,6 +1093,7 @@ dependencies = [
  "fa-journal",
  "fa-model",
  "fa-money",
+ "fa-policy",
  "fa-registers",
  "fa-time",
  "fa-verify",

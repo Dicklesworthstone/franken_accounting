@@ -474,3 +474,105 @@ fn every_pinned_bundle_refuses_sampled_flipped_bits() {
         assert!(!report.verified(), "receipt byte {i} is not bound");
     }
 }
+
+const APPROVALS_FIXTURE: &str = include_str!("fixtures/bundle_approvals_v1_1.txt");
+
+fn approvals_vector(name: &str) -> Vec<u8> {
+    let line = APPROVALS_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or("");
+    assert!(!line.is_empty(), "fixture has no `{name}` vector");
+    unhex(line)
+}
+
+/// The checks every pinned 1.1 bundle passes, by name, in report order.
+fn passed(report: &fa_verify::BundleReport) -> Vec<&'static str> {
+    report
+        .checks
+        .iter()
+        .filter(|c| matches!(c.grade, fa_verify::Grade::Pass))
+        .map(|c| c.check)
+        .collect()
+}
+
+/// The pinned format-1.1 bundles (fa-kae) verify with the checkpoint key
+/// alone: the approver's generation-0 key leaf is included under the
+/// checkpoint and admits its chain, and the cited approval carries that
+/// key's Ed25519 signature of its digest. The prefix bundle holds the key
+/// leaf in scope; the entries bundle names only the approved posting and
+/// carries the key leaf beside it.
+#[test]
+fn the_pinned_approval_bundles_verify_their_signed_approval() {
+    use fa_verify::{BundleScope, verify_bundle};
+
+    let key: [u8; 32] = approvals_vector("public_key").try_into().unwrap();
+    for (name, scope, entries) in [
+        ("bundle_prefix", BundleScope::Prefix, 7),
+        ("bundle_entries", BundleScope::Entries(vec![6]), 1),
+    ] {
+        let report = verify_bundle(&approvals_vector(name), &[key], None).unwrap();
+        assert!(report.verified(), "{name}: {:#?}", report.checks);
+        assert_eq!(report.manifest.scope, scope, "{name}");
+        assert_eq!(report.summary.entries, entries, "{name}");
+        let approvals = report.summary.approvals.as_ref().expect("a 1.1 bundle");
+        assert_eq!(
+            (approvals.records, approvals.signed, approvals.key_records),
+            (1, 1, 1),
+            "{name}"
+        );
+        let passed = passed(&report);
+        for check in ["approvals", "key_record", "key_chain", "approval"] {
+            assert!(passed.contains(&check), "{name}: {check} did not pass");
+        }
+    }
+}
+
+/// The signed approval is bound where the checkpoint cannot bind it: one
+/// changed signature byte leaves every other check passing and fails the
+/// approval's, and a 1.1 bundle relabelled 1.0 is refused. Sampled flipped
+/// bits anywhere in either bundle are refused too.
+#[test]
+fn a_pinned_approval_bundle_refuses_a_changed_signature_or_minor() {
+    use fa_verify::verify_bundle;
+
+    let key: [u8; 32] = approvals_vector("public_key").try_into().unwrap();
+    let record = approvals_vector("approval_record");
+    for name in ["bundle_prefix", "bundle_entries"] {
+        let v = approvals_vector(name);
+        let at: Vec<usize> = v
+            .windows(record.len())
+            .enumerate()
+            .filter(|(_, w)| *w == record.as_slice())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(at.len(), 1, "{name} carries the record once");
+        let mut forged = v.clone();
+        forged[at[0] + record.len() - 1] ^= 0x01;
+        let report = verify_bundle(&forged, &[key], None).unwrap();
+        let failed: Vec<&str> = report
+            .checks
+            .iter()
+            .filter(|c| !matches!(c.grade, fa_verify::Grade::Pass))
+            .map(|c| c.check)
+            .collect();
+        assert_eq!(failed, ["approval"], "{name}: {:#?}", report.checks);
+
+        assert_eq!(v[18..20], 1u16.to_le_bytes(), "{name}: format minor 1");
+        let mut relabelled = v.clone();
+        relabelled[18] = 0;
+        if let Ok(report) = verify_bundle(&relabelled, &[key], None) {
+            assert!(!report.verified(), "{name}: read as 1.0");
+        }
+
+        let step = (v.len() / 256).max(1);
+        for i in (0..v.len()).step_by(step) {
+            let mut b = v.clone();
+            b[i] ^= 1 << (i % 8);
+            if let Ok(report) = verify_bundle(&b, &[key], None) {
+                assert!(!report.verified(), "{name}: byte {i} is not bound");
+            }
+        }
+    }
+}

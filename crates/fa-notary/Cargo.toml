@@ -27,3 +27,6 @@ fgdb-gql = { workspace = true }
 fa-verify = { path = "../fa-verify", version = "=0.0.1" }
 # The register folds are the in-book oracle for the balance proof.
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
+# The golden 1.1 bundle's key registration and signed approval are built
+# with the policy codec that defines them.
+fa-policy = { path = "../fa-policy", version = "=0.0.1" }

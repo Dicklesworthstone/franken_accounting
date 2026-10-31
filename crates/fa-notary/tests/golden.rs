@@ -407,6 +407,37 @@ fn golden_documents() -> std::collections::BTreeMap<Oid, fa_journal::DocumentRea
         .collect()
 }
 
+/// The golden bundles' checkpoint over `journal`: signed with the key of
+/// seed `0x11 × 32` over the substrate chain commitment `0xc0 × 32`.
+fn bundle_checkpoint(
+    journal: &Journal,
+    key: &fa_notary::SigningKey,
+) -> fa_notary::StoredCheckpoint {
+    use fa_notary::checkpoint::{CheckpointBody, checkpoint_oid, checkpoint_vid};
+    use fa_notary::{ScopeIndex, StoredCheckpoint, TransparencyCheckpoint};
+
+    let state_oid = AccumulatorState::of_journal(journal, None).oid().unwrap();
+    let checkpoint = TransparencyCheckpoint::sign(
+        CheckpointBody {
+            statement: journal.statement(),
+            state_oid,
+            scope_index_root: ScopeIndex::of(journal).root(),
+            substrate_chain_commitment: [0xc0; 32],
+            witness_policy_oid: None,
+            time_evidence_oid: None,
+        },
+        &[key],
+    )
+    .unwrap();
+    let bytes = checkpoint.canonical_bytes().unwrap();
+    StoredCheckpoint {
+        oid: checkpoint_oid(&bytes),
+        vid: checkpoint_vid(&state_oid),
+        checkpoint,
+        bytes,
+    }
+}
+
 /// The evidence bundle and production receipt formats (fa-l3c slice 5):
 /// three bundles over a synthetic five-leaf journal against a checkpoint
 /// signed with a fixed key, and a receipt over the first, must equal
@@ -418,34 +449,12 @@ fn bundle_formats_equal_the_pinned_vectors() {
         BalanceRequest, BundleRequest, BundleScope, ProductionReceipt, ReceiptBody, assemble,
         cited_documents,
     };
-    use fa_notary::checkpoint::{CheckpointBody, checkpoint_oid, checkpoint_vid};
-    use fa_notary::{
-        ScopeIndex, ScopeRequest, SigningKey, StoredCheckpoint, TransparencyCheckpoint,
-    };
+    use fa_notary::{ScopeRequest, SigningKey};
 
     let journal = Journal::from_records(BOOK, CommitSeq(7), bundle_records()).unwrap();
     assert_eq!(journal.len(), 5);
-    let state_oid = AccumulatorState::of_journal(&journal, None).oid().unwrap();
     let key = SigningKey::from_seed(&[0x11; 32]);
-    let checkpoint = TransparencyCheckpoint::sign(
-        CheckpointBody {
-            statement: journal.statement(),
-            state_oid,
-            scope_index_root: ScopeIndex::of(&journal).root(),
-            substrate_chain_commitment: [0xc0; 32],
-            witness_policy_oid: None,
-            time_evidence_oid: None,
-        },
-        &[&key],
-    )
-    .unwrap();
-    let bytes = checkpoint.canonical_bytes().unwrap();
-    let stored = StoredCheckpoint {
-        oid: checkpoint_oid(&bytes),
-        vid: checkpoint_vid(&state_oid),
-        checkpoint,
-        bytes,
-    };
+    let stored = bundle_checkpoint(&journal, &key);
     let produce = |scope: BundleScope, balances: Vec<BalanceRequest>, inline_documents: bool| {
         let request = BundleRequest {
             scope,
@@ -529,6 +538,177 @@ fn bundle_formats_equal_the_pinned_vectors() {
     assert!(
         drift.is_empty(),
         "bundle bytes differ from the pinned v1 vectors:\n{}",
+        drift.join("\n")
+    );
+}
+
+const APPROVALS_FIXTURE: &str =
+    include_str!("../../fa-verify/tests/fixtures/bundle_approvals_v1_1.txt");
+
+fn approvals_fixture(name: &str) -> String {
+    APPROVALS_FIXTURE
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' ').map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// The golden 1.1 bundles' approver, and the seed of its generation-0 key.
+const APPROVER: VId = VId(8);
+const APPROVER_SEED: [u8; 32] = [0x22; 32];
+
+/// A journal's records, and each stored approval record by its identity.
+type RecordsAndApprovals = (
+    Vec<(VId, Entry, CommitSeq)>,
+    std::collections::BTreeMap<VId, Vec<u8>>,
+);
+
+/// `bundle_records()` and two more leaves (fa-kae): at seq 8 the approver's
+/// generation-0 key registration, and at seq 9 a posting `Dr rent / Cr cash`
+/// 10.00 USD citing the approver's approval of its proposal, signed by that
+/// key. Returns the records and the approval's stored record by identity.
+fn approval_records() -> RecordsAndApprovals {
+    use fa_policy::principal_key::{
+        SCHEME_ED25519, approval_message, key_id, registration_message,
+    };
+
+    let key = fa_notary::SigningKey::from_seed(&APPROVER_SEED);
+    let public_key = key.public_key();
+    let registered = fa_policy::PrincipalKey {
+        book_id: BOOK,
+        principal: APPROVER,
+        generation: 0,
+        public_key,
+        possession: key.sign(&registration_message(BOOK, APPROVER, 0, &public_key)),
+        endorsement: None,
+    };
+    let mut registration = payload(EntryClass::POLICY_CONTROL, Vec::new(), b"approver-key");
+    registration.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+    registration.control = Some(ControlPayload::SchemaChange {
+        kind: fa_journal::principal_key::SCHEMA_CHANGE_PRINCIPAL_KEY,
+        canonical_bytes: registered.canonical_bytes().unwrap(),
+    });
+    registration.origin = EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::PRINCIPAL_KEY,
+        spec_body_digest: registered.key_id(),
+    };
+    registration.principal_ref = APPROVER;
+
+    let usd = UnitId(1);
+    let approved = payload(
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, VId(0x10), Amount::new(usd, 1_000)),
+            LegPayload::simple(Side::Credit, VId(0x30), Amount::new(usd, 1_000)),
+        ],
+        b"approved",
+    );
+    let proposal_digest = approved.proposal_digest().unwrap();
+    let approval = fa_policy::Approval {
+        book_id: BOOK,
+        principal: APPROVER,
+        profile: fa_policy::Profile::Human,
+        capability_commitment: [0xcc; 32],
+        approved_proposal_digest: proposal_digest,
+        security_policy_epoch: 0,
+        op: fa_policy::Op::Approve,
+        role: 0,
+    };
+    let signature = fa_policy::PrincipalSignature {
+        scheme: SCHEME_ED25519,
+        generation: 0,
+        key_id: key_id(&public_key),
+        bytes: key.sign(&approval_message(&approval.digest().unwrap())),
+    };
+    let vid = fa_journal::policy::approval_vid(BOOK, APPROVER, &proposal_digest, 0);
+    let cites = vec![fa_model::ApprovalRef {
+        approval_vid: vid,
+        approved_digest: proposal_digest,
+    }];
+
+    let mut all = bundle_records();
+    all.push((
+        fa_journal::principal_key::principal_key_vid(BOOK, APPROVER, 0),
+        registration.seal(Vec::new(), None).unwrap(),
+        CommitSeq(8),
+    ));
+    all.push((
+        VId(0x106),
+        approved.seal(cites, None).unwrap(),
+        CommitSeq(9),
+    ));
+    let records =
+        std::collections::BTreeMap::from([(vid, approval.record_bytes(Some(&signature)).unwrap())]);
+    (all, records)
+}
+
+/// The evidence bundle format 1.1 (fa-kae): a bundle carries the approvals
+/// its in-scope entries cite and every key generation of each principal
+/// that signed one. A prefix bundle and an entries bundle naming only the
+/// approved posting must equal
+/// `crates/fa-verify/tests/fixtures/bundle_approvals_v1_1.txt` byte for byte,
+/// and the independent verifier accepts both with the signed approval
+/// checked against the approver's key chain.
+#[test]
+fn approval_bundle_formats_equal_the_pinned_vectors() {
+    use fa_notary::SigningKey;
+    use fa_notary::bundle::{BundleRequest, BundleScope, assemble_with_runs, cited_approvals};
+
+    let (records, approvals) = approval_records();
+    let journal = Journal::from_records(BOOK, CommitSeq(9), records).unwrap();
+    assert_eq!(journal.len(), 7);
+    let key = SigningKey::from_seed(&[0x11; 32]);
+    let stored = bundle_checkpoint(&journal, &key);
+    let produce = |scope: BundleScope| {
+        let request = BundleRequest {
+            scope,
+            balances: Vec::new(),
+            inline_documents: false,
+        };
+        let cited = cited_approvals(&journal, &request).unwrap().unwrap();
+        assert_eq!(
+            cited,
+            approvals.keys().copied().collect::<Vec<_>>(),
+            "the scope cites the one signed approval"
+        );
+        assemble_with_runs(
+            &journal,
+            &stored,
+            &request,
+            &golden_documents(),
+            &std::collections::BTreeMap::new(),
+            &approvals,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let prefix = produce(BundleScope::Prefix);
+    let entries = produce(BundleScope::Entries(vec![VId(0x106)]));
+    for b in [&prefix, &entries] {
+        let report = fa_verify::verify_bundle(&b.bytes, &[key.public_key()], None).unwrap();
+        assert!(report.verified(), "{:#?}", report.checks);
+        let summary = report.summary.approvals.expect("a format 1.1 bundle");
+        assert_eq!(
+            (summary.records, summary.signed, summary.key_records),
+            (1, 1, 1)
+        );
+    }
+
+    let record = approvals.values().next().unwrap();
+    let actual = [
+        ("public_key", hex(&key.public_key())),
+        ("approval_record", hex(record)),
+        ("bundle_prefix", hex(&prefix.bytes)),
+        ("bundle_entries", hex(&entries.bytes)),
+    ];
+    let drift: Vec<String> = actual
+        .iter()
+        .filter(|(name, bytes)| approvals_fixture(name) != *bytes)
+        .map(|(name, bytes)| format!("{name} {bytes}"))
+        .collect();
+    assert!(
+        drift.is_empty(),
+        "bundle bytes differ from the pinned v1.1 vectors:\n{}",
         drift.join("\n")
     );
 }
