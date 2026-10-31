@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=9c064ae80f36dd5e9b96e8cd021743a11f5cfee0
+tree=6a2858244e452ac5ad80f0e410aff2a771067230
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=vmi1153651
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=1111
+log_dir=/data/tmp/claude-1000/-data-projects-franken-accounting/b7366853-b02b-489e-bb45-a6d09900055d/scratchpad/tier0_kae2_logs
+recorded_utc=2026-10-31T14:10:55Z
