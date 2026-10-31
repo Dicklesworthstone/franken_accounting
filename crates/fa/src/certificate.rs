@@ -2306,11 +2306,12 @@ fn statement_chart_additions<V: Vfs + Clone>(
                 ..
             }) => continue,
             Some(ControlPayload::SchemaChange {
-                kind: 12 | 14..=20, ..
+                kind: 12 | 14..=22, ..
             }) => {
                 // Closing and FX routes, native subledger designations,
                 // account roles, dimension values, requirements and closes,
-                // and Canon rule versions change no account membership. Validate the
+                // Canon rule versions, lot policies and asset schedules
+                // change no account membership. Validate the
                 // complete canonical chart history before treating one as an
                 // unrelated control; a malformed control is not skippable.
                 fa_journal::chart::read_at(db, book, journal.through_seq)?;

@@ -152,6 +152,73 @@ impl Fixture {
     }
 }
 
+/// A lot policy (SchemaChange 21) is a chart-install control that changes no
+/// account membership, as an asset schedule (22) is: a statement certified
+/// before it stays Current. Its status check used to refuse with "chart
+/// install lacks its recorded chart body" (exit 8), because the scan's
+/// allow-list stopped at kind 20.
+#[test]
+fn a_later_lot_policy_leaves_a_retained_statement_current() {
+    let fixture = Fixture::new();
+    let inventory = fixture.dir.join("inventory.json");
+    std::fs::write(
+        &inventory,
+        r#"{"code":"1400","name":"Inventory","type":"Asset","unit":"any"}"#,
+    )
+    .unwrap();
+    ok(
+        &fixture.book,
+        &[
+            "chart",
+            "open",
+            inventory.to_str().unwrap(),
+            "--opened",
+            "2026-01-01",
+        ],
+    );
+    let certified = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    let certificate = certified
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    let oid = text(data(certificate), "oid").to_string();
+    let status = ok(&fixture.book, &["certificate", "status", &oid]);
+    assert_eq!(text(data(&status[0]), "status"), "Current");
+    ok(
+        &fixture.book,
+        &[
+            "chart",
+            "lot-policy",
+            "set",
+            "--account",
+            "1400",
+            "--law",
+            "FIFO",
+            "--regime",
+            "US-GAAP",
+            "--date",
+            "2026-03-01",
+            "--key",
+            "inventory-policy",
+        ],
+    );
+    let status = ok(&fixture.book, &["certificate", "status", &oid]);
+    assert_eq!(text(data(&status[0]), "status"), "Current");
+    // A later posting still supersedes it: the scan is not blinded.
+    fixture.post("late-sale", "2026-03-20", "1000", "4000", "5.00 USD");
+    let status = ok(&fixture.book, &["certificate", "status", &oid]);
+    assert_eq!(text(data(&status[0]), "status"), "SupersededBy");
+}
+
 #[test]
 fn equity_roll_forward_shows_prior_period_adjustments_and_ties() {
     let dir = temporary();
