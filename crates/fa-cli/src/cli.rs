@@ -7878,6 +7878,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "fx",
         "external_subledger",
         "obligation_maturity",
+        "receivable_maturity",
         "valuation_adjustments",
     ];
     if let Some((field, _)) = fields

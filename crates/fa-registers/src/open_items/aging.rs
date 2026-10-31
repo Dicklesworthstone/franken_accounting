@@ -11,8 +11,8 @@
 //!   own due date.
 //! - An item without contractual terms is listed as unscheduled, with the
 //!   reason, and is never given a guessed due date.
-//! - The kernel admits terms on credit legs only, where an obligation is
-//!   booked, so receivables are unscheduled until terms can name a debit leg.
+//! - Extension 33 v1 names credit obligations; v2 names debit receivables.
+//!   Missing terms on either side remain unscheduled.
 //!
 //! Both keep both time coordinates, exact native-unit debit and credit
 //! columns, bucket definitions, and item-level drilldown. They never add

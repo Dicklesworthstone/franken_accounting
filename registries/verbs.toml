@@ -253,7 +253,7 @@ example = "fa case open --kind Restatement --periods FY2025-P12 --narrative <oid
 
 [[verb]]
 name = "post"
-summary = "Post an entry intent under balance, period and idempotency laws, with optional functional-currency valuation from retained Rate evidence (fa fx rate add)."
+summary = "Post an entry intent under balance, period and idempotency laws, with optional functional-currency valuation from retained Rate evidence (fa fx rate add). Intent maturity is explicit: obligation_maturity names credit legs (v1); receivable_maturity names debit legs (v2), with the same status/installment fields and exact totals. Supply only one maturity field per entry."
 writes = true
 subcommands = []
 flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--prior-period-error", "--relates-to", "--draft", "--scenario", "--review", "--review-out", "--digest", "--approval"]

@@ -196,6 +196,184 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
 }
 
 #[test]
+fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "receivable-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    ok(&fixture.book, &["chart", "import", &chart]);
+    let invoice_text = r#"{"effective_date":"2026-03-01","idempotency_key":"receivable-due","legs":[{"side":"debit","account":"1200","amount":"100.00 USD"},{"side":"credit","account":"4000","amount":"100.00 USD"}],"receivable_maturity":[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"60.00 USD"},{"due_date":"2026-04-30","amount":"40.00 USD"}]}]}"#;
+    let invoice = write(&fixture.dir, "receivable-due.json", invoice_text);
+    let posted = ok(
+        &fixture.book,
+        &["post", "--intent", &invoice, "--evidence", &evidence],
+    );
+    let at_invoice = fixture.head();
+    for (name, text) in [
+        (
+            "wrong-side",
+            invoice_text.replace("\"ordinal\":0", "\"ordinal\":1"),
+        ),
+        (
+            "legacy-debit",
+            invoice_text.replace("receivable_maturity", "obligation_maturity"),
+        ),
+        (
+            "wrong-total",
+            invoice_text.replace("40.00 USD", "40.01 USD"),
+        ),
+        (
+            "both-maturities",
+            invoice_text.replace(
+                "\"receivable_maturity\":",
+                "\"obligation_maturity\":[],\"receivable_maturity\":",
+            ),
+        ),
+    ] {
+        let file = write(
+            &fixture.dir,
+            &format!("{name}.json"),
+            &text.replace("receivable-due\"", &format!("{name}\"")),
+        );
+        let (code, error) = run(
+            &fixture.book,
+            &["post", "--intent", &file, "--evidence", &evidence],
+        );
+        assert_eq!(code, 2, "{name}: {}", error.render());
+        assert_eq!(fixture.head(), at_invoice, "{name} must not publish");
+    }
+    let receipt = write(
+        &fixture.dir,
+        "receivable-partial.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"receivable-partial","legs":[{{"side":"debit","account":"1000","amount":"25.00 USD"}},{{"side":"credit","account":"1200","amount":"25.00 USD","settles":[{{"entry":"{}","ordinal":0,"amount":"25.00 USD"}}]}}]}}"#,
+            text(&posted, "vid")
+        ),
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &receipt, "--evidence", &evidence],
+    );
+    let at = fixture.head();
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    for (cutoff, overdue) in [("2026-03-31", 0), ("2026-04-01", 1)] {
+        let at_text = at.to_string();
+        let metadata = certify(
+            &fixture,
+            &[
+                "gl",
+                "aging",
+                "--account",
+                "1200",
+                "--basis",
+                "due-date",
+                "--as-of",
+                cutoff,
+                "--as-known-at",
+                &at_text,
+            ],
+        );
+        let certificate =
+            fa::DueDateAgingCertificate::decode(&unhex(text(&metadata, "bytes"))).unwrap();
+        let locator = format!("C:{}", text(&metadata, "oid"));
+        let expected = format!(
+            r#"{{"kind":"due-date-aging","account":"1200","through":"{cutoff}","known_at":{at},"buckets":[0,30,60,90]}}"#
+        );
+        let replayed = ok(&fixture.book, &["replay", &locator, "--expect", &expected]);
+        assert_eq!(text(&replayed, "family"), "due-date-aging");
+        let produced = ok(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        let verified = fa_verify::report::verify_report_expected(
+            &bytes(&produced),
+            &[key],
+            None,
+            Some(&unhex(text(&produced, "receipt"))),
+            Some(certificate.digest()),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output());
+        let report = verified.due_date_aging.unwrap();
+        assert_eq!(report.known_at, at);
+        assert_eq!(
+            (
+                report.totals[0].amounts.debits,
+                report.totals[0].amounts.credits
+            ),
+            (7_500, 0)
+        );
+        assert_eq!(report.items.len(), 2);
+        let earliest = report
+            .items
+            .iter()
+            .find(|row| row.due_date == fa_time::DateDay::parse("2026-03-31").unwrap().0)
+            .unwrap();
+        assert_eq!((earliest.open, earliest.days_past_due), (3_500, overdue));
+        assert_eq!(
+            (
+                earliest.item.original,
+                earliest.item.applied,
+                earliest.item.open
+            ),
+            (10_000, 2_500, 7_500)
+        );
+        assert!(report.unscheduled.is_empty());
+        let mut damaged = bytes(&produced);
+        let mut versioned = fa_model::obligation::InlineObligationTerms::encode_receivable_list(&[
+            fa_model::obligation::InlineObligationTerms {
+                ordinal: 0,
+                status: fa_model::obligation::ObligationStatus::Contractual,
+                installments: vec![
+                    fa_model::obligation::ObligationInstallment {
+                        due_date: fa_time::DateDay::parse("2026-03-31").unwrap(),
+                        amount: 6_000,
+                    },
+                    fa_model::obligation::ObligationInstallment {
+                        due_date: fa_time::DateDay::parse("2026-04-30").unwrap(),
+                        amount: 4_000,
+                    },
+                ],
+            },
+        ])
+        .unwrap();
+        let position = damaged
+            .windows(versioned.len())
+            .position(|bytes| bytes == versioned)
+            .expect("the portable source retains exact receivable terms");
+        versioned[0] = 1;
+        damaged[position..position + versioned.len()].copy_from_slice(&versioned);
+        assert!(
+            fa_verify::report::verify_report_expected(
+                &damaged,
+                &[key],
+                None,
+                Some(&unhex(text(&produced, "receipt"))),
+                Some(certificate.digest())
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn due_date_aging_bundle_verifies_offline() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();

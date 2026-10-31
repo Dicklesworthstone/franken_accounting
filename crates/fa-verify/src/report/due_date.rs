@@ -129,7 +129,8 @@ struct Terms {
 
 fn decode_terms(bytes: &[u8], legs: &[Leg]) -> Result<Vec<(u16, Terms)>, ReportError> {
     let mut r = Reader::new(bytes);
-    if r.u16("maturity.version")? != 1 {
+    let version = r.u16("maturity.version")?;
+    if !matches!(version, 1 | 2) {
         return Err(failed(
             "obligation_terms",
             "unsupported maturity term version",
@@ -153,10 +154,10 @@ fn decode_terms(bytes: &[u8], legs: &[Leg]) -> Result<Vec<(u16, Terms)>, ReportE
         let leg = legs
             .get(usize::from(ordinal))
             .ok_or_else(|| failed("obligation_terms", "maturity terms name an absent leg"))?;
-        if leg.debit || leg.mantissa <= 0 {
+        if leg.debit != (version == 2) || leg.mantissa <= 0 {
             return Err(failed(
                 "obligation_terms",
-                "maturity requires a positive credit leg",
+                "maturity requires a positive leg of its declared side (v1 credit, v2 debit)",
             ));
         }
         let unscheduled = match r.u8("maturity.status")? {

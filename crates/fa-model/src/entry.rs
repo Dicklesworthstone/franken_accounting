@@ -233,7 +233,7 @@ pub const RECURRING_OCCURRENCE_EXTENSION: u16 = 31;
 /// (plan §10.3, FA-INV-05 `rule-reproduction`).
 pub const RULE_INPUTS_EXTENSION: u16 = 32;
 /// Extension tag 33, `fa:obligation-maturity:v1` (plan §11.6, bead fa-5dpd):
-/// when the obligations this entry books on its credit legs fall due
+/// when this entry's credit obligations (v1) or debit receivables (v2) fall due
 /// ([`crate::obligation::InlineObligationTerms`]); validated against the
 /// legs by [`crate::obligation::validate_terms`].
 pub const OBLIGATION_MATURITY_EXTENSION: u16 = 33;

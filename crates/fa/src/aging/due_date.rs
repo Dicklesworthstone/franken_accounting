@@ -8,8 +8,8 @@
 //! This separate format preserves effective-date aging v1 bytes. The unsigned
 //! certificate requires current read authority and original retained history
 //! for local replay; its digest alone is not a signature or proof of economic
-//! truth. Credit-leg maturity is the current journal contract, so receivable
-//! debit legs remain unscheduled until that admission contract supports them.
+//! truth. Extension 33 v1 binds credit obligations and v2 debit receivables;
+//! missing terms remain explicitly unscheduled on either side.
 
 use asupersync::fs::Vfs;
 use fa_journal::{KernelError, Refusal, exit};
@@ -500,8 +500,8 @@ fn package(
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Certify one explicit due-date aging request, including maturity terms and
-    /// unscheduled amounts. Terms currently attach to credit obligations;
-    /// unsupported or missing maturity is never inferred from a posting date. Current whole-book
+    /// unscheduled amounts. Terms attach to credit obligations (v1) or debit
+    /// receivables (v2); missing maturity is never inferred from a posting date. Current whole-book
     /// read+produce authority precedes observation; HEAD resolves only once.
     /// Neither the source nor this composed certificate is written to the book.
     pub fn certify_due_date_aging(

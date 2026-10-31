@@ -3,6 +3,8 @@
 //! journaled with the entry as extension 33 (`fa:obligation-maturity:v1`),
 //! which the kernel validates against the legs, so `solvency.cash_flow_test`
 //! counts a debt by when it is due rather than when it was booked.
+//! `receivable_maturity` uses extension 33 v2 for debit items; the two
+//! declarations are mutually exclusive and retain distinct side contracts.
 
 use fa::Book;
 use fa_model::EntryPayload;
@@ -16,7 +18,7 @@ use fa_time::DateDay;
 use crate::cli::{Fail, usage};
 use crate::json::Json;
 
-pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of a credit leg; status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
+pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of a credit leg (v1). Use receivable_maturity instead for debit legs (v2), never both fields. Status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
 
 /// The intent's `obligation_maturity`, if any, as the proposal's extension 33.
 pub(crate) fn declare_terms(
@@ -24,28 +26,36 @@ pub(crate) fn declare_terms(
     doc: &Json,
     mut proposal: EntryPayload,
 ) -> Result<EntryPayload, Fail> {
-    let Some(value) = doc.get("obligation_maturity") else {
-        return Ok(proposal);
+    let (field, value, receivable) = match (
+        doc.get("obligation_maturity"),
+        doc.get("receivable_maturity"),
+    ) {
+        (None, None) => return Ok(proposal),
+        (Some(value), None) => ("obligation_maturity", value, false),
+        (None, Some(value)) => ("receivable_maturity", value, true),
+        (Some(_), Some(_)) => {
+            return Err(usage(
+                "declare obligation_maturity or receivable_maturity, not both",
+                USAGE,
+            ));
+        }
     };
     let items = value
         .as_arr()
-        .ok_or_else(|| usage("obligation_maturity must be an array", USAGE))?;
+        .ok_or_else(|| usage(format!("{field} must be an array"), USAGE))?;
     if items.is_empty() {
-        return Err(usage(
-            "obligation_maturity is empty; omit it instead",
-            USAGE,
-        ));
+        return Err(usage(format!("{field} is empty; omit it instead"), USAGE));
     }
     let units = &book.context().units;
     let mut terms = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
-        let what = format!("obligation_maturity[{i}]");
+        let what = format!("{field}[{i}]");
         let ordinal = match item.get("ordinal") {
             Some(Json::Int(n)) => u16::try_from(*n)
                 .map_err(|_| usage(format!("{what}: ordinal {n} is out of range"), USAGE))?,
             _ => {
                 return Err(usage(
-                    format!("{what}: ordinal must be the 0-based index of a credit leg"),
+                    format!("{what}: ordinal must be a 0-based leg index"),
                     USAGE,
                 ));
             }
@@ -127,8 +137,12 @@ pub(crate) fn declare_terms(
         });
     }
     terms.sort_by_key(|term| term.ordinal);
-    let bytes = InlineObligationTerms::encode_list(&terms)
-        .map_err(|e| usage(format!("obligation_maturity: {e:?}"), USAGE))?;
+    let bytes = if receivable {
+        InlineObligationTerms::encode_receivable_list(&terms)
+    } else {
+        InlineObligationTerms::encode_list(&terms)
+    }
+    .map_err(|e| usage(format!("{field}: {e:?}"), USAGE))?;
     validate_terms(&bytes, &proposal.legs)
         .map_err(|(field, why)| usage(format!("{field} {why}"), USAGE))?;
     proposal.schema_minor = proposal.schema_minor.max(EXTENSIONS_MINOR);

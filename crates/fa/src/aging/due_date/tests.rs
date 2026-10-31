@@ -35,10 +35,15 @@ struct Harness {
     book: AsyncBook<MemVfs>,
     usd: UnitId,
     evidence: EvidenceRef,
+    receivable: bool,
 }
 
 impl Harness {
     fn new() -> Self {
+        Self::with_receivable(false)
+    }
+
+    fn with_receivable(receivable: bool) -> Self {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -64,6 +69,7 @@ impl Harness {
             .unwrap();
         let accounts = [
             ("ap", AccountType::LIABILITY),
+            ("ar", AccountType::ASSET),
             ("cash", AccountType::ASSET),
             ("expense", AccountType::EXPENSE),
         ]
@@ -125,6 +131,7 @@ impl Harness {
             book,
             usd,
             evidence: document.evidence_ref(1),
+            receivable,
         }
     }
 
@@ -145,7 +152,13 @@ impl Harness {
         settles: Option<EntryRef>,
     ) -> EntryRef {
         let cx = self.cx();
-        let (debit, credit) = if settles.is_some() {
+        let (debit, credit) = if self.receivable {
+            if settles.is_some() {
+                ("cash", "ar")
+            } else {
+                ("ar", "expense")
+            }
+        } else if settles.is_some() {
             ("ap", "cash")
         } else {
             ("expense", "ap")
@@ -163,17 +176,17 @@ impl Harness {
             ),
         ];
         if let Some(target) = settles {
-            legs[0].settles.push(Settlement {
+            legs[usize::from(self.receivable)].settles.push(Settlement {
                 target,
-                ordinal: 1,
+                ordinal: u16::from(!self.receivable),
                 amount: Amount::new(self.usd, amount),
             });
         }
         let extensions = terms
             .into_iter()
             .map(|(status, installments)| {
-                InlineObligationTerms::to_extension(&[InlineObligationTerms {
-                    ordinal: 1,
+                let terms = [InlineObligationTerms {
+                    ordinal: u16::from(!self.receivable),
                     status,
                     installments: installments
                         .into_iter()
@@ -182,7 +195,12 @@ impl Harness {
                             amount,
                         })
                         .collect(),
-                }])
+                }];
+                if self.receivable {
+                    InlineObligationTerms::to_receivable_extension(&terms)
+                } else {
+                    InlineObligationTerms::to_extension(&terms)
+                }
                 .unwrap()
             })
             .collect::<Vec<_>>();
@@ -249,7 +267,7 @@ impl Harness {
 
     fn request(&self, cutoff: &str) -> AgingRequest {
         AgingRequest {
-            account: Some(account_vid(BOOK, "ap")),
+            account: Some(account_vid(BOOK, if self.receivable { "ar" } else { "ap" })),
             effective_through: day(cutoff),
             known_at: None,
             buckets: AgingBuckets::thirty_day(),
@@ -278,6 +296,7 @@ impl Harness {
             book,
             usd,
             evidence,
+            receivable,
         } = self;
         drop(book);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -297,7 +316,107 @@ impl Harness {
             book,
             usd,
             evidence,
+            receivable,
         }
+    }
+}
+
+#[test]
+fn receivable_due_dates_survive_partial_receipts_historical_replay_and_reopen() {
+    let mut h = Harness::with_receivable(true);
+    let invoice = h.invoice();
+    let at_due = h.certify(&h.request("2026-03-31"));
+    assert_eq!(at_due.report.items.len(), 2);
+    assert!(at_due.report.items.iter().all(|row| row.days_past_due == 0));
+    assert_eq!(
+        (
+            at_due.report.totals[0].amounts.debits,
+            at_due.report.totals[0].amounts.credits
+        ),
+        (1_000, 0)
+    );
+    let overdue = h.certify(&h.request("2026-04-01"));
+    let first = overdue
+        .report
+        .items
+        .iter()
+        .find(|row| row.due_date == day("2026-03-31"))
+        .unwrap();
+    assert_eq!((first.open, first.days_past_due, first.bucket), (600, 1, 1));
+    h.post("partial-receipt", "2026-04-15", 700, None, Some(invoice));
+    let after_receipt = h.certify(&h.request("2026-05-01"));
+    assert_eq!(after_receipt.report.items.len(), 1);
+    let remaining = &after_receipt.report.items[0];
+    assert_eq!(
+        (remaining.open, remaining.due_date, remaining.days_past_due),
+        (300, day("2026-04-30"), 1)
+    );
+    assert_eq!(
+        (
+            remaining.item.original,
+            remaining.item.applied,
+            remaining.item.open
+        ),
+        (1_000, 700, 300)
+    );
+    assert_eq!(
+        (
+            after_receipt.report.totals[0].amounts.debits,
+            after_receipt.report.totals[0].amounts.credits
+        ),
+        (300, 0)
+    );
+    for (key, amount, terms) in [
+        ("plain-receivable", 50, None),
+        (
+            "missing-receivable",
+            100,
+            Some((ObligationStatus::MissingMaturity, vec![])),
+        ),
+        (
+            "disputed-receivable",
+            150,
+            Some((ObligationStatus::Disputed { reason_code: 7 }, vec![])),
+        ),
+    ] {
+        h.post(key, "2026-03-02", amount, terms, None);
+    }
+    let current = h.certify(&h.request("2026-05-01"));
+    assert_eq!(current.report.unscheduled.len(), 3);
+    assert_eq!(
+        (
+            current.report.unscheduled_totals[0].amounts.debits,
+            current.report.unscheduled_totals[0].amounts.credits
+        ),
+        (300, 0)
+    );
+    for expected in [
+        Unscheduled::NoTerms,
+        Unscheduled::MissingMaturity,
+        Unscheduled::Disputed { reason_code: 7 },
+    ] {
+        assert!(
+            current
+                .report
+                .unscheduled
+                .iter()
+                .any(|row| row.reason == expected)
+        );
+    }
+    let h = h.reopen();
+    for certified in [at_due, overdue, after_receipt, current] {
+        assert_eq!(h.replay(&certified.certificate), certified.report);
+        let mut substituted = certified.report.clone();
+        substituted.items[0].due_date = day("2026-03-30");
+        let fake = reseal(&certified.certificate, &substituted);
+        assert_eq!(
+            h.book
+                .replay_due_date_aging(&h.cx(), PRINCIPAL, &cap(&["read"]), &fake)
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            exit::VERIFICATION
+        );
     }
 }
 

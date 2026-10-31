@@ -414,6 +414,95 @@ fn verify(
 }
 
 #[test]
+fn receivable_v2_replays_debit_installments_and_rejects_removed_or_retyped_terms() {
+    let invoice_legs = [leg("1000", true, 100), leg("3000", false, 100)];
+    let mut maturity = terms(0, 1, 0, &[(30, 100)]);
+    maturity[..2].copy_from_slice(&2_u16.to_le_bytes());
+    let (invoice, invoice_id) = extend(
+        posting(1, 3, b"receivable-due", &invoice_legs, None, None),
+        &maturity,
+    );
+    let mut records = schema();
+    records.push(invoice);
+    let original = item(invoice_id, 0, "1000", true, 3, 100, 0, 0, 100, vec![]);
+    for (cutoff, days_past_due, bucket) in [(30, 0, 0), (31, 1, 1)] {
+        let amounts = VerifiedAgingAmounts {
+            debits: 100,
+            credits: 0,
+            item_count: 1,
+        };
+        let expected = VerifiedDueDateAging {
+            book_id: BOOK,
+            known_at: 3,
+            effective_through: cutoff,
+            account_filter: Some(account_id("1000")),
+            source_certificate_digest: [0; 32],
+            bands: bands(),
+            items: vec![VerifiedDueDateAgedItem {
+                item: original.clone(),
+                due_date: 30,
+                open: 100,
+                days_past_due,
+                bucket,
+            }],
+            cells: vec![VerifiedAgingCell {
+                account: account_id("1000"),
+                unit_id: 1,
+                bucket,
+                amounts: amounts.clone(),
+            }],
+            totals: vec![VerifiedAgingTotal {
+                account: account_id("1000"),
+                unit_id: 1,
+                amounts,
+            }],
+            unscheduled: vec![],
+            unscheduled_totals: vec![],
+        };
+        let source = report(Some(account_id("1000")), vec![original.clone()]);
+        let (native, anchor, _) = pack(&records, 3, &source);
+        let (bundle, pin) = wrap(&native, cutoff, BOUNDS, &output(&expected));
+        let verified = verify_pinned(&bundle, anchor, Some(&pin)).unwrap();
+        assert_eq!(verified.output, output(&expected));
+        let actual = verified.due_date_aging.unwrap();
+        assert_eq!(actual.items, expected.items);
+        assert_eq!(actual.totals, expected.totals);
+
+        // Repair every outer/source binding after removing the original
+        // maturity. The same claimed scheduled output must still fail.
+        let mut removed = records.clone();
+        removed[2] = posting(1, 3, b"receivable-due", &invoice_legs, None, None).0;
+        let (native, anchor, _) = pack(&removed, 3, &source);
+        let (bundle, pin) = wrap(&native, cutoff, BOUNDS, &output(&expected));
+        assert_eq!(
+            verify_pinned(&bundle, anchor, Some(&pin))
+                .unwrap_err()
+                .predicate,
+            "report_recomputation"
+        );
+
+        // Reinterpreting the debit terms as historical v1 is not admitted,
+        // even under a freshly trusted prefix and repaired output digest.
+        let mut wrong_side = maturity.clone();
+        wrong_side[..2].copy_from_slice(&1_u16.to_le_bytes());
+        let mut retyped = records.clone();
+        retyped[2] = extend(
+            posting(1, 3, b"receivable-due", &invoice_legs, None, None),
+            &wrong_side,
+        )
+        .0;
+        let (native, anchor, _) = pack(&retyped, 3, &source);
+        let (bundle, pin) = wrap(&native, cutoff, BOUNDS, &output(&expected));
+        assert_eq!(
+            verify_pinned(&bundle, anchor, Some(&pin))
+                .unwrap_err()
+                .predicate,
+            "obligation_terms"
+        );
+    }
+}
+
+#[test]
 fn due_date_aging_independently_replays_installments_partial_settlements_and_reversals() {
     let f = fixture();
     for (known_at, cutoff, applied, history, installments) in [

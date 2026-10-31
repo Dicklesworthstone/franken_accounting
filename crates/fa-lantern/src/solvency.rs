@@ -350,7 +350,6 @@ pub fn schedule_from_inline_extensions(
             if *tag != OBLIGATION_MATURITY_EXT_TAG {
                 continue;
             }
-            any_inline = true;
             let decoded = InlineObligationTerms::decode_list(bytes)?;
             for item in decoded {
                 let idx = usize::from(item.ordinal);
@@ -364,6 +363,13 @@ pub fn schedule_from_inline_extensions(
                         ),
                     });
                 };
+                // Debit maturity v2 describes a counterparty's obligation to
+                // this book. It is neither our liability nor an authenticated
+                // forecast inflow for this solvency procedure.
+                if leg.side != Side::Credit {
+                    continue;
+                }
+                any_inline = true;
                 let entity = crate::projection::scoped_entity(&scope, leg)?;
                 let mut evidence_refs = e.entry.proposal.evidence.clone();
                 if evidence_refs.is_empty() {
@@ -2411,6 +2417,72 @@ fn make_posting(
         period: "2026-01".into(),
         approvals: Vec::new(),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn debit_maturity_is_neither_a_liability_nor_a_forecast_inflow() {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let expense = account_vid(book.book_id, "6000");
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(10),
+        day(2026, 3, 1),
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, cash, Amount::new(usd, 100)),
+            LegPayload::simple(Side::Credit, expense, Amount::new(usd, 100)),
+        ],
+        vec![
+            InlineObligationTerms::to_receivable_extension(&[InlineObligationTerms {
+                ordinal: 0,
+                status: ObligationStatus::Contractual,
+                installments: vec![ObligationInstallment {
+                    due_date: day(2026, 3, 31),
+                    amount: 100,
+                }],
+            }])
+            .unwrap(),
+        ],
+        document,
+    ));
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    assert!(
+        schedule_from_inline_extensions(procedure, &snapshot, as_of)
+            .unwrap()
+            .is_none()
+    );
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(11),
+        day(2026, 3, 1),
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, expense, Amount::new(usd, 200)),
+            LegPayload::simple(Side::Credit, payable, Amount::new(usd, 200)),
+        ],
+        vec![
+            InlineObligationTerms::to_extension(&[InlineObligationTerms {
+                ordinal: 1,
+                status: ObligationStatus::Contractual,
+                installments: vec![ObligationInstallment {
+                    due_date: day(2026, 5, 1),
+                    amount: 200,
+                }],
+            }])
+            .unwrap(),
+        ],
+        document,
+    ));
+    let schedule = schedule_from_inline_extensions(procedure, &snapshot, as_of)
+        .unwrap()
+        .unwrap();
+    assert_eq!(schedule.obligations.len(), 1);
+    assert_eq!(schedule.obligations[0].entry, VId(11));
+    assert_eq!(schedule.obligations[0].installments[0].amount, 200);
+    assert!(schedule.expected_inflows.is_empty());
 }
 
 #[cfg(test)]

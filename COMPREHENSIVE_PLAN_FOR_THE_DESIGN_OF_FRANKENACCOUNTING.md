@@ -1928,6 +1928,22 @@ All durable FrankenAccounting objects are properties and payloads of substrate e
 
 Any changed positional schema or existing field type requires its explicit breaking-major/version transition and matching encoder, decoder, registry and independent vectors before activation. These renderings specify the selected target contract; they do not silently redefine bytes already implemented as v1. Until the matching checker and representation exist, affected behavior remains unsupported.
 
+**Open-item maturity (extension 33, `fa-0hs4.13`).** Its retained body is
+`u16 version ‖ list(u16 leg_ordinal ‖ u8 status [‖ u16 reason_code for Disputed]
+‖ list(i32 due_day ‖ positive i128 amount))`. Version 1 retains its historical
+credit-obligation-only admission; version 2 admits debit-receivable terms.
+Both require sorted unique leg ordinals, sorted unique installment dates and
+exact coverage of the original leg in its native unit. Contractual terms have
+at least one installment; MissingMaturity has none; disputed terms stay
+explicitly unscheduled. One extension declares one side contract; mixed-side
+terms are unsupported. Intent fields `obligation_maturity` (v1) and
+`receivable_maturity` (v2) are mutually exclusive. Proposal and entry digests
+bind the complete versioned terms. Due-date aging and its independent portable
+verifier consume both versions and relieve earliest installments under the
+historical application fold. Liability solvency continues to select credit
+obligations; debit terms are neither liabilities nor forecast inflows. No due
+date or later amendment is inferred from a posting date or a missing document.
+
 ```text
 Amount            { unit_id: u32, mantissa: i128 }                       // scale from units.toml; no exponent field
 Rate              { numerator: BigIntCanonical, denominator: BigIntCanonical }   // exact rational; denominator > 0
