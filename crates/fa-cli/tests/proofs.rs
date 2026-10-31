@@ -632,7 +632,7 @@ fn canonical_state_export_preserves_access_boundaries_and_historical_selection()
         f.book.clone(),
         None,
         "state-proof-auditor",
-        LaunchProfile::Human,
+        LaunchProfile::Preparer,
         &["read"],
     )
     .unwrap();
