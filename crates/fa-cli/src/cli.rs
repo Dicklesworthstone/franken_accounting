@@ -1371,6 +1371,7 @@ fn needs_command_time_evidence(verb: &str, args: &Args) -> bool {
                 && args.flag("--plan-out").is_none()
         }
         ("close", Some("step")) => !close_task_plan_only(verb, args),
+        ("close", Some("run")) => true,
         ("statement", Some("issue")) => !args.switch("--dry-run") && args.flag("--plan").is_some(),
         ("schedule", Some("sweep")) => !args.switch("--dry-run"),
         _ => false,

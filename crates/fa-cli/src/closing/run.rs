@@ -2,7 +2,7 @@
 
 use std::io::Read;
 
-use fa::{ReviewedCloseAction, ReviewedCloseTask};
+use fa::{CloseRunStop, CloseRunTransition, ReviewedCloseAction, ReviewedCloseTask};
 use fa_journal::close_run::{CloseRunView, CloseTaskReceipt};
 use fa_model::{ApprovalRef, CloseTaskBodyAction};
 use fa_time::PeriodTransition;
@@ -285,6 +285,214 @@ pub(super) fn status(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &summary(&view),
     );
     Ok(())
+}
+
+/// Execute the ready graph, retaining every successful native task receipt.
+/// A requested period plan is prepared only after its dependencies finish;
+/// --plan-out therefore does not turn this command into a read-only preview.
+pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const RUN_EXAMPLE: &str = "fa close run --run december --as controller --yes";
+    options(
+        args,
+        &[
+            "--run",
+            "--task",
+            "--key",
+            "--reason",
+            "--description",
+            "--plan",
+            "--plan-out",
+            "--approval",
+        ],
+        &[],
+    )?;
+    let name = required(args, "--run")?;
+    let reviewing = args.flag("--key").is_some() || args.flag("--reason").is_some();
+    let consuming = args.flag("--plan").is_some();
+    if args
+        .flag("--plan-out")
+        .is_some_and(|path| path.is_empty() || path == "-")
+    {
+        return Err(usage(
+            "--plan-out names a new file; omit it to receive complete inline plan bytes",
+            RUN_EXAMPLE,
+        ));
+    }
+    if consuming
+        && (reviewing || args.flag("--plan-out").is_some() || args.flag("--description").is_some())
+    {
+        return Err(usage(
+            "the supplied period plan already binds its key, reason and description",
+            "use --task <period-task> --plan <file> [--approval <vid>]... --yes",
+        ));
+    }
+    if !consuming && !args.flag_all("--approval").is_empty() {
+        return Err(usage(
+            "--approval requires the reviewed --plan",
+            RUN_EXAMPLE,
+        ));
+    }
+    if !reviewing
+        && !consuming
+        && (args.flag("--task").is_some() || args.flag("--plan-out").is_some())
+    {
+        return Err(usage(
+            "a period task selection needs --key and --reason, or --plan",
+            RUN_EXAMPLE,
+        ));
+    }
+    if reviewing {
+        required(args, "--task")?;
+        required(args, "--key")?;
+        required(args, "--reason")?;
+    }
+    if consuming {
+        required(args, "--task")?;
+    }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "close", "approve"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::rea::admit_read(book, principal, &capability)
+    })?;
+    let description = args
+        .flag("--description")
+        .unwrap_or("execute reviewed close run");
+    let transition = if let Some(path) = args.flag("--plan") {
+        let bytes = read_plan_bytes(&ctx.files, path, b"fa:period-plan", "close period task")?;
+        let plan = fa_journal::TransitionPlan::decode(&bytes).map_err(|error| {
+            usage(
+                format!("invalid period plan: {error}"),
+                "prepare the ready period task with close step --dry-run",
+            )
+        })?;
+        let digest = book.plan_digest(&plan)??;
+        let approvals = args
+            .flag_all("--approval")
+            .iter()
+            .map(|value| {
+                Ok(ApprovalRef {
+                    approval_vid: parse_vid(value, "--approval")?,
+                    approved_digest: digest,
+                })
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        Some(CloseRunTransition::Reviewed {
+            task: required(args, "--task")?.into(),
+            plan,
+            approvals,
+        })
+    } else if reviewing {
+        let task = required(args, "--task")?;
+        let view = book
+            .close_run_status(name, &capability)??
+            .ok_or_else(|| usage(format!("close run {name} does not exist"), RUN_EXAMPLE))?;
+        let to = transition_for_task(&view, task)?;
+        Some(CloseRunTransition::Review {
+            task: task.into(),
+            reason_code: transition_reason(required(args, "--reason")?, to)?,
+            idempotency_key: required(args, "--key")?.as_bytes().to_vec(),
+        })
+    } else {
+        None
+    };
+    let execution = book.execute_close_run(name, capability, description, transition)??;
+    ctx.out.at_book(&book)?;
+    ctx.out
+        .effective(format!("period:{}", execution.run.body.period));
+    let (state, pending) = match &execution.stop {
+        None => ("complete", Json::Null),
+        Some(CloseRunStop::TransitionRequired { task, .. }) => ("transition-required", s(task)),
+        Some(CloseRunStop::TransitionReview { task, .. }) => ("transition-review", s(task)),
+        Some(CloseRunStop::Refused { task, .. }) => ("refused", s(task)),
+    };
+    let completed = execution
+        .completed
+        .iter()
+        .map(|recorded| {
+            obj(vec![
+                ("task", s(&recorded.task)),
+                ("receipt", receipt_json(&recorded.receipt)),
+            ])
+        })
+        .collect();
+    let fields = vec![
+        ("run", view_json(&execution.run)),
+        ("state", s(state)),
+        ("completed", Json::Arr(completed)),
+        ("pending_task", pending),
+    ];
+    if let Some(CloseRunStop::Refused { refusal, .. }) = &execution.stop {
+        // A nonzero refusal carries durable partial progress, never a success
+        // claim for the whole run and never a rollback claim for earlier tasks.
+        return Err(Fail::RefusalDetail(Box::new((
+            refusal.clone(),
+            obj(fields),
+        ))));
+    }
+    let mut human = summary(&execution.run);
+    if let Some(CloseRunStop::TransitionRequired { task, .. }) = &execution.stop {
+        human.push_str(&format!("\nReview the ready period task: fa close step --run {name} --task {task} --key <key> --reason <registered-reason> --dry-run --plan-out <file>. Then resume with close run --run {name} --task {task} --plan <file> and any required independent approvals."));
+    }
+    ctx.out.event("close_run_progress", fields, &human);
+    if let Some(CloseRunStop::TransitionReview {
+        task,
+        plan,
+        proposal_digest,
+    }) = execution.stop
+    {
+        let bytes = plan
+            .encode()
+            .map_err(|error| Fail::Internal(error.to_string()))?;
+        if let Some(path) = args.flag("--plan-out") {
+            write_post_plan(&ctx.files, path, &bytes)?;
+        }
+        ctx.out.event("close_task_planned", vec![
+            ("run", s(name)), ("task", s(&task)), ("period", s(&plan.period_code)),
+            ("from", s(plan.from.name())), ("to", s(plan.to.name())),
+            ("proposal_digest", s(hex(&proposal_digest))), ("bytes", s(hex(&bytes))),
+            ("file", args.flag("--plan-out").map_or(Json::Null, s)),
+        ], &format!("close {name}/{task}: {} → {}; review proposal {}, then resume with these unchanged plan bytes and the transition's required approvals", plan.from.name(), plan.to.name(), hex(&proposal_digest)));
+    }
+    Ok(())
+}
+
+fn transition_for_task(view: &CloseRunView, task: &str) -> Result<PeriodTransition, Fail> {
+    match view
+        .body
+        .tasks
+        .iter()
+        .find(|definition| definition.id == task)
+        .map(|definition| &definition.action)
+    {
+        Some(CloseTaskBodyAction::PeriodTransition { to: 2 }) => Ok(PeriodTransition::SoftClose),
+        Some(CloseTaskBodyAction::PeriodTransition { to: 3 }) => Ok(PeriodTransition::Close),
+        Some(CloseTaskBodyAction::PeriodTransition { to: 4 }) => Ok(PeriodTransition::Lock),
+        _ => Err(usage(
+            "only a period-transition task takes a native plan",
+            "inspect close status; a draft task already binds its retained rehearsal certificate",
+        )),
+    }
+}
+
+fn transition_reason(text: &str, transition: PeriodTransition) -> Result<u16, Fail> {
+    let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
+        .map_err(|error| Fail::Internal(error.to_string()))?;
+    let scope = fa_journal::period::reason_scope(transition);
+    text.parse::<u16>()
+        .ok()
+        .or_else(|| {
+            reasons
+                .rows
+                .iter()
+                .find(|reason| reason.scope == scope && reason.name == text)
+                .map(|reason| reason.code)
+        })
+        .ok_or_else(|| {
+            usage(
+                format!("unregistered {scope} reason {text}"),
+                reasons.listing(scope),
+            )
+        })
 }
 
 pub(super) fn step(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

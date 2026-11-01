@@ -71,8 +71,9 @@ pub(crate) fn close_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "start" => run::start(ctx, args),
         "status" => run::status(ctx, args),
         "step" => run::step(ctx, args),
+        "run" => run::execute(ctx, args),
         _ => Err(usage(
-            "close has map, routes, year-end, dry-run, start, status and step subcommands",
+            "close has map, routes, year-end, dry-run, start, status, step and run subcommands",
             EXAMPLE,
         )),
     }

@@ -443,12 +443,26 @@ checked again by the native posting kernel.
 ```bash
 fa close start --run march --period FY2026-P03 --tasks close-tasks.json --as controller --json
 fa close status --run march --json
-fa close step --run march --task accruals --as controller --yes --json
-fa close step --run march --task reclasses --as controller --yes --json
+fa close run --run march --as controller --yes --json
 fa close step --run march --task finish --key march-close --reason Scheduled \
   --as controller --dry-run --plan-out march-close.plan --json
-fa close step --run march --task finish --plan march-close.plan --as controller --yes --json
+fa close run --run march --task finish --plan march-close.plan --as controller --yes --json
 ```
+
+`close run` chooses ready tasks in task-ID order and refreshes the native basis
+after every publication. It skips tasks with durable completion receipts, so
+the same command resumes after a process interruption. A refusal returns a
+nonzero error with the successful task receipts and the remaining run in its
+structured detail; earlier effects remain committed. Without a final period
+plan it returns `transition-required`, with that task still incomplete.
+`close step` remains available to execute one specifically selected ready task.
+
+To execute the posting tasks and prepare their final transition in one call,
+use `close run --run march --task finish --key march-close --reason Scheduled
+--plan-out march-close.plan --as controller --yes`. It returns the native plan
+for independent review after the preceding effects; `--plan-out` on `close run`
+does not make the command read-only. Execute the unchanged plan in a later
+invocation with any required approvals.
 
 Period tasks use the ordinary period law. Open-to-Closed requires no separate
 approver in the current registry; Closed-to-Locked requires an independent
