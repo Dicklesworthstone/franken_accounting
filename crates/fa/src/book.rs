@@ -5220,6 +5220,24 @@ impl Book {
         )))
     }
 
+    /// Export every native statement publication for independent offline replay.
+    /// One authenticated complete prefix and shared registry closure prove all
+    /// intermediate sources, including zero-effect publications and entry links.
+    /// Migration publications and legacy-ambiguous replacement identities remain
+    /// explicit refusals; retained in-book replay supports their complete trace.
+    pub fn produce_statement_trace_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::StatementTraceCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_statement_trace_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce a portable effective-date aging schedule for `fa-verify report`.
     /// Replays both the source OpenItems certificate and the historical cutoff
     /// under current whole-book read/produce authority. The complete signed

@@ -110,11 +110,14 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N] independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
+                                                statement comparisons and complete native publication traces,
                                                 effective-date or due-date aging, reconciliation, whole-chart aging portfolios,
                                                 account roll-forwards,
                                                 direct cash flows, changes in equity, lot schedules,
                                                 native/functional one-book consolidated group statements.
                                                 V1 statements require --units;
+                                                native traces retain every consecutive source, including zero-effect steps;
+                                                migration and legacy-ambiguous Replacement traces are refused;
                                                 lot schedules require the recipient's --base-unit;
                                                 V2/V3 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -1514,6 +1517,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     }
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
+                                } else if report.statement_trace.is_some() {
+                                    "statement_trace"
                                 } else if let Some(comparison) = &report.statement_diff {
                                     match comparison.valuation {
                                         crate::report::StatementDiffValuation::Native => {
@@ -1581,6 +1586,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                         + group.income_statement.lines.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
+                                } else if let Some(trace) = &report.statement_trace {
+                                    trace.summary.lines.len()
                                 } else if let Some(comparison) = &report.statement_diff {
                                     comparison.lines.len()
                                 } else if let Some(functional) = &report.functional_trial_balance {
@@ -1685,6 +1692,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             comparison,
                             report.unit_universe_source,
                         ));
+                    }
+                    if let Some(trace) = &report.statement_trace {
+                        checks.extend(statement_trace_checks(trace, report.unit_universe_source));
                     }
                     if let Some(functional) = &report.functional_statement {
                         checks.extend(functional_statement_checks(functional));
@@ -3788,6 +3798,128 @@ fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
                     ("leg_index", n(u64::from(decision.leg_index))),
                     ("activity", s(cash_activity(decision.activity))),
                     ("basis", s(cash_basis(decision.basis))),
+                ],
+            ));
+        }
+    }
+    checks
+}
+
+fn statement_trace_checks(
+    trace: &crate::report::VerifiedStatementTrace,
+    unit_universe_source: &str,
+) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "statement_trace_parameters",
+        "recomputation",
+        vec![
+            ("before_known_at", n(trace.summary.before_known_at)),
+            ("after_known_at", n(trace.summary.after_known_at)),
+            ("publications", n(trace.publications.len() as u64)),
+            (
+                "coverage",
+                s("every consecutive publication, including zero-effect publications"),
+            ),
+            (
+                "attribution",
+                s("atomic publication; entry links do not assign per-entry monetary effects"),
+            ),
+            ("case_approval", s("not_judged")),
+            ("statement_issuance", s("not_judged")),
+            ("economic_truth", s("not_judged")),
+        ],
+    )];
+    checks.extend(statement_diff_checks(&trace.summary, unit_universe_source));
+    for publication in &trace.publications {
+        checks.push(Check::pass(
+            "statement_trace_publication",
+            "recomputation",
+            vec![
+                ("recorded_at", n(publication.recorded_at)),
+                ("before_source_digest", h(&publication.before_source_digest)),
+                ("after_source_digest", h(&publication.after_source_digest)),
+                ("entries", n(publication.entries.len() as u64)),
+                ("line_changes", n(publication.changes.len() as u64)),
+                (
+                    "mapping_changes",
+                    n(publication.mapping_changes.len() as u64),
+                ),
+                (
+                    "unchanged",
+                    Json::Bool(
+                        publication.changes.is_empty() && publication.mapping_changes.is_empty(),
+                    ),
+                ),
+            ],
+        ));
+        for entry in &publication.entries {
+            checks.push(Check::pass(
+                "statement_trace_entry",
+                "authenticated_journal",
+                vec![
+                    ("publication", n(publication.recorded_at)),
+                    ("event", s("recorded")),
+                    ("entry", s(format!("{:032x}", entry.entry))),
+                    ("digest", h(&entry.digest)),
+                    ("class", n(u64::from(entry.class))),
+                    ("recorded_at", n(entry.recorded_at)),
+                    ("posting_date", day(entry.posting_date)),
+                    ("principal", s(format!("{:032x}", entry.principal))),
+                    (
+                        "references",
+                        Json::List(
+                            entry
+                                .references
+                                .iter()
+                                .map(|(vid, digest)| {
+                                    Json::Obj(vec![
+                                        ("entry", s(format!("{vid:032x}"))),
+                                        ("digest", h(digest)),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ],
+            ));
+        }
+        for line in &publication.changes {
+            let amounts = |values: &[i128]| {
+                Json::List(values.iter().map(|amount| s(amount.to_string())).collect())
+            };
+            checks.push(Check::pass(
+                "statement_trace_line",
+                "recomputation",
+                vec![
+                    ("recorded_at", n(publication.recorded_at)),
+                    ("code", s(&line.code)),
+                    ("label", s(&line.label)),
+                    ("unit", n(u64::from(line.unit))),
+                    ("before", amounts(&line.before)),
+                    ("after", amounts(&line.after)),
+                    ("delta", amounts(&line.delta)),
+                ],
+            ));
+        }
+        for change in &publication.mapping_changes {
+            let mapping = |value: &crate::report::StatementMapping| {
+                Json::Obj(vec![
+                    ("account", s(format!("{:032x}", value.account))),
+                    ("code", s(&value.code)),
+                    ("name", s(&value.name)),
+                    ("account_type", n(u64::from(value.account_type))),
+                    ("is_leaf", Json::Bool(value.is_leaf)),
+                    ("line_code", s(&value.line_code)),
+                ])
+            };
+            checks.push(Check::pass(
+                "statement_trace_mapping",
+                "recomputation",
+                vec![
+                    ("recorded_at", n(publication.recorded_at)),
+                    ("account", s(format!("{:032x}", change.account))),
+                    ("before", change.before.as_ref().map_or(Json::Null, mapping)),
+                    ("after", change.after.as_ref().map_or(Json::Null, mapping)),
                 ],
             ));
         }

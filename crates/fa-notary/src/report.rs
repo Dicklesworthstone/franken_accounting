@@ -161,6 +161,7 @@ pub fn assemble_with_registries(
         || split_cash_flow_certificate(certificate)
         || indirect_cash_flow_certificate(certificate)
         || statement_diff_certificate(certificate)
+        || statement_trace_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -578,6 +579,31 @@ fn statement_diff_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
+/// A trace retains every consecutive v4 source, even a publication that has no
+/// monetary effect. The facade and independent verifier check the complete law.
+fn statement_trace_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "statement trace format")? != b"fa:statement-trace-certificate:v1" {
+            return Ok(false);
+        }
+        reader.u128("statement trace producer")?;
+        reader.fixed::<32>("statement trace capability")?;
+        let n = reader.count(257, "statement trace sources")?;
+        if n == 0 {
+            return Ok(false);
+        }
+        for _ in 0..n {
+            let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "statement trace source")?;
+            if !certificate_format(source, b"fa:report-certificate:v4") {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    header().unwrap_or(false)
+}
+
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -674,7 +700,8 @@ fn assemble_inner(
                 || policy_cash_flow_certificate(certificate)
                 || split_cash_flow_certificate(certificate)
                 || indirect_cash_flow_certificate(certificate)
-                || statement_diff_certificate(certificate))
+                || statement_diff_certificate(certificate)
+                || statement_trace_certificate(certificate))
         || major == 3
             && (functional::certificate(certificate, journal, known_at)
                 || functional::comparison_certificate(certificate, journal, known_at)

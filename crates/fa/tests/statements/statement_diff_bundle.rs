@@ -594,5 +594,38 @@ fn statement_diff_bundle_counts_migration_only_after_finalize_at_each_source_fro
             assert_eq!(line.delta, [5_000, 0]);
         }
     }
+    // In-book traces retain migration visibility events. Portable attribution
+    // must refuse each migration publication until its full event contract is
+    // independently supported, including a zero-effect staged chunk.
+    for (before, after) in [(before_open, opened), (opened, staged), (staged, finalized)] {
+        let trace = fixture
+            .book
+            .certify_statement_trace(
+                PRINCIPAL,
+                &capability(),
+                &fa::StatementTraceRequest {
+                    comparison: StatementDiffRequest {
+                        selection: selection("balance-sheet", JANUARY, DECEMBER),
+                        before,
+                        after: Some(after),
+                    },
+                    max_publications: fa::MAX_STATEMENT_TRACE_PUBLICATIONS,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let refusal = fixture
+            .book
+            .produce_statement_trace_bundle(
+                PRINCIPAL,
+                &capability(),
+                Some(state),
+                &trace.certificate,
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
+        assert!(refusal.message.contains("migration publications"));
+    }
     assert_eq!(fixture.book.head().unwrap(), head);
 }

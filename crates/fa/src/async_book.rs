@@ -137,6 +137,7 @@ enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
     Summary(&'a crate::SummaryCertificate),
     StatementDiff(&'a crate::StatementDiffCertificate),
+    StatementTrace(&'a crate::StatementTraceCertificate),
     Aging(&'a crate::AgingCertificate),
     Lots(&'a crate::LotsCertificate),
     DueDateAging(&'a crate::DueDateAgingCertificate),
@@ -173,6 +174,9 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Native(certificate) => certificate,
             Self::Summary(certificate) => certificate.source_certificate(),
             Self::StatementDiff(certificate) => certificate.sources().1,
+            Self::StatementTrace(certificate) => {
+                &certificate.sources()[certificate.sources().len() - 1]
+            }
             Self::Aging(certificate) => certificate.source(),
             Self::Lots(certificate) => certificate.source(),
             Self::DueDateAging(certificate) => certificate.source(),
@@ -4697,6 +4701,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export every adjacent native statement publication, including zero
+    /// effects, over one complete signed prefix and one registry epoch.
+    pub async fn produce_statement_trace_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::StatementTraceCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::StatementTrace(certificate),
+        )
+        .await
+    }
+
     /// Export contractual-maturity aging over the complete signed prefix.
     /// The outer certificate binds the basis, cutoff, installment relief and
     /// unscheduled items; extension 33 is retained inside its original entries.
@@ -5006,7 +5030,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify fa tb --functional, fa statement --functional or fa consolidate at a fixed recorded sequence before exporting",
             )));
         }
-        let history_start = if let ReportBundleCertificate::StatementDiff(comparison) = report {
+        let history_start = if let ReportBundleCertificate::StatementTrace(trace) = report {
+            let first = &trace.sources()[0];
+            if trace
+                .sources()
+                .iter()
+                .any(|source| source.registry_digest != first.registry_digest)
+            {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable statement traces require one original registry closure at every publication",
+                    "plan §12.5 / §13.3 (complete independent historical statement reconstruction)",
+                    "export a trace within one retained registry epoch; replay cross-epoch traces in the original book",
+                )));
+            }
+            first.known_at
+        } else if let ReportBundleCertificate::StatementDiff(comparison) = report {
             let (before, after) = comparison.sources();
             if before.registry_digest != after.registry_digest {
                 return Ok(Err(fa_journal::Refusal::new(
@@ -5039,6 +5079,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ReportBundleCertificate::StatementDiff(comparison) => {
                 if let Err(refusal) =
                     self.replay_statement_diff(cx, principal, capability, comparison)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::StatementTrace(trace) => {
+                if let Err(refusal) =
+                    self.replay_statement_trace(cx, principal, capability, trace)?
                 {
                     return Ok(Err(refusal));
                 }
@@ -5236,6 +5284,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             report,
             ReportBundleCertificate::Summary(_)
                 | ReportBundleCertificate::StatementDiff(_)
+                | ReportBundleCertificate::StatementTrace(_)
                 | ReportBundleCertificate::RollForward(_)
                 | ReportBundleCertificate::EquityRollForward(_)
                 | ReportBundleCertificate::CashFlow(_)
@@ -5312,6 +5361,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Some(Err(refusal)) => return Ok(Err(refusal)),
             Some(Ok(basis)) => basis,
         };
+        if matches!(report, ReportBundleCertificate::StatementTrace(_))
+            && journal.leaves.iter().any(|leaf| {
+                leaf.envelope.is_entry()
+                    && leaf.envelope.commit_seq > history_start
+                    && leaf.envelope.commit_seq <= certificate.known_at
+                    && matches!(
+                        leaf.envelope.class,
+                        EntryClass::REPLACEMENT
+                            | EntryClass::MIGRATION
+                            | EntryClass::MIGRATION_CONTROL
+                    )
+            })
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "portable trace attribution does not yet support migration publications or ambiguous legacy replacement identities",
+                "plan §8.3 / §13.3 (authenticate every publication and exact entry identity)",
+                "replay this trace in its original book, or export a supported native interval; no partial trace is produced",
+            )));
+        }
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection
             && let Err(refusal) =
                 fa_notary::report::check_open_items_scope(&journal, certificate.known_at, *account)?
@@ -5455,6 +5525,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             },
             ReportBundleCertificate::StatementDiff(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::StatementTrace(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

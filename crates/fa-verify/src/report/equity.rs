@@ -1104,6 +1104,7 @@ mod tests {
             case_member: Some(case),
             prior_period_adjustment: Some(prior),
             evidence: Vec::new(),
+            principal: 0,
             identity: 9,
             legacy_identity: None,
         }

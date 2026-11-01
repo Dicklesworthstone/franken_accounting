@@ -3,6 +3,9 @@
 //! excuse a false historical source or bridge.
 use super::*;
 
+#[path = "statement_trace.rs"]
+mod trace;
+
 struct Fixture {
     records: Vec<Record>,
     before: VerifiedStatement,
