@@ -18,12 +18,18 @@ use super::*;
 use crate::batch::BatchPosted;
 use crate::scratch::SeqMap;
 
+mod sequence;
+pub use sequence::{
+    DraftRehearsalStep, DraftSequenceRehearsal, DraftSequenceRehearsalRequest, rehearse_drafts_into,
+};
+
 const SOURCE_FORMAT: &[u8] = b"fa:draft-rehearsal-source:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:draft-rehearsal-source-digest:v1";
 const MAX_SOURCE_BYTES: usize = 1024 + (fa_model::limits::MAX_BATCH_ENTRIES + 1) * 56;
 
-/// Only `rehearse_draft_into` constructs this token, after taking ownership of
-/// an empty MemVfs target and validating/replaying the exact source prefix.
+/// Only the source-validated rehearsal factories construct this token,
+/// through their private staging helper, while owning a fresh MemVfs target
+/// whose original prefix they have validated and replayed completely.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Rehearsing(());
 
@@ -631,6 +637,36 @@ pub async fn rehearse_draft_into<V: Vfs + Clone>(
             "scratch replay differs from the complete original draft source",
         ));
     }
+    let posted = match apply_reviewed_draft(&mut target, cx, book, &view, request.known_at).await? {
+        Ok(posted) => posted,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    Ok(Ok((
+        target,
+        DraftRehearsal {
+            source: witness,
+            view,
+            seq_map,
+            batch: posted,
+        },
+    )))
+}
+
+/// Only the source-validated factories above and in `sequence` call this
+/// helper, while they own the fresh scratch target. Every native posting and
+/// retained-planner check is shared with the original single-draft rehearsal.
+async fn apply_reviewed_draft(
+    target: &mut Database<MemVfs>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    view: &DraftView,
+    known_at: CommitSeq,
+) -> Outcome<BatchPosted> {
+    if target.frontier()? != known_at {
+        return Err(corrupt(
+            "the owned scratch target moved before its draft batch",
+        ));
+    }
     let members = view
         .intents
         .iter()
@@ -644,48 +680,40 @@ pub async fn rehearse_draft_into<V: Vfs + Clone>(
     let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
     let admission = Admission::ScratchDraft(Rehearsing(()));
     let staged = match correction::stage(
-        &mut target,
+        target,
         cx,
         book,
         &capabilities,
         &batch,
         admission,
-        correction::is_correction(&view),
+        correction::is_correction(view),
     )? {
         Ok(staged) => staged,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if let Err(refusal) = check_resolved_members(&request.name, &view.intents, &staged.entries) {
+    if let Err(refusal) = check_resolved_members(&view.body.name, &view.intents, &staged.entries) {
         staged.abort();
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = witness_open(staged.txn(), &target, book, &request.name)? {
+    if let Err(refusal) = witness_open(staged.txn(), target, book, &view.body.name)? {
         staged.abort();
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = witness_membership(staged.txn(), &target, book, &view)? {
+    if let Err(refusal) = witness_membership(staged.txn(), target, book, view)? {
         staged.abort();
         return Ok(Err(refusal));
     }
     let posted = match staged
-        .commit(&mut target, cx, book, &capabilities, &batch, admission)
+        .commit(target, cx, book, &capabilities, &batch, admission)
         .await?
     {
         Ok(posted) => posted,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if posted.already_recorded || request.known_at.0.checked_add(1) != Some(posted.recorded_at.0) {
+    if posted.already_recorded || known_at.0.checked_add(1) != Some(posted.recorded_at.0) {
         return Err(corrupt(
             "draft rehearsal was not one fresh atomic publication",
         ));
     }
-    Ok(Ok((
-        target,
-        DraftRehearsal {
-            source: witness,
-            view,
-            seq_map,
-            batch: posted,
-        },
-    )))
+    Ok(Ok(posted))
 }

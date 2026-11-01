@@ -353,7 +353,10 @@ fn authorize(
     Ok(admitted.map_err(|denial| fa_journal::policy::refusal(&denial)))
 }
 
-fn difference(trunk: &TrialBalance, draft: &TrialBalance) -> Result<Vec<DraftDiffRow>, Refusal> {
+pub(crate) fn difference(
+    trunk: &TrialBalance,
+    draft: &TrialBalance,
+) -> Result<Vec<DraftDiffRow>, Refusal> {
     let mut cells: BTreeMap<(VId, u32), DraftDiffRow> = BTreeMap::new();
     for (is_draft, report) in [(false, trunk), (true, draft)] {
         for row in &report.rows {

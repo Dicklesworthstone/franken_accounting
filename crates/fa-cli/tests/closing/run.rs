@@ -526,3 +526,204 @@ fn close_run_command_reports_durable_partial_progress_on_later_task_refusal() {
         "retry preserves exactly the first task's one effect"
     );
 }
+
+fn close_events(f: &Fixture, args: &[&str]) -> Vec<Json> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&f.book)
+        .args(args)
+        .arg("--json")
+        .env_remove("FA_BOOK")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "args={args:?}: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
+    let f = Fixture::new(false);
+    f.post("combined-source", "1000", "4000", "100.00");
+    let first = reviewed_draft(&f, "combined-first", "15.00");
+    let second = reviewed_draft(&f, "combined-second", "5.00");
+    let definition = format!(
+        r#"[
+        {{"id":"first","certificate":"{first}"}},
+        {{"id":"second","depends_on":["first"],"certificate":"{second}"}},
+        {{"id":"finish","depends_on":["second"],"transition":"close"}}
+    ]"#
+    );
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "combined",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &definition,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let before = head(&f.book);
+    let review = ok(
+        &f.book,
+        &["close", "dry-run", "--run", "combined", "--period", PERIOD],
+    );
+    assert_eq!(text(&review, "event"), "close_run_rehearsal");
+    assert_eq!(
+        head(&f.book),
+        before,
+        "plain combined rehearsal never publishes"
+    );
+    assert_eq!(get(&review, "complete_on_trunk"), &Json::Bool(false));
+    let rows = get(&review, "rows").as_arr().unwrap();
+    let expense = rows.iter().find(|row| text(row, "code") == "6000").unwrap();
+    assert_eq!(text(expense, "delta"), "20.00 USD");
+    let tasks = get(&review, "tasks").as_arr().unwrap();
+    assert_eq!(tasks.len(), 3);
+    assert_eq!(text(&tasks[0], "state"), "rehearsed");
+    assert_eq!(text(&tasks[1], "state"), "rehearsed");
+    assert_eq!(text(&tasks[2], "state"), "transition-review-required");
+
+    let certificate_path = f.dir.join("combined.cert").display().to_string();
+    let certified = close_events(
+        &f,
+        &[
+            "close",
+            "dry-run",
+            "--run",
+            "combined",
+            "--certificate-out",
+            &certificate_path,
+        ],
+    );
+    assert_eq!(certified.len(), 2);
+    let certificate_event = certified
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    let oid = format!("C:{}", text(certificate_event, "oid"));
+    let original = std::fs::read(&certificate_path).unwrap();
+    let certificate = fa::CloseRunRehearsalCertificate::decode(&original).unwrap();
+    assert_eq!(
+        fa::ReportArtifact::decode(&original).unwrap().family(),
+        fa::ReportArtifactFamily::CloseRunRehearsal
+    );
+    assert_eq!(
+        head(&f.book),
+        before + 1,
+        "only complete certificate retention publishes"
+    );
+    assert_eq!(
+        get(task(&status(&f, "combined"), "first"), "completion"),
+        &Json::Null
+    );
+
+    // Review generation after real posting is a writing command even with
+    // --plan-out. It emits progress and a separate unexecuted native plan.
+    let plan_path = f.dir.join("combined-close.plan").display().to_string();
+    let executed = close_events(
+        &f,
+        &[
+            "close",
+            "run",
+            "--run",
+            "combined",
+            "--task",
+            "finish",
+            "--key",
+            "combined-finish",
+            "--reason",
+            "AuditComplete",
+            "--plan-out",
+            &plan_path,
+            "--as",
+            CONTROLLER,
+            "--yes",
+        ],
+    );
+    assert_eq!(executed.len(), 2);
+    assert_eq!(text(&executed[0], "state"), "transition-review");
+    assert_eq!(get(&executed[0], "completed").as_arr().unwrap().len(), 2);
+    assert_eq!(text(&executed[1], "event"), "close_task_planned");
+    assert_eq!(
+        get(task(&status(&f, "combined"), "finish"), "completion"),
+        &Json::Null
+    );
+    ok(
+        &f.book,
+        &[
+            "close", "run", "--run", "combined", "--task", "finish", "--plan", &plan_path, "--as",
+            CONTROLLER, "--yes",
+        ],
+    );
+    let after = head(&f.book);
+    let output_path = f.dir.join("combined-replayed.bin").display().to_string();
+    let replay = close_events(&f, &["replay", &oid, "--output", &output_path]);
+    assert_eq!(replay.len(), 2);
+    assert_eq!(text(&replay[0], "event"), "close_run_rehearsal");
+    assert_eq!(get(&replay[0], "rows"), get(&review, "rows"));
+    assert_eq!(get(&replay[0], "tasks"), get(&review, "tasks"));
+    assert_eq!(
+        get(&replay[0], "complete_on_trunk"),
+        &Json::Bool(false),
+        "historical rehearsal never substitutes current completion"
+    );
+    assert_eq!(std::fs::read(output_path).unwrap(), certificate.output());
+    assert_eq!(head(&f.book), after, "replay is a read");
+    assert_ne!(
+        run(&f.book, &["certificate", "status", &oid]).0,
+        0,
+        "native baseline freshness cannot claim current close readiness"
+    );
+}
+
+#[test]
+fn combined_close_review_rejects_conflicting_selectors_before_retention() {
+    let f = Fixture::new(false);
+    let review = reviewed_draft(&f, "selector-draft", "1.00");
+    let tasks = format!(r#"[{{"id":"one","certificate":"{review}"}}]"#);
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "selector-run",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &tasks,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let before = head(&f.book);
+    for flags in [
+        vec!["--draft", "selector-draft"],
+        vec!["--period", "FY2026-P11"],
+        vec!["--certificate-out", "-"],
+    ] {
+        let mut args = vec!["close", "dry-run", "--run", "selector-run", "--certify"];
+        args.extend(flags);
+        assert_eq!(run(&f.book, &args).0, 2);
+        assert_eq!(head(&f.book), before);
+    }
+}

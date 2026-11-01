@@ -68,6 +68,7 @@ pub mod cash_flow_policy;
 pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
+pub mod close_rehearsal;
 pub mod close_run;
 pub mod consolidation;
 pub mod custom_statement;
@@ -120,6 +121,11 @@ pub mod upload;
 #[cfg(test)]
 mod period_history_tests;
 
+pub use close_rehearsal::{
+    CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT, CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT,
+    CertifiedCloseRunRehearsal, CloseRunRehearsal, CloseRunRehearsalCertificate,
+    CloseTaskRehearsal, CloseTaskRehearsalOutcome, MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
+};
 pub use close_run::{
     CloseRunExecution, CloseRunStop, CloseRunTransition, ReviewedCloseAction, ReviewedCloseTask,
 };

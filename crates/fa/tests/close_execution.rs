@@ -383,7 +383,7 @@ fn close_run_preflights_transition_inputs_then_returns_a_fresh_unexecuted_plan()
                     "Wrong task or executor",
                     Some(CloseRunTransition::Reviewed {
                         task: task.into(),
-                        plan,
+                        plan: Box::new(plan),
                         approvals: Vec::new(),
                     }),
                 )

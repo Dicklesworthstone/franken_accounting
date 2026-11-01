@@ -48,7 +48,7 @@ pub enum CloseRunTransition {
     /// created, inferred from the close review, or transferred between tasks.
     Reviewed {
         task: String,
-        plan: TransitionPlan,
+        plan: Box<TransitionPlan>,
         approvals: Vec<ApprovalRef>,
     },
 }
@@ -71,7 +71,7 @@ pub enum CloseRunStop {
     /// Its digest is the value independent approvers must bind.
     TransitionReview {
         task: String,
-        plan: TransitionPlan,
+        plan: Box<TransitionPlan>,
         proposal_digest: [u8; 32],
     },
     /// This task published nothing. Earlier `completed` receipts remain
@@ -278,24 +278,22 @@ impl Book {
                 .tasks
                 .iter()
                 .any(|task| task.id == input.task() && task.completion.is_some())
-            {
-                if let CloseRunTransition::Reviewed {
+                && let CloseRunTransition::Reviewed {
                     task,
                     plan,
                     approvals,
                 } = input
-                {
-                    match self.execute_close_task(
-                        name,
-                        task,
-                        capability.clone(),
-                        description,
-                        Some(plan.clone()),
-                        approvals.clone(),
-                    )? {
-                        Ok(recorded) => run = recorded.run,
-                        Err(refusal) => return Ok(Err(refusal)),
-                    }
+            {
+                match self.execute_close_task(
+                    name,
+                    task,
+                    capability.clone(),
+                    description,
+                    Some(plan.as_ref().clone()),
+                    approvals.clone(),
+                )? {
+                    Ok(recorded) => run = recorded.run,
+                    Err(refusal) => return Ok(Err(refusal)),
                 }
             }
         }
@@ -354,7 +352,7 @@ impl Book {
                             Ok(plan) => match self.plan_digest(&plan)? {
                                 Ok(proposal_digest) => CloseRunStop::TransitionReview {
                                     task,
-                                    plan,
+                                    plan: Box::new(plan),
                                     proposal_digest,
                                 },
                                 Err(refusal) => CloseRunStop::Refused { task, refusal },
@@ -371,7 +369,7 @@ impl Book {
                         task: selected,
                         plan,
                         approvals,
-                    }) if selected == &task => (Some(plan.clone()), approvals.clone()),
+                    }) if selected == &task => (Some(plan.as_ref().clone()), approvals.clone()),
                     Some(_) => {
                         return Err(corrupt(
                             "a validated close transition input does not name the ready period task",

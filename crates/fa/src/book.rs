@@ -3154,6 +3154,88 @@ impl Book {
         )))
     }
 
+    /// Rehearse multiple complete drafts in one freshly owned scratch book.
+    /// Original-source current authority is admitted before allocation or
+    /// observation and never replaced by the historical scratch policy.
+    pub(crate) fn rehearse_drafts_at(
+        &mut self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+        names: Vec<String>,
+        known_at: CommitSeq,
+    ) -> Outcome<(Book, fa_journal::draft::DraftSequenceRehearsal)> {
+        if let Err(refusal) = self.read_scope(principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(denial) = fa_policy::reach(
+            capability,
+            &fa_policy::Reach {
+                branch: Some(fa_model::Id128::TRUNK),
+                observes: fa_policy::Observes::At(known_at),
+                periods: None,
+                through: None,
+                accounts: None,
+            },
+            None,
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let keys = BookKeys::generate(&Entropy::production())?;
+        let owner_token = keys.owner_token();
+        let (scratch_runtime, scratch_root) = Self::runtime_and_root()?;
+        let scratch_purposes = PurposeContexts::narrow_runtime_root(&scratch_root);
+        let target = scratch_runtime.block_on(async {
+            Database::open_memory(&scratch_purposes.commit(), keys.inner.clone()).await
+        })?;
+        let request = fa_journal::draft::DraftSequenceRehearsalRequest { names, known_at };
+        let entropy = Entropy::production();
+        let rehearsed = match &mut self.store {
+            Store::Memory(core) => scratch_runtime
+                .block_on(core.rehearse_drafts_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    capability,
+                    request,
+                    entropy,
+                ))?
+                .map(|(copy, rehearsal)| (Store::Memory(copy), rehearsal)),
+            Store::Dir(core) => scratch_runtime
+                .block_on(core.rehearse_drafts_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    capability,
+                    request,
+                    entropy,
+                ))?
+                .map(|(copy, rehearsal)| (Store::ScratchDir(copy), rehearsal)),
+            Store::ScratchDir(core) => scratch_runtime
+                .block_on(core.rehearse_drafts_into(
+                    &scratch_purposes,
+                    target,
+                    &keys,
+                    capability,
+                    request,
+                    entropy,
+                ))?
+                .map(|(copy, rehearsal)| (Store::ScratchDir(copy), rehearsal)),
+        };
+        let (store, rehearsal) = match rehearsed {
+            Ok(rehearsed) => rehearsed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            Book {
+                runtime: scratch_runtime,
+                root: scratch_root,
+                store,
+                owner_token,
+            },
+            rehearsal,
+        )))
+    }
+
     /// A scenario's materialization in a fresh memory book with its own keys
     /// and runtime, as a draft rehearsal is: the native factory replays this
     /// book at `fork_at` and posts `requests` in order (plan §15.2).
@@ -4759,6 +4841,19 @@ impl Book {
     ) -> Outcome<crate::RetainedCertificate> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.retain_replayed_draft_diff(
+            &purposes, principal, capability, certificate, verified_at
+        )))
+    }
+
+    pub(crate) fn retain_replayed_close_run_rehearsal(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::CloseRunRehearsalCertificate,
+        verified_at: CommitSeq,
+    ) -> Outcome<crate::RetainedCertificate> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_replayed_close_run_rehearsal(
             &purposes, principal, capability, certificate, verified_at
         )))
     }

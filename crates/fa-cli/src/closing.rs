@@ -7,8 +7,10 @@
 //! rehearsal uses scratch state and independent promotion requires Close.
 
 mod draft_review;
+mod rehearsal;
 mod run;
 pub(crate) use draft_review::render_draft_diff;
+pub(crate) use rehearsal::render as render_close_run_rehearsal;
 
 use std::collections::BTreeMap;
 
@@ -67,6 +69,7 @@ pub(crate) fn close_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "map" => set_routes(ctx, args),
         "routes" => show_routes(ctx, args),
         "year-end" => year_end(ctx, args),
+        "dry-run" if args.flag("--run").is_some() => rehearsal::run(ctx, args),
         "dry-run" => draft_review::run(ctx, args),
         "start" => run::start(ctx, args),
         "status" => run::status(ctx, args),
