@@ -177,6 +177,11 @@ rule = "migration_legacy_pair"
 rationale = "the record states F6's approval only as the director's habit (p.111); a native approval needs A0 and draft self-promotion attaches none, so the approval is the chunk's legacy entered-by/approved-by pair (plan §6.4 W-D-02)"
 
 [[default]]
+attribute = "reclassification_target"
+rule = "none"
+rationale = "the book stages legacy history, none of it a Reclassification of an earlier entry, so no intent names a reclassification target"
+
+[[default]]
 attribute = "approvals_recorded"
 rule = "approved_by_is_entered_by"
 rationale = "F6-approval: on p.111's natural reading the director both entered and approved the August 22 transfers; the weaker reading, entered only, is the class entered_by_only"

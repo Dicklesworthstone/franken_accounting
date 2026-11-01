@@ -909,6 +909,15 @@ fn subject_intent(book: &BookVariant, subject: &str) -> Option<String> {
     by_fact.next().is_none().then(|| one.id.clone())
 }
 
+/// The posting a `reclassification_target` value names (§6.4 W-P-04):
+/// `single(<fact>)` is that fact's one intent in `book`, the one earlier
+/// entry a Reclassification cell moves amounts out of.
+#[must_use]
+pub fn reclassification_target(book: &BookVariant, value: &str) -> Option<String> {
+    let fact = value.strip_prefix("single(")?.strip_suffix(')')?;
+    subject_intent(book, fact)
+}
+
 /// The branch class of `attr` that governs `intent`: the class its own legs
 /// name (`amount_rule = "branch:<class>"`), else the class its step names,
 /// else the one class of that attribute no other intent's legs or steps

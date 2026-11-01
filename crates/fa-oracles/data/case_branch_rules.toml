@@ -137,3 +137,16 @@ parameters = []
 classes = ["draft_self_promotion", "entry_approval", "migration_legacy_pair", "none"]
 components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/draft.rs:1496"
+
+# A Reclassification's one target (§6.4 W-P-04): the kernel reads the earlier entry the intent
+# names and refuses a move of more than that entry's legs left (FA-REF-185), after identity and
+# before period law and SoD. `single(<fact>)` names that fact's one posting as the target.
+[[rule]]
+id = "reclassification_shape"
+attribute = "reclassification_target"
+reader = "kernel:3''. A Reclassification"
+class_rule = "enum"
+parameters = []
+classes = ["single"]
+components = ["refusal", "law_row"]
+code_justification = "crates/fa-journal/src/post.rs:2972"

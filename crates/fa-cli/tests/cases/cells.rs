@@ -206,6 +206,33 @@ impl Sweeper<'_, '_> {
                     return;
                 }
                 BranchAttribute::EntryClass => intent.class.clone_from(value),
+                // W-P-04 (§6.4): the entry posted as one Reclassification of
+                // the earlier posting the cell names, under its own reason
+                // or the book's default one.
+                BranchAttribute::ReclassificationTarget => {
+                    let Some(target) = branch::reclassification_target(book, value) else {
+                        row.verdict = RowVerdict::Fail;
+                        row.reason = Some(format!(
+                            "expected `{value}` to name one posting of the book observed none"
+                        ));
+                        self.out.push(SweptCell {
+                            row,
+                            reproduce: None,
+                        });
+                        return;
+                    };
+                    intent.class = s("Reclassification");
+                    intent.target = Some(target);
+                    intent.target_kind = Some(s("reclassifies"));
+                    if intent.reason.is_none() {
+                        intent.reason = book
+                            .defaults
+                            .iter()
+                            .find(|d| d.attribute == "reason")
+                            .map(|d| d.rule.clone());
+                    }
+                    row.projection.push(("class".into(), s("Reclassification")));
+                }
                 BranchAttribute::PeriodStateAtCommit => {}
                 BranchAttribute::EvidenceAttached => match value.as_str() {
                     "none" => evidence = None,
@@ -510,12 +537,16 @@ impl Sweeper<'_, '_> {
                             .find(|(x, _)| **x == a)
                             .map(|(_, v)| v.clone())
                     };
+                    let reclassifies = value(BranchAttribute::ReclassificationTarget)
+                        .and_then(|v| branch::reclassification_target(book, &v));
                     let setting = CellSetting {
-                        entry_class: value(BranchAttribute::EntryClass),
+                        entry_class: value(BranchAttribute::EntryClass)
+                            .or_else(|| reclassifies.as_ref().map(|_| s("Reclassification"))),
                         period_state: period_state(state.as_str()),
                         evidence: value(BranchAttribute::EvidenceAttached),
                         key: Some(cell.idempotency_key.clone()),
                         approval_encoding: value(BranchAttribute::ApprovalEncoding),
+                        reclassifies,
                     };
                     let kernel = (observed != "admitted").then_some(observed.as_str());
                     // A CF's reference reads its parent's refusal and law row.

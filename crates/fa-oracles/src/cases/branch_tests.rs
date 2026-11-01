@@ -56,6 +56,7 @@ fn every_seeded_rule_resolves() {
         "entry_class_admission",
         "period_state_admission",
         "evidence_minimum",
+        "reclassification_shape",
     ] {
         assert!(rules.get(id).is_some(), "{id}");
     }

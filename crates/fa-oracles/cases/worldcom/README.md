@@ -212,6 +212,7 @@ Declared defaults (each an encoding choice the record does not fix):
 | `effective_date` | `reporting_period_last_day` | the record dates bookings, not effective dates; each entry's sourced reporting period ends on its effective date (plan §6.2) |
 | `evidence_attached` | `placeholder_reviewed` | the record describes the entries' documents without publishing them; a placeholder reviewed by case-second-reader stands in (plan §2.6) |
 | `approval_encoding` | `none` | the book posts each entry with no approval attached: an entry approval needs A0, and a draft promoted by its owner is W-P-01's own branch (plan §6.4) |
+| `reclassification_target` | `none` | the record describes each entry as an ordinary journal entry, none as a Reclassification of an earlier one, so an intent names no reclassification target; W-P-04 branches the one encoding that would name one (plan §6.4) |
 | `acting_principal` | `role_of_record` | the role the record names booked the entry (F1, F2: the 1Q01 manager; F4, F5, F10, F12, F13: the 2Q01 manager; F8: the property accounting specialist); where it names none (F3, F9, F11), the property accounting director, who directed the transfers |
 | `case_determination_date` | `restating_filing_date` | the restating filing's date is public, fixed and never precedes the restated figures (plan §2.6); the June 2002 announcement (SRC-WC-8K-20020626) becomes the sourced date once its fact lands (W2/W3) |
 | `leg_split` | `one_leg_per_named_account` | the record names one account per side of each transfer; one leg per named (account, side) is the encoding (plan §2.6 rule 2, §6.4 W-D-01) |
@@ -295,6 +296,7 @@ Declared defaults (each an encoding choice the record does not fix):
 | Attribute | Rule | Why |
 |---|---|---|
 | `approval_encoding` | `migration_legacy_pair` | the record states F6's approval only as the director's habit (p.111); a native approval needs A0 and draft self-promotion attaches none, so the approval is the chunk's legacy entered-by/approved-by pair (plan §6.4 W-D-02) |
+| `reclassification_target` | `none` | the book stages legacy history, none of it a Reclassification of an earlier entry, so no intent names a reclassification target |
 | `approvals_recorded` | `approved_by_is_entered_by` | F6-approval: on p.111's natural reading the director both entered and approved the August 22 transfers; the weaker reading, entered only, is the class entered_by_only |
 | `effective_date` | `reporting_period_last_day` | as on the native book: the record dates the booking, and the entry's sourced reporting period ends on its effective date (plan §6.2) |
 
@@ -451,6 +453,17 @@ Sources: `SRC-WC-001` (the committee found).
 | Target | Cell | Read as | Verdict | Record | Observed |
 |---|---|---|---|---|---|
 | `F6a` | `approval_encoding=none,evidence_attached=placeholder_reviewed` | CF | PASS | unconstrained | state=Open refusal=admitted exit=0 record_consistent=false commit_agrees=ok ref=agree |
+
+### `W-P-04`: first refusal at commit (P.branch_table)
+
+Given the documented entry `F6`, `F1`, `F2` posted on the book `native`, with `reclassification_target` in each cell below, the kernel's first refusal is the one each row lists. The record fixes none of these cells, so no row is the record's; the law row the table turns on is plan:§8.2 (`FA-REF-185`).
+
+Sources: `SRC-WC-001` (the committee found).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `F6a` | `reclassification_target=single(F1)` | P | PASS | unconstrained | class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false commit_agrees=ok ref=agree |
+| `F6a` | `reclassification_target=single(F2)` | P | PASS | unconstrained | class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false ref=agree |
 
 ### `W-NOTE-01`: note (NOTE.observation)
 
