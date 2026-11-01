@@ -1485,3 +1485,27 @@ rules are unchanged. Recovery text now names the permanent gate and the
 canonical main/master policy; it no longer suggests forbidden train branches
 or a Tier-1-only note as a fix for missing Tier 0. Wiring the hook does not
 retroactively qualify the published merge. Exact-tree gates remain required.
+
+## 2026-11-01 — Production timer reads discarded the serving context
+
+At 38ed0974, `TimedBook for Book` accepted a serving `Cx` for
+`latest_tick` and `corroborated_tick_at` but discarded it. Both calls used
+the synchronous book's private context. The async adapter already narrowed
+the caller's context, and mutating timer adapters already preserved it.
+Thus the production reads checked the wrong cancellation state before
+observing retained TimeEvidence. This is a source-confirmed context-boundary
+defect; native counterexample execution is still pending.
+
+The production adapter now calls `Book::latest_tick_with` and
+`Book::corroborated_tick_at_with`. Both narrow the supplied context and
+reuse the existing async-core query checkpoint and restriction. A direct
+production-adapter regression records a real tick, checks live and historical
+reads, cancels a separate caller context, requires both reads to return
+`BookError::Context`, and verifies that the journal and uncancelled read
+remain intact. An earlier timer checkpoint cannot hide the adapter defect
+because the test invokes the adapter directly.
+
+Formatting and static scanning pass; they do not execute this regression.
+The original `fa-7uhr` conflict/fresh-tick/checkpoint acceptance and a full
+verdict for this new source remain separate requirements. The full proof
+running at 38ed0974 predates this repair and cannot qualify it.

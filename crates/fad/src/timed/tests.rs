@@ -29,6 +29,81 @@ const POLICY: Policy = Policy {
     clock_drift_ns: 0,
 };
 
+#[test]
+fn production_tick_reads_preserve_caller_cancellation_and_recorded_evidence() {
+    use asupersync::runtime::RuntimeBuilder;
+
+    let book_id = Id128([184; 16]);
+    let mut book = Book::create_memory(
+        BookSpec {
+            book_id,
+            name: "Production tick read context".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("production-tick-reads", 1, 1).unwrap(),
+            time_zone_policy: Some(TimeZonePolicy::Utc),
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(184),
+    )
+    .unwrap();
+    let system = fa_journal::rows::system_principal(book_id);
+    let capability = Capability::new(system, Profile::System, &[Op::Witness], system)
+        .unwrap()
+        .for_books(&[book_id])
+        .unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let live = runtime.request_cx_with_budget(Budget::INFINITE);
+    let before = book.head().unwrap();
+    assert_eq!(TimedBook::latest_tick(&book, &live).unwrap(), None);
+    let ticked = runtime
+        .block_on(TimedBook::record_tick(
+            &mut book,
+            &live,
+            1_000_000_000,
+            true,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+    let after = book.head().unwrap();
+    eprintln!(
+        "production tick reads seed=184 frontier={} tick_seq={}",
+        after.0, ticked.recorded_at.0
+    );
+    assert!(ticked.recorded_at > before);
+    assert_eq!(
+        TimedBook::latest_tick(&book, &live).unwrap(),
+        Some(ticked.tick)
+    );
+    assert_eq!(
+        TimedBook::corroborated_tick_at(&book, &live, before).unwrap(),
+        None
+    );
+    assert_eq!(
+        TimedBook::corroborated_tick_at(&book, &live, ticked.recorded_at).unwrap(),
+        Some(ticked.tick)
+    );
+
+    let cancelled = runtime.request_cx_with_budget(Budget::INFINITE);
+    cancelled.cancel_with(CancelKind::User, Some("stop the production tick reads"));
+    // Exercise the production adapter directly so an earlier timer checkpoint
+    // cannot hide a read which substitutes the book's private context.
+    assert!(matches!(
+        TimedBook::latest_tick(&book, &cancelled),
+        Err(BookError::Context(_))
+    ));
+    assert!(matches!(
+        TimedBook::corroborated_tick_at(&book, &cancelled, ticked.recorded_at),
+        Err(BookError::Context(_))
+    ));
+    assert_eq!(book.head().unwrap(), after);
+    assert_eq!(
+        TimedBook::latest_tick(&book, &live).unwrap(),
+        Some(ticked.tick)
+    );
+}
+
 fn lab<T, F>(
     seed: u64,
     test: impl FnOnce(Cx) -> F + Send + 'static,

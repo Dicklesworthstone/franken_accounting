@@ -141,12 +141,12 @@ pub(crate) trait TimedBook {
 }
 
 impl TimedBook for Book {
-    fn latest_tick(&self, _cx: &Cx) -> Result<Option<Tick>, BookError> {
-        Book::latest_tick(self)
+    fn latest_tick(&self, cx: &Cx) -> Result<Option<Tick>, BookError> {
+        Book::latest_tick_with(self, cx)
     }
 
-    fn corroborated_tick_at(&self, _cx: &Cx, at: CommitSeq) -> Result<Option<Tick>, BookError> {
-        Book::corroborated_tick_at(self, at)
+    fn corroborated_tick_at(&self, cx: &Cx, at: CommitSeq) -> Result<Option<Tick>, BookError> {
+        Book::corroborated_tick_at_with(self, cx, at)
     }
 
     async fn record_tick(

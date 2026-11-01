@@ -4250,6 +4250,12 @@ impl Book {
         with_store!(&self.store, core => core.latest_tick(&self.purposes()))
     }
 
+    /// Read the latest tick under the caller's serving context.
+    pub fn latest_tick_with(&self, cx: &Cx) -> Result<Option<fa_journal::Tick>, BookError> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&self.store, core => core.latest_tick(&purposes))
+    }
+
     /// The latest corroborated TimeEvidence tick known at recorded frontier
     /// `at`: what a rendering of a report read at `at` is dated by, so the
     /// same report renders to the same bytes whenever it is rendered.
@@ -4258,6 +4264,16 @@ impl Book {
         at: CommitSeq,
     ) -> Result<Option<fa_journal::Tick>, BookError> {
         with_store!(&self.store, core => core.corroborated_tick_at(&self.purposes(), at))
+    }
+
+    /// Read the corroborated tick at `at` under the caller's serving context.
+    pub fn corroborated_tick_at_with(
+        &self,
+        cx: &Cx,
+        at: CommitSeq,
+    ) -> Result<Option<fa_journal::Tick>, BookError> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&self.store, core => core.corroborated_tick_at(&purposes, at))
     }
 
     /// Journal the caller's clock observation under its context and
