@@ -120,7 +120,9 @@ pub mod upload;
 #[cfg(test)]
 mod period_history_tests;
 
-pub use close_run::{ReviewedCloseAction, ReviewedCloseTask};
+pub use close_run::{
+    CloseRunExecution, CloseRunStop, CloseRunTransition, ReviewedCloseAction, ReviewedCloseTask,
+};
 
 pub use aging::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,

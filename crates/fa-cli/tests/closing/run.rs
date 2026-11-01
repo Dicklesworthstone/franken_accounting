@@ -328,3 +328,201 @@ fn close_run_rejects_cyclic_graphs_and_changed_reviewed_draft_sources() {
     );
     assert_eq!(head(&f.book), before);
 }
+
+#[test]
+fn close_run_command_executes_ready_tasks_resumes_and_waits_for_native_period_review() {
+    let f = Fixture::new(false);
+    f.post("run-source", "1000", "4000", "100.00");
+    let first = reviewed_draft(&f, "run-first", "15.00");
+    let second = reviewed_draft(&f, "run-second", "5.00");
+    let definition = format!(
+        r#"[
+        {{"id":"z-first","certificate":"{first}"}},
+        {{"id":"a-second","depends_on":["z-first"],"certificate":"{second}"}},
+        {{"id":"finish","depends_on":["a-second"],"transition":"close"}}
+    ]"#
+    );
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "automatic",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &definition,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let before = head(&f.book);
+    assert_eq!(
+        run(
+            &f.book,
+            &["close", "run", "--run", "automatic", "--as", CONTROLLER]
+        )
+        .0,
+        7
+    );
+    assert_eq!(
+        head(&f.book),
+        before,
+        "explicit execution confirmation remains mandatory"
+    );
+    assert_ne!(
+        run(
+            &f.book,
+            &[
+                "close",
+                "run",
+                "--run",
+                "automatic",
+                "--task",
+                "z-first",
+                "--key",
+                "wrong-target",
+                "--reason",
+                "AuditComplete",
+                "--as",
+                CONTROLLER,
+                "--yes"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        head(&f.book),
+        before,
+        "a wrong transition target refuses before any task publishes"
+    );
+
+    let args = [
+        "close",
+        "run",
+        "--run",
+        "automatic",
+        "--as",
+        CONTROLLER,
+        "--yes",
+    ];
+    let progress = ok(&f.book, &args);
+    assert_eq!(text(&progress, "event"), "close_run_progress");
+    assert_eq!(text(&progress, "state"), "transition-required");
+    assert_eq!(text(&progress, "pending_task"), "finish");
+    let completed = get(&progress, "completed").as_arr().unwrap();
+    assert_eq!(completed.len(), 2);
+    assert_eq!(text(&completed[0], "task"), "z-first");
+    assert_eq!(text(&completed[1], "task"), "a-second");
+    assert_eq!(
+        head(&f.book),
+        before + 2,
+        "each effect and its receipt share one transaction"
+    );
+    let retried = ok(&f.book, &args);
+    assert!(get(&retried, "completed").as_arr().unwrap().is_empty());
+    assert_eq!(get(&retried, "run"), get(&progress, "run"));
+    assert_eq!(
+        head(&f.book),
+        before + 2,
+        "reopening cannot repeat completed effects"
+    );
+
+    let plan_path = f.dir.join("automatic-close.plan").display().to_string();
+    ok(
+        &f.book,
+        &[
+            "close",
+            "step",
+            "--run",
+            "automatic",
+            "--task",
+            "finish",
+            "--key",
+            "automatic-finish",
+            "--reason",
+            "AuditComplete",
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let execute = [
+        "close",
+        "run",
+        "--run",
+        "automatic",
+        "--task",
+        "finish",
+        "--plan",
+        &plan_path,
+        "--as",
+        CONTROLLER,
+        "--yes",
+    ];
+    let finished = ok(&f.book, &execute);
+    assert_eq!(text(&finished, "state"), "complete");
+    assert_eq!(get(get(&finished, "run"), "complete"), &Json::Bool(true));
+    assert_eq!(get(&finished, "completed").as_arr().unwrap().len(), 1);
+    let completed_head = head(&f.book);
+    let final_retry = ok(&f.book, &execute);
+    assert!(get(&final_retry, "completed").as_arr().unwrap().is_empty());
+    assert_eq!(get(&final_retry, "run"), get(&finished, "run"));
+    assert_eq!(head(&f.book), completed_head);
+}
+
+#[test]
+fn close_run_command_reports_durable_partial_progress_on_later_task_refusal() {
+    let f = Fixture::new(false);
+    let first = reviewed_draft(&f, "partial-first", "15.00");
+    let second = reviewed_draft(&f, "partial-second", "5.00");
+    let definition = format!(
+        r#"[
+        {{"id":"first","certificate":"{first}"}},
+        {{"id":"second","depends_on":["first"],"certificate":"{second}"}}
+    ]"#
+    );
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "partial",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &definition,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    append(&f, "partial-second", "unreviewed-extra", "1.00");
+    let before = head(&f.book);
+    let args = [
+        "close", "run", "--run", "partial", "--as", CONTROLLER, "--yes",
+    ];
+    let (code, refused) = run(&f.book, &args);
+    assert_ne!(code, 0, "a stopped close never reports whole-run success");
+    assert_eq!(text(&refused, "event"), "error");
+    let detail = get(&refused, "detail");
+    assert_eq!(text(detail, "state"), "refused");
+    assert_eq!(text(detail, "pending_task"), "second");
+    let completed = get(detail, "completed").as_arr().unwrap();
+    assert_eq!(completed.len(), 1);
+    assert_eq!(text(&completed[0], "task"), "first");
+    assert_eq!(head(&f.book), before + 1);
+    let durable = status(&f, "partial");
+    assert_ne!(get(task(&durable, "first"), "completion"), &Json::Null);
+    assert_eq!(get(task(&durable, "second"), "completion"), &Json::Null);
+    assert_ne!(run(&f.book, &args).0, 0);
+    assert_eq!(
+        head(&f.book),
+        before + 1,
+        "retry preserves exactly the first task's one effect"
+    );
+}
