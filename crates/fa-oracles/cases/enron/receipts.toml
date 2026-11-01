@@ -211,6 +211,166 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-DEBT-B-FY1997"
+anchor = "TABLE 1|DEBT RESTATED|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "8175c92628d096c0d775a9646a28b299f4aa4af460e152978ff931edbe08629b"
+values_sha256 = "8ce8f2805f0792e84744e1b0f074e603f42cde8cb04d2a65974def3e47a052c5"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-B-FY1998"
+anchor = "TABLE 1|DEBT RESTATED|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "7f2d3c31fe91961acc08e41171fa66b704956029899ec0fdaa00af1646503211"
+values_sha256 = "e22478f1277c111e2984507de5bafca2de538ae6289a9755318a304aff66c474"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-B-FY1999"
+anchor = "TABLE 1|DEBT RESTATED|1999"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "865a4dbdf096b6c9fc0d822d3f620166ad51a483aa29d5db1cbb2cc6c1d285e4"
+values_sha256 = "2980594e2aa9d93a725cfc9c3b981b5856a66decc67ab538c5d4d33eb4bc0247"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-B-FY2000"
+anchor = "TABLE 1|DEBT RESTATED|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "9effafe4cbcb355d7a83f92814f847123d22b0e48f8ee6ec7821d68a0f0a7560"
+values_sha256 = "7b10bb808d89aac5288dbf7fbeaf83e0acb597950a35df7f68066c1d07f90fee"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-D1-FY1997"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "2499d690642faa4da2a67b078236d1c031217f3c31cf2da2142c8e84e3d617f1"
+values_sha256 = "edeadaa5009c39b1e6fbb4b6b51b368efaaa4c1ce0cc5c139f6b27781357c3d8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-D1-FY1998"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "04edd1d7736883194af3ddb232c337e53d17bc93cfd2140c4f4c4e0d966798b1"
+values_sha256 = "cdf1aa99d20e7f0b0be257a5b6dc10f86a981e6f06ead0f351e5ef526c322cf9"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-D1-FY1999"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|1999"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "bb9b8ef813475d1e0ad84e2505af6656d16c990b1f77efaf9324e8fbcae2db67"
+values_sha256 = "38882e226b256fd2c89c97a0293bac7eb3d9af0a9c3771b5b00e342219ef66d2"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-DEBT-D1-FY2000"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "67c312330b0371a0a37c565cf44ef264835147fea61261bf57380f338efcd8c9"
+values_sha256 = "02658e38206aca57720057593babd9f6fa9810b1d0c7451ada49d8d0068ea779"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-B-FY1997"
+anchor = "TABLE 1|EQUITY RESTATED|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "21bae1a69dee49f198423d293e0784b66956825f413c473527f7c6c9162d47e2"
+values_sha256 = "5bef979aaae89dabb0781af8df2c99ace04d5e2d48c9d2fd5674296689013832"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-B-FY1998"
+anchor = "TABLE 1|EQUITY RESTATED|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "96452ffa64f431b05a924b181f123789c3cbfd6daaf48b130ccb971c8914b03e"
+values_sha256 = "0114b0baf513b68e34aa66680526951b08a2d6f3bf41199b633d6fc3b873dca8"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-EQ-B-FY1999"
 anchor = "TABLE 1|EQUITY RESTATED|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -218,6 +378,54 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
 quote_sha256 = "2e1b61769121bfe44ccbec9c9fbf6319da1df1e1ff600672c38d51919e25012a"
 values_sha256 = "1d230f44d9d641a0e32a99aff46b579d95274e11470c5faf4f3291cabda24f87"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-B-FY2000"
+anchor = "TABLE 1|EQUITY RESTATED|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "b005f8a14b055687e7e14eb919f4c8a59ccaa133192a2ff0e81217829d773caa"
+values_sha256 = "0e8f2a29f862e1f22ef7321b946278dd17bd3f3bc330f44a5f953d4a3a4fa75c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-D1-FY1997"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "24492dda30ec4007fb2cc46ad1928a205d006912c1d696487755d9297d1d2098"
+values_sha256 = "1d2f66f7b5040d5f072cc613fcc3daf7a11e8a9c020e95b4ec16a7e9d76daeda"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-D1-FY1998"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "1497e20402cd8509df352ead9ed53b25d993d7d67e566665caae53f69c6a971a"
+values_sha256 = "b12fc8cfd05ea2608272993942b35b3d28b812795c65180ed305af1ea871ac85"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -243,6 +451,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-EQ-D1-FY2000"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "4ae246b6f95ee30ae578a852e00a339ab905ed88b99034f8087e90cdf5690430"
+values_sha256 = "41713b6742c2c6b6b67a87e8d8f53780699bd6fb9df79df8bf635a4a996e03cf"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-EQ-D2-FY1999"
 anchor = "TABLE 1|Consolidation of LJM1 subsidiary#4|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -250,6 +474,54 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
 quote_sha256 = "63f0edf9781ad285e1e52bcfc45e97b5d621870443c6b6f3edb2b45d6d65d29d"
 values_sha256 = "9a6ac410f5f56dd855a5ae6a0f04e4977648a2c684f77abc61590943ccb67f5b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-D2-FY2000"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary#4|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "39fa9ec190eee7b6f4dff1100d6343e10918d044c75eac8f9e9a2596173f80c9"
+values_sha256 = "1220b8061d79b729c8a60f536f858589b3629bf5b68a7cc82ba05683542a354a"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-D4-FY1997"
+anchor = "TABLE 1|Prior year proposed audit#5|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "ff783979ec1d7ad116bdc393f59e267cd5255a55eef61702d88a4ebcdb341f27"
+values_sha256 = "4263b384c37a2cbde380a48a68fe7aa7b1f206979975c5d5d305292f87c3aebe"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-EQ-D4-FY1998"
+anchor = "TABLE 1|Prior year proposed audit#5|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "999ae75823ddb85015fe6dc2becee15fcd7f1d26ddb5a460eb45fc01036d1766"
+values_sha256 = "fd0bedbd4186f478c36f3bffbcaa04fe8692db74d9d737391a9bb13ffd01e6d1"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -275,6 +547,38 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-EQ-D4-FY2000"
+anchor = "TABLE 1|Prior year proposed audit#5|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "57d817951f2d47b4086acdcd25dc8ac5c0da7d98ea03cac9dcffcb92f0d3d3ec"
+values_sha256 = "ffd4524c51ad5b4368e5261922d54826b39da2f7c64b3dbef036e3536f73fbaa"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-NI-B-FY1998"
+anchor = "TABLE 1|NET INCOME RESTATED|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "e6fcc0253ed7a328a10eb6e2e1ad6abcad60c374c64dbac4b76da610085b43d8"
+values_sha256 = "5a7e16e9595fbcb55c0be48c139df7c5a4020dd6e27bf51767e79f4197fb194b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-NI-B-FY1999"
 anchor = "TABLE 1|NET INCOME RESTATED|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -282,6 +586,38 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
 quote_sha256 = "62e66f3e9936906923febd26f9d2536edf38936998c4e5d678b925d848aaa89d"
 values_sha256 = "c5bcdbecc3835b0cfae9a21bcc6e20f5587bba1f7e5a1bfd728b331f31319895"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-NI-B-FY2000"
+anchor = "TABLE 1|NET INCOME RESTATED|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "19e68d9fe08f7c4ac18948bf437400f955359b1cf21a86544342427695c3c938"
+values_sha256 = "56b3dec360b0012b1a145f244aeab55fcda6f6b499ffc0a78638a7b7ebc100c7"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-NI-D1-FY1998"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "b73a60c55ba78f776b2f55ab9b50867400f6e8a8d549a1027d36975221dca127"
+values_sha256 = "15caf39563169fcc1b8f41755b3357a9752992e05b24d69a8c38dcef56e667c0"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -307,6 +643,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-NI-D1-FY2000"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "a9d6c94d88dcde046901195afb58f6ef4875d7032c360e77441ff1387d4ff6c4"
+values_sha256 = "18535e5112172179284224ac40f73e10b24cf3c5fb14f078bb77d11eb6f9f338"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-NI-D2-FY1999"
 anchor = "TABLE 1|Consolidation of LJM1 subsidiary|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -323,6 +675,38 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-NI-D2-FY2000"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "241ce7ecc46a448f085356fe5edce69396734f4e2c265a52b84dedcccbf01acf"
+values_sha256 = "4a541372d99d9ce85c54248210d1147710f1bf74e2ae2327c97e904be6901c0b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-NI-D4-FY1998"
+anchor = "TABLE 1|Prior year proposed audit|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "8d8feaf7780d6b65f43b3305ab71142e0bd5c8f36701fbe8db1f98f9599f14c9"
+values_sha256 = "0f2319f833a3f81eabfd0446846f61a4e35320da24f64aba1474a08bb1adfeb3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-NI-D4-FY1999"
 anchor = "TABLE 1|Prior year proposed audit|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -330,6 +714,22 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
 quote_sha256 = "0e77e68ba5473d98840c3212f4a8cb801226494f1162c8001a9f4ed7b00cbaa8"
 values_sha256 = "01856084afd7a03e3962638c15876b40305027615589afd367ad84f5128f61c3"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-NI-D4-FY2000"
+anchor = "TABLE 1|Prior year proposed audit|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "752ba8a2979112d8e507706be744746cb9196a14c39c32cf4c14d28801b24c28"
+values_sha256 = "42acad701b0d2d68593aafcaec239aa057b25dc8c3fc14145ac632400253bcc7"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -435,6 +835,38 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-TA-B-FY1997"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "cae495dbc183285a7b7f691f37c86fefb18d4c93e4f0fb1ed418831c1c6da8ea"
+values_sha256 = "80a5fdf394a789316db1f2f962c1c48c792c649bbb857be5496970aa9cdebc64"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-TA-B-FY1998"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "9a047bd7c6b1e2a1592dec4a4ea3c08325263e3783ae2c83315c2a489ea06416"
+values_sha256 = "16c70c09bc52de8228b09e190331eecf0750a9a01c72e23950ae15a4135d92a0"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-TA-B-FY1999"
 anchor = "TABLE 1|TOTAL ASSETS RESTATED|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -442,6 +874,54 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
 quote_sha256 = "0307daccc70ab3bcc9e2275c98b031d7f686f9bd29c94ce44051d505665e511f"
 values_sha256 = "1965f9acaf3c77ffd15e373bfc84978efbca3914c227bdf510e8e0470a778064"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-TA-B-FY2000"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "839fb3d31aefaf29242663a1689aa1cfc74cfbdec4d2e9c77949b72ac2ddae55"
+values_sha256 = "e67439e8570cbdae71dbf9e1bad1e474fe2cf6e2215ab4bdd7228dc164275789"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-TA-D1-FY1997"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "c498f3fe97c0df55ee8dea01a72572059b93f42d235a5e439e9c9a1654d6d4e1"
+values_sha256 = "67095c3ab9c778921a5e8893a775b31f515204320bc0e34cd919412724268cfd"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-TA-D1-FY1998"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "a512db2741cd20693e4b16f19891e72b9ff12cead72761fc5e92d2aaf34740c1"
+values_sha256 = "0f797418993d73aea33594ad677980d5d9e817d13b0388e08da96606b8233ed4"
 alignment = "value"
 quote_found_once = true
 aligned = true
@@ -467,6 +947,22 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-TA-D1-FY2000"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "de008e83a9fe450b73b8239015c79a8494cfd14ae112f35722e47144ac2fc6c0"
+values_sha256 = "e8831a05648e80af476ba0ab168b9f418909aab0526fc68208ec53aca1c499fe"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-TA-D2-FY1999"
 anchor = "TABLE 1|Consolidation of LJM1 subsidiary#3|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -483,6 +979,38 @@ original_hash_compared = false
 
 [[receipt]]
 source = "SRC-ENR-002"
+fact = "8K-TA-D4-FY1997"
+anchor = "TABLE 1|Prior year proposed audit#3|1997"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "3de682a82a346edd98962e5bb7602e0cb88feba2579bbe71bf6898bd76833f68"
+values_sha256 = "7a1460ccaae3a20a3ed8388677f55583af2d13a37980d5e44a726434ad917541"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-TA-D4-FY1998"
+anchor = "TABLE 1|Prior year proposed audit#3|1998"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "253f265d6923d56d34308b0ae3f22a80317e880d6c17969102403bd33fcccf29"
+values_sha256 = "2967db26f93d002c857993076a2aa5c46612a7b2d91cd405c6b4192074f9e9b6"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
 fact = "8K-TA-D4-FY1999"
 anchor = "TABLE 1|Prior year proposed audit#3|1999"
 verified_utc = "2026-10-30T10:39:17Z"
@@ -490,6 +1018,22 @@ tool_version = "case-fetch-v3"
 extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
 quote_sha256 = "6bebe5d371d3dd7922204adc6974ad4f068b5015df3962e09e0d111dd7c22423"
 values_sha256 = "722063de3b955375149f8b4fe58a4bf2cc422ac68e4bea47880fa9fd80f86b96"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-ENR-002"
+fact = "8K-TA-D4-FY2000"
+anchor = "TABLE 1|Prior year proposed audit#3|2000"
+verified_utc = "2026-10-30T10:39:17Z"
+tool_version = "case-fetch-v3"
+extraction_sha256 = "34a78fc0bb696d12bdf6827b7cb3f5269c681eca5d69deca2775edd67804ade4"
+quote_sha256 = "83e55b8fee3a13a3ba37cb87a8290d1130fe338b20f5b817688a9e05503a9223"
+values_sha256 = "2ae2f658d502e9cb090884147e863e0cb35f67af250417e842b73e112d8462d7"
 alignment = "value"
 quote_found_once = true
 aligned = true

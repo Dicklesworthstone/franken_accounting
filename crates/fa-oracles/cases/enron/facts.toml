@@ -17,8 +17,11 @@
 # adjustments) and restated figures (B) the 8-K's Table 1 (`8K-*`) and the 10-Q's Note 3 (`N3-*`)
 # print for FY1999. Cell keys follow the bead: `<line>@<date or FY>` for A and B, and
 # `<line>.<adjustment>@<date or FY>` for D. A column that prints no amount (the Raptor adjustment,
-# a dash for FY1999) adds nothing to a bridge and has no fact. ENR-BRIDGE-FY1999 records the bridge
-# books' encoding.
+# a dash for FY1999) adds nothing to a bridge and has no fact. ENR-BRIDGE-8K and ENR-BRIDGE-10Q record
+# the bridge books' encoding. The 8-K's Table 1 also prints FY1997, FY1998 and FY2000 and its debt
+# line: the 8-K's facts cover every cell E-T-04 bridges (FY1997-FY2000, the 10-Q's E-T-01 shape),
+# with `8K-<line>-D-FY<y>` the sum of a stock line's adjustments and `8K-<line>-D-CHG-FY<y>` its
+# change from the year before.
 
 [[fact]]
 id = "ASSUR-ENR-002"
@@ -1970,12 +1973,505 @@ granularity = "statement_line"
 cell = "equity@1999-12-31"
 
 [[fact]]
-id = "ENR-BRIDGE-FY1999"
+id = "8K-NI-D1-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco|1998"
+quote_sha256 = "b73a60c55ba78f776b2f55ab9b50867400f6e8a8d549a1027d36975221dca127"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_jedi_and_chewco@FY1998"
+
+[[fact]]
+id = "8K-NI-D4-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit|1998"
+quote_sha256 = "8d8feaf7780d6b65f43b3305ab71142e0bd5c8f36701fbe8db1f98f9599f14c9"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "net_income.prior_year_proposed_audit_adjustments_and_reclassifications@FY1998"
+
+[[fact]]
+id = "8K-NI-D1-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco|2000"
+quote_sha256 = "a9d6c94d88dcde046901195afb58f6ef4875d7032c360e77441ff1387d4ff6c4"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_jedi_and_chewco@FY2000"
+
+[[fact]]
+id = "8K-NI-D2-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary|2000"
+quote_sha256 = "241ce7ecc46a448f085356fe5edce69396734f4e2c265a52b84dedcccbf01acf"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "net_income.consolidation_of_ljm1_subsidiary@FY2000"
+
+[[fact]]
+id = "8K-NI-D4-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit|2000"
+quote_sha256 = "752ba8a2979112d8e507706be744746cb9196a14c39c32cf4c14d28801b24c28"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "net_income.prior_year_proposed_audit_adjustments_and_reclassifications@FY2000"
+
+[[fact]]
+id = "8K-TA-D1-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|1997"
+quote_sha256 = "c498f3fe97c0df55ee8dea01a72572059b93f42d235a5e439e9c9a1654d6d4e1"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_jedi_and_chewco@1997-12-31"
+
+[[fact]]
+id = "8K-TA-D4-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#3|1997"
+quote_sha256 = "3de682a82a346edd98962e5bb7602e0cb88feba2579bbe71bf6898bd76833f68"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "total_assets.prior_year_proposed_audit_adjustments_and_reclassifications@1997-12-31"
+
+[[fact]]
+id = "8K-TA-D1-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|1998"
+quote_sha256 = "a512db2741cd20693e4b16f19891e72b9ff12cead72761fc5e92d2aaf34740c1"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_jedi_and_chewco@1998-12-31"
+
+[[fact]]
+id = "8K-TA-D4-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#3|1998"
+quote_sha256 = "253f265d6923d56d34308b0ae3f22a80317e880d6c17969102403bd33fcccf29"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "total_assets.prior_year_proposed_audit_adjustments_and_reclassifications@1998-12-31"
+
+[[fact]]
+id = "8K-TA-D1-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#3|2000"
+quote_sha256 = "de008e83a9fe450b73b8239015c79a8494cfd14ae112f35722e47144ac2fc6c0"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets.consolidation_of_jedi_and_chewco@2000-12-31"
+
+[[fact]]
+id = "8K-TA-D4-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#3|2000"
+quote_sha256 = "83e55b8fee3a13a3ba37cb87a8290d1130fe338b20f5b817688a9e05503a9223"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets.prior_year_proposed_audit_adjustments_and_reclassifications@2000-12-31"
+
+[[fact]]
+id = "8K-DEBT-D1-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|1997"
+quote_sha256 = "2499d690642faa4da2a67b078236d1c031217f3c31cf2da2142c8e84e3d617f1"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "debt.consolidation_of_jedi_and_chewco@1997-12-31"
+
+[[fact]]
+id = "8K-DEBT-D1-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|1998"
+quote_sha256 = "04edd1d7736883194af3ddb232c337e53d17bc93cfd2140c4f4c4e0d966798b1"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "debt.consolidation_of_jedi_and_chewco@1998-12-31"
+
+[[fact]]
+id = "8K-DEBT-D1-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|1999"
+quote_sha256 = "bb9b8ef813475d1e0ad84e2505af6656d16c990b1f77efaf9324e8fbcae2db67"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "debt.consolidation_of_jedi_and_chewco@1999-12-31"
+
+[[fact]]
+id = "8K-DEBT-D1-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#4|2000"
+quote_sha256 = "67c312330b0371a0a37c565cf44ef264835147fea61261bf57380f338efcd8c9"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "debt.consolidation_of_jedi_and_chewco@2000-12-31"
+
+[[fact]]
+id = "8K-EQ-D1-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|1997"
+quote_sha256 = "24492dda30ec4007fb2cc46ad1928a205d006912c1d696487755d9297d1d2098"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "equity.consolidation_of_jedi_and_chewco@1997-12-31"
+
+[[fact]]
+id = "8K-EQ-D4-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#5|1997"
+quote_sha256 = "ff783979ec1d7ad116bdc393f59e267cd5255a55eef61702d88a4ebcdb341f27"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "equity.prior_year_proposed_audit_adjustments_and_reclassifications@1997-12-31"
+
+[[fact]]
+id = "8K-EQ-D1-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|1998"
+quote_sha256 = "1497e20402cd8509df352ead9ed53b25d993d7d67e566665caae53f69c6a971a"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "equity.consolidation_of_jedi_and_chewco@1998-12-31"
+
+[[fact]]
+id = "8K-EQ-D4-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#5|1998"
+quote_sha256 = "999ae75823ddb85015fe6dc2becee15fcd7f1d26ddb5a460eb45fc01036d1766"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "equity.prior_year_proposed_audit_adjustments_and_reclassifications@1998-12-31"
+
+[[fact]]
+id = "8K-EQ-D1-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of JEDI and Chewco#5|2000"
+quote_sha256 = "4ae246b6f95ee30ae578a852e00a339ab905ed88b99034f8087e90cdf5690430"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity.consolidation_of_jedi_and_chewco@2000-12-31"
+
+[[fact]]
+id = "8K-EQ-D2-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Consolidation of LJM1 subsidiary#4|2000"
+quote_sha256 = "39fa9ec190eee7b6f4dff1100d6343e10918d044c75eac8f9e9a2596173f80c9"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity.consolidation_of_ljm1_subsidiary@2000-12-31"
+
+[[fact]]
+id = "8K-EQ-D4-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|Prior year proposed audit#5|2000"
+quote_sha256 = "57d817951f2d47b4086acdcd25dc8ac5c0da7d98ea03cac9dcffcb92f0d3d3ec"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity.prior_year_proposed_audit_adjustments_and_reclassifications@2000-12-31"
+
+[[fact]]
+id = "8K-NI-B-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|NET INCOME RESTATED|1998"
+quote_sha256 = "e6fcc0253ed7a328a10eb6e2e1ad6abcad60c374c64dbac4b76da610085b43d8"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "net_income@FY1998"
+
+[[fact]]
+id = "8K-NI-B-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|NET INCOME RESTATED|2000"
+quote_sha256 = "19e68d9fe08f7c4ac18948bf437400f955359b1cf21a86544342427695c3c938"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "net_income@FY2000"
+
+[[fact]]
+id = "8K-TA-B-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|1997"
+quote_sha256 = "cae495dbc183285a7b7f691f37c86fefb18d4c93e4f0fb1ed418831c1c6da8ea"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "total_assets@1997-12-31"
+
+[[fact]]
+id = "8K-TA-B-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|1998"
+quote_sha256 = "9a047bd7c6b1e2a1592dec4a4ea3c08325263e3783ae2c83315c2a489ea06416"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "total_assets@1998-12-31"
+
+[[fact]]
+id = "8K-TA-B-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|TOTAL ASSETS RESTATED|2000"
+quote_sha256 = "839fb3d31aefaf29242663a1689aa1cfc74cfbdec4d2e9c77949b72ac2ddae55"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets@2000-12-31"
+
+[[fact]]
+id = "8K-DEBT-B-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|DEBT RESTATED|1997"
+quote_sha256 = "8175c92628d096c0d775a9646a28b299f4aa4af460e152978ff931edbe08629b"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "debt@1997-12-31"
+
+[[fact]]
+id = "8K-DEBT-B-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|DEBT RESTATED|1998"
+quote_sha256 = "7f2d3c31fe91961acc08e41171fa66b704956029899ec0fdaa00af1646503211"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "debt@1998-12-31"
+
+[[fact]]
+id = "8K-DEBT-B-FY1999"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|DEBT RESTATED|1999"
+quote_sha256 = "865a4dbdf096b6c9fc0d822d3f620166ad51a483aa29d5db1cbb2cc6c1d285e4"
+about_scope = "period:FY1999"
+granularity = "statement_line"
+cell = "debt@1999-12-31"
+
+[[fact]]
+id = "8K-DEBT-B-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|DEBT RESTATED|2000"
+quote_sha256 = "9effafe4cbcb355d7a83f92814f847123d22b0e48f8ee6ec7821d68a0f0a7560"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "debt@2000-12-31"
+
+[[fact]]
+id = "8K-EQ-B-FY1997"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|EQUITY RESTATED|1997"
+quote_sha256 = "21bae1a69dee49f198423d293e0784b66956825f413c473527f7c6c9162d47e2"
+about_scope = "period:FY1997"
+granularity = "statement_line"
+cell = "equity@1997-12-31"
+
+[[fact]]
+id = "8K-EQ-B-FY1998"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|EQUITY RESTATED|1998"
+quote_sha256 = "96452ffa64f431b05a924b181f123789c3cbfd6daaf48b130ccb971c8914b03e"
+about_scope = "period:FY1998"
+granularity = "statement_line"
+cell = "equity@1998-12-31"
+
+[[fact]]
+id = "8K-EQ-B-FY2000"
+provenance = "sourced"
+source = "SRC-ENR-002"
+anchor_kind = "table_cell"
+anchor = "TABLE 1|EQUITY RESTATED|2000"
+quote_sha256 = "b005f8a14b055687e7e14eb919f4c8a59ccaa133192a2ff0e81217829d773caa"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "equity@2000-12-31"
+
+[[fact]]
+id = "8K-TA-D-FY1997"
+provenance = "derived"
+from = ["8K-TA-D1-FY1997", "8K-TA-D4-FY1997"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-TA-D-FY1998"
+provenance = "derived"
+from = ["8K-TA-D1-FY1998", "8K-TA-D4-FY1998"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-TA-D-FY1999"
+provenance = "derived"
+from = ["8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-TA-D-FY2000"
+provenance = "derived"
+from = ["8K-TA-D1-FY2000", "8K-RAPTOR-TA-FY2000", "8K-TA-D4-FY2000"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-FY1997"
+provenance = "derived"
+from = ["8K-EQ-D1-FY1997", "8K-EQ-D4-FY1997"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-FY1998"
+provenance = "derived"
+from = ["8K-EQ-D1-FY1998", "8K-EQ-D4-FY1998"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-FY1999"
+provenance = "derived"
+from = ["8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-FY2000"
+provenance = "derived"
+from = ["8K-EQ-D1-FY2000", "8K-EQ-D2-FY2000", "8K-RAPTOR-EQ-FY2000", "8K-EQ-D4-FY2000"]
+rule = "sum"
+params = []
+
+[[fact]]
+id = "8K-TA-D-CHG-FY1998"
+provenance = "derived"
+from = ["8K-TA-D-FY1998", "8K-TA-D-FY1997"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-TA-D-CHG-FY1999"
+provenance = "derived"
+from = ["8K-TA-D-FY1999", "8K-TA-D-FY1998"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-TA-D-CHG-FY2000"
+provenance = "derived"
+from = ["8K-TA-D-FY2000", "8K-TA-D-FY1999"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-DEBT-D-CHG-FY1998"
+provenance = "derived"
+from = ["8K-DEBT-D1-FY1998", "8K-DEBT-D1-FY1997"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-DEBT-D-CHG-FY1999"
+provenance = "derived"
+from = ["8K-DEBT-D1-FY1999", "8K-DEBT-D1-FY1998"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-DEBT-D-CHG-FY2000"
+provenance = "derived"
+from = ["8K-DEBT-D1-FY2000", "8K-DEBT-D1-FY1999"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-CHG-FY1998"
+provenance = "derived"
+from = ["8K-EQ-D-FY1998", "8K-EQ-D-FY1997"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-CHG-FY1999"
+provenance = "derived"
+from = ["8K-EQ-D-FY1999", "8K-EQ-D-FY1998"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "8K-EQ-D-CHG-FY2000"
+provenance = "derived"
+from = ["8K-EQ-D-FY2000", "8K-EQ-D-FY1999"]
+rule = "difference"
+params = []
+
+[[fact]]
+id = "ENR-BRIDGE-8K"
 provenance = "interpretation"
-from = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999"]
+from = ["10K-TA-A-FY1997", "10K-DEBT-A-FY1997", "10K-EQ-A-FY1997", "10K-NI-A-FY1998"]
 reader = "case-author-1"
 second_reader = "case-second-reader"
-rationale = "A FY1999 bridge book holds three of the figures the restatements bridge, each on its own account: total assets on an asset account, equity on an equity account, and net income on a revenue account. Debt is not bridged here. A book needs balanced entries, so total assets and equity each post against one liability account that holds what the two leave (total assets less equity), and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. Each adjustment posts against the same balancing account as the figure it adjusts."
+rationale = "The 8-K bridge book holds four of the figures its Table 1 bridges, each on its own account: total assets on an asset account, debt on a liability account, equity on an equity account, and net income on a revenue account. A book needs balanced entries, so total assets, debt and equity each post against one liability account that holds what they leave, and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. A stock figure posts in its first year, FY1997, and in each later year as its change from the year before, so the certified balance at each year-end is the printed figure; a stock line's adjustments post per printed column in FY1997, and in each later year as the change in the line's total adjustment, the sum of its printed columns. Net income is a flow: each year's figure and each of its adjustments post in that year. Each adjustment posts against the same balancing account as the figure it adjusts."
 
 [[value]]
 fact = "10K-NI-A-FY1999"
@@ -2124,6 +2620,516 @@ literal = "8,736"
 rule = "scale"
 param = 6
 value = "873600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D1-FY1998"
+ordinal = 1
+literal = "(107)"
+rule = "scale"
+param = 6
+value = "-10700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D4-FY1998"
+ordinal = 1
+literal = "(6)"
+rule = "scale"
+param = 6
+value = "-600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D1-FY2000"
+ordinal = 1
+literal = "(91)"
+rule = "scale"
+param = 6
+value = "-9100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D2-FY2000"
+ordinal = 1
+literal = "(8)"
+rule = "scale"
+param = 6
+value = "-800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-D4-FY2000"
+ordinal = 1
+literal = "(33)"
+rule = "scale"
+param = 6
+value = "-3300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D1-FY1997"
+ordinal = 1
+literal = "447"
+rule = "scale"
+param = 6
+value = "44700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D4-FY1997"
+ordinal = 1
+literal = "(79)"
+rule = "scale"
+param = 6
+value = "-7900000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D1-FY1998"
+ordinal = 1
+literal = "160"
+rule = "scale"
+param = 6
+value = "16000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D4-FY1998"
+ordinal = 1
+literal = "(87)"
+rule = "scale"
+param = 6
+value = "-8700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D1-FY2000"
+ordinal = 1
+literal = "(192)"
+rule = "scale"
+param = 6
+value = "-19200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D4-FY2000"
+ordinal = 1
+literal = "(364)"
+rule = "scale"
+param = 6
+value = "-36400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D1-FY1997"
+ordinal = 1
+literal = "711"
+rule = "scale"
+param = 6
+value = "71100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D1-FY1998"
+ordinal = 1
+literal = "561"
+rule = "scale"
+param = 6
+value = "56100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D1-FY1999"
+ordinal = 1
+literal = "685"
+rule = "scale"
+param = 6
+value = "68500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D1-FY2000"
+ordinal = 1
+literal = "628"
+rule = "scale"
+param = 6
+value = "62800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D1-FY1997"
+ordinal = 1
+literal = "(262)"
+rule = "scale"
+param = 6
+value = "-26200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D4-FY1997"
+ordinal = 1
+literal = "(51)"
+rule = "scale"
+param = 6
+value = "-5100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D1-FY1998"
+ordinal = 1
+literal = "(391)"
+rule = "scale"
+param = 6
+value = "-39100000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D4-FY1998"
+ordinal = 1
+literal = "(57)"
+rule = "scale"
+param = 6
+value = "-5700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D1-FY2000"
+ordinal = 1
+literal = "(810)"
+rule = "scale"
+param = 6
+value = "-81000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D2-FY2000"
+ordinal = 1
+literal = "60"
+rule = "scale"
+param = 6
+value = "6000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D4-FY2000"
+ordinal = 1
+literal = "(242)"
+rule = "scale"
+param = 6
+value = "-24200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-B-FY1998"
+ordinal = 1
+literal = "590"
+rule = "scale"
+param = 6
+value = "59000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-NI-B-FY2000"
+ordinal = 1
+literal = "847"
+rule = "scale"
+param = 6
+value = "84700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-B-FY1997"
+ordinal = 1
+literal = "22,920"
+rule = "scale"
+param = 6
+value = "2292000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-B-FY1998"
+ordinal = 1
+literal = "29,423"
+rule = "scale"
+param = 6
+value = "2942300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-B-FY2000"
+ordinal = 1
+literal = "64,775"
+rule = "scale"
+param = 6
+value = "6477500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-B-FY1997"
+ordinal = 1
+literal = "6,965"
+rule = "scale"
+param = 6
+value = "696500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-B-FY1998"
+ordinal = 1
+literal = "7,918"
+rule = "scale"
+param = 6
+value = "791800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-B-FY1999"
+ordinal = 1
+literal = "8,837"
+rule = "scale"
+param = 6
+value = "883700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-B-FY2000"
+ordinal = 1
+literal = "10,857"
+rule = "scale"
+param = 6
+value = "1085700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-B-FY1997"
+ordinal = 1
+literal = "5,305"
+rule = "scale"
+param = 6
+value = "530500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-B-FY1998"
+ordinal = 1
+literal = "6,600"
+rule = "scale"
+param = 6
+value = "660000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-B-FY2000"
+ordinal = 1
+literal = "10,306"
+rule = "scale"
+param = 6
+value = "1030600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-FY1997"
+ordinal = 1
+literal = "36800000000"
+rule = "scale"
+param = 0
+value = "36800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-FY1998"
+ordinal = 1
+literal = "7300000000"
+rule = "scale"
+param = 0
+value = "7300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-FY1999"
+ordinal = 1
+literal = "-18200000000"
+rule = "scale"
+param = 0
+value = "-18200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-FY2000"
+ordinal = 1
+literal = "-72800000000"
+rule = "scale"
+param = 0
+value = "-72800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-FY1997"
+ordinal = 1
+literal = "-31300000000"
+rule = "scale"
+param = 0
+value = "-31300000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-FY1998"
+ordinal = 1
+literal = "-44800000000"
+rule = "scale"
+param = 0
+value = "-44800000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-FY1999"
+ordinal = 1
+literal = "-83400000000"
+rule = "scale"
+param = 0
+value = "-83400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-FY2000"
+ordinal = 1
+literal = "-116400000000"
+rule = "scale"
+param = 0
+value = "-116400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-CHG-FY1998"
+ordinal = 1
+literal = "-29500000000"
+rule = "scale"
+param = 0
+value = "-29500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-CHG-FY1999"
+ordinal = 1
+literal = "-25500000000"
+rule = "scale"
+param = 0
+value = "-25500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-TA-D-CHG-FY2000"
+ordinal = 1
+literal = "-54600000000"
+rule = "scale"
+param = 0
+value = "-54600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D-CHG-FY1998"
+ordinal = 1
+literal = "-15000000000"
+rule = "scale"
+param = 0
+value = "-15000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D-CHG-FY1999"
+ordinal = 1
+literal = "12400000000"
+rule = "scale"
+param = 0
+value = "12400000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-DEBT-D-CHG-FY2000"
+ordinal = 1
+literal = "-5700000000"
+rule = "scale"
+param = 0
+value = "-5700000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-CHG-FY1998"
+ordinal = 1
+literal = "-13500000000"
+rule = "scale"
+param = 0
+value = "-13500000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-CHG-FY1999"
+ordinal = 1
+literal = "-38600000000"
+rule = "scale"
+param = 0
+value = "-38600000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "8K-EQ-D-CHG-FY2000"
+ordinal = 1
+literal = "-33000000000"
+rule = "scale"
+param = 0
+value = "-33000000000"
 unit = "USD"
 precision = 6
 
