@@ -1435,3 +1435,35 @@ requires the caller's other forwarded input to survive. This is a gate
 self-test, not native accounting evidence. The original compiler-error,
 transport-refusal, stale-note and missing-note controls remain required;
 their rejection and the new positive must execute before qualification.
+
+## 2026-11-01 — Cross-target witness drift isolated to declared model inputs
+
+The original c6b229386 and fresh a68f7f007 cross-target target both fail
+the trial-balance certificate pin (1 passed, 1 failed, exit 101). Arithmetic,
+fold and report bytes retain their pins; certificate and bundle digests move.
+No aarch64 run is available.
+
+Two initial counterfactuals are invalid, not evidence for re-pinning:
+current source minus the new classes fails SoD registry validation, and the
+old pinned source plus current classes/symbols fails the missing CloseControl
+evidence-minimum check. Both failures and unchanged predicates are retained.
+Adding that exact new minimum produces a valid control (0d3ba4667), but its
+certificates still differ from current and its bundle retains the old pin.
+Thus changing the TOML registries alone does not establish the cause.
+
+The decisive counterfactual f698f1739 starts at the unchanged old pin source
+f6e9ffbd6 and adds only the declared class/control-kind rows, their required
+CloseControl evidence minimum, and CloseTask=62/DEPENDS_ON=38 in the registry
+and compiled SymbolTable. Its Rust change is exactly those two symbol rows;
+the compatibility checker, original evidence minima, SoD policy, accounting
+fixture and every assertion remain unchanged. On the same hz2 worker it
+reproduces all eight current a68 digests exactly. Compiled symbols enter the
+genesis commitment; they cannot be replaced by editing an unconsumed TOML
+file on old code. The original failed controls remain available and are
+never merged as product code.
+
+Only the three certificate pins and bundle pin are requalified. The previous
+pins remain in the test, all arithmetic/fold/report pins and the planted
+target-dependent encoding negative remain unchanged, and full-tree plus
+aarch64 qualification are separate requirements. This is maintenance of a
+bounded witness after an attributed model addition, not a performance win.

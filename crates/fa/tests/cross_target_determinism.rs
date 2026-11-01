@@ -724,6 +724,19 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // cf2727ad7174d97f6f4f2ea9de10d2281297b555a1065810ce4c9fde14c7839b
     // 0ad296674b33c56ee993dc03cd380fd82b089919c07641eb7b9d63bbc0290969
     // d2d4b608ae07aff1d772c748c034cf7d62d84f0beafa3cd4198edc8c4dd55e43
+    // Requalified 2026-11-01 (fa-0hs4.2): a68f7f007 and counterfactual
+    // f698f1739 produce identical eight digests on x86_64. The latter is
+    // f6e9ffbd6 plus only principal_key/CloseControl registry inputs, the
+    // required CloseControl evidence minimum, and CloseTask=62/DEPENDS_ON=38
+    // in both the registry and compiled SymbolTable. No other code, policy,
+    // compatibility checker or fixture changes. Registry-only input changes
+    // do not reproduce the new genesis/bundle: compiled symbols matter too.
+    // Fold and report-byte pins and the planted encoding negative stay intact;
+    // aarch64 qualification remains unrun. Prior tb/bs/is/bundle pins:
+    // 93b2f39a283086998bed28dc301bb7dbcdd10be664bd4743197f799377a912b7
+    // ceaae71727d546c94cfbf40268564ed8d45a28acb96cd7f2ff15cb1232945dc8
+    // d2cc69830a2dd653cfe12771324e19b151b5b31adf1d1e5beaa948b9f8fbf5ce
+    // f7e4d40e906d4627ef01e5ab929bb6aed740bb6d98b14129800e4bd0b7846f6c
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -750,7 +763,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "93b2f39a283086998bed28dc301bb7dbcdd10be664bd4743197f799377a912b7",
+        "5db0d090b7263c9f8e5aa3e15aeaed97a4e662718133f68743fec09500e82389",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -762,7 +775,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "ceaae71727d546c94cfbf40268564ed8d45a28acb96cd7f2ff15cb1232945dc8",
+        "f58eada5afeca2eefe1cafa6cba9df21f2af8a96841761079a09bd77e8ccb281",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -774,13 +787,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "d2cc69830a2dd653cfe12771324e19b151b5b31adf1d1e5beaa948b9f8fbf5ce",
+        "4a13915ecab963049454f53b4db40f6f357434efd1eb0f44e7fa022fa2840c49",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "f7e4d40e906d4627ef01e5ab929bb6aed740bb6d98b14129800e4bd0b7846f6c",
+        "1054c7ea9c960e89ff948efbb5acdb309e4e2433cc8a40fae5c92b6523c7bc1e",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );
