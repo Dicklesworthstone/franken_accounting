@@ -8,9 +8,9 @@
 #
 # E-T-04 and E-T-01 are the restatement bridges (§7.2): A, the FY2000 10-K's as-filed figure, plus
 # each restating vintage's adjustments, equals that vintage's restated figure, on one book per
-# vintage (case.toml's decision E4-bridge-books). The 8-K's (E-T-04: FY1999 net income, total assets
-# and equity) is superseded by the 10-Q eleven days later (same cells, other values), so it reads
-# the 8-K's issuance. The 10-Q's (E-T-01) is the latest vintage: net income FY1998-FY2000 (the
+# vintage (case.toml's decision E4-bridge-books). The 8-K's (E-T-04) bridges the same cells as the
+# 10-Q's and is superseded by it eleven days later (same cells, other values), so it reads each
+# year as reported in the 8-K's issuance. The 10-Q's (E-T-01) is the latest vintage: net income FY1998-FY2000 (the
 # FY2000 10-K prints no FY1997 net income, only income before cumulative effect) and total assets,
 # debt and equity FY1997-FY2000. A later year's stock folds every year through it, so only FY1997's
 # stocks and each year's net income are kernel-attested (§5.3). E-R-02 and E-R-01 read each book as
@@ -98,11 +98,81 @@ published = "BS10Q-TOTAL-LE"
 [[expectation]]
 id = "E-T-04"
 type = "T"
-book_variant = "statement-bridge-8k-fy1999"
+book_variant = "statement-bridge-8k"
 statement_template = "T.bridge"
-basis = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999", "8K-NI-D1-FY1999", "8K-NI-D2-FY1999", "8K-NI-D4-FY1999", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999"]
+basis = ["10K-TA-A-FY1997", "8K-TA-D1-FY1997", "8K-TA-D4-FY1997", "10K-DEBT-A-FY1997", "8K-DEBT-D1-FY1997", "10K-EQ-A-FY1997", "8K-EQ-D1-FY1997", "8K-EQ-D4-FY1997", "10K-NI-A-FY1998", "8K-NI-D1-FY1998", "8K-NI-D4-FY1998", "10K-TA-A-FY1998", "8K-TA-D1-FY1998", "8K-TA-D4-FY1998", "10K-DEBT-A-FY1998", "8K-DEBT-D1-FY1998", "10K-EQ-A-FY1998", "8K-EQ-D1-FY1998", "8K-EQ-D4-FY1998", "10K-NI-A-FY1999", "8K-NI-D1-FY1999", "8K-NI-D2-FY1999", "8K-NI-D4-FY1999", "10K-TA-A-FY1999", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999", "10K-DEBT-A-FY1999", "8K-DEBT-D1-FY1999", "10K-EQ-A-FY1999", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999", "10K-NI-A-FY2000", "8K-NI-D1-FY2000", "8K-NI-D2-FY2000", "8K-NI-D4-FY2000", "BS10K-TOTAL-ASSETS", "8K-TA-D1-FY2000", "8K-RAPTOR-TA-FY2000", "8K-TA-D4-FY2000", "10K-DEBT-A-FY2000", "8K-DEBT-D1-FY2000", "BS10K-TOTAL-EQUITY", "8K-EQ-D1-FY2000", "8K-EQ-D2-FY2000", "8K-RAPTOR-EQ-FY2000", "8K-EQ-D4-FY2000"]
 kind = "bridge"
 vintages = ["A:SRC-ENR-008", "D:SRC-ENR-002", "B:SRC-ENR-002"]
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-TA-B-FY1997"
+basis = ["10K-TA-A-FY1997", "8K-TA-D1-FY1997", "8K-TA-D4-FY1997"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1997"
+read_selector = "reported_in:FY1997#2"
+published = "8K-TA-B-FY1997"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-DEBT-B-FY1997"
+basis = ["10K-DEBT-A-FY1997", "8K-DEBT-D1-FY1997"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY1997"
+read_selector = "reported_in:FY1997#2"
+published = "8K-DEBT-B-FY1997"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-EQ-B-FY1997"
+basis = ["10K-EQ-A-FY1997", "8K-EQ-D1-FY1997", "8K-EQ-D4-FY1997"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1997"
+read_selector = "reported_in:FY1997#2"
+published = "8K-EQ-B-FY1997"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-NI-B-FY1998"
+basis = ["10K-NI-A-FY1998", "8K-NI-D1-FY1998", "8K-NI-D4-FY1998"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY1998"
+read_selector = "reported_in:FY1998#2"
+published = "8K-NI-B-FY1998"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-TA-B-FY1998"
+basis = ["10K-TA-A-FY1997", "10K-TA-A-FY1998", "8K-TA-D1-FY1997", "8K-TA-D4-FY1997", "8K-TA-D1-FY1998", "8K-TA-D4-FY1998"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1998"
+read_selector = "reported_in:FY1998#2"
+published = "8K-TA-B-FY1998"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-DEBT-B-FY1998"
+basis = ["10K-DEBT-A-FY1997", "10K-DEBT-A-FY1998", "8K-DEBT-D1-FY1997", "8K-DEBT-D1-FY1998"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY1998"
+read_selector = "reported_in:FY1998#2"
+published = "8K-DEBT-B-FY1998"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-EQ-B-FY1998"
+basis = ["10K-EQ-A-FY1997", "10K-EQ-A-FY1998", "8K-EQ-D1-FY1997", "8K-EQ-D4-FY1997", "8K-EQ-D1-FY1998", "8K-EQ-D4-FY1998"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1998"
+read_selector = "reported_in:FY1998#2"
+published = "8K-EQ-B-FY1998"
 
 [[target]]
 expectation = "E-T-04"
@@ -117,7 +187,7 @@ published = "8K-NI-B-FY1999"
 [[target]]
 expectation = "E-T-04"
 fact = "8K-TA-B-FY1999"
-basis = ["10K-TA-A-FY1999", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999"]
+basis = ["10K-TA-A-FY1997", "10K-TA-A-FY1998", "10K-TA-A-FY1999", "8K-TA-D1-FY1997", "8K-TA-D4-FY1997", "8K-TA-D1-FY1998", "8K-TA-D4-FY1998", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999"]
 read_verb = "balance"
 read_target = "1000"
 read_coordinate = "FY1999"
@@ -126,20 +196,140 @@ published = "8K-TA-B-FY1999"
 
 [[target]]
 expectation = "E-T-04"
+fact = "8K-DEBT-B-FY1999"
+basis = ["10K-DEBT-A-FY1997", "10K-DEBT-A-FY1998", "10K-DEBT-A-FY1999", "8K-DEBT-D1-FY1997", "8K-DEBT-D1-FY1998", "8K-DEBT-D1-FY1999"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY1999"
+read_selector = "reported_in:FY1999#2"
+published = "8K-DEBT-B-FY1999"
+
+[[target]]
+expectation = "E-T-04"
 fact = "8K-EQ-B-FY1999"
-basis = ["10K-EQ-A-FY1999", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999"]
+basis = ["10K-EQ-A-FY1997", "10K-EQ-A-FY1998", "10K-EQ-A-FY1999", "8K-EQ-D1-FY1997", "8K-EQ-D4-FY1997", "8K-EQ-D1-FY1998", "8K-EQ-D4-FY1998", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999"]
 read_verb = "balance"
 read_target = "3000"
 read_coordinate = "FY1999"
 read_selector = "reported_in:FY1999#2"
 published = "8K-EQ-B-FY1999"
 
+[[target]]
+expectation = "E-T-04"
+fact = "8K-NI-B-FY2000"
+basis = ["10K-NI-A-FY2000", "8K-NI-D1-FY2000", "8K-NI-D2-FY2000", "8K-NI-D4-FY2000"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000#2"
+published = "8K-NI-B-FY2000"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-TA-B-FY2000"
+basis = ["10K-TA-A-FY1997", "10K-TA-A-FY1998", "10K-TA-A-FY1999", "BS10K-TOTAL-ASSETS", "8K-TA-D1-FY1997", "8K-TA-D4-FY1997", "8K-TA-D1-FY1998", "8K-TA-D4-FY1998", "8K-TA-D1-FY1999", "8K-TA-D2-FY1999", "8K-TA-D4-FY1999", "8K-TA-D1-FY2000", "8K-RAPTOR-TA-FY2000", "8K-TA-D4-FY2000"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000#2"
+published = "8K-TA-B-FY2000"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-DEBT-B-FY2000"
+basis = ["10K-DEBT-A-FY1997", "10K-DEBT-A-FY1998", "10K-DEBT-A-FY1999", "10K-DEBT-A-FY2000", "8K-DEBT-D1-FY1997", "8K-DEBT-D1-FY1998", "8K-DEBT-D1-FY1999", "8K-DEBT-D1-FY2000"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000#2"
+published = "8K-DEBT-B-FY2000"
+
+[[target]]
+expectation = "E-T-04"
+fact = "8K-EQ-B-FY2000"
+basis = ["10K-EQ-A-FY1997", "10K-EQ-A-FY1998", "10K-EQ-A-FY1999", "BS10K-TOTAL-EQUITY", "8K-EQ-D1-FY1997", "8K-EQ-D4-FY1997", "8K-EQ-D1-FY1998", "8K-EQ-D4-FY1998", "8K-EQ-D1-FY1999", "8K-EQ-D2-FY1999", "8K-EQ-D4-FY1999", "8K-EQ-D1-FY2000", "8K-EQ-D2-FY2000", "8K-RAPTOR-EQ-FY2000", "8K-EQ-D4-FY2000"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY2000"
+read_selector = "reported_in:FY2000#2"
+published = "8K-EQ-B-FY2000"
+
 [[expectation]]
 id = "E-R-02"
 type = "R"
-book_variant = "statement-bridge-8k-fy1999"
+book_variant = "statement-bridge-8k"
 statement_template = "R.read_back"
-basis = ["10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-EQ-A-FY1999"]
+basis = ["10K-TA-A-FY1997", "10K-DEBT-A-FY1997", "10K-EQ-A-FY1997", "10K-NI-A-FY1998", "10K-TA-A-FY1998", "10K-DEBT-A-FY1998", "10K-EQ-A-FY1998", "10K-NI-A-FY1999", "10K-TA-A-FY1999", "10K-DEBT-A-FY1999", "10K-EQ-A-FY1999", "10K-NI-A-FY2000", "BS10K-TOTAL-ASSETS", "10K-DEBT-A-FY2000", "BS10K-TOTAL-EQUITY"]
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-TA-A-FY1997"
+basis = ["10K-TA-A-FY1997"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1997"
+read_selector = "originally_reported"
+posted = "10K-TA-A-FY1997"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-DEBT-A-FY1997"
+basis = ["10K-DEBT-A-FY1997"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY1997"
+read_selector = "originally_reported"
+posted = "10K-DEBT-A-FY1997"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-EQ-A-FY1997"
+basis = ["10K-EQ-A-FY1997"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1997"
+read_selector = "originally_reported"
+posted = "10K-EQ-A-FY1997"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-NI-A-FY1998"
+basis = ["10K-NI-A-FY1998"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY1998"
+read_selector = "originally_reported"
+posted = "10K-NI-A-FY1998"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-TA-A-FY1998"
+basis = ["10K-TA-A-FY1998"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY1998"
+read_selector = "originally_reported"
+posted = "10K-TA-A-FY1998"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-DEBT-A-FY1998"
+basis = ["10K-DEBT-A-FY1998"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY1998"
+read_selector = "originally_reported"
+posted = "10K-DEBT-A-FY1998"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-EQ-A-FY1998"
+basis = ["10K-EQ-A-FY1998"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY1998"
+read_selector = "originally_reported"
+posted = "10K-EQ-A-FY1998"
 
 [[target]]
 expectation = "E-R-02"
@@ -163,6 +353,16 @@ posted = "10K-TA-A-FY1999"
 
 [[target]]
 expectation = "E-R-02"
+fact = "10K-DEBT-A-FY1999"
+basis = ["10K-DEBT-A-FY1999"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY1999"
+read_selector = "originally_reported"
+posted = "10K-DEBT-A-FY1999"
+
+[[target]]
+expectation = "E-R-02"
 fact = "10K-EQ-A-FY1999"
 basis = ["10K-EQ-A-FY1999"]
 read_verb = "balance"
@@ -171,6 +371,45 @@ read_coordinate = "FY1999"
 read_selector = "originally_reported"
 posted = "10K-EQ-A-FY1999"
 
+[[target]]
+expectation = "E-R-02"
+fact = "10K-NI-A-FY2000"
+basis = ["10K-NI-A-FY2000"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY2000"
+read_selector = "originally_reported"
+posted = "10K-NI-A-FY2000"
+
+[[target]]
+expectation = "E-R-02"
+fact = "BS10K-TOTAL-ASSETS"
+basis = ["BS10K-TOTAL-ASSETS"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY2000"
+read_selector = "originally_reported"
+posted = "BS10K-TOTAL-ASSETS"
+
+[[target]]
+expectation = "E-R-02"
+fact = "10K-DEBT-A-FY2000"
+basis = ["10K-DEBT-A-FY2000"]
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY2000"
+read_selector = "originally_reported"
+posted = "10K-DEBT-A-FY2000"
+
+[[target]]
+expectation = "E-R-02"
+fact = "BS10K-TOTAL-EQUITY"
+basis = ["BS10K-TOTAL-EQUITY"]
+read_verb = "balance"
+read_target = "3000"
+read_coordinate = "FY2000"
+read_selector = "originally_reported"
+posted = "BS10K-TOTAL-EQUITY"
 
 [[expectation]]
 id = "E-T-01"

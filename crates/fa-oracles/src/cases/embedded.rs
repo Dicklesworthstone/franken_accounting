@@ -177,8 +177,8 @@ pub const ENRON: EmbeddedCase = EmbeddedCase {
             include_str!("../../cases/enron/books/statement-10q2001q3.toml"),
         ),
         (
-            "books/statement-bridge-8k-fy1999.toml",
-            include_str!("../../cases/enron/books/statement-bridge-8k-fy1999.toml"),
+            "books/statement-bridge-8k.toml",
+            include_str!("../../cases/enron/books/statement-bridge-8k.toml"),
         ),
         (
             "books/statement-bridge-10q.toml",

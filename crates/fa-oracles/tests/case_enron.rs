@@ -468,7 +468,7 @@ fn enron_e4_books_load() {
             "statement-10k2000",
             "statement-10q2001q3",
             "statement-bridge-10q",
-            "statement-bridge-8k-fy1999"
+            "statement-bridge-8k"
         ]
     );
     for book in case.books.values() {
@@ -485,11 +485,18 @@ fn enron_e4_books_load() {
             );
         }
     }
-    let ten_q = &case.books["statement-bridge-10q"];
-    let periods: Vec<&str> = ten_q.periods.iter().map(|p| p.code.as_str()).collect();
-    assert_eq!(periods, ["FY1997", "FY1998", "FY1999", "FY2000"]);
-    let class = |c: &str| ten_q.intents.iter().filter(|i| i.class == c).count();
-    assert_eq!((class("Original"), class("Restatement")), (15, 22));
+    // Both restating vintages bridge the same cells on a four-period book.
+    for stem in ["statement-bridge-10q", "statement-bridge-8k"] {
+        let book = &case.books[stem];
+        let periods: Vec<&str> = book.periods.iter().map(|p| p.code.as_str()).collect();
+        assert_eq!(periods, ["FY1997", "FY1998", "FY1999", "FY2000"], "{stem}");
+        let class = |c: &str| book.intents.iter().filter(|i| i.class == c).count();
+        assert_eq!(
+            (class("Original"), class("Restatement")),
+            (15, 22),
+            "{stem}"
+        );
+    }
 }
 
 /// K-TAUT (§3.8): on the bridge books every leg's amount is an as-filed
@@ -517,8 +524,8 @@ fn enron_e4_postings_from_a_and_delta_only() {
         .flat_map(|e| set.targets_of(&e.id))
         .map(|t| t.fact.as_str())
         .collect();
-    assert_eq!(restated.len(), 18);
-    for stem in ["statement-bridge-10q", "statement-bridge-8k-fy1999"] {
+    assert_eq!(restated.len(), 30);
+    for stem in ["statement-bridge-10q", "statement-bridge-8k"] {
         for leg in &case.books[stem].legs {
             let closure = fact_closure(&case, rule_fact(&leg.amount_rule));
             for f in &closure {
@@ -550,14 +557,20 @@ fn enron_e4_postings_from_a_and_delta_only() {
         "literal = \"403100000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"403100000000\"",
         "literal = \"392200000000\"\nrule = \"scale\"\nparam = 0\nvalue = \"392200000000\"",
     );
-    for ordinal in [0, 1] {
-        edit_row(
-            &mut files,
-            "books/statement-bridge-10q.toml",
-            &format!("intent = \"10K-TA-A-FY1999\"\nordinal = {ordinal}\n"),
-            "amount_literal = \"4031000000.00\"",
-            "amount_literal = \"3922000000.00\"",
-        );
+    // Both bridge books post the as-filed FY1999 change; each moves with it.
+    for book in [
+        "books/statement-bridge-10q.toml",
+        "books/statement-bridge-8k.toml",
+    ] {
+        for ordinal in [0, 1] {
+            edit_row(
+                &mut files,
+                book,
+                &format!("intent = \"10K-TA-A-FY1999\"\nordinal = {ordinal}\n"),
+                "amount_literal = \"4031000000.00\"",
+                "amount_literal = \"3922000000.00\"",
+            );
+        }
     }
     let planted = load_copy(&files).expect("the planted copy loads");
     assert_ne!(report(&planted, "K-DERIVE").verdict, Verdict::Fail);

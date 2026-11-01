@@ -1419,21 +1419,25 @@ def table_width(loc, header_line, limit):
 def aligned(loc, header_line, col, row_line, idx, width):
     """The index of a row's cell for the header's column `col`. Counting from the right holds
     while a row prints as many values as the table's fullest row (`width`); a text filing's row
-    that leaves its last columns empty prints fewer, and the count shifts. For such a row only,
-    when the counted cell does not sit under the header's cell at all: the one cell that does
-    is the column's (the row and the header are spaced text, so their character columns
-    align), and with none or several the column has no value here (index 0, the label)."""
+    that leaves its last columns empty prints fewer, and the count shifts (onto the label, for
+    the first column). For such a row only, when the counted cell does not sit under the
+    header's cell at all: the one cell that does is the column's (the row and the header are
+    spaced text, so their character columns align). A right-aligned figure printed without
+    parentheses may start exactly where its header ends; such a touching cell counts only
+    when no cell overlaps the header. With none or several the column has no value here
+    (index 0, the label)."""
     head = cell_spans(loc.lines[header_line])
     row = cell_spans(loc.lines[row_line])
-    if len(row) - 1 >= width or col >= len(head) or not 1 <= idx < len(row):
+    if len(row) - 1 >= width or col >= len(head):
         return idx
     hs, he = head[col][1], head[col][2]
-    under = [i for i, (_, a, b) in enumerate(row) if i >= 1 and a < he and b > hs]
-    counted = row[idx][1] < he and row[idx][2] > hs
-    if counted:
+    if 1 <= idx < len(row) and row[idx][1] < he and row[idx][2] > hs:
         return idx
-    # The counted cell is another column's: the one cell under the header, or none (the row
-    # leaves this column empty).
+    # The counted cell is another column's (or the label): the one cell under the header, or
+    # none (the row leaves this column empty).
+    under = [i for i, (_, a, b) in enumerate(row) if i >= 1 and a < he and b > hs]
+    if not under:
+        under = [i for i, (_, a, b) in enumerate(row) if i >= 1 and (a == he or b == hs)]
     return under[0] if len(under) == 1 else 0
 
 
