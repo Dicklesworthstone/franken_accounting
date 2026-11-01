@@ -904,6 +904,19 @@ impl BookRun<'_> {
                 None => Ok(None),
             }
         };
+        // A read as reported in one period's n-th issuance explains each period
+        // it folds as reported in that period's own n-th issuance: a statement
+        // certificate reports only its own period (FA-REF-174).
+        let reported_in = flags
+            .iter()
+            .position(|f| f == "--as-reported-in")
+            .and_then(|i| flags.get(i + 1))
+            .and_then(|c| c.strip_prefix("C:"))
+            .and_then(|oid| {
+                self.issuances
+                    .values()
+                    .find_map(|v| v.iter().position(|x| x == oid))
+            });
         let (mut certificates, mut explained, mut known_at) = (Vec::new(), Vec::new(), None);
         for label in periods {
             let code =
@@ -917,7 +930,30 @@ impl BookRun<'_> {
                 "--period".to_string(),
                 code,
             ];
-            args.extend(flags.iter().cloned());
+            match reported_in {
+                Some(index) => {
+                    let oid = self
+                        .issuances
+                        .get(label)
+                        .and_then(|v| v.get(index))
+                        .ok_or_else(|| {
+                            format!(
+                                "expected issuance {} of {label} to explain it as reported observed none",
+                                index + 1
+                            )
+                        })?;
+                    let mut rest = flags.iter();
+                    while let Some(f) = rest.next() {
+                        if f == "--as-reported-in" {
+                            rest.next();
+                            args.extend(["--as-reported-in".to_string(), format!("C:{oid}")]);
+                        } else {
+                            args.push(f.clone());
+                        }
+                    }
+                }
+                None => args.extend(flags.iter().cloned()),
+            }
             args.extend(["--certify".to_string(), "--json".to_string()]);
             let call = if let Some(call) = self.explained.get(&args) {
                 call.clone()
