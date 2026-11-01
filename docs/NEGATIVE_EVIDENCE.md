@@ -1493,8 +1493,8 @@ At 38ed0974, `TimedBook for Book` accepted a serving `Cx` for
 the synchronous book's private context. The async adapter already narrowed
 the caller's context, and mutating timer adapters already preserved it.
 Thus the production reads checked the wrong cancellation state before
-observing retained TimeEvidence. This is a source-confirmed context-boundary
-defect; native counterexample execution is still pending.
+observing retained TimeEvidence. The matched native counterexample below
+confirms this context-boundary defect.
 
 The production adapter now calls `Book::latest_tick_with` and
 `Book::corroborated_tick_at_with`. Both narrow the supplied context and
@@ -1506,10 +1506,19 @@ remain intact. An earlier timer checkpoint cannot hide the adapter defect
 because the test invokes the adapter directly.
 
 The first Tier-0 attempt on 34146634 failed E0061: the newly authored test
-omitted the required `BookKeys` constructor argument. Supply its explicit
-development key fixture; the production repair and every assertion remain
-unchanged. This compile failure does not demonstrate the context defect.
-Formatting and static scanning pass; they do not execute this regression.
+omitted the required `BookKeys` constructor argument. Its explicit development
+key fixture corrects that error; the production repair and every assertion
+remain unchanged. This compile failure does not demonstrate the context defect.
+
+On `ba29f8ad`, the complete native `fad --lib` run passed all 42 tests.
+The evidence-only child `a7592cc7` changes only the two adapters back to
+their original calls and retains the corrected regression unchanged. Its
+complete run passed 41 tests and failed the new regression at the cancelled
+`latest_tick` assertion (`timed/tests.rs:93`), after the real tick setup
+succeeded. Returning to `ba29f8ad` passed all 42 again. Every run used the
+same worker, Cargo command, profile and cap, with zero ignored or filtered
+tests. The control remains recovery evidence, never product code to merge.
+
 The original `fa-7uhr` conflict/fresh-tick/checkpoint acceptance and a full
-verdict for this new source remain separate requirements. The full proof
-running at 38ed0974 predates this repair and cannot qualify it.
+verdict for this source remain separate requirements. The full proof at
+`38ed0974` ended RED; it predates this repair and cannot qualify it.
