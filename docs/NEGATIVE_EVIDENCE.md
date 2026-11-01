@@ -1302,3 +1302,29 @@ and missing minority fact; the final positive renderer exactly matches
 the refreshed case README. The complete repository gate remains a
 separate qualification; these scoped results are not a release verdict
 or authority to close the bead.
+
+## 2026-11-01 — Merged XBRL profiles disagreed with their retained calculations (fa-yugf.99)
+
+The 6552be55a merge retained both equity writers but changed the historical
+`TypeLevelStatements` role to sum parent equity and MinorityInterest. Its
+legacy producer still emits posted equity plus a separate unclosed-earnings
+fact. StormyLion's f6a631418 sweep reported two failures when those historical
+exports were reproduced, an undetected role-removal substitution, and two
+SunPower NCI read-backs rejected by the case reader's legacy binding table.
+
+The historical role again sums its original posted-equity and
+RetainedEarningsAccumulatedDeficit facts, as in 76049acab. Current attributed
+and activity roles keep their parent-equity-plus-NCI calculation unchanged.
+The admission split is specific: a legacy export with unclosed income now
+foots under its historical role; a one-cent change to its retained-earnings
+fact must still fail. Current profile amounts and their negative controls
+are unchanged. This is versioned historical reproduction, not a relaxation
+of the current equity law or external taxonomy conformance evidence.
+
+Every XBRL producer now verifies its journal content against the retained
+coordinate before exporting. Clearing the last account role cannot bypass
+that binding. The case reader selects the attributed balance-sheet mapping
+used by current exports, while its independent XML reader, exact public-fact
+comparisons, contribution witnesses and T/R classifications remain unchanged.
+Native qualification is pending; the peer's red report is not this agent's
+independent execution, and no golden or acceptance requirement was weakened.

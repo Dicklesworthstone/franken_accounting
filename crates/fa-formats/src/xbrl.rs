@@ -1530,6 +1530,13 @@ fn write_format_journal_xbrl_profile(
     attribution: Option<&XbrlEquityAttribution>,
     activity: Option<&XbrlReportInputs>,
 ) -> Result<String, FormatError> {
+    journal
+        .coordinate
+        .verify(&FormatJournal::compute_content_digest(
+            &journal.accounts,
+            &journal.entries,
+            &journal.assertions,
+        ))?;
     let unit_catalog = UnitCatalog::embedded()?;
     let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company()?;
     let role = if activity.is_some() {
@@ -2419,6 +2426,24 @@ mod tests {
             assert_eq!(read_xbrl_equity_attribution(&legacy).unwrap(), None);
             assert_eq!(fact(&legacy, "us-gaap:StockholdersEquity"), Some(100_000));
             assert!(verify_format_journal_xbrl_xml(&legacy).is_ok());
+            let mut changed_legacy = read_xbrl_instance_xml(&legacy).unwrap();
+            let earnings_fact = changed_legacy
+                .facts
+                .iter_mut()
+                .find(|fact| fact.concept == "us-gaap:RetainedEarningsAccumulatedDeficit")
+                .unwrap();
+            earnings_fact.mantissa = earnings_fact.mantissa.checked_add(1).unwrap();
+            assert!(matches!(
+                validate_calculation_linkbase_detailed(
+                    &changed_legacy,
+                    &XbrlCalculationLinkbase::embedded_for_role(
+                        "http://frankenaccounting.org/role/TypeLevelStatements",
+                    )
+                    .unwrap(),
+                    Some(&XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap()),
+                ),
+                Err(FormatError::XbrlCalculationInconsistency { .. })
+            ));
 
             let altered = xml.replace(
                 "noncontrolling_accounts=\"33313030\"",
@@ -2674,6 +2699,19 @@ mod tests {
                 .clear();
             assert!(matches!(
                 write_format_journal_xbrl_xml(&substituted),
+                Err(FormatError::CertificateMismatch { .. })
+            ));
+            assert!(matches!(
+                write_legacy_format_journal_xbrl_xml(&substituted),
+                Err(FormatError::CertificateMismatch { .. })
+            ));
+            assert!(matches!(
+                write_format_journal_xbrl_xml_with_equity(
+                    &substituted,
+                    &XbrlEquityAttribution {
+                        noncontrolling_accounts: BTreeSet::from(["3100".into()]),
+                    },
+                ),
                 Err(FormatError::CertificateMismatch { .. })
             ));
         }

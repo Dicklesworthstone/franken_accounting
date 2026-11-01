@@ -1086,7 +1086,8 @@ impl BookRun<'_> {
                 None,
             );
         }
-        let line = fa_formats::xbrl::StatementXbrlMapping::us_gaap_type_level_balance_sheet()
+        // Current CLI exports use the attributed balance sheet, including NCI.
+        let line = fa_formats::xbrl::StatementXbrlMapping::us_gaap_attributed_balance_sheet()
             .bindings
             .into_iter()
             .find(|b| b.concept == concept)
