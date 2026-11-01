@@ -512,6 +512,9 @@ const CELL: &[(&str, Kind, &[ExpectationType])] = &[
     ("record_consistent", Kind::Bool, ALL),
     ("default", Kind::Bool, ALL),
     ("pending", Kind::Str, ALL),
+    // A P cell whose reference verdict differs from its row's: a cell the
+    // oracle has no entry point for (`not_modelled`).
+    ("reference_verdict", Kind::Str, &[E::P]),
     ("cite", Kind::Strs, &[E::D]),
     ("severity", Kind::Str, &[E::D]),
     ("statistic_value", Kind::Str, &[E::D]),

@@ -493,6 +493,11 @@ rule = "none"
 rationale = "the pilot posts no Reclassification, so no intent names a reclassification target (plan §6.4 W-P-04)"
 
 [[default]]
+attribute = "approvals_recorded"
+rule = "none"
+rationale = "the pilot records no approval on any entry (plan §6.4 W-P-01)"
+
+[[default]]
 attribute = "acting_principal"
 rule = "role_of_record"
 rationale = "the role the record names prepared the entry; where it names none, the property accounting director, who directed the transfers"

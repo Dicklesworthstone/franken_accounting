@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use fa_oracles::cases::book::{BookVariant, StepDef, StepKind, VariantKind};
+use fa_oracles::cases::book::{BookVariant, IntentDef, StepDef, StepKind, VariantKind};
 use fa_oracles::cases::check::{self, Verdict};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::CASES;
@@ -1425,11 +1425,46 @@ impl<'c> BookRun<'c> {
             ));
             return;
         };
+        let key = it
+            .idempotency_key
+            .clone()
+            .unwrap_or_else(|| format!("case-{}", it.id));
+        let mut args = match self.allocate_args(it, &key, intent_id) {
+            Ok(args) => args,
+            Err(why) => {
+                self.fail(why);
+                return;
+            }
+        };
+        args.push(s("--json"));
+        let call = self.call(seq, intent_id, "allocate", args);
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+        }
+        if let Some(vid) = call.str_field("posted", "vid") {
+            self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
+            self.vids.insert(intent_id.to_string(), vid);
+            self.posted_steps.insert(intent_id.to_string(), seq);
+        }
+        self.posts.insert(intent_id.to_string(), call);
+    }
+
+    /// The `fa allocate --intent` argv for the allocation intent `it` under
+    /// the idempotency key `key`, its JSON written as `<name>.alloc.json`
+    /// (the `allocate` step's, and a P cell's under its own cell key), up
+    /// to `--json`.
+    pub(crate) fn allocate_args(
+        &mut self,
+        it: &IntentDef,
+        key: &str,
+        name: &str,
+    ) -> Result<Vec<String>, String> {
+        let book = self.book;
         let (Some(law), Some(source)) = (&it.allocation_law, &it.allocation_source) else {
-            self.fail(format!(
-                "expected allocation_law and allocation_source on {intent_id} observed a rendering that would leave the CLI's default law"
+            return Err(format!(
+                "expected allocation_law and allocation_source on {} observed a rendering that would leave the CLI's default law",
+                it.id
             ));
-            return;
         };
         let mut doc = vec![
             ("source".to_string(), Json::Str(source.clone())),
@@ -1437,14 +1472,7 @@ impl<'c> BookRun<'c> {
                 "effective_date".into(),
                 Json::Str(it.effective_date.clone()),
             ),
-            (
-                "idempotency_key".into(),
-                Json::Str(
-                    it.idempotency_key
-                        .clone()
-                        .unwrap_or_else(|| format!("case-{}", it.id)),
-                ),
-            ),
+            ("idempotency_key".into(), Json::Str(key.to_string())),
             ("method".into(), Json::Str(law.clone())),
             (
                 "targets".into(),
@@ -1472,17 +1500,16 @@ impl<'c> BookRun<'c> {
             ));
         }
         let file = self.write(
-            &format!("{intent_id}.alloc.json"),
+            &format!("{name}.alloc.json"),
             Json::Object(doc).to_string().as_bytes(),
         );
         args.push(file);
         if it.allocation_total.is_none() {
             let Some(code) = self.period_of(&it.effective_date) else {
-                self.fail(format!(
-                    "expected a period containing {} for {intent_id} observed none",
-                    it.effective_date
+                return Err(format!(
+                    "expected a period containing {} for {} observed none",
+                    it.effective_date, it.id
                 ));
-                return;
             };
             args.extend([s("--period"), code]);
         }
@@ -1491,24 +1518,14 @@ impl<'c> BookRun<'c> {
             match self.documents.get(e).cloned() {
                 Some(oid) => args.extend([s("--evidence"), oid]),
                 None => {
-                    self.fail(format!(
-                        "expected evidence {e} of {intent_id} to be added observed none"
+                    return Err(format!(
+                        "expected evidence {e} of {} to be added observed none",
+                        it.id
                     ));
-                    return;
                 }
             }
         }
-        args.push(s("--json"));
-        let call = self.call(seq, intent_id, "allocate", args);
-        if call.exit != 0 {
-            self.lines.push(reproduce(&call));
-        }
-        if let Some(vid) = call.str_field("posted", "vid") {
-            self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
-            self.vids.insert(intent_id.to_string(), vid);
-            self.posted_steps.insert(intent_id.to_string(), seq);
-        }
-        self.posts.insert(intent_id.to_string(), call);
+        Ok(args)
     }
 
     /// A `batch` step over the intent range `A..B` (file order), posted as

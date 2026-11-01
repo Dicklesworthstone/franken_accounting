@@ -141,3 +141,8 @@ rationale = "the fixture posts no Reclassification, so its entry names no reclas
 attribute = "effective_date"
 rule = "intent_date"
 rationale = "the fixture's intent states its effective date and no cell re-dates it; the kernel resolves that date to its period (plan §6.4 W-P-03-CF-01)"
+
+[[default]]
+attribute = "approvals_recorded"
+rule = "none"
+rationale = "the fixture records no approval on its entry (plan §6.4 W-P-01)"

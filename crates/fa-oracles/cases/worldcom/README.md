@@ -213,6 +213,7 @@ Declared defaults (each an encoding choice the record does not fix):
 | `evidence_attached` | `placeholder_reviewed` | the record describes the entries' documents without publishing them; a placeholder reviewed by case-second-reader stands in (plan §2.6) |
 | `approval_encoding` | `none` | the book posts each entry with no approval attached: an entry approval needs A0, and a draft promoted by its owner is W-P-01's own branch (plan §6.4) |
 | `reclassification_target` | `none` | the record describes each entry as an ordinary journal entry, none as a Reclassification of an earlier one, so an intent names no reclassification target; W-P-04 branches the one encoding that would name one (plan §6.4) |
+| `approvals_recorded` | `none` | the book records no approval on any entry; W-P-01 attaches the director's own approval only in its cells (approval_encoding on F6a, approvals_recorded on F6b) (plan §6.4) |
 | `acting_principal` | `role_of_record` | the role the record names booked the entry (F1, F2: the 1Q01 manager; F4, F5, F10, F12, F13: the 2Q01 manager; F8: the property accounting specialist); where it names none (F3, F9, F11), the property accounting director, who directed the transfers |
 | `case_determination_date` | `restating_filing_date` | the restating filing's date is public, fixed and never precedes the restated figures (plan §2.6); the June 2002 announcement (SRC-WC-8K-20020626) becomes the sourced date once its fact lands (W2/W3) |
 | `leg_split` | `one_leg_per_named_account` | the record names one account per side of each transfer; one leg per named (account, side) is the encoding (plan §2.6 rule 2, §6.4 W-D-01) |
@@ -443,6 +444,16 @@ Sources: `SRC-WC-001` (the committee found).
 | `F6a` | `approval_encoding=entry_approval,evidence_attached=none` | P | PASS | record-consistent | state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree |
 | `F6a` | `approval_encoding=entry_approval,evidence_attached=placeholder_unreviewed` | P | PASS | unconstrained | state=Open route=approval refusal=FA-REF-008 exit=7 record_consistent=false ref=agree |
 | `F6a` | `approval_encoding=entry_approval,evidence_attached=placeholder_reviewed` | P | PASS | record-consistent | state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree |
+| `F6b` | `approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Future` | P | PASS | unconstrained | state=Future route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Future` | P | PASS | unconstrained | state=Future route=proposal-approval refusal=FA-REF-010 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Open` | P | PASS | record-consistent | state=Open route=allocate-approve refusal=FA-REF-012 exit=7 ref=not_modelled |
+| `F6b` | `approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Open` | P | PASS | record-consistent | state=Open route=proposal-approval refusal=FA-REF-008 exit=7 ref=not_modelled |
+| `F6b` | `approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=SoftClosed` | P | PASS | unconstrained | state=SoftClosed route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=SoftClosed` | P | PASS | unconstrained | state=SoftClosed route=proposal-approval refusal=FA-REF-008 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Closed` | P | PASS | unconstrained | state=Closed route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Closed` | P | PASS | unconstrained | state=Closed route=proposal-approval refusal=FA-REF-011 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Locked` | P | PASS | unconstrained | state=Locked route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled |
+| `F6b` | `approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Locked` | P | PASS | unconstrained | state=Locked route=proposal-approval refusal=FA-REF-010 exit=7 record_consistent=false ref=not_modelled |
 
 ### `W-P-01-CF-01`: counterfactual (CF.counterfactual)
 

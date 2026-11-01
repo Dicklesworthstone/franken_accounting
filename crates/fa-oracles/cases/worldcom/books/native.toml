@@ -1185,6 +1185,15 @@ values = ["draft_self_promotion", "entry_approval"]
 # W-P-04: F6a encoded as one Reclassification (plan §6.4). The record says its $544M came from two
 # entries, F1's $142M CIP leg and F2's $402M; a Reclassification names exactly one target, so each
 # value names one of them.
+# W-P-01(b) on F6b: the director's own approval of the allocation, by the two routes it can be
+# recorded through: the allocation review's own approval (fa allocate approve), or a generic
+# approval of the sealed proposal (fa approve --proposal) cited when the review is planned.
+[[branch_class]]
+id = "bc-F6b-approvals-recorded"
+attribute = "approvals_recorded"
+rule = "self_approval"
+values = ["allocation_review_approval(property-accounting-director-1)", "proposal_approval(property-accounting-director-1)"]
+
 [[branch_class]]
 id = "bc-F6a-reclassification-target"
 attribute = "reclassification_target"
@@ -1210,6 +1219,11 @@ rationale = "the book posts each entry with no approval attached: an entry appro
 attribute = "reclassification_target"
 rule = "none"
 rationale = "the record describes each entry as an ordinary journal entry, none as a Reclassification of an earlier one, so an intent names no reclassification target; W-P-04 branches the one encoding that would name one (plan §6.4)"
+
+[[default]]
+attribute = "approvals_recorded"
+rule = "none"
+rationale = "the book records no approval on any entry; W-P-01 attaches the director's own approval only in its cells (approval_encoding on F6a, approvals_recorded on F6b) (plan §6.4)"
 
 [[default]]
 attribute = "acting_principal"

@@ -466,6 +466,11 @@ rule = "none"
 rationale = "the self-test posts no Reclassification, so no intent names a reclassification target (plan §6.4 W-P-04)"
 
 [[default]]
+attribute = "approvals_recorded"
+rule = "none"
+rationale = "the self-test records no approval on any entry (plan §6.4 W-P-01)"
+
+[[default]]
 attribute = "reason"
 rule = "WrongAccount"
 rationale = "the self-test's delta moves part of A out of 1100; the correction's reason is the account, never Fraud (K-REASON)"
