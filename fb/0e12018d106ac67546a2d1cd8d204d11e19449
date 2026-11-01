@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=fb0e12018d106ac67546a2d1cd8d204d11e19449
+tree=f0a14ed3ef4455fe1c75268665012816185199d4
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=hz2
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=1280
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/timer-read-cx-native-evidence-fb0-tier0-20261101
+recorded_utc=2026-11-01T22:41:10Z
