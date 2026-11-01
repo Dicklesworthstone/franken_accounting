@@ -1231,7 +1231,7 @@ pub async fn sweep_batch_with_crash<V: asupersync::fs::Vfs + Clone>(
     describe: &mut Describe<'_>,
     crash_at: Option<fgdb::CrashPoint>,
 ) -> Outcome<Option<SweepBatch>> {
-    match sweep_batch_at(db, ctx, book, req, describe, crash_at).await? {
+    match sweep_batch_with_crash_and_witness(db, ctx, book, req, describe, crash_at).await? {
         Ok((batch, _)) => Ok(Ok(batch)),
         Err(r) => Ok(Err(r)),
     }
@@ -1247,10 +1247,12 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
     req: &SweepRequest,
     describe: &mut Describe<'_>,
 ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
-    sweep_batch_at(db, ctx, book, req, describe, None).await
+    sweep_batch_with_crash_and_witness(db, ctx, book, req, describe, None).await
 }
 
-async fn sweep_batch_at<V: asupersync::fs::Vfs + Clone>(
+/// The same admitted expiry batch and actual read witness, retaining the
+/// substrate crash seam for callers that exercise publication recovery.
+pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,

@@ -543,6 +543,18 @@ fn timed_cycle_reads_the_paged_sweep_index() {
             .unwrap();
         assert!(due.corroborated && due.sweep_index_current, "{due:?}");
         assert_eq!(due.expired, 1, "{due:?}");
+        let reads = work
+            .expiry_reads
+            .expect("completed expiry sweep has actual reads");
+        assert!(reads.used_index, "{reads:?}");
+        assert!(reads.pages_read > 0, "{reads:?}");
+        assert!(reads.candidates_read >= due.expired, "{reads:?}");
+        assert_eq!(reads.unrelated_entries_decoded, 0);
+        let fields = fa_cli::json::obj(status_fields(Some(&work)));
+        assert_eq!(
+            fields.get("expiry_reads").and_then(|v| v.get("used_index")),
+            Some(&Json::Bool(true))
+        );
         let index = fixture.book.verify_sweep_index(&cx).unwrap();
         assert!(index.index_present && index.is_green(), "{index:?}");
         assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 1);
@@ -558,6 +570,21 @@ fn timed_cycle_reads_the_paged_sweep_index() {
         assert!(next.sweep_index_current && next.expired == 1, "{next:?}");
         assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
         assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
+        advance(&root, 10).await;
+        let jumped = work
+            .run_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, midnight + 10_000)),
+            )
+            .await
+            .unwrap();
+        assert!(!jumped.corroborated, "{jumped:?}");
+        assert_eq!(
+            fa_cli::json::obj(status_fields(Some(&work))).get("expiry_reads"),
+            Some(&Json::Null),
+            "an uncorroborated cycle must not present prior discovery counts"
+        );
     })
     .unwrap()
     .expect("lab completed");
@@ -590,7 +617,7 @@ impl TimedBook for IndexFails<'_> {
         cx: &Cx,
         cap: &Capability,
         max: usize,
-    ) -> Outcome<Option<SweepBatch>> {
+    ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
         TimedBook::sweep_expiry(&mut *self.0, cx, cap, max).await
     }
 
@@ -642,6 +669,7 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         .unwrap();
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Null));
+        assert_eq!(fields.get("expiry_reads"), Some(&Json::Null));
         hold(&mut fixture, &cx, b"index-fails", 5).await;
         advance(&root, 100).await;
         let failed = work
@@ -657,6 +685,10 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
             "{failed:?}"
         );
         assert_eq!(failed.expired, 1, "the exact scan still found the due hold");
+        let reads = work.expiry_reads.expect("fallback reports actual work");
+        assert!(!reads.used_index, "{reads:?}");
+        assert_eq!(reads.pages_read, 0);
+        assert!(reads.substrate_rows_read > 0, "{reads:?}");
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(false)));
         assert!(
@@ -685,7 +717,25 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(true)));
         assert_eq!(fields.get("sweep_index_error"), Some(&Json::Null));
+        assert!(work.expiry_reads.unwrap().used_index);
         assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
+
+        // Failed maintenance can leave an index with a servable exact tail.
+        // The discovery witness, not maintenance's Result, decides its path.
+        hold(&mut fixture, &cx, b"index-tail-still-servable", 5).await;
+        advance(&root, 10).await;
+        let from_tail = work
+            .run_observation(
+                &root,
+                &mut IndexFails(&mut fixture.book),
+                Ok(observation(&root, midnight + 20)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(from_tail.expired, 1);
+        assert!(!from_tail.sweep_index_current);
+        assert!(work.expiry_reads.unwrap().used_index);
+        assert!(!status_text(Some(&work)).contains("fell back to the full scan"));
     })
     .unwrap()
     .expect("lab completed");

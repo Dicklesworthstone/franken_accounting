@@ -904,6 +904,23 @@ fn explicit_key_bootstrap_records_ticks_and_clean_stop_releases_the_timed_book()
         Some("null"),
         "{status}"
     );
+    let status_json = fa_cli::json::parse(status.trim()).unwrap();
+    let reads = status_json
+        .get("data")
+        .and_then(|data| data.get("expiry_reads"))
+        .expect("real daemon status includes expiry discovery work");
+    assert_eq!(
+        reads.get("used_index"),
+        Some(&fa_cli::json::Json::Bool(true))
+    );
+    assert_eq!(
+        reads.get("candidates_read"),
+        Some(&fa_cli::json::Json::Int(0))
+    );
+    assert!(
+        matches!(reads.get("substrate_rows_read"), Some(fa_cli::json::Json::Int(n)) if *n > 0),
+        "{reads:?}"
+    );
     assert_eq!(
         Lease::holder(&book, &registry().unwrap().daemon.lease),
         None

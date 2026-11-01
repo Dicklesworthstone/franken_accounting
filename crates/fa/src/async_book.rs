@@ -3267,12 +3267,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         max_batch: usize,
         crash_at: Option<fgdb::CrashPoint>,
     ) -> Outcome<Option<fa_journal::SweepBatch>> {
+        self.sweep_expiry_observed(cx, capability, max_batch, crash_at)
+            .await
+            .map(|outcome| outcome.map(|(batch, _)| batch))
+    }
+
+    /// Expire through the ordinary admitted transaction and retain its actual
+    /// discovery/validation work. These counts exclude index maintenance,
+    /// reversal discovery and recurring-post discovery.
+    pub async fn sweep_expiry_with_witness(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<(Option<fa_journal::SweepBatch>, fa_journal::SweepReadWitness)> {
+        self.sweep_expiry_observed(cx, capability, max_batch, None)
+            .await
+    }
+
+    async fn sweep_expiry_observed(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<(Option<fa_journal::SweepBatch>, fa_journal::SweepReadWitness)> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let req = sweep_request(capability, max_batch);
         let book = &self.context;
         let entropy = &self.entropy;
         let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
-        Ok(fa_journal::sweep::sweep_batch_with_crash(
+        Ok(fa_journal::sweep::sweep_batch_with_crash_and_witness(
             &mut self.db,
             cx,
             book,

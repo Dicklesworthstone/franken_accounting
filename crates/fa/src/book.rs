@@ -4303,6 +4303,20 @@ impl Book {
         with_store!(&mut self.store, core => core.sweep_expiry(&purposes, capability, max_batch).await)
     }
 
+    /// The admitted expiry batch and its actual discovery/validation reads,
+    /// excluding index maintenance and other timed-work families.
+    pub async fn sweep_expiry_with_witness(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<(Option<fa_journal::SweepBatch>, fa_journal::SweepReadWitness)> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep_expiry_with_witness(
+            &purposes, capability, max_batch,
+        ).await)
+    }
+
     /// Examine at most `max_batch` reached schedules under the caller's
     /// context, minting admissible reversals and reporting blocked ones.
     pub async fn sweep_reversals(

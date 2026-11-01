@@ -17,9 +17,9 @@ use asupersync::Cx;
 use asupersync::fs::Vfs;
 use asupersync::types::Time;
 use fa::{AsyncBook, Book, BookError, Capability, Op, Outcome, Profile};
-use fa_cli::json::{Json, s};
+use fa_cli::json::{Json, obj, s};
 use fa_cli::verbs::Daemon;
-use fa_journal::{Refusal, ReversalBatch, SweepBatch, Tick, Ticked};
+use fa_journal::{Refusal, ReversalBatch, SweepBatch, SweepReadWitness, Tick, Ticked};
 use fa_model::Id128;
 use fgdb_types::CommitSeq;
 use fgdb_types::context::PurposeContexts;
@@ -120,7 +120,7 @@ pub(crate) trait TimedBook {
         cx: &Cx,
         cap: &Capability,
         max: usize,
-    ) -> Outcome<Option<SweepBatch>>;
+    ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)>;
     async fn sweep_reversals(
         &mut self,
         cx: &Cx,
@@ -164,8 +164,8 @@ impl TimedBook for Book {
         cx: &Cx,
         cap: &Capability,
         max: usize,
-    ) -> Outcome<Option<SweepBatch>> {
-        Book::sweep_expiry(self, cx, cap, max).await
+    ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
+        Book::sweep_expiry_with_witness(self, cx, cap, max).await
     }
 
     async fn sweep_reversals(
@@ -219,8 +219,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
         cx: &Cx,
         cap: &Capability,
         max: usize,
-    ) -> Outcome<Option<SweepBatch>> {
-        AsyncBook::sweep_expiry(self, &PurposeContexts::narrow_runtime_root(cx), cap, max).await
+    ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
+        AsyncBook::sweep_expiry_with_witness(
+            self,
+            &PurposeContexts::narrow_runtime_root(cx),
+            cap,
+            max,
+        )
+        .await
     }
 
     async fn sweep_reversals(
@@ -297,6 +303,9 @@ pub struct TimedWork {
     // scan), so it is reported here instead of being dropped.
     sweep_index_current: Option<bool>,
     sweep_index_error: Option<String>,
+    // Actual expiry discovery/validation work from the last timer cycle.
+    // None when that cycle did not complete an admitted expiry sweep.
+    expiry_reads: Option<SweepReadWitness>,
     // A verified native prefix, owned by this serving region. On restart it
     // is absent; no mutable schedule projection supplies its initial truth.
     recurring_history: Option<fa::RecurringHistory>,
@@ -337,6 +346,7 @@ impl TimedWork {
             error: None,
             sweep_index_current: None,
             sweep_index_error: None,
+            expiry_reads: None,
             recurring_history: None,
             registers: None,
             register_wake: false,
@@ -371,6 +381,7 @@ impl TimedWork {
             error: None,
             sweep_index_current: None,
             sweep_index_error: None,
+            expiry_reads: None,
             recurring_history: None,
             registers: Some(registers::RegisterWork::new(periods)?),
             register_wake: false,
@@ -568,6 +579,7 @@ impl TimedWork {
         book: &mut B,
         sample: Result<Observation, ClockError>,
     ) -> Result<Cycle, TimedError> {
+        self.expiry_reads = None;
         self.cycles = self.cycles.saturating_add(1);
         let result = match sample {
             Ok(sample) => self.cycle(cx, book, sample).await,
@@ -610,10 +622,12 @@ impl TimedWork {
             &mut self.sweep_index_current,
             &mut self.sweep_index_error,
         );
-        if let Some(batch) = admitted(
+        let (batch, reads) = admitted(
             book.sweep_expiry(cx, capability, self.policy.sweep_batch)
                 .await,
-        )? {
+        )?;
+        self.expiry_reads = Some(reads);
+        if let Some(batch) = batch {
             cycle.expired = batch.expired.len();
         }
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
@@ -743,11 +757,36 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
                 .map_or(Json::Null, s),
         ),
         (
+            "expiry_reads",
+            work.and_then(|w| w.expiry_reads)
+                .map_or(Json::Null, expiry_read_fields),
+        ),
+        (
             "register_maintenance",
             work.and_then(|w| w.registers.as_ref())
                 .map_or(Json::Null, registers::RegisterWork::status),
         ),
     ]
+}
+
+fn expiry_read_fields(reads: SweepReadWitness) -> Json {
+    obj([
+        ("used_index", Json::Bool(reads.used_index)),
+        ("pages_read", Json::Int(reads.pages_read as i128)),
+        ("candidates_read", Json::Int(reads.candidates_read as i128)),
+        (
+            "substrate_rows_read",
+            Json::Int(reads.substrate_rows_read as i128),
+        ),
+        (
+            "delta_batches_read",
+            Json::Int(reads.delta_batches_read as i128),
+        ),
+        (
+            "unrelated_entries_decoded",
+            Json::Int(reads.unrelated_entries_decoded as i128),
+        ),
+    ])
 }
 
 /// Human status carries the authority posture and failures too.
@@ -773,8 +812,15 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
         text.push_str(&format!("; last cycle refused: {error}"));
     }
     if let Some(error) = &work.sweep_index_error {
+        text.push_str(&format!("; paged sweep index did not advance ({error})"));
+        if work.expiry_reads.is_some_and(|reads| !reads.used_index) {
+            text.push_str("; expiry discovery fell back to the full scan");
+        }
+    }
+    if let Some(reads) = work.expiry_reads {
         text.push_str(&format!(
-            "; paged sweep index did not advance ({error}); discovery fell back to the full scan"
+            "; expiry discovery: index={}, pages={}, candidates={}, substrate rows={}",
+            reads.used_index, reads.pages_read, reads.candidates_read, reads.substrate_rows_read,
         ));
     }
     if let Some(registers) = &work.registers {
