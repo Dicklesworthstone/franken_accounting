@@ -26,8 +26,9 @@ use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    RegisterError, accounting_class_included, contribution_seq, entries_at, entry_period,
-    migration_activations, period_at, resolutions, resolve_known_at,
+    EntryReadCount, PeriodOf, RegisterError, accounting_class_included, contribution_seq,
+    entries_at, entries_at_counted, entry_period, migration_activations, period_at, resolutions,
+    resolve_known_at,
 };
 
 /// Domain separator for functional-value register fold digests (`FA-INV-04.functional-fold`).
@@ -401,6 +402,24 @@ pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
     excluded_classes: &[EntryClass],
 ) -> Result<FunctionalFold, RegisterError> {
+    literal_period_functional(
+        db,
+        book,
+        period_code,
+        known_at,
+        excluded_classes,
+        &mut FunctionalFoldWork::default(),
+    )
+}
+
+fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+    work: &mut FunctionalFoldWork,
+) -> Result<FunctionalFold, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
     let root = db
@@ -430,7 +449,7 @@ pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
     let mut posted_legs_digest = [0u8; 32];
     let mut pending_holds = BTreeMap::new();
 
-    let entries = entries_at(db, book, seq)?;
+    let entries = functional_entries(db, book, seq, work)?;
     let resolved = resolutions(&entries)?;
     let activated = migration_activations(&entries)?;
     let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
@@ -534,6 +553,235 @@ pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
         entries: entries_count,
         fold_digest,
     })
+}
+
+/// Actual entry-selection work for a multiperiod functional fold. Period and
+/// book lookups, migration run lookups, arithmetic and contribution hashing
+/// are outside these counts. A failed shared attempt and its literal retry
+/// both contribute: a fallback never hides reads already performed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FunctionalFoldWork {
+    /// Complete `vertices_at` selections of the recorded prefix.
+    pub full_reads: usize,
+    /// Vertex rows visited by those selections, including non-entry objects.
+    pub vertices_read: usize,
+    /// Entry payload decodes attempted, including invisible migration chunks.
+    pub entries_decoded: usize,
+    /// Single-period retries used to preserve the literal first error.
+    pub literal_fallbacks: usize,
+}
+
+fn functional_entries<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    seq: CommitSeq,
+    work: &mut FunctionalFoldWork,
+) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
+    work.full_reads = work.full_reads.saturating_add(1);
+    let mut read = EntryReadCount::default();
+    let result = entries_at_counted(db, book, seq, &mut read);
+    work.vertices_read = work.vertices_read.saturating_add(read.vertices_read);
+    work.entries_decoded = work.entries_decoded.saturating_add(read.entries_decoded);
+    result
+}
+
+#[derive(Default)]
+struct FunctionalPeriod {
+    cells: BTreeMap<FunctionalCellKey, FunctionalCell>,
+    pending: BTreeMap<FunctionalCellKey, FunctionalCell>,
+    watermark: Option<CommitSeq>,
+    entries: u64,
+    posted_legs_digest: [u8; 32],
+    pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
+}
+
+/// Fold every requested period at one recorded prefix, reading and decoding
+/// the journal once instead of once per period. Results retain the request's
+/// order and duplicates, and equal the independent single-period fold byte
+/// for byte, including each digest, pending column and class-exclusion policy.
+/// An empty request reads nothing. Any failed shared attempt falls back to
+/// the literal folds in request order, preserving their first diagnostic.
+///
+/// This is a shared literal fold, not a maintained-register or tail-only read.
+pub fn fold_periods_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[&str],
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+) -> Result<Vec<FunctionalFold>, RegisterError> {
+    fold_periods_functional_excluding_classes_counted(
+        db,
+        book,
+        periods,
+        known_at,
+        excluded_classes,
+        &mut FunctionalFoldWork::default(),
+    )
+}
+
+/// [`fold_periods_functional_excluding_classes`] with actual entry-selection
+/// work, including failed attempts before any literal fallback.
+pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[&str],
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+    work: &mut FunctionalFoldWork,
+) -> Result<Vec<FunctionalFold>, RegisterError> {
+    if periods.is_empty() {
+        return Ok(Vec::new());
+    }
+    let seq = resolve_known_at(db, known_at)?;
+    let mut together = || -> Result<BTreeMap<&str, FunctionalFold>, RegisterError> {
+        for period in periods {
+            period_at(db, book, period, seq)?;
+        }
+        let spec = fa_journal::genesis::read_book_spec_at(db, seq)?.ok_or_else(|| {
+            RegisterError::InvalidSelection(format!(
+                "the book does not exist at sequence {}",
+                seq.0
+            ))
+        })?;
+        if spec.book_id != book.book_id || spec.calendar != book.calendar {
+            return Err(KernelError::Corrupt(
+                "functional fold context differs from the book at its selected sequence".into(),
+            )
+            .into());
+        }
+        let entries = functional_entries(db, book, seq, work)?;
+        let resolved = resolutions(&entries)?;
+        let activated = migration_activations(&entries)?;
+        let by_id = if excluded_classes.is_empty() {
+            BTreeMap::new()
+        } else {
+            entries
+                .iter()
+                .map(|(vid, entry, at)| (*vid, (entry, *at)))
+                .collect()
+        };
+        let mut folds: BTreeMap<&str, FunctionalPeriod> = periods
+            .iter()
+            .map(|period| (*period, FunctionalPeriod::default()))
+            .collect();
+        let mut period_of = PeriodOf::new(book);
+        for (vid, entry, created_at) in &entries {
+            if entry.proposal.legs.is_empty() {
+                continue;
+            }
+            let period = period_of.period(entry)?;
+            let Some(fold) = folds.get_mut(period) else {
+                continue;
+            };
+            if !accounting_class_included(db, book, seq, (*vid, entry), &by_id, excluded_classes)? {
+                continue;
+            }
+            let contribution = contribution_seq(entry, *created_at, &activated)?;
+            fold.watermark = Some(fold.watermark.map_or(contribution, |w| w.max(contribution)));
+            if entry.proposal.class == EntryClass::PENDING {
+                if let Some(release) = resolved.get(vid) {
+                    fold.watermark = Some(fold.watermark.map_or(*release, |w| w.max(*release)));
+                } else {
+                    add_functional_entry(
+                        &mut fold.pending,
+                        &spec,
+                        *vid,
+                        entry,
+                        period,
+                        (*created_at, seq),
+                    )?;
+                    let hold_digest = fold_functional_entry_contributions(
+                        [0u8; 32],
+                        &spec,
+                        *created_at,
+                        *vid,
+                        entry,
+                    )?;
+                    fold.pending_holds.insert((*created_at, *vid), hold_digest);
+                }
+            } else {
+                add_functional_entry(
+                    &mut fold.cells,
+                    &spec,
+                    *vid,
+                    entry,
+                    period,
+                    (*created_at, seq),
+                )?;
+                fold.posted_legs_digest = fold_functional_entry_contributions(
+                    fold.posted_legs_digest,
+                    &spec,
+                    *created_at,
+                    *vid,
+                    entry,
+                )?;
+                fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
+            }
+        }
+        folds
+            .into_iter()
+            .map(|(period, fold)| {
+                let cells: Vec<_> = fold.cells.into_values().collect();
+                let pending: Vec<_> = fold.pending.into_values().collect();
+                let mut fold_digest = digest_of(
+                    period,
+                    spec.base_unit,
+                    &cells,
+                    &pending,
+                    fold.watermark,
+                    fold.posted_legs_digest,
+                    &fold.pending_holds,
+                )?;
+                if !excluded_classes.is_empty() {
+                    let classes: Vec<_> = excluded_classes
+                        .iter()
+                        .map(|class| class.0)
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    let mut w = Writer::new();
+                    w.fixed(&fold_digest).list(&classes, |w, class| {
+                        w.u16(*class);
+                    });
+                    let mut h = Hasher::new();
+                    h.update(FUNCTIONAL_ACTIVITY_DIGEST_DOMAIN);
+                    h.update(&w.finish().map_err(RegisterError::Encoding)?);
+                    fold_digest = h.finalize().0;
+                }
+                Ok((
+                    period,
+                    FunctionalFold {
+                        period: period.into(),
+                        base_unit: spec.base_unit,
+                        known_at: seq,
+                        cells,
+                        pending,
+                        watermark: fold.watermark,
+                        entries: fold.entries,
+                        fold_digest,
+                    },
+                ))
+            })
+            .collect()
+    };
+    match together() {
+        Ok(folds) => periods
+            .iter()
+            .map(|period| {
+                folds.get(period).cloned().ok_or_else(|| {
+                    KernelError::Corrupt("a requested functional period has no fold".into()).into()
+                })
+            })
+            .collect(),
+        Err(_) => periods
+            .iter()
+            .map(|period| {
+                work.literal_fallbacks = work.literal_fallbacks.saturating_add(1);
+                literal_period_functional(db, book, period, Some(seq), excluded_classes, work)
+            })
+            .collect(),
+    }
 }
 
 /// Verify a claimed [`FunctionalFold`] by refolding the journal at

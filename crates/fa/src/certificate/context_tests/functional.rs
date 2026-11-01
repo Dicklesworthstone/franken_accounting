@@ -125,6 +125,77 @@ fn reseal(certificate: &mut ReportCertificate) {
 }
 
 #[test]
+fn annual_functional_income_statement_replays_the_shared_period_fold() {
+    let (mut h, _) = fixture();
+    let cx = h.cx();
+    h.runtime
+        .block_on(h.book.transition_period(
+            &cx,
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"annual-functional-open-february",
+            &cap(&["close"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut february = original(&h);
+    february.idempotency_key = b"annual-functional-february".to_vec();
+    february.effective_date = DateDay::from_ymd(2026, 2, 15).unwrap();
+    h.runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal: february,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+
+    let annual = StatementSelection {
+        definition: crate::StatementDefinition::embedded("income-statement").unwrap(),
+        periods: (1..=12)
+            .map(|month| format!("FY2026-P{month:02}"))
+            .collect(),
+        comparative: vec![PERIOD.into()],
+    };
+    let at = h.head();
+    let report = h
+        .runtime
+        .block_on(h.book.certify_functional_statement(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            annual,
+            Some(at),
+        ))
+        .unwrap()
+        .unwrap();
+    let revenue = report
+        .statement
+        .lines
+        .iter()
+        .find(|line| line.code == "revenue")
+        .unwrap();
+    // January: 125.50 USD + 100 EUR valued at 1.25; February: 125.50 USD.
+    assert_eq!(revenue.amounts, [37_600, 25_050]);
+    assert_eq!(report.certificate.known_at, at);
+    let bytes = report.certificate.canonical_bytes().unwrap();
+    let retained = ReportCertificate::decode(&bytes).unwrap();
+    let replayed = h.book.replay_report(&cx, &retained).unwrap().unwrap();
+    assert_eq!(replayed.canonical_bytes().unwrap(), retained.output);
+    assert_eq!(
+        replayed,
+        ReportOutput::FunctionalStatement(Box::new(report.statement))
+    );
+    assert_eq!(h.head(), at, "certification and replay do not publish");
+}
+
+#[test]
 fn retained_v5_replays_before_additive_close_law_but_cannot_claim_that_law() {
     let (mut h, _) = fixture();
     let certified = certified(&mut h);

@@ -807,6 +807,26 @@ fn functional_balances<V: Vfs + Clone>(
     through: DateDay,
     at: CommitSeq,
 ) -> Result<(fa_money::UnitId, Vec<AccountBalance>), fa_registers::RegisterError> {
+    let result = functional_balances_inner(db, book, kind, periods, through, at, true);
+    if result.is_err() && kind.basis() == Basis::Activity {
+        // A later period's fold can fail before the shared caller adds an
+        // earlier period's totals. Re-run in the original order on error so
+        // cross-period overflow retains precedence over any later defect.
+        functional_balances_inner(db, book, kind, periods, through, at, false)
+    } else {
+        result
+    }
+}
+
+fn functional_balances_inner<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    kind: StatementKind,
+    periods: &[String],
+    through: DateDay,
+    at: CommitSeq,
+    shared: bool,
+) -> Result<(fa_money::UnitId, Vec<AccountBalance>), fa_registers::RegisterError> {
     use fa_registers::RegisterError;
     let mut balances: BTreeMap<(VId, u32), (i128, i128)> = BTreeMap::new();
     let mut add = |account, unit, debits, credits| -> Result<(), RegisterError> {
@@ -833,14 +853,36 @@ fn functional_balances<V: Vfs + Clone>(
         }
         Basis::Activity => {
             let mut unit = None;
+            let mut folds = if shared {
+                let codes: Vec<_> = periods.iter().map(String::as_str).collect();
+                Some(
+                    fa_registers::fold_periods_functional_excluding_classes(
+                        db,
+                        book,
+                        &codes,
+                        Some(at),
+                        kind.excluded_classes(),
+                    )?
+                    .into_iter(),
+                )
+            } else {
+                None
+            };
             for period in periods {
-                let fold = fa_registers::fold_period_functional_excluding_classes(
-                    db,
-                    book,
-                    period,
-                    Some(at),
-                    kind.excluded_classes(),
-                )?;
+                let fold = match folds.as_mut() {
+                    Some(folds) => folds.next().ok_or_else(|| {
+                        RegisterError::InvalidSelection(
+                            "a requested functional period has no fold".into(),
+                        )
+                    })?,
+                    None => fa_registers::fold_period_functional_excluding_classes(
+                        db,
+                        book,
+                        period,
+                        Some(at),
+                        kind.excluded_classes(),
+                    )?,
+                };
                 if unit
                     .replace(fold.base_unit)
                     .is_some_and(|previous| previous != fold.base_unit)
