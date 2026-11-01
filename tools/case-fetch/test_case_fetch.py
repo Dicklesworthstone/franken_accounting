@@ -527,6 +527,30 @@ class TableCells(unittest.TestCase):
                          ["(147)"])
         self.assertEqual(self.cell(self.RAGGED, f"{table}|Total assets as reported|2001"), [])
 
+    # The same table's first column and a figure printed without parentheses (the 8-K's
+    # Table 1, SRC-ENR-002): a short row's count from the right lands on its label for the
+    # first column, and `60` starts exactly where its header's `2000` ends.
+    RAGGED_FIRST = ("                                    TABLE 1\n"
+                    "                                         1997     1998      1999      2000      2001\n"
+                    "Net income as reported                  $  105    $  703    $  893    $  979    $  425\n"
+                    "Total assets as reported                22,552    29,350    33,381    65,503\n"
+                    "    Consolidation of JEDI and Chewco       447       160       187      (192)\n"
+                    "    Consolidation of LJM1 subsidiary      --        --        (166)       60\n")
+
+    def test_ragged_row_reads_its_first_column_and_right_aligned_figures(self):
+        table = "TABLE 1"
+        self.assertEqual(self.cell(self.RAGGED_FIRST, f"{table}|Consolidation of JEDI and Chewco|1997"),
+                         ["447"])
+        self.assertEqual(self.cell(self.RAGGED_FIRST, f"{table}|Total assets as reported|1997"),
+                         ["22,552"])
+        self.assertEqual(self.cell(self.RAGGED_FIRST, f"{table}|Consolidation of LJM1 subsidiary|2000"),
+                         ["60"])
+        self.assertEqual(self.cell(self.RAGGED_FIRST, f"{table}|Consolidation of LJM1 subsidiary|1999"),
+                         ["(166)"])
+        # The column the row leaves empty still has no value.
+        self.assertEqual(self.cell(self.RAGGED_FIRST, f"{table}|Consolidation of JEDI and Chewco|2001"),
+                         [])
+
     def test_datecol_layout_pairs_month_days_with_years(self):
         table = "Ratios Table"
         self.assertEqual(self.cell(self.DATECOL, f"{table}|(a) Total Assets|May 31, 2008"),
