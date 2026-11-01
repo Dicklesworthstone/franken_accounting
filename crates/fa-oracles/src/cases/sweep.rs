@@ -72,6 +72,9 @@ pub struct SweepCell {
     pub expect: Option<String>,
     /// The authored `pending` reason: swept and logged, never PASS.
     pub pending: Option<String>,
+    /// The authored `[[branch_cell]] reference_verdict`, when the cell's
+    /// differs from its row's (F6b's allocation cells: `not_modelled`).
+    pub reference_verdict: Option<String>,
 }
 
 /// All P cells of one entry, on one book, in sweep order.
@@ -161,7 +164,7 @@ impl SweepPlan {
 }
 
 /// The state the history leaves `intent`'s period in when the intent's step
-/// runs (its first `intent` or `batch` step).
+/// runs (its first `intent`, `allocate` or `batch` step).
 fn state_at(book: &BookVariant, intent: &str) -> PeriodState {
     let Some(it) = book.intents.iter().find(|i| i.id == intent) else {
         return PeriodState::Future;
@@ -173,7 +176,7 @@ fn state_at(book: &BookVariant, intent: &str) -> PeriodState {
     for s in &book.steps {
         let kind = s.step_kind();
         let posts_it = match kind {
-            Some(StepKind::Intent) => s.reference == intent,
+            Some(StepKind::Intent | StepKind::Allocate) => s.reference == intent,
             Some(StepKind::Batch) => s.reference.split_once("..").is_some_and(|(a, b)| {
                 let pos = |id: &str| book.intents.iter().position(|i| i.id == id);
                 let me = pos(intent);
@@ -296,6 +299,9 @@ pub fn sweep_plan(
                 idempotency_key: cell_key(&intent_key, &c.key),
                 expect: row.and_then(|r| r.fields.str("expect")).map(str::to_string),
                 pending: row.and_then(|r| r.pending()).map(str::to_string),
+                reference_verdict: row
+                    .and_then(|r| r.fields.str("reference_verdict"))
+                    .map(str::to_string),
             });
         }
         match plan.groups.iter_mut().find(|g| g.intent == intent.id) {
@@ -325,30 +331,54 @@ pub fn sweep_plan(
             ) else {
                 continue;
             };
-            let Some(table) = enumerations.iter().find(|e| e.expectation == parent) else {
+            let tables: Vec<&Enumeration> = enumerations
+                .iter()
+                .filter(|e| e.expectation == parent)
+                .collect();
+            if tables.is_empty() {
                 continue;
-            };
-            let Some(base) = table.cells.iter().find(|c| c.default) else {
+            }
+            // The cell the CF changes: the one its `base_cell` names, else
+            // the parent's default, on whichever of the parent's targets
+            // holds it (W-P-01's default is F6a's, not F6b's).
+            let named = cf.fields.strs("base_cell");
+            let Some((table, base)) = tables.iter().find_map(|table| {
+                table
+                    .cells
+                    .iter()
+                    .find(|c| match named {
+                        Some(cell) => c.key.as_slice() == cell,
+                        None => c.default,
+                    })
+                    .map(|c| (*table, c))
+            }) else {
                 return Err(err(
                     &cf.id,
                     LoadErrorKind::MissingField,
                     format!(
-                        "{parent}'s target {} marks no `default` cell for {} to change",
-                        table.target, cf.id
+                        "no target of {parent} marks a `default` cell for {} to change, and no table of it holds a `base_cell` it names",
+                        cf.id
                     ),
                 ));
             };
-            let Some(at) = table.attrs.iter().position(|a| a.as_str() == attr) else {
-                return Err(err(
-                    &cf.id,
-                    LoadErrorKind::UnknownValue,
-                    format!(
-                        "`changed_attribute = \"{attr}\"` is not a branched attribute of {parent}"
-                    ),
-                ));
-            };
+            let mut attrs = table.attrs.clone();
             let mut key = base.key.clone();
-            key[at] = value.to_string();
+            match table.attrs.iter().position(|a| a.as_str() == attr) {
+                Some(at) => key[at] = value.to_string(),
+                // An input the parent reads but does not branch (K-BRANCH
+                // checks the read): the CF sets it on top of the base cell.
+                None => {
+                    let Some(a) = BranchAttribute::parse(attr) else {
+                        return Err(err(
+                            &cf.id,
+                            LoadErrorKind::UnknownValue,
+                            format!("`changed_attribute = \"{attr}\"` is outside the §2.6 enum"),
+                        ));
+                    };
+                    attrs.push(a);
+                    key.push(value.to_string());
+                }
+            }
             let Some(group) = plan.groups.iter_mut().find(|g| {
                 book.intents
                     .iter()
@@ -375,7 +405,7 @@ pub fn sweep_plan(
             group.cells.push(SweepCell {
                 expectation: cf.id.clone(),
                 target: table.target.clone(),
-                attrs: table.attrs.clone(),
+                attrs,
                 key,
                 state,
                 record_consistent: false,
@@ -383,6 +413,7 @@ pub fn sweep_plan(
                 idempotency_key: cell_key(&group.intent_key, &own),
                 expect: cf.fields.str("expect").map(str::to_string),
                 pending: None,
+                reference_verdict: None,
             });
         }
     }

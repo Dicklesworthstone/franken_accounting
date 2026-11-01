@@ -619,6 +619,7 @@ fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
             let mut words = l.split(' ');
             matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
                 && words.next() == Some("W-P-01")
+                && words.nth(2).is_some_and(|cell| cell.starts_with("F6a/"))
         })
         .map(String::as_str)
         .collect();
@@ -631,6 +632,49 @@ fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
             "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=none state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree",
             "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_unreviewed state=Open route=approval refusal=FA-REF-008 exit=7 record_consistent=false ref=agree",
             "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_reviewed state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree",
+        ],
+        "{text}"
+    );
+}
+
+/// W5 (§6.4 W-P-01(b) on F6b): the director's own approval of the
+/// allocation that clears F6a's clearing account. Route A approves the
+/// allocation review itself (`fa allocate approve`) and is refused
+/// FA-REF-012 by the review layer, in every period state, before any plan
+/// exists. Route B records a generic approval of the sealed proposal (`fa
+/// approve --proposal`) and cites it when the review is planned: period law
+/// decides first (Future and Locked FA-REF-010, Closed without post_closed
+/// FA-REF-011), and in Open and SoftClosed SoD refuses the preparer's own
+/// approval FA-REF-008. The reference oracle has no allocation entry point,
+/// and each cell says so (ref=not_modelled).
+#[test]
+fn worldcom_w_p_01_f6b_self_approval_of_the_allocation_is_refused() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-P-01")
+                && words.nth(2).is_some_and(|cell| cell.starts_with("F6b/"))
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Future state=Future route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Future state=Future route=proposal-approval refusal=FA-REF-010 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Open state=Open route=allocate-approve refusal=FA-REF-012 exit=7 ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Open state=Open route=proposal-approval refusal=FA-REF-008 exit=7 ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=SoftClosed state=SoftClosed route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=SoftClosed state=SoftClosed route=proposal-approval refusal=FA-REF-008 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Closed state=Closed route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Closed state=Closed route=proposal-approval refusal=FA-REF-011 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Locked state=Locked route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Locked state=Locked route=proposal-approval refusal=FA-REF-010 exit=7 record_consistent=false ref=not_modelled",
         ],
         "{text}"
     );
@@ -660,6 +704,81 @@ fn worldcom_w_p_01_cf_01_without_the_self_approval_is_admitted() {
         rows,
         [
             "PASS W-P-01-CF-01 CF native F6a/approval_encoding=none,evidence_attached=placeholder_reviewed state=Open refusal=admitted exit=0 record_consistent=false commit_agrees=ok ref=agree"
+        ],
+        "{text}"
+    );
+}
+
+/// W5 (§6.4 W-P-04): F6's $544 million transfer encoded as one
+/// Reclassification of one earlier entry. Its CIP debits came from F1
+/// ($142 million) and F2 ($402 million), and a Reclassification names
+/// exactly one target and moves no more out of it than its legs left. So
+/// each single-target cell is refused FA-REF-185 (exit 3) after identity and
+/// before period law and SoD, and the director's self-approval is never
+/// reached. The reference oracle, with the target posted at its own step,
+/// decides both cells through `Oracle::reclassify` and agrees.
+#[test]
+fn worldcom_w_p_04_single_target_reclassification_is_refused_fa_ref_185() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-P-04")
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "PASS W-P-04 P native F6a/reclassification_target=single(F1) class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false commit_agrees=ok ref=agree",
+            "PASS W-P-04 P native F6a/reclassification_target=single(F2) class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false ref=agree",
+        ],
+        "{text}"
+    );
+}
+
+/// W5 (§6.4 W-P-03-CF-01): F4 as an Original is refused FA-REF-010 in a
+/// Closed 2Q01 (W-P-03's Original/Closed cell, the CF's base cell). The
+/// same cell posted effective on F4's booking date, 2001-07-17, lands in
+/// 3Q01, which is Open, and is admitted, and the reference agrees: the
+/// period law protects closed periods, but it cannot know an entry's true
+/// effective date.
+#[test]
+fn worldcom_w_p_03_cf_01_redating_f4_out_of_the_closed_quarter_is_admitted() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let row = |id: &str| -> Vec<&str> {
+        o.lines
+            .iter()
+            .filter(|l| {
+                let mut words = l.split(' ');
+                matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN")) && words.next() == Some(id)
+            })
+            .map(String::as_str)
+            .collect()
+    };
+    let base: Vec<&str> = row("W-P-03")
+        .into_iter()
+        .filter(|l| {
+            l.starts_with(
+                "PASS W-P-03 P native F4/entry_class=Original,period_state_at_commit=Closed ",
+            )
+        })
+        .collect();
+    assert_eq!(base.len(), 1, "{text}");
+    assert!(
+        base[0].contains(" refusal=FA-REF-010 exit=7 "),
+        "{}",
+        base[0]
+    );
+    assert_eq!(
+        row("W-P-03-CF-01"),
+        [
+            "PASS W-P-03-CF-01 CF native F4/entry_class=Original,period_state_at_commit=Closed,effective_date=2001-07-17 state=Closed refusal=admitted exit=0 record_consistent=false ref=agree"
         ],
         "{text}"
     );

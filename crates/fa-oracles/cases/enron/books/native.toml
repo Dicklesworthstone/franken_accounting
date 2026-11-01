@@ -384,6 +384,16 @@ attribute = "approval_encoding"
 rule = "none"
 rationale = "the indictment states no approval of the entries; the Adjusting-in-Closed cell with a second principal's approval is E3b's"
 
+[[default]]
+attribute = "reclassification_target"
+rule = "none"
+rationale = "the record describes the entries as ordinary postings, none as a Reclassification of an earlier entry, so no intent names a reclassification target"
+
+[[default]]
+attribute = "approvals_recorded"
+rule = "none"
+rationale = "the indictment states no approval of the entries, so the book records none"
+
 [[step]]
 seq = 1
 kind = "period_open"

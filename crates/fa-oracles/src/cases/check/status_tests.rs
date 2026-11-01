@@ -217,11 +217,12 @@ fn d_and_p_with_overlapping_scopes_are_refused() {
     );
 }
 
-const CF: &str = "\n[[expectation]]\nid = \"W-P-03-CF-01\"\ntype = \"CF\"\nbook_variant = \"native\"\nstatement_template = \"CF.counterfactual\"\nbasis = [\"F4\"]\nparent = \"W-P-03\"\nchanged_attribute = \"effective_date\"\nchanged_value = \"2001-07-17\"\nexpect = \"admit\"\n";
+const CF: &str = "\n[[expectation]]\nid = \"W-P-03-CF-01\"\ntype = \"CF\"\nbook_variant = \"native\"\nstatement_template = \"CF.counterfactual\"\nbasis = [\"F4\"]\nparent = \"W-P-03\"\nchanged_attribute = \"document_date\"\nchanged_value = \"2001-07-17\"\nexpect = \"admit\"\n";
 
 /// K-BRANCH: a CF row changes one attribute its parent reads. W-P-03's
-/// kernel steps read entry_class, period_state_at_commit and
-/// evidence_attached, not the effective date.
+/// kernel steps read entry_class, period_state_at_commit, evidence_attached
+/// and the effective date (the period it resolves to, rule
+/// `effective_period`), never the document date.
 #[test]
 fn cf_row_changing_an_attribute_its_parent_does_not_read_is_refused() {
     let case = pilot_planted(&[(EXP, "", CF)]);
@@ -229,12 +230,17 @@ fn cf_row_changing_an_attribute_its_parent_does_not_read_is_refused() {
         &case,
         K_BRANCH,
         "W-P-03-CF-01",
-        "`effective_date` is not read by W-P-03",
+        "`document_date` is not read by W-P-03",
     );
-    let read = CF
-        .replace("\"effective_date\"", "\"period_state_at_commit\"")
-        .replace("\"2001-07-17\"", "\"Open\"");
-    passes(&pilot_planted(&[(EXP, "", &read)]), K_BRANCH);
+    for (attr, value) in [
+        ("period_state_at_commit", "Open"),
+        ("effective_date", "2001-07-17"),
+    ] {
+        let read = CF
+            .replace("\"document_date\"", &format!("\"{attr}\""))
+            .replace("\"2001-07-17\"", &format!("\"{value}\""));
+        passes(&pilot_planted(&[(EXP, "", &read)]), K_BRANCH);
+    }
 }
 
 const ROUND_DOLLAR: (&str, &str, &str) = (

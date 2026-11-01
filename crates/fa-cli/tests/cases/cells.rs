@@ -16,8 +16,9 @@
 use std::collections::BTreeSet;
 
 use fa_oracles::cases::Case;
-use fa_oracles::cases::book::{BranchAttribute, StepDef, StepKind};
+use fa_oracles::cases::book::{BranchAttribute, IntentDef, StepDef, StepKind};
 use fa_oracles::cases::branch::{self, Enumeration};
+use fa_oracles::cases::date::Day;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::intent_json;
 use fa_oracles::cases::log::StepRecord;
@@ -169,6 +170,10 @@ impl Sweeper<'_, '_> {
             });
             return;
         };
+        if it.is_allocation() {
+            self.decide_allocation(cell, state, row, it);
+            return;
+        }
         let mut intent = it.clone();
         intent.idempotency_key = Some(cell.idempotency_key.clone());
         let mut evidence = it
@@ -206,6 +211,39 @@ impl Sweeper<'_, '_> {
                     return;
                 }
                 BranchAttribute::EntryClass => intent.class.clone_from(value),
+                // W-P-04 (§6.4): the entry posted as one Reclassification of
+                // the earlier posting the cell names, under its own reason
+                // or the book's default one.
+                BranchAttribute::ReclassificationTarget => {
+                    let Some(target) = branch::reclassification_target(book, value) else {
+                        row.verdict = RowVerdict::Fail;
+                        row.reason = Some(format!(
+                            "expected `{value}` to name one posting of the book observed none"
+                        ));
+                        self.out.push(SweptCell {
+                            row,
+                            reproduce: None,
+                        });
+                        return;
+                    };
+                    intent.class = s("Reclassification");
+                    intent.target = Some(target);
+                    intent.target_kind = Some(s("reclassifies"));
+                    if intent.reason.is_none() {
+                        intent.reason = book
+                            .defaults
+                            .iter()
+                            .find(|d| d.attribute == "reason")
+                            .map(|d| d.rule.clone());
+                    }
+                    row.projection.push(("class".into(), s("Reclassification")));
+                }
+                // A re-dating CF (§6.4 W-P-03-CF-01): the entry posted
+                // effective on the named day. The cell's period state stays
+                // that of the entry's own period, which the sweep drives.
+                BranchAttribute::EffectiveDate if Day::parse(value).is_some() => {
+                    intent.effective_date.clone_from(value);
+                }
                 BranchAttribute::PeriodStateAtCommit => {}
                 BranchAttribute::EvidenceAttached => match value.as_str() {
                     "none" => evidence = None,
@@ -482,6 +520,191 @@ impl Sweeper<'_, '_> {
                 repro.push(reproduce(&committed));
             }
         }
+        self.conclude(cell, state, row, &observed, &dry, (fails, repro));
+    }
+
+    /// An allocation's P cell (§6.4 W-P-01(b) on F6b): its preparer seals
+    /// the allocation review (`fa allocate --review-out`), then approves it
+    /// himself by the cell's route. Route A approves the review itself (`fa
+    /// allocate approve`); route B records a generic approval of the sealed
+    /// proposal (`fa approve --proposal`) and cites it when the review is
+    /// planned (`fa allocate --review … --approval … --dry-run`). An approval
+    /// route decides its own cell, with no representative commit; a refused
+    /// review is the cell's first refusal.
+    fn decide_allocation(
+        &mut self,
+        cell: &SweepCell,
+        state: PeriodState,
+        mut row: RowLine,
+        it: &IntentDef,
+    ) {
+        let mut route = None;
+        for (attr, value) in cell.attrs.iter().zip(&cell.key) {
+            match attr {
+                BranchAttribute::PeriodStateAtCommit => {}
+                BranchAttribute::ApprovalsRecorded => {
+                    match value
+                        .split_once('(')
+                        .and_then(|(r, rest)| Some((r, rest.strip_suffix(')')?)))
+                    {
+                        Some((r @ ("allocation_review_approval" | "proposal_approval"), who)) => {
+                            route = Some((r == "allocation_review_approval", who.to_string()));
+                        }
+                        _ => {
+                            row.reason = Some(format!(
+                                "needs:A7c (approvals_recorded={value} on an allocation)"
+                            ));
+                            self.out.push(SweptCell {
+                                row,
+                                reproduce: None,
+                            });
+                            return;
+                        }
+                    }
+                }
+                other => {
+                    row.reason = Some(format!(
+                        "needs:A7c ({} cells on an allocation)",
+                        other.as_str()
+                    ));
+                    self.out.push(SweptCell {
+                        row,
+                        reproduce: None,
+                    });
+                    return;
+                }
+            }
+        }
+        let Some((review_route, approver)) = route else {
+            row.reason =
+                Some("needs:A7c (an allocation cell with no approvals_recorded route)".into());
+            self.out.push(SweptCell {
+                row,
+                reproduce: None,
+            });
+            return;
+        };
+        row.projection.push(("state".into(), state.as_str().into()));
+        let reference = format!("{}/{}", cell.target, row.cell);
+        let mut args =
+            match self
+                .run
+                .allocate_args(it, &cell.idempotency_key, &cell.idempotency_key)
+            {
+                Ok(args) => args,
+                Err(why) => {
+                    row.verdict = RowVerdict::Fail;
+                    row.reason = Some(why);
+                    self.out.push(SweptCell {
+                        row,
+                        reproduce: None,
+                    });
+                    return;
+                }
+            };
+        let review = self
+            .run
+            .work
+            .join(format!("{}.review", cell.idempotency_key))
+            .display()
+            .to_string();
+        args.extend([s("--review-out"), review.clone(), s("--json")]);
+        let sealed = self.run.call(0, &reference, "allocate", args);
+        let digests = sealed
+            .str_field("allocation_reviewed", "review_digest")
+            .zip(sealed.str_field("allocation_reviewed", "proposal_digest"));
+        let decided = match digests {
+            None => sealed,
+            Some((digest, _)) if review_route => self.run.call(
+                0,
+                &reference,
+                "allocate",
+                vec![
+                    s("allocate"),
+                    s("approve"),
+                    s("--review"),
+                    review,
+                    s("--digest"),
+                    digest,
+                    s("--as"),
+                    approver,
+                    s("--json"),
+                ],
+            ),
+            Some((digest, proposal)) => {
+                let Some(vid) = self.run.approve_as(0, &approver, &proposal) else {
+                    row.verdict = RowVerdict::Fail;
+                    row.reason = Some(
+                        "expected the approver's approval of the sealed proposal observed none"
+                            .into(),
+                    );
+                    self.out.push(SweptCell {
+                        row,
+                        reproduce: None,
+                    });
+                    return;
+                };
+                let plan = self.run.work.join(format!("{}.plan", cell.idempotency_key));
+                self.run.call(
+                    0,
+                    &reference,
+                    "allocate",
+                    vec![
+                        s("allocate"),
+                        s("--review"),
+                        review,
+                        s("--digest"),
+                        digest,
+                        s("--approval"),
+                        vid,
+                        s("--dry-run"),
+                        s("--plan-out"),
+                        plan.display().to_string(),
+                        s("--as"),
+                        it.principal.clone(),
+                        s("--json"),
+                    ],
+                )
+            }
+        };
+        let observed = outcome(&decided);
+        let route = if review_route {
+            "allocate-approve"
+        } else {
+            "proposal-approval"
+        };
+        row.projection.push(("route".into(), route.into()));
+        row.projection.push(("refusal".into(), observed.clone()));
+        row.projection
+            .push(("exit".into(), decided.exit.to_string()));
+        if !cell.record_consistent {
+            row.projection
+                .push(("record_consistent".into(), "false".into()));
+        }
+        self.conclude(
+            cell,
+            state,
+            row,
+            &observed,
+            &decided,
+            (Vec::new(), Vec::new()),
+        );
+    }
+
+    /// A decided cell's verdict: the observed first refusal against the
+    /// authored one, then (A4r) the reference oracle's verdict on the same
+    /// cell; `checks` carries the failures and reproductions found so far.
+    fn conclude(
+        &mut self,
+        cell: &SweepCell,
+        state: PeriodState,
+        mut row: RowLine,
+        observed: &str,
+        dry: &Call,
+        checks: (Vec<String>, Vec<String>),
+    ) {
+        let book = self.run.book;
+        let (mut fails, mut repro) = checks;
         if fails.is_empty()
             && let Some(want) = cell.expect.as_deref()
         {
@@ -490,7 +713,7 @@ impl Sweeper<'_, '_> {
                 fails.push(format!(
                     "expected refusal={want} observed refusal={observed}"
                 ));
-                repro.push(reproduce(&dry));
+                repro.push(reproduce(dry));
             }
         }
         if fails.is_empty() {
@@ -510,14 +733,20 @@ impl Sweeper<'_, '_> {
                             .find(|(x, _)| **x == a)
                             .map(|(_, v)| v.clone())
                     };
+                    let reclassifies = value(BranchAttribute::ReclassificationTarget)
+                        .and_then(|v| branch::reclassification_target(book, &v));
                     let setting = CellSetting {
-                        entry_class: value(BranchAttribute::EntryClass),
+                        entry_class: value(BranchAttribute::EntryClass)
+                            .or_else(|| reclassifies.as_ref().map(|_| s("Reclassification"))),
                         period_state: period_state(state.as_str()),
                         evidence: value(BranchAttribute::EvidenceAttached),
                         key: Some(cell.idempotency_key.clone()),
                         approval_encoding: value(BranchAttribute::ApprovalEncoding),
+                        reclassifies,
+                        effective_date: value(BranchAttribute::EffectiveDate)
+                            .filter(|v| Day::parse(v).is_some()),
                     };
-                    let kernel = (observed != "admitted").then_some(observed.as_str());
+                    let kernel = (observed != "admitted").then_some(observed);
                     // A CF's reference reads its parent's refusal and law row.
                     let expectation = self.run.case.expectations.as_ref().and_then(|s| {
                         let e = s.get(&cell.expectation)?;
@@ -536,6 +765,7 @@ impl Sweeper<'_, '_> {
                                 &setting,
                                 kernel,
                                 false,
+                                cell.reference_verdict.as_deref(),
                             );
                             (token, fail)
                         }
@@ -548,7 +778,7 @@ impl Sweeper<'_, '_> {
                     if let Some(why) = fail {
                         row.verdict = RowVerdict::Fail;
                         row.reason = Some(why);
-                        repro.push(reproduce(&dry));
+                        repro.push(reproduce(dry));
                     } else {
                         row.verdict = RowVerdict::Pass;
                     }
@@ -593,7 +823,10 @@ pub fn sweep<'c>(
     let entry_seq = book
         .steps
         .iter()
-        .find(|s| s.step_kind() == Some(StepKind::Intent) && s.reference == group.intent)
+        .find(|s| {
+            matches!(s.step_kind(), Some(StepKind::Intent | StepKind::Allocate))
+                && s.reference == group.intent
+        })
         .map_or(i128::MAX, |s| s.seq);
     // The history's own principals for the transitions it lacks.
     let closer = book

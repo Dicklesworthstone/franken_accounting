@@ -137,3 +137,43 @@ parameters = []
 classes = ["draft_self_promotion", "entry_approval", "migration_legacy_pair", "none"]
 components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/draft.rs:1496"
+
+# A Reclassification's one target (§6.4 W-P-04): the kernel reads the earlier entry the intent
+# names and refuses a move of more than that entry's legs left (FA-REF-185), after identity and
+# before period law and SoD. `single(<fact>)` names that fact's one posting as the target.
+[[rule]]
+id = "reclassification_shape"
+attribute = "reclassification_target"
+reader = "kernel:3''. A Reclassification"
+class_rule = "enum"
+parameters = []
+classes = ["single"]
+components = ["refusal", "law_row"]
+code_justification = "crates/fa-journal/src/post.rs:2972"
+
+# The period an entry's effective date resolves to (§6.4 W-P-03-CF-01): the kernel resolves the
+# date to exactly one period before period law checks that period's state, so re-dating an entry
+# changes which state its class is admitted against.
+[[rule]]
+id = "effective_period"
+attribute = "effective_date"
+reader = "kernel:3. Resolve the effective date to exactly one period"
+class_rule = "enum"
+parameters = []
+classes = []
+components = ["refusal", "law_row"]
+code_justification = "crates/fa-journal/src/post.rs:2570"
+
+# Who approved a proposal (§6.4 W-P-01(b) on F6b): SoD reads every cited approval's principal and
+# refuses the preparer's own (FA-REF-008) before it counts approvals; the allocation review layer
+# refuses its preparer's review approval itself (FA-REF-012). `<route>(<principal label>)` names the
+# route the approval was recorded through and its approver; `none` cites no approval.
+[[rule]]
+id = "self_approval"
+attribute = "approvals_recorded"
+reader = "kernel:5''. Segregation of duties"
+class_rule = "enum"
+parameters = []
+classes = ["allocation_review_approval", "proposal_approval", "none"]
+components = ["refusal", "law_row"]
+code_justification = "crates/fa-journal/src/post.rs:3348"
