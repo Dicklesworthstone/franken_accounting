@@ -472,3 +472,40 @@ parent = "W-P-01"
 changed_attribute = "approval_encoding"
 changed_value = "none"
 expect = "admit"
+
+# W-P-04 (plan §6.4): F6's $544 million transfer out of CIP encoded as one Reclassification of one
+# earlier entry. The CIP debits of the first quarter 2001 adjustment it moved are F1's $142 million
+# leg and F2's $402 million, two entries; a Reclassification names exactly one target and moves no
+# more out of it than its legs left, so either single target is refused FA-REF-185 by the
+# Reclassification law, after identity and before period law and SoD: on this encoding the
+# director's self-approval is never reached. Both cells are record-inconsistent.
+[[expectation]]
+id = "W-P-04"
+type = "P"
+book_variant = "native"
+statement_template = "P.branch_table"
+basis = ["F6", "F1", "F2"]
+intent = "F6a"
+refusal = "FA-REF-185"
+law_row = "plan:§8.2"
+attribute = "reclassification_target"
+reference_verdict = "FA-REF-185"
+
+[[target]]
+expectation = "W-P-04"
+fact = "F6a"
+branch_attrs = ["reclassification_target"]
+
+[[branch_cell]]
+expectation = "W-P-04"
+target = "F6a"
+cell = ["single(F1)"]
+expect = "FA-REF-185"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-P-04"
+target = "F6a"
+cell = ["single(F2)"]
+expect = "FA-REF-185"
+record_consistent = false

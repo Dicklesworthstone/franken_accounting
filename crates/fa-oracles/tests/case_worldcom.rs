@@ -10,11 +10,13 @@
 
 use std::collections::BTreeMap;
 
+use fa_oracles::cases::branch;
 use fa_oracles::cases::check::{CheckFailure, Verdict, run_load_checks};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::WORLDCOM;
 use fa_oracles::cases::error::{LoadError, LoadErrorKind};
 use fa_oracles::cases::fact::{Provenance, values_canonical};
+use fa_oracles::cases::reference::{CellSetting, RefVerdict, ReferenceAdapter};
 use fa_oracles::cases::{Case, CaseFiles, load};
 use fa_oracles::sha256;
 
@@ -925,4 +927,84 @@ fn w7_posted_ordinal_names_a_fact_and_a_positive_ordinal() {
             "{bad}: {errors:#?}"
         );
     }
+}
+
+/// W-P-04 (§6.4): F6a's `reclassification_target` cells are exactly
+/// `single(F1)` and `single(F2)`. With each target posted at its own step,
+/// the reference oracle refuses both FA-REF-185 through
+/// `Oracle::reclassify`: F1's CIP debit is $142 million and F2's $402
+/// million, each short of the $544 million F6a moves. F6a posted as itself
+/// is not refused by that law, so the refusal is the encoding's.
+#[test]
+fn w_p_04_single_target_reclassification_is_fa_ref_185_in_the_reference() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-P-04").expect("W-P-04");
+    let t = set.targets_of("W-P-04").next().expect("its target");
+    let cells = branch::enumerate(&case, e, t).expect("the cells enumerate");
+    let keys: Vec<Vec<String>> = cells.cells.iter().map(|c| c.key.clone()).collect();
+    assert_eq!(
+        keys,
+        [
+            vec!["single(F1)".to_string()],
+            vec!["single(F2)".to_string()]
+        ]
+    );
+    assert!(cells.cells.iter().all(|c| !c.record_consistent));
+    let book = &case.books["native"];
+    let f6a = book.intents.iter().find(|i| i.id == "F6a").expect("F6a");
+    let adapter = ReferenceAdapter::new(&case, book).expect("the adapter");
+    for target in ["F1", "F2"] {
+        let cell = CellSetting {
+            entry_class: Some("Reclassification".into()),
+            key: Some(format!("wp04-{target}")),
+            reclassifies: branch::reclassification_target(book, &format!("single({target})")),
+            ..CellSetting::default()
+        };
+        assert_eq!(cell.reclassifies.as_deref(), Some(target));
+        assert_eq!(
+            adapter.first_refusal(f6a, &cell),
+            Ok(Ok(Some("FA-REF-185"))),
+            "{target}"
+        );
+        assert_eq!(
+            adapter.p_cell(f6a, &cell, Some("FA-REF-185")),
+            RefVerdict::Agree
+        );
+        assert!(matches!(
+            adapter.p_cell(f6a, &cell, Some("FA-REF-010")),
+            RefVerdict::Disagree { .. }
+        ));
+    }
+    let plain = CellSetting {
+        key: Some("wp04-plain".into()),
+        ..CellSetting::default()
+    };
+    assert_ne!(
+        adapter.first_refusal(f6a, &plain),
+        Ok(Ok(Some("FA-REF-185")))
+    );
+    assert_eq!(branch::reclassification_target(book, "single(F99)"), None);
+    assert_eq!(branch::reclassification_target(book, "F1"), None);
+}
+
+/// A `reclassification_target` value outside the rule's closed class list
+/// (`single(<fact>)`) is refused at load, naming the value.
+#[test]
+fn w_p_04_reclassification_target_outside_single_is_refused() {
+    let mut files = worldcom();
+    edit_row(
+        &mut files,
+        "books/native.toml",
+        "id = \"bc-F6a-reclassification-target\"",
+        "\"single(F2)\"",
+        "\"both(F1,F2)\"",
+    );
+    let errors = load_copy(&files).expect_err("both(F1,F2) is no class of the rule");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.kind == LoadErrorKind::UnknownValue && e.detail.contains("both(F1,F2)")),
+        "{errors:#?}"
+    );
 }

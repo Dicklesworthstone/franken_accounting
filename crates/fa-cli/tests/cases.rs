@@ -665,6 +665,38 @@ fn worldcom_w_p_01_cf_01_without_the_self_approval_is_admitted() {
     );
 }
 
+/// W5 (§6.4 W-P-04): F6's $544 million transfer encoded as one
+/// Reclassification of one earlier entry. Its CIP debits came from F1
+/// ($142 million) and F2 ($402 million), and a Reclassification names
+/// exactly one target and moves no more out of it than its legs left. So
+/// each single-target cell is refused FA-REF-185 (exit 3) after identity and
+/// before period law and SoD, and the director's self-approval is never
+/// reached. The reference oracle, with the target posted at its own step,
+/// decides both cells through `Oracle::reclassify` and agrees.
+#[test]
+fn worldcom_w_p_04_single_target_reclassification_is_refused_fa_ref_185() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-P-04")
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "PASS W-P-04 P native F6a/reclassification_target=single(F1) class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false commit_agrees=ok ref=agree",
+            "PASS W-P-04 P native F6a/reclassification_target=single(F2) class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false ref=agree",
+        ],
+        "{text}"
+    );
+}
+
 /// A8b (§6.4 W-D-02): F6 as legacy history on WorldCom's migration book.
 /// The run opens, stages F6a and F6b (each one-approval twin refused
 /// FA-REF-012) and finalizes; jet.self_approved sees neither chunk before

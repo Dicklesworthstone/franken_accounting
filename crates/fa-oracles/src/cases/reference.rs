@@ -93,7 +93,14 @@ pub struct CellSetting {
     /// The `approval_encoding` value: `draft_self_promotion` adds the
     /// owner's own promotion after an admitted plan (A8b).
     pub approval_encoding: Option<String>,
+    /// The intent a `reclassification_target` cell reclassifies: the cell is
+    /// one Reclassification of that earlier posting (§6.4 W-P-04).
+    pub reclassifies: Option<String>,
 }
+
+/// The oracle replayed to a step, its periods' states, and the journal index
+/// of the one posting replayed into it (a Reclassification's target).
+type Replayed = (Oracle, BTreeMap<String, PeriodState>, Option<usize>);
 
 /// The adapter over one book variant.
 pub struct ReferenceAdapter<'c> {
@@ -247,22 +254,43 @@ impl<'c> ReferenceAdapter<'c> {
     }
 
     /// The oracle after the period steps before `seq`, every period in its
-    /// history state except `fresh`, left Future; and those states.
+    /// history state except `fresh`, left Future; those states; and the
+    /// journal index of `posting`, posted at its own step.
     fn oracle_at(
         &self,
         seq: i128,
         fresh: Option<&str>,
-    ) -> Result<(Oracle, BTreeMap<String, PeriodState>), String> {
+        posting: Option<&IntentDef>,
+    ) -> Result<Replayed, String> {
         let mut oracle = self.oracle.clone();
         let mut states: BTreeMap<String, PeriodState> = self
             .codes
             .keys()
             .map(|l| (l.clone(), PeriodState::Future))
             .collect();
+        // The one earlier posting a cell needs in the journal (a
+        // Reclassification's target), posted at its own step.
+        let mut posted = None;
         for step in self.book.steps.iter().filter(|s| s.seq < seq) {
             let Some(kind) = step.step_kind() else {
                 continue;
             };
+            if let Some(p) = posting
+                && kind == StepKind::Intent
+                && step.reference == p.id
+            {
+                let index = oracle.journal_len();
+                if let Verdict::Refused { code } =
+                    oracle.post(&self.intent(p, &CellSetting::default())?)
+                {
+                    return Err(format!(
+                        "{}: the reference refused it at its step ({code})",
+                        p.id
+                    ));
+                }
+                posted = Some(index);
+                continue;
+            }
             if !matches!(
                 kind,
                 StepKind::PeriodOpen
@@ -281,7 +309,7 @@ impl<'c> ReferenceAdapter<'c> {
                 states.insert(label.to_string(), to);
             }
         }
-        Ok((oracle, states))
+        Ok((oracle, states, posted))
     }
 
     fn advance(
@@ -426,10 +454,23 @@ impl<'c> ReferenceAdapter<'c> {
             )
         })?;
         let seq = self.step_of(intent);
+        let reclassified = match cell.reclassifies.as_deref() {
+            Some(t) => Some(
+                self.book
+                    .intents
+                    .iter()
+                    .find(|i| i.id == t)
+                    .ok_or_else(|| format!("{}: reclassifies no intent `{t}`", intent.id))?,
+            ),
+            None => None,
+        };
         // The cell's period state, reached from Future along the sweep
         // order; else the history's at the intent's step.
-        let (mut oracle, states) =
-            self.oracle_at(seq, cell.period_state.is_some().then_some(label))?;
+        let (mut oracle, states, target) = self.oracle_at(
+            seq,
+            cell.period_state.is_some().then_some(label),
+            reclassified,
+        )?;
         let mut state = states.get(label).copied().unwrap_or(PeriodState::Future);
         if let Some(target) = cell.period_state {
             let rank = |s: PeriodState| match s {
@@ -455,9 +496,36 @@ impl<'c> ReferenceAdapter<'c> {
                 state = to;
             }
         }
-        let reference = self.intent(intent, cell)?;
-        // 1. Structure, balance, period, identity, period law.
-        if let Verdict::Refused { code } = oracle.post(&reference) {
+        let mut reference = self.intent(intent, cell)?;
+        // 1. Structure, balance, period, identity, period law; a
+        //    Reclassification cell posts through `Oracle::reclassify`, whose
+        //    law against its target is decided after identity.
+        let verdict = match (reclassified, target) {
+            (None, _) => oracle.post(&reference),
+            (Some(_), Some(index)) => {
+                let reason = intent
+                    .reason
+                    .as_deref()
+                    .or_else(|| {
+                        self.book
+                            .defaults
+                            .iter()
+                            .find(|d| d.attribute == "reason")
+                            .map(|d| d.rule.as_str())
+                    })
+                    .ok_or_else(|| format!("{}: a Reclassification names no reason", intent.id))?;
+                reference.supersession_reason = supersession_tag(reason)
+                    .ok_or_else(|| format!("{}: reason `{reason}` is not registered", intent.id))?;
+                oracle.reclassify(&reference, index)
+            }
+            (Some(t), None) => {
+                return Err(format!(
+                    "{}: its target {} posts at no step before it",
+                    intent.id, t.id
+                ));
+            }
+        };
+        if let Verdict::Refused { code } = verdict {
             return Ok(Ok(Some(code)));
         }
         // 2. SoD over the intent's approvals: none recorded by a P cell,
@@ -840,6 +908,17 @@ fn reason_tag(name: &str) -> Option<u16> {
         .map(|c| c.code)
 }
 
+/// A supersession reason's registered code (`reason_codes.toml`, scope
+/// `supersession`).
+fn supersession_tag(name: &str) -> Option<u16> {
+    fa_registry::reason_codes::ReasonCodes::embedded()
+        .ok()?
+        .rows
+        .iter()
+        .find(|c| c.scope == "supersession" && c.name == name)
+        .map(|c| c.code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -852,6 +931,7 @@ mod tests {
             evidence: evidence.map(Into::into),
             key: Some(key.into()),
             approval_encoding: None,
+            reclassifies: None,
         }
     }
 

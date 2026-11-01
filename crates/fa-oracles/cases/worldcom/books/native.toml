@@ -1182,6 +1182,15 @@ attribute = "approval_encoding"
 rule = "draft_promotion_owner"
 values = ["draft_self_promotion", "entry_approval"]
 
+# W-P-04: F6a encoded as one Reclassification (plan §6.4). The record says its $544M came from two
+# entries, F1's $142M CIP leg and F2's $402M; a Reclassification names exactly one target, so each
+# value names one of them.
+[[branch_class]]
+id = "bc-F6a-reclassification-target"
+attribute = "reclassification_target"
+rule = "reclassification_shape"
+values = ["single(F1)", "single(F2)"]
+
 [[default]]
 attribute = "effective_date"
 rule = "reporting_period_last_day"
@@ -1196,6 +1205,11 @@ rationale = "the record describes the entries' documents without publishing them
 attribute = "approval_encoding"
 rule = "none"
 rationale = "the book posts each entry with no approval attached: an entry approval needs A0, and a draft promoted by its owner is W-P-01's own branch (plan §6.4)"
+
+[[default]]
+attribute = "reclassification_target"
+rule = "none"
+rationale = "the record describes each entry as an ordinary journal entry, none as a Reclassification of an earlier one, so an intent names no reclassification target; W-P-04 branches the one encoding that would name one (plan §6.4)"
 
 [[default]]
 attribute = "acting_principal"
