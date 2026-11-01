@@ -1415,19 +1415,24 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         "report and certificate"
     );
     let certified_report = certified[0].to_string();
-    assert_eq!(
-        certified_report,
-        cli_data(&[
-            "tb",
-            "--period",
-            "FY2026-P03",
-            "--as-known-at",
-            &certified[1]["known_at"].to_string(),
-            "--book",
-            &b,
-            "--json",
-        ])
-    );
+    // The uncertified historical read discloses how it was served (fa-715);
+    // the certified report folds the journal and carries no serving basis.
+    // Apart from that disclosure the two are byte-identical.
+    let mut historical: JsonValue = fastmcp_rust::serde_json::from_str(&cli_data(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &certified[1]["known_at"].to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]))
+    .unwrap();
+    assert!(historical["served"]["mode"].is_string(), "{historical}");
+    assert_eq!(certified[0]["served"], JsonValue::Null);
+    historical["served"] = JsonValue::Null;
+    assert_eq!(certified_report, historical.to_string());
     let certificate_hex = certified[1]["bytes"].as_str().unwrap().to_string();
     let certificate_oid = certified[1]["oid"].as_str().unwrap().to_string();
     assert_eq!(certificate_oid.len(), 64);
