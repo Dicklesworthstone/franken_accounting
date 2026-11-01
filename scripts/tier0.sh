@@ -22,6 +22,11 @@
 
 set -uo pipefail
 
+# Completion markers are a machine contract; forward plain Cargo output
+# through rch without replacing any caller-supplied environment allowlist.
+export CARGO_TERM_COLOR=never
+export RCH_ENV_ALLOWLIST="${RCH_ENV_ALLOWLIST:+$RCH_ENV_ALLOWLIST,}CARGO_TERM_COLOR"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 

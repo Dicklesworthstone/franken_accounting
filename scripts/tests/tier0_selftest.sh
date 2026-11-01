@@ -10,6 +10,7 @@
 #   - scripts/tests/tier0_selftest.sh::pre_push_requires_tier0_note
 #   - scripts/tests/tier0_selftest.sh::falls_back_to_local_lane_on_rch_refusal
 #   - scripts/tests/tier0_selftest.sh::unrun_refuses_to_fold_without_ejecting
+#   - scripts/tests/tier0_selftest.sh::forced_color_preserves_completion_and_forwarded_inputs
 # =============================================================================
 
 set -uo pipefail
@@ -42,6 +43,18 @@ if [ "${FAKE_RCH_MODE:-remote}" = "ssh-timeout" ]; then
 fi
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--" ]; then
   shift 2
+fi
+if [ "${FAKE_RCH_MODE:-remote}" = "check-color-forwarding" ]; then
+  case " ${RCH_ENV_ALLOWLIST//,/ } " in
+    *" FA_TIER0_SELFTEST_SENTINEL "*) ;;
+    *) printf 'caller environment allowlist was replaced\n' >&2; exit 97 ;;
+  esac
+  # Model the observed remote color default unless the gate explicitly
+  # forwards Cargo's setting. Cargo itself emits the completion marker.
+  case " ${RCH_ENV_ALLOWLIST//,/ } " in
+    *" CARGO_TERM_COLOR "*) ;;
+    *) export CARGO_TERM_COLOR=always ;;
+  esac
 fi
 printf '[RCH] Selected worker: hz2 at 10.0.0.2\n'
 RCH_CARGO_WRAPPER_BYPASS=1 "$@"
@@ -168,6 +181,27 @@ remote_tier0_note() {
 
 remote_train_note() {
   git --git-dir="$remote" notes --ref=merge-train show "$1" 2>/dev/null || true
+}
+
+forced_color_preserves_completion_and_forwarded_inputs() {
+  local rc=0
+  (
+    cd "$dev" || exit 1
+    CARGO_TERM_COLOR=always RCH_ENV_ALLOWLIST=FA_TIER0_SELFTEST_SENTINEL \
+      FAKE_RCH_MODE=check-color-forwarding \
+      bash scripts/tier0.sh --no-note --require-clean
+  ) >"$base/forced-color.out" 2>"$base/forced-color.err"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    gate_fail "forced_color_preserves_completion_and_forwarded_inputs — completed compile was not admitted (exit $rc; $(cat "$base/forced-color.out" "$base/forced-color.err"))"
+    return 1
+  fi
+  if ! grep -Eq '^PASS check tier0 PASS step=check ' "$base/forced-color.out"; then
+    gate_fail "forced_color_preserves_completion_and_forwarded_inputs — no positive compile verdict"
+    return 1
+  fi
+  gate_pass "forced_color_preserves_completion_and_forwarded_inputs (real Cargo completed, forced caller color overridden, existing allowlist retained)"
+  return 0
 }
 
 delete_remote_trains() {
@@ -566,6 +600,7 @@ setup_fixture_repo
 if [ "$#" -gt 0 ]; then
   for fn in "$@"; do
     case "$fn" in
+      forced_color_preserves_completion_and_forwarded_inputs|\
       folds_two_green_trains_and_updates_main|\
       refuses_test_target_syntax_error|\
       refuses_lib_type_error|\
@@ -582,6 +617,7 @@ if [ "$#" -gt 0 ]; then
     esac
   done
 else
+  forced_color_preserves_completion_and_forwarded_inputs
   folds_two_green_trains_and_updates_main
   refuses_test_target_syntax_error
   refuses_lib_type_error

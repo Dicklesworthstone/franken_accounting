@@ -1417,3 +1417,21 @@ change is introduced. The original 679/2 run stays red; the independent
 FA-ART-LAB-04 witness mismatch is not repaired by replacing its hashes.
 Native re-execution and complete qualification of this repair remain
 required.
+
+## 2026-11-01 — Cargo color hid a successful compile from the gate (fa-1qk0)
+
+Original Tier 0 on c6b229386 observed remote exit 0 and Cargo completion
+after 15m05, but returned UNRUN: ANSI escapes before `Finished` prevented
+its anchored completion predicate from matching. No PASS note or fold was
+permitted by that run. A fresh execution on the same tree with supported
+plain Cargo output passed and published the exact-tree note before folding.
+
+Both gate drivers now set `CARGO_TERM_COLOR=never` and append that setting
+to the existing RCH environment allowlist. No marker, exit-code rule,
+budget, test inventory or failure classification changes. The existing
+Tier-0 harness gains a forced-color caller regression: its controlled RCH
+shim still executes real Cargo, models the remote color default, and
+requires the caller's other forwarded input to survive. This is a gate
+self-test, not native accounting evidence. The original compiler-error,
+transport-refusal, stale-note and missing-note controls remain required;
+their rejection and the new positive must execute before qualification.

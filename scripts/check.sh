@@ -49,6 +49,11 @@
 # =============================================================================
 set -u
 
+# The anchored Cargo completion markers require plain output, including when
+# rch or the caller otherwise requests color. Preserve other forwarded inputs.
+export CARGO_TERM_COLOR=never
+export RCH_ENV_ALLOWLIST="${RCH_ENV_ALLOWLIST:+$RCH_ENV_ALLOWLIST,}CARGO_TERM_COLOR"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 # shellcheck source=lib/gate_verdict.sh
