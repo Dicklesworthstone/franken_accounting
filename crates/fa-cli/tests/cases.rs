@@ -619,6 +619,7 @@ fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
             let mut words = l.split(' ');
             matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
                 && words.next() == Some("W-P-01")
+                && words.nth(2).is_some_and(|cell| cell.starts_with("F6a/"))
         })
         .map(String::as_str)
         .collect();
@@ -631,6 +632,49 @@ fn worldcom_w_p_01_draft_self_promotion_is_refused_fa_ref_008() {
             "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=none state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree",
             "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_unreviewed state=Open route=approval refusal=FA-REF-008 exit=7 record_consistent=false ref=agree",
             "PASS W-P-01 P native F6a/approval_encoding=entry_approval,evidence_attached=placeholder_reviewed state=Open route=approval refusal=FA-REF-008 exit=7 ref=agree",
+        ],
+        "{text}"
+    );
+}
+
+/// W5 (§6.4 W-P-01(b) on F6b): the director's own approval of the
+/// allocation that clears F6a's clearing account. Route A approves the
+/// allocation review itself (`fa allocate approve`) and is refused
+/// FA-REF-012 by the review layer, in every period state, before any plan
+/// exists. Route B records a generic approval of the sealed proposal (`fa
+/// approve --proposal`) and cites it when the review is planned: period law
+/// decides first (Future and Locked FA-REF-010, Closed without post_closed
+/// FA-REF-011), and in Open and SoftClosed SoD refuses the preparer's own
+/// approval FA-REF-008. The reference oracle has no allocation entry point,
+/// and each cell says so (ref=not_modelled).
+#[test]
+fn worldcom_w_p_01_f6b_self_approval_of_the_allocation_is_refused() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let rows: Vec<&str> = o
+        .lines
+        .iter()
+        .filter(|l| {
+            let mut words = l.split(' ');
+            matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN"))
+                && words.next() == Some("W-P-01")
+                && words.nth(2).is_some_and(|cell| cell.starts_with("F6b/"))
+        })
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Future state=Future route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Future state=Future route=proposal-approval refusal=FA-REF-010 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Open state=Open route=allocate-approve refusal=FA-REF-012 exit=7 ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Open state=Open route=proposal-approval refusal=FA-REF-008 exit=7 ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=SoftClosed state=SoftClosed route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=SoftClosed state=SoftClosed route=proposal-approval refusal=FA-REF-008 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Closed state=Closed route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Closed state=Closed route=proposal-approval refusal=FA-REF-011 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=allocation_review_approval(property-accounting-director-1),period_state_at_commit=Locked state=Locked route=allocate-approve refusal=FA-REF-012 exit=7 record_consistent=false ref=not_modelled",
+            "PASS W-P-01 P native F6b/approvals_recorded=proposal_approval(property-accounting-director-1),period_state_at_commit=Locked state=Locked route=proposal-approval refusal=FA-REF-010 exit=7 record_consistent=false ref=not_modelled",
         ],
         "{text}"
     );

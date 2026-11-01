@@ -1877,6 +1877,7 @@ fn p_row(run: &BookRun<'_>, e: &Expectation, mut row: RowLine) -> Eval {
             &CellSetting::default(),
             observed.as_deref(),
             true,
+            None,
         );
         row.projection.push(("ref".into(), token));
         witnesses.append(&mut seen);
@@ -1902,7 +1903,8 @@ fn p_row(run: &BookRun<'_>, e: &Expectation, mut row: RowLine) -> Eval {
 /// refusal (`None` when it admitted). A disagreement fails; `not_modelled`
 /// never counts as agreement and must be what the row declares; and on the
 /// documented outcome (`documented`), the declared `reference_verdict` is
-/// the refusal the reference agreed on.
+/// the refusal the reference agreed on. A cell's own `reference_verdict`
+/// (`cell_declared`) replaces the row's.
 pub(crate) fn reference(
     run: &BookRun<'_>,
     e: &Expectation,
@@ -1910,6 +1912,7 @@ pub(crate) fn reference(
     cell: &CellSetting,
     kernel: Option<&str>,
     documented: bool,
+    cell_declared: Option<&str>,
 ) -> (String, Option<String>, Vec<(String, String)>) {
     let Some(it) = run.book.intents.iter().find(|i| i.id == intent) else {
         return (
@@ -1927,7 +1930,7 @@ pub(crate) fn reference(
             kernel: kernel.unwrap_or("admit").into(),
         },
     };
-    let declared = e.fields.str("reference_verdict");
+    let declared = cell_declared.or_else(|| e.fields.str("reference_verdict"));
     let mut witnesses = vec![("reference".to_string(), verdict.token().to_string())];
     let observed = kernel.unwrap_or("admit");
     let fail = match &verdict {

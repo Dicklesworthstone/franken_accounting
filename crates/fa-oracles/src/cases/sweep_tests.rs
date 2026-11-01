@@ -394,3 +394,50 @@ fn a_cf_row_with_a_base_cell_adds_the_attribute_its_parent_does_not_branch() {
         "the CF's key is its own"
     );
 }
+
+/// W-P-01(b) on F6b (§6.4): the allocation's cells are planned on a group of
+/// their own, F6b's, whose entry step is an `allocate` step: two routes
+/// across the five period states, each cell decided in its own state, its
+/// `reference_verdict = "not_modelled"` carried (the oracle has no
+/// allocation entry point), and only the Open cells the record's.
+#[test]
+fn allocation_cells_are_planned_on_the_allocation_entry() {
+    let case =
+        crate::cases::load(&crate::cases::embedded::WORLDCOM.case_files()).expect("worldcom loads");
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-P-01").expect("W-P-01");
+    // Both of W-P-01's targets, as the runner passes them: the CF of
+    // W-P-01 finds its default cell on F6a's table, not F6b's.
+    let tables: Vec<Enumeration> = set
+        .targets_of("W-P-01")
+        .map(|t| enumerate(&case, e, t).expect("a table"))
+        .collect();
+    assert_eq!(tables.len(), 2);
+    let plan = sweep_plan(&case, "native", &tables).expect("a plan");
+    let group = plan
+        .groups
+        .iter()
+        .find(|g| g.intent == "F6b")
+        .expect("F6b's group");
+    assert_eq!(group.intent_key, "wc-F6b");
+    assert_eq!(group.cells.len(), 10);
+    assert_eq!(group.states(), PeriodState::ALL);
+    assert!(
+        group
+            .cells
+            .iter()
+            .all(|c| c.reference_verdict.as_deref() == Some("not_modelled"))
+    );
+    let route_b_open = group
+        .cells
+        .iter()
+        .find(|c| c.key == ["proposal_approval(property-accounting-director-1)", "Open"])
+        .expect("route B's Open cell");
+    assert_eq!(route_b_open.expect.as_deref(), Some("FA-REF-008"));
+    assert!(route_b_open.record_consistent);
+    assert_eq!(
+        group.cells.iter().filter(|c| c.record_consistent).count(),
+        2,
+        "only the two Open cells are the record's"
+    );
+}

@@ -639,6 +639,7 @@ Declared defaults (each an encoding choice the record does not fix):
 | `acting_principal` | `role_of_record` | RR2 says a senior Enron executive released the reserve into earnings; that role (senior-executive-1, grants read and post) books RR1e |
 | `approval_encoding` | `none` | the indictment states no approval of the entries; the Adjusting-in-Closed cell with a second principal's approval is E3b's |
 | `reclassification_target` | `none` | the record describes the entries as ordinary postings, none as a Reclassification of an earlier entry, so no intent names a reclassification target |
+| `approvals_recorded` | `none` | the indictment states no approval of the entries, so the book records none |
 
 ## Findings, refusals, tie-outs and read-backs
 

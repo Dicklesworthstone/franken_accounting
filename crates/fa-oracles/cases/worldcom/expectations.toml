@@ -459,6 +459,100 @@ cell = ["entry_approval", "placeholder_unreviewed"]
 expect = "FA-REF-008"
 record_consistent = false
 
+# W-P-01(b) on F6b (plan §6.4): the director's own approval of the allocation that clears F6a's
+# clearing account into the ten Fiber Optic Cable items. Route A approves the allocation review
+# itself (fa allocate approve): the review layer refuses its preparer FA-REF-012 before any plan
+# exists, whatever the period's state. Route B records a generic approval of the sealed proposal
+# (fa approve --proposal) and cites it when the review is planned (fa allocate --review --approval
+# --dry-run): period law decides first (Future and Locked FA-REF-010; Closed without post_closed
+# FA-REF-011), then SoD refuses the preparer's own approval FA-REF-008 (sod_policy.toml#default:
+# no Allocation rule). The F6 transfers were booked inside 3Q01 (p.111), so only the Open cells
+# are the record's. The reference oracle has no allocation entry point: each cell is not_modelled.
+[[target]]
+expectation = "W-P-01"
+fact = "F6b"
+branch_attrs = ["approvals_recorded", "period_state_at_commit"]
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["allocation_review_approval(property-accounting-director-1)", "Future"]
+expect = "FA-REF-012"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["allocation_review_approval(property-accounting-director-1)", "Open"]
+expect = "FA-REF-012"
+record_consistent = true
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["allocation_review_approval(property-accounting-director-1)", "SoftClosed"]
+expect = "FA-REF-012"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["allocation_review_approval(property-accounting-director-1)", "Closed"]
+expect = "FA-REF-012"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["allocation_review_approval(property-accounting-director-1)", "Locked"]
+expect = "FA-REF-012"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["proposal_approval(property-accounting-director-1)", "Future"]
+expect = "FA-REF-010"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["proposal_approval(property-accounting-director-1)", "Open"]
+expect = "FA-REF-008"
+record_consistent = true
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["proposal_approval(property-accounting-director-1)", "SoftClosed"]
+expect = "FA-REF-008"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["proposal_approval(property-accounting-director-1)", "Closed"]
+expect = "FA-REF-011"
+record_consistent = false
+reference_verdict = "not_modelled"
+
+[[branch_cell]]
+expectation = "W-P-01"
+target = "F6b"
+cell = ["proposal_approval(property-accounting-director-1)", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false
+reference_verdict = "not_modelled"
+
 # W-P-01-CF-01 (plan §6.4): the same F6a with no approval attached. SoD then has nothing to refuse,
 # step 5b decides on the evidence, and with the reviewed placeholder the post is admitted: the
 # refusal W-P-01 shows rests on the self-approval, not on the transfer.
