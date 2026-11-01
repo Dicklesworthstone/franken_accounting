@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=1206b0238e983a161279240713eb91f18ee37c5b
+tree=cd2666be3075900ba24174e7f50c8423e5aa5bed
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=vmi1153651
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=70
+log_dir=/tmp/fa-worldcom-tier0-1206-final-20261101
+recorded_utc=2026-11-01T07:31:41Z
