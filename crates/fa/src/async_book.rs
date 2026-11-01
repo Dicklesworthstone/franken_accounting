@@ -3580,6 +3580,49 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         )))
     }
 
+    /// Apply an ordered collection of whole drafts in one owned target. The
+    /// current reviewer is admitted on this original source, never on its
+    /// historical scratch copy. Each planner still passes native admission.
+    pub(crate) async fn rehearse_drafts_into(
+        &mut self,
+        cx: &PurposeContexts,
+        target: Database<fgdb::MemVfs>,
+        keys: &BookKeys,
+        reviewer: &fa_journal::Capability,
+        request: fa_journal::draft::DraftSequenceRehearsalRequest,
+        entropy: Entropy,
+    ) -> Outcome<(
+        AsyncBook<fgdb::MemVfs, B>,
+        fa_journal::draft::DraftSequenceRehearsal,
+    )> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let (target, rehearsal) = match fa_journal::draft::rehearse_drafts_into(
+            &mut self.db,
+            target,
+            cx,
+            &self.context,
+            reviewer,
+            request,
+        )
+        .await?
+        {
+            Ok(rehearsed) => rehearsed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
+            AsyncBook {
+                db: target,
+                blobs: self.blobs.clone(),
+                context: self.context.clone(),
+                entropy,
+                signer: keys.checkpoint_signing_key(),
+                carried: fa_journal::CarriedHistory::default(),
+                principal_key: None,
+            },
+            rehearsal,
+        )))
+    }
+
     /// Materialize a scenario into an owned, empty memory database (plan
     /// §15.2): the native factory replays this book at `fork_at` and posts
     /// `requests` in order, rehearsing a case-bound class under its private

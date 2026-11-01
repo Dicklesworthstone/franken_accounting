@@ -66,8 +66,9 @@ pub use batch::plan_batch_into_draft;
 pub use correction::plan_correction_into_draft;
 pub(crate) use rehearsal::Rehearsing;
 pub use rehearsal::{
-    DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftSourceRecord,
-    rehearse_draft_into,
+    DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftRehearsalStep,
+    DraftSequenceRehearsal, DraftSequenceRehearsalRequest, DraftSourceRecord, rehearse_draft_into,
+    rehearse_drafts_into,
 };
 
 /// Canonical bytes of a draft body: `u16 version ‖ book_id[16] ‖ str name ‖

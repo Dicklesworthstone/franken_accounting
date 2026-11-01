@@ -378,7 +378,7 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .collect::<Result<Vec<_>, Fail>>()?;
         Some(CloseRunTransition::Reviewed {
             task: required(args, "--task")?.into(),
-            plan,
+            plan: Box::new(plan),
             approvals,
         })
     } else if reviewing {

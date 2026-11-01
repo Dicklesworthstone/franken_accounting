@@ -198,6 +198,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Retain only after the sync facade has replayed the entire combined
+    /// close graph. The store also requires verified_at to remain HEAD.
+    pub(crate) async fn retain_replayed_close_run_rehearsal(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &crate::CloseRunRehearsalCertificate,
+        verified_at: CommitSeq,
+    ) -> Outcome<RetainedCertificate> {
+        if let Err(refusal) = authorize(self, cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(denial) =
+            fa_policy::require(capability, Op::Produce, "retaining a close rehearsal")
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let artifact = match ReportArtifact::try_from(certificate) {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let validated = ValidatedArtifact {
+            artifact,
+            verified_at,
+        };
+        let context = self.context().clone();
+        crate::certificate_store::retain_validated(
+            &mut self.db,
+            cx,
+            &context,
+            &self.blobs,
+            &validated,
+        )
+        .await
+    }
+
     /// Retrieve the original immutable artifact, including non-native families.
     /// The full public digest is mandatory; a nested source is never substituted.
     /// Current whole-book read authority is checked before fetching any bytes and
