@@ -1429,6 +1429,7 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
         adapter.mcp.instructions(),
         adapter.authority_json(),
     );
+    let instruction_bytes = instructions.len();
     let mut builder = ServerBuilder::new(adapter.mcp.server.clone(), crate::VERSION)
         .instructions(instructions)
         .middleware(ToolArgumentErrors {
@@ -1452,7 +1453,8 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
     // the pinned framework's own instruction and capability limits.
     server.server_discovery().map_err(|e| {
         ServerError::Foundation(format!(
-            "fa-mcp cannot advertise its registered server: {e}"
+            "fa-mcp cannot advertise its registered server: {e} (instructions are {instruction_bytes} bytes; discovery allows {})",
+            fastmcp_rust::MAX_SERVER_INSTRUCTIONS_BYTES
         ))
     })?;
     Ok(server)

@@ -149,7 +149,13 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             || (e.verb == "rule" && e.subcommand.as_deref() == Some("test"))
             // fa-gpd4: sweeping due holds and scheduled reversals exercises
             // the book's intrinsic System principal on the host.
-            || (e.verb == "schedule" && e.subcommand.as_deref() == Some("sweep"));
+            || (e.verb == "schedule" && e.subcommand.as_deref() == Some("sweep"))
+            // fa-4o0: starting a close run and executing its tasks, one at a
+            // time or resumably, need Close authority and independent
+            // approvals outside both launch templates; sessions inspect a
+            // run through fa_close_status.
+            || (e.verb == "close"
+                && matches!(e.subcommand.as_deref(), Some("start" | "step" | "run")));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"
@@ -495,8 +501,13 @@ fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
     assert!(mcp.cluster("fa.close").unwrap().on_demand);
     // Historical reads, draft rehearsal, consolidation and exact reviewed
     // year-end preparation share this on-demand cluster. The latter does
-    // not grant native Close or independent Approve authority.
-    assert_eq!(mcp.tools_of("fa.close").count(), 5);
+    // not grant native Close or independent Approve authority. A close run's
+    // status is a read; starting and stepping one stay host-only (fa-4o0).
+    assert_eq!(mcp.tools_of("fa.close").count(), 6);
+    assert_eq!(
+        mcp.tool_for("close", Some("status")).unwrap().wire_name(),
+        "fa_close_status"
+    );
     assert_eq!(
         mcp.tool_for("close", Some("dry-run")).unwrap().wire_name(),
         "fa_close_dry_run"

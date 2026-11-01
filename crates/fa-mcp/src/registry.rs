@@ -3814,7 +3814,11 @@ mod tests {
             .tool_by_wire("fa_close_year_end")
             .expect("governed year-end draft tool");
         assert!(mcp.cluster("fa.close").unwrap().on_demand);
-        assert_eq!(mcp.tools_of("fa.close").count(), 5);
+        assert_eq!(mcp.tools_of("fa.close").count(), 6);
+        assert_eq!(
+            mcp.tool_for("close", Some("status")).unwrap().wire_name(),
+            "fa_close_status"
+        );
         assert!(
             !mcp.exposed(&[])
                 .any(|item| item.wire_name() == tool.wire_name())
