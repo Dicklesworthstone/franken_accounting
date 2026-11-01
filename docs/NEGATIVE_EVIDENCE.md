@@ -1358,3 +1358,29 @@ the unchanged model and independent verifier tests. No accounting validator,
 amount, procedure threshold, golden or acceptance requirement is weakened.
 Native execution of this updated workflow is pending; this test repair is
 maintenance of the existing feature, not a newly delivered accounting law.
+
+## 2026-11-01 — WorldCom's restatement lacked four original reporting closures (fa-yugf.42, fa-yugf.99)
+
+The recorded f6a631418 case run refused `case diff --statements` with
+FA-REF-161 for FY2001-P02. The native fixture uses a custom quarterly
+calendar: only 2001Q1 had a Lock, while the other four periods affected by
+R1 were merely Closed and had no StatementIssuance. Close permits audit
+adjustments; it is not an originally reported frontier. The refusal was
+correct and prevented W-T-03, W-R-02 and the case's disclosure from claiming
+retained comparisons that did not exist.
+
+The fixture now executes its four missing planned Locks through the existing
+two-person approval workflow before the case. Existing posting step numbers,
+published amounts, source documents, expectation types, the runtime budget
+and the README are unchanged. These are reconstructed book controls, not
+assertions of real filing dates or substitutes for the still-unimplemented
+historical issuance workflow in W7. No refusal or accounting law is relaxed.
+The existing unreported-coordinate controls remain the negative check; a
+redundant full WorldCom run is not added just to test another fixture edit.
+
+Native Linux case execution and the complete renderer acceptance remain
+pending. Linux workers initially reported zero slots; capacity recovered
+before this candidate's native verification attempt. Portable oracle tests
+are being attempted separately on the Windows worker with its
+explicit native target and isolated artifact directory; such results cannot
+qualify a Linux book workflow or the full project gate.

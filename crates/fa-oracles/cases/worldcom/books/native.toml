@@ -1308,6 +1308,13 @@ ref = "2001Q2"
 principal = "case-closer-1"
 
 [[step]]
+seq = 23
+kind = "period_lock"
+ref = "2001Q2"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
 seq = 24
 kind = "intent"
 ref = "F6a"
@@ -1359,6 +1366,23 @@ kind = "period_close"
 ref = "2001Q4"
 principal = "case-closer-1"
 
+# These reconstructed Locks, like Q1's, supply the native book's original
+# reporting frontiers. They do not assert real-world filing dates or supply
+# missing StatementIssuance evidence. Existing posting step numbers stay fixed.
+[[step]]
+seq = 35
+kind = "period_lock"
+ref = "2001Q3"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 36
+kind = "period_lock"
+ref = "2001Q4"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
 [[step]]
 seq = 40
 kind = "intent"
@@ -1374,6 +1398,13 @@ seq = 42
 kind = "period_close"
 ref = "2002Q1"
 principal = "case-closer-1"
+
+[[step]]
+seq = 43
+kind = "period_lock"
+ref = "2002Q1"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
 
 [[step]]
 seq = 50
