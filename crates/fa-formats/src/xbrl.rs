@@ -2673,6 +2673,22 @@ mod tests {
                 60_000 + income
             );
             verify_format_journal_xbrl_xml(&xml).unwrap();
+            let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
+            let linkbase = XbrlCalculationLinkbase::embedded_for_role(EQUITY_ROLE).unwrap();
+            validate_calculation_linkbase_detailed(&instance, &linkbase, Some(&schema)).unwrap();
+            // A legacy profile rejects even this unmodified attributed instance;
+            // it cannot establish that the omitted-income mutation is detected.
+            assert!(matches!(
+                validate_calculation_linkbase_detailed(
+                    &instance,
+                    &XbrlCalculationLinkbase::embedded_for_role(
+                        "http://frankenaccounting.org/role/TypeLevelStatements",
+                    )
+                    .unwrap(),
+                    Some(&schema),
+                ),
+                Err(FormatError::XbrlCalculationInconsistency { .. })
+            ));
             let mut omitted_income = instance;
             omitted_income
                 .facts
@@ -2680,11 +2696,6 @@ mod tests {
                 .find(|fact| fact.concept == "us-gaap:StockholdersEquity")
                 .unwrap()
                 .mantissa = 60_000;
-            let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
-            let linkbase = XbrlCalculationLinkbase::embedded_for_role(
-                "http://frankenaccounting.org/role/TypeLevelStatements",
-            )
-            .unwrap();
             assert!(matches!(
                 validate_calculation_linkbase_detailed(&omitted_income, &linkbase, Some(&schema)),
                 Err(FormatError::XbrlCalculationInconsistency { .. })

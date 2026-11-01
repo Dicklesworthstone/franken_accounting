@@ -1328,3 +1328,10 @@ used by current exports, while its independent XML reader, exact public-fact
 comparisons, contribution witnesses and T/R classifications remain unchanged.
 Native qualification is pending; the peer's red report is not this agent's
 independent execution, and no golden or acceptance requirement was weakened.
+
+The existing omitted-income negative also selected the historical calculation
+role for an attributed instance. The candidate first requires the unmodified
+instance to validate under its actual equity profile, retains an explicit
+wrong-profile control, and then requires the omitted-income mutation to fail
+under that same actual profile. An unrelated profile rejection can no longer
+stand in for detecting the incorrect parent-equity amount.
