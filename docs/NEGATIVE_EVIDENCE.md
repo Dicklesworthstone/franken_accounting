@@ -1384,3 +1384,16 @@ before this candidate's native verification attempt. Portable oracle tests
 are being attempted separately on the Windows worker with its
 explicit native target and isolated artifact directory; such results cannot
 qualify a Linux book workflow or the full project gate.
+
+## 2026-11-01 — Aging-portfolio prose used an uncited proof-class noun (fa-0hs4.13)
+
+The original native `registry-check` target on 1206b023 passed 16 tests and
+failed `real_workspace_registries_pass`: README paragraph 97 used “the proof”
+without a live FA-ART or FA-INV citation. The paragraph describes independent
+runtime verification of a retained portfolio certificate, not a registered
+formal proof artifact. It now calls that operation “verification”. Its
+account-level checks, distinct `complete` and `reconciled` verdicts, and
+explicit limitation about external-subledger agreement remain unchanged.
+No unrelated invariant citation, evidence artifact, checker exemption or
+accounting requirement is added. The original checker must be rerun on the
+repaired tree; the recorded 16/1 run remains a failure.

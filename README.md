@@ -838,9 +838,9 @@ both original sources at one prefix. It checks each selected account in each
 native unit, preserves zero-activity leaves and lists uncovered accounts explicitly.
 Equal and opposite account differences cannot cancel into a passing result, and
 pending reservations remain separate from posted and open amounts. `complete` and
-`reconciled` are distinct verdicts; the proof does not establish agreement with an
-external subledger. The recipient pins the outer portfolio certificate or keeps
-the signed receipt. Embedded recipients can additionally use
+`reconciled` are distinct verdicts; the verification does not establish agreement
+with an external subledger. The recipient pins the outer portfolio certificate or
+keeps the signed receipt. Embedded recipients can additionally use
 `fa_verify::report::verify_aging_portfolio_report_expected` with their independently
 chosen `AgingPortfolioRequest`, including the exact all-posting versus selected
 scope even when both happen to cover the same leaves. The existing major-2 bundle
