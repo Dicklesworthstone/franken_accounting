@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=dabae58ffab8a5b97657293361b83d1ef4c2a3b8
+tree=1e0d3ee23ce0a0a902c43b745d94882f28b0fa79
+lane=local
+host=hetzner1:Linux-x86_64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=8
+check_status=PASS
+check_seconds=244
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/timer-read-cx-daba-tier0-20261101
+recorded_utc=2026-11-01T20:52:56Z
