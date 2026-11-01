@@ -697,6 +697,49 @@ fn worldcom_w_p_04_single_target_reclassification_is_refused_fa_ref_185() {
     );
 }
 
+/// W5 (§6.4 W-P-03-CF-01): F4 as an Original is refused FA-REF-010 in a
+/// Closed 2Q01 (W-P-03's Original/Closed cell, the CF's base cell). The
+/// same cell posted effective on F4's booking date, 2001-07-17, lands in
+/// 3Q01, which is Open, and is admitted, and the reference agrees: the
+/// period law protects closed periods, but it cannot know an entry's true
+/// effective date.
+#[test]
+fn worldcom_w_p_03_cf_01_redating_f4_out_of_the_closed_quarter_is_admitted() {
+    let o = outcome("worldcom");
+    let text = o.text();
+    let row = |id: &str| -> Vec<&str> {
+        o.lines
+            .iter()
+            .filter(|l| {
+                let mut words = l.split(' ');
+                matches!(words.next(), Some("PASS" | "FAIL" | "UNRUN")) && words.next() == Some(id)
+            })
+            .map(String::as_str)
+            .collect()
+    };
+    let base: Vec<&str> = row("W-P-03")
+        .into_iter()
+        .filter(|l| {
+            l.starts_with(
+                "PASS W-P-03 P native F4/entry_class=Original,period_state_at_commit=Closed ",
+            )
+        })
+        .collect();
+    assert_eq!(base.len(), 1, "{text}");
+    assert!(
+        base[0].contains(" refusal=FA-REF-010 exit=7 "),
+        "{}",
+        base[0]
+    );
+    assert_eq!(
+        row("W-P-03-CF-01"),
+        [
+            "PASS W-P-03-CF-01 CF native F4/entry_class=Original,period_state_at_commit=Closed,effective_date=2001-07-17 state=Closed refusal=admitted exit=0 record_consistent=false ref=agree"
+        ],
+        "{text}"
+    );
+}
+
 /// A8b (§6.4 W-D-02): F6 as legacy history on WorldCom's migration book.
 /// The run opens, stages F6a and F6b (each one-approval twin refused
 /// FA-REF-012) and finalizes; jet.self_approved sees neither chunk before

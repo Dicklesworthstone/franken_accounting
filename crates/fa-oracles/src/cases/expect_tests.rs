@@ -335,6 +335,30 @@ fn cf_row_changing_two_attributes_is_refused() {
     );
 }
 
+/// W-P-03-CF-01: a CF's `base_cell` names one of its parent's authored
+/// cells, and a re-dating CF names a YYYY-MM-DD day.
+#[test]
+fn cf_base_cell_names_a_parent_cell_and_a_redating_cf_names_a_day() {
+    let based = CF.replace(
+        "expect = \"admit\"",
+        "base_cell = [\"Original\", \"Closed\"]\nexpect = \"admit\"",
+    );
+    loads(
+        &appended(&based),
+        "a CF naming its parent's authored cell loads",
+    );
+    refused_exp(
+        &appended(&based.replace("\"Closed\"]", "\"Frozen\"]")),
+        LoadErrorKind::DanglingKey,
+        "`base_cell = [\"Original\", \"Frozen\"]` is no [[branch_cell]] of W-P-03",
+    );
+    refused_exp(
+        &appended(&CF.replace("\"2001-07-17\"", "\"July 17\"")),
+        LoadErrorKind::UnknownValue,
+        "an effective_date CF names a YYYY-MM-DD day",
+    );
+}
+
 #[test]
 fn authored_self_row_is_refused() {
     refused_exp(

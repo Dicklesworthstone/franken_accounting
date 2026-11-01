@@ -346,3 +346,51 @@ fn a_cf_row_is_planned_as_its_parents_default_cell_changed() {
         "the CF's key is its own"
     );
 }
+
+/// W-P-03-CF-01 (§6.4): W-P-03 marks no default cell, so the CF names its
+/// base cell (Original, Closed). The parent does not branch the effective
+/// date, so the planned cell is that base cell with the re-dated day added.
+/// It is decided in the base cell's state, under a key of its own.
+#[test]
+fn a_cf_row_with_a_base_cell_adds_the_attribute_its_parent_does_not_branch() {
+    let case =
+        crate::cases::load(&crate::cases::embedded::WORLDCOM.case_files()).expect("worldcom loads");
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-P-03").expect("W-P-03");
+    let t = set
+        .targets_of("W-P-03")
+        .find(|t| t.fact == "F4")
+        .expect("F4");
+    let table = enumerate(&case, e, t).expect("F4's table");
+    let plan = sweep_plan(&case, "native", &[table]).expect("a plan");
+    let group = plan
+        .groups
+        .iter()
+        .find(|g| g.intent == "F4")
+        .expect("F4's group");
+    let cf: Vec<&SweepCell> = group
+        .cells
+        .iter()
+        .filter(|c| c.expectation == "W-P-03-CF-01")
+        .collect();
+    assert_eq!(cf.len(), 1);
+    assert_eq!(
+        cf[0].attrs,
+        [
+            BranchAttribute::EntryClass,
+            BranchAttribute::PeriodStateAtCommit,
+            BranchAttribute::EffectiveDate
+        ]
+    );
+    assert_eq!(cf[0].key, ["Original", "Closed", "2001-07-17"]);
+    assert_eq!(cf[0].state, PeriodState::Closed);
+    assert_eq!(cf[0].expect.as_deref(), Some("admit"));
+    assert!(
+        group
+            .cells
+            .iter()
+            .filter(|c| c.expectation == "W-P-03")
+            .all(|c| c.idempotency_key != cf[0].idempotency_key),
+        "the CF's key is its own"
+    );
+}

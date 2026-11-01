@@ -451,6 +451,9 @@ const EXP: &[(&str, Kind, &[ExpectationType])] = &[
     ("parent", Kind::Str, &[E::Cf]),
     ("changed_attribute", Kind::Str, &[E::Cf]),
     ("changed_value", Kind::Str, &[E::Cf]),
+    // The parent's authored cell a CF changes, when the parent marks no
+    // `default` cell (W-P-03-CF-01: the record fixes no period-law cell).
+    ("base_cell", Kind::Strs, &[E::Cf]),
     ("expect", Kind::Str, &[E::Cf]),
     ("read_verb", Kind::Str, &[E::T, E::R]),
     ("read_target", Kind::Str, &[E::T, E::R]),
@@ -1675,6 +1678,38 @@ impl<'a> Check<'a, '_> {
                 LoadErrorKind::UnknownValue,
                 format!(
                     "`changed_attribute = \"{a}\"` is one §2.6 attribute (a CF changes exactly one)"
+                ),
+            );
+        }
+        // A re-dating CF names the day the entry is moved to.
+        if f.str("changed_attribute") == Some(BranchAttribute::EffectiveDate.as_str())
+            && let Some(v) = f.str("changed_value")
+            && super::date::Day::parse(v).is_none()
+        {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownValue,
+                format!("`changed_value = \"{v}\"`: an effective_date CF names a YYYY-MM-DD day"),
+            );
+        }
+        if let (Some(cell), Some(p)) = (f.strs("base_cell"), f.str("parent"))
+            && !self
+                .set
+                .branch_cells
+                .iter()
+                .any(|c| c.expectation == p && c.cell.as_slice() == cell)
+        {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::DanglingKey,
+                format!(
+                    "`base_cell = [{}]` is no [[branch_cell]] of {p}",
+                    cell.iter()
+                        .map(|v| format!("\"{v}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             );
         }

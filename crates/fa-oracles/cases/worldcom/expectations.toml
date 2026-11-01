@@ -509,3 +509,20 @@ target = "F6a"
 cell = ["single(F2)"]
 expect = "FA-REF-185"
 record_consistent = false
+
+# W-P-03-CF-01 (plan §6.4): F4 as an Original is refused FA-REF-010 in a Closed 2Q01 (W-P-03's
+# Original/Closed cell). Posted instead effective on its booking date, 2001-07-17 (p.26 l.5), it
+# lands in 3Q01, which is Open, and is admitted. The period law protects closed periods; it cannot
+# know an entry's true effective date, which is why the case dates each entry by its sourced
+# reporting period (Limits).
+[[expectation]]
+id = "W-P-03-CF-01"
+type = "CF"
+book_variant = "native"
+statement_template = "CF.counterfactual"
+basis = ["F4", "F4-p26"]
+parent = "W-P-03"
+base_cell = ["Original", "Closed"]
+changed_attribute = "effective_date"
+changed_value = "2001-07-17"
+expect = "admit"
