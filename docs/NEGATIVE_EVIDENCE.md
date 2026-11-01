@@ -1335,3 +1335,26 @@ instance to validate under its actual equity profile, retains an explicit
 wrong-profile control, and then requires the omitted-income mutation to fail
 under that same actual profile. An unrelated profile rejection can no longer
 stand in for detecting the incorrect parent-equity amount.
+
+## 2026-11-01 — Solvency's debit-maturity negative retained the old admission contract (fa-0hs4.13)
+
+The forensic solvency workflow still expected general `obligation_maturity`
+on a debit leg to fail as historical extension 33 v1. The merged receivable
+implementation deliberately selects v2 when a general declaration names a
+debit leg. That obsolete expectation blocked the remaining checks in the
+test; it was not evidence of an invalid payable entering the journal.
+
+The original credit-only shortfall, changed due date, incomplete schedule,
+and exact installment-total checks remain. A new mixed-side history must
+produce the same 50.00 shortfall: its authenticated debit schedule is not
+another liability. The wrong-side negative now uses the explicit
+`receivable_maturity` spelling on a credit leg, which remains forbidden.
+Both malformed declarations must leave book information unchanged.
+
+The admission split is intentional: general debit terms now have a positive
+workflow check under v2; explicit receivable terms on a credit and an inexact
+installment total still refuse. Historical v1 debit rejection remains in
+the unchanged model and independent verifier tests. No accounting validator,
+amount, procedure threshold, golden or acceptance requirement is weakened.
+Native execution of this updated workflow is pending; this test repair is
+maintenance of the existing feature, not a newly delivered accounting law.

@@ -541,11 +541,12 @@ fn creditor_and_investor_margins_survive_public_workflow() {
 /// over the default 30-day horizon only the 150.00 matures: 50.00 short.
 /// The same history with the 1,000.00 due May 20 is 1,050.00 short. Planted
 /// negatives: a debt booked without terms leaves the schedule incomplete and
-/// the test refuses; terms on a debit leg, or installments that do not total
-/// the leg, are refused at `fa post`.
+/// the test refuses; explicit receivable terms on a credit leg, or installments
+/// that do not total the leg, are refused at `fa post`. General v2 debit terms
+/// are admitted but contribute no liability to the cash-flow test.
 #[test]
 fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
-    let book_with = |long_due: &str, short_terms: bool| {
+    let book_with = |long_due: &str, short_terms: bool, debit_terms: bool| {
         let f = Fixture::new();
         f.post(
             "capital",
@@ -555,6 +556,15 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
                 ("credit", "3000", "100.00", None),
             ],
         );
+        let long_terms = if debit_terms {
+            // General maturity terms admit either side under v2. The debit
+            // schedule is not another liability in the solvency population.
+            format!(
+                r#""obligation_maturity":[{{"ordinal":0,"status":"contractual","installments":[{{"due_date":"2026-05-15","amount":"1000.00 USD"}}]}},{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"{long_due}","amount":"1000.00 USD"}}]}}]"#
+            )
+        } else {
+            due(long_due, "1000.00")
+        };
         let (code, out) = f.try_post(
             "long-debt",
             "2026-01-15",
@@ -562,7 +572,7 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
                 ("debit", "6000", "1000.00", None),
                 ("credit", "2000", "1000.00", None),
             ],
-            &due(long_due, "1000.00"),
+            &long_terms,
         );
         assert_eq!(code, 0, "{}", out.render());
         let short = if short_terms {
@@ -605,7 +615,7 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
         )
     };
 
-    let (code, dec31) = solvency(&book_with("2026-12-31", true));
+    let (code, dec31) = solvency(&book_with("2026-12-31", true, false));
     assert_eq!(code, 0, "{}", dec31.render());
     let (value, narrative) = shortfall(&dec31);
     assert_eq!(value, 5_000, "{narrative}");
@@ -619,7 +629,7 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
     }
 
     // Only the long debt's due date changes, and with it the verdict.
-    let (code, may20) = solvency(&book_with("2026-05-20", true));
+    let (code, may20) = solvency(&book_with("2026-05-20", true, false));
     assert_eq!(code, 0, "{}", may20.render());
     let (value, narrative) = shortfall(&may20);
     assert_eq!(value, 105_000, "{narrative}");
@@ -631,7 +641,7 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
 
     // Planted: the 150.00 debt booked without terms is an open obligation
     // the schedule omits, so no maturity-based verdict is given.
-    let (code, incomplete) = solvency(&book_with("2026-12-31", false));
+    let (code, incomplete) = solvency(&book_with("2026-12-31", false, false));
     assert_eq!(code, 2, "{}", incomplete.render());
     assert!(
         incomplete
@@ -641,23 +651,42 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
         incomplete.render()
     );
 
-    // Planted: terms the kernel's law refuses never reach the journal.
+    // The same payable history under v2 has the same shortfall even with
+    // authenticated debit-side maturity. Counting that debit schedule as a
+    // liability would overstate the 150.00 maturing obligations by 1000.00.
+    let (code, mixed) = solvency(&book_with("2026-12-31", true, true));
+    assert_eq!(code, 0, "{}", mixed.render());
+    let (value, narrative) = shortfall(&mixed);
+    assert_eq!(value, 5_000, "{narrative}");
+    assert!(
+        narrative.contains("maturing_obligations=15000")
+            && narrative.contains("deferred_obligations=100000")
+            && narrative.contains("maturity_basis=authenticated_schedule"),
+        "{narrative}"
+    );
+
+    // Planted: the explicit receivable spelling remains debit-only, unlike
+    // the general v2 schedule. These malformed terms never reach the journal.
     let f = Fixture::new();
-    let (code, debit) = f.try_post(
-        "debit-terms",
+    let before = ok(&f.book, &["book", "info"]);
+    let (code, credit) = f.try_post(
+        "credit-receivable-terms",
         "2026-01-15",
         &[
             ("debit", "6000", "40.00", None),
             ("credit", "2000", "40.00", None),
         ],
-        r#""obligation_maturity":[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-05-15","amount":"40.00 USD"}]}]"#,
+        r#""receivable_maturity":[{"ordinal":1,"status":"contractual","installments":[{"due_date":"2026-05-15","amount":"40.00 USD"}]}]"#,
     );
-    assert_eq!(code, 2, "{}", debit.render());
+    assert_eq!(code, 2, "{}", credit.render());
     assert!(
-        debit.render().contains("names a debit leg"),
+        credit
+            .render()
+            .contains("receivable_maturity requires a debit leg"),
         "{}",
-        debit.render()
+        credit.render()
     );
+    assert_eq!(data(&ok(&f.book, &["book", "info"])), data(&before));
     let (code, short) = f.try_post(
         "short-terms",
         "2026-01-15",
@@ -675,4 +704,5 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
         "{}",
         short.render()
     );
+    assert_eq!(data(&ok(&f.book, &["book", "info"])), data(&before));
 }
