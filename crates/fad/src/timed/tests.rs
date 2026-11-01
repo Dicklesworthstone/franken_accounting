@@ -35,6 +35,7 @@ fn production_tick_reads_preserve_caller_cancellation_and_recorded_evidence() {
 
     let book_id = Id128([184; 16]);
     let mut book = Book::create_memory(
+        BookKeys::for_development(184),
         BookSpec {
             book_id,
             name: "Production tick read context".into(),

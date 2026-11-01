@@ -1505,6 +1505,10 @@ reads, cancels a separate caller context, requires both reads to return
 remain intact. An earlier timer checkpoint cannot hide the adapter defect
 because the test invokes the adapter directly.
 
+The first Tier-0 attempt on 34146634 failed E0061: the newly authored test
+omitted the required `BookKeys` constructor argument. Supply its explicit
+development key fixture; the production repair and every assertion remain
+unchanged. This compile failure does not demonstrate the context defect.
 Formatting and static scanning pass; they do not execute this regression.
 The original `fa-7uhr` conflict/fresh-tick/checkpoint acceptance and a full
 verdict for this new source remain separate requirements. The full proof
