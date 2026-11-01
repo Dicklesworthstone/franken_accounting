@@ -96,6 +96,9 @@ pub struct CellSetting {
     /// The intent a `reclassification_target` cell reclassifies: the cell is
     /// one Reclassification of that earlier posting (§6.4 W-P-04).
     pub reclassifies: Option<String>,
+    /// A re-dating CF's day (§6.4 W-P-03-CF-01): the entry posts effective
+    /// on it, while `period_state` stays that of its own period.
+    pub effective_date: Option<String>,
 }
 
 /// The oracle replayed to a step, its periods' states, and the journal index
@@ -412,7 +415,10 @@ impl<'c> ReferenceAdapter<'c> {
                 .entry_class
                 .clone()
                 .unwrap_or_else(|| intent.class.clone()),
-            date: day(&intent.effective_date)?,
+            date: day(cell
+                .effective_date
+                .as_deref()
+                .unwrap_or(&intent.effective_date))?,
             discriminator: None,
             legs,
             key: key.into_bytes(),
@@ -528,6 +534,18 @@ impl<'c> ReferenceAdapter<'c> {
         if let Verdict::Refused { code } = verdict {
             return Ok(Ok(Some(code)));
         }
+        // SoD and the matrix read the posting period's state: the cell's
+        // own period, or the one a re-dating CF moves the entry into.
+        let state = match cell
+            .effective_date
+            .as_deref()
+            .and_then(|d| self.period_of(d))
+        {
+            Some(posted) if posted != label => {
+                states.get(posted).copied().unwrap_or(PeriodState::Future)
+            }
+            _ => state,
+        };
         // 2. SoD over the intent's approvals: none recorded by a P cell,
         //    except an entry_approval cell's own approval by the preparer,
         //    attached at post (A0, §6.4 W-P-01(b)).
@@ -932,6 +950,7 @@ mod tests {
             key: Some(key.into()),
             approval_encoding: None,
             reclassifies: None,
+            effective_date: None,
         }
     }
 

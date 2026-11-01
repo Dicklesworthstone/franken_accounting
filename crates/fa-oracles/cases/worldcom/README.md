@@ -465,6 +465,16 @@ Sources: `SRC-WC-001` (the committee found).
 | `F6a` | `reclassification_target=single(F1)` | P | PASS | unconstrained | class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false commit_agrees=ok ref=agree |
 | `F6a` | `reclassification_target=single(F2)` | P | PASS | unconstrained | class=Reclassification state=Open refusal=FA-REF-185 exit=3 record_consistent=false ref=agree |
 
+### `W-P-03-CF-01`: counterfactual (CF.counterfactual)
+
+If `effective_date` were `2001-07-17`, the row `W-P-03` reads as below (authored outcome: admit). This is a counterfactual, never a claim about what happened.
+
+Sources: `SRC-WC-001` (the committee found).
+
+| Target | Cell | Read as | Verdict | Record | Observed |
+|---|---|---|---|---|---|
+| `F4` | `entry_class=Original,period_state_at_commit=Closed,effective_date=2001-07-17` | CF | PASS | unconstrained | state=Closed refusal=admitted exit=0 record_consistent=false ref=agree |
+
 ### `W-NOTE-01`: note (NOTE.observation)
 
 An observation on `W-ST-ta1999-ex27`, `W-ST-ta1999-restated`, recorded with no verdict.

@@ -150,3 +150,16 @@ parameters = []
 classes = ["single"]
 components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/post.rs:2972"
+
+# The period an entry's effective date resolves to (§6.4 W-P-03-CF-01): the kernel resolves the
+# date to exactly one period before period law checks that period's state, so re-dating an entry
+# changes which state its class is admitted against.
+[[rule]]
+id = "effective_period"
+attribute = "effective_date"
+reader = "kernel:3. Resolve the effective date to exactly one period"
+class_rule = "enum"
+parameters = []
+classes = []
+components = ["refusal", "law_row"]
+code_justification = "crates/fa-journal/src/post.rs:2570"

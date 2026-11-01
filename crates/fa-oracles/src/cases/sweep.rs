@@ -328,27 +328,40 @@ pub fn sweep_plan(
             let Some(table) = enumerations.iter().find(|e| e.expectation == parent) else {
                 continue;
             };
-            let Some(base) = table.cells.iter().find(|c| c.default) else {
+            // The cell the CF changes: the one its `base_cell` names, else
+            // the parent target's default.
+            let named = cf.fields.strs("base_cell");
+            let Some(base) = table.cells.iter().find(|c| match named {
+                Some(cell) => c.key.as_slice() == cell,
+                None => c.default,
+            }) else {
                 return Err(err(
                     &cf.id,
                     LoadErrorKind::MissingField,
                     format!(
-                        "{parent}'s target {} marks no `default` cell for {} to change",
+                        "{parent}'s target {} marks no `default` cell for {} to change, and it names no `base_cell` of the table",
                         table.target, cf.id
                     ),
                 ));
             };
-            let Some(at) = table.attrs.iter().position(|a| a.as_str() == attr) else {
-                return Err(err(
-                    &cf.id,
-                    LoadErrorKind::UnknownValue,
-                    format!(
-                        "`changed_attribute = \"{attr}\"` is not a branched attribute of {parent}"
-                    ),
-                ));
-            };
+            let mut attrs = table.attrs.clone();
             let mut key = base.key.clone();
-            key[at] = value.to_string();
+            match table.attrs.iter().position(|a| a.as_str() == attr) {
+                Some(at) => key[at] = value.to_string(),
+                // An input the parent reads but does not branch (K-BRANCH
+                // checks the read): the CF sets it on top of the base cell.
+                None => {
+                    let Some(a) = BranchAttribute::parse(attr) else {
+                        return Err(err(
+                            &cf.id,
+                            LoadErrorKind::UnknownValue,
+                            format!("`changed_attribute = \"{attr}\"` is outside the §2.6 enum"),
+                        ));
+                    };
+                    attrs.push(a);
+                    key.push(value.to_string());
+                }
+            }
             let Some(group) = plan.groups.iter_mut().find(|g| {
                 book.intents
                     .iter()
@@ -375,7 +388,7 @@ pub fn sweep_plan(
             group.cells.push(SweepCell {
                 expectation: cf.id.clone(),
                 target: table.target.clone(),
-                attrs: table.attrs.clone(),
+                attrs,
                 key,
                 state,
                 record_consistent: false,

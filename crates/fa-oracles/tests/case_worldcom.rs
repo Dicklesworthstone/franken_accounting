@@ -1008,3 +1008,34 @@ fn w_p_04_reclassification_target_outside_single_is_refused() {
         "{errors:#?}"
     );
 }
+
+/// W-P-03-CF-01 (§6.4): in the reference oracle, F4 as an Original in a
+/// Closed 2Q01 is FA-REF-010 (W-P-03's base cell), and the same cell posted
+/// effective on its booking date, 2001-07-17, lands in 3Q01, which the
+/// history has opened, and is admitted: the period law reads the period the
+/// date resolves to, not the date the entry was booked.
+#[test]
+fn w_p_03_cf_01_redating_f4_out_of_the_closed_quarter_is_admitted_in_the_reference() {
+    let case = load_copy(&worldcom()).expect("the committed case loads");
+    let book = &case.books["native"];
+    let f4 = book.intents.iter().find(|i| i.id == "F4").expect("F4");
+    let adapter = ReferenceAdapter::new(&case, book).expect("the adapter");
+    let base = CellSetting {
+        entry_class: Some("Original".into()),
+        period_state: Some(fa_time::PeriodState::Closed),
+        key: Some("wp03cf-base".into()),
+        ..CellSetting::default()
+    };
+    assert_eq!(adapter.first_refusal(f4, &base), Ok(Ok(Some("FA-REF-010"))));
+    let redated = CellSetting {
+        key: Some("wp03cf-redated".into()),
+        effective_date: Some("2001-07-17".into()),
+        ..base.clone()
+    };
+    assert_eq!(adapter.first_refusal(f4, &redated), Ok(Ok(None)));
+    assert_eq!(adapter.p_cell(f4, &redated, None), RefVerdict::Agree);
+    assert!(matches!(
+        adapter.p_cell(f4, &redated, Some("FA-REF-010")),
+        RefVerdict::Disagree { .. }
+    ));
+}

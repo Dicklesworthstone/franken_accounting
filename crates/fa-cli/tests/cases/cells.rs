@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 use fa_oracles::cases::Case;
 use fa_oracles::cases::book::{BranchAttribute, StepDef, StepKind};
 use fa_oracles::cases::branch::{self, Enumeration};
+use fa_oracles::cases::date::Day;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::intent_json;
 use fa_oracles::cases::log::StepRecord;
@@ -232,6 +233,12 @@ impl Sweeper<'_, '_> {
                             .map(|d| d.rule.clone());
                     }
                     row.projection.push(("class".into(), s("Reclassification")));
+                }
+                // A re-dating CF (§6.4 W-P-03-CF-01): the entry posted
+                // effective on the named day. The cell's period state stays
+                // that of the entry's own period, which the sweep drives.
+                BranchAttribute::EffectiveDate if Day::parse(value).is_some() => {
+                    intent.effective_date.clone_from(value);
                 }
                 BranchAttribute::PeriodStateAtCommit => {}
                 BranchAttribute::EvidenceAttached => match value.as_str() {
@@ -547,6 +554,8 @@ impl Sweeper<'_, '_> {
                         key: Some(cell.idempotency_key.clone()),
                         approval_encoding: value(BranchAttribute::ApprovalEncoding),
                         reclassifies,
+                        effective_date: value(BranchAttribute::EffectiveDate)
+                            .filter(|v| Day::parse(v).is_some()),
                     };
                     let kernel = (observed != "admitted").then_some(observed.as_str());
                     // A CF's reference reads its parent's refusal and law row.
