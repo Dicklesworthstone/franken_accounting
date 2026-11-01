@@ -72,19 +72,18 @@ while read -r local_ref local_sha remote_ref _remote_sha; do
     refs/heads/main|refs/heads/master)
       tree_sha="$(git rev-parse "${local_sha}^{tree}" 2>/dev/null || echo unknown)"
       if ! has_tier0_pass_for_tree "$local_sha" "$tree_sha"; then
-        msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no tier0 PASS note under refs/notes/fa-tier0 and has no green verdict note for its exact tree.
-  Fix options:
-    1. Run Tier 0 on the tree:  bash scripts/tier0.sh --publish-note
-    2. Prove the tree locally:  bash scripts/local_proof.sh --publish-note
-    3. Queue for merge train:   git push origin HEAD:refs/heads/train/<bead>-<agent>"
+        msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no tier0 PASS note under refs/notes/fa-tier0 for its exact tree.
+  In the permanent gate checkout, check this exact tree:
+    bash scripts/tier0.sh --publish-note
+  Retry the canonical main/master push after PASS. Follow AGENTS.md's Branch Policy."
         printf 'REFUSED %s\n' "$msg" >&2
         exit 1
       fi
       if ! has_green_verdict_for_tree "$local_sha" "$tree_sha"; then
         msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no green verdict note for its exact tree.
-  Fix options:
-    1. Prove the tree locally:  bash scripts/local_proof.sh --publish-note
-    2. Queue for merge train:   git push origin HEAD:refs/heads/train/<bead>-<agent>"
+  In the permanent gate checkout, prove this exact tree:
+    bash scripts/local_proof.sh --publish-note
+  Follow AGENTS.md's Branch Policy; publish canonical main/master only."
         if [ "$strict" = "1" ]; then
           printf 'REFUSED %s\n' "$msg" >&2
           exit 1
@@ -97,9 +96,9 @@ while read -r local_ref local_sha remote_ref _remote_sha; do
       tree_sha="$(git rev-parse "${local_sha}^{tree}" 2>/dev/null || echo unknown)"
       if ! has_green_verdict_for_tree "$local_sha" "$tree_sha"; then
         msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no green verdict note for its exact tree.
-  Fix options:
-    1. Prove the tree locally:  bash scripts/local_proof.sh --publish-note
-    2. Queue for merge train:   git push origin HEAD:refs/heads/train/<bead>-<agent>"
+  In the permanent gate checkout, prove this exact tree:
+    bash scripts/local_proof.sh --publish-note
+  Follow AGENTS.md's Branch Policy; publish canonical main/master only."
         if [ "$strict" = "1" ]; then
           printf 'REFUSED %s\n' "$msg" >&2
           exit 1

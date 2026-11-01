@@ -1467,3 +1467,21 @@ pins remain in the test, all arithmetic/fold/report pins and the planted
 target-dependent encoding negative remain unchanged, and full-tree plus
 aarch64 qualification are separate requirements. This is maintenance of a
 bounded witness after an attributed model addition, not a performance win.
+
+## 2026-11-01 — Existing pre-push guard was disconnected in the shared checkout
+
+The concurrent merge 517c2044d (tree f363d990d) reached main and master;
+at 14:03 UTC neither the local Tier-0 notes nor remote notes snapshot
+c9f2067b3 held its exact-tree note. `core.hooksPath` was unset and the
+default pre-push hook was absent. The tracked guard existed but Git did
+not invoke it. No other default hooks were present.
+
+Set the reversible local `core.hooksPath=scripts/hooks` and verified Git
+resolves the tracked executable. Direct protocol-admission checks reject
+the unqualified tip on main and master, accept an existing Tier-0-qualified
+tree in default mode, and reject it in strict mode without a full verdict.
+These are hook checks, not actual push attempts. Predicate and strictness
+rules are unchanged. Recovery text now names the permanent gate and the
+canonical main/master policy; it no longer suggests forbidden train branches
+or a Tier-1-only note as a fix for missing Tier 0. Wiring the hook does not
+retroactively qualify the published merge. Exact-tree gates remain required.
