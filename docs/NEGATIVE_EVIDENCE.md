@@ -1397,3 +1397,23 @@ explicit limitation about external-subledger agreement remain unchanged.
 No unrelated invariant citation, evidence artifact, checker exemption or
 accounting requirement is added. The original checker must be rerun on the
 repaired tree; the recorded 16/1 run remains a failure.
+
+## 2026-11-01 — Historical-report fixture varied only the credit (fa-715)
+
+The original full Linux qualification at c6b229386 ran the facade library:
+679 tests passed and two failed. The historical-cache/authority regression
+failed before its first selected report: `post_rent(..., 12_345)` kept the
+helper's fixed 150,000-cent debit and supplied only a 12,345-cent credit.
+The posting kernel correctly refused FA-REF-001. Its later 700,000-cent
+call had the same fixture defect.
+
+The existing citing helper now accepts both explicit amounts, and that
+historical test supplies balanced 12,345/12,345 and 700,000/700,000 inputs.
+Its expected totals, maintained cursors, tail counts, capability ceiling,
+literal fallback and no-repair assertions are unchanged. The original
+`post_rent` wrapper still fixes the debit at 150,000; its 149,999-credit
+FA-REF-001 negative remains intact. No production auto-balancing or law
+change is introduced. The original 679/2 run stays red; the independent
+FA-ART-LAB-04 witness mismatch is not repaired by replacing its hashes.
+Native re-execution and complete qualification of this repair remain
+required.

@@ -4778,16 +4778,32 @@ fn authorized_historical_reports_pin_cache_tail_and_authority_to_the_selected_pr
     let (mut book, usd, day, _) = certified_fixture();
     let principal = VId(1);
     let periods = ["FY2026-P03".to_string()];
+    let source = fa_journal::Document {
+        book_id: book.context().book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: principal,
+        bytes: b"INVOICE (facade fixture source document)".to_vec(),
+    };
     let before_cache = book.head().unwrap();
     let advance = book
         .advance_registers(principal, &maintenance_capability(principal), &periods[0])
         .unwrap()
         .unwrap();
     assert!(advance.wrote);
-    let selected = post_rent(&mut book, usd, principal, day, b"historical-tail", 12_345)
-        .unwrap()
-        .unwrap()
-        .recorded_at();
+    let selected = post_rent_citing(
+        &mut book,
+        usd,
+        principal,
+        day,
+        b"historical-tail",
+        (12_345, 12_345),
+        &source,
+    )
+    .unwrap()
+    .unwrap()
+    .recorded_at();
     let literal_stock = book.trial_balance_at(&periods, Some(selected)).unwrap();
     let literal_activity = book.period_activity(&periods, Some(selected)).unwrap();
     assert_eq!(literal_stock.unit_totals[&usd.0], (162_345, 162_345));
@@ -4846,9 +4862,17 @@ fn authorized_historical_reports_pin_cache_tail_and_authority_to_the_selected_pr
 
     // A backdated future publication and a newer cache must not enter either
     // the historical answer or its disclosed serving cursor/tail count.
-    post_rent(&mut book, usd, principal, day, b"later-backdated", 700_000)
-        .unwrap()
-        .unwrap();
+    post_rent_citing(
+        &mut book,
+        usd,
+        principal,
+        day,
+        b"later-backdated",
+        (700_000, 700_000),
+        &source,
+    )
+    .unwrap()
+    .unwrap();
     book.advance_registers(principal, &maintenance_capability(principal), &periods[0])
         .unwrap()
         .unwrap();
@@ -5777,17 +5801,26 @@ fn post_rent(
         retrieved_by: principal,
         bytes: b"INVOICE (facade fixture source document)".to_vec(),
     };
-    post_rent_citing(book, usd, principal, day, key, cents_credit, &source)
+    post_rent_citing(
+        book,
+        usd,
+        principal,
+        day,
+        key,
+        (150_000, cents_credit),
+        &source,
+    )
 }
 
-/// [`post_rent`], citing `source` (added to the book first).
+/// Post explicit debit/credit amounts, citing `source` (added first).
+/// [`post_rent`] keeps its fixed debit for the original imbalance negative.
 fn post_rent_citing(
     book: &mut Book,
     usd: fa_money::UnitId,
     principal: VId,
     day: DateDay,
     key: &[u8],
-    cents_credit: i128,
+    (cents_debit, cents_credit): (i128, i128),
     source: &fa_journal::Document,
 ) -> Outcome<Posted> {
     let book_id = book.context().book_id;
@@ -5795,7 +5828,7 @@ fn post_rent_citing(
         LegPayload::simple(
             Side::Debit,
             account_vid(book_id, "6000"),
-            Amount::new(usd, 150_000),
+            Amount::new(usd, cents_debit),
         ),
         LegPayload::simple(
             Side::Credit,
@@ -9616,9 +9649,17 @@ fn a_bundle_inlines_a_governed_document_only_for_a_capability_that_reveals_it() 
         retrieved_by: counsel,
         bytes: b"ACCOUNT 0012-3456-7890 (bundle fixture)\n".repeat(200),
     };
-    post_rent_citing(&mut book, usd, counsel, day, b"rent", 150_000, &statement)
-        .expect("kernel")
-        .expect("admitted");
+    post_rent_citing(
+        &mut book,
+        usd,
+        counsel,
+        day,
+        b"rent",
+        (150_000, 150_000),
+        &statement,
+    )
+    .expect("kernel")
+    .expect("admitted");
     let witness = Capability::embedded(counsel, &["witness"]).expect("witness");
     book.checkpoint(counsel, &witness).unwrap().unwrap();
 
