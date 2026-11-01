@@ -13770,6 +13770,50 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     assert_eq!(field(&zero, "event"), Some("closing_noop"), "{zero}");
 
+    // A reviewed close run (fa-4o0) with one period task: its status, its
+    // combined rehearsal, resumable execution stopping at the transition that
+    // needs a reviewed plan, the task's sealed plan, and the plan executed.
+    run3(&[
+        "close",
+        "start",
+        "--run",
+        "events-run",
+        "--period",
+        "FY2026-P12",
+        "--tasks",
+        r#"[{"id":"finish","transition":"close"}]"#,
+    ]);
+    run3(&["close", "status", "--run", "events-run"]);
+    run3(&["close", "dry-run", "--run", "events-run"]);
+    run3(&["close", "run", "--run", "events-run", "--yes"]);
+    let close_plan = dir.join("events-run.plan").display().to_string();
+    run3(&[
+        "close",
+        "step",
+        "--run",
+        "events-run",
+        "--task",
+        "finish",
+        "--key",
+        "events-run-close",
+        "--reason",
+        "AuditComplete",
+        "--dry-run",
+        "--plan-out",
+        &close_plan,
+    ]);
+    run3(&[
+        "close",
+        "step",
+        "--run",
+        "events-run",
+        "--task",
+        "finish",
+        "--plan",
+        &close_plan,
+        "--yes",
+    ]);
+
     // A mid-year book supplies a native locked Opening period. A distinct
     // retained source and trial balance produce one sealed migration chunk,
     // which two independent reviewers approve before staging.
@@ -15931,6 +15975,10 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("period", Some("lock"), "always"),
     ("period", Some("reopen"), "always"),
     ("close", Some("year-end"), "always"),
+    // A close task publishes its draft promotion or period transition, one at a
+    // time or resumably over the whole graph (fa-4o0).
+    ("close", Some("step"), "always"),
+    ("close", Some("run"), "always"),
     ("bank", Some("reconcile"), "always"),
     ("bank", Some("unmatch"), "always"),
     // A period-end revaluation commits a reviewed adjustment (fa-3ock).
