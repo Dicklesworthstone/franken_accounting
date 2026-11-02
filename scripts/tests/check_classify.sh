@@ -562,6 +562,69 @@ EOF
   gate_pass "test_jobs_and_listings_follow_their_package_worker (alpha->w1, beta+gamma->w2 for jobs and listings; a refused listing is UNRUN)"
 }
 
+# This is an argv-contract test, not evidence that a Rust build ran. Every
+# compiling entry point must use the same profile as split tests/listings.
+compiling_steps_share_the_test_profile() {
+  local mode dir rc
+  for mode in default empty; do
+    dir="$base/shared-profile-$mode"
+    mkdir -p "$dir/bin" "$dir/state" "$dir/logs"
+    cat > "$dir/bin/rch" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_STATE/args"
+printf 'Finished test profile\ncase_one: test\ntest result: ok. 1 passed; 0 failed\nRemote command finished: exit=0 in 9ms\n'
+EOF
+    chmod +x "$dir/bin/rch"
+    (
+      export PATH="$dir/bin:$PATH" FAKE_STATE="$dir/state"
+      export CHECK_LOG_DIR="$dir/logs" CHECK_STEP_MANIFEST="$dir/step-verdicts.jsonl"
+      unset CHECK_TEST_CONFIG
+      [ "$mode" = empty ] && export CHECK_TEST_CONFIG=""
+      # shellcheck source=../lib/gate_verdict.sh
+      . "$SOURCE_ROOT/scripts/lib/gate_verdict.sh"
+      gate_init "inner"
+      # shellcheck disable=SC1090
+      . "$harness"
+      cargo_build check check --workspace --all-targets
+      cargo_build clippy clippy --workspace --all-targets -- -D warnings
+      cargo_build test-list test --workspace -- --list
+      cargo_build robot-schema test -p fa-cli --test robot_schema
+      cargo_build fuzz-smoke run -p fa-fuzz --bin fa-fuzz-smoke
+    ) > "$dir/stdout.log" 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      gate_fail "compiling_steps_share_the_test_profile — $mode: harness exit $rc"
+      return 1
+    fi
+    python3 - "$dir/state/args" "$mode" <<'PY'
+import pathlib, shlex, sys
+commands = [shlex.split(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+expected = [
+    ("check", ["--workspace", "--all-targets"]),
+    ("clippy", ["--workspace", "--all-targets", "--", "-D", "warnings"]),
+    ("test", ["--workspace", "--", "--list"]),
+    ("test", ["-p", "fa-cli", "--test", "robot_schema"]),
+    ("run", ["-p", "fa-fuzz", "--bin", "fa-fuzz-smoke"]),
+]
+config = [] if sys.argv[2] == "empty" else [
+    "--config", "profile.dev.debug=false", "--config", "profile.test.debug=false"
+]
+assert len(commands) == len(expected), commands
+for actual, (subcommand, targets) in zip(commands, expected):
+    # Preserve the caller's complete target set and compiler warning policy.
+    assert actual[:4] == ["exec", "--", "cargo", subcommand], actual
+    assert actual[4] == "-j" and actual[5].isdigit(), actual
+    assert actual[6:] == config + targets, (sys.argv[2], actual)
+PY
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      gate_fail "compiling_steps_share_the_test_profile — $mode: compiling argv differs"
+      return 1
+    fi
+  done
+  gate_pass "compiling_steps_share_the_test_profile (all five compile paths; default and explicit empty config)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
@@ -571,5 +634,6 @@ ubs_scan_classifies_each_package_scan
 run_gate_protects_the_step_manifest
 invariant_gates_wait_for_a_passing_test_step
 test_jobs_and_listings_follow_their_package_worker
+compiling_steps_share_the_test_profile
 
 gate_verdict
