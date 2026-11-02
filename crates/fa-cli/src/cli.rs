@@ -20256,7 +20256,7 @@ fn statement_equity_diff_from_certificates(
         // Both original statements have replayed against the independent
         // request before creating any file or retaining a comparison.
         write_request()?;
-        let artifact = fa::ReportArtifact::from(&certified.certificate);
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
         let (bytes, retained) = notary::retain_report_artifact_for(
             book,
             &ctx.files,
