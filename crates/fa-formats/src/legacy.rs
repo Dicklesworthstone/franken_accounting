@@ -215,10 +215,23 @@ impl LegacyColumnMap {
             let v = unquote_toml_str(FMT, line_idx + 1, raw_v.trim())?;
             match section {
                 "" | "columns" => {
-                    cols.insert(k, v);
+                    if cols.insert(k.clone(), v).is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!("line {}: repeated column-map key {k:?}", line_idx + 1),
+                        });
+                    }
                 }
                 "account_map" => {
-                    account_mappings.insert(k, v);
+                    if account_mappings.insert(k.clone(), v).is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!(
+                                "line {}: repeated legacy account mapping {k:?}",
+                                line_idx + 1
+                            ),
+                        });
+                    }
                 }
                 _ => unreachable!(),
             }
@@ -312,28 +325,147 @@ fn unquote_toml_str(format: &'static str, line_no: usize, s: &str) -> Result<Str
     }
 }
 
-fn parse_csv_fields(line: &str, sep: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '"' {
-            if in_quotes && chars.peek() == Some(&'"') {
-                current.push('"');
-                let _ = chars.next();
-            } else {
-                in_quotes = !in_quotes;
-            }
-        } else if c == sep && !in_quotes {
-            out.push(current.trim().to_owned());
-            current.clear();
-        } else {
-            current.push(c);
+/// One logical CSV record at a time, with its physical starting line. A
+/// quoted newline is field content, not a second ledger row. Comments are
+/// recognized only in the preamble before the header, so a `#` source ID or a
+/// memo whose next line starts with `#` remains evidence. The complete
+/// original bytes still supply the import digest.
+struct LegacyCsvRecords<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    line: usize,
+    finished: bool,
+    preamble: bool,
+    format: &'static str,
+}
+
+impl<'a> LegacyCsvRecords<'a> {
+    fn new(source: &'a str, format: &'static str) -> Self {
+        Self {
+            chars: source
+                .strip_prefix('\u{feff}')
+                .unwrap_or(source)
+                .chars()
+                .peekable(),
+            line: 1,
+            finished: false,
+            preamble: true,
+            format,
         }
     }
-    out.push(current.trim().to_owned());
-    out
+
+    fn error(&mut self, line: usize, detail: &str) -> FormatError {
+        self.finished = true;
+        FormatError::Parse {
+            format: self.format,
+            detail: format!("line {line}: {detail}"),
+        }
+    }
+
+    fn newline(&mut self, ch: char) {
+        if ch == '\r' && self.chars.peek() == Some(&'\n') {
+            self.chars.next();
+        }
+        self.line += 1;
+    }
+}
+
+impl Iterator for LegacyCsvRecords<'_> {
+    type Item = Result<(usize, Vec<String>), FormatError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let mut line = self.line;
+        let mut fields = Vec::new();
+        let mut field = String::new();
+        let mut quoted = false;
+        let mut closed_quote = false;
+        while let Some(ch) = self.chars.next() {
+            if quoted {
+                match ch {
+                    '"' if self.chars.peek() == Some(&'"') => {
+                        self.chars.next();
+                        field.push('"');
+                    }
+                    '"' => {
+                        quoted = false;
+                        closed_quote = true;
+                    }
+                    '\r' | '\n' => {
+                        field.push(ch);
+                        if ch == '\r' && self.chars.peek() == Some(&'\n') {
+                            field.push('\n');
+                        }
+                        self.newline(ch);
+                    }
+                    _ => field.push(ch),
+                }
+                continue;
+            }
+            match ch {
+                '#' if self.preamble
+                    && fields.is_empty()
+                    && field.trim().is_empty()
+                    && !closed_quote =>
+                {
+                    // CSV-GL exports include provenance comments before their
+                    // header; quotes and commas inside those comments are text.
+                    while let Some(ch) = self.chars.next() {
+                        if ch == '\r' || ch == '\n' {
+                            self.newline(ch);
+                            break;
+                        }
+                    }
+                    field.clear();
+                    line = self.line;
+                }
+                '"' if field.trim().is_empty() && !closed_quote => {
+                    // Keep the existing tolerance of horizontal whitespace
+                    // around fields, without trimming inside quoted text.
+                    field.clear();
+                    quoted = true;
+                }
+                ',' => {
+                    fields.push(core::mem::take(&mut field));
+                    closed_quote = false;
+                }
+                '\r' | '\n' => {
+                    self.newline(ch);
+                    if !fields.is_empty() || !field.trim().is_empty() || closed_quote {
+                        fields.push(field);
+                        self.preamble = false;
+                        return Some(Ok((line, fields)));
+                    }
+                    field.clear();
+                    line = self.line;
+                }
+                '"' => {
+                    return Some(Err(
+                        self.error(line, "unexpected quote in an unquoted CSV field")
+                    ));
+                }
+                ' ' | '\t' if closed_quote => {}
+                _ if closed_quote => {
+                    return Some(Err(
+                        self.error(line, "unexpected text after a quoted CSV field")
+                    ));
+                }
+                _ => field.push(ch),
+            }
+        }
+        self.finished = true;
+        if quoted {
+            return Some(Err(self.error(line, "unterminated quoted CSV field")));
+        }
+        if fields.is_empty() && field.trim().is_empty() && !closed_quote {
+            None
+        } else {
+            fields.push(field);
+            self.preamble = false;
+            Some(Ok((line, fields)))
+        }
+    }
 }
 
 fn parse_date_flexible(format: &'static str, raw: &str) -> Result<DateDay, FormatError> {
@@ -1172,16 +1304,19 @@ fn parse_tabular_csv_with_format(
     let mut entries_by_id: BTreeMap<String, LegacyChunkEntry> = BTreeMap::new();
     let mut row_count = 0usize;
 
-    for (line_idx, raw_line) in src.lines().enumerate() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields = parse_csv_fields(line, ',');
+    for record in LegacyCsvRecords::new(src, fmt_name) {
+        let (line_no, fields) = record?;
+        let line_idx = line_no - 1;
         if header_idx.is_none() {
             let mut map = BTreeMap::new();
             for (i, h) in fields.iter().enumerate() {
-                map.insert(h.trim().to_owned(), i);
+                let name = h.trim();
+                if map.insert(name.to_owned(), i).is_some() {
+                    return Err(FormatError::Parse {
+                        format: fmt_name,
+                        detail: format!("line {line_no}: duplicate CSV header column {name:?}"),
+                    });
+                }
             }
             for req in [
                 &column_map.entry_id_column,
@@ -1198,18 +1333,83 @@ fn parse_tabular_csv_with_format(
                     });
                 }
             }
+            // The generic mapping is an explicit promise about this source,
+            // including its provenance columns. A misspelled mapped header
+            // must not silently discard author, reviewer, currency or memo.
+            // Built-in vendor formats allow their optional metadata columns
+            // to be absent, as older exports have always done.
+            if format == LegacyFormat::GenericCsv {
+                for column in [
+                    &column_map.recorded_at_column,
+                    &column_map.debit_column,
+                    &column_map.credit_column,
+                    &column_map.signed_amount_column,
+                    &column_map.side_column,
+                    &column_map.amount_column,
+                    &column_map.unit_column,
+                    &column_map.description_column,
+                    &column_map.memo_column,
+                    &column_map.entered_by_column,
+                    &column_map.approved_by_column,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if !map.contains_key(column) {
+                        return Err(FormatError::Parse {
+                            format: fmt_name,
+                            detail: format!(
+                                "line {line_no}: missing declared CSV header column {column:?}"
+                            ),
+                        });
+                    }
+                }
+            }
+            let has = |column: &Option<String>| {
+                column.as_ref().is_some_and(|name| map.contains_key(name))
+            };
+            if has(&column_map.debit_column) != has(&column_map.credit_column)
+                || has(&column_map.side_column) != has(&column_map.amount_column)
+            {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!("line {line_no}: CSV amount column pairs must both be present"),
+                });
+            }
+            if !has(&column_map.debit_column)
+                && !has(&column_map.signed_amount_column)
+                && !has(&column_map.side_column)
+            {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {line_no}: CSV header has no declared amount representation"
+                    ),
+                });
+            }
             header_idx = Some(map);
             continue;
         }
 
         let headers = header_idx.as_ref().unwrap();
-        let get = |col: &str| -> &str {
+        if fields.len() != headers.len() {
+            return Err(FormatError::Parse {
+                format: fmt_name,
+                detail: format!(
+                    "line {line_no}: CSV record has {} columns; header declares {}",
+                    fields.len(),
+                    headers.len()
+                ),
+            });
+        }
+        let get_text = |col: &str| -> &str {
             headers
                 .get(col)
                 .and_then(|&i| fields.get(i))
-                .map(|s| s.trim())
+                .map(String::as_str)
                 .unwrap_or("")
         };
+        let get = |col: &str| -> &str { get_text(col).trim() };
         let get_opt = |col: &Option<String>| -> &str { col.as_deref().map(get).unwrap_or("") };
 
         row_count += 1;
@@ -1280,7 +1480,15 @@ fn parse_tabular_csv_with_format(
             if signed > 0 {
                 (Side::Debit, signed)
             } else {
-                (Side::Credit, -signed)
+                (
+                    Side::Credit,
+                    signed.checked_neg().ok_or_else(|| FormatError::Overflow {
+                        format: fmt_name,
+                        detail: format!(
+                            "line {line_no}: signed CSV amount magnitude overflows i128"
+                        ),
+                    })?,
+                )
             }
         } else if !side_str.is_empty() || !amount_str.is_empty() {
             let side = if side_str.eq_ignore_ascii_case(&column_map.debit_marker) {
@@ -1319,8 +1527,48 @@ fn parse_tabular_csv_with_format(
             });
         };
 
-        let desc = get_opt(&column_map.description_column);
-        let memo = get_opt(&column_map.memo_column);
+        // Some real exports include both debit/credit columns and a signed
+        // amount (Xero's Gross, for example). All supplied representations
+        // must agree exactly; a priority order must not hide a contradiction.
+        if !signed_str.is_empty() {
+            let expected = if side == Side::Debit {
+                mantissa
+            } else {
+                -mantissa
+            };
+            if parse_exact_decimal(fmt_name, signed_str, scale)? != expected {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!("line {line_no}: conflicting CSV amount representations"),
+                });
+            }
+        }
+        if !side_str.is_empty() || !amount_str.is_empty() {
+            let marker = if side == Side::Debit {
+                &column_map.debit_marker
+            } else {
+                &column_map.credit_marker
+            };
+            if !side_str.eq_ignore_ascii_case(marker)
+                || parse_exact_decimal(fmt_name, amount_str, scale)? != mantissa
+            {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!("line {line_no}: conflicting CSV amount representations"),
+                });
+            }
+        }
+
+        let desc = column_map
+            .description_column
+            .as_deref()
+            .map(get_text)
+            .unwrap_or("");
+        let memo = column_map
+            .memo_column
+            .as_deref()
+            .map(get_text)
+            .unwrap_or("");
         let ts_ns = parse_legacy_timestamp_ns(fmt_name, get_opt(&column_map.recorded_at_column))?;
         let entered_by = {
             let v = get_opt(&column_map.entered_by_column);
@@ -1344,7 +1592,7 @@ fn parse_tabular_csv_with_format(
                         source_approved_by: None,
                     },
                     effective_date: eff_date,
-                    description: if desc.is_empty() {
+                    description: if desc.trim().is_empty() {
                         entry_id.to_owned()
                     } else {
                         desc.to_owned()
@@ -1390,7 +1638,7 @@ fn parse_tabular_csv_with_format(
             amount: Amount::new(uid, mantissa),
             unit_code: unit_code.to_owned(),
             unit_scale: scale,
-            memo: (!memo.is_empty()).then(|| memo.to_owned()),
+            memo: (!memo.trim().is_empty()).then(|| memo.to_owned()),
         });
     }
 
@@ -2283,6 +2531,187 @@ ENTRY-1,2025-12-31,,4000,-25.00,Revenue,,
                     if detail.contains("line 4") && detail.contains(field)
             ));
         }
+    }
+
+    fn real_world_csv_columns(extra: &str) -> LegacyColumnMap {
+        LegacyColumnMap::parse_toml(&format!(
+            "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\nmemo_column = \"memo\"\n{extra}"
+        ))
+        .expect("explicit CSV columns")
+    }
+
+    #[test]
+    fn legacy_csv_preserves_multiline_records_bom_quotes_ids_and_exact_large_amounts() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = real_world_csv_columns(
+            "recorded_at_column = \"recorded\"\nentered_by_column = \"entered\"\napproved_by_column = \"approved\"\n",
+        );
+        let source = concat!(
+            "\u{feff}# source comment, with an unmatched quote: \"\r\n",
+            "entry,date,account,amount,memo,recorded,entered,approved\r\n",
+            "\"000001,part \"\"A\"\"\",2025-12-31,1000,90071992547409.93,\"  café, \"\"proof\"\"\r\n",
+            "# this is retained evidence, not a comment\n",
+            "last line  \",2025-12-31T10:00:00Z,Alice,Carol\r\n",
+            "#OTHER,2025-12-31,1000,0.01,small debit,,,\r\n",
+            "#OTHER,2025-12-31,3000,-0.01,small credit,,,\r\n",
+            "\"000001,part \"\"A\"\"\",2025-12-31,3000,-90071992547409.93,\"credit, account\",,,",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 4, "physical lines are not source rows");
+        assert_eq!(batch.chunks.len(), 2);
+        let first = &batch.chunks[0];
+        assert_eq!(first.provenance.source_id, "000001,part \"A\"");
+        assert_eq!(first.legs.len(), 2);
+        assert_eq!(first.legs[0].amount.mantissa, 9_007_199_254_740_993);
+        assert_eq!(first.legs[1].amount.mantissa, 9_007_199_254_740_993);
+        assert_eq!(first.legs[0].side, Side::Debit);
+        assert_eq!(first.legs[1].side, Side::Credit);
+        assert_eq!(
+            first.legs[0].memo.as_deref(),
+            Some("  café, \"proof\"\r\n# this is retained evidence, not a comment\nlast line  ")
+        );
+        assert_eq!(first.legs[1].memo.as_deref(), Some("credit, account"));
+        assert_eq!(first.provenance.source_entered_by.as_deref(), Some("Alice"));
+        assert_eq!(
+            first.provenance.source_approved_by.as_deref(),
+            Some("Carol")
+        );
+        assert_eq!(batch.chunks[1].provenance.source_id, "#OTHER");
+        assert_eq!(batch.trial_balance[0].mantissa, 9_007_199_254_740_994);
+
+        // The parser never normalizes the retained source commitment, even
+        // when an LF-only source happens to yield the same monetary legs.
+        let lf_only =
+            parse_generic_csv(&source.replace("\r\n", "\n"), &columns, &units, &accounts).unwrap();
+        assert_ne!(batch.source_bytes_digest, lf_only.source_bytes_digest);
+
+        let changed = source.replace("\"credit, account\",,,", "\"credit, account\",,Mallory,");
+        let error = parse_generic_csv(&changed, &columns, &units, &accounts).unwrap_err();
+        assert!(matches!(error, FormatError::Parse { detail, .. }
+            if detail.contains("line 8") && detail.contains("entered-by identity")));
+    }
+
+    #[test]
+    fn legacy_csv_refuses_malformed_quotes_duplicate_headers_and_ragged_rows() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = real_world_csv_columns("");
+        let header = "entry,date,account,amount,memo\n";
+        for (source, reason) in [
+            (
+                format!("{header}E\"1,2025-12-31,1000,1.00,memo\n"),
+                "unexpected quote",
+            ),
+            (
+                format!("{header}\"E1\"junk,2025-12-31,1000,1.00,memo\n"),
+                "unexpected text",
+            ),
+            (
+                format!("{header}E1,2025-12-31,1000,1.00,\"never closed\n"),
+                "unterminated quoted",
+            ),
+            (
+                "entry,date,account,amount, amount ,memo\n".to_owned(),
+                "duplicate CSV header",
+            ),
+            (
+                format!("{header}E1,2025-12-31,1000,1.00\n"),
+                "record has 4 columns; header declares 5",
+            ),
+            (
+                format!("{header}E1,2025-12-31,1000,1.00,memo,discarded\n"),
+                "record has 6 columns; header declares 5",
+            ),
+        ] {
+            let error = parse_generic_csv(&source, &columns, &units, &accounts)
+                .expect_err("malformed records must never silently become a different ledger");
+            assert!(
+                matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains(reason)),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_csv_requires_declared_generic_metadata_but_keeps_vendor_optional_columns() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let source = "entry,date,account,amount,memo\nE1,2025-12-31,1000,1.00,cash\nE1,2025-12-31,3000,-1.00,capital\n";
+        for key in [
+            "recorded_at_column",
+            "unit_column",
+            "description_column",
+            "entered_by_column",
+            "approved_by_column",
+        ] {
+            let columns = real_world_csv_columns(&format!("{key} = \"misspelled\"\n"));
+            let error = parse_generic_csv(source, &columns, &units, &accounts).unwrap_err();
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains("missing declared CSV header column") && detail.contains("misspelled")));
+        }
+        let qb = "Transaction ID,Date,Account,Debit,Credit\n001,2025-12-31,1000,1.00,\n001,2025-12-31,3000,,1.00\n";
+        let batch = parse_quickbooks_csv(qb, &units, &accounts, "USD").unwrap();
+        assert_eq!(batch.chunks[0].provenance.source_id, "001");
+        assert_eq!(batch.chunks[0].provenance.source_entered_by, None);
+        assert_eq!(batch.chunks[0].legs[0].amount.mantissa, 100);
+
+        // A typo cannot change an explicit map by silently taking its last value.
+        for repeated in [
+            "entry_id_column = \"other\"\n",
+            "[account_map]\n\"legacy\" = \"1000\"\n\"legacy\" = \"3000\"\n",
+        ] {
+            assert!(LegacyColumnMap::parse_toml(&format!(
+                "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\n{repeated}"
+            )).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_csv_checks_every_supplied_amount_representation() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = real_world_csv_columns(
+            "debit_column = \"debit\"\ncredit_column = \"credit\"\nside_column = \"side\"\namount_column = \"magnitude\"\n",
+        );
+        let source = concat!(
+            "entry,date,account,amount,memo,debit,credit,side,magnitude\n",
+            "E1,2025-12-31,1000,12.34,cash,12.34,,D,12.34\n",
+            "E1,2025-12-31,3000,-12.34,capital,,12.34,C,12.34\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.chunks[0].legs[0].amount.mantissa, 1_234);
+        for changed in [
+            source.replace(",1000,12.34,", ",1000,12.35,"),
+            source.replace(",3000,-12.34,", ",3000,12.34,"),
+            source.replace(",D,12.34", ",C,12.34"),
+            source.replace(",C,12.34", ",C,12.35"),
+        ] {
+            let error = parse_generic_csv(&changed, &columns, &units, &accounts).unwrap_err();
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains("conflicting CSV amount representations")));
+        }
+        for token in ["1.234", "1e2", "NaN", "Inf"] {
+            let changed = source.replace(",1000,12.34,", &format!(",1000,{token},"));
+            assert!(
+                parse_generic_csv(&changed, &columns, &units, &accounts).is_err(),
+                "even a secondary amount must be exact: {token}"
+            );
+        }
+
+        // Xero legitimately repeats a signed Gross beside debit/credit; that
+        // representation stays accepted when every supplied value agrees.
+        let xero = "JournalNumber,JournalDate,AccountCode,Debit,Credit,Gross\n0001,2025-12-31,090,12.34,,12.34\n0001,2025-12-31,200,,12.34,-12.34\n";
+        assert_eq!(
+            parse_xero_csv(xero, &units, &accounts, "USD")
+                .unwrap()
+                .row_count,
+            2
+        );
+        assert!(
+            parse_xero_csv(&xero.replace(",-12.34", ",12.34"), &units, &accounts, "USD").is_err()
+        );
     }
 
     #[test]
