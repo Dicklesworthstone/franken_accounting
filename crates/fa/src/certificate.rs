@@ -887,6 +887,7 @@ fn offline_registry_profile(certificate: &ReportCertificate) -> bool {
             ReportSelection::TrialBalance(_)
                 | ReportSelection::FunctionalTrialBalance(_)
                 | ReportSelection::FunctionalStatement(_)
+                | ReportSelection::CustomStatement(_)
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
         ))
@@ -904,7 +905,7 @@ pub(crate) fn offline_report_registries(
 ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
     if !offline_registry_profile(certificate) {
         return Err(invalid(
-            "portable report registries require a native statement, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional statement or one-book consolidation certificate",
+            "portable report registries require a native statement, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional or custom statement, or one-book consolidation certificate",
         ));
     }
     let sources = report_registries(&certificate.selection);
@@ -950,7 +951,7 @@ pub(crate) fn offline_report_registries_at<V: Vfs + Clone>(
 ) -> Outcome<Vec<(String, Vec<u8>)>> {
     if !offline_registry_profile(certificate) {
         return Ok(Err(invalid(
-            "portable report registries require a native statement, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional statement or one-book consolidation certificate",
+            "portable report registries require a native statement, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional or custom statement, or one-book consolidation certificate",
         )));
     }
     match registry_epoch::resolve(db, cx, book, certificate)? {

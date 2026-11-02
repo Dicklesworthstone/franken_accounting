@@ -240,7 +240,10 @@ pub fn rate_oids(journal: &Journal, known_at: CommitSeq) -> Outcome<Vec<Oid>> {
 pub(super) fn certificate(certificate: &[u8], journal: &Journal, known_at: CommitSeq) -> bool {
     let check = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        let (output, selector) = if certificate.starts_with(b"fa:report-certificate:v10") {
+        let (output, selector) = if certificate.starts_with(b"fa:report-certificate:v12") {
+            reader.fixed::<{ b"fa:report-certificate:v12".len() }>("functional certificate")?;
+            ("fa:functional-custom-statement:v1", 10)
+        } else if certificate.starts_with(b"fa:report-certificate:v10") {
             reader.fixed::<{ b"fa:report-certificate:v10".len() }>("functional certificate")?;
             ("fa:functional-trial-balance:v1", 8)
         } else if certificate.starts_with(b"fa:report-certificate:v5") {

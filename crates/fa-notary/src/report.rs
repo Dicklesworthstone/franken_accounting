@@ -43,7 +43,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, native statement-diff, v6/v7 one-book consolidation, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -125,6 +125,11 @@ pub fn assemble(
 /// Summary trial balances retain their exact outer root selection and output
 /// over a native source and the same four-document closure; historical chart
 /// membership is reconstructed from the authenticated prefix.
+/// Native custom statements retain their exact v11 selection and native read
+/// attestations, with rounding_laws as their fifth registry. Their activation
+/// control is carried in the authenticated prefix; independent reconstruction
+/// checks its definition and chart commitments without promoting the native
+/// approval or definition-object reads into separate membership proofs.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -136,6 +141,7 @@ pub fn assemble_with_registries(
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
     let explanation = explanation_certificate(certificate);
+    let custom = custom_statement_certificate(certificate);
     let expected: &[&str] = if explanation {
         &[
             "account_types",
@@ -144,10 +150,19 @@ pub fn assemble_with_registries(
             "foundations",
             "reason_codes",
         ]
+    } else if custom {
+        &[
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "rounding_laws",
+        ]
     } else {
         &["account_types", "entry_classes", "units", "foundations"]
     };
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
+        || custom
         || summary_certificate(certificate)
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
@@ -172,7 +187,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, or five including rounding_laws for custom statements",
         )));
     }
     assemble_inner(
@@ -186,7 +201,7 @@ pub fn assemble_with_registries(
     )
 }
 
-/// Package a replayed functional trial balance, financial statement or
+/// Package a replayed functional trial balance, built-in or custom financial statement or
 /// statement comparison or complete publication trace with its
 /// original six-registry closure, exact historical version-2 BookSpec, and every authenticated Rate
 /// document cited at or before known-at. The facade must govern every Rate read.
@@ -296,6 +311,30 @@ fn open_items_certificate(certificate: &[u8]) -> bool {
 
 fn explanation_certificate(certificate: &[u8]) -> bool {
     v3_certificate(certificate, "fa:balance-explanation:v1", 0)
+}
+
+/// Route only the native custom statement tag, output and selector together.
+/// Functional custom layouts require the complete v3 valuation closure. This
+/// header check does not stand in for activation validation or recomputation.
+fn custom_statement_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.fixed::<{ b"fa:report-certificate:v11".len() }>("custom statement format")?
+            != *b"fa:report-certificate:v11"
+            || reader.str(64, "custom statement scope")? != "fa-fold-over-prefix"
+        {
+            return Ok(false);
+        }
+        reader.str(64, "custom statement authority")?;
+        if reader.str(64, "custom statement output")? != "fa:custom-statement-report:v1" {
+            return Ok(false);
+        }
+        reader.fixed::<16>("custom statement book")?;
+        Ok(reader.fixed::<16>("custom statement branch")? == [0; 16]
+            && reader.u64("custom statement frontier")? > 0
+            && reader.u8("custom statement selector")? == 9)
+    };
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
 // A version tag is followed by the framed replay scope. Matching only its
@@ -688,6 +727,7 @@ fn assemble_inner(
             || certificate_format(certificate, b"fa:report-certificate:v8"))
         || major == 2
             && (certificate_format(certificate, b"fa:report-certificate:v4")
+                || custom_statement_certificate(certificate)
                 || summary_certificate(certificate)
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)
@@ -710,7 +750,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -853,6 +893,34 @@ mod format_tests {
             .bytes(&aging.finish().unwrap())
             .bytes(control);
         outer.finish().unwrap()
+    }
+
+    #[test]
+    fn custom_statement_routing_keeps_native_and_functional_closures_distinct() {
+        let journal =
+            Journal::from_records(fa_model::Id128([3; 16]), CommitSeq(9), Vec::new()).unwrap();
+        let native = native_header(11, "fa:custom-statement-report:v1", 9);
+        let functional = native_header(12, "fa:functional-custom-statement:v1", 10);
+        assert!(custom_statement_certificate(&native));
+        assert!(!custom_statement_certificate(&functional));
+        assert!(functional::certificate(&functional, &journal, CommitSeq(9)));
+        assert!(!functional::certificate(&native, &journal, CommitSeq(9)));
+        assert!(!functional::certificate(
+            &functional,
+            &journal,
+            CommitSeq(8)
+        ));
+        for malformed in [
+            native_header(11, "fa:functional-custom-statement:v1", 9),
+            native_header(11, "fa:custom-statement-report:v1", 10),
+            native_header(12, "fa:custom-statement-report:v1", 10),
+            native_header(12, "fa:functional-custom-statement:v1", 9),
+            native_header(110, "fa:custom-statement-report:v1", 9),
+            native_header(120, "fa:functional-custom-statement:v1", 10),
+        ] {
+            assert!(!custom_statement_certificate(&malformed));
+            assert!(!functional::certificate(&malformed, &journal, CommitSeq(9)));
+        }
     }
 
     #[test]
