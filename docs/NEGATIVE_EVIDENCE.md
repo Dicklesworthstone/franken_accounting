@@ -1550,7 +1550,32 @@ The real-binary regression selects the March prefix while April has another
 open item. It requires the owner's exact historical answer, one original
 5.00 USD item rather than the head's two, one AccessEvent per admitted token
 read, unchanged publication state on refusals, no retained certificate,
-and current revocation even at the old prefix. This is authored acceptance;
-native execution, an old-admission counterexample and final-tree gates are
-still pending. There is no substrate read-counter or independent-verifier
-claim from source inspection.
+and current revocation even at the old prefix. It uses an issued Human token
+with read, produce, and a known-at bound; it does not issue the Auditor
+profile template.
+
+On exact `bdf60c680` (tree `a45648f7`), the four complete CLI targets
+`gl_certificates`, `proofs`, `read_scope`, and `robot_schema` passed 69/0
+through real RCH at 2026-11-02T18:06:22Z, with no ignored or filtered tests.
+The whole `fa-verbs` package passed 21/0. The original Tier 0 passed on that
+tree at 18:36:51Z, using its authorized local compile fallback after an
+actual remote refusal. No native test ran locally. The first cold CLI
+attempt and two remote Tier-0 attempts reached the original compile limit;
+their failures remain part of the record.
+
+The evidence-only control `aa02ee77e` changes only the admission condition
+back to the old guard. It retains the historical chart repair and the exact
+test blob `0adb85ae9bfe5e7f305078700f222d848386325b`. The same four complete
+CLI targets finished with 68 passed and one failed, exit 101, at
+2026-11-02T19:26:28Z. Only the new positive case failed: its real
+`gl aging --as-known-at 7` token read returned FA-REF-011/exit 7 where exit 0
+was required. The control first encountered an SSH refusal and then a cold
+compile timeout; neither was counted as this counterexample. Its unchanged
+retry reused completed dependencies and actually ran all 69 cases. This
+control is retained as evidence and must never be published as product code.
+
+These are exact-revision component results, not a full-repository pass.
+Newer combined product code still needs a fresh positive run and final-tree
+gates. The original read-authorization Bead stays open for its account-scope,
+whole-entry, substrate read-counter, and reference-model requirements.
+No independent-verifier claim follows from this self-executed evidence.
