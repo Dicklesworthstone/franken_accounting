@@ -4,7 +4,9 @@
 //! uses the production statement engine, not a second interpretation of posted
 //! legs, Closing lineage, reservations or migration visibility. No publication
 //! is skipped, including a zero-effect publication or changes which later net
-//! to zero. Native units and comparative columns are never combined.
+//! to zero. Native units and comparative columns are never combined. A
+//! functional trace uses verified retained base amounts at every frontier,
+//! with separate durable formats and source commitment domains.
 //!
 //! Entry links identify records published, or migration chunks made visible,
 //! at a step. The line delta belongs to the atomic PUBLICATION. A multi-entry
@@ -35,13 +37,15 @@ use crate::{
 };
 
 mod certificate;
-pub(crate) use certificate::CERTIFICATE_FORMAT;
+pub(crate) use certificate::{CERTIFICATE_FORMAT, FUNCTIONAL_CERTIFICATE_FORMAT};
 pub use certificate::{
     CertifiedStatementTrace, MAX_STATEMENT_TRACE_CERTIFICATE_BYTES, StatementTraceCertificate,
 };
 
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-trace:v1";
+pub const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-trace:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-trace-source:v1";
+const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-trace-source:v1";
 pub const MAX_STATEMENT_TRACE_PUBLICATIONS: usize = 256;
 pub const MAX_STATEMENT_TRACE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_LINKS: usize = 65_536;
@@ -168,11 +172,11 @@ fn changes_size(
 }
 
 fn bridge_size(report: &StatementDiff) -> Result<usize, Refusal> {
-    // The existing fa:statement-diff:v1 layout, priced before its encoder is
+    // The existing statement-diff layout, priced before its encoder is
     // called. Equality with the emitted length is checked below, not assumed.
     let mut bytes = size([
         4,
-        crate::statement_diff::OUTPUT_FORMAT.len(),
+        report.output_format().len(),
         16,
         16,
         8,
@@ -184,6 +188,9 @@ fn bridge_size(report: &StatementDiff) -> Result<usize, Refusal> {
         4,
         4,
     ])?;
+    if report.is_functional() {
+        bytes = size([bytes, 4, 4, "retained-base-amounts".len()])?;
+    }
     for column in &report.before().columns {
         bytes = size([
             bytes,
@@ -291,6 +298,20 @@ fn write_publication(w: &mut Writer, step: &StatementPublication) {
 
 impl StatementTrace {
     #[must_use]
+    pub fn is_functional(&self) -> bool {
+        self.summary.is_functional()
+    }
+
+    #[must_use]
+    pub fn output_format(&self) -> &'static [u8] {
+        if self.is_functional() {
+            FUNCTIONAL_OUTPUT_FORMAT
+        } else {
+            OUTPUT_FORMAT
+        }
+    }
+
+    #[must_use]
     pub fn summary(&self) -> &StatementDiff {
         &self.summary
     }
@@ -304,7 +325,7 @@ impl StatementTrace {
     }
 
     fn encoded_len(&self) -> Result<usize, Refusal> {
-        let mut bytes = size([12, OUTPUT_FORMAT.len(), bridge_size(&self.summary)?])?;
+        let mut bytes = size([12, self.output_format().len(), bridge_size(&self.summary)?])?;
         for step in &self.publications {
             bytes = size([bytes, publication_size(step)?])?;
         }
@@ -326,7 +347,7 @@ impl StatementTrace {
             ));
         }
         let mut w = Writer::with_capacity(length);
-        w.bytes(OUTPUT_FORMAT)
+        w.bytes(self.output_format())
             .bytes(&summary)
             .list(&self.publications, write_publication);
         let bytes = w.finish().map_err(|e| invalid(e.to_string()))?;
@@ -391,10 +412,15 @@ struct Builder {
     publications: Vec<StatementPublication>,
     step_bytes: usize,
     links: usize,
+    functional: bool,
 }
 
 impl Builder {
     fn new(first: Statement, after: CommitSeq) -> Result<Self, Refusal> {
+        Self::with_basis(first, after, false)
+    }
+
+    fn with_basis(first: Statement, after: CommitSeq, functional: bool) -> Result<Self, Refusal> {
         admit_source(&first)?;
         let span = after
             .0
@@ -403,7 +429,7 @@ impl Builder {
         if span > MAX_STATEMENT_TRACE_PUBLICATIONS as u64 {
             return Err(invalid("trace exceeds 256 publications"));
         }
-        StatementDiff::between(first.clone(), first.clone())?;
+        Self::compare(first.clone(), first.clone(), functional)?;
         Ok(Self {
             previous: first.clone(),
             first,
@@ -411,7 +437,20 @@ impl Builder {
             publications: Vec::new(),
             step_bytes: 0,
             links: 0,
+            functional,
         })
+    }
+
+    fn compare(
+        before: Statement,
+        after: Statement,
+        functional: bool,
+    ) -> Result<StatementDiff, Refusal> {
+        if functional {
+            StatementDiff::between_functional(before, after)
+        } else {
+            StatementDiff::between(before, after)
+        }
     }
 
     fn push(&mut self, next: Statement, entries: Vec<StatementEntryLink>) -> Result<(), Refusal> {
@@ -460,7 +499,7 @@ impl Builder {
         if links > MAX_LINKS {
             return Err(invalid("trace exceeds 65536 entry links"));
         }
-        let diff = StatementDiff::between(self.previous.clone(), next.clone())?;
+        let diff = Self::compare(self.previous.clone(), next.clone(), self.functional)?;
         // between validated both bounded source shapes before these encodings.
         let old = diff
             .before()
@@ -485,10 +524,15 @@ impl Builder {
         }
         incoming = size([incoming, changes_size(&[], diff.mapping_changes())?])?;
         let bytes = size([self.step_bytes, incoming])?;
+        let source_domain = if self.functional {
+            FUNCTIONAL_SOURCE_DOMAIN
+        } else {
+            SOURCE_DOMAIN
+        };
         let step = StatementPublication {
             recorded_at: CommitSeq(next.known_at),
-            before_source_digest: domain_digest(SOURCE_DOMAIN, &[&old]),
-            after_source_digest: domain_digest(SOURCE_DOMAIN, &[&new]),
+            before_source_digest: domain_digest(source_domain, &[&old]),
+            after_source_digest: domain_digest(source_domain, &[&new]),
             entries,
             changes: diff
                 .lines()
@@ -509,7 +553,7 @@ impl Builder {
         if self.previous.known_at != self.after.0 {
             return Err(invalid("trace stops before its requested final sequence"));
         }
-        let summary = StatementDiff::between(self.first, self.previous)?;
+        let summary = Self::compare(self.first, self.previous, self.functional)?;
         let trace = StatementTrace {
             summary,
             publications: self.publications,
@@ -754,6 +798,75 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(r) = builder.push(statement, entries) {
                 return Ok(Err(r));
             }
+        }
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        Ok(builder.finish())
+    }
+
+    /// Trace every publication using the original functional valuations at
+    /// each prefix. No current rate replaces a retained historical amount.
+    /// Complete history is prepared only after current whole-book admission.
+    pub async fn functional_statement_trace(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &StatementTraceRequest,
+    ) -> Outcome<StatementTrace> {
+        let head = match self.admit_functional_report(cx, principal, capability, None, false)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match resolved(request, head) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let after = request.after.unwrap_or(head);
+        let first = match self
+            .functional_statement(
+                cx,
+                principal,
+                capability,
+                request.selection.clone(),
+                Some(request.before),
+            )
+            .await?
+        {
+            Ok(statement) => statement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut builder = match Builder::with_basis(first, after, true) {
+            Ok(builder) => builder,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        for offset in 1..=after.0 - request.before.0 {
+            let at = CommitSeq(request.before.0 + offset);
+            cx.query().checkpoint().map_err(BookError::Context)?;
+            let statement = match self
+                .functional_statement(
+                    cx,
+                    principal,
+                    capability,
+                    request.selection.clone(),
+                    Some(at),
+                )
+                .await?
+            {
+                Ok(statement) => statement,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let entries = match publication_entries(self, cx, at)? {
+                Ok(entries) => entries,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = builder.push(statement, entries) {
+                return Ok(Err(refusal));
+            }
+        }
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, Some(after), false)?
+        {
+            return Ok(Err(refusal));
         }
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(builder.finish())

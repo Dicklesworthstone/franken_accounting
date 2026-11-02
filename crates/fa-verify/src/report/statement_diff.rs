@@ -198,8 +198,38 @@ pub(super) fn replay(
     after: VerifiedStatement,
     after_bytes: &[u8],
 ) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
+    let (result, output) = derive(
+        request.functional,
+        before_certificate,
+        after_certificate,
+        before,
+        before_bytes,
+        after,
+        after_bytes,
+    )?;
+    if output != request.output {
+        return Err(failed(
+            "statement_diff_recomputation",
+            "statement source commitments, complete lines, checked deltas, mapping changes or exact canonical bytes differ from independent replay",
+        ));
+    }
+    Ok((result, output))
+}
+
+/// Derive a bridge only from independently reconstructed sources. Publication
+/// traces reuse this arithmetic without treating an intermediate output as fact.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn derive(
+    functional: bool,
+    before_certificate: &NativeCertificate<'_>,
+    after_certificate: &NativeCertificate<'_>,
+    before: VerifiedStatement,
+    before_bytes: &[u8],
+    after: VerifiedStatement,
+    after_bytes: &[u8],
+) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
     bind(before_certificate, after_certificate)?;
-    if request.functional != before_certificate.functional {
+    if functional != before_certificate.functional {
         return Err(failed(
             "statement_diff_selection",
             "comparison family changes its source measure",
@@ -268,7 +298,7 @@ pub(super) fn replay(
             })
         })
         .collect();
-    let valuation = if request.functional {
+    let valuation = if functional {
         let [base_unit] = before.units.as_slice() else {
             return Err(failed(
                 "statement_diff_selection",
@@ -282,19 +312,19 @@ pub(super) fn replay(
     } else {
         StatementDiffValuation::Native
     };
-    let source_domain = if request.functional {
+    let source_domain = if functional {
         FUNCTIONAL_SOURCE_DOMAIN
     } else {
         SOURCE_DOMAIN
     };
     // Functional certificates wrap the canonical statement. The comparison
     // commits that inner statement under its own valuation-specific domain.
-    let before_bytes = if request.functional {
+    let before_bytes = if functional {
         super::functional::statement_bytes(before_bytes)?
     } else {
         before_bytes
     };
-    let after_bytes = if request.functional {
+    let after_bytes = if functional {
         super::functional::statement_bytes(after_bytes)?
     } else {
         after_bytes
@@ -321,12 +351,6 @@ pub(super) fn replay(
         &before_certificate.book,
         &before_certificate.branch,
     )?;
-    if output != request.output {
-        return Err(failed(
-            "statement_diff_recomputation",
-            "statement source commitments, complete lines, checked deltas, mapping changes or exact canonical bytes differ from independent replay",
-        ));
-    }
     Ok((result, output))
 }
 

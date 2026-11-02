@@ -13178,14 +13178,13 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     if functional
         && (matches!(
             args.positional[1].as_str(),
-            "trace" | "issue" | "issuances" | "lint" | "regulatory" | "equity-roll-forward"
+            "issue" | "issuances" | "lint" | "regulatory" | "equity-roll-forward"
         ) || args.flag("--branch").is_some()
-            || args.flag("--from-diff").is_some()
             || crate::issuance::view_flag(args).is_some())
     {
         return Err(usage(
-            "--functional selects a trunk balance sheet, income statement, or two-frontier statement diff; traces, issuance views and branch workflows do not support this basis",
-            "fa statement diff --functional --definition income-statement --for <period> --before <seq> --after <seq> [--certify]",
+            "--functional selects a trunk balance sheet, income statement, statement diff or publication trace; issuance views and branch workflows do not support this basis",
+            "fa statement trace --functional --definition income-statement --for <period> --before <seq> --after <seq> [--certify]",
         ));
     }
     // Statement issuance (plan §12.5, bead fa-wrrw).
@@ -13364,7 +13363,11 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             max_publications: max_publications(args)?,
         };
         if certify {
-            let certified = book.certify_statement_trace(who, &capability, &request)??;
+            let certified = if functional {
+                book.certify_functional_statement_trace(who, &capability, &request)??
+            } else {
+                book.certify_statement_trace(who, &capability, &request)??
+            };
             return emit_certified_statement_trace(
                 &ctx.out,
                 &ctx.files,
@@ -13374,7 +13377,11 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 &certified,
             );
         }
-        let trace = book.statement_trace(who, &capability, &request)??;
+        let trace = if functional {
+            book.functional_statement_trace(who, &capability, &request)??
+        } else {
+            book.statement_trace(who, &capability, &request)??
+        };
         return render_statement_trace(&ctx.out, &book, &trace, None);
     }
     let definition = StatementDefinition::embedded(mode).map_err(|error| {
@@ -13595,7 +13602,11 @@ fn emit_certified_statement_trace(
         out,
         args,
         &artifact,
-        "fa:statement-trace:v1",
+        if certified.certificate.uses_functional_valuations() {
+            "fa:functional-statement-trace:v1"
+        } else {
+            "fa:statement-trace:v1"
+        },
         &bytes,
         &retained,
     );
@@ -13836,6 +13847,15 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             if let Ok(request) = comparison.request() {
                 statement_question_matches(args, &request.selection)?;
             }
+            if args.switch("--functional") && !comparison.uses_functional_valuations() {
+                return Err(fa_journal::Refusal::new(
+                    fa::certificate::code::CERTIFICATE_INVALID,
+                    exit::VERIFICATION,
+                    "--functional requires a retained functional statement comparison",
+                    "plan §8.3 / §12.5 (a trace preserves its sources' accounting basis)",
+                    "pass a functional statement diff, or omit --functional to trace a native comparison",
+                ).into());
+            }
             // The trace replays every publication from the earlier source on.
             let (before, after) = comparison.sources();
             book.prepare_report_history(
@@ -13843,8 +13863,16 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 &capability,
                 Some(before.known_at.min(after.known_at)),
             )??;
-            let certified =
-                book.certify_statement_trace_from_diff(who, &capability, &comparison, limit)??;
+            let certified = if comparison.uses_functional_valuations() {
+                book.certify_functional_statement_trace_from_diff(
+                    who,
+                    &capability,
+                    &comparison,
+                    limit,
+                )??
+            } else {
+                book.certify_statement_trace_from_diff(who, &capability, &comparison, limit)??
+            };
             emit_certified_statement_trace(
                 &ctx.out,
                 &ctx.files,
@@ -14099,37 +14127,49 @@ pub(crate) fn render_statement_trace(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    out.event_with_certificate(
-        "statement_trace",
-        vec![
-            ("name", s(&after.definition_name)),
-            (
-                "definition_version",
-                Json::Int(i128::from(after.definition_version)),
-            ),
-            ("definition_digest", s(hex(&after.definition_digest))),
-            ("before_known_at", Json::Int(i128::from(before.known_at))),
-            ("after_known_at", Json::Int(i128::from(after.known_at))),
-            ("had_changes", Json::Bool(trace.had_changes())),
-            (
-                "publication_count",
-                Json::Int(trace.publications().len() as i128),
-            ),
-            ("columns", Json::Arr(columns)),
-            ("lines", Json::Arr(lines)),
-            ("mapping_changes", Json::Arr(mapping_changes)),
-            ("publications", Json::Arr(publications)),
-        ],
-        &format!(
-            "{} trace · {} -> {} · {} publication(s) · had_changes={}",
-            after.definition_name,
-            before.known_at,
-            after.known_at,
-            trace.publications().len(),
-            trace.had_changes()
+    let mut fields = vec![
+        ("name", s(&after.definition_name)),
+        (
+            "definition_version",
+            Json::Int(i128::from(after.definition_version)),
         ),
-        certificate,
+        ("definition_digest", s(hex(&after.definition_digest))),
+        ("before_known_at", Json::Int(i128::from(before.known_at))),
+        ("after_known_at", Json::Int(i128::from(after.known_at))),
+        ("had_changes", Json::Bool(trace.had_changes())),
+        (
+            "publication_count",
+            Json::Int(trace.publications().len() as i128),
+        ),
+        ("columns", Json::Arr(columns)),
+        ("lines", Json::Arr(lines)),
+        ("mapping_changes", Json::Arr(mapping_changes)),
+        ("publications", Json::Arr(publications)),
+    ];
+    let mut human = format!(
+        "{} trace · {} -> {} · {} publication(s) · had_changes={}",
+        after.definition_name,
+        before.known_at,
+        after.known_at,
+        trace.publications().len(),
+        trace.had_changes()
     );
+    if let Some(base_unit) = summary.functional_unit() {
+        let code = registered_unit_code(base_unit, units)?;
+        fields.extend([
+            ("functional", Json::Bool(true)),
+            ("base_unit", s(&code)),
+            ("valuation_basis", s("retained-base-amounts")),
+        ]);
+        human.push_str(&format!(" · functional {code} · retained base amounts"));
+    } else {
+        fields.extend([
+            ("functional", Json::Bool(false)),
+            ("base_unit", Json::Null),
+            ("valuation_basis", s("native-amounts")),
+        ]);
+    }
+    out.event_with_certificate("statement_trace", fields, &human, certificate);
     Ok(())
 }
 

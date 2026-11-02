@@ -75,6 +75,7 @@ mod due_date_reconciliation;
 mod equity;
 mod explain;
 mod functional;
+mod general_ledger;
 mod indirect_cash_flow;
 mod lots;
 mod metadata;
@@ -85,6 +86,7 @@ mod registry;
 mod roll_forward;
 mod statement;
 mod statement_diff;
+mod statement_trace;
 mod summary;
 mod temporal;
 pub use aging::{
@@ -119,6 +121,7 @@ pub use explain::{
 pub use functional::{
     VerifiedFunctionalCell, VerifiedFunctionalStatement, VerifiedFunctionalTrialBalance,
 };
+pub use general_ledger::VerifiedGeneralLedgerDetail;
 pub use indirect_cash_flow::{
     AdjustmentCategory, AdjustmentSign, IndirectCashFlowAdjustment, IndirectCashFlowContribution,
     IndirectCashFlowDefinition, IndirectCashFlowUnit, VerifiedCashFlowBasis,
@@ -143,6 +146,9 @@ pub use roll_forward::{
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use statement_diff::{
     StatementDiffValuation, StatementLineChange, StatementMappingChange, VerifiedStatementDiff,
+};
+pub use statement_trace::{
+    VerifiedStatementEntryLink, VerifiedStatementPublication, VerifiedStatementTrace,
 };
 pub use summary::{SummaryScope, VerifiedSummaryGroup, VerifiedSummaryTrialBalance};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
@@ -240,6 +246,8 @@ pub struct VerifiedReport {
     pub statement: Option<VerifiedStatement>,
     /// Two complete native statements and their exact historical bridge.
     pub statement_diff: Option<VerifiedStatementDiff>,
+    /// Complete publication-by-publication attribution, including zero effects.
+    pub statement_trace: Option<VerifiedStatementTrace>,
     /// Authenticated dimension hierarchy and exact values included in the fold.
     pub dimension: Option<VerifiedDimensionSelection>,
     /// Present for independently reconstructed native open-item reports.
@@ -788,6 +796,11 @@ fn verify_report_with_lots_input(
     } else {
         None
     };
+    let statement_trace = if statement_trace::recognizes(certificate_bytes) {
+        Some(statement_trace::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     // Each supported composition has a fixed depth. Equity has one roll-forward
     // source; split cash flow also retains its original roll-forward directly,
     // and policy cash flow has one direct-cash source over a roll-forward.
@@ -871,6 +884,11 @@ fn verify_report_with_lots_input(
         .or_else(|| due_date.as_ref().map(|value| value.source))
         .or_else(|| roll_forward.as_ref().map(|value| value.source))
         .or_else(|| statement_diff.as_ref().map(|value| value.after))
+        .or_else(|| {
+            statement_trace
+                .as_ref()
+                .and_then(|value| value.sources.last().copied())
+        })
         .or_else(|| summary.as_ref().map(|value| value.source))
         .or_else(|| lots.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
@@ -959,6 +977,7 @@ fn verify_report_with_lots_input(
         .or_else(|| due_date.as_ref().map(|value| value.digest))
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
         .or_else(|| statement_diff.as_ref().map(|value| value.digest))
+        .or_else(|| statement_trace.as_ref().map(|value| value.digest))
         .or_else(|| summary.as_ref().map(|value| value.digest))
         .or_else(|| lots.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
@@ -989,6 +1008,7 @@ fn verify_report_with_lots_input(
         || is_explanation
         || roll_forward.is_some()
         || statement_diff.is_some() && !cert.functional
+        || statement_trace.is_some() && !cert.functional
         || summary.is_some())
         && major != 2
     {
@@ -1246,6 +1266,7 @@ fn verify_report_with_lots_input(
             statement: None,
             statement_diff: None,
             dimension: None,
+            statement_trace: None,
             open_items: None,
             lots: None,
             explanation: None,
@@ -1334,70 +1355,89 @@ fn verify_report_with_lots_input(
                 report.columns[0].periods.clone(),
             )
         };
-        let (functional_statement, statement_diff, output, output_digest) = if let (
-            Some(request),
-            Some(before_certificate),
-        ) =
-            (&statement_diff, &before_statement)
-        {
-            let Selection::Statement(before_selection) = &before_certificate.selection else {
-                return Err(failed(
-                    "supported_report",
-                    "functional comparison source is not a statement",
-                ));
-            };
-            let before_bodies = crate::migration_balance::report_bodies_at(
-                envelopes,
-                &records,
-                &bodies,
-                before_certificate.known_at,
-            )
-            .map_err(|e| failed("migration_visibility", e.to_string()))?;
-            let before_inputs =
-                historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
-            let before_rates =
-                functional::historical_rates(&functional_rates, &records, &before_inputs.infos)?;
-            let (before, before_output) = functional::replay_statement(
-                before_certificate,
-                before_selection,
-                definitions,
-                book,
-                &before_rates,
-                &before_inputs.schema,
-                envelopes,
-                &records,
-                &legs,
-                &before_inputs.infos,
-                &before_inputs.resolved,
-                &before_inputs.visible_migrations,
-                &before_inputs.migration_activations,
-            )?;
-            if before_output != before_certificate.output {
-                return Err(failed(
-                    "report_recomputation",
-                    "the comparison's earlier functional statement differs from its independently replayed historical source",
-                ));
-            }
-            let after = functional_statement.ok_or_else(|| {
-                failed(
-                    "supported_report",
-                    "functional comparison has no later statement",
+        let (functional_statement, statement_diff, statement_trace, output, output_digest) =
+            if let Some(request) = &statement_trace {
+                // The final source above authenticates the complete Rate closure
+                // before any historical projection is allowed to select from it.
+                let (trace, output) = statement_trace::replay(
+                    request,
+                    envelopes,
+                    &records,
+                    &bodies,
+                    &legs,
+                    &units,
+                    Some(statement_trace::FunctionalInputs {
+                        registry: definitions,
+                        book,
+                        rates: &functional_rates,
+                    }),
+                )?;
+                let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+                (None, None, Some(trace), output, output_digest)
+            } else if let (Some(request), Some(before_certificate)) =
+                (&statement_diff, &before_statement)
+            {
+                let Selection::Statement(before_selection) = &before_certificate.selection else {
+                    return Err(failed(
+                        "supported_report",
+                        "functional comparison source is not a statement",
+                    ));
+                };
+                let before_bodies = crate::migration_balance::report_bodies_at(
+                    envelopes,
+                    &records,
+                    &bodies,
+                    before_certificate.known_at,
                 )
-            })?;
-            let (comparison, output) = statement_diff::replay(
-                request,
-                before_certificate,
-                &cert,
-                before.statement,
-                &before_output,
-                after.statement,
-                &output,
-            )?;
-            let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
-            (None, Some(comparison), output, output_digest)
-        } else {
-            (functional_statement, None, output, cert.output_digest)
-        };
+                .map_err(|e| failed("migration_visibility", e.to_string()))?;
+                let before_inputs =
+                    historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
+                let before_rates = functional::historical_rates(
+                    &functional_rates,
+                    &records,
+                    &before_inputs.infos,
+                )?;
+                let (before, before_output) = functional::replay_statement(
+                    before_certificate,
+                    before_selection,
+                    definitions,
+                    book,
+                    &before_rates,
+                    &before_inputs.schema,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &before_inputs.infos,
+                    &before_inputs.resolved,
+                    &before_inputs.visible_migrations,
+                    &before_inputs.migration_activations,
+                )?;
+                if before_output != before_certificate.output {
+                    return Err(failed(
+                        "report_recomputation",
+                        "the comparison's earlier functional statement differs from its independently replayed historical source",
+                    ));
+                }
+                let after = functional_statement.ok_or_else(|| {
+                    failed(
+                        "supported_report",
+                        "functional comparison has no later statement",
+                    )
+                })?;
+                let (comparison, output) = statement_diff::replay(
+                    request,
+                    before_certificate,
+                    &cert,
+                    before.statement,
+                    &before_output,
+                    after.statement,
+                    &output,
+                )?;
+                let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+                (None, Some(comparison), None, output, output_digest)
+            } else {
+                (functional_statement, None, None, output, cert.output_digest)
+            };
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
@@ -1414,6 +1454,7 @@ fn verify_report_with_lots_input(
             statement: None,
             statement_diff,
             dimension: None,
+            statement_trace,
             open_items: None,
             lots: None,
             explanation: None,
@@ -1519,6 +1560,7 @@ fn verify_report_with_lots_input(
                 statement: None,
                 statement_diff: None,
                 dimension: None,
+                statement_trace: None,
                 open_items: None,
                 lots: Some(report),
                 explanation: None,
@@ -1610,6 +1652,7 @@ fn verify_report_with_lots_input(
                     statement: None,
                     statement_diff: None,
                     dimension: None,
+                    statement_trace: None,
                     open_items: None,
                     lots: None,
                     explanation: None,
@@ -1648,6 +1691,7 @@ fn verify_report_with_lots_input(
                 statement: None,
                 statement_diff: None,
                 dimension: None,
+                statement_trace: None,
                 open_items: None,
                 lots: None,
                 explanation: None,
@@ -1730,6 +1774,7 @@ fn verify_report_with_lots_input(
                     statement: None,
                     statement_diff: None,
                     dimension: None,
+                    statement_trace: None,
                     open_items: None,
                     lots: None,
                     explanation: None,
@@ -1798,6 +1843,7 @@ fn verify_report_with_lots_input(
                     statement: None,
                     statement_diff: None,
                     dimension: None,
+                    statement_trace: None,
                     open_items: None,
                     lots: None,
                     explanation: None,
@@ -1836,6 +1882,7 @@ fn verify_report_with_lots_input(
                 statement: None,
                 statement_diff: None,
                 dimension: None,
+                statement_trace: None,
                 open_items: None,
                 lots: None,
                 explanation: None,
@@ -1874,6 +1921,7 @@ fn verify_report_with_lots_input(
             statement: None,
             statement_diff: None,
             dimension: None,
+            statement_trace: None,
             open_items: Some(open_items),
             lots: None,
             explanation: None,
@@ -1933,6 +1981,7 @@ fn verify_report_with_lots_input(
             statement: None,
             statement_diff: None,
             dimension: None,
+            statement_trace: None,
             open_items: None,
             lots: None,
             explanation: Some(explanation),
@@ -1983,10 +2032,17 @@ fn verify_report_with_lots_input(
             ));
         }
         let effective_through = Some(statement.columns[0].effective_through);
-        let (statement, statement_diff, output, output_digest) = if let (
-            Some(request),
-            Some(before_certificate),
+        let (statement, statement_diff, statement_trace, output, output_digest) = if let Some(
+            request,
         ) =
+            &statement_trace
+        {
+            let (trace, output) = statement_trace::replay(
+                request, envelopes, &records, &bodies, &legs, &units, None,
+            )?;
+            let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+            (None, None, Some(trace), output, output_digest)
+        } else if let (Some(request), Some(before_certificate)) =
             (&statement_diff, &before_statement)
         {
             let Selection::Statement(before_selection) = &before_certificate.selection else {
@@ -2033,9 +2089,9 @@ fn verify_report_with_lots_input(
                 &output,
             )?;
             let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
-            (None, Some(comparison), output, output_digest)
+            (None, Some(comparison), None, output, output_digest)
         } else {
-            (Some(statement), None, output, cert.output_digest)
+            (Some(statement), None, None, output, cert.output_digest)
         };
         return Ok(VerifiedReport {
             scope: "recomputation",
@@ -2053,6 +2109,7 @@ fn verify_report_with_lots_input(
             statement,
             statement_diff,
             dimension: None,
+            statement_trace,
             open_items: None,
             lots: None,
             explanation: None,
@@ -2136,6 +2193,7 @@ fn verify_report_with_lots_input(
                 statement: None,
                 statement_diff: None,
                 dimension: None,
+                statement_trace: None,
                 open_items: None,
                 lots: None,
                 explanation: None,
@@ -2229,6 +2287,7 @@ fn verify_report_with_lots_input(
                 statement: None,
                 statement_diff: None,
                 dimension: None,
+                statement_trace: None,
                 open_items: None,
                 lots: None,
                 explanation: None,
@@ -2267,6 +2326,7 @@ fn verify_report_with_lots_input(
             statement: None,
             statement_diff: None,
             dimension: None,
+            statement_trace: None,
             open_items: None,
             lots: None,
             explanation: None,
@@ -2325,6 +2385,7 @@ fn verify_report_with_lots_input(
         statement: None,
         statement_diff: None,
         dimension,
+        statement_trace: None,
         open_items: None,
         lots: None,
         explanation: None,

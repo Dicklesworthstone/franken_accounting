@@ -3,6 +3,8 @@
 //! pending reservations, reversals and migration controls.
 #[path = "cash_flow.rs"]
 mod cash_flow;
+#[path = "general_ledger.rs"]
+mod general_ledger;
 
 use super::*;
 use crate::report::{

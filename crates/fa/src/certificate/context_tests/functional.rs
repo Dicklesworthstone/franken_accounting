@@ -125,6 +125,223 @@ fn reseal(certificate: &mut ReportCertificate) {
 }
 
 #[test]
+fn annual_functional_income_statement_replays_the_shared_period_fold() {
+    let (mut h, _) = fixture();
+    let cx = h.cx();
+    h.runtime
+        .block_on(h.book.transition_period(
+            &cx,
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"annual-functional-open-february",
+            &cap(&["close"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut february = original(&h);
+    february.idempotency_key = b"annual-functional-february".to_vec();
+    february.effective_date = DateDay::from_ymd(2026, 2, 15).unwrap();
+    h.runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal: february,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+
+    let annual = StatementSelection {
+        definition: crate::StatementDefinition::embedded("income-statement").unwrap(),
+        periods: (1..=12)
+            .map(|month| format!("FY2026-P{month:02}"))
+            .collect(),
+        comparative: vec![PERIOD.into()],
+    };
+    let at = h.head();
+    let report = h
+        .runtime
+        .block_on(h.book.certify_functional_statement(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            annual,
+            Some(at),
+        ))
+        .unwrap()
+        .unwrap();
+    let revenue = report
+        .statement
+        .lines
+        .iter()
+        .find(|line| line.code == "revenue")
+        .unwrap();
+    // January: 125.50 USD + 100 EUR valued at 1.25; February: 125.50 USD.
+    assert_eq!(revenue.amounts, [37_600, 25_050]);
+    assert_eq!(report.certificate.known_at, at);
+    let bytes = report.certificate.canonical_bytes().unwrap();
+    let retained = ReportCertificate::decode(&bytes).unwrap();
+    let replayed = h.book.replay_report(&cx, &retained).unwrap().unwrap();
+    assert_eq!(replayed.canonical_bytes().unwrap(), retained.output);
+    assert_eq!(
+        replayed,
+        ReportOutput::FunctionalStatement(Box::new(report.statement))
+    );
+    assert_eq!(h.head(), at, "certification and replay do not publish");
+}
+
+#[test]
+fn functional_publication_trace_keeps_each_historical_rate_and_cancelled_movement() {
+    let (mut h, old_rate) = fixture();
+    let before = h.head();
+    let cx = h.cx();
+    let later_rate = FxRateDocument {
+        rate_num: 2,
+        rate_den: 1,
+        retrieved_at_ns: 2,
+        source: "later retained functional trace rate".into(),
+        ..old_rate
+    };
+    let document = Document {
+        book_id: BOOK,
+        kind: RATE_DOCUMENT_KIND,
+        mime: "application/vnd.fa.fx-rate".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: later_rate.canonical_bytes().unwrap(),
+    };
+    h.runtime
+        .block_on(h.book.add_document(&cx, &document))
+        .unwrap()
+        .unwrap();
+    let rate_at = h.head();
+    for (key, reverse) in [
+        ("functional-trace-plus", false),
+        ("functional-trace-minus", true),
+    ] {
+        let mut proposal = original(&h);
+        proposal.idempotency_key = key.as_bytes().to_vec();
+        for leg in &mut proposal.legs {
+            leg.amount = Amount::new(later_rate.quote_unit, 5_000);
+            if reverse {
+                leg.side = match leg.side {
+                    Side::Debit => Side::Credit,
+                    Side::Credit => Side::Debit,
+                };
+            }
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget =
+            ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
+        let proposal = cx
+            .merge_eval()
+            .with_restriction(|| {
+                fa_journal::fx::value_proposal(
+                    &mut budget,
+                    proposal,
+                    &spec(),
+                    &h.book.context().units,
+                    FxLawId::SpotClose,
+                    std::slice::from_ref(&later_rate),
+                )
+            })
+            .unwrap();
+        h.runtime
+            .block_on(h.book.post(
+                &cx,
+                PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: cap(&["post"]),
+                },
+            ))
+            .unwrap()
+            .unwrap();
+    }
+    let after = h.head();
+    let request = crate::StatementTraceRequest {
+        comparison: crate::StatementDiffRequest {
+            selection: selection(),
+            before,
+            after: Some(after),
+        },
+        max_publications: 16,
+    };
+    let certified = h
+        .runtime
+        .block_on(h.book.certify_functional_statement_trace(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &request,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(certified.report.is_functional());
+    assert!(certified.report.summary().is_unchanged());
+    assert!(certified.report.had_changes());
+    let initial_revenue = certified
+        .report
+        .summary()
+        .before()
+        .lines
+        .iter()
+        .find(|line| line.code == "revenue")
+        .unwrap();
+    assert_eq!(
+        initial_revenue.amounts,
+        [25_050, 0],
+        "the initial 100 EUR remains valued at its original 1.25 rate"
+    );
+    let changes: Vec<_> = certified
+        .report
+        .publications()
+        .iter()
+        .flat_map(|publication| publication.changes.iter())
+        .filter(|line| line.code == "revenue")
+        .map(|line| line.delta.clone())
+        .collect();
+    assert_eq!(
+        changes,
+        [vec![10_000, 0], vec![-10_000, 0]],
+        "the two later 50 EUR movements use their retained 2.00 rate"
+    );
+    let rate_publication = certified
+        .report
+        .publications()
+        .iter()
+        .find(|publication| publication.recorded_at == rate_at)
+        .unwrap();
+    assert!(rate_publication.is_unchanged());
+    assert!(rate_publication.entries.is_empty());
+    assert_eq!(
+        certified.certificate.sources().len() as u64,
+        after.0 - before.0 + 1
+    );
+    let bytes = certified.certificate.canonical_bytes().unwrap();
+    let decoded = crate::StatementTraceCertificate::decode(&bytes).unwrap();
+    assert_eq!(
+        h.book
+            .replay_statement_trace(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    assert_eq!(
+        h.head(),
+        after,
+        "trace certification and replay do not publish or revalue"
+    );
+}
+
+#[test]
 fn retained_v5_replays_before_additive_close_law_but_cannot_claim_that_law() {
     let (mut h, _) = fixture();
     let certified = certified(&mut h);

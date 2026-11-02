@@ -18,7 +18,7 @@
 //!                                                a document's public commitment from its bytes
 //!   bundle       <bundle> --key K... [--receipt R]
 //!                                                an evidence bundle, every predicate graded
-//!   report       <bundle> --key K... [--units N,N,... | --base-unit N]
+//!   report       <bundle> --key K... [--units N,N,... | --base-unit N] [--view detail]
 //!                                                a native report; statement units come from the recipient
 //! ```
 //!
@@ -38,8 +38,9 @@
 //! Exit codes: `0` every check passed, `8` a check failed or did not run
 //! (the artifact does not verify, or an input exceeds the
 //! [`MAX_INPUT_BYTES`] bound), `2` usage (an unknown command or flag, a
-//! missing, repeated, inapplicable or malformed argument; every argument is
-//! judged before any file is opened), `5` an input file could not be read.
+//! missing, repeated, inapplicable or malformed argument; syntax is judged
+//! before any file is opened and report-view compatibility after source
+//! verification), `5` an input file could not be read.
 //! Robot mode (`--json`) prints one deterministic JSON object on stdout;
 //! otherwise the report is text. A usage or I/O error is also a diagnostic
 //! line on stderr. Bare `fa-verify`, `help` and `--help` print the usage and
@@ -108,13 +109,17 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-               [--units N,N,... | --base-unit N] independently recompute native or dimension-filtered
+               [--units N,N,... | --base-unit N] [--view detail]
+                                                independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
+                                                statement comparisons and complete native publication traces,
                                                 effective-date or due-date aging, reconciliation, whole-chart aging portfolios,
                                                 account roll-forwards,
                                                 direct cash flows, changes in equity, lot schedules,
                                                 native/functional one-book consolidated group statements.
                                                 V1 statements require --units;
+                                                native traces retain every consecutive source, including zero-effect steps;
+                                                migration and legacy-ambiguous Replacement traces are refused;
                                                 lot schedules require the recipient's --base-unit;
                                                 V2/V3 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -152,6 +157,12 @@ options:
   --base-unit N  required only for lot schedules: your expected numeric cost unit ID.
                  This premise does not prove Book genesis or disposal-law admission.
                  It cannot be combined with --units or used for another report family.
+  --view detail  report: derive complete general-ledger detail from a verified roll-forward.
+                 Keeps zero cells, offsetting legs, gross turnover and exact running balances.
+                 --expect still pins the original outer RollForwardCertificate; the derived
+                 detail output digest is separate. Balances use effective-date order at the
+                 selected recorded prefix, not balances observed when entries were recorded.
+                 Other report families refuse; no new certificate or trust premise is added.
   --json         one JSON report on stdout (robot mode)
   --hex          read every input file as hexadecimal text
 
@@ -182,7 +193,7 @@ const COMMANDS: [&str; 13] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 21] = [
+const VALUE_FLAGS: [&str; 22] = [
     "--state",
     "--after-seq",
     "--through-seq",
@@ -204,6 +215,7 @@ const VALUE_FLAGS: [&str; 21] = [
     "--receipt",
     "--units",
     "--base-unit",
+    "--view",
 ];
 const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 
@@ -254,6 +266,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--expect",
             "--units",
             "--base-unit",
+            "--view",
         ],
         _ => &[],
     }
@@ -1389,6 +1402,16 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         "report" => {
             let file = subject(args, "a report bundle file")?;
+            let detail_view = match args.one("--view") {
+                None => false,
+                Some("detail") => true,
+                Some(value) => {
+                    return Err(usage(
+                        format!("unknown report view `{value}`"),
+                        "use --view detail for a RollForwardCertificate report, or omit --view",
+                    ));
+                }
+            };
             let keys = args.all("--key");
             if keys.is_empty() {
                 return Err(usage(
@@ -1483,6 +1506,29 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     reason: Some(error.detail),
                 }),
                 Ok(report) => {
+                    let detail = if detail_view {
+                        if report.roll_forward.is_none() {
+                            return Err(usage(
+                                "--view detail requires a RollForwardCertificate report",
+                                "select an exported account roll-forward or GL-detail proof bundle",
+                            ));
+                        }
+                        match report.general_ledger_detail() {
+                            Ok(detail) => Some(detail),
+                            Err(error) => {
+                                checks.push(Check {
+                                    name: error.predicate,
+                                    scope: "recomputation",
+                                    verdict: Verdict::Fail,
+                                    detail: Vec::new(),
+                                    reason: Some(error.detail),
+                                });
+                                return Ok(checks);
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     checks.push(Check::pass(
                         "report_bundle",
                         report.scope,
@@ -1514,6 +1560,15 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     }
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
+                                } else if let Some(trace) = &report.statement_trace {
+                                    match trace.summary.valuation {
+                                        crate::report::StatementDiffValuation::Native => {
+                                            "statement_trace"
+                                        }
+                                        crate::report::StatementDiffValuation::Functional {
+                                            ..
+                                        } => "functional_statement_trace",
+                                    }
                                 } else if let Some(comparison) = &report.statement_diff {
                                     match comparison.valuation {
                                         crate::report::StatementDiffValuation::Native => {
@@ -1581,6 +1636,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                         + group.income_statement.lines.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
+                                } else if let Some(trace) = &report.statement_trace {
+                                    trace.summary.lines.len()
                                 } else if let Some(comparison) = &report.statement_diff {
                                     comparison.lines.len()
                                 } else if let Some(functional) = &report.functional_trial_balance {
@@ -1686,6 +1743,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             report.unit_universe_source,
                         ));
                     }
+                    if let Some(trace) = &report.statement_trace {
+                        checks.extend(statement_trace_checks(trace, report.unit_universe_source));
+                    }
                     if let Some(functional) = &report.functional_statement {
                         checks.extend(functional_statement_checks(functional));
                         checks.extend(statement_checks(
@@ -1719,7 +1779,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         checks.extend(due_date_reconciliation_checks(comparison));
                         checks.extend(due_date_aging_checks(&comparison.aging));
                     }
-                    if let Some(schedule) = &report.roll_forward {
+                    if let Some(detail) = &detail {
+                        checks.extend(general_ledger_checks(detail));
+                    } else if let Some(schedule) = &report.roll_forward {
                         checks.extend(roll_forward_checks(schedule));
                     }
                     if let Some(equity) = &report.equity_roll_forward {
@@ -3235,6 +3297,128 @@ fn roll_forward_checks(report: &crate::report::VerifiedRollForward) -> Vec<Check
     checks
 }
 
+fn general_ledger_checks(detail: &crate::report::VerifiedGeneralLedgerDetail) -> Vec<Check> {
+    let ledger = &detail.ledger;
+    let accounts: std::collections::BTreeMap<_, _> = ledger
+        .accounts
+        .iter()
+        .map(|account| (account.id, account))
+        .collect();
+    let mut checks = vec![Check::pass(
+        "general_ledger_detail",
+        "recomputation",
+        vec![
+            ("book", h(&ledger.book_id)),
+            ("known_at", n(ledger.known_at)),
+            ("label", s(&ledger.label)),
+            ("effective_from", day(Some(ledger.effective_from))),
+            ("effective_through", day(Some(ledger.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&detail.source_certificate_digest),
+            ),
+            ("source_output_digest", h(&detail.source_output_digest)),
+            ("detail_output_digest", h(&detail.output_digest)),
+            ("output_format", s("fa:general-ledger:v1")),
+            (
+                "output_binding",
+                s("deterministic_projection_of_verified_roll_forward"),
+            ),
+            (
+                "running_order",
+                s("account_unit_effective_recorded_entry_leg"),
+            ),
+            ("balance_basis", s("selected_prefix_effective_order")),
+            ("sign_convention", s("debit_minus_credit")),
+            ("accounting_basis", s("posted_native_units")),
+            ("economic_truth", s("not_judged")),
+            ("source_document_authenticity", s("not_judged")),
+            ("accounts", n(ledger.accounts.len() as u64)),
+            ("cells", n(ledger.cells.len() as u64)),
+            ("lines", n(ledger.lines.len() as u64)),
+            (
+                "units",
+                Json::List(
+                    ledger
+                        .units
+                        .iter()
+                        .map(|&unit| n(u64::from(unit)))
+                        .collect(),
+                ),
+            ),
+        ],
+    )];
+    for (index, cell) in ledger.cells.iter().enumerate() {
+        let account = accounts.get(&cell.account_id);
+        checks.push(Check::pass(
+            "general_ledger_cell",
+            "recomputation",
+            vec![
+                ("cell_index", n(index as u64)),
+                ("account_id", s(format!("{:032x}", cell.account_id))),
+                (
+                    "code",
+                    account.map_or(Json::Null, |account| s(&account.code)),
+                ),
+                (
+                    "name",
+                    account.map_or(Json::Null, |account| s(&account.name)),
+                ),
+                (
+                    "account_type",
+                    account.map_or(Json::Null, |account| n(u64::from(account.account_type))),
+                ),
+                (
+                    "is_leaf",
+                    account.map_or(Json::Null, |account| Json::Bool(account.is_leaf)),
+                ),
+                ("unit_id", n(u64::from(cell.unit_id))),
+                ("opening", amount(cell.opening)),
+                ("debits", amount(cell.debits)),
+                ("credits", amount(cell.credits)),
+                ("net_change", amount(cell.net_change)),
+                ("closing", amount(cell.closing)),
+                ("line_start", n(u64::from(cell.line_start))),
+                ("line_end", n(u64::from(cell.line_end))),
+            ],
+        ));
+    }
+    for (index, line) in ledger.lines.iter().enumerate() {
+        // The projector constructs these indices from the complete verified
+        // source; they never come directly from an untrusted detail payload.
+        let cell = &ledger.cells[line.cell_index as usize];
+        let bucket = &ledger.buckets[line.bucket_index as usize];
+        checks.push(Check::pass(
+            "general_ledger_line",
+            "recomputation",
+            vec![
+                ("line_index", n(index as u64)),
+                ("cell_index", n(u64::from(line.cell_index))),
+                ("account_id", s(format!("{:032x}", cell.account_id))),
+                ("unit_id", n(u64::from(cell.unit_id))),
+                ("entry_digest", h(&line.entry_digest)),
+                ("leg_index", n(u64::from(line.leg_index))),
+                ("recorded_seq", n(line.recorded_seq)),
+                ("effective_day", day(Some(line.effective_day))),
+                ("bucket_index", n(u64::from(line.bucket_index))),
+                ("class", n(u64::from(bucket.class))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+                ("debits", amount(line.debits)),
+                ("credits", amount(line.credits)),
+                ("running_balance", amount(line.running_balance)),
+            ],
+        ));
+    }
+    checks
+}
+
 fn cash_activity(activity: crate::report::CashFlowActivity) -> &'static str {
     use crate::report::CashFlowActivity;
     match activity {
@@ -3795,6 +3979,155 @@ fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
     checks
 }
 
+fn statement_trace_checks(
+    trace: &crate::report::VerifiedStatementTrace,
+    unit_universe_source: &str,
+) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "statement_trace_parameters",
+        "recomputation",
+        vec![
+            ("before_known_at", n(trace.summary.before_known_at)),
+            ("after_known_at", n(trace.summary.after_known_at)),
+            ("publications", n(trace.publications.len() as u64)),
+            (
+                "coverage",
+                s("every consecutive publication, including zero-effect publications"),
+            ),
+            (
+                "attribution",
+                s("atomic publication; entry links do not assign per-entry monetary effects"),
+            ),
+            ("case_approval", s("not_judged")),
+            ("statement_issuance", s("not_judged")),
+            ("economic_truth", s("not_judged")),
+        ],
+    )];
+    checks.extend(statement_diff_checks(&trace.summary, unit_universe_source));
+    if let crate::report::StatementDiffValuation::Functional {
+        base_unit,
+        book_parameters_source,
+    } = trace.summary.valuation
+    {
+        checks.push(Check::pass(
+            "functional_statement_trace_basis",
+            "recomputation",
+            vec![
+                ("base_unit", n(u64::from(base_unit))),
+                ("valuation_basis", s("retained-base-amounts")),
+                (
+                    "historical_rate_closure",
+                    s("exact Rate subset at every consecutive source frontier"),
+                ),
+                (
+                    "rate_visibility",
+                    s("authenticated import history at or before first use"),
+                ),
+                ("book_parameters_source", s(book_parameters_source)),
+                ("genesis_registration", s("not_judged")),
+                ("registry_activation", s("not_judged")),
+                ("external_rate_truth", s("not_judged")),
+                ("case_admission", s("not_judged")),
+            ],
+        ));
+    }
+    for publication in &trace.publications {
+        checks.push(Check::pass(
+            "statement_trace_publication",
+            "recomputation",
+            vec![
+                ("recorded_at", n(publication.recorded_at)),
+                ("before_source_digest", h(&publication.before_source_digest)),
+                ("after_source_digest", h(&publication.after_source_digest)),
+                ("entries", n(publication.entries.len() as u64)),
+                ("line_changes", n(publication.changes.len() as u64)),
+                (
+                    "mapping_changes",
+                    n(publication.mapping_changes.len() as u64),
+                ),
+                (
+                    "unchanged",
+                    Json::Bool(
+                        publication.changes.is_empty() && publication.mapping_changes.is_empty(),
+                    ),
+                ),
+            ],
+        ));
+        for entry in &publication.entries {
+            checks.push(Check::pass(
+                "statement_trace_entry",
+                "authenticated_journal",
+                vec![
+                    ("publication", n(publication.recorded_at)),
+                    ("event", s("recorded")),
+                    ("entry", s(format!("{:032x}", entry.entry))),
+                    ("digest", h(&entry.digest)),
+                    ("class", n(u64::from(entry.class))),
+                    ("recorded_at", n(entry.recorded_at)),
+                    ("posting_date", day(entry.posting_date)),
+                    ("principal", s(format!("{:032x}", entry.principal))),
+                    (
+                        "references",
+                        Json::List(
+                            entry
+                                .references
+                                .iter()
+                                .map(|(vid, digest)| {
+                                    Json::Obj(vec![
+                                        ("entry", s(format!("{vid:032x}"))),
+                                        ("digest", h(digest)),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ],
+            ));
+        }
+        for line in &publication.changes {
+            let amounts = |values: &[i128]| {
+                Json::List(values.iter().map(|amount| s(amount.to_string())).collect())
+            };
+            checks.push(Check::pass(
+                "statement_trace_line",
+                "recomputation",
+                vec![
+                    ("recorded_at", n(publication.recorded_at)),
+                    ("code", s(&line.code)),
+                    ("label", s(&line.label)),
+                    ("unit", n(u64::from(line.unit))),
+                    ("before", amounts(&line.before)),
+                    ("after", amounts(&line.after)),
+                    ("delta", amounts(&line.delta)),
+                ],
+            ));
+        }
+        for change in &publication.mapping_changes {
+            let mapping = |value: &crate::report::StatementMapping| {
+                Json::Obj(vec![
+                    ("account", s(format!("{:032x}", value.account))),
+                    ("code", s(&value.code)),
+                    ("name", s(&value.name)),
+                    ("account_type", n(u64::from(value.account_type))),
+                    ("is_leaf", Json::Bool(value.is_leaf)),
+                    ("line_code", s(&value.line_code)),
+                ])
+            };
+            checks.push(Check::pass(
+                "statement_trace_mapping",
+                "recomputation",
+                vec![
+                    ("recorded_at", n(publication.recorded_at)),
+                    ("account", s(format!("{:032x}", change.account))),
+                    ("before", change.before.as_ref().map_or(Json::Null, mapping)),
+                    ("after", change.after.as_ref().map_or(Json::Null, mapping)),
+                ],
+            ));
+        }
+    }
+    checks
+}
+
 fn statement_diff_checks(
     comparison: &crate::report::VerifiedStatementDiff,
     unit_universe_source: &str,
@@ -4175,6 +4508,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn functional_statement_trace_discloses_every_frontier_and_retained_rate_premises() {
+        use crate::report::{
+            StatementDiffValuation, VerifiedStatement, VerifiedStatementDiff,
+            VerifiedStatementPublication, VerifiedStatementTrace,
+        };
+        let statement = VerifiedStatement {
+            definition_name: "income-statement".into(),
+            definition_version: 1,
+            definition_digest: [4; 32],
+            kind: "IncomeStatement",
+            units: vec![7],
+            columns: vec![],
+            lines: vec![],
+            mappings: vec![],
+        };
+        let mut trace = VerifiedStatementTrace {
+            summary: VerifiedStatementDiff {
+                valuation: StatementDiffValuation::Functional {
+                    base_unit: 7,
+                    book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
+                },
+                before_known_at: 11,
+                after_known_at: 12,
+                before_digest: [5; 32],
+                after_digest: [6; 32],
+                before: statement.clone(),
+                after: statement,
+                lines: vec![],
+                mapping_changes: vec![],
+            },
+            publications: vec![VerifiedStatementPublication {
+                recorded_at: 12,
+                before_source_digest: [7; 32],
+                after_source_digest: [8; 32],
+                entries: vec![],
+                changes: vec![],
+                mapping_changes: vec![],
+            }],
+        };
+        let checks = statement_trace_checks(&trace, "authenticated-registry");
+        let basis = checks
+            .iter()
+            .find(|check| check.name == "functional_statement_trace_basis")
+            .expect("a functional trace must disclose its historical valuation basis");
+        let mut json = String::new();
+        basis.json().write(&mut json);
+        for expected in [
+            "\"base_unit\":7",
+            "\"valuation_basis\":\"retained-base-amounts\"",
+            "exact Rate subset at every consecutive source frontier",
+            "authenticated import history at or before first use",
+            "\"genesis_registration\":\"not_judged\"",
+            "\"registry_activation\":\"not_judged\"",
+            "\"external_rate_truth\":\"not_judged\"",
+            "\"case_admission\":\"not_judged\"",
+        ] {
+            assert!(json.contains(expected), "{expected}: {json}");
+        }
+        let publication = checks
+            .iter()
+            .find(|check| check.name == "statement_trace_publication")
+            .expect("a zero-effect publication must still be displayed");
+        let mut json = String::new();
+        publication.json().write(&mut json);
+        assert!(json.contains("\"recorded_at\":12"), "{json}");
+        assert!(json.contains("\"unchanged\":true"), "{json}");
+        trace.summary.valuation = StatementDiffValuation::Native;
+        assert!(
+            statement_trace_checks(&trace, "authenticated-registry")
+                .iter()
+                .all(|check| check.name != "functional_statement_trace_basis")
+        );
+    }
+
+    #[test]
     fn functional_statement_diff_renders_arithmetic_scope_without_case_or_rate_truth_claims() {
         use crate::report::{StatementDiffValuation, VerifiedStatement, VerifiedStatementDiff};
         let statement = VerifiedStatement {
@@ -4488,6 +4896,103 @@ mod tests {
         assert!(render(4).contains("\"leg_index\":2"));
         assert!(render(4).contains(&format!("\"entry_digest\":\"{}\"", "05".repeat(32))));
         assert!(render(4).contains(&format!("\"credits\":\"{}\"", i128::MAX)));
+    }
+
+    #[test]
+    fn general_ledger_detail_renders_exact_amounts_and_separate_source_trust_scope() {
+        use crate::report::*;
+        let detail = VerifiedGeneralLedgerDetail {
+            source_certificate_digest: [4; 32],
+            source_output_digest: [5; 32],
+            output_digest: [6; 32],
+            output: Vec::new(),
+            ledger: VerifiedGeneralLedger {
+                book_id: [3; 16],
+                known_at: 9,
+                label: "Selected ledger".into(),
+                effective_from: 10,
+                effective_through: 40,
+                accounts: vec![RollForwardAccount {
+                    id: 1,
+                    code: "3000".into(),
+                    name: "Equity".into(),
+                    account_type: 3,
+                    is_leaf: true,
+                }],
+                units: vec![0],
+                buckets: vec![RollForwardBucket {
+                    class: 4,
+                    reason_code: "supersession:1".into(),
+                    rule_digest: Some([7; 32]),
+                }],
+                cells: vec![GeneralLedgerCell {
+                    account_id: 1,
+                    unit_id: 0,
+                    opening: -i128::MAX,
+                    debits: i128::MAX,
+                    credits: 0,
+                    net_change: i128::MAX,
+                    closing: 0,
+                    line_start: 0,
+                    line_end: 1,
+                }],
+                lines: vec![GeneralLedgerLine {
+                    cell_index: 0,
+                    entry_digest: [8; 32],
+                    leg_index: 2,
+                    recorded_seq: 8,
+                    effective_day: 20,
+                    bucket_index: 0,
+                    debits: i128::MAX,
+                    credits: 0,
+                    running_balance: 0,
+                }],
+            },
+        };
+        let checks = general_ledger_checks(&detail);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "general_ledger_detail",
+                "general_ledger_cell",
+                "general_ledger_line"
+            ]
+        );
+        assert!(checks.iter().all(|check| check.scope == "recomputation"));
+        let output = report("report", true, &checks);
+        assert_eq!(output.exit, EXIT_VERIFIED);
+        for expected in [
+            format!("\"source_certificate_digest\":\"{}\"", "04".repeat(32)),
+            format!("\"source_output_digest\":\"{}\"", "05".repeat(32)),
+            format!("\"detail_output_digest\":\"{}\"", "06".repeat(32)),
+            "\"output_binding\":\"deterministic_projection_of_verified_roll_forward\"".into(),
+            "\"balance_basis\":\"selected_prefix_effective_order\"".into(),
+            "\"sign_convention\":\"debit_minus_credit\"".into(),
+            "\"economic_truth\":\"not_judged\"".into(),
+            "\"source_document_authenticity\":\"not_judged\"".into(),
+            "\"code\":\"3000\"".into(),
+            format!("\"opening\":\"{}\"", -i128::MAX),
+            format!("\"debits\":\"{}\"", i128::MAX),
+            "\"running_balance\":\"0\"".into(),
+            "\"recorded_seq\":8".into(),
+            "\"leg_index\":2".into(),
+            "\"reason_code\":\"supersession:1\"".into(),
+            format!("\"rule_digest\":\"{}\"", "07".repeat(32)),
+        ] {
+            assert!(
+                output.stdout.contains(&expected),
+                "{expected}: {}",
+                output.stdout
+            );
+        }
+        assert_eq!(
+            output,
+            report("report", true, &general_ledger_checks(&detail))
+        );
+        let human = report("report", false, &checks);
+        assert_eq!(human.exit, EXIT_VERIFIED);
+        assert!(human.stdout.contains("general_ledger_line"));
+        assert!(human.stdout.contains("source_certificate_digest"));
     }
 
     #[test]
@@ -5211,6 +5716,36 @@ mod tests {
         ]
         .map(str::to_string);
         assert_eq!(run(&malformed, &no_read).exit, EXIT_USAGE);
+    }
+
+    #[test]
+    fn general_ledger_detail_view_syntax_precedes_io_and_source_failure_emits_no_detail() {
+        let key = key_hex();
+        let no_read = |_: &str| -> std::io::Result<Vec<u8>> {
+            panic!("invalid detail arguments must refuse before any file read")
+        };
+        for arguments in [
+            vec!["report", "missing", "--key", &key, "--view", "summary"],
+            vec!["report", "missing", "--key", &key, "--view", ""],
+            vec!["report", "missing", "--key", &key, "--view"],
+            vec![
+                "report", "missing", "--key", &key, "--view", "detail", "--view", "detail",
+            ],
+            vec!["bundle", "missing", "--key", &key, "--view", "detail"],
+        ] {
+            let args: Vec<String> = arguments.into_iter().map(str::to_string).collect();
+            assert_eq!(run(&args, &no_read).exit, EXIT_USAGE);
+        }
+        let args = [
+            "report", "broken", "--key", &key, "--view", "detail", "--json",
+        ]
+        .map(str::to_string);
+        let broken = |_: &str| Ok(b"not a report bundle".to_vec());
+        let output = run(&args, &broken);
+        assert_eq!(output.exit, EXIT_FAILED);
+        assert!(!output.stdout.contains("general_ledger_detail"));
+        assert!(!output.stdout.contains("general_ledger_cell"));
+        assert!(!output.stdout.contains("detail_output_digest"));
     }
 
     #[test]

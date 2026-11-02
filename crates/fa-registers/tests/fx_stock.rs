@@ -23,8 +23,10 @@ use fa_model::{
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::{Amount, RoundingLaw, Side, UnitId, UnitRegistry};
 use fa_registers::{
-    FunctionalStockCell, FunctionalStockCellKey, FunctionalStockFold, RegisterError, balance_as_of,
-    fold_functional_stock, fold_period_functional, verify_functional_stock,
+    FunctionalFoldWork, FunctionalStockCell, FunctionalStockCellKey, FunctionalStockFold,
+    RegisterError, balance_as_of, fold_functional_stock, fold_period_functional,
+    fold_period_functional_excluding_classes, fold_periods_functional_excluding_classes,
+    fold_periods_functional_excluding_classes_counted, verify_functional_stock,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -378,6 +380,205 @@ impl Fixture {
         })
         .unwrap()
     }
+}
+
+#[test]
+fn functional_periods_share_one_read_and_match_literal_valuations_releases_and_lineage() {
+    for declared_entity in [false, true] {
+        let mut f = Fixture::with_entity(declared_entity);
+        let december = day(2025, 12, 5);
+        let rate = f.rate(december, 11, "December multiperiod rate");
+        f.post(f.valued(f.proposal("december", december, f.eur, 1_000), &rate));
+        let january = day(2026, 1, 5);
+        let rate = f.rate(january, 12, "January multiperiod rate");
+        f.post(f.valued(f.proposal("january", january, f.eur, 500), &rate));
+        f.post(f.proposal("march", day(2026, 3, 5), f.usd, 100));
+
+        let mut adjustment = f.proposal("adjustment", day(2026, 3, 6), f.usd, 20);
+        adjustment.class = EntryClass::ADJUSTING;
+        let adjustment = f.post(adjustment);
+        let before_reversal = f.db.frontier().unwrap();
+        let mut reversal = f.proposal("undo-adjustment", day(2026, 3, 7), f.usd, 20);
+        reversal.class = EntryClass::REVERSAL;
+        for leg in &mut reversal.legs {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+        }
+        reversal.supersession.push(fa_model::Supersession {
+            target: adjustment.entry_ref(),
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 1,
+        });
+        f.post(reversal);
+        let mut hold = f.proposal("march-hold", day(2026, 3, 10), f.usd, 200);
+        hold.class = EntryClass::PENDING;
+        hold.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let hold = f.post(hold);
+        let held_at = f.db.frontier().unwrap();
+        let mut partial = f.proposal("april-resolution", day(2026, 4, 10), f.usd, 75);
+        partial.class = EntryClass::RESOLUTION;
+        partial.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(hold.entry_ref()),
+            disposition: Some(Disposition::Posts {
+                source_ordinals: vec![0, 1],
+            }),
+        });
+        let released = f.post(partial);
+        let head = f.db.frontier().unwrap();
+
+        // Reverse period order, an empty period, and a duplicate all preserve
+        // the caller's requested result order without a second journal read.
+        let periods = [
+            "FY2026-P04",
+            "FY2025-P12",
+            "FY2026-P01",
+            "FY2026-P03",
+            "FY2026-P03",
+            "FY2026-P02",
+        ];
+        for at in [before_reversal, held_at, head] {
+            for excluded in [
+                vec![],
+                vec![EntryClass::CLOSING],
+                vec![EntryClass::ADJUSTING],
+                vec![
+                    EntryClass::PENDING,
+                    EntryClass::ADJUSTING,
+                    EntryClass::ADJUSTING,
+                ],
+            ] {
+                let literal: Vec<_> = periods
+                    .iter()
+                    .map(|period| {
+                        fold_period_functional_excluding_classes(
+                            &f.db,
+                            &f.book,
+                            period,
+                            Some(at),
+                            &excluded,
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                let mut work = FunctionalFoldWork::default();
+                let shared = fold_periods_functional_excluding_classes_counted(
+                    &f.db,
+                    &f.book,
+                    &periods,
+                    Some(at),
+                    &excluded,
+                    &mut work,
+                )
+                .unwrap();
+                assert_eq!(
+                    shared, literal,
+                    "entity={declared_entity}, at={at:?}, exclusions={excluded:?}"
+                );
+                let rows = f.db.vertices_at(at).unwrap();
+                let entries = rows
+                    .iter()
+                    .filter(|row| row.labels.contains(&label::ENTRY))
+                    .count();
+                assert_eq!(work.full_reads, 1, "{work:?}");
+                assert_eq!(work.vertices_read, rows.len(), "{work:?}");
+                assert_eq!(work.entries_decoded, entries, "{work:?}");
+                assert_eq!(work.literal_fallbacks, 0, "{work:?}");
+                assert_eq!(shared[1].total_debits().unwrap(), 1_100);
+                assert_eq!(shared[2].total_debits().unwrap(), 600);
+                assert_eq!(shared[3], shared[4]);
+                assert!(shared[5].cells.is_empty() && shared[5].pending.is_empty());
+                if at == head {
+                    assert_eq!(shared[0].total_debits().unwrap(), 75);
+                    assert!(shared[3].pending.is_empty());
+                    if !excluded.contains(&EntryClass::PENDING) {
+                        assert_eq!(shared[3].watermark, Some(released.recorded_at()));
+                    }
+                }
+                if excluded.contains(&EntryClass::ADJUSTING) {
+                    assert_eq!(shared[3].total_debits().unwrap(), 100);
+                }
+            }
+        }
+        assert_eq!(f.db.frontier().unwrap(), head, "shared reads never publish");
+    }
+}
+
+#[test]
+fn functional_periods_preserve_literal_error_order_and_do_not_fold_unselected_faults() {
+    let mut f = Fixture::new();
+    f.post(f.proposal("max-january", day(2026, 1, 5), f.usd, i128::MAX));
+    let good = f.db.frontier().unwrap();
+    // Retained corruption is deliberately injected through the substrate;
+    // the normal writer refuses the second gross unit before publication.
+    f.append_retained_fault(f.proposal("overflow-january", day(2026, 1, 6), f.usd, 1));
+    f.append_retained_fault(f.proposal("unvalued-march", day(2026, 3, 5), f.eur, 1));
+    let head = f.db.frontier().unwrap();
+
+    for periods in [
+        ["FY2026-P03", "FY2026-P01"],
+        ["FY2026-P01", "FY2026-P03"],
+        ["FY2026-P01", "unknown-period"],
+        ["unknown-period", "FY2026-P01"],
+    ] {
+        let literal = fold_period_functional(&f.db, &f.book, periods[0], None).unwrap_err();
+        let mut work = FunctionalFoldWork::default();
+        let error = fold_periods_functional_excluding_classes_counted(
+            &f.db,
+            &f.book,
+            &periods,
+            None,
+            &[],
+            &mut work,
+        )
+        .unwrap_err();
+        assert_eq!(format!("{error:?}"), format!("{literal:?}"), "{periods:?}");
+        assert_eq!(work.literal_fallbacks, 1, "{work:?}");
+        if periods[1] != "unknown-period" && periods[0] != "unknown-period" {
+            assert_eq!(
+                work.full_reads, 2,
+                "both failed attempts are counted: {work:?}"
+            );
+        }
+    }
+    let empty_period =
+        fold_periods_functional_excluding_classes(&f.db, &f.book, &["FY2026-P04"], None, &[])
+            .unwrap();
+    assert!(empty_period[0].cells.is_empty());
+    let historical = fold_periods_functional_excluding_classes(
+        &f.db,
+        &f.book,
+        &["FY2026-P01", "FY2026-P03"],
+        Some(good),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(historical[0].total_debits().unwrap(), i128::MAX);
+    assert!(historical[1].cells.is_empty());
+    assert_eq!(f.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn functional_periods_empty_selection_does_not_observe_an_invalid_coordinate() {
+    let f = Fixture::new();
+    let mut work = FunctionalFoldWork::default();
+    let empty = fold_periods_functional_excluding_classes_counted(
+        &f.db,
+        &f.book,
+        &[],
+        Some(CommitSeq(u64::MAX)),
+        &[EntryClass::CLOSING],
+        &mut work,
+    )
+    .unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(work, FunctionalFoldWork::default());
 }
 
 #[test]
@@ -1518,6 +1719,38 @@ fn migration_stock_appears_only_at_finalization_and_uses_its_activation_watermar
             (1, 50_000, 50_000)
         );
         assert_eq!(visible.watermark, Some(finalized.recorded_at));
+        // Sharing a selection must apply the same migration activation
+        // predicate to every period, without interpreting a staged chunk as
+        // an already-visible opening balance or using its birth as watermark.
+        for at in [staged_at, before_finalize, finalized.recorded_at] {
+            let periods = ["FY2025-OPEN", "FY2026-P01"];
+            let mut work = FunctionalFoldWork::default();
+            let shared = fold_periods_functional_excluding_classes_counted(
+                &f.db,
+                &f.book,
+                &periods,
+                Some(at),
+                &[],
+                &mut work,
+            )
+            .unwrap();
+            for (period, fold) in periods.iter().zip(&shared) {
+                assert_eq!(
+                    *fold,
+                    fold_period_functional(&f.db, &f.book, period, Some(at)).unwrap()
+                );
+            }
+            assert_eq!(work.full_reads, 1);
+            assert_eq!(work.literal_fallbacks, 0);
+            if at == finalized.recorded_at {
+                assert_eq!(shared[0].total_debits().unwrap(), 50_000);
+                assert_eq!(shared[0].watermark, Some(finalized.recorded_at));
+            } else {
+                assert!(shared[0].cells.is_empty());
+                assert_eq!(shared[0].watermark, None);
+            }
+            assert!(shared[1].cells.is_empty());
+        }
         assert_eq!(f.stock(day(2026, 1, 31), Some(staged_at)), staged);
         assert!(
             f.stock(day(2026, 1, 31), Some(before_finalize))

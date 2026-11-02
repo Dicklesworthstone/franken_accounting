@@ -989,6 +989,10 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let certificate = fa::StatementDiffCertificate::decode(&bytes)?;
                 book.produce_statement_diff_bundle(principal, &capability, state, &certificate)??
             }
+            fa::ReportArtifactFamily::StatementTrace => {
+                let certificate = fa::StatementTraceCertificate::decode(&bytes)?;
+                book.produce_statement_trace_bundle(principal, &capability, state, &certificate)??
+            }
             fa::ReportArtifactFamily::DueDateAging => {
                 let certificate = fa::DueDateAgingCertificate::decode(&bytes)?;
                 if let Some(expected) = crate::notary::aging_bundle_expectation(
@@ -1109,7 +1113,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, summary or functional trial-balance or statement report, native statement diff, lot schedule, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, lot schedule, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }

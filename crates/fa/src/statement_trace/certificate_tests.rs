@@ -695,3 +695,260 @@ fn native_source_and_trace_encoding_lengths_include_all_frames_and_optional_meta
         good.report.canonical_bytes().unwrap().len()
     );
 }
+
+#[test]
+fn functional_trace_keeps_saved_endpoints_zero_effects_and_cold_replay() {
+    let mut h = Harness::new();
+    let before = h.head();
+    h.post(
+        "functional-plus",
+        "2026-03-15",
+        h.usd,
+        ("cash", "sales"),
+        15,
+        false,
+    );
+    h.post(
+        "functional-minus",
+        "2026-03-15",
+        h.usd,
+        ("sales", "cash"),
+        15,
+        false,
+    );
+    h.post(
+        "functional-pending",
+        "2026-03-15",
+        h.usd,
+        ("cash", "capital"),
+        5,
+        true,
+    );
+    let after = h.head();
+    let request = h.request(before, "balance-sheet");
+    let cx = h.cx();
+    let authority = cap(&["read", "produce"]);
+    let comparison = h
+        .runtime
+        .block_on(h.book.certify_functional_statement_diff(
+            &cx,
+            PRINCIPAL,
+            &authority,
+            &request.comparison,
+        ))
+        .unwrap()
+        .unwrap();
+    let direct = h
+        .runtime
+        .block_on(
+            h.book
+                .certify_functional_statement_trace(&cx, PRINCIPAL, &authority, &request),
+        )
+        .unwrap()
+        .unwrap();
+    let ordinary = h
+        .runtime
+        .block_on(
+            h.book
+                .functional_statement_trace(&cx, PRINCIPAL, &cap(&["read"]), &request),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ordinary, direct.report);
+    assert!(direct.report.summary().is_unchanged());
+    assert!(direct.report.had_changes());
+    assert_eq!(direct.report.publications().len(), 3);
+    assert!(direct.report.publications()[2].is_unchanged());
+    assert_eq!(direct.certificate.sources().len(), 4);
+    assert_eq!(direct.certificate.format(), FUNCTIONAL_CERTIFICATE_FORMAT);
+    assert_eq!(
+        direct.certificate.output_format(),
+        crate::statement_trace::FUNCTIONAL_OUTPUT_FORMAT
+    );
+    assert!(
+        direct
+            .certificate
+            .sources()
+            .iter()
+            .all(|source| matches!(source.selection, ReportSelection::FunctionalStatement(_)))
+    );
+
+    h.post(
+        "later-head",
+        "2026-03-20",
+        h.usd,
+        ("cash", "sales"),
+        99,
+        false,
+    );
+    let head = h.head();
+    let traced = h
+        .runtime
+        .block_on(h.book.certify_functional_statement_trace_from_diff(
+            &cx,
+            PRINCIPAL,
+            &authority,
+            &comparison.certificate,
+            3,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(traced.report, direct.report);
+    assert_eq!(traced.report.summary(), &comparison.report);
+    assert_eq!(
+        traced.certificate.sources().first().unwrap(),
+        comparison.certificate.sources().0
+    );
+    assert_eq!(
+        traced.certificate.sources().last().unwrap(),
+        comparison.certificate.sources().1
+    );
+    assert_eq!(
+        traced.certificate.request().unwrap().comparison.after,
+        Some(after)
+    );
+    assert_eq!(h.head(), head);
+    let bytes = traced.certificate.canonical_bytes().unwrap();
+    let decoded = StatementTraceCertificate::decode(&bytes).unwrap();
+    assert_eq!(decoded, traced.certificate);
+    let artifact = crate::ReportArtifact::decode(&bytes).unwrap();
+    assert!(artifact.uses_functional_valuations());
+    assert_eq!(
+        artifact.family(),
+        crate::ReportArtifactFamily::StatementTrace
+    );
+    let mut h = h.reopen();
+    let cx = h.cx();
+    let replayed = h
+        .runtime
+        .block_on(h.book.replay_report_artifact_for_with_history(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read"]),
+            &bytes,
+            Some(decoded.digest()),
+            crate::ReportArtifactExpectation::AsSupplied,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replayed.output, direct.report.canonical_bytes().unwrap());
+    assert_eq!(replay(&h, &decoded), direct.report);
+    let jsonl = h
+        .book
+        .statement_trace_jsonl(&cx, PRINCIPAL, &authority, &decoded)
+        .unwrap()
+        .unwrap();
+    assert!(jsonl.contains("\"format\":\"fa:functional-statement-trace-jsonl:v1\""));
+    assert!(jsonl.contains("\"functional\":true"));
+    assert!(jsonl.contains("\"valuation_basis\":\"retained-base-amounts\""));
+    assert_eq!(h.head(), head);
+}
+
+#[test]
+fn functional_trace_rejects_false_outputs_mixed_sources_and_insufficient_authority() {
+    let mut h = Harness::new();
+    let before = h.head();
+    h.post(
+        "functional-change",
+        "2026-03-15",
+        h.usd,
+        ("cash", "sales"),
+        15,
+        false,
+    );
+    let request = h.request(before, "balance-sheet");
+    let native = certify(&h, &request);
+    let cx = h.cx();
+    let authority = cap(&["read", "produce"]);
+    let good = h
+        .runtime
+        .block_on(
+            h.book
+                .certify_functional_statement_trace(&cx, PRINCIPAL, &authority, &request),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        StatementTraceCertificate::seal(
+            good.certificate.sources.clone(),
+            PRINCIPAL,
+            [0; 32],
+            native.certificate.output.clone(),
+        )
+        .is_err()
+    );
+    let mut mixed = good.certificate.sources.clone();
+    mixed[0] = native.certificate.sources[0].clone();
+    assert!(StatementTraceCertificate::seal(
+        mixed, PRINCIPAL, [0; 32], good.certificate.output.clone(),
+    ).is_err());
+    let mut false_output = good.certificate.output.clone();
+    *false_output.last_mut().unwrap() ^= 1;
+    assert_false_trace(&h, &reseal(&good.certificate, false_output));
+    let mut w = Writer::new();
+    w.bytes(CERTIFICATE_FORMAT)
+        .u128(PRINCIPAL.0)
+        .fixed(&[0; 32]);
+    w.list(good.certificate.sources(), |w, source| {
+        w.bytes(&source.canonical_bytes().unwrap());
+    })
+    .bytes(good.certificate.output());
+    let mut substituted = w.finish().unwrap();
+    substituted.extend_from_slice(&domain_digest(DIGEST_DOMAIN, &[&substituted]));
+    assert!(
+        StatementTraceCertificate::decode(&substituted).is_err(),
+        "resealing the outer native format cannot relabel functional sources"
+    );
+
+    assert_eq!(
+        h.runtime
+            .block_on(h.book.certify_functional_statement_trace(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &request,
+            ))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+    let scoped = authority.clone().for_accounts(&["cash"]).unwrap();
+    let mut reversed = request.clone();
+    reversed.comparison.before = CommitSeq(h.head().0 + 1);
+    reversed.comparison.after = Some(before);
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .functional_statement_trace(&cx, PRINCIPAL, &scoped, &reversed,)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY,
+        "authority must precede even malformed frontier observation"
+    );
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .certify_functional_statement_trace(&cx, PRINCIPAL, &scoped, &reversed,)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+    let mut bounded = request;
+    bounded.max_publications = 0;
+    assert!(
+        h.runtime
+            .block_on(
+                h.book
+                    .certify_functional_statement_trace(&cx, PRINCIPAL, &authority, &bounded,)
+            )
+            .unwrap()
+            .is_err()
+    );
+}

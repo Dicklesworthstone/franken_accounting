@@ -20,7 +20,7 @@ const LEDGER_FORMAT: &[u8] = b"fa:general-ledger:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:cash-flow:v1";
 pub(super) const MAX_ACCOUNTS: usize = 4096;
 pub(super) const MAX_LINES: usize = 250_000;
-const MAX_CELLS: usize = 65_536;
+pub(super) const MAX_CELLS: usize = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
