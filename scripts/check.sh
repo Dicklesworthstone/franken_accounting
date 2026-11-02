@@ -277,15 +277,17 @@ CHECK_JOBS="${CHECK_JOBS:-2}"
 # test pool (about 62 GB on 2026-10-29, more than any worker kept free; rch
 # drops slots near 15 GB free). Unset, every rch step uses $RCH_WORKER.
 CHECK_TEST_WORKERS="${CHECK_TEST_WORKERS:-}"
-# CHECK_TEST_CONFIG: cargo `--config` arguments that every test job and every
-# test listing passes, identically, so that both share one pool. By default
-# they build without debuginfo. Under the profile's line-tables-only, 494 of
+# CHECK_TEST_CONFIG: cargo `--config` arguments shared by every compiling
+# step, test job and test listing, so their dependency artifacts agree.
+# By default they build without debuginfo. This changes symbols, not debug
+# assertions, overflow checks, optimization or the selected targets/tests.
+# Under the profile's line-tables-only, 494 of
 # the 731 MB of fa-cli's `cli` test binary is DWARF; without debuginfo it is
 # 238 MB. fa-cli's ~45 integration-test binaries made one worker's half of
 # the test pool 49 GB on 2026-10-30, and that worker ran out of slots
 # (fa-0hs4.2). A failing test still names its file and line, because the
 # panic's Location is compiled in; only backtrace frames lose theirs. Set
-# CHECK_TEST_CONFIG="" to test the developer profile unchanged.
+# CHECK_TEST_CONFIG="" to use the developer profile throughout unchanged.
 read -r -a CHECK_TEST_CONFIG_ARGS <<<"${CHECK_TEST_CONFIG---config profile.dev.debug=false --config profile.test.debug=false}"
 cargo_build() {
   local label="$1" sub="$2"; shift 2
@@ -303,7 +305,7 @@ cargo_build() {
     return
   fi
   RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
-    rch exec -- cargo "$sub" -j "$CHECK_JOBS" "$@" >"$log" 2>&1
+    rch exec -- cargo "$sub" -j "$CHECK_JOBS" "${CHECK_TEST_CONFIG_ARGS[@]}" "$@" >"$log" 2>&1
   local rc=$?
   finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   t1="$(date +%s)"
