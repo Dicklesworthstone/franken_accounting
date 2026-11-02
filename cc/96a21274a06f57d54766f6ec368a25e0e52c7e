@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=cc96a21274a06f57d54766f6ec368a25e0e52c7e
+tree=15058b585abf670ab3a98a684dcebce46133a325
+lane=local
+host=hetzner1:Linux-x86_64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=3
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/expiry-index-contract-cc96-tier0-20261102
+recorded_utc=2026-11-02T00:50:22Z
