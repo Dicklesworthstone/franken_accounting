@@ -45,6 +45,7 @@ pub enum ReportArtifactFamily {
     DueDateAging,
     RollForward,
     EquityRollForward,
+    EquityRollForwardDiff,
     ExternalFeed,
     NativeSubledger,
     CashFlow,
@@ -82,6 +83,7 @@ impl ReportArtifactFamily {
             Self::DueDateAging => "due-date-aging",
             Self::RollForward => "roll-forward",
             Self::EquityRollForward => "equity-roll-forward",
+            Self::EquityRollForwardDiff => "equity-roll-forward-diff",
             Self::ExternalFeed => "external-feed-reconciliation",
             Self::NativeSubledger => "native-subledger-reconciliation",
             Self::CashFlow => "cash-flow",
@@ -121,6 +123,7 @@ pub enum ReportArtifactExpectation<'a> {
     },
     IndirectCashFlow(&'a IndirectCashFlowRequest),
     EquityRollForward(&'a crate::EquityRollForwardRequest),
+    EquityRollForwardDiff(&'a crate::EquityRollForwardDiffRequest),
     ExternalFeed(&'a crate::ExternalFeedRequest),
     NativeSubledger(&'a crate::NativeSubledgerRequest),
     AgingReconciliation(&'a AgingReconciliationRequest),
@@ -146,6 +149,7 @@ enum Artifact {
     DueDateAging(Box<DueDateAgingCertificate>),
     RollForward(Box<RollForwardCertificate>),
     EquityRollForward(Box<crate::EquityRollForwardCertificate>),
+    EquityRollForwardDiff(Box<crate::EquityRollForwardDiffCertificate>),
     ExternalFeed(Box<crate::ExternalFeedCertificate>),
     NativeSubledger(Box<crate::NativeSubledgerCertificate>),
     CashFlow(Box<CashFlowCertificate>),
@@ -254,6 +258,10 @@ impl ReportArtifact {
             Artifact::EquityRollForward(Box::new(crate::EquityRollForwardCertificate::decode(
                 bytes,
             )?))
+        } else if format == crate::EQUITY_DIFF_CERTIFICATE_FORMAT {
+            Artifact::EquityRollForwardDiff(Box::new(
+                crate::EquityRollForwardDiffCertificate::decode(bytes)?,
+            ))
         } else if format == crate::NATIVE_SUBLEDGER_CERTIFICATE_FORMAT {
             Artifact::NativeSubledger(Box::new(crate::NativeSubledgerCertificate::decode(bytes)?))
         } else if format == crate::EXTERNAL_FEED_CERTIFICATE_FORMAT {
@@ -322,6 +330,7 @@ impl ReportArtifact {
             Artifact::DueDateAging(_) => ReportArtifactFamily::DueDateAging,
             Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
             Artifact::EquityRollForward(_) => ReportArtifactFamily::EquityRollForward,
+            Artifact::EquityRollForwardDiff(_) => ReportArtifactFamily::EquityRollForwardDiff,
             Artifact::ExternalFeed(_) => ReportArtifactFamily::ExternalFeed,
             Artifact::NativeSubledger(_) => ReportArtifactFamily::NativeSubledger,
             Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
@@ -342,6 +351,26 @@ impl ReportArtifact {
         }
     }
 
+    /// Borrow an intact original equity certificate without serializing or
+    /// decoding it again. A successful decode still does not establish replay.
+    #[must_use]
+    pub fn equity_roll_forward_certificate(&self) -> Option<&crate::EquityRollForwardCertificate> {
+        match &self.inner {
+            Artifact::EquityRollForward(certificate) => Some(certificate),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn equity_roll_forward_diff_certificate(
+        &self,
+    ) -> Option<&crate::EquityRollForwardDiffCertificate> {
+        match &self.inner {
+            Artifact::EquityRollForwardDiff(certificate) => Some(certificate),
+            _ => None,
+        }
+    }
+
     /// Inspect the source immutably. A nested source is not interchangeable with
     /// its outer certificate: it omits the outer selector and exact derived output.
     /// Comparisons and traces expose their final source here; replay still checks
@@ -358,6 +387,9 @@ impl ReportArtifact {
             Artifact::DueDateAging(c) => c.source(),
             Artifact::RollForward(c) => c.source_certificate(),
             Artifact::EquityRollForward(c) => c.source_certificate().source_certificate(),
+            Artifact::EquityRollForwardDiff(c) => {
+                c.sources().1.source_certificate().source_certificate()
+            }
             Artifact::ExternalFeed(c) => c.source_certificate(),
             Artifact::NativeSubledger(c) => c.source_certificate(),
             Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
@@ -416,6 +448,7 @@ impl ReportArtifact {
     /// source equals HEAD and would otherwise need no historical preparation.
     fn earliest_source_known_at(&self) -> Result<CommitSeq, Refusal> {
         match &self.inner {
+            Artifact::EquityRollForwardDiff(certificate) => Ok(certificate.sources().0.known_at()),
             Artifact::StatementDiff(certificate) => {
                 let (before, after) = certificate.sources();
                 Ok(before.known_at.min(after.known_at))
@@ -441,6 +474,7 @@ impl ReportArtifact {
             Artifact::DueDateAging(c) => c.digest(),
             Artifact::RollForward(c) => c.digest(),
             Artifact::EquityRollForward(c) => c.digest(),
+            Artifact::EquityRollForwardDiff(c) => c.digest(),
             Artifact::ExternalFeed(c) => c.digest(),
             Artifact::NativeSubledger(c) => c.digest(),
             Artifact::CashFlow(c) => c.digest(),
@@ -474,6 +508,7 @@ impl ReportArtifact {
             Artifact::DueDateAging(c) => c.output(),
             Artifact::RollForward(c) => c.output(),
             Artifact::EquityRollForward(c) => c.output(),
+            Artifact::EquityRollForwardDiff(c) => c.output(),
             Artifact::ExternalFeed(c) => c.output(),
             Artifact::NativeSubledger(c) => c.output(),
             Artifact::CashFlow(c) => c.output(),
@@ -512,6 +547,7 @@ impl ReportArtifact {
             Artifact::DueDateAging(c) => c.canonical_bytes(),
             Artifact::RollForward(c) => c.canonical_bytes(),
             Artifact::EquityRollForward(c) => c.canonical_bytes(),
+            Artifact::EquityRollForwardDiff(c) => c.canonical_bytes(),
             Artifact::ExternalFeed(c) => c.canonical_bytes(),
             Artifact::NativeSubledger(c) => c.canonical_bytes(),
             Artifact::CashFlow(c) => c.canonical_bytes(),
@@ -553,6 +589,7 @@ from_certificate!(
     DueDateAgingCertificate,
     RollForwardCertificate,
     crate::EquityRollForwardCertificate,
+    crate::EquityRollForwardDiffCertificate,
     crate::ExternalFeedCertificate,
     crate::NativeSubledgerCertificate,
     CashFlowCertificate,
@@ -786,6 +823,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 ReportArtifactExpectation::EquityRollForward(request),
             ) => self
                 .replay_equity_roll_forward(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            (
+                Artifact::EquityRollForwardDiff(c),
+                ReportArtifactExpectation::EquityRollForwardDiff(request),
+            ) => self
+                .replay_equity_roll_forward_diff(cx, principal, capability, c, request)?
                 .map(|_| ()),
             (Artifact::NativeSubledger(c), ReportArtifactExpectation::NativeSubledger(request)) => {
                 self.replay_native_subledger(cx, principal, capability, c, request)?

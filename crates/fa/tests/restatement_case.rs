@@ -4,6 +4,8 @@
 
 #[path = "restatement_case/custom_statements.rs"]
 mod custom_statements;
+#[path = "restatement_case/equity_diff.rs"]
+mod equity_diff;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -946,6 +948,27 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         fa::CertificateStatus::Current { .. }
     ));
     let before_adjustment = book.head().unwrap();
+    // Preserve the original equity certificate before the case publishes its
+    // adjustment. The comparison must retain this claim rather than mint a
+    // replacement after learning the correction.
+    let equity_before_request = fa::EquityRollForwardRequest {
+        units: vec![usd.0],
+        label: "FY2026 equity after prior-period correction".into(),
+        effective_from: day(2026, 1, 1),
+        effective_through: day(2026, 12, 31),
+        known_at: Some(before_adjustment),
+        issuance_accounts: vec![account_vid(book_id, "3000")],
+        distribution_accounts: Vec::new(),
+    };
+    let equity_before = book
+        .certify_equity_roll_forward(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &equity_before_request,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.head().unwrap(), before_adjustment);
     let posted = book
         .post_case(poster.clone(), 1, date, b"post")
         .unwrap()
@@ -1148,6 +1171,14 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     assert_eq!(
         equity.movements[0].relates_to.as_ref().unwrap().1,
         "FY2025-P12"
+    );
+    equity_diff::verify_posted_adjustment_comparison(
+        &mut book,
+        &read,
+        &equity_before,
+        &certified,
+        &equity_before_request,
+        state,
     );
 
     // fa-75j4 slice 5: disclosed in a Disclosure document a principal other

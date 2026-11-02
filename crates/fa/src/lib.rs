@@ -77,6 +77,7 @@ pub mod disposal;
 pub mod document_disclosure;
 pub mod draft_review;
 pub mod equity_certificate;
+pub mod equity_diff;
 pub mod evidence_disclosure;
 pub mod external_subledger;
 pub mod findings;
@@ -191,6 +192,12 @@ pub use draft_review::{
 pub use equity_certificate::{
     CertifiedEquityRollForward, EQUITY_CERTIFICATE_FORMAT, EQUITY_REPORT_FORMAT,
     EquityRollForwardCertificate, MAX_EQUITY_CERTIFICATE_BYTES,
+};
+pub use equity_diff::{
+    CertifiedEquityRollForwardDiff, EQUITY_DIFF_CERTIFICATE_FORMAT, EQUITY_DIFF_OUTPUT_FORMAT,
+    EQUITY_DIFF_REQUEST_FORMAT, EquityRollForwardDiff, EquityRollForwardDiffCertificate,
+    EquityRollForwardDiffLine, EquityRollForwardDiffRequest, EquityRollForwardDiffUnit,
+    MAX_EQUITY_DIFF_CERTIFICATE_BYTES,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use external_subledger::{

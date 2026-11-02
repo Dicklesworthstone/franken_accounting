@@ -216,6 +216,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::EquityRollForward(c) => {
                 return self.equity_artifact_status(cx, principal, capability, c);
             }
+            Artifact::EquityRollForwardDiff(c) => {
+                // Full comparison replay above established both original
+                // sources. Freshness concerns its final equity selection,
+                // including role scope, metadata and opening stock.
+                return self.equity_artifact_status(cx, principal, capability, c.sources().1);
+            }
             Artifact::ExternalFeed(c) => {
                 return self.external_feed_certificate_status(cx, principal, capability, c);
             }

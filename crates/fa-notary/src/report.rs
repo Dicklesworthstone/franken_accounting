@@ -43,7 +43,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, effective-date aging, roll-forward, equity roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -122,6 +122,9 @@ pub fn assemble(
 /// Native statement comparisons retain both original v4 sources and the exact
 /// outer bridge under their shared four-document closure. Each source is
 /// reconstructed at its own recorded frontier from the complete prefix.
+/// Equity comparisons retain both original v2 equity sources, including their
+/// case and movement citations, under the same native four-document profile.
+/// Their recipient must independently supply the common equity question.
 /// Summary trial balances retain their exact outer root selection and output
 /// over a native source and the same four-document closure; historical chart
 /// membership is reconstructed from the authenticated prefix.
@@ -173,6 +176,7 @@ pub fn assemble_with_registries(
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
         || equity_certificate(certificate)
+        || equity_diff_certificate(certificate)
         || cash_flow_certificate(certificate)
         || policy_cash_flow_certificate(certificate)
         || split_cash_flow_certificate(certificate)
@@ -532,6 +536,42 @@ fn equity_certificate(certificate: &[u8]) -> bool {
     check().unwrap_or(false)
 }
 
+/// An equity comparison has exactly two original v2 equity sources, each over
+/// one native roll-forward. Keep this route at a fixed depth: neither legacy
+/// equity semantics, functional valuation nor another comparison may be
+/// substituted for a source. The facade and recipient replay the full claims.
+fn equity_diff_certificate(certificate: &[u8]) -> bool {
+    let check = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "equity comparison format")?
+            != b"fa:equity-roll-forward-diff-certificate:v1"
+        {
+            return Ok(false);
+        }
+        for name in ["before equity source", "after equity source"] {
+            let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, name)?;
+            let mut nested = Reader::new(source);
+            if nested.bytes(64, "equity source format")? != b"fa:equity-roll-forward-certificate:v2"
+                || !equity_certificate(source)
+            {
+                return Ok(false);
+            }
+        }
+        reader.u128("equity comparison producer")?;
+        reader.fixed::<32>("equity comparison capability")?;
+        let output = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "equity comparison output")?;
+        if Reader::new(output).bytes(64, "equity comparison output format")?
+            != b"fa:equity-roll-forward-diff:v1"
+        {
+            return Ok(false);
+        }
+        reader.fixed::<32>("equity comparison digest")?;
+        reader.finish()?;
+        Ok(true)
+    };
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && check().unwrap_or(false)
+}
+
 /// Recognize the direct cash wrapper over its native lead schedule. Production
 /// replays the full outer report; recipients independently verify every cash
 /// movement and its classification. Other wrappers have their own exact route.
@@ -777,6 +817,7 @@ fn assemble_inner(
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
                 || equity_certificate(certificate)
+                || equity_diff_certificate(certificate)
                 || cash_flow_certificate(certificate)
                 || policy_cash_flow_certificate(certificate)
                 || split_cash_flow_certificate(certificate)
@@ -790,7 +831,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -1071,6 +1112,69 @@ mod format_tests {
             assert!(!statement_diff_certificate(&valid[..end]));
         }
         assert!(!certificate_format(&valid, b"fa:report-certificate:v4"));
+    }
+
+    #[test]
+    fn equity_comparison_routes_only_two_original_v2_native_equity_sources() {
+        let equity = |version: u8, source: &[u8]| {
+            let mut roll = Writer::new();
+            roll.bytes(b"fa:roll-forward-certificate:v1")
+                .bytes(source)
+                .list(&[7_u128], |w, id| {
+                    w.u128(*id);
+                })
+                .list(&[1_u32], |w, unit| {
+                    w.u32(*unit);
+                })
+                .str("Equity")
+                .i32(1)
+                .i32(30);
+            let mut w = Writer::new();
+            w.bytes(format!("fa:equity-roll-forward-certificate:v{version}").as_bytes())
+                .bytes(&roll.finish().unwrap());
+            w.finish().unwrap()
+        };
+        let wrap = |before: &[u8], after: &[u8], output: &[u8]| {
+            let mut w = Writer::new();
+            w.bytes(b"fa:equity-roll-forward-diff-certificate:v1")
+                .bytes(before)
+                .bytes(after)
+                .u128(7)
+                .fixed(&[8; 32])
+                .bytes(output)
+                .fixed(&[9; 32]);
+            w.finish().unwrap()
+        };
+        let mut output = Writer::new();
+        output.bytes(b"fa:equity-roll-forward-diff:v1");
+        let output = output.finish().unwrap();
+        let native = native_header(1, "fa:trial-balance:v1", 1);
+        let v2 = equity(2, &native);
+        let valid = wrap(&v2, &v2, &output);
+        assert!(equity_diff_certificate(&valid));
+        assert!(!equity_certificate(&valid));
+        assert!(!statement_diff_certificate(&valid));
+        assert!(!custom_statement_diff_certificate(&valid));
+        for wrong in [
+            equity(1, &native),
+            equity(20, &native),
+            equity(2, &native_header(1, "fa:trial-balance:v1", 0)),
+            equity(2, &native_header(2, "fa:trial-balance:v1", 1)),
+            equity(2, &native_header(10, "fa:functional-trial-balance:v1", 1)),
+            native.clone(),
+            valid.clone(),
+            Vec::new(),
+        ] {
+            assert!(!equity_diff_certificate(&wrap(&wrong, &v2, &output)));
+            assert!(!equity_diff_certificate(&wrap(&v2, &wrong, &output)));
+        }
+        assert!(!equity_diff_certificate(&wrap(&v2, &v2, &v2)));
+        for end in 0..valid.len() {
+            assert!(!equity_diff_certificate(&valid[..end]));
+        }
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(!equity_diff_certificate(&trailing));
     }
 
     #[test]

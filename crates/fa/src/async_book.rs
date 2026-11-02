@@ -143,6 +143,10 @@ enum ReportBundleCertificate<'a> {
     DueDateAging(&'a crate::DueDateAgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
     EquityRollForward(&'a crate::EquityRollForwardCertificate),
+    EquityRollForwardDiff {
+        certificate: &'a crate::EquityRollForwardDiffCertificate,
+        expected: &'a crate::EquityRollForwardDiffRequest,
+    },
     CashFlow(&'a crate::CashFlowCertificate),
     CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
     SplitCashFlow {
@@ -184,6 +188,11 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::EquityRollForward(certificate) => {
                 certificate.source_certificate().source_certificate()
             }
+            Self::EquityRollForwardDiff { certificate, .. } => certificate
+                .sources()
+                .1
+                .source_certificate()
+                .source_certificate(),
             Self::CashFlow(certificate) => certificate.source_certificate().source_certificate(),
             Self::CashFlowPolicy(certificate) => certificate
                 .source_certificate()
@@ -4832,6 +4841,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export both original v2 equity certificates, their complete provenance
+    /// and the exact comparison after replay against an independent question.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn produce_equity_roll_forward_diff_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::EquityRollForwardDiffCertificate,
+        expected: &crate::EquityRollForwardDiffRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::EquityRollForwardDiff {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     /// Export policy-classified direct cash flow. Replay derives each decision
     /// from the original complete counterpart entries before the exact policy,
     /// including unused rules and explicit overrides, is signed in the bundle.
@@ -5073,6 +5107,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
             first.known_at
+        } else if let ReportBundleCertificate::EquityRollForwardDiff { certificate, .. } = report {
+            let (before, after) = certificate.sources();
+            let before = before.source_certificate().source_certificate();
+            let after = after.source_certificate().source_certificate();
+            if before.registry_digest != after.registry_digest {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable equity comparisons require the same original registry closure on both sources",
+                    "plan §8.3 / §12.1 / §13.3 (independent reconstruction of both original equity reports)",
+                    "export an equity comparison within one retained registry epoch; replay cross-epoch comparisons in the original book",
+                )));
+            }
+            before.known_at
         } else if let ReportBundleCertificate::StatementDiff(comparison) = report {
             let (before, after) = comparison.sources();
             if before.registry_digest != after.registry_digest {
@@ -5177,6 +5225,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     capability,
                     certificate,
                     certificate.request(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::EquityRollForwardDiff {
+                certificate,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_equity_roll_forward_diff(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    expected,
                 )? {
                     return Ok(Err(refusal));
                 }
@@ -5329,6 +5392,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::StatementTrace(_)
                 | ReportBundleCertificate::RollForward(_)
                 | ReportBundleCertificate::EquityRollForward(_)
+                | ReportBundleCertificate::EquityRollForwardDiff { .. }
                 | ReportBundleCertificate::CashFlow(_)
                 | ReportBundleCertificate::CashFlowPolicy(_)
                 | ReportBundleCertificate::SplitCashFlow { .. }
@@ -5598,6 +5662,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
             ReportBundleCertificate::EquityRollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::EquityRollForwardDiff { certificate, .. } => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

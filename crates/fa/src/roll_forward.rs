@@ -801,6 +801,7 @@ fn as_account(account: &AccountRow) -> Account {
 mod tests {
     mod certification;
     mod equity_certificate;
+    mod equity_diff;
     mod workpaper;
 
     use super::*;

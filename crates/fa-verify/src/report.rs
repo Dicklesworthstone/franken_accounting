@@ -85,6 +85,7 @@ mod dimension;
 mod due_date;
 mod due_date_reconciliation;
 mod equity;
+mod equity_diff;
 mod explain;
 mod functional;
 mod general_ledger;
@@ -129,6 +130,10 @@ pub use due_date::{
 pub use due_date_reconciliation::VerifiedDueDateAgingReconciliation;
 pub use equity::{
     EquityActivityKind, EquityMovement, EquityRollForwardUnit, VerifiedEquityRollForward,
+};
+pub use equity_diff::{
+    EquityRollForwardDiffLine, EquityRollForwardDiffRequest, EquityRollForwardDiffUnit,
+    VerifiedEquityRollForwardDiff,
 };
 pub use explain::{
     ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
@@ -298,6 +303,9 @@ pub struct VerifiedReport {
     pub indirect_cash_flow: Option<VerifiedIndirectCashFlow>,
     /// Complete Statement of Changes in Equity, including owner role inputs.
     pub equity_roll_forward: Option<VerifiedEquityRollForward>,
+    /// Two original v2 equity statements, independently replayed against the
+    /// recipient's shared dates, units and owner-account roles.
+    pub equity_roll_forward_diff: Option<VerifiedEquityRollForwardDiff>,
     /// Functional cells independently repriced from original Rate evidence.
     pub functional_trial_balance: Option<VerifiedFunctionalTrialBalance>,
     /// Financial-statement rows computed from independently repriced base amounts.
@@ -676,6 +684,32 @@ pub fn verify_lots_report_expected(
     )
 }
 
+/// Verify both original equity statements and their exact comparison against
+/// an independently chosen common accounting question. Outer certificate pins,
+/// receipts and checkpoint trust retain their ordinary separate requirements.
+/// This entry point refuses every other report family; the generic entry point
+/// refuses equity comparisons because it has no independently supplied request.
+pub fn verify_equity_roll_forward_diff_report_expected(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected: &EquityRollForwardDiffRequest,
+    expected_certificate: Option<&[u8; 32]>,
+) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_recipient_inputs(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+        None,
+        None,
+        Some(expected),
+        verify_checkpoint,
+    )
+}
+
 /// Recompute a v4 statement with a recipient-owned complete numeric unit list.
 /// For version-1 bundles the definition is a report parameter: this authenticates
 /// the underlying journal and arithmetic, not unit registration or definition
@@ -800,6 +834,31 @@ fn verify_report_with_lots_input(
     recipient_base_unit: Option<u32>,
     authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
 ) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_recipient_inputs(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+        recipient_units,
+        recipient_base_unit,
+        None,
+        authenticate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_report_with_recipient_inputs(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected_certificate: Option<&[u8; 32]>,
+    recipient_units: Option<&[u32]>,
+    recipient_base_unit: Option<u32>,
+    recipient_equity_diff: Option<&EquityRollForwardDiffRequest>,
+    authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
+) -> Result<VerifiedReport, ReportError> {
     if let Some(units) = recipient_units {
         validate_units(units)?;
     }
@@ -821,6 +880,21 @@ fn verify_report_with_lots_input(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let equity_diff = if equity_diff::recognizes(certificate_bytes) {
+        Some(equity_diff::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    match (&equity_diff, recipient_equity_diff) {
+        (Some(certificate), Some(expected)) => equity_diff::bind(certificate, expected)?,
+        (None, None) => {}
+        _ => {
+            return Err(failed(
+                "equity_diff_request",
+                "equity comparisons require an independent recipient request; that request is not applicable to another report family",
+            ));
+        }
+    }
     let lots = if lots::recognizes(certificate_bytes) {
         Some(lots::decode(certificate_bytes)?)
     } else {
@@ -855,8 +929,11 @@ fn verify_report_with_lots_input(
     // source; split cash flow also retains its original roll-forward directly,
     // and policy cash flow has one direct-cash source over a roll-forward.
     // No generic recursive certificate dispatch is accepted.
-    let equity = if equity::recognizes(certificate_bytes) {
-        Some(equity::decode(certificate_bytes)?)
+    let equity_bytes = equity_diff
+        .as_ref()
+        .map_or(certificate_bytes, |value| value.after);
+    let equity = if equity::recognizes(equity_bytes) {
+        Some(equity::decode(equity_bytes)?)
     } else {
         None
     };
@@ -1013,9 +1090,10 @@ fn verify_report_with_lots_input(
     if let (Some(aging), Some(control)) = (&due_date, &control) {
         due_date_reconciliation::bind(aging, &cert, control)?;
     }
-    let certificate_digest = indirect_cash
+    let certificate_digest = equity_diff
         .as_ref()
         .map(|value| value.digest)
+        .or_else(|| indirect_cash.as_ref().map(|value| value.digest))
         .or_else(|| equity.as_ref().map(|value| value.digest))
         .or_else(|| cash_policy.as_ref().map(|value| value.digest))
         .or_else(|| cash.as_ref().map(|value| value.digest))
@@ -1342,6 +1420,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: Some(report),
@@ -1572,6 +1651,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: None,
@@ -1761,6 +1841,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance,
             functional_statement,
             consolidation: None,
@@ -1868,6 +1949,7 @@ fn verify_report_with_lots_input(
                 split_cash_flow: None,
                 indirect_cash_flow: None,
                 equity_roll_forward: None,
+                equity_roll_forward_diff: None,
                 functional_trial_balance: None,
                 functional_statement: None,
                 consolidation: None,
@@ -1961,6 +2043,7 @@ fn verify_report_with_lots_input(
                     split_cash_flow: None,
                     indirect_cash_flow: None,
                     equity_roll_forward: None,
+                    equity_roll_forward_diff: None,
                     functional_trial_balance: None,
                     functional_statement: None,
                     consolidation: None,
@@ -2001,6 +2084,7 @@ fn verify_report_with_lots_input(
                 split_cash_flow: None,
                 indirect_cash_flow: None,
                 equity_roll_forward: None,
+                equity_roll_forward_diff: None,
                 functional_trial_balance: None,
                 functional_statement: None,
                 consolidation: None,
@@ -2085,6 +2169,7 @@ fn verify_report_with_lots_input(
                     split_cash_flow: None,
                     indirect_cash_flow: None,
                     equity_roll_forward: None,
+                    equity_roll_forward_diff: None,
                     functional_trial_balance: None,
                     functional_statement: None,
                     consolidation: None,
@@ -2155,6 +2240,7 @@ fn verify_report_with_lots_input(
                     split_cash_flow: None,
                     indirect_cash_flow: None,
                     equity_roll_forward: None,
+                    equity_roll_forward_diff: None,
                     functional_trial_balance: None,
                     functional_statement: None,
                     consolidation: None,
@@ -2195,6 +2281,7 @@ fn verify_report_with_lots_input(
                 split_cash_flow: None,
                 indirect_cash_flow: None,
                 equity_roll_forward: None,
+                equity_roll_forward_diff: None,
                 functional_trial_balance: None,
                 functional_statement: None,
                 consolidation: None,
@@ -2235,6 +2322,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: None,
@@ -2296,6 +2384,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: None,
@@ -2425,6 +2514,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: None,
@@ -2479,6 +2569,21 @@ fn verify_report_with_lots_input(
                 envelopes,
                 &infos,
             )?;
+            let (equity_roll_forward, equity_roll_forward_diff, output) =
+                if let Some(comparison) = &equity_diff {
+                    let (comparison, output) = equity_diff::replay(
+                        comparison,
+                        equity_roll_forward,
+                        &units,
+                        envelopes,
+                        &records,
+                        &bodies,
+                        &legs,
+                    )?;
+                    (None, Some(comparison), output)
+                } else {
+                    (Some(equity_roll_forward), None, output)
+                };
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 summary: None,
@@ -2488,7 +2593,7 @@ fn verify_report_with_lots_input(
                 checkpoint: signed,
                 known_at: cert.known_at,
                 time_selection: None,
-                effective_through: Some(equity_roll_forward.effective_through),
+                effective_through: Some(certificate.effective_through),
                 activity: false,
                 periods: Vec::new(),
                 rows: Vec::new(),
@@ -2509,7 +2614,8 @@ fn verify_report_with_lots_input(
                 cash_flow: None,
                 split_cash_flow: None,
                 indirect_cash_flow: None,
-                equity_roll_forward: Some(equity_roll_forward),
+                equity_roll_forward,
+                equity_roll_forward_diff,
                 functional_trial_balance: None,
                 functional_statement: None,
                 consolidation: None,
@@ -2605,6 +2711,7 @@ fn verify_report_with_lots_input(
                 split_cash_flow,
                 indirect_cash_flow,
                 equity_roll_forward: None,
+                equity_roll_forward_diff: None,
                 functional_trial_balance: None,
                 functional_statement: None,
                 consolidation: None,
@@ -2645,6 +2752,7 @@ fn verify_report_with_lots_input(
             split_cash_flow: None,
             indirect_cash_flow: None,
             equity_roll_forward: None,
+            equity_roll_forward_diff: None,
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: None,
@@ -2705,6 +2813,7 @@ fn verify_report_with_lots_input(
         split_cash_flow: None,
         indirect_cash_flow: None,
         equity_roll_forward: None,
+        equity_roll_forward_diff: None,
         functional_trial_balance: None,
         functional_statement: None,
         consolidation: None,
