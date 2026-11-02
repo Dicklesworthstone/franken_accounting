@@ -4204,6 +4204,7 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
     });
     let source = dir.join("rate.json");
     std::fs::write(&source, rate.to_string()).unwrap();
+    let trace_before = head(&b);
     let retained = cli_data(&[
         "fx",
         "rate",
@@ -4244,6 +4245,8 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         &b,
         "--json",
     ]);
+
+    let trace_after = head(&b);
 
     // The owner installs the dedicated valuation route and retains a Human
     // closing quote before the Agent session can review the exposure.
@@ -4528,6 +4531,103 @@ fn inline_fx_rates_keep_agent_provenance_and_functional_reports_match_the_cli() 
         ["fx routes", "fx revalue", "tb", "tb", "tb"],
         "the reads and the review leave one receipt each; the retry and refusals none"
     );
+
+    // Pin the historical interval independently of MCP access receipts and
+    // later Rate uploads. The original EUR invoice must still contribute its
+    // recorded 110 USD carrying value through the registered statement route.
+    let expected_trace = cli_data(&[
+        "statement",
+        "trace",
+        "--functional",
+        "--definition",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &trace_before.to_string(),
+        "--after",
+        &trace_after.to_string(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let mut producer = Mcp::start_with(
+        &book,
+        &[
+            "--cluster",
+            "fa.proof",
+            "--principal",
+            "functional-trace-reviewer",
+            "--grant",
+            "read",
+            "--grant",
+            "produce",
+        ],
+    );
+    producer.discover();
+    let arguments = json!({
+        "name": "trace", "functional": true, "definition": "income-statement",
+        "for": "FY2026-P03", "before": trace_before, "after": trace_after,
+    });
+    let (error, output, _) = call_tool(&mut producer, "fa_read_statement", arguments.clone());
+    assert!(!error, "functional publication trace through MCP: {output}");
+    assert_eq!(
+        output, expected_trace,
+        "MCP and CLI must reproduce the same pinned functional trace"
+    );
+    let trace: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(trace["functional"], json!(true));
+    assert_eq!(trace["base_unit"], json!("USD"));
+    assert_eq!(trace["valuation_basis"], json!("retained-base-amounts"));
+    assert_eq!(trace["before_known_at"], json!(trace_before));
+    assert_eq!(trace["after_known_at"], json!(trace_after));
+    assert_eq!(
+        trace["publication_count"],
+        json!(trace_after - trace_before)
+    );
+    let revenue = trace["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|line| line["code"] == json!("revenue"))
+        .unwrap();
+    assert_eq!(revenue["delta"], json!(["110.00 USD"]));
+    assert!(
+        trace["publications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|publication| publication["unchanged"] == json!(true)
+                && publication["entries"].as_array().unwrap().is_empty()),
+        "the Rate import is retained as a zero-effect publication"
+    );
+    let mut arguments = arguments;
+    arguments["certify"] = json!(true);
+    let (error, output, _) = call_tool(&mut producer, "fa_read_statement", arguments);
+    assert!(!error, "functional trace certificate through MCP: {output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2);
+    assert_eq!(certified[0], trace);
+    assert_eq!(
+        certified[1]["output_format"],
+        json!("fa:functional-statement-trace:v1")
+    );
+    for certificate in [
+        format!("C:{}", certified[1]["oid"].as_str().unwrap()),
+        certified[1]["bytes"].as_str().unwrap().to_string(),
+    ] {
+        let (error, replayed, _) = call_tool(
+            &mut producer,
+            "fa_read_replay",
+            json!({"certificate": certificate}),
+        );
+        assert!(
+            !error,
+            "retained functional trace replay through MCP: {replayed}"
+        );
+        assert_eq!(replayed, expected_trace);
+    }
+    assert_eq!(producer.finish(), 0);
 }
 
 #[test]

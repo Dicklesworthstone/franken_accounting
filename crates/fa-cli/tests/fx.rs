@@ -1911,6 +1911,252 @@ fn functional_consolidation_replays_exact_valuations_and_refuses_unvalued_or_rew
 /// A correction is explained in the functional amounts originally retained
 /// on each entry, even after a different quote and a cold process reopen.
 #[test]
+fn functional_statement_trace_preserves_cancelled_activity_and_saved_basis_after_reopen() {
+    let f = Fixture::new();
+    let first_rate = f.rate(
+        "trace-initial",
+        "spot_close",
+        "2026-03-05",
+        "11",
+        "10",
+        "HalfEven",
+    );
+    f.post(&f.intent(
+        "trace-initial-sale",
+        text(data(&first_rate), "oid"),
+        "SpotClose",
+    ));
+    let before = head(&f.book);
+    let second_rate = f.rate(
+        "trace-temporary",
+        "spot_close",
+        "2026-03-05",
+        "6",
+        "5",
+        "HalfEven",
+    );
+    let temporary = f.post(&f.intent(
+        "trace-temporary-sale",
+        text(data(&second_rate), "oid"),
+        "SpotClose",
+    ));
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            text(data(&temporary), "vid"),
+            "--reason",
+            "WrongAccount",
+        ],
+    );
+    let after = head(&f.book);
+    let before_text = before.to_string();
+    let after_text = after.to_string();
+    let sequence = [
+        "statement",
+        "trace",
+        "--functional",
+        "--definition",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &before_text,
+        "--after",
+        &after_text,
+    ];
+    let original_head = head(&f.book);
+    let trace = ok(&f.book, &sequence);
+    assert_eq!(
+        head(&f.book),
+        original_head,
+        "reading a trace publishes no valuation"
+    );
+    assert_eq!(text(&trace, "event"), "statement_trace");
+    let report = data(&trace);
+    assert_eq!(report.get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(text(report, "base_unit"), "USD");
+    assert_eq!(text(report, "valuation_basis"), "retained-base-amounts");
+    assert_eq!(report.get("had_changes"), Some(&Json::Bool(true)));
+    let revenue = rows(report, "lines")
+        .iter()
+        .find(|line| text(line, "code") == "revenue")
+        .unwrap();
+    for (field, expected) in [
+        ("before", "110.00 USD"),
+        ("after", "110.00 USD"),
+        ("delta", "0.00 USD"),
+    ] {
+        assert_eq!(rows(revenue, field)[0].as_str(), Some(expected));
+    }
+    let publications = rows(report, "publications");
+    assert_eq!(publications.len() as i128, after - before);
+    for (index, publication) in publications.iter().enumerate() {
+        assert_eq!(
+            integer(publication, "recorded_at"),
+            before + index as i128 + 1
+        );
+    }
+    for expected in ["120.00 USD", "-120.00 USD"] {
+        assert!(
+            publications
+                .iter()
+                .any(
+                    |publication| rows(publication, "changes").iter().any(|line| {
+                        text(line, "code") == "revenue"
+                            && rows(line, "delta")[0].as_str() == Some(expected)
+                    })
+                ),
+            "the cancelling movement {expected} must remain visible: {publications:?}"
+        );
+    }
+    assert!(
+        publications
+            .iter()
+            .any(|publication| rows(publication, "entries").is_empty()
+                && publication.get("unchanged") == Some(&Json::Bool(true)))
+    );
+
+    let file = f.dir.join("functional-trace.cert");
+    let mut certify = sequence.to_vec();
+    certify.extend(["--certificate-out", file.to_str().unwrap()]);
+    let (status, certified) = run_many(&f.book, &certify, None);
+    assert_eq!(status, 0, "{certified:?}");
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), report);
+    assert_eq!(
+        text(data(&certified[1]), "output_format"),
+        "fa:functional-statement-trace:v1"
+    );
+    let bytes = std::fs::read(&file).unwrap();
+    let certificate = fa::StatementTraceCertificate::decode(&bytes).unwrap();
+    assert!(certificate.uses_functional_valuations());
+    assert_eq!(certificate.canonical_bytes().unwrap(), bytes);
+    assert_eq!(certificate.sources().len() as i128, after - before + 1);
+    let reference = format!("C:{}", text(data(&certified[1]), "oid"));
+
+    let diff_file = f.dir.join("functional-trace-source-diff.cert");
+    let mut diff_args = sequence.to_vec();
+    diff_args[1] = "diff";
+    diff_args.extend(["--certificate-out", diff_file.to_str().unwrap()]);
+    let (status, diff) = run_many(&f.book, &diff_args, None);
+    assert_eq!(status, 0, "{diff:?}");
+    let diff_reference = format!("C:{}", text(data(&diff[1]), "oid"));
+    let comparison =
+        fa::StatementDiffCertificate::decode(&std::fs::read(&diff_file).unwrap()).unwrap();
+    for explicit in [false, true] {
+        let path = f
+            .dir
+            .join(format!("functional-trace-from-diff-{explicit}.cert"));
+        let mut args = vec![
+            "statement",
+            "trace",
+            "--from-diff",
+            diff_reference.as_str(),
+            "--certificate-out",
+            path.to_str().unwrap(),
+        ];
+        if explicit {
+            args.push("--functional");
+        }
+        let (status, from_diff) = run_many(&f.book, &args, None);
+        assert_eq!(status, 0, "{from_diff:?}");
+        assert_eq!(
+            data(&from_diff[0]),
+            report,
+            "the saved comparison determines the basis"
+        );
+        let expanded =
+            fa::StatementTraceCertificate::decode(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(expanded.output(), certificate.output());
+        assert_eq!(expanded.sources().first().unwrap(), comparison.sources().0);
+        assert_eq!(expanded.sources().last().unwrap(), comparison.sources().1);
+    }
+
+    // New quotes and later backdated activity cannot rewrite an original trace.
+    let later_rate = f.rate(
+        "trace-later",
+        "spot_close",
+        "2026-03-05",
+        "9",
+        "1",
+        "HalfEven",
+    );
+    f.post(&f.intent(
+        "trace-later-sale",
+        text(data(&later_rate), "oid"),
+        "SpotClose",
+    ));
+    let before_replay = head(&f.book);
+    for source in [reference.as_str(), file.to_str().unwrap()] {
+        assert_eq!(data(&ok(&f.book, &["replay", source])), report);
+    }
+    let (status, workpaper) = run_many(&f.book, &["replay", &reference, "--workpaper"], None);
+    assert_eq!(status, 0, "{workpaper:?}");
+    assert_eq!(workpaper.len(), 2);
+    assert_eq!(data(&workpaper[0]), report);
+    let manifest = json::parse(text(data(&workpaper[1]), "text").lines().next().unwrap()).unwrap();
+    assert_eq!(manifest.get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(text(&manifest, "valuation_basis"), "retained-base-amounts");
+    assert_eq!(
+        head(&f.book),
+        before_replay,
+        "historical replay remains read-only"
+    );
+
+    // A declared functional request must not silently accept a native bridge.
+    let native_file = f.dir.join("native-trace-source-diff.cert");
+    let mut native_args = sequence.to_vec();
+    native_args[1] = "diff";
+    native_args.retain(|arg| *arg != "--functional");
+    native_args.extend(["--certificate-out", native_file.to_str().unwrap()]);
+    let (status, native) = run_many(&f.book, &native_args, None);
+    assert_eq!(status, 0, "{native:?}");
+    let native_reference = format!("C:{}", text(data(&native[1]), "oid"));
+    let no_output = f.dir.join("mismatched-basis-must-not-exist.cert");
+    let before_refusal = head(&f.book);
+    let (status, refused) = run_many(
+        &f.book,
+        &[
+            "statement",
+            "trace",
+            "--functional",
+            "--from-diff",
+            &native_reference,
+            "--certificate-out",
+            no_output.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(status, 8, "{refused:?}");
+    assert_eq!(refused.len(), 1);
+    assert!(!no_output.exists());
+    assert_eq!(head(&f.book), before_refusal);
+    let reader = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "functional-trace-reader",
+        LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let (status, denied) = bound(
+        &reader,
+        &[
+            "statement",
+            "trace",
+            "--functional",
+            "--from-diff",
+            "-",
+            "--certify",
+        ],
+        Some("malformed certificate bytes"),
+    );
+    assert_eq!(status, 7, "{}", denied.render());
+    assert!(text(data(&denied), "message").contains("produce"));
+}
+
+#[test]
 fn functional_statement_diff_replays_saved_sources_and_exact_base_currency_changes() {
     const SEED: u8 = 0x6a;
     let f = Fixture::build(Some(SEED));

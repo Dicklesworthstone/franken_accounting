@@ -6323,6 +6323,34 @@ impl Book {
         ))
     }
 
+    /// Trace every publication in the book's functional currency using the
+    /// retained historical valuations under current whole-book authority.
+    pub fn functional_statement_trace(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementTraceRequest,
+    ) -> Outcome<crate::StatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_statement_trace(
+            &purposes, principal, capability, request,
+        )))
+    }
+
+    /// Retain every functional statement source in the selected interval,
+    /// preparing complete valuation history before certifying any source.
+    pub fn certify_functional_statement_trace(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementTraceRequest,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement_trace(
+            &purposes, principal, capability, request,
+        )))
+    }
+
     /// Replay a certified statement trace under current read authority.
     pub fn replay_statement_trace(
         &self,
@@ -6347,6 +6375,21 @@ impl Book {
         with_store!(&self.store, core => core.certify_statement_trace_from_diff(
             &self.purposes(), principal, capability, comparison, max_publications
         ))
+    }
+
+    /// Add complete publication attribution to a saved functional comparison
+    /// while preserving its original endpoint certificates byte-for-byte.
+    pub fn certify_functional_statement_trace_from_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        comparison: &crate::StatementDiffCertificate,
+        max_publications: usize,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement_trace_from_diff(
+            &purposes, principal, capability, comparison, max_publications,
+        )))
     }
 
     /// Read and classify native cash movements under current read authority.

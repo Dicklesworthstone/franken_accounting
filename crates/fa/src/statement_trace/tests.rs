@@ -287,3 +287,87 @@ fn output_size_accounting_matches_every_optional_link_field_and_bounds_overflow(
     assert!(size([MAX_STATEMENT_TRACE_BYTES, 1]).is_err());
     assert!(size([usize::MAX, 1]).is_err());
 }
+
+fn functional_source(at: u64, sales: i128) -> Statement {
+    let mut source = input(at, sales, 0);
+    source.units = vec![1];
+    for column in &mut source.columns {
+        column.balances.retain(|balance| balance.unit_id == 1);
+    }
+    statement(&source)
+}
+
+#[test]
+fn functional_trace_preserves_cancelled_changes_and_separates_inner_source_domains() {
+    let first = functional_source(10, 20);
+    let middle = functional_source(11, 35);
+    let mut builder = Builder::with_basis(first.clone(), CommitSeq(13), true).unwrap();
+    builder.push(middle.clone(), vec![link(11, 1)]).unwrap();
+    builder
+        .push(functional_source(12, 20), vec![link(12, 2)])
+        .unwrap();
+    builder.push(functional_source(13, 20), Vec::new()).unwrap();
+    let trace = builder.finish().unwrap();
+    assert!(trace.is_functional());
+    assert_eq!(trace.summary().functional_unit(), Some(fa_money::UnitId(1)));
+    assert!(trace.summary().is_unchanged());
+    assert!(trace.had_changes());
+    assert_eq!(trace.output_format(), FUNCTIONAL_OUTPUT_FORMAT);
+    assert!(trace.publications()[2].is_unchanged());
+    assert_eq!(
+        trace.publications()[0].before_source_digest,
+        domain_digest(
+            FUNCTIONAL_SOURCE_DOMAIN,
+            &[&first.canonical_bytes().unwrap()]
+        )
+    );
+    assert_eq!(
+        trace.publications()[0].after_source_digest,
+        domain_digest(
+            FUNCTIONAL_SOURCE_DOMAIN,
+            &[&middle.canonical_bytes().unwrap()]
+        )
+    );
+    let mut native = Builder::new(first, CommitSeq(11)).unwrap();
+    native.push(middle, vec![link(11, 1)]).unwrap();
+    assert_ne!(
+        trace.publications()[0].before_source_digest,
+        native.finish().unwrap().publications()[0].before_source_digest,
+        "identical amounts do not make native and functional sources interchangeable"
+    );
+    assert_eq!(
+        trace.canonical_bytes().unwrap().len(),
+        trace.encoded_len().unwrap()
+    );
+    let bytes = trace.canonical_bytes().unwrap();
+    let mut reader = fa_model::Reader::new(&bytes);
+    assert_eq!(
+        reader.bytes(64, "format").unwrap(),
+        FUNCTIONAL_OUTPUT_FORMAT
+    );
+    assert_eq!(
+        reader.bytes(MAX_STATEMENT_TRACE_BYTES, "summary").unwrap(),
+        trace.summary().canonical_bytes().unwrap()
+    );
+}
+
+#[test]
+fn functional_trace_rejects_mixed_units_and_changed_base_unit() {
+    assert!(Builder::with_basis(statement(&input(10, 0, 0)), CommitSeq(10), true).is_err());
+    let mut builder = Builder::with_basis(functional_source(10, 0), CommitSeq(11), true).unwrap();
+    let mut changed = functional_source(11, 0);
+    for line in &mut changed.lines {
+        line.unit_id = 2;
+    }
+    assert!(builder.push(changed, Vec::new()).is_err());
+    let empty = Builder::with_basis(functional_source(u64::MAX, 0), CommitSeq(u64::MAX), true)
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert!(empty.publications().is_empty());
+    assert_eq!(empty.summary().functional_unit(), Some(fa_money::UnitId(1)));
+    assert_eq!(
+        empty.canonical_bytes().unwrap().len(),
+        empty.encoded_len().unwrap()
+    );
+}

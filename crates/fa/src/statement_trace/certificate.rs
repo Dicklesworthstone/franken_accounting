@@ -1,4 +1,4 @@
-//! Retain and replay every native snapshot behind a publication trace.
+//! Retain and replay every snapshot behind a publication trace.
 //!
 //! Endpoint-only certificates cannot authenticate intermediate history. This
 //! container therefore retains a ReportCertificate for EVERY sequence, including
@@ -23,7 +23,9 @@ use crate::{
 };
 
 pub const CERTIFICATE_FORMAT: &[u8] = b"fa:statement-trace-certificate:v1";
+pub const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8] = b"fa:functional-statement-trace-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-trace-certificate-digest:v1";
+const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-trace-certificate-digest:v1";
 pub const MAX_STATEMENT_TRACE_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCES: usize = MAX_STATEMENT_TRACE_PUBLICATIONS + 1;
 
@@ -72,7 +74,12 @@ fn family(sources: &[ReportCertificate]) -> Result<(), Refusal> {
     let Some(first) = sources.first() else {
         return Err(invalid("a trace must retain its initial source"));
     };
-    if sources.len() > MAX_SOURCES || !matches!(&first.selection, ReportSelection::Statement(_)) {
+    if sources.len() > MAX_SOURCES
+        || !matches!(
+            &first.selection,
+            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
+        )
+    {
         return Err(invalid("a trace needs 1..=257 financial statement sources"));
     }
     for (index, source) in sources.iter().enumerate() {
@@ -83,7 +90,7 @@ fn family(sources: &[ReportCertificate]) -> Result<(), Refusal> {
             || first.known_at.0.checked_add(index as u64) != Some(source.known_at.0)
         {
             return Err(invalid(
-                "trace sources must be the same trunk statement at every consecutive sequence",
+                "trace sources must be the same trunk statement and valuation basis at every consecutive sequence",
             ));
         }
     }
@@ -92,7 +99,9 @@ fn family(sources: &[ReportCertificate]) -> Result<(), Refusal> {
 
 fn statement(output: ReportOutput) -> Result<Statement, Refusal> {
     match output {
-        ReportOutput::Statement(statement) => Ok(*statement),
+        ReportOutput::Statement(statement) | ReportOutput::FunctionalStatement(statement) => {
+            Ok(*statement)
+        }
         _ => Err(invalid(
             "a trace source replay did not produce a financial statement",
         )),
@@ -100,6 +109,39 @@ fn statement(output: ReportOutput) -> Result<Statement, Refusal> {
 }
 
 impl StatementTraceCertificate {
+    #[must_use]
+    pub fn uses_functional_valuations(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source.selection.uses_functional_valuations())
+    }
+
+    #[must_use]
+    pub fn format(&self) -> &'static [u8] {
+        if self.uses_functional_valuations() {
+            FUNCTIONAL_CERTIFICATE_FORMAT
+        } else {
+            CERTIFICATE_FORMAT
+        }
+    }
+
+    #[must_use]
+    pub fn output_format(&self) -> &'static [u8] {
+        if self.uses_functional_valuations() {
+            super::FUNCTIONAL_OUTPUT_FORMAT
+        } else {
+            super::OUTPUT_FORMAT
+        }
+    }
+
+    fn digest_domain(&self) -> &'static [u8] {
+        if self.uses_functional_valuations() {
+            FUNCTIONAL_DIGEST_DOMAIN
+        } else {
+            DIGEST_DOMAIN
+        }
+    }
+
     #[must_use]
     pub fn sources(&self) -> &[ReportCertificate] {
         &self.sources
@@ -125,8 +167,10 @@ impl StatementTraceCertificate {
         family(&self.sources)?;
         let first = &self.sources[0];
         let last = &self.sources[self.sources.len() - 1];
-        let ReportSelection::Statement(selection) = &first.selection else {
-            return Err(invalid("trace source is not a statement"));
+        let selection = match &first.selection {
+            ReportSelection::Statement(selection)
+            | ReportSelection::FunctionalStatement(selection) => selection,
+            _ => return Err(invalid("trace source is not a statement")),
         };
         Ok(StatementTraceRequest {
             comparison: StatementDiffRequest {
@@ -146,12 +190,12 @@ impl StatementTraceCertificate {
         let mut r = Reader::new(&self.output);
         if r.bytes(64, "trace output format")
             .map_err(|e| invalid(e.to_string()))?
-            != super::OUTPUT_FORMAT
+            != self.output_format()
         {
             return Err(invalid("unsupported statement trace output format"));
         }
         // Includes the final digest, which is appended only after hashing body.
-        let mut length = total([92, CERTIFICATE_FORMAT.len(), self.output.len()])?;
+        let mut length = total([92, self.format().len(), self.output.len()])?;
         let mut sources = Vec::with_capacity(self.sources.len());
         for source in &self.sources {
             let bytes = source
@@ -164,7 +208,7 @@ impl StatementTraceCertificate {
             sources.push(bytes);
         }
         let mut w = Writer::with_capacity(length);
-        w.bytes(CERTIFICATE_FORMAT)
+        w.bytes(self.format())
             .u128(self.producer.0)
             .fixed(&self.capability_commitment)
             .list(&sources, |w, source| {
@@ -191,7 +235,8 @@ impl StatementTraceCertificate {
             output,
             digest: [0; 32],
         };
-        certificate.digest = domain_digest(DIGEST_DOMAIN, &[&certificate.body_bytes()?]);
+        certificate.digest =
+            domain_digest(certificate.digest_domain(), &[&certificate.body_bytes()?]);
         Ok(certificate)
     }
 
@@ -199,7 +244,7 @@ impl StatementTraceCertificate {
     /// The bounded output is an opaque claim until complete semantic replay.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut bytes = self.body_bytes()?;
-        if domain_digest(DIGEST_DOMAIN, &[&bytes]) != self.digest {
+        if domain_digest(self.digest_domain(), &[&bytes]) != self.digest {
             return Err(invalid("statement trace certificate digest mismatch"));
         }
         bytes.extend_from_slice(&self.digest);
@@ -211,7 +256,8 @@ impl StatementTraceCertificate {
         let malformed =
             |e: DecodeError| invalid(format!("malformed statement trace certificate: {e}"));
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "trace certificate format").map_err(malformed)? != CERTIFICATE_FORMAT {
+        let format = r.bytes(64, "trace certificate format").map_err(malformed)?;
+        if format != CERTIFICATE_FORMAT && format != FUNCTIONAL_CERTIFICATE_FORMAT {
             return Err(invalid("unsupported statement trace certificate format"));
         }
         let producer = VId(r.u128("trace producer").map_err(malformed)?);
@@ -255,6 +301,7 @@ fn source_at<V: Vfs + Clone, B: Vfs + Clone>(
     request: &StatementDiffRequest,
     at: CommitSeq,
     endpoints: Option<(&ReportCertificate, &ReportCertificate)>,
+    functional: bool,
 ) -> Outcome<CertifiedStatement> {
     let pinned = endpoints.and_then(|(before, after)| {
         if at == before.known_at {
@@ -274,7 +321,19 @@ fn source_at<V: Vfs + Clone, B: Vfs + Clone>(
                 certificate: source.clone(),
             }));
     }
-    book.certify_statement(cx, request.selection.clone(), Some(at))
+    if functional {
+        // The async caller has admitted authority and prepared complete
+        // retained Entry/Rate history before this synchronous source walk.
+        Ok(book
+            .certify_report(
+                cx,
+                ReportSelection::FunctionalStatement(Box::new(request.selection.clone())),
+                Some(at),
+            )?
+            .and_then(crate::statements::certified_functional))
+    } else {
+        book.certify_statement(cx, request.selection.clone(), Some(at))
+    }
 }
 
 fn source_frame_size(source: &ReportCertificate) -> Result<usize, Refusal> {
@@ -294,11 +353,12 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
     capability: &Capability,
     request: &StatementDiffRequest,
     endpoints: Option<(&ReportCertificate, &ReportCertificate)>,
+    functional: bool,
 ) -> Outcome<CertifiedStatementTrace> {
     let Some(after) = request.after else {
         return Ok(Err(invalid("trace interval was not resolved")));
     };
-    let first = match source_at(book, cx, request, request.before, endpoints)? {
+    let first = match source_at(book, cx, request, request.before, endpoints, functional)? {
         Ok(s) => s,
         Err(r) => return Ok(Err(r)),
     };
@@ -306,7 +366,7 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
         Ok(n) => n,
         Err(r) => return Ok(Err(r)),
     };
-    let mut builder = match Builder::new(first.statement, after) {
+    let mut builder = match Builder::with_basis(first.statement, after, functional) {
         Ok(b) => b,
         Err(r) => return Ok(Err(r)),
     };
@@ -314,7 +374,7 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
     for offset in 1..=after.0 - request.before.0 {
         let at = CommitSeq(request.before.0 + offset);
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let next = match source_at(book, cx, request, at, endpoints)? {
+        let next = match source_at(book, cx, request, at, endpoints, functional)? {
             Ok(s) => s,
             Err(r) => return Ok(Err(r)),
         };
@@ -332,7 +392,11 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
         }
         if let Err(r) = total([
             92,
-            CERTIFICATE_FORMAT.len(),
+            if functional {
+                FUNCTIONAL_CERTIFICATE_FORMAT.len()
+            } else {
+                CERTIFICATE_FORMAT.len()
+            },
             source_bytes,
             builder.step_bytes,
         ]) {
@@ -348,7 +412,12 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
         Ok(n) => n,
         Err(r) => return Ok(Err(r)),
     };
-    if let Err(r) = total([92, CERTIFICATE_FORMAT.len(), source_bytes, length]) {
+    let format = if functional {
+        FUNCTIONAL_CERTIFICATE_FORMAT
+    } else {
+        CERTIFICATE_FORMAT
+    };
+    if let Err(r) = total([92, format.len(), source_bytes, length]) {
         return Ok(Err(r));
     }
     let output = match report.canonical_bytes() {
@@ -388,7 +457,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(r) => r,
             Err(r) => return Ok(Err(r)),
         };
-        build(self, cx, principal, capability, &request, None)
+        build(self, cx, principal, capability, &request, None, false)
+    }
+
+    /// Certify every functional statement prefix, retaining the original
+    /// valuation laws and Rate evidence at each frontier. The complete source
+    /// chain is domain-separated from native-unit attribution.
+    pub async fn certify_functional_statement_trace(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &StatementTraceRequest,
+    ) -> Outcome<CertifiedStatementTrace> {
+        let head = match self.admit_functional_report(cx, principal, capability, None, true)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match resolved(request, head) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self
+            .prepare_functional_report(cx, principal, capability, request.after, true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = build(self, cx, principal, capability, &request, None, true)?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, request.after, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
     }
 
     /// Add publication attribution to an EXISTING saved comparison. Replay the
@@ -408,7 +510,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         if comparison.uses_functional_valuations() {
             return Ok(Err(invalid(
-                "functional statement comparisons do not support publication attribution; replay the functional comparison directly",
+                "functional statement comparisons require certify_functional_statement_trace_from_diff to prepare their retained valuation history",
             )));
         }
         let request = match comparison.request() {
@@ -435,7 +537,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(report) => report,
             Err(r) => return Ok(Err(r)),
         };
-        let certified = match build(self, cx, principal, capability, &request, Some(endpoints))? {
+        let certified = match build(
+            self,
+            cx,
+            principal,
+            capability,
+            &request,
+            Some(endpoints),
+            false,
+        )? {
             Ok(value) => value,
             Err(r) => return Ok(Err(r)),
         };
@@ -447,9 +557,86 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(Ok(certified))
     }
 
-    /// Verify EVERY original native source, refold each historical statement,
+    /// Add complete publication attribution to an existing functional bridge.
+    /// Both saved endpoint certificates are replayed and retained byte-for-byte;
+    /// later postings and later Rate documents never replace either endpoint.
+    pub async fn certify_functional_statement_trace_from_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        comparison: &StatementDiffCertificate,
+        max_publications: usize,
+    ) -> Outcome<CertifiedStatementTrace> {
+        let head = match self.admit_functional_report(cx, principal, capability, None, true)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !comparison.uses_functional_valuations() {
+            return Ok(Err(invalid(
+                "a functional publication trace requires a functional comparison; use certify_statement_trace_from_diff for native sources",
+            )));
+        }
+        let request = match comparison.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match resolved(
+            &StatementTraceRequest {
+                comparison: request,
+                max_publications,
+            },
+            head,
+        ) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let endpoints = comparison.sources();
+        if endpoints.0.known_at == endpoints.1.known_at && endpoints.0 != endpoints.1 {
+            return Ok(Err(invalid(
+                "a zero-length trace cannot collapse distinct endpoint certificates",
+            )));
+        }
+        if let Err(refusal) = self
+            .prepare_functional_report(cx, principal, capability, request.after, true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let original = match self.replay_statement_diff(cx, principal, capability, comparison)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let certified = match build(
+            self,
+            cx,
+            principal,
+            capability,
+            &request,
+            Some(endpoints),
+            true,
+        )? {
+            Ok(certified) => certified,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if certified.report.summary() != &original {
+            return Ok(Err(invalid(
+                "functional trace no longer reproduces the saved comparison",
+            )));
+        }
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, request.after, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(certified))
+    }
+
+    /// Verify EVERY original source, refold each historical statement,
     /// rebuild all publication metadata and compare the complete trace output.
     /// Neither a matching digest nor unchanged endpoint totals is sufficient.
+    /// Functional sources require complete prepared history; cold callers use
+    /// `replay_report_artifact_for_with_history` to hydrate it under authority.
     pub fn replay_statement_trace(
         &self,
         cx: &PurposeContexts,
@@ -478,10 +665,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(r) => return Ok(Err(r)),
         };
         let after = certificate.sources[certificate.sources.len() - 1].known_at;
-        let mut builder = match Builder::new(first, after) {
-            Ok(b) => b,
-            Err(r) => return Ok(Err(invalid(r.message))),
-        };
+        let mut builder =
+            match Builder::with_basis(first, after, certificate.uses_functional_valuations()) {
+                Ok(b) => b,
+                Err(r) => return Ok(Err(invalid(r.message))),
+            };
         for source in certificate.sources.iter().skip(1) {
             cx.query().checkpoint().map_err(BookError::Context)?;
             let next = match self.replay_report(cx, source)?.and_then(statement) {

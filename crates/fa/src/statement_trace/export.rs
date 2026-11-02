@@ -166,7 +166,19 @@ fn render(
     query.checkpoint().map_err(BookError::Context)?;
     let summary = trace.summary();
     emit!(out.begin("statement_trace"));
-    emit!(out.string("format", "fa:statement-trace-jsonl:v1"));
+    emit!(out.string(
+        "format",
+        if trace.is_functional() {
+            "fa:functional-statement-trace-jsonl:v1"
+        } else {
+            "fa:statement-trace-jsonl:v1"
+        }
+    ));
+    if let Some(unit) = summary.functional_unit() {
+        emit!(out.boolean("functional", true));
+        emit!(out.number("base_unit_id", unit.0));
+        emit!(out.string("valuation_basis", "retained-base-amounts"));
+    }
     emit!(out.string("certificate_digest", &hex(certificate.digest())));
     emit!(out.string("book_id", &summary.book_id().to_hex()));
     emit!(out.string("branch_id", &summary.before().branch_id.to_hex()));
