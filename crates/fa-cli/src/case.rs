@@ -711,10 +711,15 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
     ctx.out.at_book(&book)?;
     for selected in selected {
         let request = &selected.request;
+        let metadata = request
+            .selection
+            .statement_metadata()
+            .map_err(|error| Fail::Internal(format!("case statement metadata: {error}")))?
+            .ok_or_else(|| Fail::Internal("case selected a non-statement report".into()))?;
         let mut fields = vec![
             ("case", Json::Int(i128::from(ordinal))),
             ("period", s(&selected.period)),
-            ("name", s(request.selection.definition.name())),
+            ("name", s(metadata.definition_name)),
             ("opening", Json::Bool(selected.opening)),
             ("functional", Json::Bool(selected.functional)),
             ("basis", s(selected.basis.name())),
@@ -765,27 +770,19 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
             &format!(
                 "case {ordinal} {} {}: {} at {} → Post at {}",
                 selected.period,
-                request.selection.definition.name(),
+                metadata.definition_name,
                 selected.basis.name(),
                 request.before.0,
                 request.after.unwrap().0
             ),
         );
         if certify {
-            let certified = if selected.functional {
-                book.certify_functional_statement_diff(who, &cap, request)??
-            } else {
-                book.certify_statement_diff(who, &cap, request)??
-            };
+            let certified = book.certify_case_statement_diff(who, &cap, &selected)??;
             crate::cli::emit_certified_statement_diff(
                 &ctx.out, &ctx.files, args, &mut book, &cap, &certified,
             )?;
         } else {
-            let diff = if selected.functional {
-                book.functional_statement_diff(who, &cap, request)??
-            } else {
-                book.statement_diff(who, &cap, request)??
-            };
+            let diff = book.case_statement_diff(who, &cap, &selected)??;
             crate::cli::render_statement_diff(&ctx.out, &book, &diff, None)?;
         }
     }

@@ -1200,6 +1200,35 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
             .collect::<Vec<_>>(),
         ["read"]
     );
+    // The same tool names saved custom reporting views and source-based
+    // comparisons without accepting paths or requiring a new tool family.
+    for (arguments, value, switch) in [
+        (
+            json!({"name":"custom", "definition":"company-income", "for":"FY2026-P03", "as_reported_in":"C:saved"}),
+            Some(("--as-reported-in", "C:saved")),
+            None,
+        ),
+        (
+            json!({"name":"custom", "definition":"company-income", "for":"FY2026-P03", "as_originally_reported":true}),
+            None,
+            Some("--as-originally-reported"),
+        ),
+        (
+            json!({"name":"diff", "before_certificate":"C:before", "after_certificate":"C:after", "functional":true}),
+            Some(("--before-certificate", "C:before")),
+            Some("--functional"),
+        ),
+    ] {
+        let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        if let Some((flag, expected)) = value {
+            assert_eq!(parsed.flag(flag), Some(expected));
+        }
+        if let Some(switch) = switch {
+            assert!(parsed.switch(switch));
+        }
+    }
     for argument in ["as", "grant", "yes", "book", "plan_out", "certificate_out"] {
         let mut rejected = args.clone();
         rejected[argument] = json!("forbidden");

@@ -77,6 +77,45 @@ fn layout(fixture: &Fixture, version: u32) -> PathBuf {
     path
 }
 
+fn issue(fixture: &Fixture, certificate: &str) {
+    let plan = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "issue",
+            "--certificate",
+            certificate,
+            "--issued-to",
+            "board",
+            "--dry-run",
+        ],
+    );
+    let plan = event(&plan, "statement_issuance_plan");
+    let path = fixture.dir.join("company-issuance.plan");
+    std::fs::write(&path, text(plan, "bytes")).unwrap();
+    let approved = ok(
+        &fixture.book,
+        &[
+            "approve",
+            "--proposal",
+            text(plan, "proposal_digest"),
+            "--as",
+            "issuance-controller",
+        ],
+    );
+    ok(
+        &fixture.book,
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            path.to_str().unwrap(),
+            "--approval",
+            text(data(&approved[0]), "approval_vid"),
+        ],
+    );
+}
+
 #[test]
 fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new_versions() {
     let fixture = Fixture::new();
@@ -140,6 +179,7 @@ fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new
     assert_eq!(presented.get("divisor"), Some(&Json::Int(1000)));
     assert_eq!(text(&presented, "activation"), activation);
     let certificate = format!("C:{}", text(event(&report, "report_certificate"), "oid"));
+    issue(&fixture, &certificate);
 
     fixture.post(
         "later-custom-sale",
@@ -148,6 +188,29 @@ fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new
         "4000",
         "5.00 USD",
     );
+    let after = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "custom",
+            "--definition",
+            "company-income",
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P02",
+            "--certify",
+            "--scale-digits",
+            "3",
+            "--rounding",
+            "HalfEven",
+            "--residual-line",
+            "rounding",
+            "--residual-label",
+            "Presentation rounding",
+        ],
+    );
+    let after_certificate = format!("C:{}", text(event(&after, "report_certificate"), "oid"));
     let v2 = layout(&fixture, 2);
     let (plan2, a2, b2) = approved_review(&fixture, &v2, "2026-02-01", "company-v2");
     activate(&fixture, &plan2, &a2, &b2);
@@ -160,6 +223,8 @@ fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new
             "company-income",
             "--for",
             "FY2026-P03",
+            "--as-currently-stated",
+            "--certify",
         ],
     );
     assert_eq!(
@@ -173,6 +238,136 @@ fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new
     let replay = ok(&fixture.book, &["replay", &certificate]);
     assert_eq!(event(&replay, "statement"), &exact);
     assert_eq!(event(&replay, "custom_statement"), &presented);
+    // The saved question includes its comparative and presentation. Leaving
+    // those flags out inherits them, including after v2 became active.
+    let command = [
+        "statement",
+        "custom",
+        "--definition",
+        "company-income",
+        "--for",
+        "FY2026-P03",
+    ];
+    for view in [
+        vec!["--as-originally-reported"],
+        vec!["--as-issued-to", "board"],
+        vec!["--as-reported-in", &certificate],
+    ] {
+        let original = ok(
+            &fixture.book,
+            &[&command[..], &view, &["--certify"]].concat(),
+        );
+        assert_eq!(event(&original, "statement"), &exact);
+        assert_eq!(event(&original, "custom_statement"), &presented);
+        assert_eq!(
+            text(event(&original, "report_certificate"), "oid"),
+            text(event(&report, "report_certificate"), "oid"),
+            "the issued certificate is preserved, not regenerated"
+        );
+    }
+    for mismatch in [
+        vec!["--compare", "FY2026-P01"],
+        vec!["--functional"],
+        vec![
+            "--scale-digits",
+            "2",
+            "--rounding",
+            "HalfEven",
+            "--residual-line",
+            "rounding",
+            "--residual-label",
+            "Presentation rounding",
+        ],
+    ] {
+        let (exit, events, _) = run(
+            &fixture.book,
+            &[
+                &command[..],
+                &["--as-reported-in", &certificate, "--certify"],
+                &mismatch,
+            ]
+            .concat(),
+        );
+        assert_eq!(exit, 8, "{events:?}");
+        assert_eq!(
+            events.len(),
+            1,
+            "no statement or certificate before refusal"
+        );
+        assert_eq!(text(&events[0], "event"), "error");
+    }
+    // Both source certificates survive an unrelated later activation.
+    // Their exact financial differences never use rounded displayed cells.
+    let compared = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &certificate,
+            "--after-certificate",
+            &after_certificate,
+            "--definition",
+            "company-income",
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P02",
+            "--certify",
+        ],
+    );
+    let diff = event(&compared, "statement_diff");
+    let net = array(diff, "lines")
+        .iter()
+        .find(|line| text(line, "code") == "net_income" && text(line, "unit") == "USD")
+        .unwrap();
+    assert_eq!(
+        array(net, "delta"),
+        &[Json::Str("5.00 USD".into()), Json::Str("0.00 USD".into())]
+    );
+    let saved = event(&compared, "report_certificate");
+    let decoded = fa::StatementDiffCertificate::decode(&unhex(text(saved, "bytes"))).unwrap();
+    assert!(decoded.is_custom());
+    assert_eq!(decoded.sources().0.selection, decoded.sources().1.selection);
+    assert_eq!(hex(&decoded.sources().0.digest), &certificate[2..]);
+    assert_eq!(hex(&decoded.sources().1.digest), &after_certificate[2..]);
+    let diff_reference = format!("C:{}", text(saved, "oid"));
+    assert_eq!(
+        event(
+            &ok(&fixture.book, &["replay", &diff_reference]),
+            "statement_diff"
+        ),
+        diff
+    );
+    let current_certificate = format!("C:{}", text(event(&current, "report_certificate"), "oid"));
+    let (exit, events, _) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &certificate,
+            "--after-certificate",
+            &current_certificate,
+            "--certify",
+        ],
+    );
+    assert_eq!(
+        exit, 8,
+        "a changed layout cannot be compared silently: {events:?}"
+    );
+    assert_eq!(events.len(), 1);
+    let (exit, events, _) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "trace",
+            "--from-diff",
+            &diff_reference,
+            "--certify",
+        ],
+    );
+    assert_eq!(exit, 2, "custom trace support is explicit: {events:?}");
     let status = ok(&fixture.book, &["certificate", "status", &certificate]);
     assert_eq!(
         text(event(&status, "certificate_status"), "status"),

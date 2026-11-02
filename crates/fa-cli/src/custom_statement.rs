@@ -249,18 +249,26 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--compare",
             "--known-at",
             "--as-known-at",
+            "--as-issued-to",
+            "--as-reported-in",
             "--certificate-out",
             "--scale-digits",
             "--rounding",
             "--residual-line",
             "--residual-label",
         ],
-        &["--certify", "--functional"],
+        &[
+            "--certify",
+            "--functional",
+            "--as-originally-reported",
+            "--as-currently-stated",
+        ],
         REPORT,
     )?;
     let name = args.require("--definition", "the activated company layout's name")?;
     let period = args.require("--for", "the current fiscal period")?;
-    let functional = args.switch("--functional");
+    let view = crate::issuance::reported_view(args, REPORT)?;
+    let rounding_spec = rounding(args)?;
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let cap = ctx.capability(
         args,
@@ -274,58 +282,126 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut book = ctx
         .books
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
-    let (known_at, instant) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
+    let (mut known_at, instant) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
     if instant.is_some() {
         return Err(usage(
             "custom statement reports currently select an explicit recorded sequence or HEAD",
             "--as-known-at HEAD|<seq>",
         ));
     }
+    // Issuance views select the complete saved question, not just its
+    // frontier. A later layout can already have been active at that same
+    // frontier when an older layout's certificate left the entity.
+    let source = match view {
+        Some(crate::issuance::ReportedView::Originally) => {
+            let original = book.originally_reported(period)??;
+            known_at = Some(original.known_at);
+            match original.basis {
+                fa_journal::ReportedBasis::Issuance(record) => {
+                    Some(book.reported_statement(&cap, &record.issuance.certificate, period)??)
+                }
+                fa_journal::ReportedBasis::Lock(_) => None,
+            }
+        }
+        Some(crate::issuance::ReportedView::IssuedTo(audience)) => {
+            let issued = book.issued_to(period, audience)??;
+            Some(book.reported_statement(&cap, &issued.issuance.certificate, period)??)
+        }
+        Some(crate::issuance::ReportedView::ReportedIn(certificate)) => {
+            Some(book.reported_statement(&cap, &certificate, period)??)
+        }
+        None => None,
+    };
+    if let Some(source) = &source {
+        known_at = Some(source.known_at);
+    }
     crate::cli::prepare_native_certificate_history(&mut book, &cap, known_at)?;
     let at = known_at.unwrap_or(book.head()?);
-    let scope = book.read_scope(who, &cap)??;
-    scope.admit_whole_book(Some(at))??;
-    let row = scope.period_at(period, Some(at))??.ok_or_else(|| {
-        usage(
-            format!("period {period} does not exist at {}", at.0),
-            REPORT,
-        )
-    })?;
-    let day = DateDay(
-        row.end
-            .0
-            .checked_sub(1)
-            .ok_or_else(|| Fail::Internal("period end underflow".into()))?,
-    );
-    let active = book
-        .active_statement_definition(&cap, name, day, at)??
-        .ok_or_else(|| {
-            usage(
-                format!(
-                    "no approved definition {name} is in force for {day} at {}",
-                    at.0
-                ),
-                DEFINE,
-            )
-        })?;
-    let rounding_spec = rounding(args)?;
-    let selection = CustomStatementSelection {
-        definition: active.definition,
-        activation: active.activation,
-        activated_at: active.recorded_at,
-        functional,
-        periods: vec![period.into()],
-        comparative: args
-            .flag("--compare")
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        presentation: rounding_spec,
+    book.read_scope(who, &cap)??.admit_whole_book(Some(at))??;
+    let selection = if let Some(source) = &source {
+        let fa::ReportSelection::CustomStatement(selection) = &source.selection else {
+            return Err(saved_question_mismatch(
+                "the reported certificate is not a company statement",
+            ));
+        };
+        if selection.definition.name != name
+            || selection.periods != [period]
+            || args
+                .flag("--compare")
+                .is_some_and(|period| selection.comparative != [period])
+            || (args.switch("--functional") && !selection.functional)
+            || rounding_spec
+                .as_ref()
+                .is_some_and(|spec| selection.presentation.as_ref() != Some(spec))
+        {
+            return Err(saved_question_mismatch(
+                "the requested definition, periods, accounting basis or rounding differs from the reported certificate",
+            ));
+        }
+        (**selection).clone()
+    } else {
+        let row = book
+            .read_scope(who, &cap)??
+            .period_at(period, Some(at))??
+            .ok_or_else(|| {
+                usage(
+                    format!("period {period} does not exist at {}", at.0),
+                    REPORT,
+                )
+            })?;
+        let day = DateDay(
+            row.end
+                .0
+                .checked_sub(1)
+                .ok_or_else(|| Fail::Internal("period end underflow".into()))?,
+        );
+        let active = book
+            .active_statement_definition(&cap, name, day, at)??
+            .ok_or_else(|| {
+                usage(
+                    format!(
+                        "no approved definition {name} is in force for {day} at {}",
+                        at.0
+                    ),
+                    DEFINE,
+                )
+            })?;
+        CustomStatementSelection {
+            definition: active.definition,
+            activation: active.activation,
+            activated_at: active.recorded_at,
+            functional: args.switch("--functional"),
+            periods: vec![period.into()],
+            comparative: args
+                .flag("--compare")
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            presentation: rounding_spec,
+        }
     };
+    let functional = selection.functional;
     ctx.out.at_book(&book)?;
     ctx.out.known_at(at);
     ctx.out.effective(format!("period:{period}"));
-    let (report, certificate) = if certify {
+    let (report, certificate) = if let Some(source) = source {
+        let bytes = source
+            .canonical_bytes()
+            .map_err(|error| Fail::Internal(format!("reported statement: {error}")))?;
+        book.replay_report_artifact_for_with_history(
+            who,
+            &cap,
+            &bytes,
+            Some(&source.digest),
+            fa::ReportArtifactExpectation::AsSupplied,
+        )??;
+        let fa::ReportOutput::CustomStatement(report) = book.replay_report(&source)?? else {
+            return Err(Fail::Internal(
+                "reported custom statement returned another family".into(),
+            ));
+        };
+        (*report, certify.then_some(source))
+    } else if certify {
         let certified = if functional {
             book.certify_functional_custom_statement(&cap, selection, Some(at))??
         } else {
@@ -361,6 +437,16 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         crate::notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
     }
     Ok(())
+}
+
+fn saved_question_mismatch(message: &str) -> Fail {
+    fa_journal::Refusal::new(
+        fa::certificate::code::CERTIFICATE_INVALID,
+        fa_journal::exit::VERIFICATION,
+        message,
+        "plan §12.5 (reported views preserve the complete issued statement selection)",
+        "select the issued company definition and period; omit --compare, --functional and presentation options to inherit the saved selection",
+    ).into()
 }
 
 fn rounding(args: &Args) -> Result<Option<fa::PresentationRoundingSpec>, Fail> {

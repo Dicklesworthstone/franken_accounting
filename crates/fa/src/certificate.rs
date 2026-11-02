@@ -246,6 +246,20 @@ pub enum ReportSelection {
     CustomStatement(Box<crate::custom_statement::CustomStatementSelection>),
 }
 
+/// The identity and columns shared by issuable statement families. The full
+/// [`ReportSelection`] remains the question: this view never substitutes for
+/// its activation, presentation law or retained valuation basis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatementMetadata<'a> {
+    pub definition_name: &'a str,
+    pub definition_version: u32,
+    pub definition_digest: [u8; 32],
+    pub kind: fa_statements::StatementKind,
+    pub periods: &'a [String],
+    pub comparative: &'a [String],
+    pub functional: bool,
+}
+
 impl From<TrialBalanceSelection> for ReportSelection {
     fn from(selection: TrialBalanceSelection) -> Self {
         Self::TrialBalance(selection)
@@ -259,6 +273,36 @@ impl From<crate::StatementSelection> for ReportSelection {
 }
 
 impl ReportSelection {
+    /// Validated definition identity for statements that may be issued.
+    /// Regulatory schedules and other report families are not issuances.
+    pub fn statement_metadata(
+        &self,
+    ) -> Result<Option<StatementMetadata<'_>>, fa_model::EncodeError> {
+        Ok(match self {
+            Self::Statement(selection) | Self::FunctionalStatement(selection) => {
+                Some(StatementMetadata {
+                    definition_name: selection.definition.name(),
+                    definition_version: selection.definition.version(),
+                    definition_digest: selection.definition.digest()?,
+                    kind: selection.definition.kind(),
+                    periods: &selection.periods,
+                    comparative: &selection.comparative,
+                    functional: self.uses_functional_valuations(),
+                })
+            }
+            Self::CustomStatement(selection) => Some(StatementMetadata {
+                definition_name: &selection.definition.name,
+                definition_version: selection.definition.version,
+                definition_digest: selection.definition.digest()?.0,
+                kind: selection.definition.kind,
+                periods: &selection.periods,
+                comparative: &selection.comparative,
+                functional: selection.functional,
+            }),
+            _ => None,
+        })
+    }
+
     fn is_canonical(&self) -> bool {
         match self {
             Self::TrialBalance(selection) => selection.is_canonical(),

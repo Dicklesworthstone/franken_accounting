@@ -1823,14 +1823,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(r));
         }
-        let (certified_at, selection) =
-            match self.trunk_statement(cx, capability, certificate).await? {
-                Ok(Ok(found)) => found,
-                Ok(Err(why)) => return Ok(Err(not_issuable(why))),
-                Err(r) => return Ok(Err(r)),
-            };
+        let source = match self.trunk_statement(cx, capability, certificate).await? {
+            Ok(Ok(found)) => found,
+            Ok(Err(why)) => return Ok(Err(not_issuable(why))),
+            Err(r) => return Ok(Err(r)),
+        };
+        let selection = source
+            .selection
+            .statement_metadata()
+            .map_err(KernelError::from)?
+            .ok_or_else(|| KernelError::Corrupt("issuable statement metadata vanished".into()))?;
         let digest = fa_journal::evidence::hex(certificate);
-        let period = match (period, selection.periods.as_slice()) {
+        let period = match (period, selection.periods) {
             (Some(p), periods) if periods.iter().any(|q| q == p) => p.to_string(),
             (Some(p), periods) => {
                 return Ok(Err(not_issuable(format!(
@@ -1847,32 +1851,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 ))));
             }
         };
-        let definition = &selection.definition;
         Ok(Ok(fa_journal::StatementIssuance {
             book_id: self.context.book_id,
             period,
             ordinal: 0,
-            definition_digest: definition
-                .digest()
-                .map_err(|e| BookError::Kernel(e.into()))?,
-            definition_name: definition.name().to_string(),
-            definition_version: definition.version(),
+            definition_digest: selection.definition_digest,
+            definition_name: selection.definition_name.to_string(),
+            definition_version: selection.definition_version,
             certificate: *certificate,
-            certified_at,
+            certified_at: source.known_at,
             issued_to,
             document,
         }))
     }
 
     /// The retained trunk statement certificate `digest` of this book, read
-    /// under `capability`'s whole-book `read` (fa-wrrw): its known-at and
-    /// statement selection, or `Ok(Err(why))` saying what it is instead.
+    /// under `capability`'s whole-book `read` (fa-wrrw), preserving its complete
+    /// selection, or `Ok(Err(why))` saying what it is instead.
     async fn trunk_statement(
         &self,
         cx: &PurposeContexts,
         capability: &fa_journal::Capability,
         digest: &[u8; 32],
-    ) -> Outcome<Result<(CommitSeq, crate::StatementSelection), String>> {
+    ) -> Outcome<Result<crate::ReportCertificate, String>> {
         let artifact = match self
             .read_report_artifact(cx, capability.holder(), capability, digest)
             .await?
@@ -1888,22 +1889,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ))));
         }
         let source = artifact.source_certificate();
-        let selection = match &source.selection {
-            crate::ReportSelection::Statement(selection)
-            | crate::ReportSelection::FunctionalStatement(selection) => selection,
-            _ => {
-                return Ok(Ok(Err(format!(
-                    "certificate {hex} certifies a {} report, not a supported native or functional statement",
-                    source.selection.output_format()
-                ))));
-            }
-        };
+        if source
+            .selection
+            .statement_metadata()
+            .map_err(KernelError::from)?
+            .is_none()
+        {
+            return Ok(Ok(Err(format!(
+                "certificate {hex} certifies a {} report, not a supported native or functional statement",
+                source.selection.output_format()
+            ))));
+        }
         if source.book_id != self.context.book_id || source.branch_id != fa_model::Id128::TRUNK {
             return Ok(Ok(Err(format!(
                 "certificate {hex} does not certify this book's trunk"
             ))));
         }
-        Ok(Ok(Ok((source.known_at, (**selection).clone()))))
+        Ok(Ok(Ok(source.clone())))
     }
 
     /// Where `AS ISSUED TO <audience>` pins `period`'s reads (plan §7.4,
@@ -1932,16 +1934,36 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &[u8; 32],
         period: &str,
     ) -> Outcome<CommitSeq> {
+        self.reported_statement(cx, capability, certificate, period)
+            .await
+            .map(|result| result.map(|source| source.known_at))
+    }
+
+    /// The exact retained question behind `AS REPORTED IN`, including an
+    /// approved custom activation, comparative columns and presentation law.
+    /// Current whole-book authority is checked before reading the artifact.
+    pub async fn reported_statement(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: &str,
+    ) -> Outcome<crate::ReportCertificate> {
         use fa_journal::issuance::not_reported_in;
-        let (known_at, selection) = match self.trunk_statement(cx, capability, certificate).await? {
+        let source = match self.trunk_statement(cx, capability, certificate).await? {
             Ok(Ok(found)) => found,
             Ok(Err(why)) => return Ok(Err(not_reported_in(why))),
             Err(r) => return Ok(Err(r)),
         };
+        let selection = source
+            .selection
+            .statement_metadata()
+            .map_err(KernelError::from)?
+            .ok_or_else(|| KernelError::Corrupt("reported statement metadata vanished".into()))?;
         let columns: Vec<&str> = selection
             .periods
             .iter()
-            .chain(&selection.comparative)
+            .chain(selection.comparative)
             .map(String::as_str)
             .collect();
         if !columns.contains(&period) {
@@ -1951,7 +1973,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 columns.join(", ")
             ))));
         }
-        Ok(Ok(known_at))
+        Ok(Ok(source))
     }
 
     /// Plan the issuance of the retained statement certificate `certificate`

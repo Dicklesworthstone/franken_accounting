@@ -2,6 +2,9 @@
 //! a journaled case body, its determination, its numbering and its
 //! refusals, over a real memory book.
 
+#[path = "restatement_case/custom_statements.rs"]
+mod custom_statements;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa::{Book, BookKeys, Entropy, ScenarioDiff};
@@ -67,14 +70,11 @@ fn retain_case_comparisons(book: &mut Book, ordinal: u32) -> Vec<[u8; 32]> {
         .unwrap();
     let mut digests = Vec::new();
     for request in requests {
-        let certificate = if request.functional {
-            book.certify_functional_statement_diff(PRINCIPAL, &capability, &request.request)
-        } else {
-            book.certify_statement_diff(PRINCIPAL, &capability, &request.request)
-        }
-        .unwrap()
-        .unwrap()
-        .certificate;
+        let certificate = book
+            .certify_case_statement_diff(PRINCIPAL, &capability, &request)
+            .unwrap()
+            .unwrap()
+            .certificate;
         let digest = *certificate.digest();
         book.retain_report_artifact(
             PRINCIPAL,
@@ -992,11 +992,19 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         assert_eq!(impact.request.before, before_adjustment);
         assert_eq!(impact.request.after, Some(posted.recorded_at));
         let diff = book
-            .statement_diff(PRINCIPAL, &comparison_cap, &impact.request)
+            .case_statement_diff(PRINCIPAL, &comparison_cap, impact)
             .unwrap()
             .unwrap();
         let line = |name| diff.lines().iter().find(|line| line.code == name).unwrap();
-        if impact.request.selection.definition.name() == "balance-sheet" {
+        if impact
+            .request
+            .selection
+            .statement_metadata()
+            .unwrap()
+            .unwrap()
+            .definition_name
+            == "balance-sheet"
+        {
             assert_eq!(line("assets").delta, vec![50_000]);
             assert_eq!(line("total_equity").delta, vec![50_000]);
         } else {
@@ -1011,7 +1019,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .filter(|question| question.basis != fa::CaseStatementBasis::BeforePostImpact)
     {
         let diff = book
-            .statement_diff(PRINCIPAL, &comparison_cap, &original.request)
+            .case_statement_diff(PRINCIPAL, &comparison_cap, original)
             .unwrap()
             .unwrap();
         assert!(

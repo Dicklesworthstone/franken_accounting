@@ -563,6 +563,41 @@ pub fn resolve_at<V: Vfs + Clone>(
     }
 }
 
+/// Every approved name active at one authorized recorded/effective coordinate,
+/// ordered by name. Later activations cannot add to an original reporting
+/// question. Every selected activation is validated under the same immutable
+/// approval and reviewed-chart law as an explicitly resolved name.
+pub(crate) fn all_active_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    day: DateDay,
+    at: CommitSeq,
+) -> Outcome<Vec<ActivatedStatementDefinition>> {
+    let mut active = std::collections::BTreeMap::new();
+    for activation in history(db, cx, book, at)? {
+        if activation.effective_from <= day {
+            active.insert(activation.definition.name.clone(), activation);
+        }
+    }
+    let mut validated = Vec::with_capacity(active.len());
+    for activation in active.into_values() {
+        match validate_active_at(
+            db,
+            cx,
+            book,
+            &activation.definition,
+            activation.activation,
+            day,
+            at,
+        )? {
+            Ok(activation) => validated.push(activation),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    }
+    Ok(Ok(validated))
+}
+
 /// Validate an explicitly pinned approved version. A later name activation
 /// does not replace this question or invalidate native certificate replay.
 /// The caller independently lints the chart at each report column coordinate.
