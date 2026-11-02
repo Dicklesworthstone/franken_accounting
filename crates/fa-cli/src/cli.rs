@@ -12458,7 +12458,7 @@ fn tb_net(code: &str, debits: i128, credits: i128) -> Result<i128, Fail> {
 
 /// Complete report families admit their native input closure before loading
 /// history, including Produce when their existing retention contract needs it.
-fn prepare_certificate_history(
+pub(crate) fn prepare_certificate_history(
     book: &mut Book,
     capability: &Capability,
     additional_ops: &[fa_policy::Op],
@@ -13158,6 +13158,17 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     {
         return crate::custom_statement::command(ctx, args);
     }
+    if args.positional.len() == 2
+        && args.positional[1] == "trace"
+        && args.flag("--from-diff").is_none()
+        && args.flag("--before-certificate").is_none()
+        && args.flag("--after-certificate").is_none()
+        && args
+            .flag("--definition")
+            .is_some_and(|name| StatementDefinition::embedded(name).is_err())
+    {
+        return crate::custom_statement::trace(ctx, args);
+    }
     if args.flag("--file").is_some()
         || args.flag("--scale-digits").is_some()
         || args.flag("--residual-line").is_some()
@@ -13547,7 +13558,7 @@ const STATEMENT_CERTIFICATES_EXAMPLE: &str = "fa statement diff --before-certifi
 
 /// `--max-publications` for a statement trace (default 64); the library
 /// refuses a value outside 1..=256.
-fn max_publications(args: &Args) -> Result<usize, Fail> {
+pub(crate) fn max_publications(args: &Args) -> Result<usize, Fail> {
     args.flag("--max-publications")
         .unwrap_or("64")
         .parse()
@@ -13586,7 +13597,7 @@ pub(crate) fn emit_certified_statement_diff(
 
 /// Retain a certified statement trace (after its replay), then render the
 /// publications and the trace certificate.
-fn emit_certified_statement_trace(
+pub(crate) fn emit_certified_statement_trace(
     out: &Out,
     files: &Files,
     args: &Args,
@@ -13602,11 +13613,8 @@ fn emit_certified_statement_trace(
         out,
         args,
         &artifact,
-        if certified.certificate.uses_functional_valuations() {
-            "fa:functional-statement-trace:v1"
-        } else {
-            "fa:statement-trace:v1"
-        },
+        std::str::from_utf8(certified.certificate.output_format())
+            .map_err(|error| Fail::Internal(format!("statement trace format: {error}")))?,
         &bytes,
         &retained,
     );
@@ -13694,6 +13702,42 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             "--compare names the comparative column of a --for period",
             "--for FY2026-P03 --compare FY2026-P02, or omit both to accept the certificates' own periods",
         ));
+    }
+    // The statement verb also serves date-, unit-, role- and regulatory-
+    // selected families. None may silently reinterpret a saved question.
+    // Check registered statement options only; global authority and output
+    // controls remain available. Frontier-specific errors above stay precise.
+    let registry = crate::verbs::registry().map_err(|error| Fail::Internal(error.into()))?;
+    let verb = registry
+        .verbs
+        .iter()
+        .find(|verb| verb.name == "statement")
+        .ok_or_else(|| Fail::Internal("statement verb is missing".into()))?;
+    const SAVED_FLAGS: &[&str] = &[
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
+        "--for",
+        "--compare",
+        "--definition",
+        "--max-publications",
+        "--certificate-out",
+    ];
+    for flag in &verb.flags {
+        if args.flag(flag).is_some() && !SAVED_FLAGS.contains(&flag.as_str()) {
+            return Err(usage(
+                format!("{flag} does not apply to a statement selected by saved certificates"),
+                STATEMENT_CERTIFICATES_EXAMPLE,
+            ));
+        }
+    }
+    for switch in &verb.switches {
+        if args.switch(switch) && !["--certify", "--functional"].contains(&switch.as_str()) {
+            return Err(usage(
+                format!("{switch} does not apply to a statement selected by saved certificates"),
+                STATEMENT_CERTIFICATES_EXAMPLE,
+            ));
+        }
     }
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let who = ctx.principal(args);
@@ -13844,12 +13888,6 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 &capability,
                 fa::StatementDiffCertificate::decode,
             )?;
-            if comparison.is_custom() {
-                return Err(usage(
-                    "publication tracing is not yet supported for custom statement comparisons",
-                    "fa replay C:<diff-oid> replays both saved company statements and their exact comparison",
-                ));
-            }
             statement_question_matches(args, &comparison.report_selection()?)?;
             if args.switch("--functional") && !comparison.uses_functional_valuations() {
                 return Err(fa_journal::Refusal::new(

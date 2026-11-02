@@ -357,7 +357,7 @@ fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new
         "a changed layout cannot be compared silently: {events:?}"
     );
     assert_eq!(events.len(), 1);
-    let (exit, events, _) = run(
+    let traced = ok(
         &fixture.book,
         &[
             "statement",
@@ -367,7 +367,113 @@ fn approved_company_layout_certifies_rounding_and_replays_after_postings_and_new
             "--certify",
         ],
     );
-    assert_eq!(exit, 2, "custom trace support is explicit: {events:?}");
+    let trace = event(&traced, "statement_trace");
+    assert_eq!(trace.get("lines"), diff.get("lines"));
+    assert_eq!(trace.get("after_known_at"), diff.get("after_known_at"));
+    assert_eq!(trace.get("definition_version"), Some(&Json::Int(1)));
+    let trace_source = event(&traced, "report_certificate");
+    assert_eq!(
+        text(trace_source, "output_format"),
+        "fa:custom-statement-trace:v1"
+    );
+    let attributed =
+        fa::StatementTraceCertificate::decode(&unhex(text(trace_source, "bytes"))).unwrap();
+    assert!(attributed.is_custom());
+    assert_eq!(attributed.sources().first().unwrap(), decoded.sources().0);
+    assert_eq!(attributed.sources().last().unwrap(), decoded.sources().1);
+    assert_eq!(
+        attributed.sources().len() as u64,
+        decoded.sources().1.known_at.0 - decoded.sources().0.known_at.0 + 1
+    );
+    let trace_reference = format!("C:{}", text(trace_source, "oid"));
+    let replayed = ok(&fixture.book, &["replay", &trace_reference, "--workpaper"]);
+    assert_eq!(event(&replayed, "statement_trace"), trace);
+    assert!(
+        text(event(&replayed, "workpaper_exported"), "text")
+            .contains("\"format\":\"fa:custom-statement-trace-jsonl:v1\"")
+    );
+
+    // Direct selection resolves v1 at BEFORE, even though v2 is active now.
+    // It asks the same complete question and keeps exact unrounded deltas.
+    let before = decoded.sources().0.known_at.0.to_string();
+    let after = decoded.sources().1.known_at.0.to_string();
+    let direct_args = [
+        "statement",
+        "trace",
+        "--definition",
+        "company-income",
+        "--for",
+        "FY2026-P03",
+        "--compare",
+        "FY2026-P02",
+        "--before",
+        &before,
+        "--after",
+        &after,
+        "--scale-digits",
+        "3",
+        "--rounding",
+        "HalfEven",
+        "--residual-line",
+        "rounding",
+        "--residual-label",
+        "Presentation rounding",
+    ];
+    let direct = ok(&fixture.book, &direct_args);
+    assert_eq!(event(&direct, "statement_trace"), trace);
+    assert_eq!(direct[0].get("certificate"), Some(&Json::Null));
+    for (mismatch, expected_exit) in [
+        (vec!["--definition", "another-layout"], 8),
+        (vec!["--for", "FY2026-P01"], 8),
+        (vec!["--functional"], 8),
+        (vec!["--max-publications", "1"], 3),
+        (vec!["--rounding", "HalfEven"], 2),
+        (vec!["--unit", "EUR"], 2),
+        (vec!["--from", "2020-01-01", "--to", "2020-12-31"], 2),
+        (vec!["--issuance", "3000"], 2),
+        (vec!["--form", "041"], 2),
+        (vec!["--dry-run"], 2),
+    ] {
+        let (exit, events, _) = run(
+            &fixture.book,
+            &[
+                &[
+                    "statement",
+                    "trace",
+                    "--from-diff",
+                    &diff_reference,
+                    "--certify",
+                ][..],
+                &mismatch,
+            ]
+            .concat(),
+        );
+        assert_eq!(exit, expected_exit, "{mismatch:?}: {events:?}");
+        assert_eq!(events.len(), 1, "no partial trace or certificate");
+        assert_eq!(text(&events[0], "event"), "error");
+    }
+    let fa::ReportSelection::CustomStatement(question) = decoded.report_selection().unwrap() else {
+        panic!("custom question")
+    };
+    let before_activation = (question.activated_at.0 - 1).to_string();
+    let (exit, events, _) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "trace",
+            "--definition",
+            "company-income",
+            "--for",
+            "FY2026-P03",
+            "--before",
+            &before_activation,
+            "--after",
+            &after,
+            "--certify",
+        ],
+    );
+    assert_eq!(exit, 2, "the layout must exist at BEFORE: {events:?}");
+    assert_eq!(events.len(), 1);
     let status = ok(&fixture.book, &["certificate", "status", &certificate]);
     assert_eq!(
         text(event(&status, "certificate_status"), "status"),

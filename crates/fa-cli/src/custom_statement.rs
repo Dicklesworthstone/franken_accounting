@@ -1,8 +1,13 @@
 //! Review, activate and report a company's own financial statement layout.
 
-use fa::{Book, CustomStatementDefinition, CustomStatementReport, CustomStatementSelection};
+use fa::{
+    Book, CustomStatementDefinition, CustomStatementReport, CustomStatementSelection,
+    CustomStatementTraceRequest,
+};
 use fa_model::ApprovalRef;
+use fa_policy::Capability;
 use fa_time::DateDay;
+use fgdb_types::{CommitSeq, VId};
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_read_flag, parse_vid, usage};
@@ -11,6 +16,7 @@ use crate::json::{Json, obj, s};
 const DEFINE: &str = "fa statement define --file layout.toml --from 2026-01-01 --key layout-v1 --plan-out layout.plan";
 const ACTIVATE: &str = "fa statement activate --plan layout.plan --approval <vid> --approval <vid>";
 const REPORT: &str = "fa statement custom --definition <name> --for FY2026-P03 [--compare FY2025-P03] [--functional] [--certify]";
+const TRACE: &str = "fa statement trace --definition <company-layout> --for FY2026-P03 --before <seq> [--after HEAD|<seq>] [--functional] [--certify]";
 
 pub(crate) fn command(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional[1].as_str() {
@@ -240,6 +246,152 @@ fn activate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// Resolve a company's layout once at the requested historical frontier.
+/// Report, trace and comparative columns share this exact selection; later
+/// activations cannot silently change the question midway through a trace.
+fn active_selection(
+    book: &Book,
+    who: VId,
+    capability: &Capability,
+    args: &Args,
+    at: CommitSeq,
+    presentation: Option<fa::PresentationRoundingSpec>,
+) -> Result<CustomStatementSelection, Fail> {
+    let name = args.require("--definition", "the activated company layout's name")?;
+    let period = args.require("--for", "the current fiscal period")?;
+    let row = book
+        .read_scope(who, capability)??
+        .period_at(period, Some(at))??
+        .ok_or_else(|| {
+            usage(
+                format!("period {period} does not exist at {}", at.0),
+                REPORT,
+            )
+        })?;
+    let day = DateDay(
+        row.end
+            .0
+            .checked_sub(1)
+            .ok_or_else(|| Fail::Internal("period end underflow".into()))?,
+    );
+    let active = book
+        .active_statement_definition(capability, name, day, at)??
+        .ok_or_else(|| {
+            usage(
+                format!(
+                    "no approved definition {name} is in force for {day} at {}",
+                    at.0
+                ),
+                DEFINE,
+            )
+        })?;
+    Ok(CustomStatementSelection {
+        definition: active.definition,
+        activation: active.activation,
+        activated_at: active.recorded_at,
+        functional: args.switch("--functional"),
+        periods: vec![period.into()],
+        comparative: args
+            .flag("--compare")
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        presentation,
+    })
+}
+
+/// A direct company trace pins the approved layout at BEFORE. Saved traces
+/// enter through the existing --from-diff route and retain that comparison's
+/// complete question and original endpoint certificates instead.
+pub(crate) fn trace(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    options(
+        args,
+        &[
+            "--definition",
+            "--for",
+            "--compare",
+            "--before",
+            "--after",
+            "--max-publications",
+            "--certificate-out",
+            "--scale-digits",
+            "--rounding",
+            "--residual-line",
+            "--residual-label",
+        ],
+        &["--certify", "--functional"],
+        TRACE,
+    )?;
+    let before = CommitSeq(
+        args.require("--before", "the first recorded sequence")?
+            .parse()
+            .map_err(|_| usage("--before must be a recorded CommitSeq integer", TRACE))?,
+    );
+    let after = match args.flag("--after") {
+        None | Some("HEAD") => None,
+        Some(raw) => Some(CommitSeq(raw.parse().map_err(|_| {
+            usage(
+                "--after must be HEAD or a recorded CommitSeq integer",
+                TRACE,
+            )
+        })?)),
+    };
+    let presentation = rounding(args)?;
+    let max_publications = crate::cli::max_publications(args)?;
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let capability = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let who = ctx.principal(args);
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::cli::prepare_certificate_history(
+            book,
+            &capability,
+            if certify {
+                &[fa_policy::Op::Produce]
+            } else {
+                &[]
+            },
+            Some(before),
+        )
+    })?;
+    let selection = active_selection(&book, who, &capability, args, before, presentation)?;
+    let functional = selection.functional;
+    let request = CustomStatementTraceRequest {
+        selection,
+        before,
+        after,
+        max_publications,
+    };
+    ctx.out.at_book(&book)?;
+    if certify {
+        let certified = if functional {
+            book.certify_functional_custom_statement_trace(who, &capability, &request)??
+        } else {
+            book.certify_custom_statement_trace(who, &capability, &request)??
+        };
+        return crate::cli::emit_certified_statement_trace(
+            &ctx.out,
+            &ctx.files,
+            args,
+            &mut book,
+            &capability,
+            &certified,
+        );
+    }
+    let trace = if functional {
+        book.functional_custom_statement_trace(who, &capability, &request)??
+    } else {
+        book.custom_statement_trace(who, &capability, &request)??
+    };
+    crate::cli::render_statement_trace(&ctx.out, &book, &trace, None)
+}
+
 fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     options(
         args,
@@ -340,45 +492,7 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         (**selection).clone()
     } else {
-        let row = book
-            .read_scope(who, &cap)??
-            .period_at(period, Some(at))??
-            .ok_or_else(|| {
-                usage(
-                    format!("period {period} does not exist at {}", at.0),
-                    REPORT,
-                )
-            })?;
-        let day = DateDay(
-            row.end
-                .0
-                .checked_sub(1)
-                .ok_or_else(|| Fail::Internal("period end underflow".into()))?,
-        );
-        let active = book
-            .active_statement_definition(&cap, name, day, at)??
-            .ok_or_else(|| {
-                usage(
-                    format!(
-                        "no approved definition {name} is in force for {day} at {}",
-                        at.0
-                    ),
-                    DEFINE,
-                )
-            })?;
-        CustomStatementSelection {
-            definition: active.definition,
-            activation: active.activation,
-            activated_at: active.recorded_at,
-            functional: args.switch("--functional"),
-            periods: vec![period.into()],
-            comparative: args
-                .flag("--compare")
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            presentation: rounding_spec,
-        }
+        active_selection(&book, who, &cap, args, at, rounding_spec)?
     };
     let functional = selection.functional;
     ctx.out.at_book(&book)?;

@@ -1237,6 +1237,70 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
 }
 
 #[test]
+fn company_statement_traces_preserve_saved_questions_and_direct_historical_bounds() {
+    let (mcp, reg) = embedded();
+    let tool = mcp.tool_for("statement", None).unwrap();
+    for (arguments, command) in [
+        (
+            json!({"name":"trace", "from_diff":"C:comparison", "certify":true, "max_publications":"32"}),
+            "fa statement trace --from-diff C:comparison --certify --max-publications 32 --json",
+        ),
+        (
+            json!({"name":"trace", "definition":"company-income", "for":"FY2026-P03", "compare":"FY2026-P02", "before":"17", "after":"24", "functional":true, "certify":true, "scale_digits":"3", "rounding":"HalfEven", "residual_line":"rounding", "residual_label":"Residual"}),
+            "fa statement trace --definition company-income --for FY2026-P03 --compare FY2026-P02 --before 17 --after 24 --functional --certify --scale-digits 3 --rounding HalfEven --residual-line rounding --residual-label Residual --json",
+        ),
+    ] {
+        let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+        assert!(invocation.stdin.is_none());
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, ["statement", "trace"]);
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("statement", &parsed)
+                .unwrap()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>(),
+            ["read", "produce"]
+        );
+        let translated = mcp.command_to_call(reg, command).unwrap();
+        assert_eq!(translated.tool, "fa_read_statement");
+        assert_eq!(translated.arguments, arguments);
+        if arguments.get("from_diff").is_some() {
+            for flag in ["--before", "--after", "--for", "--compare", "--definition"] {
+                assert!(parsed.flag(flag).is_none(), "saved selection stays omitted");
+            }
+        } else {
+            assert_eq!(parsed.flag("--before"), Some("17"));
+            assert_eq!(parsed.flag("--after"), Some("24"));
+            assert_eq!(parsed.flag("--scale-digits"), Some("3"));
+            assert!(parsed.switch("--functional"));
+        }
+        for path in ["certificate_out", "plan_out", "out"] {
+            let mut rejected = arguments.clone();
+            rejected[path] = json!("host-file");
+            assert!(tool.invocation(&mcp, reg, &rejected).is_err(), "{path}");
+        }
+    }
+    let read = tool
+        .invocation(
+            &mcp,
+            reg,
+            &json!({"name":"trace", "definition":"company-income", "for":"FY2026-P03", "before":"17", "after":"24"}),
+        )
+        .unwrap();
+    let parsed = fa_cli::args::parse(&read.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read"]
+    );
+}
+
+#[test]
 fn functional_trial_balance_mcp_preserves_scope_time_and_certificate_authority() {
     let (mcp, reg) = embedded();
     let tool = mcp.tool_for("tb", None).unwrap();

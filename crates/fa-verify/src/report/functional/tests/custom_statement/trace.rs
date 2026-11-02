@@ -69,6 +69,13 @@ fn identity(key: &[u8]) -> u128 {
     u128::from_le_bytes(digest[..16].try_into().unwrap())
 }
 
+fn reversal_identity(target: u128) -> u128 {
+    // Reversals have one identity per original target, independently of
+    // the caller's idempotency key. This domain hashes the raw target bytes.
+    let digest = hash_parts(b"fa:vid:reversal:v1", &[&target.to_le_bytes()]);
+    u128::from_le_bytes(digest[..16].try_into().unwrap())
+}
+
 fn trace_digest(functional: bool, bytes: &[u8]) -> [u8; 32] {
     framed_hash(
         if functional {
@@ -112,7 +119,11 @@ fn publications(
             let entries = key
                 .into_iter()
                 .map(|key| VerifiedStatementEntryLink {
-                    entry: identity(key),
+                    entry: if class == 4 {
+                        reversal_identity(identity(b"comparison-small-expense"))
+                    } else {
+                        identity(key)
+                    },
                     digest: fixture
                         .records
                         .iter()
@@ -350,7 +361,7 @@ fn resealed_custom_trace_cannot_hide_cancellation_zero_publications_or_lineage()
     for functional in [false, true] {
         let (outputs, sources) = sources(&fixture, functional, TRACE_END);
         let publications = publications(&fixture, functional, &outputs);
-        for mutation in 0..11 {
+        for mutation in 0..12 {
             let mut changed = publications.clone();
             match mutation {
                 0 => {
@@ -372,6 +383,7 @@ fn resealed_custom_trace_cannot_hide_cancellation_zero_publications_or_lineage()
                 }
                 9 => changed.swap(0, 1),
                 10 => changed.push(changed[0].clone()),
+                11 => changed[3].entries[0].entry = identity(b"trace-expense-reversal"),
                 _ => unreachable!(),
             }
             let error = check(
