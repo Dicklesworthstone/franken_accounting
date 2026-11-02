@@ -7350,6 +7350,42 @@ fn law_and_unit_listings_name_every_registered_law_and_unit() {
             .any(|a| text(a, "key") == "definition"),
         "{out}"
     );
+    // A law named under the wrong --family is not a missing law: the
+    // refusal names the family that holds it and the command that works.
+    let (code, out, _) = fa(
+        None,
+        &[
+            "law",
+            "show",
+            "HalfEven",
+            "--family",
+            "allocation",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "message").contains("`HalfEven` is a rounding law"),
+        "{out}"
+    );
+    assert_eq!(
+        text(&doc(&out), "fix"),
+        "fa law show HalfEven --family rounding",
+        "{out}"
+    );
+    let (code, out, _) = fa(
+        None,
+        &["law", "show", "NoSuchLaw", "--family", "rounding", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "fix").starts_with("fa law list --family rounding --json; registered: "),
+        "{out}"
+    );
+    assert!(
+        !text(&doc(&out), "fix").contains("LargestRemainder"),
+        "{out}"
+    );
     for bad in [
         vec!["law", "show", "NoSuchLaw", "--json"],
         vec!["law", "list", "--family", "tax", "--json"],
@@ -16688,6 +16724,29 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         Some(&upper),
         closed_seq,
     );
+    // `fa diff --to <instant>` resolves through the same retained ticks:
+    // its envelope keeps that evidence and names its selection, never "all".
+    let lower_seq = lower.recorded_at.0.to_string();
+    for (selection, effective) in [
+        (["--period", PERIOD], format!("period:{PERIOD}")),
+        (["--as-of", "2026-03-31"], "as-of:2026-03-31".to_string()),
+    ] {
+        let mut argv = vec!["diff", "--from", lower_seq.as_str(), "--to", INSTANT];
+        argv.extend(selection);
+        argv.push("--json");
+        let diffed = ok(&argv);
+        assert_eq!(field(&diffed, "event"), Some("ledger_diff"), "{diffed}");
+        check_coordinate(
+            diffed.trim_end(),
+            current_frontier,
+            Some(&upper),
+            closed_seq,
+        );
+        let envelope = json::parse(diffed.trim_end()).unwrap();
+        let coordinate = envelope.get("coordinate").unwrap();
+        assert_eq!(text(coordinate, "effective"), effective, "{diffed}");
+        assert_eq!(int(&doc(&diffed), "to"), Some(i128::from(closed_seq.0)));
+    }
     let equivalent = report(
         &book,
         &[

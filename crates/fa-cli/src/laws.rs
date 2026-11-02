@@ -154,12 +154,37 @@ pub(crate) fn law_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     Ok(())
                 }
                 0 => {
-                    let mut names: Vec<&str> = all.iter().map(|r| r.name.as_str()).collect();
+                    // A name registered in another family is a wrong --family,
+                    // not a missing law: say which family holds it.
+                    let holders: Vec<&str> = all
+                        .iter()
+                        .filter(|r| r.name == name)
+                        .map(|r| r.family)
+                        .collect();
+                    if let (Some(asked), Some(holder)) = (family, holders.first()) {
+                        return Err(usage(
+                            format!(
+                                "no {asked} law is named `{name}`; `{name}` is a {} law",
+                                holders.join(", ")
+                            ),
+                            format!("fa law show {name} --family {holder}"),
+                        ));
+                    }
+                    let mut names: Vec<&str> = all
+                        .iter()
+                        .filter(|r| family.is_none_or(|f| r.family == f))
+                        .map(|r| r.name.as_str())
+                        .collect();
                     names.sort_unstable();
                     names.dedup();
+                    let scope = family.map_or_else(String::new, |f| format!(" {f}"));
                     Err(usage(
-                        format!("no registered law is named `{name}`"),
-                        format!("fa law list --json; registered: {}", names.join(", ")),
+                        format!("no registered{scope} law is named `{name}`"),
+                        format!(
+                            "fa law list{} --json; registered: {}",
+                            family.map_or_else(String::new, |f| format!(" --family {f}")),
+                            names.join(", ")
+                        ),
                     ))
                 }
                 _ => Err(usage(

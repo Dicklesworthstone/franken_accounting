@@ -2,8 +2,10 @@
 //!
 //! UTC is sampled between two reads of the caller's monotonic timer. The
 //! pure judge compares elapsed UTC with that sampling bracket at process
-//! startup; a rejected jump never becomes a new trusted baseline. This is
-//! local clock corroboration, not authentication of physical UTC.
+//! startup; a rejected jump never becomes a new trusted baseline. A lasting
+//! step (an NTP correction, a suspended host) therefore stays uncorroborated
+//! until the daemon restarts and samples a new baseline. This is local clock
+//! corroboration, not authentication of physical UTC.
 
 use core::fmt;
 use core::future::Future;
@@ -210,6 +212,27 @@ mod tests {
             judge.observe(sample(1_600, 499)),
             Err(ClockError::MonotonicRollback)
         );
+    }
+
+    /// The refusal tells an operator to restart after a lasting step; this
+    /// is the behaviour that advice depends on.
+    #[test]
+    fn a_lasting_step_stays_uncorroborated_until_a_new_baseline() {
+        let mut judge = Judge::new(5);
+        assert_eq!(judge.observe(sample(1_000, 0)), Ok(false));
+        assert_eq!(judge.observe(sample(1_100, 100)), Ok(true));
+        // The wall clock steps forward 50 and keeps the new offset.
+        for monotonic in [200, 300, 10_000, 1_000_000] {
+            assert_eq!(
+                judge.observe(sample(1_050 + monotonic, monotonic)),
+                Ok(false),
+                "at monotonic {monotonic}"
+            );
+        }
+        // A restarted daemon's judge corroborates the stepped clock again.
+        let mut restarted = Judge::new(5);
+        assert_eq!(restarted.observe(sample(1_001_050, 1_000_000)), Ok(false));
+        assert_eq!(restarted.observe(sample(1_001_150, 1_000_100)), Ok(true));
     }
 
     #[test]
