@@ -10,12 +10,13 @@ mod procedure;
 pub(crate) use expectations::{
     aging_bundle_expectation, aging_expectation_json, cash_flow_expectation_json,
     due_date_aging_expectation_json, due_date_reconciliation_bundle_expectation,
-    due_date_reconciliation_expectation_json, equity_expectation_json,
-    external_feed_expectation_json, indirect_cash_flow_bundle_expectation,
-    indirect_expectation_json, lots_expectation_json, native_subledger_expectation_json,
-    policy_cash_flow_expectation_json, portfolio_bundle_expectation, portfolio_expectation_json,
-    reconciliation_bundle_expectation, reconciliation_expectation_json,
-    split_cash_flow_bundle_expectation, split_cash_flow_expectation_json,
+    due_date_reconciliation_expectation_json, equity_diff_expectation,
+    equity_diff_expectation_json, equity_expectation_json, external_feed_expectation_json,
+    indirect_cash_flow_bundle_expectation, indirect_expectation_json, lots_expectation_json,
+    native_subledger_expectation_json, policy_cash_flow_expectation_json,
+    portfolio_bundle_expectation, portfolio_expectation_json, reconciliation_bundle_expectation,
+    reconciliation_expectation_json, split_cash_flow_bundle_expectation,
+    split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -88,6 +89,13 @@ pub(crate) fn prepare_artifact_history(
         )??;
     }
     let known_at = match artifact.family() {
+        ReportArtifactFamily::EquityRollForwardDiff => {
+            let certificate = artifact
+                .equity_roll_forward_diff_certificate()
+                .ok_or_else(|| certificate_invalid("an equity comparison has no source pair"))?;
+            let (before, after) = certificate.sources();
+            before.known_at().min(after.known_at())
+        }
         ReportArtifactFamily::StatementDiff => {
             let certificate = fa::StatementDiffCertificate::decode(bytes)?;
             let (before, after) = certificate.sources();
@@ -1114,6 +1122,24 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let equity_diff = if let Some(certificate) = artifact.equity_roll_forward_diff_certificate() {
+        let expectations::Expected::EquityDiff(request) = &expected else {
+            return Err(certificate_invalid(
+                "equity comparison replay needs an independent equity-roll-forward-diff expectation",
+            ));
+        };
+        let report =
+            book.replay_equity_roll_forward_diff(principal, &capability, certificate, request)??;
+        let (before, after) = certificate.sources();
+        Some((
+            report,
+            before.digest(),
+            after.digest(),
+            request.canonical_bytes()?,
+        ))
+    } else {
+        None
+    };
     let native_subledger = if artifact.family() == ReportArtifactFamily::NativeSubledger {
         let expectations::Expected::NativeSubledger(request) = &expected else {
             return Err(certificate_invalid(
@@ -1284,6 +1310,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(report) = equity {
         crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
         true
+    } else if let Some((report, before, after, request)) = equity_diff {
+        crate::cli::render_equity_roll_forward_diff(
+            &ctx.out,
+            &book,
+            &report,
+            (before, after),
+            &request,
+            None,
+            Some(&digest),
+        )?;
+        true
     } else if let Some((report, accounts)) = native_subledger {
         crate::subledger::render_native(&ctx.out, &book, &report, &accounts, Some(&digest))?;
         true
@@ -1324,6 +1361,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 | ReportArtifactFamily::EffectiveDateAging
                 | ReportArtifactFamily::DueDateAging
                 | ReportArtifactFamily::EquityRollForward
+                | ReportArtifactFamily::EquityRollForwardDiff
                 | ReportArtifactFamily::ExternalFeed
                 | ReportArtifactFamily::NativeSubledger
         )

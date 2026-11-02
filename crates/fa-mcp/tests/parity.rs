@@ -1301,6 +1301,78 @@ fn company_statement_traces_preserve_saved_questions_and_direct_historical_bound
 }
 
 #[test]
+fn equity_comparisons_keep_the_independent_request_and_authority_on_mcp() {
+    let (mcp, reg) = embedded();
+    let tool = mcp.tool_for("statement", None).unwrap();
+    let schema = tool.input_schema(&mcp, reg);
+    assert_eq!(schema["properties"]["expect"]["type"], json!("string"));
+    for field in ["request_out", "certificate_out", "expect_file", "out"] {
+        assert!(schema["properties"].get(field).is_none(), "{field}");
+    }
+    let expected = r#"{"kind":"equity-roll-forward-diff","units":["USD"],"label":"Annual equity","from":"2026-01-01","through":"2026-12-31","known_at":17,"after_known_at":24,"issuance_accounts":["3100"],"distribution_accounts":["3200"]}"#;
+    for certify in [false, true] {
+        let mut arguments = json!({
+            "name":"diff",
+            "before_certificate":"C:original",
+            "after_certificate":"C:revised",
+            "expect":expected,
+        });
+        if certify {
+            arguments["certify"] = json!(true);
+        }
+        let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+        assert!(invocation.stdin.is_none());
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, ["statement", "diff"]);
+        assert_eq!(parsed.flag("--expect"), Some(expected));
+        assert_eq!(parsed.flag("--before-certificate"), Some("C:original"));
+        assert_eq!(parsed.flag("--after-certificate"), Some("C:revised"));
+        let ops = fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ops,
+            if certify {
+                vec!["read", "produce"]
+            } else {
+                vec!["read"]
+            }
+        );
+        let command = format!(
+            "fa statement diff --before-certificate C:original --after-certificate C:revised --expect '{expected}'{} --json",
+            if certify { " --certify" } else { "" },
+        );
+        let translated = mcp.command_to_call(reg, &command).unwrap();
+        assert_eq!(translated.tool, "fa_read_statement");
+        assert_eq!(translated.arguments, arguments);
+        for forbidden in ["request_out", "certificate_out", "grant", "book"] {
+            let mut rejected = arguments.clone();
+            rejected[forbidden] = json!("host-selected");
+            assert!(
+                tool.invocation(&mcp, reg, &rejected).is_err(),
+                "{forbidden}"
+            );
+        }
+    }
+    let bundle = mcp.tool_by_wire("fa_notary_bundle").unwrap();
+    let invocation = bundle
+        .invocation(
+            &mcp,
+            reg,
+            &json!({"certificate":"C:comparison", "expect":expected}),
+        )
+        .unwrap();
+    assert_eq!(invocation.stdin, Some(b"C:comparison".to_vec()));
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.flag("--certificate"), Some("-"));
+    assert_eq!(parsed.flag("--expect"), Some(expected));
+}
+
+#[test]
 fn functional_trial_balance_mcp_preserves_scope_time_and_certificate_authority() {
     let (mcp, reg) = embedded();
     let tool = mcp.tool_for("tb", None).unwrap();

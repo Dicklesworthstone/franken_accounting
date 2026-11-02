@@ -1880,6 +1880,52 @@ and valuation source before checking the complete publication chain. Migration
 publications and ambiguous legacy Replacement identities within the traced
 interval remain unsupported by offline attribution.
 
+### Comparing equity statements
+
+Two original v2 equity roll-forward certificates compare through the same
+saved-certificate command. The caller supplies the common date range, label,
+native units and explicit issuance/distribution account roles, together with
+both fixed recorded frontiers. Only recorded time may differ. The
+`equity_roll_forward_diff` result includes all fifteen equity fields before,
+after and as exact deltas, both original certificate digests, and both complete
+movement citation arrays. Prior-period adjustments, their exact reversals,
+case and source-period citations, and closing transfers retain each source's
+original classification.
+
+```bash
+equity_request='{"kind":"equity-roll-forward-diff","units":["USD"],"label":"Annual equity","from":"2026-01-01","through":"2026-12-31","known_at":120,"after_known_at":145,"issuance_accounts":["3100"],"distribution_accounts":["3200"]}'
+fa statement diff --before-certificate original-equity.cert \
+  --after-certificate revised-equity.cert --expect "$equity_request" \
+  --certify --request-out equity-request.bin --book ./books/myco --json
+fa replay C:<comparison-oid> --expect "$equity_request" --book ./books/myco --json
+```
+
+Omitting `--certify` computes the comparison under read authority without
+retaining a certificate. Missing roles, `HEAD` in either expected frontier,
+mixed report families and conflicting statement selectors refuse. The existing
+built-in and custom comparison paths keep their original selection contracts.
+
+Retain the canonical request when making or agreeing the comparison.
+`--request-out` creates a new file; MCP returns the same bytes inline in
+`verification_request_hex` and accepts the expectation through its `expect`
+argument. Once a checkpoint covers both sources, portable export and
+independent verification use that separately retained request:
+
+```bash
+fa bundle produce --certificate C:<comparison-oid> --expect "$equity_request" \
+  --out equity-diff.fab --receipt-out equity-diff.receipt --book ./books/myco --json
+fa-verify report equity-diff.fab --receipt equity-diff.receipt \
+  --key <trusted-checkpoint-public-key> --expect <comparison-oid> \
+  --equity-diff-request equity-request.bin --json
+```
+
+The recipient selects their own expected request and outer comparison digest.
+The verifier reconstructs both complete historical equity statements and every
+delta; the delivered bundle cannot choose the recipient's units or owner-account
+roles. Certificate status uses the same independent JSON expectation. Equity
+comparison does not issue a statement, create a publication trace, or complete
+automatic restatement-case disclosure coverage.
+
 ### Rendered documents
 
 `fa tb` and `fa statement <definition>` also render the report as a document

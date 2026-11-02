@@ -21,6 +21,7 @@ pub(super) enum Expected {
     CashFlow(RollForwardRequest, CashFlowDefinition),
     Indirect(IndirectCashFlowRequest),
     Equity(fa::EquityRollForwardRequest),
+    EquityDiff(fa::EquityRollForwardDiffRequest),
     ExternalFeed(fa::ExternalFeedRequest),
     NativeSubledger(fa::NativeSubledgerRequest),
     Reconciliation(AgingReconciliationRequest),
@@ -47,6 +48,9 @@ impl Expected {
             },
             Self::Indirect(request) => fa::ReportArtifactExpectation::IndirectCashFlow(request),
             Self::Equity(request) => fa::ReportArtifactExpectation::EquityRollForward(request),
+            Self::EquityDiff(request) => {
+                fa::ReportArtifactExpectation::EquityRollForwardDiff(request)
+            }
             Self::ExternalFeed(request) => fa::ReportArtifactExpectation::ExternalFeed(request),
             Self::NativeSubledger(request) => {
                 fa::ReportArtifactExpectation::NativeSubledger(request)
@@ -143,13 +147,17 @@ fn account(text: &str, book: &Book) -> Result<VId, Fail> {
 }
 
 fn fixed_prefix(doc: &Json) -> Result<CommitSeq, Fail> {
-    match field(doc, "known_at")? {
+    fixed_sequence(doc, "known_at")
+}
+
+fn fixed_sequence(doc: &Json, key: &str) -> Result<CommitSeq, Fail> {
+    match field(doc, key)? {
         Json::Int(value) => u64::try_from(*value)
             .map(CommitSeq)
-            .map_err(|_| invalid("expected known_at must be a nonnegative u64 sequence")),
-        _ => Err(invalid(
-            "expected known_at must be a fixed integer sequence; HEAD is not a replay expectation",
-        )),
+            .map_err(|_| invalid(format!("expected {key} must be a nonnegative u64 sequence"))),
+        _ => Err(invalid(format!(
+            "expected {key} must be a fixed integer sequence; HEAD is not a replay expectation"
+        ))),
     }
 }
 
@@ -345,6 +353,45 @@ pub(crate) fn indirect_cash_flow_bundle_expectation(
     }
 }
 
+/// The same independent fixed question binds generation, replay and portable
+/// export. Neither original certificate supplies the caller's expected roles.
+pub(crate) fn equity_diff_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<fa::EquityRollForwardDiffRequest, Fail> {
+    match parse(args, book, principal, capability)? {
+        Expected::EquityDiff(request) => Ok(request),
+        _ => Err(invalid(
+            "equity comparison requires --expect JSON with kind equity-roll-forward-diff, fixed known_at and after_known_at, units, dates, label and explicit issuance_accounts/distribution_accounts",
+        )),
+    }
+}
+
+fn equity_request(doc: &Json, book: &Book) -> Result<fa::EquityRollForwardRequest, Fail> {
+    let roles = |key| -> Result<Vec<VId>, Fail> {
+        array(doc, key)?
+            .iter()
+            .map(|item| match item {
+                Json::Str(text) => account(text, book),
+                _ => Err(invalid(
+                    "expected equity roles must contain account codes or ids",
+                )),
+            })
+            .collect()
+    };
+    Ok(fa::EquityRollForwardRequest {
+        units: units(doc, book)?,
+        label: string(doc, "label")?.to_string(),
+        effective_from: day(doc, "from")?,
+        effective_through: day(doc, "through")?,
+        known_at: Some(fixed_prefix(doc)?),
+        issuance_accounts: roles("issuance_accounts")?,
+        distribution_accounts: roles("distribution_accounts")?,
+    })
+}
+
 fn reconciliation_request(doc: &Json, book: &Book) -> Result<AgingReconciliationRequest, Fail> {
     exact_fields(doc, &["kind", "account", "through", "known_at", "buckets"])?;
     Ok(AgingReconciliationRequest {
@@ -447,40 +494,30 @@ pub(super) fn parse(
                 known_at: Some(fixed_prefix(&doc)?),
             }))
         }
-        "equity-roll-forward" => {
-            exact_fields(
-                &doc,
-                &[
-                    "kind",
-                    "units",
-                    "label",
-                    "from",
-                    "through",
-                    "known_at",
-                    "issuance_accounts",
-                    "distribution_accounts",
-                ],
-            )?;
-            let roles = |key| -> Result<Vec<VId>, Fail> {
-                array(&doc, key)?
-                    .iter()
-                    .map(|item| match item {
-                        Json::Str(text) => account(text, book),
-                        _ => Err(invalid(
-                            "expected equity roles must contain account codes or ids",
-                        )),
-                    })
-                    .collect()
-            };
-            Ok(Expected::Equity(fa::EquityRollForwardRequest {
-                units: units(&doc, book)?,
-                label: string(&doc, "label")?.to_string(),
-                effective_from: day(&doc, "from")?,
-                effective_through: day(&doc, "through")?,
-                known_at: Some(fixed_prefix(&doc)?),
-                issuance_accounts: roles("issuance_accounts")?,
-                distribution_accounts: roles("distribution_accounts")?,
-            }))
+        kind @ ("equity-roll-forward" | "equity-roll-forward-diff") => {
+            let mut allowed = vec![
+                "kind",
+                "units",
+                "label",
+                "from",
+                "through",
+                "known_at",
+                "issuance_accounts",
+                "distribution_accounts",
+            ];
+            if kind == "equity-roll-forward-diff" {
+                allowed.push("after_known_at");
+            }
+            exact_fields(&doc, &allowed)?;
+            let request = equity_request(&doc, book)?;
+            if kind == "equity-roll-forward-diff" {
+                Ok(Expected::EquityDiff(fa::EquityRollForwardDiffRequest {
+                    before: request,
+                    after: fixed_sequence(&doc, "after_known_at")?,
+                }))
+            } else {
+                Ok(Expected::Equity(request))
+            }
         }
         "policy-cash-flow" => {
             exact_fields(
@@ -711,6 +748,19 @@ pub(crate) fn external_feed_expectation_json(request: &fa::ExternalFeedRequest) 
 }
 
 pub(crate) fn equity_expectation_json(request: &fa::EquityRollForwardRequest) -> Json {
+    obj(equity_expectation_fields(request, "equity-roll-forward"))
+}
+
+pub(crate) fn equity_diff_expectation_json(request: &fa::EquityRollForwardDiffRequest) -> Json {
+    let mut fields = equity_expectation_fields(&request.before, "equity-roll-forward-diff");
+    fields.push(("after_known_at", Json::Int(i128::from(request.after.0))));
+    obj(fields)
+}
+
+fn equity_expectation_fields(
+    request: &fa::EquityRollForwardRequest,
+    kind: &'static str,
+) -> Vec<(&'static str, Json)> {
     let roles = |accounts: &[VId]| {
         Json::Arr(
             accounts
@@ -719,8 +769,8 @@ pub(crate) fn equity_expectation_json(request: &fa::EquityRollForwardRequest) ->
                 .collect(),
         )
     };
-    obj(vec![
-        ("kind", s("equity-roll-forward")),
+    vec![
+        ("kind", s(kind)),
         (
             "units",
             Json::Arr(
@@ -745,7 +795,7 @@ pub(crate) fn equity_expectation_json(request: &fa::EquityRollForwardRequest) ->
             "distribution_accounts",
             roles(&request.distribution_accounts),
         ),
-    ])
+    ]
 }
 
 fn policy_fields(definition: &CashFlowDefinition) -> Vec<(&'static str, Json)> {
@@ -1060,6 +1110,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
         }
         fa::ReportArtifactExpectation::EquityRollForward(request) => {
             equity_expectation_json(request)
+        }
+        fa::ReportArtifactExpectation::EquityRollForwardDiff(request) => {
+            equity_diff_expectation_json(request)
         }
         fa::ReportArtifactExpectation::IndirectCashFlow(request) => {
             let policy = match &request.cash_definition {
