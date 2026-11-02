@@ -187,7 +187,7 @@ pub fn assemble_with_registries(
 }
 
 /// Package a replayed functional trial balance, financial statement or
-/// two-source statement comparison with its
+/// statement comparison or complete publication trace with its
 /// original six-registry closure, exact historical version-2 BookSpec, and every authenticated Rate
 /// document cited at or before known-at. The facade must govern every Rate read.
 /// This profile supports sequence-selected trunk reports under SpotClose,
@@ -221,7 +221,8 @@ pub fn assemble_functional_with_registries(
         "rounding_laws",
     ];
     if !(functional::certificate(certificate, journal, known_at)
-        || functional::comparison_certificate(certificate, journal, known_at))
+        || functional::comparison_certificate(certificate, journal, known_at)
+        || functional::trace_certificate(certificate, journal, known_at))
         || registries
             .iter()
             .map(|(name, _)| name.as_str())
@@ -705,10 +706,11 @@ fn assemble_inner(
         || major == 3
             && (functional::certificate(certificate, journal, known_at)
                 || functional::comparison_certificate(certificate, journal, known_at)
+                || functional::trace_certificate(certificate, journal, known_at)
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff, v5 functional statement, v10 functional trial balance, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -1023,6 +1025,118 @@ mod format_tests {
                 CommitSeq(9)
             ));
         }
+    }
+
+    #[test]
+    fn functional_trace_routes_only_complete_bounded_consecutive_v5_sources() {
+        let journal =
+            Journal::from_records(fa_model::Id128([3; 16]), CommitSeq(300), Vec::new()).unwrap();
+        let source = |version: u8, book: [u8; 16], branch: [u8; 16], at: u64, selector: u8| {
+            let mut writer = Writer::new();
+            writer
+                .fixed(format!("fa:report-certificate:v{version}").as_bytes())
+                .str("fa-fold-over-prefix")
+                .str("embedded-owner")
+                .str("fa:functional-statement:v1")
+                .fixed(&book)
+                .fixed(&branch)
+                .u64(at)
+                .u8(selector);
+            writer.finish().unwrap()
+        };
+        let wrap = |format: &[u8], sources: &[Vec<u8>]| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(format)
+                .u128(7)
+                .fixed(&[8; 32])
+                .u32(sources.len() as u32);
+            for source in sources {
+                writer.bytes(source);
+            }
+            writer.finish().unwrap()
+        };
+        let format = b"fa:functional-statement-trace-certificate:v1";
+        let sources: Vec<_> = (8..=10)
+            .map(|at| source(5, [3; 16], [0; 16], at, 3))
+            .collect();
+        let valid = wrap(format, &sources);
+        assert!(functional::trace_certificate(
+            &valid,
+            &journal,
+            CommitSeq(10)
+        ));
+        assert!(!statement_trace_certificate(&valid));
+        assert!(!functional::comparison_certificate(
+            &valid,
+            &journal,
+            CommitSeq(10)
+        ));
+        assert!(!functional::trace_certificate(
+            &valid,
+            &journal,
+            CommitSeq(9)
+        ));
+        assert!(!functional::trace_certificate(
+            &valid,
+            &journal,
+            CommitSeq(11)
+        ));
+        assert!(!functional::trace_certificate(
+            &wrap(b"fa:statement-trace-certificate:v1", &sources),
+            &journal,
+            CommitSeq(10)
+        ));
+        for bad in [
+            source(4, [3; 16], [0; 16], 9, 3),
+            source(50, [3; 16], [0; 16], 9, 3),
+            source(10, [3; 16], [0; 16], 9, 8),
+            source(5, [4; 16], [0; 16], 9, 3),
+            source(5, [3; 16], [1; 16], 9, 3),
+            source(5, [3; 16], [0; 16], 9, 2),
+            source(5, [3; 16], [0; 16], 8, 3),
+            source(5, [3; 16], [0; 16], 10, 3),
+            valid.clone(),
+        ] {
+            let mut changed = sources.clone();
+            changed[1] = bad;
+            assert!(!functional::trace_certificate(
+                &wrap(format, &changed),
+                &journal,
+                CommitSeq(10)
+            ));
+        }
+        let omitted = vec![sources[0].clone(), sources[2].clone()];
+        assert!(!functional::trace_certificate(
+            &wrap(format, &omitted),
+            &journal,
+            CommitSeq(10)
+        ));
+        for end in 0..valid.len() {
+            assert!(!functional::trace_certificate(
+                &valid[..end],
+                &journal,
+                CommitSeq(10)
+            ));
+        }
+        for count in [0, 1, 257, 258] {
+            let bounded: Vec<_> = (0..count)
+                .map(|at| source(5, [3; 16], [0; 16], at, 3))
+                .collect();
+            assert_eq!(
+                functional::trace_certificate(
+                    &wrap(format, &bounded),
+                    &journal,
+                    CommitSeq(count.saturating_sub(1))
+                ),
+                matches!(count, 1 | 257)
+            );
+        }
+        assert!(!functional::trace_certificate(
+            &valid,
+            &journal,
+            CommitSeq(1)
+        ));
     }
 
     #[test]

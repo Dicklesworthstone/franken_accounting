@@ -352,6 +352,129 @@ fn functional_statement_diff_does_not_borrow_the_native_portable_profile() {
 }
 
 #[test]
+fn cold_head_functional_producers_hydrate_before_resolving_checkpoint_availability() {
+    let seed = 0xa7;
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "fa-functional-head-bundle-{}-{suffix}",
+        std::process::id(),
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let mut fixture = Fixture::at(seed, Some(&directory));
+    fixture.transfer(
+        day(2026, 1, 15),
+        b"cold-functional-source",
+        fixture.usd,
+        ("1000", "4000"),
+        1_100,
+    );
+    let at = fixture.book.head().unwrap();
+    let trace = fixture
+        .book
+        .certify_functional_statement_trace(
+            PRINCIPAL,
+            &capability(),
+            &fa::StatementTraceRequest {
+                comparison: StatementDiffRequest {
+                    selection: selection("income-statement", JANUARY, DECEMBER),
+                    before: at,
+                    after: Some(at),
+                },
+                max_publications: 1,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert!(trace.report.publications().is_empty());
+    assert_eq!(trace.certificate.sources().len(), 1);
+    let source = trace.certificate.sources()[0].clone();
+    assert_eq!(source.known_at, at);
+    fixture.book.compact_storage().unwrap();
+    drop(fixture);
+
+    let mut hydrated = None;
+    for trace_family in [true, false] {
+        let mut book = Book::open_dir(
+            &directory,
+            BookKeys::for_development(seed),
+            Entropy::deterministic(u64::from(seed)),
+        )
+        .unwrap();
+        assert_eq!(book.head().unwrap(), at);
+        assert!(
+            !book.has_delta_since(CommitSeq(0)).unwrap(),
+            "each producer must start from the actual cold storage checkpoint"
+        );
+        // A signed checkpoint is published after the prefix it covers, so a
+        // source exactly at HEAD cannot yet have a covering checkpoint. The
+        // producer must first validate its functional source with complete
+        // birth history, then honestly report the absent requested state.
+        // It must not fail because HEAD history hydration was skipped.
+        let result = if trace_family {
+            book.produce_statement_trace_bundle(
+                PRINCIPAL,
+                &capability(),
+                Some(Oid([0xfe; 32])),
+                &trace.certificate,
+            )
+        } else {
+            book.produce_report_bundle(PRINCIPAL, &capability(), Some(Oid([0xfe; 32])), &source)
+        }
+        .unwrap()
+        .unwrap();
+        assert!(result.is_none(), "the selected checkpoint does not exist");
+        assert!(book.has_delta_since(CommitSeq(0)).unwrap());
+        assert_eq!(book.head().unwrap(), at, "hydration never publishes");
+        if !trace_family {
+            hydrated = Some(book);
+        }
+    }
+
+    let mut book = hydrated.unwrap();
+    let state = checkpoint(&mut book);
+    let head = book.head().unwrap();
+    assert!(
+        head > at,
+        "the covering checkpoint is published after its prefix"
+    );
+    let key = book.checkpoint_public_key();
+    let produced = book
+        .produce_statement_trace_bundle(PRINCIPAL, &capability(), Some(state), &trace.certificate)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        None,
+        Some(&produced.receipt),
+        Some(trace.certificate.digest()),
+    )
+    .unwrap();
+    assert_eq!(verified.output, trace.certificate.output());
+    assert!(verified.statement_trace.unwrap().publications.is_empty());
+    let produced = book
+        .produce_report_bundle(PRINCIPAL, &capability(), Some(state), &source)
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        None,
+        Some(&produced.receipt),
+        Some(&source.digest),
+    )
+    .unwrap();
+    assert_eq!(verified.output, source.output);
+    assert!(verified.functional_statement.is_some());
+    assert_eq!(book.head().unwrap(), head, "both exports are read-only");
+}
+
+#[test]
 fn statement_diff_bundle_counts_migration_only_after_finalize_at_each_source_frontier() {
     use fa_journal::{RunBody, RunControlRequest, RunMode, TrialBalanceLine};
     use fa_model::{ApprovalRef, PeriodRef};

@@ -4701,8 +4701,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
-    /// Export every adjacent native statement publication, including zero
-    /// effects, over one complete signed prefix and one registry epoch.
+    /// Export every adjacent native or functional statement publication,
+    /// including zero effects, over one complete signed prefix and one registry
+    /// epoch. Functional traces retain the original Book parameters, six
+    /// registries and exact Rate closure through the final source; each earlier
+    /// source is replayed against its own historical subset.
     pub async fn produce_statement_trace_bundle(
         &mut self,
         cx: &PurposeContexts,
@@ -5061,10 +5064,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         } else {
             certificate.known_at
         };
-        if let Err(refusal) = self
-            .prepare_report_history(cx, principal, capability, Some(history_start))
+        // Functional replay verifies immutable Entry births and original
+        // carrying/Rate evidence even when a source selects HEAD. A cold
+        // checkpoint can answer today's rows without having that history
+        // loaded; the ordinary report preparation intentionally skips it.
+        let prepared = if certificate.selection.uses_functional_valuations() {
+            self.prepare_functional_report(
+                cx,
+                principal,
+                capability,
+                Some(certificate.known_at),
+                true,
+            )
             .await?
-        {
+            .map(|_| ())
+        } else {
+            self.prepare_report_history(cx, principal, capability, Some(history_start))
+                .await?
+        };
+        if let Err(refusal) = prepared {
             return Ok(Err(refusal));
         }
         let replayed = match report {
@@ -5379,7 +5397,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 fa_journal::exit::REFUSAL,
                 "portable trace attribution does not yet support migration publications or ambiguous legacy replacement identities",
                 "plan §8.3 / §13.3 (authenticate every publication and exact entry identity)",
-                "replay this trace in its original book, or export a supported native interval; no partial trace is produced",
+                "replay this trace in its original book, or export a supported native or functional interval; no partial trace is produced",
             )));
         }
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection

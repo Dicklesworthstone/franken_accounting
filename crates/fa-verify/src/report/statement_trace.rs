@@ -1,4 +1,4 @@
-//! Independent attribution of every publication in a native statement interval.
+//! Independent attribution of every publication in a statement interval.
 //! The complete authenticated checkpoint prefix supplies all historical inputs;
 //! no intermediate statement or entry link is accepted from the claimed output.
 
@@ -7,16 +7,20 @@ use std::collections::BTreeMap;
 use super::{
     Certificate as NativeCertificate, MAX_REPORT_BUNDLE_BYTES, ReportError, Selection,
     StatementLineChange, StatementMappingChange, VerifiedStatement, VerifiedStatementDiff, failed,
-    metadata, statement_diff,
+    functional, metadata, registry, statement_diff,
 };
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 use crate::envelope::{KIND_ENTRY, LeafEnvelope, Leg, proposal_leg_details};
 
 const FORMAT: &[u8] = b"fa:statement-trace-certificate:v1";
+const FUNCTIONAL_FORMAT: &[u8] = b"fa:functional-statement-trace-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-trace-certificate-digest:v1";
+const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-trace-certificate-digest:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-trace-source:v1";
+const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-trace-source:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:statement-trace:v1";
+const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-trace:v1";
 const MAX_SOURCES: usize = 257;
 const MAX_LINKS: usize = 65_536;
 const MAX_REFERENCES: usize = 4096;
@@ -53,6 +57,7 @@ pub struct VerifiedStatementTrace {
 }
 
 pub(super) struct Certificate<'a> {
+    pub functional: bool,
     pub sources: Vec<&'a [u8]>,
     pub output: &'a [u8],
     pub digest: [u8; 32],
@@ -61,7 +66,7 @@ pub(super) struct Certificate<'a> {
 pub(super) fn recognizes(bytes: &[u8]) -> bool {
     Reader::new(bytes)
         .bytes(64, "statement_trace.format")
-        .is_ok_and(|format| format == FORMAT)
+        .is_ok_and(|format| format == FORMAT || format == FUNCTIONAL_FORMAT)
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
@@ -69,12 +74,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         return Err(failed("bounded_input", "statement trace exceeds 64 MiB"));
     }
     let mut r = Reader::new(bytes);
-    if r.bytes(64, "statement_trace.format")? != FORMAT {
-        return Err(failed(
-            "supported_report",
-            "unsupported statement trace format",
-        ));
-    }
+    let functional = match r.bytes(64, "statement_trace.format")? {
+        FORMAT => false,
+        FUNCTIONAL_FORMAT => true,
+        _ => {
+            return Err(failed(
+                "supported_report",
+                "unsupported statement trace format",
+            ));
+        }
+    };
     // Historical producer provenance is never a current authority grant.
     r.u128("statement_trace.producer")?;
     r.fixed::<32>("statement_trace.capability")?;
@@ -88,16 +97,26 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut sources = Vec::with_capacity(n);
     for _ in 0..n {
         let source = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_trace.source")?;
-        if !source.starts_with(super::STATEMENT_CERTIFICATE_FORMAT) {
+        let source_format = if functional {
+            super::FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
+        } else {
+            super::STATEMENT_CERTIFICATE_FORMAT
+        };
+        if !source.starts_with(source_format) {
             return Err(failed(
                 "supported_report",
-                "trace sources require native v4 financial statements",
+                "trace sources must preserve the outer family's native v4 or functional v5 statement measure",
             ));
         }
         sources.push(source);
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_trace.output")?;
-    if Reader::new(output).bytes(64, "statement_trace.output_format")? != OUTPUT_FORMAT {
+    let output_format = if functional {
+        FUNCTIONAL_OUTPUT_FORMAT
+    } else {
+        OUTPUT_FORMAT
+    };
+    if Reader::new(output).bytes(64, "statement_trace.output_format")? != output_format {
         return Err(failed(
             "supported_report",
             "unrelated statement trace output",
@@ -107,7 +126,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let digest = r.fixed::<32>("statement_trace.digest")?;
     r.finish("statement trace certificate")?;
     if hash_parts(
-        DIGEST_DOMAIN,
+        if functional {
+            FUNCTIONAL_DIGEST_DOMAIN
+        } else {
+            DIGEST_DOMAIN
+        },
         &[&(body_len as u32).to_le_bytes(), &bytes[..body_len]],
     ) != digest
     {
@@ -120,18 +143,30 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     for (offset, source) in sources.iter().enumerate() {
         let next = super::certificate(source)?;
         statement_diff::bind(&first, &next)?;
-        if first.known_at.checked_add(offset as u64) != Some(next.known_at) || next.functional {
+        if first.known_at.checked_add(offset as u64) != Some(next.known_at)
+            || next.functional != functional
+        {
             return Err(failed(
                 "statement_trace_sources",
-                "trace must retain every consecutive native statement at the same selection and registry epoch",
+                "trace must retain every consecutive statement at the same selection, valuation measure and registry epoch",
             ));
         }
     }
     Ok(Certificate {
+        functional,
         sources,
         output,
         digest,
     })
+}
+
+/// The final statement has already independently checked this exact complete
+/// Rate closure. Each earlier source derives its required subset from its own
+/// authenticated prefix and checks original custody and first-use visibility.
+pub(super) struct FunctionalInputs<'a> {
+    pub registry: &'a registry::FunctionalRegistry,
+    pub book: &'a [u8],
+    pub rates: &'a [([u8; 32], &'a [u8])],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -142,6 +177,7 @@ fn source(
     bodies: &[(u64, &[u8])],
     legs: &[Vec<Leg>],
     units: &[u32],
+    functional_inputs: Option<&FunctionalInputs<'_>>,
 ) -> Result<(VerifiedStatement, Vec<u8>), ReportError> {
     let Selection::Statement(selection) = &certificate.selection else {
         return Err(failed(
@@ -157,19 +193,39 @@ fn source(
     )
     .map_err(|error| failed("migration_visibility", error.to_string()))?;
     let inputs = super::historical_inputs(certificate, envelopes, records, &source_bodies)?;
-    let (statement, output) = super::statement::replay(
-        selection,
-        &certificate.book,
-        &certificate.branch,
-        certificate.known_at,
-        units,
-        &inputs.schema,
-        envelopes,
-        &inputs.infos,
-        legs,
-        &inputs.visible_migrations,
-        &inputs.resolved,
-    )?;
+    let (statement, output) = if let Some(valuation) = functional_inputs {
+        let rates = functional::historical_rates(valuation.rates, records, &inputs.infos)?;
+        let (report, output) = functional::replay_statement(
+            certificate,
+            selection,
+            valuation.registry,
+            valuation.book,
+            &rates,
+            &inputs.schema,
+            envelopes,
+            records,
+            legs,
+            &inputs.infos,
+            &inputs.resolved,
+            &inputs.visible_migrations,
+            &inputs.migration_activations,
+        )?;
+        (report.statement, output)
+    } else {
+        super::statement::replay(
+            selection,
+            &certificate.book,
+            &certificate.branch,
+            certificate.known_at,
+            units,
+            &inputs.schema,
+            envelopes,
+            &inputs.infos,
+            legs,
+            &inputs.visible_migrations,
+            &inputs.resolved,
+        )?
+    };
     if output != certificate.output {
         return Err(failed(
             "report_recomputation",
@@ -177,6 +233,21 @@ fn source(
         ));
     }
     Ok((statement, output))
+}
+
+fn source_digest(functional: bool, output: &[u8]) -> Result<[u8; 32], ReportError> {
+    let (domain, bytes) = if functional {
+        (
+            FUNCTIONAL_SOURCE_DOMAIN,
+            functional::statement_bytes(output)?,
+        )
+    } else {
+        (SOURCE_DOMAIN, output)
+    };
+    Ok(hash_parts(
+        domain,
+        &[&(bytes.len() as u32).to_le_bytes(), bytes],
+    ))
 }
 
 fn links(
@@ -328,7 +399,7 @@ fn encode_publication(
         for (id, digest) in &entry.references {
             w.u128(*id).fixed(digest);
         }
-        w.u8(0); // No migration run in this admitted native attribution profile.
+        w.u8(0); // No migration run in this admitted attribution profile.
     }
     w.count(step.changes.len());
     for line in &step.changes {
@@ -368,9 +439,25 @@ pub(super) fn replay(
     bodies: &[(u64, &[u8])],
     legs: &[Vec<Leg>],
     units: &[u32],
+    functional_inputs: Option<FunctionalInputs<'_>>,
 ) -> Result<(VerifiedStatementTrace, Vec<u8>), ReportError> {
+    if request.functional != functional_inputs.is_some() {
+        return Err(failed(
+            "supported_report",
+            "trace valuation profile requires matching independently checked source inputs",
+        ));
+    }
+    let functional_inputs = functional_inputs.as_ref();
     let first_certificate = super::certificate(request.sources[0])?;
-    let (first, first_bytes) = source(&first_certificate, envelopes, records, bodies, legs, units)?;
+    let (first, first_bytes) = source(
+        &first_certificate,
+        envelopes,
+        records,
+        bodies,
+        legs,
+        units,
+        functional_inputs,
+    )?;
     let mut previous_certificate = super::certificate(request.sources[0])?;
     let mut previous = first.clone();
     let mut previous_bytes = first_bytes.clone();
@@ -379,10 +466,17 @@ pub(super) fn replay(
     let mut link_count = 0usize;
     for raw in request.sources.iter().skip(1) {
         let next_certificate = super::certificate(raw)?;
-        let (next, next_bytes) =
-            source(&next_certificate, envelopes, records, bodies, legs, units)?;
+        let (next, next_bytes) = source(
+            &next_certificate,
+            envelopes,
+            records,
+            bodies,
+            legs,
+            units,
+            functional_inputs,
+        )?;
         let (diff, _) = statement_diff::derive(
-            false,
+            request.functional,
             &previous_certificate,
             &next_certificate,
             previous,
@@ -397,17 +491,8 @@ pub(super) fn replay(
             .ok_or_else(|| failed("bounded_input", "trace exceeds 65536 total entry links"))?;
         let publication = VerifiedStatementPublication {
             recorded_at: next_certificate.known_at,
-            before_source_digest: hash_parts(
-                SOURCE_DOMAIN,
-                &[
-                    &(previous_bytes.len() as u32).to_le_bytes(),
-                    &previous_bytes,
-                ],
-            ),
-            after_source_digest: hash_parts(
-                SOURCE_DOMAIN,
-                &[&(next_bytes.len() as u32).to_le_bytes(), &next_bytes],
-            ),
+            before_source_digest: source_digest(request.functional, &previous_bytes)?,
+            after_source_digest: source_digest(request.functional, &next_bytes)?,
             entries,
             changes: diff
                 .lines
@@ -428,7 +513,7 @@ pub(super) fn replay(
         previous_bytes = next_bytes;
     }
     let (summary, summary_bytes) = statement_diff::derive(
-        false,
+        request.functional,
         &first_certificate,
         &previous_certificate,
         first,
@@ -436,8 +521,13 @@ pub(super) fn replay(
         previous,
         &previous_bytes,
     )?;
+    let output_format = if request.functional {
+        FUNCTIONAL_OUTPUT_FORMAT
+    } else {
+        OUTPUT_FORMAT
+    };
     let length = 12usize
-        .checked_add(OUTPUT_FORMAT.len())
+        .checked_add(output_format.len())
         .and_then(|n| n.checked_add(summary_bytes.len()))
         .and_then(|n| n.checked_add(encoded_steps.len()))
         .filter(|n| *n == request.output.len())
@@ -448,7 +538,7 @@ pub(super) fn replay(
             )
         })?;
     let mut w = Writer::default();
-    w.bytes(OUTPUT_FORMAT)
+    w.bytes(output_format)
         .bytes(&summary_bytes)
         .count(publications.len())
         .fixed(&encoded_steps);

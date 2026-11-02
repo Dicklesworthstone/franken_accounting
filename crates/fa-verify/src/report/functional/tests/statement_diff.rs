@@ -6,6 +6,9 @@
 use super::*;
 use crate::report::MAX_REPORT_BUNDLE_BYTES;
 
+#[path = "statement_trace.rs"]
+mod trace;
+
 struct Fixture {
     records: Vec<Record>,
     rates: Vec<RateFixture>,

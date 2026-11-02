@@ -1560,8 +1560,15 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     }
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
-                                } else if report.statement_trace.is_some() {
-                                    "statement_trace"
+                                } else if let Some(trace) = &report.statement_trace {
+                                    match trace.summary.valuation {
+                                        crate::report::StatementDiffValuation::Native => {
+                                            "statement_trace"
+                                        }
+                                        crate::report::StatementDiffValuation::Functional {
+                                            ..
+                                        } => "functional_statement_trace",
+                                    }
                                 } else if let Some(comparison) = &report.statement_diff {
                                     match comparison.valuation {
                                         crate::report::StatementDiffValuation::Native => {
@@ -3997,6 +4004,33 @@ fn statement_trace_checks(
         ],
     )];
     checks.extend(statement_diff_checks(&trace.summary, unit_universe_source));
+    if let crate::report::StatementDiffValuation::Functional {
+        base_unit,
+        book_parameters_source,
+    } = trace.summary.valuation
+    {
+        checks.push(Check::pass(
+            "functional_statement_trace_basis",
+            "recomputation",
+            vec![
+                ("base_unit", n(u64::from(base_unit))),
+                ("valuation_basis", s("retained-base-amounts")),
+                (
+                    "historical_rate_closure",
+                    s("exact Rate subset at every consecutive source frontier"),
+                ),
+                (
+                    "rate_visibility",
+                    s("authenticated import history at or before first use"),
+                ),
+                ("book_parameters_source", s(book_parameters_source)),
+                ("genesis_registration", s("not_judged")),
+                ("registry_activation", s("not_judged")),
+                ("external_rate_truth", s("not_judged")),
+                ("case_admission", s("not_judged")),
+            ],
+        ));
+    }
     for publication in &trace.publications {
         checks.push(Check::pass(
             "statement_trace_publication",
@@ -4472,6 +4506,81 @@ pub fn run(args: &[String], read: Read<'_>) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn functional_statement_trace_discloses_every_frontier_and_retained_rate_premises() {
+        use crate::report::{
+            StatementDiffValuation, VerifiedStatement, VerifiedStatementDiff,
+            VerifiedStatementPublication, VerifiedStatementTrace,
+        };
+        let statement = VerifiedStatement {
+            definition_name: "income-statement".into(),
+            definition_version: 1,
+            definition_digest: [4; 32],
+            kind: "IncomeStatement",
+            units: vec![7],
+            columns: vec![],
+            lines: vec![],
+            mappings: vec![],
+        };
+        let mut trace = VerifiedStatementTrace {
+            summary: VerifiedStatementDiff {
+                valuation: StatementDiffValuation::Functional {
+                    base_unit: 7,
+                    book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
+                },
+                before_known_at: 11,
+                after_known_at: 12,
+                before_digest: [5; 32],
+                after_digest: [6; 32],
+                before: statement.clone(),
+                after: statement,
+                lines: vec![],
+                mapping_changes: vec![],
+            },
+            publications: vec![VerifiedStatementPublication {
+                recorded_at: 12,
+                before_source_digest: [7; 32],
+                after_source_digest: [8; 32],
+                entries: vec![],
+                changes: vec![],
+                mapping_changes: vec![],
+            }],
+        };
+        let checks = statement_trace_checks(&trace, "authenticated-registry");
+        let basis = checks
+            .iter()
+            .find(|check| check.name == "functional_statement_trace_basis")
+            .expect("a functional trace must disclose its historical valuation basis");
+        let mut json = String::new();
+        basis.json().write(&mut json);
+        for expected in [
+            "\"base_unit\":7",
+            "\"valuation_basis\":\"retained-base-amounts\"",
+            "exact Rate subset at every consecutive source frontier",
+            "authenticated import history at or before first use",
+            "\"genesis_registration\":\"not_judged\"",
+            "\"registry_activation\":\"not_judged\"",
+            "\"external_rate_truth\":\"not_judged\"",
+            "\"case_admission\":\"not_judged\"",
+        ] {
+            assert!(json.contains(expected), "{expected}: {json}");
+        }
+        let publication = checks
+            .iter()
+            .find(|check| check.name == "statement_trace_publication")
+            .expect("a zero-effect publication must still be displayed");
+        let mut json = String::new();
+        publication.json().write(&mut json);
+        assert!(json.contains("\"recorded_at\":12"), "{json}");
+        assert!(json.contains("\"unchanged\":true"), "{json}");
+        trace.summary.valuation = StatementDiffValuation::Native;
+        assert!(
+            statement_trace_checks(&trace, "authenticated-registry")
+                .iter()
+                .all(|check| check.name != "functional_statement_trace_basis")
+        );
+    }
 
     #[test]
     fn functional_statement_diff_renders_arithmetic_scope_without_case_or_rate_truth_claims() {

@@ -2154,6 +2154,153 @@ fn functional_statement_trace_preserves_cancelled_activity_and_saved_basis_after
     );
     assert_eq!(status, 7, "{}", denied.render());
     assert!(text(data(&denied), "message").contains("produce"));
+    assert_functional_trace_offline(&f, &certificate, &reference, &file);
+}
+
+/// Cross the actual producer/recipient boundary with only the exported bytes,
+/// an independently selected book key and the original outer certificate pin.
+fn assert_functional_trace_offline(
+    f: &Fixture,
+    certificate: &fa::StatementTraceCertificate,
+    reference: &str,
+    certificate_file: &Path,
+) {
+    let key = {
+        let keys = BookKeys::load(&f.book.join("book.keys")).unwrap();
+        let book = Book::open_dir(&f.book, keys, Entropy::production()).unwrap();
+        book.checkpoint_public_key()
+    };
+    let checkpoint = ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let state = text(data(&checkpoint), "oid");
+    let expected = fa_verify::blake3::hex(certificate.digest());
+    let key_hex = fa_verify::blake3::hex(&key);
+    let original_head = head(&f.book);
+    let mut original = None;
+    for (index, source) in [reference, certificate_file.to_str().unwrap()]
+        .into_iter()
+        .enumerate()
+    {
+        let bundle_file = f.dir.join(format!("functional-trace-{index}.fab"));
+        let receipt_file = f.dir.join(format!("functional-trace-{index}.receipt"));
+        let produced = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                source,
+                "--state",
+                state,
+                "--out",
+                bundle_file.to_str().unwrap(),
+                "--receipt-out",
+                receipt_file.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(text(data(&produced), "scope"), "report");
+        let bytes = std::fs::read(&bundle_file).unwrap();
+        let receipt = std::fs::read(&receipt_file).unwrap();
+        let verified = fa_verify::report::verify_report_expected(
+            &bytes,
+            &[key],
+            None,
+            Some(&receipt),
+            Some(certificate.digest()),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output());
+        assert_eq!(verified.certificate_digest, *certificate.digest());
+        assert_eq!(
+            verified.known_at,
+            certificate.sources().last().unwrap().known_at.0
+        );
+        assert!(verified.functional_statement.is_none());
+        assert!(verified.statement_diff.is_none());
+        let trace = verified.statement_trace.unwrap();
+        assert!(matches!(
+            trace.summary.valuation,
+            fa_verify::report::StatementDiffValuation::Functional { .. }
+        ));
+        assert_eq!(trace.publications.len() + 1, certificate.sources().len());
+        assert!(trace.summary.lines.iter().all(|line| line.delta == [0]));
+        for expected_delta in [12000, -12000] {
+            assert!(
+                trace.publications.iter().any(|publication| publication
+                    .changes
+                    .iter()
+                    .any(|line| { line.code == "revenue" && line.delta == [expected_delta] })),
+                "an offsetting original valuation must remain in the portable trace"
+            );
+        }
+        assert!(
+            trace
+                .publications
+                .iter()
+                .any(|publication| publication.entries.is_empty())
+        );
+        let args = [
+            "report",
+            bundle_file.to_str().unwrap(),
+            "--key",
+            &key_hex,
+            "--receipt",
+            receipt_file.to_str().unwrap(),
+            "--expect",
+            &expected,
+            "--json",
+        ]
+        .map(str::to_string);
+        let result = fa_verify::cli::run(&args, &|path| std::fs::read(path));
+        assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
+        for expected in [
+            "\"report_mode\":\"functional_statement_trace\"",
+            "functional_statement_trace_basis",
+            "statement_trace_publication",
+            "exact Rate subset at every consecutive source frontier",
+        ] {
+            assert!(
+                result.stdout.contains(expected),
+                "{expected}: {}",
+                result.stdout
+            );
+        }
+        let mut wrong_pin = args;
+        wrong_pin[7] = fa_verify::blake3::hex(&certificate.sources().last().unwrap().digest);
+        let refused = fa_verify::cli::run(&wrong_pin, &|path| std::fs::read(path));
+        assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
+        assert!(!refused.stdout.contains("functional_statement_trace_basis"));
+        if let Some(original) = &original {
+            assert_eq!(&bytes, original);
+        } else {
+            original = Some(bytes);
+        }
+    }
+    assert_eq!(
+        head(&f.book),
+        original_head,
+        "owner proof export does not modify journal history"
+    );
+    // The daemon/MCP route forwards canonical input through the shared handler.
+    let authority = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "functional-trace-exporter",
+        LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let input = fa_verify::blake3::hex(&certificate.canonical_bytes().unwrap());
+    let (status, produced) = bound(
+        &authority,
+        &["bundle", "produce", "--certificate", "-", "--state", state],
+        Some(&input),
+    );
+    assert_eq!(status, 0, "{}", produced.render());
+    assert_eq!(
+        text(data(&produced), "bytes"),
+        fa_verify::blake3::hex(&original.unwrap())
+    );
+    assert_eq!(access_events_since(&f.book, original_head), 1);
 }
 
 #[test]

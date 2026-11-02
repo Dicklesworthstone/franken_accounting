@@ -1008,7 +1008,7 @@ fn verify_report_with_lots_input(
         || is_explanation
         || roll_forward.is_some()
         || statement_diff.is_some() && !cert.functional
-        || statement_trace.is_some()
+        || statement_trace.is_some() && !cert.functional
         || summary.is_some())
         && major != 2
     {
@@ -1355,70 +1355,89 @@ fn verify_report_with_lots_input(
                 report.columns[0].periods.clone(),
             )
         };
-        let (functional_statement, statement_diff, output, output_digest) = if let (
-            Some(request),
-            Some(before_certificate),
-        ) =
-            (&statement_diff, &before_statement)
-        {
-            let Selection::Statement(before_selection) = &before_certificate.selection else {
-                return Err(failed(
-                    "supported_report",
-                    "functional comparison source is not a statement",
-                ));
-            };
-            let before_bodies = crate::migration_balance::report_bodies_at(
-                envelopes,
-                &records,
-                &bodies,
-                before_certificate.known_at,
-            )
-            .map_err(|e| failed("migration_visibility", e.to_string()))?;
-            let before_inputs =
-                historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
-            let before_rates =
-                functional::historical_rates(&functional_rates, &records, &before_inputs.infos)?;
-            let (before, before_output) = functional::replay_statement(
-                before_certificate,
-                before_selection,
-                definitions,
-                book,
-                &before_rates,
-                &before_inputs.schema,
-                envelopes,
-                &records,
-                &legs,
-                &before_inputs.infos,
-                &before_inputs.resolved,
-                &before_inputs.visible_migrations,
-                &before_inputs.migration_activations,
-            )?;
-            if before_output != before_certificate.output {
-                return Err(failed(
-                    "report_recomputation",
-                    "the comparison's earlier functional statement differs from its independently replayed historical source",
-                ));
-            }
-            let after = functional_statement.ok_or_else(|| {
-                failed(
-                    "supported_report",
-                    "functional comparison has no later statement",
+        let (functional_statement, statement_diff, statement_trace, output, output_digest) =
+            if let Some(request) = &statement_trace {
+                // The final source above authenticates the complete Rate closure
+                // before any historical projection is allowed to select from it.
+                let (trace, output) = statement_trace::replay(
+                    request,
+                    envelopes,
+                    &records,
+                    &bodies,
+                    &legs,
+                    &units,
+                    Some(statement_trace::FunctionalInputs {
+                        registry: definitions,
+                        book,
+                        rates: &functional_rates,
+                    }),
+                )?;
+                let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+                (None, None, Some(trace), output, output_digest)
+            } else if let (Some(request), Some(before_certificate)) =
+                (&statement_diff, &before_statement)
+            {
+                let Selection::Statement(before_selection) = &before_certificate.selection else {
+                    return Err(failed(
+                        "supported_report",
+                        "functional comparison source is not a statement",
+                    ));
+                };
+                let before_bodies = crate::migration_balance::report_bodies_at(
+                    envelopes,
+                    &records,
+                    &bodies,
+                    before_certificate.known_at,
                 )
-            })?;
-            let (comparison, output) = statement_diff::replay(
-                request,
-                before_certificate,
-                &cert,
-                before.statement,
-                &before_output,
-                after.statement,
-                &output,
-            )?;
-            let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
-            (None, Some(comparison), output, output_digest)
-        } else {
-            (functional_statement, None, output, cert.output_digest)
-        };
+                .map_err(|e| failed("migration_visibility", e.to_string()))?;
+                let before_inputs =
+                    historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
+                let before_rates = functional::historical_rates(
+                    &functional_rates,
+                    &records,
+                    &before_inputs.infos,
+                )?;
+                let (before, before_output) = functional::replay_statement(
+                    before_certificate,
+                    before_selection,
+                    definitions,
+                    book,
+                    &before_rates,
+                    &before_inputs.schema,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &before_inputs.infos,
+                    &before_inputs.resolved,
+                    &before_inputs.visible_migrations,
+                    &before_inputs.migration_activations,
+                )?;
+                if before_output != before_certificate.output {
+                    return Err(failed(
+                        "report_recomputation",
+                        "the comparison's earlier functional statement differs from its independently replayed historical source",
+                    ));
+                }
+                let after = functional_statement.ok_or_else(|| {
+                    failed(
+                        "supported_report",
+                        "functional comparison has no later statement",
+                    )
+                })?;
+                let (comparison, output) = statement_diff::replay(
+                    request,
+                    before_certificate,
+                    &cert,
+                    before.statement,
+                    &before_output,
+                    after.statement,
+                    &output,
+                )?;
+                let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+                (None, Some(comparison), None, output, output_digest)
+            } else {
+                (functional_statement, None, None, output, cert.output_digest)
+            };
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
@@ -1435,7 +1454,7 @@ fn verify_report_with_lots_input(
             statement: None,
             statement_diff,
             dimension: None,
-            statement_trace: None,
+            statement_trace,
             open_items: None,
             lots: None,
             explanation: None,
@@ -2018,8 +2037,9 @@ fn verify_report_with_lots_input(
         ) =
             &statement_trace
         {
-            let (trace, output) =
-                statement_trace::replay(request, envelopes, &records, &bodies, &legs, &units)?;
+            let (trace, output) = statement_trace::replay(
+                request, envelopes, &records, &bodies, &legs, &units, None,
+            )?;
             let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
             (None, None, Some(trace), output, output_digest)
         } else if let (Some(request), Some(before_certificate)) =
