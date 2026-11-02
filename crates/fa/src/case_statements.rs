@@ -106,7 +106,7 @@ fn period_cutoff<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Outcome<fa_time::DateDay> {
     let Some(row) = db
-        .vertex_at(fa_journal::rows::period_vid(&book.calendar.id, period), at)
+        .vertex_at(fa_model::period_vid(&book.calendar.id, period), at)
         .map_err(KernelError::from)?
         .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))
     else {
