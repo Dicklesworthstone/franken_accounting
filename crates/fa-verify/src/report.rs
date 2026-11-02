@@ -75,6 +75,7 @@ mod due_date_reconciliation;
 mod equity;
 mod explain;
 mod functional;
+mod general_ledger;
 mod indirect_cash_flow;
 mod lots;
 mod metadata;
@@ -120,6 +121,7 @@ pub use explain::{
 pub use functional::{
     VerifiedFunctionalCell, VerifiedFunctionalStatement, VerifiedFunctionalTrialBalance,
 };
+pub use general_ledger::VerifiedGeneralLedgerDetail;
 pub use indirect_cash_flow::{
     AdjustmentCategory, AdjustmentSign, IndirectCashFlowAdjustment, IndirectCashFlowContribution,
     IndirectCashFlowDefinition, IndirectCashFlowUnit, VerifiedCashFlowBasis,

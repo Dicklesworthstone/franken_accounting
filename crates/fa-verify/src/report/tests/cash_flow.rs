@@ -326,7 +326,7 @@ fn fixture(known_at: u64, from: i32, through: i32, cancelling_counterparts: bool
     }
 }
 
-fn ledger_bytes(roll: &VerifiedRollForward) -> Vec<u8> {
+pub(super) fn ledger_bytes(roll: &VerifiedRollForward) -> Vec<u8> {
     let mut w = Writer::default();
     w.bytes(b"fa:general-ledger:v1")
         .fixed(&BOOK)

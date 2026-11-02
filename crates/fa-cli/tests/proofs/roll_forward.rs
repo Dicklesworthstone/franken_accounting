@@ -83,6 +83,7 @@ fn retained_lead_schedule_and_detail_source_export_by_oid_file_and_bound_stdin()
     let before = fixture.head();
     let locator = format!("C:{}", text(&metadata, "oid"));
     let mut original_bundle = None;
+    let mut detail_output_digest = None;
     for source in [locator.as_str(), certificate_path.to_str().unwrap()] {
         let produced = ok(
             &fixture.book,
@@ -113,6 +114,40 @@ fn retained_lead_schedule_and_detail_source_export_by_oid_file_and_bound_stdin()
         assert_eq!(verified.unit_universe_source, "authenticated-registry");
         assert!(verified.rows.is_empty());
         assert!(verified.aging.is_none());
+        let detail = verified
+            .general_ledger_detail()
+            .expect("the independently verified lead schedule yields complete ledger detail");
+        assert_eq!(detail.source_certificate_digest, *certificate.digest());
+        assert_eq!(detail.source_output_digest, verified.output_digest);
+        assert_ne!(detail.output_digest, detail.source_output_digest);
+        assert_ne!(detail.output, verified.output);
+        assert_eq!(detail.ledger.known_at, known_at);
+        assert_eq!(detail.ledger.cells.len(), 1);
+        let cell = &detail.ledger.cells[0];
+        assert_eq!(cell.opening, 1000);
+        assert_eq!(cell.debits, 2000);
+        assert_eq!(cell.credits, 1234);
+        assert_eq!(cell.net_change, 766);
+        assert_eq!(cell.closing, 1766);
+        assert_eq!((cell.line_start, cell.line_end), (0, 3));
+        assert_eq!(
+            detail
+                .ledger
+                .lines
+                .iter()
+                .map(|line| line.running_balance)
+                .collect::<Vec<_>>(),
+            [2234, 1000, 1766],
+            "effective-date detail retains the offset and reversal before the later sale"
+        );
+        let repeated = verified.general_ledger_detail().unwrap();
+        assert_eq!(repeated.output, detail.output);
+        assert_eq!(repeated.output_digest, detail.output_digest);
+        if let Some(expected) = detail_output_digest {
+            assert_eq!(detail.output_digest, expected);
+        } else {
+            detail_output_digest = Some(detail.output_digest);
+        }
         let lead = verified.roll_forward.unwrap();
         assert_eq!(lead.label, "Cash lead schedule");
         assert_eq!(lead.rows.len(), 1);
@@ -202,6 +237,36 @@ fn retained_lead_schedule_and_detail_source_export_by_oid_file_and_bound_stdin()
     assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
     assert!(result.stdout.contains("\"verdict\":\"verified\""));
     assert!(result.stdout.contains("Cash lead schedule"));
+    assert!(!result.stdout.contains("\"general_ledger_line\""));
+    let mut detail_args = args.to_vec();
+    detail_args.extend(["--view".to_string(), "detail".to_string()]);
+    let result = fa_verify::cli::run(&detail_args, &|path| std::fs::read(path));
+    assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
+    assert!(result.stdout.contains("\"general_ledger_detail\""));
+    assert_eq!(result.stdout.matches("\"general_ledger_cell\"").count(), 1);
+    assert_eq!(result.stdout.matches("\"general_ledger_line\"").count(), 3);
+    assert!(
+        result
+            .stdout
+            .contains(&format!("\"source_certificate_digest\":\"{expected}\""))
+    );
+    assert!(result.stdout.contains(&format!(
+        "\"detail_output_digest\":\"{}\"",
+        fa_verify::blake3::hex(&detail_output_digest.unwrap())
+    )));
+    for balance in [2234, 1000, 1766] {
+        assert!(
+            result
+                .stdout
+                .contains(&format!("\"running_balance\":\"{balance}\""))
+        );
+    }
+    let repeated = fa_verify::cli::run(&detail_args, &|path| std::fs::read(path));
+    assert_eq!(repeated.stdout, result.stdout);
+    detail_args[7] = fa_verify::blake3::hex(&detail_output_digest.unwrap());
+    let refused = fa_verify::cli::run(&detail_args, &|path| std::fs::read(path));
+    assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
+    assert!(!refused.stdout.contains("\"general_ledger_detail\""));
     let mut wrong_pin = args;
     wrong_pin[7] = fa_verify::blake3::hex(&certificate.source_certificate().digest);
     let result = fa_verify::cli::run(&wrong_pin, &|path| std::fs::read(path));
