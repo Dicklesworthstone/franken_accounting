@@ -47,6 +47,7 @@ fn comparison(
         .copied()
         .collect();
     VerifiedStatementDiff {
+        custom: None,
         valuation: StatementDiffValuation::Functional {
             base_unit: 0,
             book_parameters_source: BOOK_PARAMETERS_SOURCE,

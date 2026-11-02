@@ -4,6 +4,9 @@
 use super::*;
 use crate::report::{VerifiedReport, custom_statement as custom};
 
+#[path = "custom_statement/diff.rs"]
+mod diff;
+
 const KNOWN_AT: u64 = 6;
 
 fn layout(version: u32) -> Vec<u8> {

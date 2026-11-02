@@ -90,6 +90,94 @@ fn row<'a>(diff: &'a StatementDiff, code: &str, unit: u32) -> &'a StatementLineC
         .unwrap()
 }
 
+fn custom_definition() -> CustomStatementDefinition {
+    let mut definition = CustomStatementDefinition::from_builtin(
+        &StatementDefinition::embedded("balance-sheet").unwrap(),
+    );
+    definition.name = "company-balance-sheet".into();
+    definition.version = 7;
+    let fa_statements::custom::CustomLineSource::AccountSet { expr, .. } =
+        &mut definition.lines[0].source
+    else {
+        panic!("the first balance-sheet line maps assets");
+    };
+    *expr = fa_statements::custom::AccountSetExpr::AccountCodes(vec!["cash".into()]);
+    definition
+}
+
+#[test]
+fn custom_bridges_preserve_exact_rows_zero_account_changes_and_separate_basis_domains() {
+    let definition = custom_definition();
+    let old_input = input(10, 90, 30);
+    let mut new_input = input(20, 110, 35);
+    new_input.accounts.push(account(99, "zero-sales", 4));
+    let before = fa_statements::custom::evaluate_custom(&definition, &old_input).unwrap();
+    let after = fa_statements::custom::evaluate_custom(&definition, &new_input).unwrap();
+    let native = StatementDiff::between(before, after).unwrap();
+    assert!(native.is_custom());
+    assert_eq!(native.output_format(), CUSTOM_OUTPUT_FORMAT);
+    assert_eq!(row(&native, "assets", 1).delta, [15, 0]);
+    assert_eq!(row(&native, "assets", 2).delta, [0, 0]);
+    assert_eq!(native.mapping_changes().len(), 1);
+    assert_eq!(native.mapping_changes()[0].account_id, 99);
+    assert!(native.mapping_changes()[0].before.is_none());
+
+    let single_unit = |mut input: StatementInput| {
+        input.units = vec![1];
+        for column in &mut input.columns {
+            column.balances.retain(|balance| balance.unit_id == 1);
+        }
+        fa_statements::custom::evaluate_custom(&definition, &input).unwrap()
+    };
+    let before = single_unit(old_input);
+    let after = single_unit(new_input);
+    let functional = StatementDiff::between_functional(before.clone(), after.clone()).unwrap();
+    let native = StatementDiff::between(before, after).unwrap();
+    assert!(functional.is_custom());
+    assert_eq!(functional.functional_unit(), Some(UnitId(1)));
+    assert_eq!(functional.output_format(), FUNCTIONAL_CUSTOM_OUTPUT_FORMAT);
+    assert_eq!(functional.lines(), native.lines());
+    assert_ne!(functional.before_digest, native.before_digest);
+    assert_ne!(functional.after_digest, native.after_digest);
+    assert_ne!(
+        functional.canonical_bytes().unwrap(),
+        native.canonical_bytes().unwrap()
+    );
+}
+
+#[test]
+fn custom_bridges_accept_the_complete_layout_and_refuse_changed_layouts_or_mapping_forgery() {
+    use fa_statements::custom::{CustomLineDefinition, CustomLineSource, evaluate_custom};
+
+    let mut definition = custom_definition();
+    while definition.lines.len() < 128 {
+        let suffix = definition.lines.len();
+        definition.lines.push(CustomLineDefinition {
+            code: format!("asset_detail_{suffix}"),
+            label: format!("Asset detail {suffix}"),
+            source: CustomLineSource::Formula {
+                add: vec!["assets".into()],
+                subtract: Vec::new(),
+            },
+        });
+    }
+    let before = evaluate_custom(&definition, &input(10, 90, 30)).unwrap();
+    let after = evaluate_custom(&definition, &input(20, 110, 35)).unwrap();
+    let diff = StatementDiff::between(before.clone(), after.clone()).unwrap();
+    assert_eq!(diff.lines().len(), 256);
+    assert_eq!(diff.lines().last().unwrap().delta, [0, 0]);
+    let mut relabeled = definition;
+    relabeled.lines[0].label = "Different asset meaning".into();
+    let changed = evaluate_custom(&relabeled, &input(20, 110, 35)).unwrap();
+    assert!(StatementDiff::between(before.clone(), changed).is_err());
+    let mut forged = after.clone();
+    forged.mappings[0].line_code = "unclosed_revenue".into();
+    assert!(StatementDiff::between(before.clone(), forged).is_err());
+    let mut incomplete = after;
+    incomplete.lines.pop();
+    assert!(StatementDiff::between(before, incomplete).is_err());
+}
+
 #[test]
 fn exact_bridge_keeps_units_columns_and_subtotals_distinct() {
     let before = report(&input(10, 90, 30));

@@ -157,7 +157,8 @@ pub use roll_forward::{
 };
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use statement_diff::{
-    StatementDiffValuation, StatementLineChange, StatementMappingChange, VerifiedStatementDiff,
+    StatementDiffValuation, StatementLineChange, StatementMappingChange,
+    VerifiedCustomStatementComparison, VerifiedStatementDiff,
 };
 pub use statement_trace::{
     VerifiedStatementEntryLink, VerifiedStatementPublication, VerifiedStatementTrace,
@@ -1347,10 +1348,16 @@ fn verify_report_with_lots_input(
         });
     }
     if let Selection::CustomStatement(selection) = &cert.selection {
-        // This profile proves the directly selected company report. An outer
-        // composition needs its own replay and cannot inherit this result by
-        // substituting a custom statement for that composition's source.
-        if certificate_digest != cert.digest {
+        // Only the explicit custom comparison profile can compose this
+        // source. Every other outer family must retain its own replay path.
+        if let Some(comparison) = &statement_diff {
+            if !comparison.custom || before_statement.is_none() {
+                return Err(failed(
+                    "supported_report",
+                    "a custom source requires the matching complete custom comparison family",
+                ));
+            }
+        } else if certificate_digest != cert.digest {
             return Err(failed(
                 "supported_report",
                 "custom statements require their direct report certificate",
@@ -1407,12 +1414,99 @@ fn verify_report_with_lots_input(
             })?;
         let effective_through = Some(current.effective_through);
         let periods = current.periods.clone();
+        let (custom_statement, statement_diff, output, output_digest) = if let (
+            Some(request),
+            Some(before_certificate),
+        ) =
+            (&statement_diff, &before_statement)
+        {
+            let Selection::CustomStatement(before_selection) = &before_certificate.selection else {
+                return Err(failed(
+                    "statement_diff_selection",
+                    "custom comparison has a noncustom source",
+                ));
+            };
+            let before_bodies = crate::migration_balance::report_bodies_at(
+                envelopes,
+                &records,
+                &bodies,
+                before_certificate.known_at,
+            )
+            .map_err(|error| failed("migration_visibility", error.to_string()))?;
+            let before_inputs =
+                historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
+            let before_valued = if cert.functional {
+                // The later source above checked the complete Rate closure.
+                // Project from original historical proposals, then check
+                // first use, imports and every retained amount again at the
+                // earlier source's own frontier.
+                let before_rates = functional::historical_rates(
+                    &functional_rates,
+                    &records,
+                    &before_inputs.infos,
+                )?;
+                Some(functional::statement_legs(
+                    before_certificate,
+                    functional_registry.as_ref().ok_or_else(|| {
+                        failed("registry_closure", "missing functional registries")
+                    })?,
+                    functional_book
+                        .ok_or_else(|| failed("functional_book", "missing Book parameters"))?,
+                    &before_rates,
+                    &before_inputs.schema,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &before_inputs.infos,
+                    &before_inputs.migration_activations,
+                )?)
+            } else {
+                None
+            };
+            let (before_units, before_legs) = match &before_valued {
+                Some((base, values)) => (std::slice::from_ref(base), values.as_slice()),
+                None => (units.as_slice(), legs.as_slice()),
+            };
+            let (before, before_output) = custom_statement::replay(
+                before_selection,
+                &before_certificate.book,
+                &before_certificate.branch,
+                before_certificate.known_at,
+                before_units,
+                &before_inputs.schema,
+                envelopes,
+                &records,
+                &before_inputs.infos,
+                before_legs,
+                &before_inputs.visible_migrations,
+                &before_inputs.resolved,
+            )?;
+            if before_output != before_certificate.output {
+                return Err(failed(
+                    "custom_statement_recomputation",
+                    "the earlier custom statement differs from its independently reconstructed historical source",
+                ));
+            }
+            let (comparison, comparison_output) = statement_diff::replay_custom(
+                request,
+                before_certificate,
+                &cert,
+                before,
+                &before_output,
+                report,
+                &output,
+            )?;
+            let output_digest = hash_parts(b"fa:report-output:v1", &[&comparison_output]);
+            (None, Some(comparison), comparison_output, output_digest)
+        } else {
+            (Some(report), None, output, cert.output_digest)
+        };
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
             bundle_digest: digest,
-            certificate_digest: cert.digest,
-            output_digest: cert.output_digest,
+            certificate_digest,
+            output_digest,
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
@@ -1421,8 +1515,8 @@ fn verify_report_with_lots_input(
             periods,
             rows: Vec::new(),
             statement: None,
-            custom_statement: Some(report),
-            statement_diff: None,
+            custom_statement,
+            statement_diff,
             dimension: None,
             statement_trace: None,
             open_items: None,

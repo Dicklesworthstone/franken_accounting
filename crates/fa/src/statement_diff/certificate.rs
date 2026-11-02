@@ -20,8 +20,14 @@ use crate::{
 
 pub const CERTIFICATE_FORMAT: &[u8] = b"fa:statement-diff-certificate:v1";
 pub const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8] = b"fa:functional-statement-diff-certificate:v1";
+pub const CUSTOM_CERTIFICATE_FORMAT: &[u8] = b"fa:custom-statement-diff-certificate:v1";
+pub const FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT: &[u8] =
+    b"fa:functional-custom-statement-diff-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-diff-certificate-digest:v1";
 const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-diff-certificate-digest:v1";
+const CUSTOM_DIGEST_DOMAIN: &[u8] = b"fa:custom-statement-diff-certificate-digest:v1";
+const FUNCTIONAL_CUSTOM_DIGEST_DOMAIN: &[u8] =
+    b"fa:functional-custom-statement-diff-certificate-digest:v1";
 pub const MAX_STATEMENT_DIFF_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,7 +66,9 @@ fn sources(before: &ReportCertificate, after: &ReportCertificate) -> Result<(), 
         || before.selection != after.selection
         || !matches!(
             &before.selection,
-            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
+            ReportSelection::Statement(_)
+                | ReportSelection::FunctionalStatement(_)
+                | ReportSelection::CustomStatement(_)
         )
     {
         return Err(invalid(
@@ -75,6 +83,10 @@ fn statement(output: ReportOutput) -> Result<Statement, Refusal> {
         ReportOutput::Statement(statement) | ReportOutput::FunctionalStatement(statement) => {
             Ok(*statement)
         }
+        // Replay has already reproduced the activation and any presentation
+        // rounding. The comparison always uses the exact underlying amounts;
+        // the complete original presentation remains in each source certificate.
+        ReportOutput::CustomStatement(report) => Ok(report.statement),
         _ => Err(invalid(
             "comparison source replay did not produce a financial statement",
         )),
@@ -186,28 +198,43 @@ impl StatementDiffCertificate {
             || self.after.selection.uses_functional_valuations()
     }
     #[must_use]
+    pub fn is_custom(&self) -> bool {
+        matches!(&self.before.selection, ReportSelection::CustomStatement(_))
+    }
+    #[must_use]
     pub fn output_format(&self) -> &'static str {
-        if self.uses_functional_valuations() {
-            "fa:functional-statement-diff:v1"
-        } else {
-            "fa:statement-diff:v1"
+        match (self.is_custom(), self.uses_functional_valuations()) {
+            (false, false) => "fa:statement-diff:v1",
+            (false, true) => "fa:functional-statement-diff:v1",
+            (true, false) => "fa:custom-statement-diff:v1",
+            (true, true) => "fa:functional-custom-statement-diff:v1",
         }
     }
 
     fn certificate_format(&self) -> &'static [u8] {
-        if self.uses_functional_valuations() {
-            FUNCTIONAL_CERTIFICATE_FORMAT
-        } else {
-            CERTIFICATE_FORMAT
+        match (self.is_custom(), self.uses_functional_valuations()) {
+            (false, false) => CERTIFICATE_FORMAT,
+            (false, true) => FUNCTIONAL_CERTIFICATE_FORMAT,
+            (true, false) => CUSTOM_CERTIFICATE_FORMAT,
+            (true, true) => FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
         }
     }
 
     fn digest_domain(&self) -> &'static [u8] {
-        if self.uses_functional_valuations() {
-            FUNCTIONAL_DIGEST_DOMAIN
-        } else {
-            DIGEST_DOMAIN
+        match (self.is_custom(), self.uses_functional_valuations()) {
+            (false, false) => DIGEST_DOMAIN,
+            (false, true) => FUNCTIONAL_DIGEST_DOMAIN,
+            (true, false) => CUSTOM_DIGEST_DOMAIN,
+            (true, true) => FUNCTIONAL_CUSTOM_DIGEST_DOMAIN,
         }
+    }
+
+    /// Recover the exact shared source selection, including a custom layout's
+    /// activation, original activation frontier and retained presentation law.
+    /// No currently active definition is selected during this operation.
+    pub fn report_selection(&self) -> Result<ReportSelection, Refusal> {
+        sources(&self.before, &self.after)?;
+        Ok(self.before.selection.clone())
     }
 
     /// Recover the statement and two frontiers. The request itself contains no
@@ -218,7 +245,11 @@ impl StatementDiffCertificate {
         let selection = match &self.before.selection {
             ReportSelection::Statement(selection)
             | ReportSelection::FunctionalStatement(selection) => selection,
-            _ => return Err(invalid("comparison sources are not financial statements")),
+            _ => {
+                return Err(invalid(
+                    "custom comparison selections require report_selection, not an embedded statement request",
+                ));
+            }
         };
         Ok(StatementDiffRequest {
             selection: (**selection).clone(),
@@ -312,7 +343,14 @@ impl StatementDiffCertificate {
         let format = r
             .bytes(64, "comparison certificate format")
             .map_err(malformed)?;
-        if format != CERTIFICATE_FORMAT && format != FUNCTIONAL_CERTIFICATE_FORMAT {
+        if ![
+            CERTIFICATE_FORMAT,
+            FUNCTIONAL_CERTIFICATE_FORMAT,
+            CUSTOM_CERTIFICATE_FORMAT,
+            FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
+        ]
+        .contains(&format)
+        {
             return Err(invalid(
                 "unsupported statement comparison certificate format",
             ));

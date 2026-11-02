@@ -11,22 +11,32 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::{Refusal, exit};
 use fa_model::{Id128, Writer, domain_digest};
 use fa_money::UnitId;
+use fa_statements::custom::{
+    CUSTOM_STATEMENT_DEF_FORMAT, CustomStatementDefinition, map_custom_accounts,
+};
 use fa_statements::{AccountMapping, Statement, StatementDefinition};
 use fgdb_types::CommitSeq;
 
 use crate::StatementSelection;
 
 mod certificate;
-pub(crate) use certificate::{CERTIFICATE_FORMAT, FUNCTIONAL_CERTIFICATE_FORMAT};
+pub(crate) use certificate::{
+    CERTIFICATE_FORMAT, CUSTOM_CERTIFICATE_FORMAT, FUNCTIONAL_CERTIFICATE_FORMAT,
+    FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
+};
 pub use certificate::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiffCertificate,
 };
 
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-diff:v1";
 pub const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-diff:v1";
+pub const CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:custom-statement-diff:v1";
+pub const FUNCTIONAL_CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:functional-custom-statement-diff:v1";
 const FUNCTIONAL_VALUATION_BASIS: &str = "retained-base-amounts";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-diff-source:v1";
 const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-diff-source:v1";
+const CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:custom-statement-diff-source:v1";
+const FUNCTIONAL_CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:functional-custom-statement-diff-source:v1";
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_UNITS: usize = 4096;
 const MAX_COLUMNS: usize = 8;
@@ -132,24 +142,63 @@ fn bounded_source(statement: &Statement) -> Result<Vec<u8>, Refusal> {
 /// line/unit product and the mapping metadata. Source completeness still needs
 /// the historical chart/journal; it cannot be inferred from these rows alone.
 fn validate_source(statement: &Statement) -> Result<Vec<u32>, Refusal> {
+    enum Definition {
+        Embedded(StatementDefinition),
+        Custom(CustomStatementDefinition),
+    }
     if statement.columns.is_empty()
         || statement.columns.len() > MAX_COLUMNS
         || statement.mappings.len() > MAX_MAPPINGS
-        || statement.lines.len() > 64 * MAX_UNITS
+        || statement.lines.len() > 128 * MAX_UNITS
     {
         return Err(invalid(
             "statement source cardinality exceeds the comparison contract",
         ));
     }
-    let definition = StatementDefinition::decode(&statement.definition_bytes)
-        .map_err(|e| invalid(e.to_string()))?;
-    if definition.name() != statement.definition_name
-        || definition.version() != statement.definition_version
-        || definition.digest().map_err(|e| invalid(e.to_string()))? != statement.definition_digest
-        || definition
-            .canonical_bytes()
-            .map_err(|e| invalid(e.to_string()))?
-            != statement.definition_bytes
+    let definition = if statement
+        .definition_bytes
+        .starts_with(CUSTOM_STATEMENT_DEF_FORMAT)
+    {
+        Definition::Custom(
+            CustomStatementDefinition::decode(&statement.definition_bytes)
+                .map_err(|e| invalid(e.to_string()))?,
+        )
+    } else {
+        Definition::Embedded(
+            StatementDefinition::decode(&statement.definition_bytes)
+                .map_err(|e| invalid(e.to_string()))?,
+        )
+    };
+    let (name, version, digest, definition_bytes, basis, definition_lines) = match &definition {
+        Definition::Embedded(value) => (
+            value.name(),
+            value.version(),
+            value.digest(),
+            value.canonical_bytes(),
+            value.basis(),
+            value
+                .lines()
+                .iter()
+                .map(|line| (&line.code, &line.label))
+                .collect::<Vec<_>>(),
+        ),
+        Definition::Custom(value) => (
+            value.name.as_str(),
+            value.version,
+            value.digest().map(|digest| digest.0),
+            value.canonical_bytes(),
+            value.kind.basis(),
+            value
+                .lines
+                .iter()
+                .map(|line| (&line.code, &line.label))
+                .collect::<Vec<_>>(),
+        ),
+    };
+    if name != statement.definition_name
+        || version != statement.definition_version
+        || digest.map_err(|e| invalid(e.to_string()))? != statement.definition_digest
+        || definition_bytes.map_err(|e| invalid(e.to_string()))? != statement.definition_bytes
     {
         return Err(invalid("statement definition bytes and identity disagree"));
     }
@@ -170,12 +219,12 @@ fn validate_source(statement: &Statement) -> Result<Vec<u32>, Refusal> {
                 "statement source has an invalid or noncanonical column",
             ));
         }
-        match (definition.basis(), column.effective_from) {
+        match (basis, column.effective_from) {
             (fa_statements::Basis::Stock, None) | (fa_statements::Basis::Activity, Some(_)) => {}
             _ => return Err(invalid("statement column confuses stock and activity")),
         }
     }
-    let first_code = &definition.lines()[0].code;
+    let first_code = definition_lines[0].0;
     let units: Vec<u32> = statement
         .lines
         .iter()
@@ -185,20 +234,19 @@ fn validate_source(statement: &Statement) -> Result<Vec<u32>, Refusal> {
     if units.is_empty()
         || units.len() > MAX_UNITS
         || units.windows(2).any(|u| u[0] >= u[1])
-        || statement.lines.len() != definition.lines().len() * units.len()
+        || statement.lines.len() != definition_lines.len() * units.len()
     {
         return Err(invalid(
             "statement source is not a complete canonical line/unit table",
         ));
     }
-    for (definition_line, actual) in definition
-        .lines()
+    for ((code, label), actual) in definition_lines
         .iter()
         .zip(statement.lines.chunks(units.len()))
     {
         for (line, unit) in actual.iter().zip(&units) {
-            if line.code != definition_line.code
-                || line.label != definition_line.label
+            if &line.code != *code
+                || &line.label != *label
                 || line.unit_id != *unit
                 || line.amounts.len() != statement.columns.len()
             {
@@ -213,8 +261,11 @@ fn validate_source(statement: &Statement) -> Result<Vec<u32>, Refusal> {
         .iter()
         .map(|m| m.account.clone())
         .collect();
-    let mappings =
-        fa_statements::map_accounts(&definition, &accounts).map_err(|e| invalid(e.to_string()))?;
+    let mappings = match &definition {
+        Definition::Embedded(value) => fa_statements::map_accounts(value, &accounts),
+        Definition::Custom(value) => map_custom_accounts(value, &accounts),
+    }
+    .map_err(|e| invalid(e.to_string()))?;
     if mappings != statement.mappings {
         return Err(invalid(
             "statement source mappings disagree with its definition or canonical order",
@@ -268,10 +319,14 @@ impl StatementDiff {
         } else {
             None
         };
-        let source_domain = if functional {
-            FUNCTIONAL_SOURCE_DOMAIN
-        } else {
-            SOURCE_DOMAIN
+        let custom = before
+            .definition_bytes
+            .starts_with(CUSTOM_STATEMENT_DEF_FORMAT);
+        let source_domain = match (custom, functional) {
+            (false, false) => SOURCE_DOMAIN,
+            (false, true) => FUNCTIONAL_SOURCE_DOMAIN,
+            (true, false) => CUSTOM_SOURCE_DOMAIN,
+            (true, true) => FUNCTIONAL_CUSTOM_SOURCE_DOMAIN,
         };
         let before_digest = domain_digest(source_domain, &[&bounded_source(&before)?]);
         let after_digest = domain_digest(source_domain, &[&bounded_source(&after)?]);
@@ -338,12 +393,20 @@ impl StatementDiff {
     pub fn is_functional(&self) -> bool {
         self.functional_unit.is_some()
     }
+    /// Whether both exact sources use the same company-defined layout.
+    #[must_use]
+    pub fn is_custom(&self) -> bool {
+        self.before
+            .definition_bytes
+            .starts_with(CUSTOM_STATEMENT_DEF_FORMAT)
+    }
     #[must_use]
     pub fn output_format(&self) -> &'static [u8] {
-        if self.is_functional() {
-            FUNCTIONAL_OUTPUT_FORMAT
-        } else {
-            OUTPUT_FORMAT
+        match (self.is_custom(), self.is_functional()) {
+            (false, false) => OUTPUT_FORMAT,
+            (false, true) => FUNCTIONAL_OUTPUT_FORMAT,
+            (true, false) => CUSTOM_OUTPUT_FORMAT,
+            (true, true) => FUNCTIONAL_CUSTOM_OUTPUT_FORMAT,
         }
     }
     #[must_use]
