@@ -418,6 +418,22 @@ proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_x
 Current-source execution status must be taken from the corresponding gate,
 not from this format description.
 
+### Authentic public-ledger replay
+
+The [public-ledger workflow](docs/public_ledger.md) adds checksum-pinned
+acquisition of Oklahoma OMES's FY2024 Q4 general-ledger publication and complete
+agency fixtures for a pension system, a university, and a museum. It preserves
+the original source fields and exact amounts, refuses unbalanced or subcent
+selections, and provides a native migration-to-report-to-proof replay driver.
+
+The entire 373,357-row publication has been profiled; normalization and all 35
+Python checks pass. **Native replay remains unverified:** prerequisite Rust
+compilation exceeded the execution environment's memory limit. The documentation
+records the validation boundary and the commands needed to complete it. These
+published records are monthly activity aggregates, with their actual detail
+retained; they do not contain the agencies' original transaction-level journals
+or opening balances.
+
 ### Bank CSV downloads
 
 Bank downloads can use an explicit column, date and amount declaration:
