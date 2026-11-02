@@ -1522,3 +1522,13 @@ tests. The control remains recovery evidence, never product code to merge.
 The original `fa-7uhr` conflict/fresh-tick/checkpoint acceptance and a full
 verdict for this source remain separate requirements. The full proof at
 `38ed0974` ended RED; it predates this repair and cannot qualify it.
+
+## 2026-11-02 — Expiry-status serialization did not compile
+
+The first native whole-`fad --lib` attempt on `f86a3376` failed E0308 at
+`timed.rs:773`: the new expiry-read JSON helper passed an array to `obj`,
+which requires a vector. No tests executed. The correction passes the same
+six observed kernel fields in `vec![...]`; it changes no accounting effect,
+counter value, assertion, gate or dependency. The failed transcript is
+retained as `expiry-reads-f86-fad-lib-20261101.log` in the session artifacts.
+Runtime and full-tree qualification of the corrected feature remain required.

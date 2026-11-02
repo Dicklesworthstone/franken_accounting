@@ -19,6 +19,7 @@ use asupersync::types::Time;
 use fa::{AsyncBook, Book, BookError, Capability, Op, Outcome, Profile};
 use fa_cli::json::{Json, obj, s};
 use fa_cli::verbs::Daemon;
+use fa_journal::sweep::SweepIndexAdvance;
 use fa_journal::{Refusal, ReversalBatch, SweepBatch, SweepReadWitness, Tick, Ticked};
 use fa_model::Id128;
 use fgdb_types::CommitSeq;
@@ -134,10 +135,7 @@ pub(crate) trait TimedBook {
         max: usize,
         history: &mut Option<fa::RecurringHistory>,
     ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>>;
-    async fn advance_sweep_index(
-        &mut self,
-        cx: &Cx,
-    ) -> Result<fa_journal::SweepIndexState, BookError>;
+    async fn advance_sweep_index(&mut self, cx: &Cx) -> Result<SweepIndexAdvance, BookError>;
 }
 
 impl TimedBook for Book {
@@ -187,11 +185,8 @@ impl TimedBook for Book {
         Book::sweep_recurring_with_history(self, cx, cap, max, history).await
     }
 
-    async fn advance_sweep_index(
-        &mut self,
-        cx: &Cx,
-    ) -> Result<fa_journal::SweepIndexState, BookError> {
-        Book::advance_sweep_index_with(self, cx).await
+    async fn advance_sweep_index(&mut self, cx: &Cx) -> Result<SweepIndexAdvance, BookError> {
+        Book::advance_sweep_index_report(self, cx).await
     }
 }
 
@@ -255,23 +250,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
         .await
     }
 
-    async fn advance_sweep_index(
-        &mut self,
-        cx: &Cx,
-    ) -> Result<fa_journal::SweepIndexState, BookError> {
-        AsyncBook::advance_sweep_index(self, &PurposeContexts::narrow_runtime_root(cx)).await
+    async fn advance_sweep_index(&mut self, cx: &Cx) -> Result<SweepIndexAdvance, BookError> {
+        AsyncBook::advance_sweep_index_report(self, &PurposeContexts::narrow_runtime_root(cx)).await
     }
 }
 
 /// Record a paged sweep index advance for status; whether it reached head.
 fn noted(
-    advanced: Result<fa_journal::SweepIndexState, BookError>,
+    advanced: Result<SweepIndexAdvance, BookError>,
     current: &mut Option<bool>,
     error: &mut Option<String>,
+    rebuilt: &mut bool,
 ) -> bool {
-    *current = Some(advanced.is_ok());
-    *error = advanced.err().map(|e| e.to_string());
-    error.is_none()
+    match advanced {
+        Ok(report) => {
+            *current = Some(true);
+            *error = None;
+            *rebuilt |= report.rebuilt;
+            true
+        }
+        Err(failure) => {
+            *current = Some(false);
+            *error = Some(failure.to_string());
+            false
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -303,6 +306,9 @@ pub struct TimedWork {
     // scan), so it is reported here instead of being dropped.
     sweep_index_current: Option<bool>,
     sweep_index_error: Option<String>,
+    // Either advance in this cycle can reconstruct the index. Keep that fact
+    // even when the post-effects advance subsequently carries it normally.
+    sweep_index_rebuilt: bool,
     // Actual expiry discovery/validation work from the last timer cycle.
     // None when that cycle did not complete an admitted expiry sweep.
     expiry_reads: Option<SweepReadWitness>,
@@ -346,6 +352,7 @@ impl TimedWork {
             error: None,
             sweep_index_current: None,
             sweep_index_error: None,
+            sweep_index_rebuilt: false,
             expiry_reads: None,
             recurring_history: None,
             registers: None,
@@ -381,6 +388,7 @@ impl TimedWork {
             error: None,
             sweep_index_current: None,
             sweep_index_error: None,
+            sweep_index_rebuilt: false,
             expiry_reads: None,
             recurring_history: None,
             registers: Some(registers::RegisterWork::new(periods)?),
@@ -580,6 +588,7 @@ impl TimedWork {
         sample: Result<Observation, ClockError>,
     ) -> Result<Cycle, TimedError> {
         self.expiry_reads = None;
+        self.sweep_index_rebuilt = false;
         self.cycles = self.cycles.saturating_add(1);
         let result = match sample {
             Ok(sample) => self.cycle(cx, book, sample).await,
@@ -615,12 +624,13 @@ impl TimedWork {
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
         // The disposable paged index turns candidate discovery into a read of
         // the committed delta instead of a whole-book scan (fa-gpd4,
-        // fa-0hs4.11). It is derived state: when it cannot advance, discovery
-        // falls back to the exact scan and the cycle still runs.
+        // fa-0hs4.11). It is derived state: failed maintenance still allows
+        // discovery from a servable index plus tail, or the exact scan.
         cycle.sweep_index_current = noted(
             book.advance_sweep_index(cx).await,
             &mut self.sweep_index_current,
             &mut self.sweep_index_error,
+            &mut self.sweep_index_rebuilt,
         );
         let (batch, reads) = admitted(
             book.sweep_expiry(cx, capability, self.policy.sweep_batch)
@@ -658,6 +668,7 @@ impl TimedWork {
                 book.advance_sweep_index(cx).await,
                 &mut self.sweep_index_current,
                 &mut self.sweep_index_error,
+                &mut self.sweep_index_rebuilt,
             );
         }
         Ok(cycle)
@@ -757,6 +768,14 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
                 .map_or(Json::Null, s),
         ),
         (
+            "sweep_index",
+            work.and_then(|w| {
+                w.expiry_reads
+                    .map(|reads| expiry_index_path(reads, w.sweep_index_rebuilt))
+            })
+            .map_or(Json::Null, s),
+        ),
+        (
             "expiry_reads",
             work.and_then(|w| w.expiry_reads)
                 .map_or(Json::Null, expiry_read_fields),
@@ -769,8 +788,18 @@ pub fn status_fields(work: Option<&TimedWork>) -> Vec<(&'static str, Json)> {
     ]
 }
 
+fn expiry_index_path(reads: SweepReadWitness, rebuilt: bool) -> &'static str {
+    if !reads.used_index {
+        "fallback"
+    } else if rebuilt {
+        "rebuilt"
+    } else {
+        "verified"
+    }
+}
+
 fn expiry_read_fields(reads: SweepReadWitness) -> Json {
-    obj([
+    obj(vec![
         ("used_index", Json::Bool(reads.used_index)),
         ("pages_read", Json::Int(reads.pages_read as i128)),
         ("candidates_read", Json::Int(reads.candidates_read as i128)),
@@ -819,8 +848,12 @@ pub fn status_text(work: Option<&TimedWork>) -> String {
     }
     if let Some(reads) = work.expiry_reads {
         text.push_str(&format!(
-            "; expiry discovery: index={}, pages={}, candidates={}, substrate rows={}",
-            reads.used_index, reads.pages_read, reads.candidates_read, reads.substrate_rows_read,
+            "; expiry discovery: index={}, path={}, pages={}, candidates={}, substrate rows={}",
+            reads.used_index,
+            expiry_index_path(reads, work.sweep_index_rebuilt),
+            reads.pages_read,
+            reads.candidates_read,
+            reads.substrate_rows_read,
         ));
     }
     if let Some(registers) = &work.registers {

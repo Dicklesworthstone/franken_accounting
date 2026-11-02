@@ -904,6 +904,10 @@ fn explicit_key_bootstrap_records_ticks_and_clean_stop_releases_the_timed_book()
         Some("null"),
         "{status}"
     );
+    assert!(
+        matches!(field(&status, "sweep_index"), Some("rebuilt" | "verified")),
+        "{status}"
+    );
     let status_json = fa_cli::json::parse(status.trim()).unwrap();
     let reads = status_json
         .get("data")

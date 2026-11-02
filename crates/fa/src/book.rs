@@ -4408,6 +4408,15 @@ impl Book {
         with_store!(&mut self.store, core => core.advance_sweep_index(&purposes).await)
     }
 
+    /// Advance under the caller's context and retain reconstruction provenance.
+    pub async fn advance_sweep_index_report(
+        &mut self,
+        cx: &Cx,
+    ) -> Result<fa_journal::sweep::SweepIndexAdvance, BookError> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.advance_sweep_index_report(&purposes).await)
+    }
+
     /// Advance the disposable paged sweep index over the committed delta stream
     /// to the current head (plan §5.4, §7.6, FA-CFG-02).
     pub fn advance_sweep_index(&mut self) -> Result<fa_journal::SweepIndexState, BookError> {

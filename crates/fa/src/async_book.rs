@@ -3392,6 +3392,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::advance_sweep_index(&mut self.db, cx, &self.context).await?)
     }
 
+    /// Advance the same disposable index, retaining reconstruction provenance.
+    pub async fn advance_sweep_index_report(
+        &mut self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_journal::sweep::SweepIndexAdvance, BookError> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::sweep::advance_sweep_index_report(&mut self.db, cx, &self.context).await?)
+    }
+
     /// Rebuild the disposable paged sweep index from the authoritative journal
     /// at the current head (plan §5.4, §7.6, FA-CFG-02).
     pub async fn rebuild_sweep_index(

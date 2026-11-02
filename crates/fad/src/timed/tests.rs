@@ -555,6 +555,7 @@ fn timed_cycle_reads_the_paged_sweep_index() {
             fields.get("expiry_reads").and_then(|v| v.get("used_index")),
             Some(&Json::Bool(true))
         );
+        assert_eq!(fields.get("sweep_index"), Some(&s("rebuilt")));
         let index = fixture.book.verify_sweep_index(&cx).unwrap();
         assert!(index.index_present && index.is_green(), "{index:?}");
         assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 1);
@@ -568,6 +569,10 @@ fn timed_cycle_reads_the_paged_sweep_index() {
             .await
             .unwrap();
         assert!(next.sweep_index_current && next.expired == 1, "{next:?}");
+        assert_eq!(
+            fa_cli::json::obj(status_fields(Some(&work))).get("sweep_index"),
+            Some(&s("verified"))
+        );
         assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
         assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
         advance(&root, 10).await;
@@ -585,9 +590,89 @@ fn timed_cycle_reads_the_paged_sweep_index() {
             Some(&Json::Null),
             "an uncorroborated cycle must not present prior discovery counts"
         );
+        assert_eq!(
+            fa_cli::json::obj(status_fields(Some(&work))).get("sweep_index"),
+            Some(&Json::Null)
+        );
     })
     .unwrap()
     .expect("lab completed");
+}
+
+/// Count expiry discovery after maintaining each prefix. This does not count
+/// index bootstrap/maintenance, nor claim a whole-cycle or latency bound.
+#[test]
+fn expiry_discovery_witness_is_independent_of_ten_thousand_unrelated_entries() {
+    async fn scenario(root: &Cx, seed: u8, history: u64) -> SweepReadWitness {
+        let mut fixture = fixture(root, seed).await;
+        let cx = PurposeContexts::narrow_runtime_root(root);
+        eprintln!("expiry discovery start seed={seed} unrelated_entries={history}");
+        for n in 0..history {
+            let mut request = fixture.request.clone();
+            request.proposal.idempotency_key = format!("unrelated-{n}").into_bytes();
+            fixture.book.post(&cx, request).await.unwrap().unwrap();
+        }
+        let mut work = TimedWork::bootstrap_for_book(
+            root,
+            fixture.book.context().book_id,
+            Policy {
+                sweep_batch: 3,
+                ..POLICY
+            },
+        )
+        .unwrap();
+        let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let midnight = u64::try_from(april.0).unwrap() * 86_400_000_000_000;
+        work.run_observation(
+            root,
+            &mut fixture.book,
+            Ok(observation(root, midnight - 100)),
+        )
+        .await
+        .unwrap();
+        // Bootstrap is intentionally outside the measured discovery. Every
+        // unrelated entry above went through the ordinary admitted post path.
+        fixture.book.advance_sweep_index(&cx).await.unwrap();
+        for key in [b"scale-a", b"scale-b", b"scale-c"] {
+            hold(&mut fixture, &cx, key, 5).await;
+        }
+        advance(root, 100).await;
+        let cycle = work
+            .run_observation(root, &mut fixture.book, Ok(observation(root, midnight)))
+            .await
+            .unwrap();
+        assert_eq!(cycle.expired, 3, "{cycle:?}");
+        assert!(fixture.book.due_holds(&cx).unwrap().is_empty());
+        assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
+        let reads = work.expiry_reads.unwrap();
+        assert!(reads.used_index, "{reads:?}");
+        assert_eq!(reads.pages_read, 1);
+        assert_eq!(reads.candidates_read, 3);
+        assert_eq!(reads.unrelated_entries_decoded, 0);
+        assert!(
+            reads.substrate_rows_read
+                <= reads.pages_read * fa_journal::sweep::SWEEP_INDEX_PAGE_SIZE,
+            "the three-hold discovery/validation work fits one candidate page: {reads:?}"
+        );
+        eprintln!(
+            "expiry discovery seed={seed} unrelated_entries={history} frontier={} reads={reads:?}",
+            fixture.book.head(&cx).unwrap().0,
+        );
+        reads
+    }
+    let small = lab(191, |root| async move { scenario(&root, 191, 0).await })
+        .unwrap()
+        .expect("small lab completed");
+    let large = lab(
+        192,
+        |root| async move { scenario(&root, 192, 10_000).await },
+    )
+    .unwrap()
+    .expect("large lab completed");
+    assert_eq!(
+        large, small,
+        "expiry discovery witness excludes unrelated retained history"
+    );
 }
 
 /// The real book, except that its paged sweep index cannot advance.
@@ -640,10 +725,7 @@ impl TimedBook for IndexFails<'_> {
         TimedBook::sweep_recurring(&mut *self.0, cx, cap, max, history).await
     }
 
-    async fn advance_sweep_index(
-        &mut self,
-        _cx: &Cx,
-    ) -> Result<fa_journal::SweepIndexState, BookError> {
+    async fn advance_sweep_index(&mut self, _cx: &Cx) -> Result<SweepIndexAdvance, BookError> {
         Err(BookError::Runtime("planted index failure".into()))
     }
 }
@@ -670,6 +752,7 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Null));
         assert_eq!(fields.get("expiry_reads"), Some(&Json::Null));
+        assert_eq!(fields.get("sweep_index"), Some(&Json::Null));
         hold(&mut fixture, &cx, b"index-fails", 5).await;
         advance(&root, 100).await;
         let failed = work
@@ -691,6 +774,7 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         assert!(reads.substrate_rows_read > 0, "{reads:?}");
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(false)));
+        assert_eq!(fields.get("sweep_index"), Some(&s("fallback")));
         assert!(
             matches!(fields.get("sweep_index_error"),
                 Some(Json::Str(error)) if error.contains("planted index failure")),
@@ -717,6 +801,7 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(true)));
         assert_eq!(fields.get("sweep_index_error"), Some(&Json::Null));
+        assert_eq!(fields.get("sweep_index"), Some(&s("rebuilt")));
         assert!(work.expiry_reads.unwrap().used_index);
         assert!(fixture.book.verify_sweep_index(&cx).unwrap().is_green());
 
@@ -736,6 +821,10 @@ fn a_sweep_index_that_cannot_advance_is_reported_and_the_cycle_still_expires() {
         assert!(!from_tail.sweep_index_current);
         assert!(work.expiry_reads.unwrap().used_index);
         assert!(!status_text(Some(&work)).contains("fell back to the full scan"));
+        assert_eq!(
+            fa_cli::json::obj(status_fields(Some(&work))).get("sweep_index"),
+            Some(&s("verified"))
+        );
     })
     .unwrap()
     .expect("lab completed");
@@ -843,6 +932,11 @@ fn corrupt_sweep_index_is_rebuilt_and_reported() {
         let fields = fa_cli::json::obj(status_fields(Some(&work)));
         assert_eq!(fields.get("sweep_index_current"), Some(&Json::Bool(true)));
         assert_eq!(fields.get("sweep_index_error"), Some(&Json::Null));
+        assert_eq!(
+            fields.get("sweep_index"),
+            Some(&s("rebuilt")),
+            "the post-effects advance must retain the earlier reconstruction"
+        );
         let rebuilt = book.verify_sweep_index(&cx).unwrap();
         assert!(rebuilt.index_present && rebuilt.is_green(), "{rebuilt:?}");
         assert_eq!(rebuilt.holds_checked, 1, "{rebuilt:?}");

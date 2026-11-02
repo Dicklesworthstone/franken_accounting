@@ -452,6 +452,23 @@ pub struct SweepIndexState {
     pub schedule_pages: Vec<SweepIndexPageMeta>,
 }
 
+/// Outcome of one index advance. `rebuilt` includes initial construction;
+/// it is an observation of this call, not persisted cache authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepIndexAdvance {
+    pub state: SweepIndexState,
+    pub rebuilt: bool,
+}
+
+impl SweepIndexAdvance {
+    fn reconstructed(state: SweepIndexState) -> Self {
+        Self {
+            state,
+            rebuilt: true,
+        }
+    }
+}
+
 /// Result of refolding and verifying the disposable `SweepIndex` against
 /// the authoritative journal (FA-CFG-02).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2497,17 +2514,32 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
 ) -> Result<SweepIndexState, KernelError> {
+    Ok(advance_sweep_index_report(db, ctx, book).await?.state)
+}
+
+/// The same index advance, retaining whether this call reconstructed the
+/// index rather than carrying its validated prior state over the delta tail.
+pub async fn advance_sweep_index_report<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+) -> Result<SweepIndexAdvance, KernelError> {
     let basis = db.frontier()?;
     let (from, mut holds_map, mut schedules_map, initial_tick, previous, expected) =
         match load_servable_sweep_index(db)? {
             Some((state, payload)) if state.book_id == book.book_id => {
                 if state.through == basis {
-                    return Ok(state);
+                    return Ok(SweepIndexAdvance {
+                        state,
+                        rebuilt: false,
+                    });
                 }
                 let mut hmap = BTreeMap::new();
                 for meta in &state.hold_pages {
                     let Some(page_holds) = read_hold_page_checked(db, book.book_id, meta)? else {
-                        return rebuild_sweep_index(db, ctx, book).await;
+                        return rebuild_sweep_index(db, ctx, book)
+                            .await
+                            .map(SweepIndexAdvance::reconstructed);
                     };
                     for h in page_holds {
                         hmap.insert(h.hold.vid, h);
@@ -2517,7 +2549,9 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
                 for meta in &state.schedule_pages {
                     let Some(page_schedules) = read_schedule_page_checked(db, book.book_id, meta)?
                     else {
-                        return rebuild_sweep_index(db, ctx, book).await;
+                        return rebuild_sweep_index(db, ctx, book)
+                            .await
+                            .map(SweepIndexAdvance::reconstructed);
                     };
                     for s in page_schedules {
                         smap.insert(s.target.vid, s);
@@ -2535,7 +2569,9 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
             _ => {
                 let existing = db.vertex(sweep_index_vid())?;
                 if existing.is_some() {
-                    return rebuild_sweep_index(db, ctx, book).await;
+                    return rebuild_sweep_index(db, ctx, book)
+                        .await
+                        .map(SweepIndexAdvance::reconstructed);
                 }
                 (
                     CommitSeq::ORIGIN,
@@ -2553,13 +2589,17 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
             fgdb::RebuildError::Index {
                 error: IndexError::CursorRetired { .. },
                 ..
-            } => rebuild_sweep_index(db, ctx, book).await,
+            } => rebuild_sweep_index(db, ctx, book)
+                .await
+                .map(SweepIndexAdvance::reconstructed),
             other => Err(fgdb::WriteError::from(other).into()),
         };
     }
 
     let Some(tail) = fold_sweep_delta_tail(db, from, initial_tick)? else {
-        return rebuild_sweep_index(db, ctx, book).await;
+        return rebuild_sweep_index(db, ctx, book)
+            .await
+            .map(SweepIndexAdvance::reconstructed);
     };
     for resolved in &tail.resolved_holds {
         holds_map.remove(resolved);
@@ -2580,6 +2620,7 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
+    let rebuilt = previous.is_none();
     let (state, batch) = stage_sweep_index_write(
         book.book_id,
         basis,
@@ -2592,7 +2633,7 @@ pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
         expected,
     )?;
     db.write(&ctx.commit(), batch).await?;
-    Ok(state)
+    Ok(SweepIndexAdvance { state, rebuilt })
 }
 
 /// Refold the authoritative journal and verify the disposable `SweepIndex`
