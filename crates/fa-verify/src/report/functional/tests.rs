@@ -2,6 +2,7 @@
 
 mod closing;
 mod consolidation;
+mod custom_statement;
 mod migration;
 mod revaluation;
 mod settlement;

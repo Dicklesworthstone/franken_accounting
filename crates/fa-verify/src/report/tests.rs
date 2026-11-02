@@ -205,6 +205,7 @@ fn bundle(
         .collect();
     let (codes, cutoff, activity) = match &selection {
         Selection::Statement(_)
+        | Selection::CustomStatement(_)
         | Selection::Consolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {
@@ -245,6 +246,7 @@ fn bundle(
         .u64(known_at);
     match selection {
         Selection::Statement(_)
+        | Selection::CustomStatement(_)
         | Selection::Consolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {

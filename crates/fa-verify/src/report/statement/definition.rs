@@ -3,11 +3,15 @@ use super::super::{ReportError, failed, text};
 use crate::codec::Reader;
 use std::collections::BTreeSet;
 
-pub(super) const MAX_BYTES: usize = 64 * 1024;
+pub(in crate::report) const MAX_BYTES: usize = 64 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Source {
+pub(in crate::report) enum Source {
     Accounts {
         types: Vec<u8>,
+        credit: bool,
+    },
+    CustomAccounts {
+        set: crate::report::custom_statement::definition::AccountSet,
         credit: bool,
     },
     Formula {
@@ -16,14 +20,15 @@ pub(super) enum Source {
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Line {
+pub(in crate::report) struct Line {
     pub code: String,
     pub label: String,
     pub source: Source,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Definition {
+pub(in crate::report) struct Definition {
     pub bytes: Vec<u8>,
+    pub digest_domain: &'static [u8],
     pub name: String,
     pub version: u32,
     pub activity: bool,
@@ -167,6 +172,7 @@ impl Definition {
         r.finish("statement definition")?;
         Ok(Self {
             bytes: bytes.to_vec(),
+            digest_domain: b"fa:statement-definition:v1",
             name,
             version,
             activity,

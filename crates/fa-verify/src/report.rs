@@ -64,11 +64,19 @@
 //! eliminations, investment/capital eliminations, HalfEven NCI and both fixed
 //! financial statements are independently reconstructed. Cross-book currency
 //! translation and partially owned intermediate parents remain unsupported.
+//!
+//! Native v11 and functional v12 company statements independently bind the
+//! custom definition to its authenticated activation control and reviewed chart,
+//! reconstruct every exact row and comparative, and reproduce registered
+//! presentation rounding with explicit residuals. Their scope is recomputation:
+//! historical Approval-row admission, Human profiles, separation of duties and
+//! the definition object's atomic birth are not proved by the journal prefix.
 
 mod aging;
 mod cash_flow;
 mod cash_flow_split;
 mod consolidation;
+mod custom_statement;
 mod dimension;
 mod due_date;
 mod due_date_reconciliation;
@@ -105,6 +113,10 @@ pub use cash_flow_split::{
 pub use consolidation::{
     ConsolidationElimination, ConsolidationEquity, ConsolidationLeg, ConsolidationMember,
     VerifiedConsolidation,
+};
+pub use custom_statement::{
+    PresentedStatementLine, VerifiedCustomActivation, VerifiedCustomStatement,
+    VerifiedPresentedStatement,
 };
 pub use dimension::VerifiedDimensionSelection;
 pub use due_date::{
@@ -178,6 +190,8 @@ const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certi
 const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
 const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v10";
+const CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = custom_statement::NATIVE_FORMAT;
+const FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = custom_statement::FUNCTIONAL_FORMAT;
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
 const MAX_ROWS: usize = 1 << 20;
 
@@ -244,6 +258,9 @@ pub struct VerifiedReport {
     pub rows: Vec<ReportRow>,
     /// Present for independently reconstructed native financial statements.
     pub statement: Option<VerifiedStatement>,
+    /// Company layout, authenticated activation/chart binding, exact rows and
+    /// optional rounded presentation. Historical approval admission is unjudged.
+    pub custom_statement: Option<VerifiedCustomStatement>,
     /// Two complete native statements and their exact historical bridge.
     pub statement_diff: Option<VerifiedStatementDiff>,
     /// Complete publication-by-publication attribution, including zero effects.
@@ -298,6 +315,7 @@ enum Selection {
     AsOf(i32),
     Activity(Vec<String>),
     Statement(statement::Selection),
+    CustomStatement(Box<custom_statement::Selection>),
     Consolidation(String),
     OpenItems(Option<u128>),
     ExplainBalance { account: u128, period: String },
@@ -338,16 +356,23 @@ fn strings(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<String>, Repor
 fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
     let functional_trial_balance = bytes.starts_with(FUNCTIONAL_CERTIFICATE_FORMAT);
-    let format = if functional_trial_balance {
+    let custom_statement = bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT)
+        || bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT);
+    let format = if functional_trial_balance || custom_statement {
         r.fixed::<25>("certificate.format")?.to_vec()
     } else {
         r.fixed::<24>("certificate.format")?.to_vec()
     };
     let functional_statement = format.as_slice() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT;
     let functional_consolidation = format.as_slice() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT;
+    let functional_custom_statement =
+        format.as_slice() == FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT;
     let consolidation =
         format.as_slice() == CONSOLIDATION_CERTIFICATE_FORMAT || functional_consolidation;
-    let functional = functional_trial_balance || functional_statement || functional_consolidation;
+    let functional = functional_trial_balance
+        || functional_statement
+        || functional_consolidation
+        || functional_custom_statement;
     let statement = format.as_slice() == STATEMENT_CERTIFICATE_FORMAT || functional_statement;
     let instant = format.as_slice() == INSTANT_CERTIFICATE_FORMAT;
     let dimension = format.as_slice() == DIMENSION_CERTIFICATE_FORMAT;
@@ -359,10 +384,11 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         && !open_items
         && !functional
         && !consolidation
+        && !custom_statement
     {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, or v10 functional trial balance",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, v10 functional trial balance, or v11/v12 custom statement",
         ));
     }
     for (field, expected) in [
@@ -397,7 +423,18 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         selector
     };
-    let selection = if consolidation {
+    let selection = if custom_statement {
+        if selector != if functional_custom_statement { 10 } else { 9 } {
+            return Err(failed(
+                "supported_report",
+                "v11/v12 requires its native/functional custom statement selector",
+            ));
+        }
+        Selection::CustomStatement(Box::new(custom_statement::Selection::read(
+            &mut r,
+            functional_custom_statement,
+        )?))
+    } else if consolidation {
         if selector != if functional_consolidation { 5 } else { 4 } {
             return Err(failed(
                 "supported_report",
@@ -460,6 +497,8 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         Selection::OpenItems(_) => "fa:open-items:v1",
         Selection::Statement(_) if functional => "fa:functional-statement:v1",
         Selection::Statement(_) => "fa:statement:v1",
+        Selection::CustomStatement(_) if functional => "fa:functional-custom-statement:v1",
+        Selection::CustomStatement(_) => "fa:custom-statement-report:v1",
         _ if dimension => "fa:dimension-trial-balance:v1",
         _ if functional => "fa:functional-trial-balance:v1",
         _ => "fa:trial-balance:v1",
@@ -484,7 +523,13 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let registry_digest = r.fixed("certificate.registry_digest")?;
     let journal_root = r.fixed("certificate.journal_root")?;
     let leaves = r.u64("certificate.leaves")?;
-    let expected_inputs = if dimension || functional { 8 } else { 7 };
+    let expected_inputs = if custom_statement {
+        if functional { 13 } else { 12 }
+    } else if dimension || functional {
+        8
+    } else {
+        7
+    };
     let inputs = r.count(expected_inputs, 4, "certificate.native_inputs")?;
     if inputs != expected_inputs {
         return Err(failed(
@@ -498,7 +543,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
     let time_selection = if instant
-        || (statement || consolidation || dimension || open_items || functional)
+        || (statement || custom_statement || consolidation || dimension || open_items || functional)
             && r.present("certificate.time_selection")?
     {
         Some(VerifiedInstantSelection::read(&mut r)?)
@@ -985,14 +1030,16 @@ fn verify_report_with_lots_input(
     if (cert.functional || is_consolidation) != (major == 3) {
         return Err(failed(
             "supported_report",
-            "functional v5/v10 and consolidation v6/v7 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
+            "functional v5/v10/v12 and consolidation v6/v7 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
         ));
     }
     let is_statement = matches!(cert.selection, Selection::Statement(_));
+    let is_custom_statement = matches!(cert.selection, Selection::CustomStatement(_));
     let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
     let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
     if ((!is_statement || cert.functional) && recipient_units.is_some())
         || (!is_statement
+            && !is_custom_statement
             && !is_open_items
             && !is_explanation
             && roll_forward.is_none()
@@ -1001,7 +1048,7 @@ fn verify_report_with_lots_input(
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a native statement, OpenItems, ExplainBalance, summary, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, custom statement, OpenItems, ExplainBalance, summary, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
     if (is_open_items
@@ -1009,12 +1056,13 @@ fn verify_report_with_lots_input(
         || roll_forward.is_some()
         || statement_diff.is_some() && !cert.functional
         || statement_trace.is_some() && !cert.functional
+        || is_custom_statement && !cert.functional
         || summary.is_some())
         && major != 2
     {
         return Err(failed(
             "registry_closure",
-            "native v3 reports, summaries, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
+            "native v3/v11 reports, summaries, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -1093,7 +1141,7 @@ fn verify_report_with_lots_input(
                 7
             } else if major == 3 {
                 6
-            } else if is_explanation {
+            } else if is_explanation || is_custom_statement {
                 5
             } else {
                 4
@@ -1116,9 +1164,17 @@ fn verify_report_with_lots_input(
             (units, BTreeMap::new())
         } else if major == 3 {
             let definitions = registry::verify_functional(&inputs, &cert.registry_digest)?;
+            if is_custom_statement {
+                registry::verify_custom_rounding(&inputs)?;
+            }
             let units = definitions.units.keys().copied().collect();
             functional_registry = Some(definitions);
             (units, BTreeMap::new())
+        } else if is_custom_statement {
+            (
+                registry::verify_custom(&inputs, &cert.registry_digest)?,
+                BTreeMap::new(),
+            )
         } else {
             let verified = registry::verify(&inputs, &cert.registry_digest, is_explanation)?;
             if lots.is_some() {
@@ -1264,6 +1320,7 @@ fn verify_report_with_lots_input(
             periods: vec![period.clone()],
             rows: Vec::new(),
             statement: None,
+            custom_statement: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -1283,6 +1340,107 @@ fn verify_report_with_lots_input(
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: Some(report),
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    if let Selection::CustomStatement(selection) = &cert.selection {
+        // This profile proves the directly selected company report. An outer
+        // composition needs its own replay and cannot inherit this result by
+        // substituting a custom statement for that composition's source.
+        if certificate_digest != cert.digest {
+            return Err(failed(
+                "supported_report",
+                "custom statements require their direct report certificate",
+            ));
+        }
+        let valued = if cert.functional {
+            let definitions = functional_registry
+                .as_ref()
+                .ok_or_else(|| failed("registry_closure", "missing functional registries"))?;
+            let book = functional_book
+                .ok_or_else(|| failed("functional_book", "missing Book parameters"))?;
+            Some(functional::statement_legs(
+                &cert,
+                definitions,
+                book,
+                &functional_rates,
+                &schema,
+                envelopes,
+                &records,
+                &legs,
+                &infos,
+                &migration_activations,
+            )?)
+        } else {
+            None
+        };
+        let (report_units, report_legs) = match &valued {
+            Some((base, values)) => (std::slice::from_ref(base), values.as_slice()),
+            None => (units.as_slice(), legs.as_slice()),
+        };
+        let (report, output) = custom_statement::replay(
+            selection,
+            &cert.book,
+            &cert.branch,
+            cert.known_at,
+            report_units,
+            &schema,
+            envelopes,
+            &records,
+            &infos,
+            report_legs,
+            &visible_migrations,
+            &resolved,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "custom_statement_recomputation",
+                "company statement lines, historical mappings, exact amounts or presentation residuals differ from independent recomputation",
+            ));
+        }
+        let current =
+            report.statement.columns.first().ok_or_else(|| {
+                failed("report_selector", "custom statement has no current column")
+            })?;
+        let effective_through = Some(current.effective_through);
+        let periods = current.periods.clone();
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            summary: None,
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: cert.time_selection,
+            effective_through,
+            activity: selection.activity(),
+            periods,
+            rows: Vec::new(),
+            statement: None,
+            custom_statement: Some(report),
+            statement_diff: None,
+            dimension: None,
+            statement_trace: None,
+            open_items: None,
+            lots: None,
+            explanation: None,
+            aging: None,
+            due_date_aging: None,
+            aging_reconciliation: None,
+            aging_portfolio: None,
+            due_date_aging_reconciliation: None,
+            roll_forward: None,
+            cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
+            equity_roll_forward: None,
+            functional_trial_balance: None,
+            functional_statement: None,
+            consolidation: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1452,6 +1610,7 @@ fn verify_report_with_lots_input(
             periods,
             rows: Vec::new(),
             statement: None,
+            custom_statement: None,
             statement_diff,
             dimension: None,
             statement_trace,
@@ -1558,6 +1717,7 @@ fn verify_report_with_lots_input(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                custom_statement: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -1650,6 +1810,7 @@ fn verify_report_with_lots_input(
                     periods: control.periods,
                     rows: Vec::new(),
                     statement: None,
+                    custom_statement: None,
                     statement_diff: None,
                     dimension: None,
                     statement_trace: None,
@@ -1689,6 +1850,7 @@ fn verify_report_with_lots_input(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                custom_statement: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -1772,6 +1934,7 @@ fn verify_report_with_lots_input(
                     periods: control.periods,
                     rows: Vec::new(),
                     statement: None,
+                    custom_statement: None,
                     statement_diff: None,
                     dimension: None,
                     statement_trace: None,
@@ -1841,6 +2004,7 @@ fn verify_report_with_lots_input(
                     periods: control.periods,
                     rows: Vec::new(),
                     statement: None,
+                    custom_statement: None,
                     statement_diff: None,
                     dimension: None,
                     statement_trace: None,
@@ -1880,6 +2044,7 @@ fn verify_report_with_lots_input(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                custom_statement: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -1919,6 +2084,7 @@ fn verify_report_with_lots_input(
             periods: Vec::new(),
             rows: Vec::new(),
             statement: None,
+            custom_statement: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -1979,6 +2145,7 @@ fn verify_report_with_lots_input(
             periods: vec![period.clone()],
             rows: Vec::new(),
             statement: None,
+            custom_statement: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -2107,6 +2274,7 @@ fn verify_report_with_lots_input(
             periods: selection.periods.clone(),
             rows: Vec::new(),
             statement,
+            custom_statement: None,
             statement_diff,
             dimension: None,
             statement_trace,
@@ -2191,6 +2359,7 @@ fn verify_report_with_lots_input(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                custom_statement: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -2285,6 +2454,7 @@ fn verify_report_with_lots_input(
                 periods: Vec::new(),
                 rows: Vec::new(),
                 statement: None,
+                custom_statement: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -2324,6 +2494,7 @@ fn verify_report_with_lots_input(
             periods: Vec::new(),
             rows: Vec::new(),
             statement: None,
+            custom_statement: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -2383,6 +2554,7 @@ fn verify_report_with_lots_input(
         periods,
         rows,
         statement: None,
+        custom_statement: None,
         statement_diff: None,
         dimension,
         statement_trace: None,

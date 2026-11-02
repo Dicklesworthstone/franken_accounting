@@ -426,10 +426,13 @@ pub(super) fn consolidation_amounts(
         .collect())
 }
 
+/// Reproduce every retained valuation before a statement selects its columns.
+/// Preserve entry positions and lineage while replacing native amounts only
+/// with independently checked functional amounts. Both fixed and company
+/// definitions use this boundary, including the same complete Rate closure.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn replay_statement(
+pub(super) fn statement_legs(
     cert: &Certificate<'_>,
-    selection: &statement::Selection,
     registry: &registry::FunctionalRegistry,
     book_bytes: &[u8],
     documents: &[([u8; 32], &[u8])],
@@ -438,10 +441,8 @@ pub(super) fn replay_statement(
     records: &[(usize, &[u8])],
     legs: &[Vec<Leg>],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
-    resolved: &BTreeSet<usize>,
-    visible_migrations: &BTreeSet<u64>,
     migration_activations: &BTreeMap<u64, u64>,
-) -> Result<(VerifiedFunctionalStatement, Vec<u8>), ReportError> {
+) -> Result<(u32, Vec<Vec<Leg>>), ReportError> {
     let (spec, checked) = sources(
         cert,
         registry,
@@ -459,7 +460,19 @@ pub(super) fn replay_statement(
     // The original native legs remain intact for all source validation.
     let mut valued_legs = vec![Vec::new(); legs.len()];
     for (index, entry) in checked {
-        valued_legs[index] = legs[index]
+        let native = legs.get(index).ok_or_else(|| {
+            failed(
+                "functional_arithmetic",
+                "verified valuation has no native entry",
+            )
+        })?;
+        if native.len() != entry.amounts.len() {
+            return Err(failed(
+                "functional_arithmetic",
+                "independently checked amounts must cover every original native leg",
+            ));
+        }
+        valued_legs[index] = native
             .iter()
             .zip(entry.amounts)
             .map(|(leg, amount)| Leg {
@@ -470,12 +483,43 @@ pub(super) fn replay_statement(
             })
             .collect();
     }
+    Ok((spec.base, valued_legs))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn replay_statement(
+    cert: &Certificate<'_>,
+    selection: &statement::Selection,
+    registry: &registry::FunctionalRegistry,
+    book_bytes: &[u8],
+    documents: &[([u8; 32], &[u8])],
+    schema: &metadata::Schema,
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    legs: &[Vec<Leg>],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    resolved: &BTreeSet<usize>,
+    visible_migrations: &BTreeSet<u64>,
+    migration_activations: &BTreeMap<u64, u64>,
+) -> Result<(VerifiedFunctionalStatement, Vec<u8>), ReportError> {
+    let (base_unit, valued_legs) = statement_legs(
+        cert,
+        registry,
+        book_bytes,
+        documents,
+        schema,
+        envelopes,
+        records,
+        legs,
+        infos,
+        migration_activations,
+    )?;
     let (statement, inner) = statement::replay(
         selection,
         &cert.book,
         &cert.branch,
         cert.known_at,
-        &[spec.base],
+        &[base_unit],
         schema,
         envelopes,
         infos,
@@ -496,7 +540,7 @@ pub(super) fn replay_statement(
     }
     Ok((
         VerifiedFunctionalStatement {
-            base_unit: spec.base,
+            base_unit,
             statement,
             book_parameters_source: BOOK_PARAMETERS_SOURCE,
         },

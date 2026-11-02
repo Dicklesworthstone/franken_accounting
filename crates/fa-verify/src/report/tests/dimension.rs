@@ -196,6 +196,7 @@ fn dimension_bundle(
             cert.u8(1).i32(day);
         }
         Selection::Statement(_)
+        | Selection::CustomStatement(_)
         | Selection::Consolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {
