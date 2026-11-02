@@ -1,5 +1,5 @@
 //! Immutable source registries for retained native trial balances, open items,
-//! statements and balance explanations.
+//! statements, custom layouts, functional reports and balance explanations.
 //!
 //! The epoch archives source text, not executable code or an authorization grant.
 //! Its semantic closure is the digest the original certificate already binds.
@@ -14,7 +14,9 @@
 //! One-book consolidation additionally retains account-role and rounding
 //! sources, plus FX laws for functional v7. Those arithmetic and role meanings
 //! must match this interpreter exactly; archiving never activates old policy.
-//! Other law-dependent selectors keep their existing stricter contract.
+//! Custom statements preserve their presentation-rounding law; their functional
+//! profile shares the exact FX and rounding closure of functional statements
+//! and trial balances. Other selectors keep their existing stricter contract.
 
 use super::*;
 use fa_journal::object::{self, ObjectKind};
@@ -32,6 +34,21 @@ const EXPLANATION_NAMES: [&str; 5] = [
     "units",
     "foundations",
     "reason_codes",
+];
+const CUSTOM_STATEMENT_NAMES: [&str; 5] = [
+    "account_types",
+    "entry_classes",
+    "units",
+    "foundations",
+    "rounding_laws",
+];
+const FUNCTIONAL_REPORT_NAMES: [&str; 6] = [
+    "account_types",
+    "entry_classes",
+    "units",
+    "foundations",
+    "fx_laws",
+    "rounding_laws",
 ];
 const CONSOLIDATION_NAMES: [&str; 6] = [
     "account_types",
@@ -80,6 +97,9 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
         ReportSelection::TrialBalance(_)
             | ReportSelection::OpenItems { .. }
             | ReportSelection::Statement(_)
+            | ReportSelection::CustomStatement(_)
+            | ReportSelection::FunctionalStatement(_)
+            | ReportSelection::FunctionalTrialBalance(_)
             | ReportSelection::ExplainBalance { .. }
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
@@ -105,6 +125,8 @@ impl Epoch {
             .collect::<Vec<_>>();
         if names != NAMES
             && names != EXPLANATION_NAMES
+            && names != CUSTOM_STATEMENT_NAMES
+            && names != FUNCTIONAL_REPORT_NAMES
             && names != CONSOLIDATION_NAMES
             && names != FUNCTIONAL_CONSOLIDATION_NAMES
             || sources
@@ -112,7 +134,7 @@ impl Epoch {
                 .any(|(_, text)| text.len() > MAX_SOURCE_BYTES)
         {
             return Err(invalid(
-                "a report epoch requires its exact bounded four-source native, five-source explanation, six-source consolidation or seven-source functional consolidation profile",
+                "a report epoch requires its exact bounded four-source native, five-source explanation or custom statement, six-source functional report or consolidation, or seven-source functional consolidation profile",
             ));
         }
         let sources_ref = sources
@@ -141,6 +163,9 @@ impl Epoch {
         if !matches!(
             selection,
             ReportSelection::ExplainBalance { .. }
+                | ReportSelection::CustomStatement(_)
+                | ReportSelection::FunctionalStatement(_)
+                | ReportSelection::FunctionalTrialBalance(_)
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
         ) {
@@ -252,7 +277,7 @@ impl Epoch {
                 && archived != document(name, text)?
             {
                 return Err(unavailable(format!(
-                    "registry epoch {name} differs from this interpreter's supported consolidation semantics"
+                    "registry epoch {name} differs from this interpreter's supported arithmetic or account-role semantics"
                 )));
             }
             if name == "reason_codes" {
@@ -628,6 +653,80 @@ mod tests {
             .certificate
     }
 
+    fn custom_selection(functional: bool) -> crate::CustomStatementSelection {
+        let mut definition = crate::CustomStatementDefinition::from_builtin(
+            &crate::StatementDefinition::embedded("income-statement").unwrap(),
+        );
+        definition.name = "archived-company-income".into();
+        crate::CustomStatementSelection {
+            definition,
+            activation: VId(1),
+            activated_at: CommitSeq(1),
+            functional,
+            periods: vec!["FY2026-P01".into()],
+            comparative: Vec::new(),
+            presentation: None,
+        }
+    }
+
+    fn custom_certificate(h: &mut Harness, functional: bool) -> ReportCertificate {
+        let cx = h.cx();
+        let capability = fa_journal::Capability::embedded(VId(1), &["rule_change"]).unwrap();
+        let mut selection = custom_selection(functional);
+        let plan = h
+            .book
+            .plan_statement_definition(
+                &cx,
+                &capability,
+                selection.definition.clone(),
+                DateDay::from_ymd(2026, 1, 1).unwrap(),
+                b"archived-company-activation",
+            )
+            .unwrap()
+            .unwrap();
+        let mut approvals = Vec::new();
+        for principal in [VId(2), VId(3)] {
+            approvals.push(
+                h.runtime
+                    .block_on(h.book.approve(
+                        &cx,
+                        fa_journal::Capability::embedded(principal, &["approve"]).unwrap(),
+                        plan.proposal_digest().unwrap(),
+                    ))
+                    .unwrap()
+                    .unwrap()
+                    .approval(),
+            );
+        }
+        let active = h
+            .runtime
+            .block_on(
+                h.book
+                    .activate_statement_definition(&cx, &capability, plan, approvals),
+            )
+            .unwrap()
+            .unwrap();
+        selection.activation = active.activation;
+        selection.activated_at = active.recorded_at;
+        let producer = fa_journal::Capability::embedded(VId(1), &["read", "produce"]).unwrap();
+        if functional {
+            h.runtime
+                .block_on(
+                    h.book
+                        .certify_functional_custom_statement(&cx, &producer, selection, None),
+                )
+                .unwrap()
+                .unwrap()
+                .certificate
+        } else {
+            h.book
+                .certify_custom_statement(&cx, &producer, selection, None)
+                .unwrap()
+                .unwrap()
+                .certificate
+        }
+    }
+
     /// A retained source transcript from a different executable build. The
     /// fixture changes build provenance only, never native evidence or amounts.
     /// Unlike an API that bypasses admission, it uses an actual native commit
@@ -822,6 +921,175 @@ mod tests {
                     code::CERTIFICATE_REGISTRY_UNAVAILABLE
                 );
             }
+        }
+    }
+
+    #[test]
+    fn custom_and_functional_epochs_require_their_exact_rounding_and_fx_profiles() {
+        let book = Id128([0xc7; 16]);
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let native = ReportSelection::CustomStatement(Box::new(custom_selection(false)));
+        let functional = ReportSelection::CustomStatement(Box::new(custom_selection(true)));
+        for selection in [&native, &functional] {
+            let epoch = Epoch::for_selection(book, selection).unwrap();
+            assert!(supports(selection));
+            assert_eq!(epoch.closure, registry_digest(selection).unwrap());
+            assert_eq!(Epoch::decode(&epoch.encode().unwrap()).unwrap(), epoch);
+            epoch.admit_for(selection, &units).unwrap();
+            assert_eq!(
+                epoch.offline_documents(&units).unwrap().len(),
+                if selection.uses_functional_valuations() {
+                    6
+                } else {
+                    5
+                }
+            );
+            for (name, from, to) in [
+                (
+                    "rounding_laws",
+                    "name = \"HalfEven\"",
+                    "name = \"HalfEvenChanged\"",
+                ),
+                (
+                    "fx_laws",
+                    "rounding_law = \"HalfEven\"",
+                    "rounding_law = \"HalfUp\"",
+                ),
+            ] {
+                let mut sources = epoch.sources.clone();
+                let Some((_, text)) = sources.iter_mut().find(|(candidate, _)| candidate == name)
+                else {
+                    continue;
+                };
+                assert!(
+                    text.contains(from),
+                    "negative mutates a real arithmetic law"
+                );
+                *text = text.replacen(from, to, 1);
+                let altered = Epoch::new(book, sources).unwrap();
+                assert_eq!(
+                    altered.admit_for(selection, &units).unwrap_err().code,
+                    code::CERTIFICATE_REGISTRY_UNAVAILABLE
+                );
+            }
+            let other = if selection.uses_functional_valuations() {
+                &native
+            } else {
+                &functional
+            };
+            assert_eq!(
+                epoch.admit_for(other, &units).unwrap_err().code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE
+            );
+            let mut reordered = epoch.sources.clone();
+            reordered.swap(3, 4);
+            assert!(Epoch::new(book, reordered).is_err());
+            assert_eq!(
+                Epoch::current(book)
+                    .unwrap()
+                    .admit_for(selection, &units)
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+                "the base four sources cannot silently erase a custom law obligation"
+            );
+        }
+        // Ordinary functional reports read exactly the same six registries.
+        // Sharing that epoch changes neither selector nor calculation output.
+        let functional_epoch = Epoch::for_selection(book, &functional).unwrap();
+        for selected in [
+            ReportSelection::FunctionalStatement(Box::new(crate::StatementSelection {
+                definition: crate::StatementDefinition::embedded("income-statement").unwrap(),
+                periods: vec!["FY2026-P01".into()],
+                comparative: Vec::new(),
+            })),
+            ReportSelection::FunctionalTrialBalance(TrialBalanceSelection::Periods(vec![
+                "FY2026-P01".into(),
+            ])),
+        ] {
+            assert!(supports(&selected));
+            assert_eq!(
+                Epoch::for_selection(book, &selected).unwrap(),
+                functional_epoch
+            );
+            functional_epoch.admit_for(&selected, &units).unwrap();
+        }
+    }
+
+    #[test]
+    fn custom_epochs_publish_with_retention_and_export_original_sources_after_reopen() {
+        for functional in [false, true] {
+            let (mut h, _) = Harness::with_posts(1);
+            let original = custom_certificate(&mut h, functional);
+            let before = h.head();
+            let retained = h.retain(&original).unwrap();
+            let root = vid(h.book.context().book_id, &original.registry_digest);
+            assert!(h.book.db.vertex_at(root, before).unwrap().is_none());
+            assert_eq!(
+                h.book
+                    .db
+                    .vertex_at(root, retained.recorded_at)
+                    .unwrap()
+                    .unwrap()
+                    .created_at,
+                retained.recorded_at,
+                "custom source epoch and certificate publish in one transaction"
+            );
+            let original_epoch = resolve(&h.book.db, &h.cx().query(), h.book.context(), &original)
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let mut sources = original_epoch.sources.clone();
+            sources[3] = historical_epoch(h.book.context().book_id).sources[3].clone();
+            let archived = Epoch::new(h.book.context().book_id, sources).unwrap();
+            assert_ne!(archived.closure, original.registry_digest);
+            let historical = original.resealed_under(archived.closure);
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &historical)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+                "the current executable cannot invent an unavailable historical transcript"
+            );
+            publish_epoch(&mut h, &archived);
+            h.retain(&historical).unwrap();
+            let h = h.reopen();
+            let stored = h.read(&historical.digest).unwrap();
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &stored)
+                    .unwrap()
+                    .unwrap()
+                    .canonical_bytes()
+                    .unwrap(),
+                original.output
+            );
+            let at = h.head();
+            let documents = offline_report_registries_at(
+                &h.book.db,
+                &h.cx().query(),
+                h.book.context(),
+                &stored,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                documents,
+                archived.offline_documents(&h.book.context().units).unwrap()
+            );
+            assert_ne!(
+                documents,
+                original_epoch
+                    .offline_documents(&h.book.context().units)
+                    .unwrap()
+            );
+            assert_eq!(
+                h.head(),
+                at,
+                "reading archived custom sources publishes no new epoch"
+            );
         }
     }
 

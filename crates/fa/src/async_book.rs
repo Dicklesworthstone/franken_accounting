@@ -5004,6 +5004,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     | crate::ReportSelection::FunctionalConsolidation { .. }
                     | crate::ReportSelection::DimensionTrialBalance { .. }
                     | crate::ReportSelection::Statement(_)
+                    | crate::ReportSelection::CustomStatement(_)
                     | crate::ReportSelection::OpenItems { .. }
                     | crate::ReportSelection::ExplainBalance { .. }
             )
@@ -5011,7 +5012,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's native or functional trial-balance, statement or one-book consolidation, dimension-filtered trial-balance, open-item or balance-explanation certificate",
+                "offline report production requires this book's native or functional trial-balance, built-in or custom statement, one-book consolidation, dimension-filtered trial-balance, open-item or balance-explanation certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
                 "certify fa tb (optionally --functional or --dimension kind=value), fa statement (optionally --functional), fa consolidate (optionally --functional), fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
@@ -5021,6 +5022,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &certificate.selection,
                 crate::ReportSelection::FunctionalTrialBalance(_)
                     | crate::ReportSelection::FunctionalStatement(_)
+                    | crate::ReportSelection::CustomStatement(_)
             ))
             && (certificate.branch_id != fa_model::Id128::TRUNK
                 || certificate.time_selection.is_some())
@@ -5028,7 +5030,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "portable functional and consolidation reports require a sequence-selected trunk certificate",
+                "portable functional, custom statement and consolidation reports require a sequence-selected trunk certificate",
                 "plan §5.3 / §13.3 (the independent valuation profile has explicit source coordinates)",
                 "certify fa tb --functional, fa statement --functional or fa consolidate at a fixed recorded sequence before exporting",
             )));
@@ -5318,6 +5320,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | crate::ReportSelection::ExplainBalance { .. }
                 | crate::ReportSelection::FunctionalTrialBalance(_)
                 | crate::ReportSelection::FunctionalStatement(_)
+                | crate::ReportSelection::CustomStatement(_)
                 | crate::ReportSelection::Consolidation { .. }
                 | crate::ReportSelection::FunctionalConsolidation { .. }
         );
@@ -5432,12 +5435,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify the report at its resolved recorded sequence before producing an offline report bundle",
             )));
         }
-        let book_source = if consolidation
-            || matches!(
-                &certificate.selection,
-                crate::ReportSelection::FunctionalTrialBalance(_)
-                    | crate::ReportSelection::FunctionalStatement(_)
-            ) {
+        let book_source = if consolidation || certificate.selection.uses_functional_valuations() {
             let rate_oids = if certificate.selection.uses_functional_valuations() {
                 match fa_notary::report::functional_rate_oids(&journal, certificate.known_at)? {
                     Ok(oids) => oids,

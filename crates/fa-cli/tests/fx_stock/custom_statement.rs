@@ -288,6 +288,78 @@ fn functional_company_statements_keep_carrying_values_rounding_and_cold_replay()
             Json::Str("130.00 USD".into())
         ]
     );
+
+    // The generic CLI export must carry both custom families through fresh
+    // processes, using the old layout and journal coordinate after v2 exists.
+    let native_path = fixture.dir.join("native-company.cert");
+    let native_original = ok_many(
+        &fixture.book,
+        &[
+            "statement",
+            "custom",
+            "--definition",
+            "company-income",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+            "--as-known-at",
+            &decoded.known_at.0.to_string(),
+            "--certificate-out",
+            native_path.to_str().unwrap(),
+        ],
+    );
+    let native_reference = format!(
+        "C:{}",
+        text(event(&native_original, "report_certificate"), "oid")
+    );
+    let native_certificate =
+        fa::ReportCertificate::decode(&std::fs::read(&native_path).unwrap()).unwrap();
+    let checkpoint = ok(
+        &fixture.book,
+        &["checkpoint", "create", "--grant", "witness"],
+    );
+    let key: [u8; 32] = unhex(text(data(&checkpoint), "public_key"))
+        .try_into()
+        .unwrap();
+    for (family, reference, certificate) in [
+        ("native", &native_reference, &native_certificate),
+        ("functional", &reference, &decoded),
+    ] {
+        let bundle_path = fixture.dir.join(format!("{family}-company.bundle"));
+        let receipt_path = fixture.dir.join(format!("{family}-company.receipt"));
+        let result = ok(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                reference,
+                "--state",
+                text(data(&checkpoint), "oid"),
+                "--out",
+                bundle_path.to_str().unwrap(),
+                "--receipt-out",
+                receipt_path.to_str().unwrap(),
+            ],
+        );
+        assert!(text(data(&result), "verify").contains("fa-verify report"));
+        let verified = fa_verify::report::verify_report_expected(
+            &std::fs::read(&bundle_path).unwrap(),
+            &[key],
+            None,
+            Some(&std::fs::read(&receipt_path).unwrap()),
+            Some(&certificate.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output);
+        assert_eq!(verified.known_at, certificate.known_at.0);
+        let custom = verified.custom_statement.unwrap();
+        assert_eq!(custom.statement.definition_version, 1);
+        assert_eq!(custom.functional_unit.is_some(), family == "functional");
+        assert!(!custom.activation.approval_admission_verified);
+        assert!(!custom.activation.definition_birth_verified);
+    }
 }
 
 #[test]

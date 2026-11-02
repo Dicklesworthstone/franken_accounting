@@ -200,12 +200,36 @@ Certification retains both exact and rounded output. Native custom reports use
 v11 certificates; functional custom reports use v12. Replay keeps the original
 approved layout, reporting basis and historical Rate evidence after later
 postings or layout activations. Certificate status reports relevant later
-activity. These are native replay certificates; portable independent custom
-report verification remains unsupported. The MCP statement tool accepts the
-same `functional`, comparative and presentation options and transports review
-source inline. Embedded callers use `Book::functional_custom_statement` or
-`Book::certify_functional_custom_statement` to prepare historical reads under
-current authority.
+activity. Both certificate families export through `fa bundle produce
+--certificate C:<oid>` and verify with the standalone `fa-verify report` command.
+Native v11 bundles retain the five required registries; functional v12 bundles
+also retain the FX laws, historical Book parameters and complete original Rate
+evidence. The recipient must supply trusted checkpoint keys and either the
+independently selected certificate digest or a signed production receipt.
+
+Offline recomputation binds the exact layout to its authenticated activation
+control and reviewed chart. It checks the complete mapping partition, including
+zero-balance accounts, then reproduces every exact current/comparative row,
+formula, check line and rounded presentation byte. Rounded rows expose their
+exact amounts, presented amounts, signed errors and explicit residuals. Functional
+rows use the independently checked original valuation evidence; later quotes
+cannot revalue an earlier certificate. Retaining a custom or ordinary functional
+certificate also archives its exact registry sources. Replay and export can use
+older foundation provenance only when the accounting and valuation meanings
+remain supported and the native source reads and output still reproduce.
+
+This verifies computation and journal bindings. It does not independently prove
+historical Approval-row birth, Human profiles, separation of duties, policy
+admission or the definition object's atomic publication; the verifier exposes
+those limits explicitly. Native activation continues to enforce its dual-control
+checks. Custom issuance, statement comparisons and publication traces remain
+outside this report profile.
+
+The MCP statement tool accepts the same `functional`, comparative and
+presentation options and transports review source inline. Embedded callers use
+`Book::functional_custom_statement` or `Book::certify_functional_custom_statement`
+to prepare historical reads under current authority, then the existing report
+bundle APIs to produce complete report bundles.
 
 ### Proportional posting of held entries
 
