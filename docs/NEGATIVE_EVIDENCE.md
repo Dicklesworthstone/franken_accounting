@@ -1575,10 +1575,16 @@ retry reused completed dependencies and actually ran all 69 cases. This
 control is retained as evidence and must never be published as product code.
 
 These are exact-revision component results, not a full-repository pass.
-Newer combined product code still needs a fresh positive run and final-tree
-gates. The original read-authorization Bead stays open for its account-scope,
-whole-entry, substrate read-counter, and reference-model requirements.
-No independent-verifier claim follows from this self-executed evidence.
+The return to corrected product `19e14bef0` passed the same four complete
+CLI targets, 69/0 with no ignored or filtered cases, at 20:44:43Z. All three
+forms again returned one original 5.00 USD item at pin 7 versus two at HEAD.
+This is a later combined revision, not a strict same-revision A/B/A claim.
+The original full repository run on 19e then recorded a compile-limit
+failure; it is not a full PASS. Newer main `e4723f6f` and subsequent changes
+need their own qualification. The original read-authorization Bead stays
+open for its account-scope, whole-entry, substrate read-counter, and
+reference-model requirements. These native results were self-executed;
+the subsequent source review is described below.
 
 ## 2026-11-02 — Combined custom-case period lookup did not compile
 
@@ -1590,5 +1596,34 @@ helper is `fa_model::period_vid`, already used by the facade's other period
 lookups. The call now names that helper directly; its calendar, period code,
 recorded frontier, row validation, and effective-date bounds are unchanged.
 The superseded CLI and full-proof attempts on `665fbc8a` were deliberately
-stopped after this actual compiler failure. Corrected source requires fresh
-qualification; the earlier aging component passes do not qualify this tree.
+stopped after this actual compiler failure. Corrected `19e14bef0` subsequently
+passed the original all-target Tier 0 remotely at 20:17:34Z; its first cold
+attempt had hit the original compile limit. That compile result and the
+69-case CLI pass above do not claim full custom-case runtime qualification.
+
+## 2026-11-02 — Effective-date replay renderer missed the historical conversion
+
+StormyLion and a fresh-context reviewer examined `e65cf0322` without
+compiling or running it (Agent Mail 6279). They found that the separate
+`render_aging` helper used only by effective-date certificate replay still
+loaded the HEAD chart and filtered by creation date. The earlier description
+of both renderers was therefore too broad. Replay already requires HEAD
+authority, and account IDs determine the displayed codes, so the reviewers
+found no authorization or output defect from this omission. The conversion
+was nevertheless incomplete.
+
+That helper now accepts the caller capability and uses
+`accounts_at(aging.known_at, capability)`, with no creation-date filter;
+the sole replay caller passes its actual capability. The existing pinned
+aging test also checks bare `--certify` refusal. The existing AR/AP role
+test now issues a real pinned read/produce token before making the HEAD AR
+role ambiguous and removing the HEAD AP role. Both effective-date and
+due-date aliases must still return the exact historical 40.00 USD item and
+record four admitted reads. All original role and refusal assertions remain.
+The shared read-scope runner forwards nonempty stderr without dumping every
+successful JSON response; targeted positive witnesses remain.
+
+These review corrections and added controls are authored, not yet executed
+native evidence. Existing 19e passes do not qualify them. The source review
+also confirms that output comparison cannot detect the `accounts_at` swaps
+by itself; there is still no substrate read-counter claim.

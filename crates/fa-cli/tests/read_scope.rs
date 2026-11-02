@@ -109,12 +109,9 @@ impl Fixture {
             .unwrap_or_else(|error| panic!("robot schema: {error}\n{stdout}\n{stderr}"));
         let exit = output.status.code().unwrap_or(-1);
         let event = json::parse(lines[0]).unwrap();
-        eprintln!(
-            "read-scope argv={args:?} exit={exit} event={:?} refusal={:?} known_at={:?}\nstdout={stdout}\nstderr={stderr}",
-            event.get("event"),
-            data(&event).get("refusal_id"),
-            event.get("coordinate").and_then(|c| c.get("known_at")),
-        );
+        if !stderr.is_empty() {
+            eprintln!("read-scope argv={args:?} exit={exit}\nstderr={stderr}");
+        }
         (exit, event)
     }
 
@@ -1453,6 +1450,9 @@ fn pinned_auditors_read_plain_aging_at_their_prefix() {
         let mut reconcile = scoped.clone();
         reconcile.push("--reconcile");
         f.out_of_scope(&reconcile, "known_at");
+        let mut certifying = scoped.clone();
+        certifying.push("--certify");
+        f.out_of_scope(&certifying, "known_at");
         let output = format!("refused-aging-{}.certificate", basis.unwrap_or("default"));
         let mut retaining = scoped.clone();
         retaining.extend(["--certificate-out", output.as_str()]);

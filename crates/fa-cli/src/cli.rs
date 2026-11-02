@@ -16767,6 +16767,7 @@ pub(crate) fn render_roll_forward(
 pub(crate) fn render_aging(
     out: &Out,
     book: &Book,
+    capability: &Capability,
     aging: &fa::EffectiveDateAging,
     certificate: Option<&str>,
 ) -> Result<(), Fail> {
@@ -16774,9 +16775,8 @@ pub(crate) fn render_aging(
     out.effective(format!("as-of:{}", aging.effective_through));
     let units = &book.context().units;
     let accounts: std::collections::BTreeMap<VId, String> = book
-        .accounts()?
+        .accounts_at(aging.known_at, capability)??
         .into_iter()
-        .filter(|account| account.created_at <= aging.known_at)
         .map(|account| (account.vid, account.code))
         .collect();
     if let Some(account) = aging.account

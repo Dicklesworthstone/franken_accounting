@@ -28747,7 +28747,8 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
 /// holding the receivable or payable role, the same aging as naming it with
 /// --account. Planted: an explicit account or a reconciliation beside the
 /// role, an unknown word, a second account holding the role (both named), and
-/// a book where no account holds it are each refused with the way out.
+/// a book where no account holds it are each refused with the way out. A
+/// pinned token keeps the original role selection after those roles change.
 #[test]
 fn aging_ar_and_ap_age_the_account_holding_the_role() -> std::io::Result<()> {
     let dir = tmp("aging-roles")?;
@@ -28792,6 +28793,36 @@ fn aging_ar_and_ap_age_the_account_holding_the_role() -> std::io::Result<()> {
         );
     }
 
+    let pin = field(&ok(&book, &["book", "info"]), "known_at")
+        .expect("book head")
+        .to_owned();
+    let token = dir.join("aging-role-reader.token").display().to_string();
+    ok(
+        &book,
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "aging-role-reader",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--op",
+            "produce",
+            "--known-at-most",
+            &pin,
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "produce",
+        ],
+    );
+
     for (kind, code) in [("ar", "1200"), ("ap", "2000")] {
         let by_role = doc(&ok(&book, &["aging", kind, "--as-of", "2026-03-31"]));
         assert_eq!(text(&by_role, "account"), code, "{kind}: {by_role:?}");
@@ -28834,6 +28865,59 @@ fn aging_ar_and_ap_age_the_account_holding_the_role() -> std::io::Result<()> {
         out.contains("1200, 1210") && out.contains("--reconcile"),
         "{out}"
     );
+    ok(&book, &["chart", "role", "2000", "payable", "--remove"]);
+    let (code, out, err) = run(&book, &["aging", "ap", "--as-of", "2026-03-31"]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.contains("no account holds the payable role"), "{out}");
+
+    let before = field(&ok(&book, &["book", "info"]), "known_at")
+        .expect("book head")
+        .to_owned();
+    for (kind, account) in [("ar", "1200"), ("ap", "2000")] {
+        for basis in ["effective-date", "due-date"] {
+            let historical = [
+                "gl",
+                "aging",
+                "--account",
+                account,
+                "--as-of",
+                "2026-03-31",
+                "--basis",
+                basis,
+                "--as-known-at",
+                &pin,
+            ];
+            let expected = doc(&ok(&book, &historical));
+            let scoped = [
+                "--token",
+                &token,
+                "aging",
+                kind,
+                "--as-of",
+                "2026-03-31",
+                "--basis",
+                basis,
+                "--as-known-at",
+                &pin,
+            ];
+            let actual = doc(&ok(&book, &scoped));
+            assert_eq!(actual, expected, "{scoped:?}");
+            assert_eq!(text(&actual, "account"), account);
+            let items = arr(
+                &actual,
+                if basis == "due-date" {
+                    "unscheduled"
+                } else {
+                    "items"
+                },
+            );
+            assert_eq!(items.len(), 1, "{actual:?}");
+            assert_eq!(text(&items[0], "original"), "40.00 USD");
+            eprintln!("pinned-aging-role argv={scoped:?} exit=0 account={account} items=1");
+        }
+    }
+    let access = doc(&ok(&book, &["access", "log", "--since", &before]));
+    assert_eq!(int(&access, "count"), Some(4));
 
     let bare = dir.join("bare");
     ok(&bare, &["book", "create", "--name", "No Roles Co"]);
