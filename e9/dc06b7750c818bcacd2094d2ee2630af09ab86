@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=e9dc06b7750c818bcacd2094d2ee2630af09ab86
+tree=ac3c0fdbc6620118029d523766b0b7a10f32e878
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=hz3
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=1533
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/aging-review-e9dc-tier0-20261102
+recorded_utc=2026-11-02T22:10:22Z
