@@ -48,6 +48,7 @@ fn comparison(
         })
         .collect();
     VerifiedStatementDiff {
+        custom: None,
         valuation: StatementDiffValuation::Native,
         before_known_at: start,
         after_known_at: end,

@@ -24,6 +24,37 @@ pub(super) const FUNCTIONAL_FORMAT: &[u8] = b"fa:report-certificate:v12";
 pub(super) const NATIVE_OUTPUT_FORMAT: &[u8] = b"fa:custom-statement-report:v1";
 pub(super) const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-custom-statement:v1";
 
+/// Extract only after the complete custom source has been independently
+/// recomputed. Comparisons commit its exact inner Statement, while retaining
+/// and checking the full presentation and activation wrapper in each source.
+pub(super) fn statement_bytes(bytes: &[u8]) -> Result<&[u8], ReportError> {
+    let mut r = Reader::new(bytes);
+    if bytes.starts_with(FUNCTIONAL_OUTPUT_FORMAT) {
+        r.fixed::<{ FUNCTIONAL_OUTPUT_FORMAT.len() }>("custom statement format")?;
+        if r.bytes(64, "custom statement valuation")? != b"retained-base-amounts" {
+            return Err(failed(
+                "statement_diff_selection",
+                "invalid custom valuation basis",
+            ));
+        }
+        r.u32("custom functional unit")?;
+    } else if r.fixed::<{ NATIVE_OUTPUT_FORMAT.len() }>("custom statement format")?
+        != NATIVE_OUTPUT_FORMAT
+    {
+        return Err(failed(
+            "statement_diff_selection",
+            "invalid custom source wrapper",
+        ));
+    }
+    r.u128("custom activation")?;
+    let inner = r.bytes(MAX_REPORT_BUNDLE_BYTES, "custom exact statement")?;
+    if r.present("custom presentation")? {
+        r.bytes(MAX_REPORT_BUNDLE_BYTES, "custom presented statement")?;
+    }
+    r.finish("custom statement output")?;
+    Ok(inner)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Selection {
     pub source: statement::Selection,

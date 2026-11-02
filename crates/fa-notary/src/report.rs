@@ -141,7 +141,8 @@ pub fn assemble_with_registries(
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
     let explanation = explanation_certificate(certificate);
-    let custom = custom_statement_certificate(certificate);
+    let custom =
+        custom_statement_certificate(certificate) || custom_statement_diff_certificate(certificate);
     let expected: &[&str] = if explanation {
         &[
             "account_types",
@@ -600,23 +601,41 @@ fn indirect_cash_flow_certificate(certificate: &[u8]) -> bool {
 }
 
 /// A comparison is its complete outer certificate and TWO native statement
-/// sources. Never route a functional comparison or a different nested report
-/// through the native four-registry profile. Full semantic verification is
+/// sources. Custom sources require the additional rounding registry. Never
+/// route a functional comparison or a different nested report through a native
+/// profile. Full semantic verification is
 /// performed by facade replay and again by the independent report interpreter.
 fn statement_diff_certificate(certificate: &[u8]) -> bool {
+    statement_diff_family(certificate, false) || custom_statement_diff_certificate(certificate)
+}
+
+fn custom_statement_diff_certificate(certificate: &[u8]) -> bool {
+    statement_diff_family(certificate, true)
+}
+
+fn statement_diff_family(certificate: &[u8], custom: bool) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "statement diff format")? != b"fa:statement-diff-certificate:v1" {
+        let format: &[u8] = if custom {
+            b"fa:custom-statement-diff-certificate:v1"
+        } else {
+            b"fa:statement-diff-certificate:v1"
+        };
+        if reader.bytes(64, "statement diff format")? != format {
             return Ok(false);
         }
         reader.u128("statement diff producer")?;
         reader.fixed::<32>("statement diff capability")?;
         let before = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "statement diff before")?;
         let after = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "statement diff after")?;
-        Ok(certificate_format(before, b"fa:report-certificate:v4")
-            && certificate_format(after, b"fa:report-certificate:v4"))
+        Ok(if custom {
+            custom_statement_certificate(before) && custom_statement_certificate(after)
+        } else {
+            certificate_format(before, b"fa:report-certificate:v4")
+                && certificate_format(after, b"fa:report-certificate:v4")
+        })
     };
-    header().unwrap_or(false)
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
 /// A trace retains every consecutive v4 source, even a publication that has no
@@ -1082,6 +1101,133 @@ mod format_tests {
         ] {
             assert!(!functional::comparison_certificate(
                 &wrap(&wrong, &after),
+                &journal,
+                CommitSeq(9)
+            ));
+        }
+        for end in 0..valid.len() {
+            assert!(!functional::comparison_certificate(
+                &valid[..end],
+                &journal,
+                CommitSeq(9)
+            ));
+        }
+    }
+
+    #[test]
+    fn custom_native_comparisons_route_only_two_v11_sources_to_the_rounding_profile() {
+        let native = native_header(11, "fa:custom-statement-report:v1", 9);
+        let wrap = |format: &[u8], before: &[u8], after: &[u8]| {
+            let mut w = Writer::new();
+            w.bytes(format)
+                .u128(7)
+                .fixed(&[8; 32])
+                .bytes(before)
+                .bytes(after);
+            w.finish().unwrap()
+        };
+        let format = b"fa:custom-statement-diff-certificate:v1";
+        let valid = wrap(format, &native, &native);
+        assert!(custom_statement_diff_certificate(&valid));
+        assert!(statement_diff_certificate(&valid));
+        assert!(!custom_statement_certificate(&valid));
+        for wrong in [
+            native_header(4, "fa:statement:v1", 0),
+            native_header(5, "fa:functional-statement:v1", 3),
+            native_header(12, "fa:functional-custom-statement:v1", 10),
+            native_header(110, "fa:custom-statement-report:v1", 9),
+            native_header(11, "fa:custom-statement-report:v1", 10),
+            native_header(11, "fa:functional-custom-statement:v1", 9),
+            Vec::new(),
+        ] {
+            assert!(!statement_diff_certificate(&wrap(format, &wrong, &native)));
+            assert!(!statement_diff_certificate(&wrap(format, &native, &wrong)));
+        }
+        for wrong_format in [
+            b"fa:statement-diff-certificate:v1".as_slice(),
+            b"fa:functional-custom-statement-diff-certificate:v1".as_slice(),
+        ] {
+            assert!(!statement_diff_certificate(&wrap(
+                wrong_format,
+                &native,
+                &native
+            )));
+        }
+        for end in 0..valid.len() {
+            assert!(!statement_diff_certificate(&valid[..end]));
+        }
+    }
+
+    #[test]
+    fn custom_functional_comparisons_route_only_two_v12_sources_in_one_book_prefix() {
+        let journal =
+            Journal::from_records(fa_model::Id128([3; 16]), CommitSeq(12), Vec::new()).unwrap();
+        let source =
+            |version: u8, output: &str, book: [u8; 16], branch: [u8; 16], at: u64, selector: u8| {
+                let mut w = Writer::new();
+                w.fixed(format!("fa:report-certificate:v{version}").as_bytes())
+                    .str("fa-fold-over-prefix")
+                    .str("embedded-owner")
+                    .str(output)
+                    .fixed(&book)
+                    .fixed(&branch)
+                    .u64(at)
+                    .u8(selector);
+                w.finish().unwrap()
+            };
+        let wrap = |format: &[u8], before: &[u8], after: &[u8]| {
+            let mut w = Writer::new();
+            w.bytes(format)
+                .u128(7)
+                .fixed(&[8; 32])
+                .bytes(before)
+                .bytes(after);
+            w.finish().unwrap()
+        };
+        let output = "fa:functional-custom-statement:v1";
+        let format = b"fa:functional-custom-statement-diff-certificate:v1";
+        let before = source(12, output, [3; 16], [0; 16], 8, 10);
+        let after = source(12, output, [3; 16], [0; 16], 9, 10);
+        let valid = wrap(format, &before, &after);
+        assert!(functional::comparison_certificate(
+            &valid,
+            &journal,
+            CommitSeq(9)
+        ));
+        assert!(!statement_diff_certificate(&valid));
+        assert!(!custom_statement_diff_certificate(&valid));
+        assert!(!functional::comparison_certificate(
+            &valid,
+            &journal,
+            CommitSeq(10)
+        ));
+        for wrong in [
+            source(11, "fa:custom-statement-report:v1", [3; 16], [0; 16], 8, 9),
+            source(5, "fa:functional-statement:v1", [3; 16], [0; 16], 8, 3),
+            source(120, output, [3; 16], [0; 16], 8, 10),
+            source(12, "fa:functional-statement:v1", [3; 16], [0; 16], 8, 10),
+            source(12, output, [4; 16], [0; 16], 8, 10),
+            source(12, output, [3; 16], [1; 16], 8, 10),
+            source(12, output, [3; 16], [0; 16], 8, 9),
+            source(12, output, [3; 16], [0; 16], 10, 10),
+        ] {
+            assert!(!functional::comparison_certificate(
+                &wrap(format, &wrong, &after),
+                &journal,
+                CommitSeq(9)
+            ));
+            assert!(!functional::comparison_certificate(
+                &wrap(format, &before, &wrong),
+                &journal,
+                CommitSeq(9)
+            ));
+        }
+        for wrong_format in [
+            b"fa:functional-statement-diff-certificate:v1".as_slice(),
+            b"fa:custom-statement-diff-certificate:v1".as_slice(),
+        ] {
+            assert!(!functional::comparison_certificate(
+                &wrap(wrong_format, &before, &after),
                 &journal,
                 CommitSeq(9)
             ));

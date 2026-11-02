@@ -15,6 +15,9 @@ use fgdb::{MemVfs, WriteBatch, WriteMismatchPolicy};
 use fgdb_types::CanonicalScalar;
 use std::path::Path;
 
+#[path = "custom_certificate_tests.rs"]
+mod custom;
+
 const BOOK: Id128 = Id128([0x61; 16]);
 const PRINCIPAL: VId = VId(7);
 const PATH: &str = "statement-diff-book";

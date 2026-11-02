@@ -1576,14 +1576,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                         } => "functional_statement_trace",
                                     }
                                 } else if let Some(comparison) = &report.statement_diff {
-                                    match comparison.valuation {
-                                        crate::report::StatementDiffValuation::Native => {
-                                            "statement_diff"
-                                        }
-                                        crate::report::StatementDiffValuation::Functional {
-                                            ..
-                                        } => "functional_statement_diff",
-                                    }
+                                    statement_diff_mode(comparison)
                                 } else if report.functional_trial_balance.is_some() {
                                     if report.activity {
                                         "functional_activity"
@@ -2985,13 +2978,15 @@ fn consolidation_checks(report: &crate::report::VerifiedConsolidation) -> Vec<Ch
     checks
 }
 
-fn custom_statement_checks(report: &crate::report::VerifiedCustomStatement) -> Vec<Check> {
-    let activation = &report.activation;
-    let mut checks = vec![Check::pass(
+fn custom_activation_checks(
+    activation: &crate::report::VerifiedCustomActivation,
+    definition_digest: &[u8; 32],
+) -> Vec<Check> {
+    vec![Check::pass(
         "custom_statement_recomputation",
         "recomputation",
         vec![
-            ("definition_digest", h(&report.statement.definition_digest)),
+            ("definition_digest", h(definition_digest)),
             ("activation", s(format!("{:032x}", activation.activation))),
             ("activated_at", n(activation.activated_at)),
             ("effective_from", day(Some(activation.effective_from))),
@@ -3022,7 +3017,12 @@ fn custom_statement_checks(report: &crate::report::VerifiedCustomStatement) -> V
             ("security_policy_admission", s("not_judged")),
             ("registry_activation", s("not_judged")),
         ],
-    )];
+    )]
+}
+
+fn custom_statement_checks(report: &crate::report::VerifiedCustomStatement) -> Vec<Check> {
+    let mut checks =
+        custom_activation_checks(&report.activation, &report.statement.definition_digest);
     if let Some(base_unit) = report.functional_unit {
         checks.push(Check::pass(
             "functional_custom_statement_basis",
@@ -3043,7 +3043,15 @@ fn custom_statement_checks(report: &crate::report::VerifiedCustomStatement) -> V
             ],
         ));
     }
-    if let Some(presented) = &report.presented {
+    checks.extend(custom_presentation_checks(report.presented.as_ref()));
+    checks
+}
+
+fn custom_presentation_checks(
+    presented: Option<&crate::report::VerifiedPresentedStatement>,
+) -> Vec<Check> {
+    let mut checks = Vec::new();
+    if let Some(presented) = presented {
         checks.push(Check::pass(
             "custom_statement_presentation",
             "recomputation",
@@ -4246,6 +4254,19 @@ fn statement_trace_checks(
     checks
 }
 
+fn statement_diff_mode(comparison: &crate::report::VerifiedStatementDiff) -> &'static str {
+    match (comparison.custom.is_some(), comparison.valuation) {
+        (false, crate::report::StatementDiffValuation::Native) => "statement_diff",
+        (true, crate::report::StatementDiffValuation::Native) => "custom_statement_diff",
+        (false, crate::report::StatementDiffValuation::Functional { .. }) => {
+            "functional_statement_diff"
+        }
+        (true, crate::report::StatementDiffValuation::Functional { .. }) => {
+            "functional_custom_statement_diff"
+        }
+    }
+}
+
 fn statement_diff_checks(
     comparison: &crate::report::VerifiedStatementDiff,
     unit_universe_source: &str,
@@ -4267,6 +4288,40 @@ fn statement_diff_checks(
             ("economic_truth", s("not_judged")),
         ],
     )];
+    if let Some(custom) = &comparison.custom {
+        checks.extend(custom_activation_checks(
+            &custom.activation,
+            &comparison.before.definition_digest,
+        ));
+        checks.push(Check::pass(
+            "custom_statement_diff_basis",
+            "recomputation",
+            vec![
+                (
+                    "selection",
+                    s("same exact definition, activation, periods, comparatives and presentation"),
+                ),
+                ("deltas", s("exact unrounded statement amounts")),
+                (
+                    "source_commitments",
+                    s("complete independently reconstructed exact statements"),
+                ),
+                (
+                    "source_presentations",
+                    s("independently recomputed at both original frontiers"),
+                ),
+            ],
+        ));
+        for (side, presented) in [
+            ("before", custom.before_presented.as_ref()),
+            ("after", custom.after_presented.as_ref()),
+        ] {
+            for mut check in custom_presentation_checks(presented) {
+                check.detail.insert(0, ("side", s(side)));
+                checks.push(check);
+            }
+        }
+    }
     if let crate::report::StatementDiffValuation::Functional {
         base_unit,
         book_parameters_source,
@@ -4726,6 +4781,7 @@ mod tests {
         };
         let mut trace = VerifiedStatementTrace {
             summary: VerifiedStatementDiff {
+                custom: None,
                 valuation: StatementDiffValuation::Functional {
                     base_unit: 7,
                     book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
@@ -4797,6 +4853,7 @@ mod tests {
             mappings: vec![],
         };
         let mut comparison = VerifiedStatementDiff {
+            custom: None,
             valuation: StatementDiffValuation::Functional {
                 base_unit: 7,
                 book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
@@ -4837,6 +4894,61 @@ mod tests {
             statement_diff_checks(&comparison, "authenticated-registry")
                 .iter()
                 .all(|check| check.name != "functional_statement_diff_basis")
+        );
+        assert_eq!(statement_diff_mode(&comparison), "statement_diff");
+        comparison.custom = Some(crate::report::VerifiedCustomStatementComparison {
+            activation: crate::report::VerifiedCustomActivation {
+                activation: 91,
+                activated_at: 5,
+                effective_from: 0,
+                chart_digest: [8; 32],
+                approval_refs: vec![(7, [9; 32]), (8, [10; 32])],
+                approval_admission_verified: false,
+                definition_birth_verified: false,
+            },
+            before_presented: Some(crate::report::VerifiedPresentedStatement {
+                rounding_law: 1,
+                scale_reduction_digits: 1,
+                divisor: 10,
+                lines: vec![],
+            }),
+            after_presented: Some(crate::report::VerifiedPresentedStatement {
+                rounding_law: 1,
+                scale_reduction_digits: 1,
+                divisor: 10,
+                lines: vec![],
+            }),
+        });
+        assert_eq!(statement_diff_mode(&comparison), "custom_statement_diff");
+        let checks = statement_diff_checks(&comparison, "authenticated-registry");
+        let mut json = String::new();
+        for check in &checks {
+            check.json().write(&mut json);
+        }
+        for expected in [
+            "\"approval_admission_verified\":false",
+            "\"definition_birth_verified\":false",
+            "\"deltas\":\"exact unrounded statement amounts\"",
+            "\"source_presentations\":\"independently recomputed at both original frontiers\"",
+            "\"side\":\"before\"",
+            "\"side\":\"after\"",
+        ] {
+            assert!(json.contains(expected), "{expected}: {json}");
+        }
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| check.name == "custom_statement_presentation")
+                .count(),
+            2,
+        );
+        comparison.valuation = StatementDiffValuation::Functional {
+            base_unit: 7,
+            book_parameters_source: "certificate-bound-report-parameters; genesis-registration-not-proved",
+        };
+        assert_eq!(
+            statement_diff_mode(&comparison),
+            "functional_custom_statement_diff"
         );
     }
 

@@ -272,6 +272,8 @@ impl ReportArtifact {
             ))
         } else if format == crate::statement_diff::CERTIFICATE_FORMAT
             || format == crate::statement_diff::FUNCTIONAL_CERTIFICATE_FORMAT
+            || format == crate::statement_diff::CUSTOM_CERTIFICATE_FORMAT
+            || format == crate::statement_diff::FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT
         {
             Artifact::StatementDiff(Box::new(StatementDiffCertificate::decode(bytes)?))
         } else if format == crate::statement_trace::CERTIFICATE_FORMAT

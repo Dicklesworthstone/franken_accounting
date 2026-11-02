@@ -272,11 +272,11 @@ pub(super) fn certificate(certificate: &[u8], journal: &Journal, known_at: Commi
 pub(super) fn comparison_certificate(bytes: &[u8], journal: &Journal, known_at: CommitSeq) -> bool {
     let check = || -> Result<bool, fa_model::DecodeError> {
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "functional comparison format")?
-            != b"fa:functional-statement-diff-certificate:v1"
-        {
-            return Ok(false);
-        }
+        let custom = match r.bytes(64, "functional comparison format")? {
+            b"fa:functional-statement-diff-certificate:v1" => false,
+            b"fa:functional-custom-statement-diff-certificate:v1" => true,
+            _ => return Ok(false),
+        };
         r.u128("functional comparison producer")?;
         r.fixed::<32>("functional comparison capability")?;
         let before = r.bytes(
@@ -287,12 +287,17 @@ pub(super) fn comparison_certificate(bytes: &[u8], journal: &Journal, known_at: 
             super::MAX_REPORT_BUNDLE_BYTES,
             "functional comparison after",
         )?;
-        let format = b"fa:report-certificate:v5";
-        if !before.starts_with(format) || !after.starts_with(format) {
+        let format: &[u8] = if custom {
+            b"fa:report-certificate:v12"
+        } else {
+            b"fa:report-certificate:v5"
+        };
+        let (Some(before_fields), Some(_)) =
+            (before.strip_prefix(format), after.strip_prefix(format))
+        else {
             return Ok(false);
-        }
-        let mut earlier = Reader::new(before);
-        earlier.fixed::<{ b"fa:report-certificate:v5".len() }>("functional source format")?;
+        };
+        let mut earlier = Reader::new(before_fields);
         earlier.str(64, "functional source scope")?;
         earlier.str(64, "functional source authority")?;
         earlier.str(64, "functional source output")?;

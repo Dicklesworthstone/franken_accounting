@@ -9,6 +9,9 @@ use fa::{
 };
 use fa_money::RoundingLaw;
 
+#[path = "custom_statement_diff_bundle.rs"]
+mod diff;
+
 fn layout(version: u32) -> CustomStatementDefinition {
     let mut definition = CustomStatementDefinition::from_builtin(
         &StatementDefinition::embedded("income-statement").unwrap(),

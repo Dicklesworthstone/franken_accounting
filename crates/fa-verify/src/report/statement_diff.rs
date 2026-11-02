@@ -10,19 +10,29 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     Certificate as NativeCertificate, MAX_REPORT_BUNDLE_BYTES, ReportError, Selection,
-    StatementMapping, VerifiedStatement, failed,
+    StatementMapping, VerifiedCustomActivation, VerifiedCustomStatement,
+    VerifiedPresentedStatement, VerifiedStatement, failed,
 };
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 
 const FORMAT: &[u8] = b"fa:statement-diff-certificate:v1";
 const FUNCTIONAL_FORMAT: &[u8] = b"fa:functional-statement-diff-certificate:v1";
+const CUSTOM_FORMAT: &[u8] = b"fa:custom-statement-diff-certificate:v1";
+const FUNCTIONAL_CUSTOM_FORMAT: &[u8] = b"fa:functional-custom-statement-diff-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-diff-certificate-digest:v1";
 const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-diff-certificate-digest:v1";
+const CUSTOM_DIGEST_DOMAIN: &[u8] = b"fa:custom-statement-diff-certificate-digest:v1";
+const FUNCTIONAL_CUSTOM_DIGEST_DOMAIN: &[u8] =
+    b"fa:functional-custom-statement-diff-certificate-digest:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-diff-source:v1";
 const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-diff-source:v1";
+const CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:custom-statement-diff-source:v1";
+const FUNCTIONAL_CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:functional-custom-statement-diff-source:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:statement-diff:v1";
 const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-diff:v1";
+const CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:custom-statement-diff:v1";
+const FUNCTIONAL_CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:functional-custom-statement-diff:v1";
 const FUNCTIONAL_VALUATION_BASIS: &[u8] = b"retained-base-amounts";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,8 +63,20 @@ pub struct StatementMappingChange {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedCustomStatementComparison {
+    /// Both sources bind the same original activation and reviewed chart.
+    /// Historical Human admission remains explicitly unproved.
+    pub activation: VerifiedCustomActivation,
+    /// Presentations are independently reproduced for both source reports.
+    /// Comparison deltas always use the exact, unrounded statement amounts.
+    pub before_presented: Option<VerifiedPresentedStatement>,
+    pub after_presented: Option<VerifiedPresentedStatement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedStatementDiff {
     pub valuation: StatementDiffValuation,
+    pub custom: Option<VerifiedCustomStatementComparison>,
     pub before_known_at: u64,
     pub after_known_at: u64,
     /// Domain-separated commitments to the complete reconstructed statements.
@@ -70,6 +92,7 @@ pub struct VerifiedStatementDiff {
 
 pub(super) struct Certificate<'a> {
     pub functional: bool,
+    pub custom: bool,
     pub before: &'a [u8],
     pub after: &'a [u8],
     pub output: &'a [u8],
@@ -79,7 +102,12 @@ pub(super) struct Certificate<'a> {
 pub(super) fn recognizes(bytes: &[u8]) -> bool {
     Reader::new(bytes)
         .bytes(64, "statement_diff.format")
-        .is_ok_and(|format| format == FORMAT || format == FUNCTIONAL_FORMAT)
+        .is_ok_and(|format| {
+            matches!(
+                format,
+                FORMAT | FUNCTIONAL_FORMAT | CUSTOM_FORMAT | FUNCTIONAL_CUSTOM_FORMAT
+            )
+        })
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
@@ -90,9 +118,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let mut r = Reader::new(bytes);
-    let functional = match r.bytes(64, "statement_diff.format")? {
-        FORMAT => false,
-        FUNCTIONAL_FORMAT => true,
+    let (custom, functional) = match r.bytes(64, "statement_diff.format")? {
+        FORMAT => (false, false),
+        FUNCTIONAL_FORMAT => (false, true),
+        CUSTOM_FORMAT => (true, false),
+        FUNCTIONAL_CUSTOM_FORMAT => (true, true),
         _ => {
             return Err(failed(
                 "supported_report",
@@ -105,23 +135,20 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     r.fixed::<32>("statement_diff.capability")?;
     let before = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_diff.before")?;
     let after = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_diff.after")?;
-    let source_format = if functional {
-        super::FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
-    } else {
-        super::STATEMENT_CERTIFICATE_FORMAT
+    let source_format: &[u8] = match (custom, functional) {
+        (false, false) => super::STATEMENT_CERTIFICATE_FORMAT,
+        (false, true) => super::FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
+        (true, false) => super::custom_statement::NATIVE_FORMAT,
+        (true, true) => super::custom_statement::FUNCTIONAL_FORMAT,
     };
     if !before.starts_with(source_format) || !after.starts_with(source_format) {
         return Err(failed(
             "supported_report",
-            "both comparison sources must preserve the outer family's native v4 or functional v5 statement measure",
+            "both comparison sources must preserve the outer family's built-in v4/v5 or custom v11/v12 statement measure",
         ));
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_diff.output")?;
-    let output_format = if functional {
-        FUNCTIONAL_OUTPUT_FORMAT
-    } else {
-        OUTPUT_FORMAT
-    };
+    let output_format = output_format(custom, functional);
     if Reader::new(output).bytes(64, "statement_diff.output_format")? != output_format {
         return Err(failed(
             "supported_report",
@@ -134,10 +161,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     // Model identities frame each part with its u32 byte length. The
     // accumulator/report-output hashes elsewhere deliberately use raw parts.
     if hash_parts(
-        if functional {
-            FUNCTIONAL_DIGEST_DOMAIN
-        } else {
-            DIGEST_DOMAIN
+        match (custom, functional) {
+            (false, false) => DIGEST_DOMAIN,
+            (false, true) => FUNCTIONAL_DIGEST_DOMAIN,
+            (true, false) => CUSTOM_DIGEST_DOMAIN,
+            (true, true) => FUNCTIONAL_CUSTOM_DIGEST_DOMAIN,
         },
         &[&(body_len as u32).to_le_bytes(), &bytes[..body_len]],
     ) != digest
@@ -149,6 +177,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     Ok(Certificate {
         functional,
+        custom,
         before,
         after,
         output,
@@ -165,7 +194,10 @@ pub(super) fn bind(
         || after.branch != [0; 16]
         || before.known_at > after.known_at
         || before.selection != after.selection
-        || !matches!(before.selection, Selection::Statement(_))
+        || !matches!(
+            before.selection,
+            Selection::Statement(_) | Selection::CustomStatement(_)
+        )
         || before.time_selection.is_some()
         || after.time_selection.is_some()
         || before.dimension.is_some()
@@ -198,6 +230,12 @@ pub(super) fn replay(
     after: VerifiedStatement,
     after_bytes: &[u8],
 ) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
+    if request.custom != matches!(before_certificate.selection, Selection::CustomStatement(_)) {
+        return Err(failed(
+            "statement_diff_selection",
+            "comparison changes the custom or built-in definition family",
+        ));
+    }
     let (result, output) = derive(
         request.functional,
         before_certificate,
@@ -216,6 +254,53 @@ pub(super) fn replay(
     Ok((result, output))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn replay_custom(
+    request: &Certificate<'_>,
+    before_certificate: &NativeCertificate<'_>,
+    after_certificate: &NativeCertificate<'_>,
+    before: VerifiedCustomStatement,
+    before_bytes: &[u8],
+    after: VerifiedCustomStatement,
+    after_bytes: &[u8],
+) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
+    if !request.custom
+        || before.activation != after.activation
+        || before.functional_unit != after.functional_unit
+        || before.book_parameters_source != after.book_parameters_source
+    {
+        return Err(failed(
+            "statement_diff_selection",
+            "custom sources must preserve their original activation and valuation basis",
+        ));
+    }
+    let context = VerifiedCustomStatementComparison {
+        activation: before.activation,
+        before_presented: before.presented,
+        after_presented: after.presented,
+    };
+    let (mut report, output) = replay(
+        request,
+        before_certificate,
+        after_certificate,
+        before.statement,
+        before_bytes,
+        after.statement,
+        after_bytes,
+    )?;
+    report.custom = Some(context);
+    Ok((report, output))
+}
+
+fn output_format(custom: bool, functional: bool) -> &'static [u8] {
+    match (custom, functional) {
+        (false, false) => OUTPUT_FORMAT,
+        (false, true) => FUNCTIONAL_OUTPUT_FORMAT,
+        (true, false) => CUSTOM_OUTPUT_FORMAT,
+        (true, true) => FUNCTIONAL_CUSTOM_OUTPUT_FORMAT,
+    }
+}
+
 /// Derive a bridge only from independently reconstructed sources. Publication
 /// traces reuse this arithmetic without treating an intermediate output as fact.
 #[allow(clippy::too_many_arguments)]
@@ -229,6 +314,7 @@ pub(super) fn derive(
     after_bytes: &[u8],
 ) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
     bind(before_certificate, after_certificate)?;
+    let custom = matches!(before_certificate.selection, Selection::CustomStatement(_));
     if functional != before_certificate.functional {
         return Err(failed(
             "statement_diff_selection",
@@ -312,25 +398,31 @@ pub(super) fn derive(
     } else {
         StatementDiffValuation::Native
     };
-    let source_domain = if functional {
-        FUNCTIONAL_SOURCE_DOMAIN
-    } else {
-        SOURCE_DOMAIN
+    let source_domain = match (custom, functional) {
+        (false, false) => SOURCE_DOMAIN,
+        (false, true) => FUNCTIONAL_SOURCE_DOMAIN,
+        (true, false) => CUSTOM_SOURCE_DOMAIN,
+        (true, true) => FUNCTIONAL_CUSTOM_SOURCE_DOMAIN,
     };
     // Functional certificates wrap the canonical statement. The comparison
     // commits that inner statement under its own valuation-specific domain.
-    let before_bytes = if functional {
+    let before_bytes = if custom {
+        super::custom_statement::statement_bytes(before_bytes)?
+    } else if functional {
         super::functional::statement_bytes(before_bytes)?
     } else {
         before_bytes
     };
-    let after_bytes = if functional {
+    let after_bytes = if custom {
+        super::custom_statement::statement_bytes(after_bytes)?
+    } else if functional {
         super::functional::statement_bytes(after_bytes)?
     } else {
         after_bytes
     };
     let result = VerifiedStatementDiff {
         valuation,
+        custom: None,
         before_known_at: before_certificate.known_at,
         after_known_at: after_certificate.known_at,
         before_digest: hash_parts(
@@ -350,6 +442,7 @@ pub(super) fn derive(
         &result,
         &before_certificate.book,
         &before_certificate.branch,
+        custom,
     )?;
     Ok((result, output))
 }
@@ -358,6 +451,7 @@ fn encode(
     report: &VerifiedStatementDiff,
     book: &[u8; 16],
     branch: &[u8; 16],
+    custom: bool,
 ) -> Result<Vec<u8>, ReportError> {
     // Bound the full encoding before allocation. A bridge carries three
     // amount vectors per line and both sides of every mapping change.
@@ -365,11 +459,7 @@ fn encode(
         StatementDiffValuation::Native => None,
         StatementDiffValuation::Functional { base_unit, .. } => Some(base_unit),
     };
-    let output_format = if functional.is_some() {
-        FUNCTIONAL_OUTPUT_FORMAT
-    } else {
-        OUTPUT_FORMAT
-    };
+    let output_format = output_format(custom, functional.is_some());
     let mut size = 4 + output_format.len() + 16 + 16 + 8 + 8 + 32 * 3 + 4 * 3;
     if functional.is_some() {
         size += 8 + FUNCTIONAL_VALUATION_BASIS.len();
