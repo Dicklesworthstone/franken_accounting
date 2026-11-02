@@ -717,7 +717,6 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
         vec!["--functional"],
         vec!["--for", "FY2026-P12"],
         vec!["--before", "1"],
-        vec!["--grant", "read", "--certify"],
         vec!["--request-out", request_path.to_str().unwrap()],
     ] {
         let mut args = vec![
@@ -732,12 +731,26 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
         ];
         args.extend(extra.iter().copied());
         let (code, refused) = many(&f.book, &args);
-        assert_eq!(
-            code,
-            if extra.contains(&"--grant") { 7 } else { 2 },
-            "{refused:?}"
-        );
+        assert_eq!(code, 2, "{refused:?}");
     }
+    // Restrict the actual launch authority: an unbound --grant adds operations
+    // to the command's implied read/produce set and cannot remove produce.
+    let (code, refused) = closing_agent(
+        &f,
+        &["read"],
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &before_oid,
+            "--after-certificate",
+            &after_oid,
+            "--expect",
+            &expected,
+            "--certify",
+        ],
+    );
+    assert_eq!(code, 7, "{refused:?}");
     assert_eq!(
         head(&f.book),
         retained_at,
