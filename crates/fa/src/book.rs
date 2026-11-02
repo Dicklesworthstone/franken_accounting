@@ -1892,6 +1892,21 @@ impl Book {
         )))
     }
 
+    /// Read the exact retained statement behind `AS REPORTED IN`, preserving
+    /// the approved custom layout, valuation basis and presentation settings.
+    /// The certificate must report `period` and belong to this book's trunk.
+    pub fn reported_statement(
+        &self,
+        capability: &fa_journal::Capability,
+        certificate: &[u8; 32],
+        period: &str,
+    ) -> Outcome<crate::ReportCertificate> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => self.runtime.block_on(core.reported_statement(
+            &purposes, capability, certificate, period,
+        )))
+    }
+
     /// Every statement issuance of `period`, by ordinal, or of the book.
     pub fn statement_issuances(
         &self,
@@ -2098,6 +2113,34 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.case_statement_diff_requests(
             &purposes, principal, capability, ordinal, audience,
+        )))
+    }
+
+    /// Read one fixed case statement comparison, including an approved custom
+    /// layout, under current Read authority. This does not certify or publish.
+    pub fn case_statement_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        question: &crate::CaseStatementDiffRequest,
+    ) -> Outcome<crate::StatementDiff> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.case_statement_diff(
+            &purposes, principal, capability, question,
+        )))
+    }
+
+    /// Certify one fixed case comparison and preserve its exact originally
+    /// issued source certificate when that source asks the selected question.
+    pub fn certify_case_statement_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        question: &crate::CaseStatementDiffRequest,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_case_statement_diff(
+            &purposes, principal, capability, question,
         )))
     }
 

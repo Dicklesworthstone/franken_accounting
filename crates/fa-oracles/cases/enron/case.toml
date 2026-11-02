@@ -31,7 +31,7 @@ scope = "the sources ledger of the Enron case (six public-record sources and the
 claims = ["E-P-01", "E-R-01", "E-R-02", "E-T-01", "E-T-02", "E-T-03", "E-T-04", "E-T-05"]
 capabilities = ["case_kind:Restatement", "refusal:FA-REF-010", "refusal:FA-REF-011", "verb:assert-balance", "verb:case", "verb:post", "verb:scenario", "verb:statement"]
 pinned_commit = "d0673641d"
-variants = ["statement-10k2000", "statement-10q2001q3", "statement-bridge-8k", "statement-bridge-10q", "native"]
+variants = ["statement-10k2000", "statement-10q2001q3", "statement-bridge-8k", "statement-bridge-8k-fy1999", "statement-bridge-10q", "native"]
 
 [[decision]]
 id = "E4-bridge-books"

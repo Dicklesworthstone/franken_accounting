@@ -161,7 +161,9 @@ pub use book::{
     Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS, ProducedBundle, ReadScope,
     Replanned,
 };
-pub use case_statements::{CaseStatementBasis, CaseStatementDiffRequest};
+pub use case_statements::{
+    CaseStatementBasis, CaseStatementComparisonRequest, CaseStatementDiffRequest,
+};
 pub use cash_flow_basis::{
     CashFlowBasis, CashFlowBasisCertificate, CashFlowBasisDefinition, CashFlowBasisKind,
 };
@@ -172,7 +174,7 @@ pub use cash_flow_certificate::{
 pub use certificate::{
     CertificateStatus, CertificateSupersedingCase, CertifiedReport, CertifiedTrialBalance,
     FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT, FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
-    ReportCertificate, ReportOutput, ReportSelection, TrialBalanceSelection,
+    ReportCertificate, ReportOutput, ReportSelection, StatementMetadata, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use consolidation::FunctionalConsolidation;

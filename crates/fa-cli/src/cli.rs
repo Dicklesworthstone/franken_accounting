@@ -13616,8 +13616,17 @@ fn emit_certified_statement_trace(
 /// The statement a caller says it means (`--for`, `--compare`,
 /// `--definition`) must be exactly the one the retained certificates answer.
 /// It is checked, never used to re-select; omitting it accepts theirs.
-fn statement_question_matches(args: &Args, selection: &fa::StatementSelection) -> Result<(), Fail> {
-    let definition = selection.definition.name();
+fn statement_question_matches(args: &Args, selection: &fa::ReportSelection) -> Result<(), Fail> {
+    let selection = selection.statement_metadata()
+        .map_err(|error| Fail::Internal(format!("statement selection metadata: {error}")))?
+        .ok_or_else(|| Fail::Refusal(fa_journal::Refusal::new(
+            fa::certificate::code::CERTIFICATE_INVALID,
+            exit::VERIFICATION,
+            "the source certificate does not select a financial statement",
+            "plan §8.3 / §13.6 (a statement comparison preserves its source family)",
+            "pass two retained native or functional statement certificates of the same definition",
+        )))?;
+    let definition = selection.definition_name;
     let comparative: Vec<String> = args
         .flag("--compare")
         .into_iter()
@@ -13626,9 +13635,9 @@ fn statement_question_matches(args: &Args, selection: &fa::StatementSelection) -
     let same_definition = args
         .flag("--definition")
         .is_none_or(|name| name == definition);
-    let same_periods = args
-        .flag("--for")
-        .is_none_or(|period| selection.periods == [period] && selection.comparative == comparative);
+    let same_periods = args.flag("--for").is_none_or(|period| {
+        selection.periods == [period] && selection.comparative == comparative.as_slice()
+    });
     if same_definition && same_periods {
         return Ok(());
     }
@@ -13753,17 +13762,8 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             )?;
             // Mismatched sources are the library's refusal; this checks only
             // the question the caller stated against the first source.
-            if let fa::ReportSelection::Statement(selection)
-            | fa::ReportSelection::FunctionalStatement(selection) = &before.selection
-            {
-                statement_question_matches(args, selection)?;
-            }
-            if args.switch("--functional")
-                && !matches!(
-                    before.selection,
-                    fa::ReportSelection::FunctionalStatement(_)
-                )
-            {
+            statement_question_matches(args, &before.selection)?;
+            if args.switch("--functional") && !before.selection.uses_functional_valuations() {
                 return Err(fa_journal::Refusal::new(
                     fa::certificate::code::CERTIFICATE_INVALID,
                     exit::VERIFICATION,
@@ -13844,9 +13844,13 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 &capability,
                 fa::StatementDiffCertificate::decode,
             )?;
-            if let Ok(request) = comparison.request() {
-                statement_question_matches(args, &request.selection)?;
+            if comparison.is_custom() {
+                return Err(usage(
+                    "publication tracing is not yet supported for custom statement comparisons",
+                    "fa replay C:<diff-oid> replays both saved company statements and their exact comparison",
+                ));
             }
+            statement_question_matches(args, &comparison.report_selection()?)?;
             if args.switch("--functional") && !comparison.uses_functional_valuations() {
                 return Err(fa_journal::Refusal::new(
                     fa::certificate::code::CERTIFICATE_INVALID,

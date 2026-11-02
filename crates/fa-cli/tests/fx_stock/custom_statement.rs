@@ -228,7 +228,69 @@ fn functional_company_statements_keep_carrying_values_rounding_and_cold_replay()
         "Current"
     );
 
+    let issuance = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "issue",
+            "--certificate",
+            &reference,
+            "--issued-to",
+            "board",
+            "--dry-run",
+        ],
+    );
+    let issuance_path = fixture.file(
+        "functional-company-issuance.plan",
+        text(data(&issuance), "bytes"),
+    );
+    let approval = ok(
+        &fixture.book,
+        &[
+            "approve",
+            "--proposal",
+            text(data(&issuance), "proposal_digest"),
+            "--as",
+            "issuance-controller",
+        ],
+    );
+    ok(
+        &fixture.book,
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            &issuance_path,
+            "--approval",
+            text(data(&approval), "approval_vid"),
+        ],
+    );
+
     fixture.post("company-backdate", "2026-01-20", "10.00", 13);
+    let after = ok_many(
+        &fixture.book,
+        &[
+            "statement",
+            "custom",
+            "--definition",
+            "company-income",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+            "--certify",
+            "--scale-digits",
+            "2",
+            "--rounding",
+            "HalfEven",
+            "--residual-line",
+            "rounding",
+            "--residual-label",
+            "Presentation rounding",
+        ],
+    );
+    let after_reference = format!("C:{}", text(event(&after, "report_certificate"), "oid"));
     activate_layout(
         &fixture,
         "income-statement",
@@ -239,6 +301,74 @@ fn functional_company_statements_keep_carrying_values_rounding_and_cold_replay()
     let replay = ok_many(&fixture.book, &["replay", &reference]);
     assert_eq!(event(&replay, "statement"), exact);
     assert_eq!(event(&replay, "functional_custom_statement"), presented);
+    // Issued views inherit the saved functional basis, comparative and
+    // rounding without requiring the caller to reconstruct the old flags.
+    for view in [
+        vec!["--as-originally-reported"],
+        vec!["--as-issued-to", "board"],
+        vec!["--as-reported-in", &reference],
+    ] {
+        let original = ok_many(
+            &fixture.book,
+            &[
+                &[
+                    "statement",
+                    "custom",
+                    "--definition",
+                    "company-income",
+                    "--for",
+                    "FY2026-P02",
+                    "--certify",
+                ][..],
+                &view,
+            ]
+            .concat(),
+        );
+        assert_eq!(event(&original, "statement"), exact);
+        assert_eq!(event(&original, "functional_custom_statement"), presented);
+        assert_eq!(
+            text(event(&original, "report_certificate"), "oid"),
+            &reference[2..]
+        );
+    }
+    let compared = ok_many(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &reference,
+            "--after-certificate",
+            &after_reference,
+            "--functional",
+            "--certify",
+        ],
+    );
+    let diff = event(&compared, "statement_diff");
+    assert_eq!(diff.get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(text(diff, "base_unit"), "USD");
+    let net = rows(diff, "lines")
+        .iter()
+        .find(|line| text(line, "code") == "net_income")
+        .unwrap();
+    assert_eq!(
+        rows(net, "delta"),
+        &[Json::Str("0.00 USD".into()), Json::Str("13.00 USD".into())]
+    );
+    let diff_source = event(&compared, "report_certificate");
+    let comparison =
+        fa::StatementDiffCertificate::decode(&unhex(text(diff_source, "bytes"))).unwrap();
+    assert!(comparison.is_custom());
+    assert!(comparison.uses_functional_valuations());
+    assert_eq!(comparison.sources().0.canonical_bytes().unwrap(), bytes);
+    let diff_reference = format!("C:{}", text(diff_source, "oid"));
+    assert_eq!(
+        event(
+            &ok_many(&fixture.book, &["replay", &diff_reference]),
+            "statement_diff"
+        ),
+        diff
+    );
     assert_eq!(
         text(
             data(&ok(&fixture.book, &["certificate", "status", &reference])),

@@ -468,7 +468,8 @@ fn enron_e4_books_load() {
             "statement-10k2000",
             "statement-10q2001q3",
             "statement-bridge-10q",
-            "statement-bridge-8k"
+            "statement-bridge-8k",
+            "statement-bridge-8k-fy1999"
         ]
     );
     for book in case.books.values() {

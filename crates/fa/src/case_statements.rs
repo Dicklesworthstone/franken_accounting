@@ -49,6 +49,16 @@ impl CaseStatementBasis {
     }
 }
 
+/// A statement-family-aware question with fixed case frontiers. Its selection
+/// retains custom activation and presentation evidence without inventing a
+/// built-in definition for a company layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaseStatementComparisonRequest {
+    pub selection: ReportSelection,
+    pub before: CommitSeq,
+    pub after: Option<CommitSeq>,
+}
+
 /// A fixed, independently replayable question and the reporting evidence that
 /// selected it. This is a request, not an assertion that a case was disclosed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,7 +75,7 @@ pub struct CaseStatementDiffRequest {
     /// affected period's reporting closure. For `BeforePostImpact`, this is
     /// the actual posting period whose case-only movement is compared.
     pub basis_period: String,
-    pub request: StatementDiffRequest,
+    pub request: CaseStatementComparisonRequest,
 }
 
 #[derive(Clone)]
@@ -87,6 +97,34 @@ fn refused(code: &'static str, message: impl Into<String>, fix: &str) -> Refusal
         "plan §7.4 and §8.3 (originally reported closure versus the case's atomic Post)",
         fix,
     )
+}
+
+fn period_cutoff<V: Vfs + Clone>(
+    db: &fgdb::Database<V>,
+    book: &fa_journal::BookContext,
+    period: &str,
+    at: CommitSeq,
+) -> Outcome<fa_time::DateDay> {
+    let Some(row) = db
+        .vertex_at(fa_journal::rows::period_vid(&book.calendar.id, period), at)
+        .map_err(KernelError::from)?
+        .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))
+    else {
+        return Ok(Err(crate::statements::invalid(format!(
+            "case statement period `{period}` did not exist at its original reporting frontier {}",
+            at.0,
+        ))));
+    };
+    let row = fa_journal::rows::PeriodRow::decode(&row)?;
+    if row.calendar_id != book.calendar.id || row.end <= row.start {
+        return Err(KernelError::Corrupt(
+            "case statement period has a different calendar or invalid bounds".into(),
+        )
+        .into());
+    }
+    Ok(Ok(fa_time::DateDay(row.end.0.checked_sub(1).ok_or_else(
+        || KernelError::Corrupt("case statement period end underflow".into()),
+    )?)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -407,14 +445,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         // issued comparative can precede every period named by the case.
         let earliest = requests
             .iter()
-            .flat_map(|request| {
-                request
-                    .request
-                    .selection
-                    .periods
-                    .iter()
-                    .chain(&request.request.selection.comparative)
-            })
+            .filter_map(|request| request.request.selection.statement_columns())
+            .flat_map(|(_, periods, comparative)| periods.iter().chain(comparative))
             .filter_map(|code| periods.iter().find(|period| &period.code == code))
             .min_by_key(|period| (period.start, period.code.as_str()));
         let opening = earliest
@@ -474,7 +506,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .collect();
         for period in posting_periods {
             for &functional in &measures {
-                for name in ["balance-sheet", "income-statement"] {
+                let selections = match self.case_layouts_at(
+                    cx,
+                    principal,
+                    capability,
+                    &period,
+                    before_post,
+                    functional,
+                )? {
+                    Ok(selections) => selections,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                for selection in selections {
                     requests.push(CaseStatementDiffRequest {
                         case: ordinal,
                         period: period.clone(),
@@ -482,13 +525,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         functional,
                         basis: CaseStatementBasis::BeforePostImpact,
                         basis_period: period.clone(),
-                        request: StatementDiffRequest {
-                            selection: StatementSelection {
-                                definition: StatementDefinition::embedded(name)
-                                    .map_err(|error| KernelError::Corrupt(error.to_string()))?,
-                                periods: vec![period.clone()],
-                                comparative: Vec::new(),
-                            },
+                        request: CaseStatementComparisonRequest {
+                            selection,
                             before: before_post,
                             after: Some(posted_at),
                         },
@@ -497,6 +535,70 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         }
         Ok(Ok(requests))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn case_layouts_at(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period: &str,
+        before: CommitSeq,
+        functional: bool,
+    ) -> Outcome<Vec<ReportSelection>> {
+        self.query(cx, |db, book| {
+            let authority = match fa_journal::policy::admit_reads(db, book, principal, capability)?
+            {
+                Ok(authority) => authority,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = authority.whole_book(before) {
+                return Ok(Err(refusal));
+            }
+            let through = match period_cutoff(db, book, period, before)? {
+                Ok(through) => through,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let active = match crate::statement_definition::all_active_at(
+                db,
+                &cx.query(),
+                book,
+                through,
+                before,
+            )? {
+                Ok(active) => active,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let mut selections = Vec::with_capacity(2 + active.len());
+            for name in ["balance-sheet", "income-statement"] {
+                let selection = Box::new(StatementSelection {
+                    definition: StatementDefinition::embedded(name)
+                        .map_err(|error| KernelError::Corrupt(error.to_string()))?,
+                    periods: vec![period.to_string()],
+                    comparative: Vec::new(),
+                });
+                selections.push(if functional {
+                    ReportSelection::FunctionalStatement(selection)
+                } else {
+                    ReportSelection::Statement(selection)
+                });
+            }
+            for active in active {
+                selections.push(ReportSelection::CustomStatement(Box::new(
+                    crate::CustomStatementSelection {
+                        definition: active.definition,
+                        activation: active.activation,
+                        activated_at: active.recorded_at,
+                        functional,
+                        periods: vec![period.to_string()],
+                        comparative: Vec::new(),
+                        presentation: None,
+                    },
+                )));
+            }
+            Ok(Ok(selections))
+        })
     }
 
     async fn reported_case_statement_requests(
@@ -554,29 +656,27 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             };
             let source = artifact.source_certificate();
-            let (selection, functional) = match &source.selection {
-                ReportSelection::Statement(selection) => (selection, false),
-                ReportSelection::FunctionalStatement(selection) => (selection, true),
-                _ => {
-                    return Err(KernelError::Corrupt(
+            let selection = source
+                .selection
+                .statement_metadata()
+                .map_err(KernelError::from)?
+                .ok_or_else(|| {
+                    KernelError::Corrupt(
                         "issued case source is not a supported native or functional statement"
                             .into(),
                     )
-                    .into());
-                }
-            };
+                })?;
             if artifact.family() != crate::ReportArtifactFamily::Native
                 || source.book_id != self.context().book_id
                 || source.branch_id != Id128::TRUNK
                 || source.known_at != issued.issuance.certified_at
-                || selection.definition.name() != issued.issuance.definition_name
-                || selection.definition.version() != issued.issuance.definition_version
-                || selection.definition.digest().map_err(KernelError::from)?
-                    != issued.issuance.definition_digest
+                || selection.definition_name != issued.issuance.definition_name
+                || selection.definition_version != issued.issuance.definition_version
+                || selection.definition_digest != issued.issuance.definition_digest
                 || !selection
                     .periods
                     .iter()
-                    .chain(&selection.comparative)
+                    .chain(selection.comparative)
                     .any(|code| code == &basis_period)
             {
                 return Err(KernelError::Corrupt(
@@ -584,49 +684,145 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )
                 .into());
             }
-            Some(((**selection).clone(), functional))
+            Some(source.selection.clone())
         } else {
             None
         };
         let functional = issued_selection
             .as_ref()
-            .is_some_and(|(_, functional)| *functional);
-        let mut names = vec!["balance-sheet".to_string(), "income-statement".to_string()];
-        if let Some(issued) = original
-            && !names.contains(&issued.issuance.definition_name)
-        {
-            names.push(issued.issuance.definition_name.clone());
+            .is_some_and(ReportSelection::uses_functional_valuations);
+        let mut selections =
+            match self.case_layouts_at(cx, principal, capability, &period, before, functional)? {
+                Ok(selections) => selections,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        // An issued question is immutable, even if a newer activation was
+        // already present at its certified frontier. Opening stock uses the
+        // layout applicable at the earlier opening cutoff; that activation
+        // may precede the issued current period's layout. An unissued name
+        // first effective after that cutoff has no opening question. An
+        // explicitly issued stock layout must have an applicable counterpart;
+        // missing it is a refusal below, never permission to omit it.
+        if let Some(mut issued) = issued_selection {
+            if opening {
+                match &mut issued {
+                    ReportSelection::Statement(selection)
+                    | ReportSelection::FunctionalStatement(selection) => {
+                        selection.periods = vec![period.clone()];
+                        selection.comparative.clear();
+                    }
+                    ReportSelection::CustomStatement(selection)
+                        if selection.definition.kind
+                            == fa_statements::StatementKind::BalanceSheet =>
+                    {
+                        let applicable = self.query(cx, |db, book| {
+                            let authority = match fa_journal::policy::admit_reads(
+                                db, book, principal, capability,
+                            )? {
+                                Ok(authority) => authority,
+                                Err(refusal) => return Ok(Err(refusal)),
+                            };
+                            if let Err(refusal) = authority.whole_book(before) {
+                                return Ok(Err(refusal));
+                            }
+                            let mut current = None;
+                            for code in &selection.periods {
+                                let through = match period_cutoff(db, book, code, before)? {
+                                    Ok(through) => through,
+                                    Err(refusal) => return Ok(Err(refusal)),
+                                };
+                                current = Some(
+                                    current
+                                        .map_or(through, |day: fa_time::DateDay| day.max(through)),
+                                );
+                            }
+                            let current = current.ok_or_else(|| {
+                                KernelError::Corrupt(
+                                    "issued statement has no current period".into(),
+                                )
+                            })?;
+                            let activation = match crate::statement_definition::validate_active_at(
+                                db,
+                                &cx.query(),
+                                book,
+                                &selection.definition,
+                                selection.activation,
+                                current,
+                                before,
+                            )? {
+                                Ok(activation) => activation,
+                                Err(refusal) => return Ok(Err(refusal)),
+                            };
+                            let opening = match period_cutoff(db, book, &period, before)? {
+                                Ok(opening) => opening,
+                                Err(refusal) => return Ok(Err(refusal)),
+                            };
+                            Ok(Ok(activation.effective_from <= opening))
+                        })?;
+                        match applicable {
+                            Ok(true) => {
+                                selection.periods = vec![period.clone()];
+                                selection.comparative.clear();
+                            }
+                            Ok(false) => {
+                                let historical = selections.iter().find(|historical| matches!(historical,
+                                    ReportSelection::CustomStatement(historical)
+                                        if historical.definition.name == selection.definition.name
+                                            && historical.definition.kind == fa_statements::StatementKind::BalanceSheet
+                                ));
+                                let Some(historical) = historical else {
+                                    return Ok(Err(crate::statements::invalid(format!(
+                                        "issued custom stock layout `{}` has no approved version at opening period `{period}` and original frontier {}; the required opening comparison cannot be omitted",
+                                        selection.definition.name, before.0,
+                                    ))));
+                                };
+                                issued = historical.clone();
+                            }
+                            Err(refusal) => return Ok(Err(refusal)),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let issued_name = issued
+                .statement_metadata()
+                .map_err(KernelError::from)?
+                .ok_or_else(|| KernelError::Corrupt("issued statement metadata vanished".into()))?
+                .definition_name;
+            let mut replace = None;
+            for (index, selected) in selections.iter().enumerate() {
+                if selected
+                    .statement_metadata()
+                    .map_err(KernelError::from)?
+                    .is_some_and(|metadata| metadata.definition_name == issued_name)
+                {
+                    replace = Some(index);
+                    break;
+                }
+            }
+            if let Some(index) = replace {
+                selections[index] = issued;
+            } else {
+                selections.push(issued);
+            }
         }
         let mut requests = Vec::new();
-        for name in names {
-            let mut selection = if let Some((selection, _)) = issued_selection
-                .as_ref()
-                .filter(|(selection, _)| selection.definition.name() == name)
-            {
-                selection.clone()
-            } else {
-                StatementSelection {
-                    definition: StatementDefinition::embedded(&name)
-                        .map_err(|error| KernelError::Corrupt(error.to_string()))?,
-                    periods: vec![period.clone()],
-                    comparative: Vec::new(),
-                }
-            };
-            if opening {
-                if selection.definition.kind() != fa_statements::StatementKind::BalanceSheet {
-                    continue;
-                }
-                selection.periods = vec![period.clone()];
-                selection.comparative.clear();
+        for selection in selections {
+            let metadata = selection
+                .statement_metadata()
+                .map_err(KernelError::from)?
+                .ok_or_else(|| KernelError::Corrupt("case statement metadata vanished".into()))?;
+            if opening && metadata.kind != fa_statements::StatementKind::BalanceSheet {
+                continue;
             }
             requests.push(CaseStatementDiffRequest {
                 case: ordinal,
                 period: period.clone(),
                 opening,
-                functional,
+                functional: metadata.functional,
                 basis: basis.clone(),
                 basis_period: basis_period.clone(),
-                request: StatementDiffRequest {
+                request: CaseStatementComparisonRequest {
                     selection,
                     before,
                     after: Some(posted_at),
@@ -638,6 +834,267 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    fn admit_case_statement_question(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        question: &CaseStatementDiffRequest,
+        produce: bool,
+    ) -> Outcome<()> {
+        if produce
+            && let Err(denial) = fa_policy::require(
+                capability,
+                fa_policy::Op::Produce,
+                "certifying a case statement comparison",
+            )
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        self.query(cx, |db, book| {
+            let authority = match fa_journal::policy::admit_reads(db, book, principal, capability)?
+            {
+                Ok(authority) => authority,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let head = db.frontier().map_err(KernelError::from)?;
+            if let Err(refusal) = authority.whole_book(head) {
+                return Ok(Err(refusal));
+            }
+            let Some(metadata) = question
+                .request
+                .selection
+                .statement_metadata()
+                .map_err(KernelError::from)?
+            else {
+                return Ok(Err(crate::statements::invalid(
+                    "case comparisons require a supported statement selection",
+                )));
+            };
+            if metadata.functional != question.functional {
+                return Ok(Err(crate::statements::invalid(
+                    "case comparison valuation basis must match its exact report selection",
+                )));
+            }
+            if !question
+                .request
+                .after
+                .is_some_and(|after| question.request.before <= after && after <= head)
+            {
+                return Ok(Err(crate::statements::invalid(
+                    "case comparisons require fixed frontiers with before <= after <= book head",
+                )));
+            }
+            Ok(Ok(()))
+        })
+    }
+
+    /// Evaluate a selected case question under Read authority. A custom
+    /// presentation remains pinned, while the bridge compares exact amounts.
+    pub async fn case_statement_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        question: &CaseStatementDiffRequest,
+    ) -> Outcome<crate::StatementDiff> {
+        if let Err(refusal) =
+            self.admit_case_statement_question(cx, principal, capability, question, false)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(question.request.before))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let request = &question.request;
+        match &request.selection {
+            ReportSelection::Statement(selection)
+            | ReportSelection::FunctionalStatement(selection) => {
+                let request = StatementDiffRequest {
+                    selection: (**selection).clone(),
+                    before: request.before,
+                    after: request.after,
+                };
+                if question.functional {
+                    self.functional_statement_diff(cx, principal, capability, &request)
+                        .await
+                } else {
+                    self.statement_diff(cx, principal, capability, &request)
+                }
+            }
+            ReportSelection::CustomStatement(selection) => {
+                let before = if question.functional {
+                    self.functional_custom_statement(
+                        cx,
+                        capability,
+                        (**selection).clone(),
+                        Some(request.before),
+                    )
+                    .await?
+                } else {
+                    self.custom_statement(
+                        cx,
+                        capability,
+                        (**selection).clone(),
+                        Some(request.before),
+                    )?
+                };
+                let before = match before {
+                    Ok(before) => before,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                let after = if question.functional {
+                    self.functional_custom_statement(
+                        cx,
+                        capability,
+                        (**selection).clone(),
+                        request.after,
+                    )
+                    .await?
+                } else {
+                    self.custom_statement(cx, capability, (**selection).clone(), request.after)?
+                };
+                let after = match after {
+                    Ok(after) => after,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                if question.functional {
+                    Ok(crate::StatementDiff::between_functional(
+                        before.statement,
+                        after.statement,
+                    ))
+                } else {
+                    Ok(crate::StatementDiff::between(
+                        before.statement,
+                        after.statement,
+                    ))
+                }
+            }
+            _ => Ok(Err(crate::statements::invalid(
+                "unsupported case statement family",
+            ))),
+        }
+    }
+
+    async fn certify_case_statement_source(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: &ReportSelection,
+        at: CommitSeq,
+    ) -> Outcome<crate::ReportCertificate> {
+        match selection {
+            ReportSelection::FunctionalStatement(selection) => self
+                .certify_functional_statement(
+                    cx,
+                    principal,
+                    capability,
+                    (**selection).clone(),
+                    Some(at),
+                )
+                .await
+                .map(|result| result.map(|report| report.certificate)),
+            ReportSelection::CustomStatement(selection) if selection.functional => self
+                .certify_functional_custom_statement(
+                    cx,
+                    capability,
+                    (**selection).clone(),
+                    Some(at),
+                )
+                .await
+                .map(|result| result.map(|report| report.certificate)),
+            _ => self
+                .certify_report(cx, selection.clone(), Some(at))
+                .map(|result| result.map(|report| report.certificate)),
+        }
+    }
+
+    async fn exact_issued_case_statement_source(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_policy::Capability,
+        question: &CaseStatementDiffRequest,
+    ) -> Outcome<Option<crate::ReportCertificate>> {
+        let CaseStatementBasis::FirstIssuance { certificate, .. } = &question.basis else {
+            return Ok(Ok(None));
+        };
+        let source = match self
+            .reported_statement(cx, capability, certificate, &question.basis_period)
+            .await?
+        {
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((source.time_selection.is_none()
+            && source.known_at == question.request.before
+            && source.selection == question.request.selection)
+            .then_some(source)))
+    }
+
+    /// Certify a fixed case question, retaining the original issued source
+    /// whenever it asks this exact sequence-selected question. An instant
+    /// selection is recertified at its original resolved sequence, preserving
+    /// the existing sequence-only comparison contract and issuance basis.
+    pub async fn certify_case_statement_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        question: &CaseStatementDiffRequest,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        if let Err(refusal) =
+            self.admit_case_statement_question(cx, principal, capability, question, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(question.request.before))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let request = &question.request;
+        let original = match self
+            .exact_issued_case_statement_source(cx, capability, question)
+            .await?
+        {
+            Ok(original) => original,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let before = if let Some(original) = original {
+            original
+        } else {
+            match self
+                .certify_case_statement_source(
+                    cx,
+                    principal,
+                    capability,
+                    &request.selection,
+                    request.before,
+                )
+                .await?
+            {
+                Ok(source) => source,
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        };
+        let after = request.after.ok_or_else(|| {
+            KernelError::Corrupt("validated case comparison lost its fixed Post".into())
+        })?;
+        let after = match self
+            .certify_case_statement_source(cx, principal, capability, &request.selection, after)
+            .await?
+        {
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.compare_statement_certificates(cx, principal, capability, &before, &after)
+    }
+
     /// Validate the complete fixed set before a disclosure writes anything.
     /// The kernel separately witnesses the retained artifacts and immutable
     /// Post. This layer owns statement selection and independent replay of
@@ -724,6 +1181,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(post) => post,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let already_disclosed = recorded.is_some();
         if let Some(recorded) = recorded {
             if recorded != digests {
                 return Ok(Err(comparison_refused(
@@ -766,9 +1224,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     ))));
                 }
             };
-            let request = match certificate.request() {
-                Ok(request) => request,
+            let selection = match certificate.report_selection() {
+                Ok(selection) => selection,
                 Err(refusal) => return Ok(Err(comparison_refused(refusal.message))),
+            };
+            let (before, after) = certificate.sources();
+            let request = CaseStatementComparisonRequest {
+                selection,
+                before: before.known_at,
+                after: Some(after.known_at),
             };
             let Some(index) = expected.iter().enumerate().find_map(|(index, expected)| {
                 (!matched[index]
@@ -781,6 +1245,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     fa_journal::evidence::hex(digest),
                 ))));
             };
+            // A new disclosure must keep the actual issued closure for its
+            // exact sequence-selected question. A replay-equivalent newly
+            // certified source cannot replace what left the entity. Existing
+            // immutable disclosures retain their exact retry contract above.
+            if !already_disclosed {
+                let issued = match self
+                    .exact_issued_case_statement_source(cx, capability, &expected[index])
+                    .await?
+                {
+                    Ok(issued) => issued,
+                    Err(refusal) => return Ok(Err(comparison_refused(refusal.message))),
+                };
+                if let Some(issued) = issued
+                    && before.digest != issued.digest
+                {
+                    return Ok(Err(comparison_refused(format!(
+                        "comparison {} replaces the exact first-issued source certificate {}",
+                        fa_journal::evidence::hex(digest),
+                        fa_journal::evidence::hex(&issued.digest),
+                    ))));
+                }
+            }
             if let Err(refusal) = self
                 .replay_report_artifact_for_with_history(
                     cx,

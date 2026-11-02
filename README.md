@@ -1851,8 +1851,20 @@ them, so the statement as reported (the certificate that was handed out) and as
 restated (a later certificate) are compared without selecting anything from
 HEAD. A stated `--for`, `--compare` or `--definition` is checked against the
 certificates. With `--certify` the comparison keeps those exact source
-certificates, and `fa statement trace --from-diff C:<oid> --certify` attributes
-it to each intermediate publication.
+certificates. This also works for approved custom layouts in native or
+functional currency: both sources must preserve the complete definition,
+activation, periods, comparative columns and presentation settings. Every
+delta uses exact amounts, even when presentation rounding makes the displayed
+totals identical. Changing a layout is a different question and is refused.
+
+Custom comparisons export through `fa bundle produce --certificate C:<oid>`.
+The independent verifier reconstructs both historical statements, their
+activation and chart bindings, presentations and original functional Rate
+sources before checking every delta and mapping change. It does not claim to
+prove historical Human approval admission or the economic truth of a
+restatement. For built-in statements,
+`fa statement trace --from-diff C:<oid> --certify` attributes the comparison
+to every intermediate publication; custom publication traces remain unsupported.
 
 ### Rendered documents
 
@@ -1914,6 +1926,28 @@ names its number. The first issuance is what `--as-originally-reported` reads
 from then on: the known-at of the certificate it issued, ahead of the period's
 Lock. A later issuance of restated statements is recorded beside it and never
 moves that coordinate. An issuance is never withdrawn.
+
+Issuance accepts native and functional custom statements as well as the
+built-in layouts. For a custom historical view, the issued certificate fixes
+the original definition, activation, valuation basis, comparative columns and
+presentation. Omitted options inherit those selections; explicitly conflicting
+options refuse. Adding `--certify` returns the original retained certificate.
+A later layout activation cannot replace the statement that was issued.
+
+```bash
+fa statement custom --definition management-income --for FY2026-P03 \
+  --as-originally-reported --certify --book ./books/myco --json
+```
+
+Restatement-case comparisons include the exact issued question and every
+applicable custom layout at the original reporting frontier. Opening-balance
+questions resolve layouts at the opening cutoff; posting-period comparisons
+use the layouts applicable immediately before the case Post. A missing
+required historical layout or an account that the original layout cannot map
+causes a refusal. New disclosures bind the exact original issued source when
+it is sequence-selected, the complete expected question set and the fixed
+Post frontier. Broader case-specific cash-flow and equity coverage, and
+custom publication traces, remain separate work.
 
 Two more restatement views read a period at a reported coordinate. On `fa tb`,
 `fa statement` and `fa explain balance`:
