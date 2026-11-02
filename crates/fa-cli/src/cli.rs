@@ -13825,9 +13825,11 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 after.equity_roll_forward_certificate(),
             ) {
                 return statement_equity_diff_from_certificates(
-                    ctx,
+                    &ctx.out,
+                    &ctx.files,
                     args,
                     &mut book,
+                    who,
                     &capability,
                     before,
                     after,
@@ -20192,10 +20194,13 @@ const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward (--f
 
 /// Compare the two original equity reports under a separately chosen question.
 /// A role, date or recorded frontier is never inferred from either artifact.
+#[allow(clippy::too_many_arguments)]
 fn statement_equity_diff_from_certificates(
-    ctx: &mut Ctx<'_>,
+    out: &Out,
+    files: &Files,
     args: &Args,
     book: &mut Book,
+    principal: VId,
     capability: &Capability,
     before: &fa::EquityRollForwardCertificate,
     after: &fa::EquityRollForwardCertificate,
@@ -20220,7 +20225,7 @@ fn statement_equity_diff_from_certificates(
         }
         if args
             .flag("--certificate-out")
-            .is_some_and(|other| ctx.files.resolve(path) == ctx.files.resolve(other))
+            .is_some_and(|other| files.resolve(path) == files.resolve(other))
         {
             return Err(usage(
                 "--request-out and --certificate-out must name different new files",
@@ -20228,7 +20233,6 @@ fn statement_equity_diff_from_certificates(
             ));
         }
     }
-    let principal = ctx.principal(args);
     let expected = notary::equity_diff_expectation(args, book, principal, capability)?;
     let request_bytes = expected.canonical_bytes()?;
     book.prepare_report_history(
@@ -20236,11 +20240,11 @@ fn statement_equity_diff_from_certificates(
         capability,
         Some(before.known_at().min(after.known_at())),
     )??;
-    ctx.out.at_book(book)?;
+    out.at_book(book)?;
     let write_request = || -> Result<(), Fail> {
         if let Some(path) = args.flag("--request-out") {
             write_new_output_file(
-                &ctx.files,
+                files,
                 path,
                 &request_bytes,
                 "equity verification request",
@@ -20259,14 +20263,14 @@ fn statement_equity_diff_from_certificates(
         let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
         let (bytes, retained) = notary::retain_report_artifact_for(
             book,
-            &ctx.files,
+            files,
             args,
             &artifact,
             capability,
             fa::ReportArtifactExpectation::EquityRollForwardDiff(&expected),
         )?;
         render_equity_roll_forward_diff(
-            &ctx.out,
+            out,
             book,
             &certified.report,
             (before.digest(), after.digest()),
@@ -20277,7 +20281,7 @@ fn statement_equity_diff_from_certificates(
         let format = std::str::from_utf8(fa::EQUITY_DIFF_OUTPUT_FORMAT)
             .map_err(|error| Fail::Internal(format!("equity comparison output format: {error}")))?;
         notary::emit_report_artifact_for(
-            &ctx.out,
+            out,
             args,
             &artifact,
             format,
@@ -20291,7 +20295,7 @@ fn statement_equity_diff_from_certificates(
         .diff_equity_roll_forward_certificates(principal, capability, before, after, &expected)??;
     write_request()?;
     render_equity_roll_forward_diff(
-        &ctx.out,
+        out,
         book,
         &report,
         (before.digest(), after.digest()),
