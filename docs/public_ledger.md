@@ -108,6 +108,15 @@ a modified input is refused before a native book is created.
 
 ## Run it
 
+The [Public ledger native replay workflow](../.github/workflows/public-ledger.yml)
+runs the Python source checks, builds the native binaries with the pinned
+toolchain, executes the Rust CSV regressions, and replays all three agencies.
+It uses committed source fixtures, records the exact tested commit and runner
+resources, and retains reports and command transcripts as workflow artifacts.
+Each agency still runs when another agency fails, provided the native build
+succeeded. Read the workflow result and the individual replay reports for
+execution evidence; configuration alone is not a successful native run.
+
 Use the repository's pinned Rust toolchain and normal build lane:
 
 ```bash

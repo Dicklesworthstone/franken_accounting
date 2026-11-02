@@ -1,0 +1,113 @@
+name: Public ledger native replay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/public_ledger*.py'
+      - 'scripts/tests/test_public_ledger*.py'
+      - 'crates/**'
+      - 'registries/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.github/workflows/public-ledger.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-ledger-native-replay
+  cancel-in-progress: false
+
+jobs:
+  authentic-agency-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Fetch the exact public commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          mkdir -p artifacts/public-ledger
+
+      - name: Record runner resources and source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            git rev-parse HEAD
+            python3 --version
+            free -h
+            df -h .
+          } | tee artifacts/public-ledger/environment.log
+
+      - name: Verify authentic source fixtures and negative controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_public_ledger*.py' -v 2>&1 | tee artifacts/public-ledger/python-tests.log
+
+      - name: Install the pinned compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-08-31 --profile minimal
+
+      - name: Build the native accounting CLI and independent verifier
+        id: native-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 build --locked -Z bindeps -Z git=shallow-deps -p fa-cli --bin fa -p fa-verify --bin fa-verify --jobs 1 2>&1 | tee artifacts/public-ledger/native-build.log
+
+      - name: Regress CSV preservation and ambiguous-input refusal
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --lib legacy::tests:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/legacy-tests.log
+
+      - name: Replay the complete firefighters pension selection
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/public_ledger.py run --agency 31500 --out artifacts/public-ledger/pension 2>&1 | tee artifacts/public-ledger/pension.log
+
+      - name: Replay the complete university selection
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/public_ledger.py run --agency 66000 --out artifacts/public-ledger/university 2>&1 | tee artifacts/public-ledger/university.log
+
+      - name: Replay the complete museum selection
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/public_ledger.py run --agency 20400 --out artifacts/public-ledger/museum 2>&1 | tee artifacts/public-ledger/museum.log
+
+      - name: Retain replay reports and command transcripts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-ledger-replay-${{ github.sha }}
+          path: |
+            artifacts/public-ledger/*.log
+            artifacts/public-ledger/*/report.json
+            artifacts/public-ledger/*/failure.json
+            artifacts/public-ledger/*/commands.jsonl
+          retention-days: 14
+          if-no-files-found: error
