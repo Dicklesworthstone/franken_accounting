@@ -1579,3 +1579,16 @@ Newer combined product code still needs a fresh positive run and final-tree
 gates. The original read-authorization Bead stays open for its account-scope,
 whole-entry, substrate read-counter, and reference-model requirements.
 No independent-verifier claim follows from this self-executed evidence.
+
+## 2026-11-02 — Combined custom-case period lookup did not compile
+
+The original Tier 0 on exact combined `665fbc8a` failed with E0425 in
+`crates/fa/src/case_statements.rs:109`, in both `fa` and its library-test
+target. The newly merged historical custom-statement path called
+`fa_journal::rows::period_vid`, which does not exist. The canonical public
+helper is `fa_model::period_vid`, already used by the facade's other period
+lookups. The call now names that helper directly; its calendar, period code,
+recorded frontier, row validation, and effective-date bounds are unchanged.
+The superseded CLI and full-proof attempts on `665fbc8a` were deliberately
+stopped after this actual compiler failure. Corrected source requires fresh
+qualification; the earlier aging component passes do not qualify this tree.
