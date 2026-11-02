@@ -369,6 +369,88 @@ fn functional_company_statements_keep_carrying_values_rounding_and_cold_replay()
         ),
         diff
     );
+    // Saved custom functional sources select their own basis and retain
+    // their original rounded layouts after a new version has been activated.
+    let traced = ok_many(
+        &fixture.book,
+        &[
+            "statement",
+            "trace",
+            "--from-diff",
+            &diff_reference,
+            "--certify",
+        ],
+    );
+    let trace = event(&traced, "statement_trace");
+    assert_eq!(trace.get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(text(trace, "base_unit"), "USD");
+    assert_eq!(trace.get("lines"), diff.get("lines"));
+    assert_eq!(trace.get("definition_version"), Some(&Json::Int(1)));
+    let trace_source = event(&traced, "report_certificate");
+    assert_eq!(
+        text(trace_source, "output_format"),
+        "fa:functional-custom-statement-trace:v1"
+    );
+    let attributed =
+        fa::StatementTraceCertificate::decode(&unhex(text(trace_source, "bytes"))).unwrap();
+    assert!(attributed.is_custom());
+    assert!(attributed.uses_functional_valuations());
+    assert_eq!(
+        attributed.sources().first().unwrap(),
+        comparison.sources().0
+    );
+    assert_eq!(attributed.sources().last().unwrap(), comparison.sources().1);
+    assert!(
+        attributed
+            .sources()
+            .iter()
+            .all(|source| source.selection == decoded.selection)
+    );
+    let trace_reference = format!("C:{}", text(trace_source, "oid"));
+    let replayed = ok_many(&fixture.book, &["replay", &trace_reference, "--workpaper"]);
+    assert_eq!(event(&replayed, "statement_trace"), trace);
+    assert!(
+        text(event(&replayed, "workpaper_exported"), "text")
+            .contains("\"format\":\"fa:functional-custom-statement-trace-jsonl:v1\"")
+    );
+    let before = comparison.sources().0.known_at.0.to_string();
+    let after = comparison.sources().1.known_at.0.to_string();
+    let direct_path = fixture.dir.join("functional-company-trace.cert");
+    let direct = ok_many(
+        &fixture.book,
+        &[
+            "statement",
+            "trace",
+            "--definition",
+            "company-income",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+            "--before",
+            &before,
+            "--after",
+            &after,
+            "--certificate-out",
+            direct_path.to_str().unwrap(),
+            "--scale-digits",
+            "2",
+            "--rounding",
+            "HalfEven",
+            "--residual-line",
+            "rounding",
+            "--residual-label",
+            "Presentation rounding",
+        ],
+    );
+    assert_eq!(event(&direct, "statement_trace"), trace);
+    let direct_certificate =
+        fa::StatementTraceCertificate::decode(&std::fs::read(direct_path).unwrap()).unwrap();
+    assert_eq!(
+        direct_certificate.report_selection().unwrap(),
+        decoded.selection
+    );
     assert_eq!(
         text(
             data(&ok(&fixture.book, &["certificate", "status", &reference])),

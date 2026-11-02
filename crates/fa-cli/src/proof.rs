@@ -914,6 +914,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut report_digest = None;
     let mut report_units = None;
     let mut report_base_unit = None;
+    let mut equity_diff_request = false;
     let produced = if let Some(source) = report_source {
         let bytes = crate::notary::read_certificate_bytes(
             &book,
@@ -933,10 +934,11 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     | fa::ReportArtifactFamily::DueDateAgingReconciliation
                     | fa::ReportArtifactFamily::SplitCashFlow
                     | fa::ReportArtifactFamily::IndirectCashFlow
+                    | fa::ReportArtifactFamily::EquityRollForwardDiff
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, split cash-flow or indirect cash-flow certificate",
+                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -1063,6 +1065,26 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &certificate,
                 )??
             }
+            fa::ReportArtifactFamily::EquityRollForwardDiff => {
+                let expected =
+                    crate::notary::equity_diff_expectation(args, &book, principal, &capability)?;
+                let certificate =
+                    artifact
+                        .equity_roll_forward_diff_certificate()
+                        .ok_or_else(|| {
+                            Fail::Internal(
+                                "equity comparison artifact has no typed certificate".into(),
+                            )
+                        })?;
+                equity_diff_request = true;
+                book.produce_equity_roll_forward_diff_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    certificate,
+                    &expected,
+                )??
+            }
             fa::ReportArtifactFamily::CashFlow => {
                 let certificate = fa::CashFlowCertificate::decode(&bytes)?;
                 book.produce_cash_flow_bundle(principal, &capability, state, &certificate)??
@@ -1113,7 +1135,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, lot schedule, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, lot schedule, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward or comparison, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }
@@ -1191,6 +1213,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(digest) = report_digest {
         verify.push_str(&format!(" --expect {digest}"));
     }
+    if equity_diff_request {
+        verify.push_str(" --equity-diff-request <independently-retained-request-file>");
+    }
     if let Some(base_unit) = report_base_unit {
         verify.push_str(&format!(" --base-unit {base_unit}"));
     }
@@ -1204,7 +1229,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .join(",")
         ));
     }
-    let unit_premise = if report_units.is_some() {
+    let unit_premise = if equity_diff_request {
+        "\nSelect the canonical equity request retained when the comparison was requested (--request-out or verification_request_hex); the delivered bundle cannot choose the recipient's expected frontiers, units, dates or owner-account roles."
+    } else if report_units.is_some() {
         "\nConfirm --units against the recipient's complete unit-ID list: the checkpoint authenticates the journal, not genesis unit-table membership or unit labels."
     } else if report_base_unit.is_some() {
         "\nConfirm --base-unit against the recipient's independently expected base currency: this bundle authenticates the lot schedule and relief provenance, but does not authenticate genesis currency policy or prove per-disposal lot-law admission."

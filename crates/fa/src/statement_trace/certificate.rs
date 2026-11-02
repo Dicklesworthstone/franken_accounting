@@ -14,8 +14,9 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use super::{
-    Builder, MAX_STATEMENT_TRACE_PUBLICATIONS, StatementTrace, StatementTraceRequest, authorize,
-    publication_entries, resolved,
+    Builder, CustomStatementTraceRequest, MAX_STATEMENT_TRACE_PUBLICATIONS, SourceRequest,
+    StatementTrace, StatementTraceRequest, authorize, publication_entries, resolve_interval,
+    resolved,
 };
 use crate::{
     AsyncBook, BookError, CertifiedStatement, Outcome, ReportCertificate, ReportOutput,
@@ -24,8 +25,14 @@ use crate::{
 
 pub const CERTIFICATE_FORMAT: &[u8] = b"fa:statement-trace-certificate:v1";
 pub const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8] = b"fa:functional-statement-trace-certificate:v1";
+pub const CUSTOM_CERTIFICATE_FORMAT: &[u8] = b"fa:custom-statement-trace-certificate:v1";
+pub const FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT: &[u8] =
+    b"fa:functional-custom-statement-trace-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-trace-certificate-digest:v1";
 const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-trace-certificate-digest:v1";
+const CUSTOM_DIGEST_DOMAIN: &[u8] = b"fa:custom-statement-trace-certificate-digest:v1";
+const FUNCTIONAL_CUSTOM_DIGEST_DOMAIN: &[u8] =
+    b"fa:functional-custom-statement-trace-certificate-digest:v1";
 pub const MAX_STATEMENT_TRACE_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCES: usize = MAX_STATEMENT_TRACE_PUBLICATIONS + 1;
 
@@ -77,7 +84,9 @@ fn family(sources: &[ReportCertificate]) -> Result<(), Refusal> {
     if sources.len() > MAX_SOURCES
         || !matches!(
             &first.selection,
-            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
+            ReportSelection::Statement(_)
+                | ReportSelection::FunctionalStatement(_)
+                | ReportSelection::CustomStatement(_)
         )
     {
         return Err(invalid("a trace needs 1..=257 financial statement sources"));
@@ -102,6 +111,9 @@ fn statement(output: ReportOutput) -> Result<Statement, Refusal> {
         ReportOutput::Statement(statement) | ReportOutput::FunctionalStatement(statement) => {
             Ok(*statement)
         }
+        // Source replay verifies the complete presentation. Attribution is
+        // always over the exact underlying statement, never rounded amounts.
+        ReportOutput::CustomStatement(report) => Ok(report.statement),
         _ => Err(invalid(
             "a trace source replay did not produce a financial statement",
         )),
@@ -109,6 +121,13 @@ fn statement(output: ReportOutput) -> Result<Statement, Refusal> {
 }
 
 impl StatementTraceCertificate {
+    #[must_use]
+    pub fn is_custom(&self) -> bool {
+        self.sources
+            .first()
+            .is_some_and(|source| matches!(&source.selection, ReportSelection::CustomStatement(_)))
+    }
+
     #[must_use]
     pub fn uses_functional_valuations(&self) -> bool {
         self.sources
@@ -118,27 +137,30 @@ impl StatementTraceCertificate {
 
     #[must_use]
     pub fn format(&self) -> &'static [u8] {
-        if self.uses_functional_valuations() {
-            FUNCTIONAL_CERTIFICATE_FORMAT
-        } else {
-            CERTIFICATE_FORMAT
+        match (self.is_custom(), self.uses_functional_valuations()) {
+            (false, false) => CERTIFICATE_FORMAT,
+            (false, true) => FUNCTIONAL_CERTIFICATE_FORMAT,
+            (true, false) => CUSTOM_CERTIFICATE_FORMAT,
+            (true, true) => FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
         }
     }
 
     #[must_use]
     pub fn output_format(&self) -> &'static [u8] {
-        if self.uses_functional_valuations() {
-            super::FUNCTIONAL_OUTPUT_FORMAT
-        } else {
-            super::OUTPUT_FORMAT
+        match (self.is_custom(), self.uses_functional_valuations()) {
+            (false, false) => super::OUTPUT_FORMAT,
+            (false, true) => super::FUNCTIONAL_OUTPUT_FORMAT,
+            (true, false) => super::CUSTOM_OUTPUT_FORMAT,
+            (true, true) => super::FUNCTIONAL_CUSTOM_OUTPUT_FORMAT,
         }
     }
 
     fn digest_domain(&self) -> &'static [u8] {
-        if self.uses_functional_valuations() {
-            FUNCTIONAL_DIGEST_DOMAIN
-        } else {
-            DIGEST_DOMAIN
+        match (self.is_custom(), self.uses_functional_valuations()) {
+            (false, false) => DIGEST_DOMAIN,
+            (false, true) => FUNCTIONAL_DIGEST_DOMAIN,
+            (true, false) => CUSTOM_DIGEST_DOMAIN,
+            (true, true) => FUNCTIONAL_CUSTOM_DIGEST_DOMAIN,
         }
     }
 
@@ -163,6 +185,12 @@ impl StatementTraceCertificate {
         &self.digest
     }
 
+    /// The complete, identical question retained by every source certificate.
+    pub fn report_selection(&self) -> Result<ReportSelection, Refusal> {
+        family(&self.sources)?;
+        Ok(self.sources[0].selection.clone())
+    }
+
     pub fn request(&self) -> Result<StatementTraceRequest, Refusal> {
         family(&self.sources)?;
         let first = &self.sources[0];
@@ -170,7 +198,11 @@ impl StatementTraceCertificate {
         let selection = match &first.selection {
             ReportSelection::Statement(selection)
             | ReportSelection::FunctionalStatement(selection) => selection,
-            _ => return Err(invalid("trace source is not a statement")),
+            _ => {
+                return Err(invalid(
+                    "custom trace sources require the complete report_selection",
+                ));
+            }
         };
         Ok(StatementTraceRequest {
             comparison: StatementDiffRequest {
@@ -257,7 +289,14 @@ impl StatementTraceCertificate {
             |e: DecodeError| invalid(format!("malformed statement trace certificate: {e}"));
         let mut r = Reader::new(bytes);
         let format = r.bytes(64, "trace certificate format").map_err(malformed)?;
-        if format != CERTIFICATE_FORMAT && format != FUNCTIONAL_CERTIFICATE_FORMAT {
+        if ![
+            CERTIFICATE_FORMAT,
+            FUNCTIONAL_CERTIFICATE_FORMAT,
+            CUSTOM_CERTIFICATE_FORMAT,
+            FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
+        ]
+        .contains(&format)
+        {
             return Err(invalid("unsupported statement trace certificate format"));
         }
         let producer = VId(r.u128("trace producer").map_err(malformed)?);
@@ -298,10 +337,9 @@ impl StatementTraceCertificate {
 fn source_at<V: Vfs + Clone, B: Vfs + Clone>(
     book: &AsyncBook<V, B>,
     cx: &PurposeContexts,
-    request: &StatementDiffRequest,
+    request: &SourceRequest,
     at: CommitSeq,
     endpoints: Option<(&ReportCertificate, &ReportCertificate)>,
-    functional: bool,
 ) -> Outcome<CertifiedStatement> {
     let pinned = endpoints.and_then(|(before, after)| {
         if at == before.known_at {
@@ -321,19 +359,18 @@ fn source_at<V: Vfs + Clone, B: Vfs + Clone>(
                 certificate: source.clone(),
             }));
     }
-    if functional {
-        // The async caller has admitted authority and prepared complete
-        // retained Entry/Rate history before this synchronous source walk.
-        Ok(book
-            .certify_report(
-                cx,
-                ReportSelection::FunctionalStatement(Box::new(request.selection.clone())),
-                Some(at),
-            )?
-            .and_then(crate::statements::certified_functional))
-    } else {
-        book.certify_statement(cx, request.selection.clone(), Some(at))
-    }
+    // The caller has admitted authority and, for functional selections,
+    // prepared complete retained Entry/Rate history before this source walk.
+    // Reusing the exact full selection also retains the custom activation and
+    // presentation at intermediate frontiers; no latest-layout lookup occurs.
+    Ok(book
+        .certify_report(cx, request.selection.clone(), Some(at))?
+        .and_then(|source| {
+            statement(source.report).map(|statement| CertifiedStatement {
+                statement,
+                certificate: source.certificate,
+            })
+        }))
 }
 
 fn source_frame_size(source: &ReportCertificate) -> Result<usize, Refusal> {
@@ -351,14 +388,12 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
     cx: &PurposeContexts,
     principal: VId,
     capability: &Capability,
-    request: &StatementDiffRequest,
+    request: &SourceRequest,
     endpoints: Option<(&ReportCertificate, &ReportCertificate)>,
-    functional: bool,
 ) -> Outcome<CertifiedStatementTrace> {
-    let Some(after) = request.after else {
-        return Ok(Err(invalid("trace interval was not resolved")));
-    };
-    let first = match source_at(book, cx, request, request.before, endpoints, functional)? {
+    let after = request.after;
+    let functional = request.selection.uses_functional_valuations();
+    let first = match source_at(book, cx, request, request.before, endpoints)? {
         Ok(s) => s,
         Err(r) => return Ok(Err(r)),
     };
@@ -371,10 +406,19 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
         Err(r) => return Ok(Err(r)),
     };
     let mut sources = vec![first.certificate];
+    let format = match (
+        matches!(&request.selection, ReportSelection::CustomStatement(_)),
+        functional,
+    ) {
+        (false, false) => CERTIFICATE_FORMAT,
+        (false, true) => FUNCTIONAL_CERTIFICATE_FORMAT,
+        (true, false) => CUSTOM_CERTIFICATE_FORMAT,
+        (true, true) => FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
+    };
     for offset in 1..=after.0 - request.before.0 {
         let at = CommitSeq(request.before.0 + offset);
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let next = match source_at(book, cx, request, at, endpoints, functional)? {
+        let next = match source_at(book, cx, request, at, endpoints)? {
             Ok(s) => s,
             Err(r) => return Ok(Err(r)),
         };
@@ -390,16 +434,7 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
         if let Err(r) = builder.push(next.statement, entries) {
             return Ok(Err(r));
         }
-        if let Err(r) = total([
-            92,
-            if functional {
-                FUNCTIONAL_CERTIFICATE_FORMAT.len()
-            } else {
-                CERTIFICATE_FORMAT.len()
-            },
-            source_bytes,
-            builder.step_bytes,
-        ]) {
+        if let Err(r) = total([92, format.len(), source_bytes, builder.step_bytes]) {
             return Ok(Err(r));
         }
         sources.push(next.certificate);
@@ -411,11 +446,6 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
     let length = match report.encoded_len() {
         Ok(n) => n,
         Err(r) => return Ok(Err(r)),
-    };
-    let format = if functional {
-        FUNCTIONAL_CERTIFICATE_FORMAT
-    } else {
-        CERTIFICATE_FORMAT
     };
     if let Err(r) = total([92, format.len(), source_bytes, length]) {
         return Ok(Err(r));
@@ -439,7 +469,74 @@ fn build<V: Vfs + Clone, B: Vfs + Clone>(
     )
 }
 
+fn request_from_diff(
+    comparison: &StatementDiffCertificate,
+    max_publications: usize,
+    head: CommitSeq,
+) -> Result<SourceRequest, Refusal> {
+    let selection = comparison.report_selection()?;
+    let (first, last) = comparison.sources();
+    let after = resolve_interval(first.known_at, Some(last.known_at), max_publications, head)?;
+    Ok(SourceRequest {
+        selection,
+        before: first.known_at,
+        after,
+    })
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Retain every historical native custom statement, including its exact
+    /// reviewed activation and independently recomputed presentation.
+    pub fn certify_custom_statement_trace(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &CustomStatementTraceRequest,
+    ) -> Outcome<CertifiedStatementTrace> {
+        let head = match authorize(self, cx, principal, capability, true)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match SourceRequest::custom(request, head, false) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        build(self, cx, principal, capability, &request, None)
+    }
+
+    /// Retain every functional custom source under one complete approved
+    /// selector. Historical Rate evidence is prepared before source evaluation.
+    pub async fn certify_functional_custom_statement_trace(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &CustomStatementTraceRequest,
+    ) -> Outcome<CertifiedStatementTrace> {
+        let head = match self.admit_functional_report(cx, principal, capability, None, true)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match SourceRequest::custom(request, head, true) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self
+            .prepare_functional_report(cx, principal, capability, Some(request.after), true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = build(self, cx, principal, capability, &request, None)?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, Some(request.after), true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
     /// Retain a source certificate for every adjacent frontier, not just the
     /// endpoints. Current read+produce authority precedes all observations.
     pub fn certify_statement_trace(
@@ -453,11 +550,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(h) => h,
             Err(r) => return Ok(Err(r)),
         };
-        let request = match resolved(request, head) {
+        let request = match resolved(request, head).and_then(|r| SourceRequest::builtin(r, false)) {
             Ok(r) => r,
             Err(r) => return Ok(Err(r)),
         };
-        build(self, cx, principal, capability, &request, None, false)
+        build(self, cx, principal, capability, &request, None)
     }
 
     /// Certify every functional statement prefix, retaining the original
@@ -474,19 +571,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(head) => head,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let request = match resolved(request, head) {
+        let request = match resolved(request, head).and_then(|r| SourceRequest::builtin(r, true)) {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),
         };
         if let Err(refusal) = self
-            .prepare_functional_report(cx, principal, capability, request.after, true)
+            .prepare_functional_report(cx, principal, capability, Some(request.after), true)
             .await?
         {
             return Ok(Err(refusal));
         }
-        let result = build(self, cx, principal, capability, &request, None, true)?;
+        let result = build(self, cx, principal, capability, &request, None)?;
         if let Err(refusal) =
-            self.admit_functional_report(cx, principal, capability, request.after, true)?
+            self.admit_functional_report(cx, principal, capability, Some(request.after), true)?
         {
             return Ok(Err(refusal));
         }
@@ -513,17 +610,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "functional statement comparisons require certify_functional_statement_trace_from_diff to prepare their retained valuation history",
             )));
         }
-        let request = match comparison.request() {
-            Ok(r) => r,
-            Err(r) => return Ok(Err(r)),
-        };
-        let request = match resolved(
-            &StatementTraceRequest {
-                comparison: request,
-                max_publications,
-            },
-            head,
-        ) {
+        let request = match request_from_diff(comparison, max_publications, head) {
             Ok(r) => r,
             Err(r) => return Ok(Err(r)),
         };
@@ -537,15 +624,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(report) => report,
             Err(r) => return Ok(Err(r)),
         };
-        let certified = match build(
-            self,
-            cx,
-            principal,
-            capability,
-            &request,
-            Some(endpoints),
-            false,
-        )? {
+        let certified = match build(self, cx, principal, capability, &request, Some(endpoints))? {
             Ok(value) => value,
             Err(r) => return Ok(Err(r)),
         };
@@ -577,17 +656,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "a functional publication trace requires a functional comparison; use certify_statement_trace_from_diff for native sources",
             )));
         }
-        let request = match comparison.request() {
-            Ok(request) => request,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let request = match resolved(
-            &StatementTraceRequest {
-                comparison: request,
-                max_publications,
-            },
-            head,
-        ) {
+        let request = match request_from_diff(comparison, max_publications, head) {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -598,7 +667,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         if let Err(refusal) = self
-            .prepare_functional_report(cx, principal, capability, request.after, true)
+            .prepare_functional_report(cx, principal, capability, Some(request.after), true)
             .await?
         {
             return Ok(Err(refusal));
@@ -607,15 +676,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let certified = match build(
-            self,
-            cx,
-            principal,
-            capability,
-            &request,
-            Some(endpoints),
-            true,
-        )? {
+        let certified = match build(self, cx, principal, capability, &request, Some(endpoints))? {
             Ok(certified) => certified,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -625,7 +686,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         if let Err(refusal) =
-            self.admit_functional_report(cx, principal, capability, request.after, true)?
+            self.admit_functional_report(cx, principal, capability, Some(request.after), true)?
         {
             return Ok(Err(refusal));
         }

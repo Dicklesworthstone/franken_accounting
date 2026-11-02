@@ -52,7 +52,7 @@ fn invalid(message: impl Into<String>) -> Refusal {
     )
 }
 
-fn normalize(
+pub(crate) fn normalize(
     request: &EquityRollForwardRequest,
     at: CommitSeq,
 ) -> Result<EquityRollForwardRequest, Refusal> {

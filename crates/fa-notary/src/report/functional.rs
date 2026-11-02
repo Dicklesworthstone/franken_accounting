@@ -311,18 +311,19 @@ pub(super) fn comparison_certificate(bytes: &[u8], journal: &Journal, known_at: 
     bytes.len() <= super::MAX_REPORT_BUNDLE_BYTES && check().unwrap_or(false)
 }
 
-/// A publication trace retains every consecutive functional v5 source through
-/// its final frontier. The final complete prefix also contains every earlier
-/// source's original Rate receipts and valuations. This bounded format route
-/// does not replace full facade replay or independent historical verification.
+/// A publication trace retains every consecutive functional source through its
+/// final frontier: v5 for built-in statements, v12 for custom statements. The
+/// final complete prefix also contains every earlier source's original Rate
+/// receipts and valuations. This bounded format route does not replace full
+/// facade replay or independent historical verification.
 pub(super) fn trace_certificate(bytes: &[u8], journal: &Journal, known_at: CommitSeq) -> bool {
     let check = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(bytes);
-        if reader.bytes(64, "functional trace format")?
-            != b"fa:functional-statement-trace-certificate:v1"
-        {
-            return Ok(false);
-        }
+        let source_format: &[u8] = match reader.bytes(64, "functional trace format")? {
+            b"fa:functional-statement-trace-certificate:v1" => b"fa:report-certificate:v5",
+            b"fa:functional-custom-statement-trace-certificate:v1" => b"fa:report-certificate:v12",
+            _ => return Ok(false),
+        };
         reader.u128("functional trace producer")?;
         reader.fixed::<32>("functional trace capability")?;
         let count = reader.count(257, "functional trace sources")?;
@@ -334,7 +335,7 @@ pub(super) fn trace_certificate(bytes: &[u8], journal: &Journal, known_at: Commi
         };
         for offset in 0..count {
             let source = reader.bytes(super::MAX_REPORT_BUNDLE_BYTES, "functional trace source")?;
-            if !source.starts_with(b"fa:report-certificate:v5")
+            if !source.starts_with(source_format)
                 || !certificate(source, journal, CommitSeq(first + offset as u64))
             {
                 return Ok(false);

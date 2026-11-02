@@ -5,6 +5,9 @@ use fa_model::symbols::{property, relation};
 use fgdb::{WriteBatch, WriteMismatchPolicy};
 use fgdb_types::CanonicalScalar;
 
+#[path = "custom_certificate_tests.rs"]
+mod custom;
+
 fn certify(h: &Harness, request: &StatementTraceRequest) -> CertifiedStatementTrace {
     h.book
         .certify_statement_trace(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), request)

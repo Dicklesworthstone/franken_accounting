@@ -109,18 +109,19 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-               [--units N,N,... | --base-unit N] [--view detail]
+               [--units N,N,... | --base-unit N | --equity-diff-request Q] [--view detail]
                                                 independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 statement comparisons and complete native publication traces,
                                                 effective-date or due-date aging, reconciliation, whole-chart aging portfolios,
                                                 account roll-forwards,
-                                                direct cash flows, changes in equity, lot schedules,
+                                                direct cash flows, changes in equity and their comparisons, lot schedules,
                                                 native/functional one-book consolidated group statements.
                                                 V1 statements require --units;
                                                 native traces retain every consecutive source, including zero-effect steps;
                                                 migration and legacy-ambiguous Replacement traces are refused;
                                                 lot schedules require the recipient's --base-unit;
+                                                equity comparisons require the independently retained canonical request Q;
                                                 V2/V3 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
@@ -157,6 +158,10 @@ options:
   --base-unit N  required only for lot schedules: your expected numeric cost unit ID.
                  This premise does not prove Book genesis or disposal-law admission.
                  It cannot be combined with --units or used for another report family.
+  --equity-diff-request Q  report: independently retained canonical equity comparison question.
+                 Fixes both recorded frontiers, dates, label, units and owner-account roles;
+                 required even when --expect or --receipt authenticates the outer certificate.
+                 Cannot be combined with --units, --base-unit or --view detail.
   --view detail  report: derive complete general-ledger detail from a verified roll-forward.
                  Keeps zero cells, offsetting legs, gross turnover and exact running balances.
                  --expect still pins the original outer RollForwardCertificate; the derived
@@ -193,7 +198,7 @@ const COMMANDS: [&str; 13] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 22] = [
+const VALUE_FLAGS: [&str; 23] = [
     "--state",
     "--after-seq",
     "--through-seq",
@@ -215,6 +220,7 @@ const VALUE_FLAGS: [&str; 22] = [
     "--receipt",
     "--units",
     "--base-unit",
+    "--equity-diff-request",
     "--view",
 ];
 const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
@@ -266,6 +272,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--expect",
             "--units",
             "--base-unit",
+            "--equity-diff-request",
             "--view",
         ],
         _ => &[],
@@ -1452,6 +1459,21 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     "use --base-unit for lots, or --units for a native financial statement",
                 ));
             }
+            let equity_request = if let Some(path) = args.one("--equity-diff-request") {
+                if units.is_some() || base_unit.is_some() || detail_view {
+                    return Err(usage(
+                        "--equity-diff-request cannot be combined with --units, --base-unit or --view detail",
+                        "retain the complete independent equity question in the canonical request file",
+                    ));
+                }
+                let request = load(read, path, args.hex)?;
+                Some(crate::report::EquityRollForwardDiffRequest::decode(&request).map_err(|error| usage(
+                    format!("invalid independent equity request: {error}"),
+                    "supply the original canonical request retained separately from the delivered report bundle",
+                ))?)
+            } else {
+                None
+            };
             let mut checks = Vec::new();
             let expected_checkpoint = if let Some(path) = args.one("--checkpoint") {
                 let bytes = load(read, path, args.hex)?;
@@ -1469,7 +1491,16 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .one("--receipt")
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
-            let verified = if let Some(base_unit) = base_unit {
+            let verified = if let Some(expected) = &equity_request {
+                crate::report::verify_equity_roll_forward_diff_report_expected(
+                    &bytes,
+                    &keys,
+                    expected_checkpoint.as_ref(),
+                    receipt.as_deref(),
+                    expected,
+                    expected_digest.as_ref(),
+                )
+            } else if let Some(base_unit) = base_unit {
                 crate::report::verify_lots_report_expected(
                     &bytes,
                     &keys,
@@ -1567,14 +1598,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
                                 } else if let Some(trace) = &report.statement_trace {
-                                    match trace.summary.valuation {
-                                        crate::report::StatementDiffValuation::Native => {
-                                            "statement_trace"
-                                        }
-                                        crate::report::StatementDiffValuation::Functional {
-                                            ..
-                                        } => "functional_statement_trace",
-                                    }
+                                    statement_trace_mode(trace)
                                 } else if let Some(comparison) = &report.statement_diff {
                                     statement_diff_mode(comparison)
                                 } else if report.functional_trial_balance.is_some() {
@@ -1583,6 +1607,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     } else {
                                         "functional_stock"
                                     }
+                                } else if report.equity_roll_forward_diff.is_some() {
+                                    "equity_roll_forward_diff"
                                 } else if report.equity_roll_forward.is_some() {
                                     "equity_roll_forward"
                                 } else if report.indirect_cash_flow.is_some() {
@@ -1643,6 +1669,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     comparison.lines.len()
                                 } else if let Some(functional) = &report.functional_trial_balance {
                                     functional.cells.len() + functional.pending.len()
+                                } else if let Some(comparison) = &report.equity_roll_forward_diff {
+                                    comparison.units.len() * 15
                                 } else if let Some(equity) = &report.equity_roll_forward {
                                     equity.units.len()
                                 } else if let Some(indirect) = &report.indirect_cash_flow {
@@ -1794,6 +1822,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(equity) = &report.equity_roll_forward {
                         checks.extend(equity_checks(equity));
+                    }
+                    if let Some(comparison) = &report.equity_roll_forward_diff {
+                        checks.extend(equity_diff_checks(comparison));
                     }
                     if let Some(functional) = &report.functional_trial_balance {
                         checks.extend(functional_checks(functional));
@@ -3185,6 +3216,55 @@ fn functional_checks(report: &crate::report::VerifiedFunctionalTrialBalance) -> 
     checks
 }
 
+fn equity_diff_checks(report: &crate::report::VerifiedEquityRollForwardDiff) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "equity_diff_parameters",
+        "recomputation",
+        vec![
+            ("book", h(&report.before.book_id)),
+            ("before", n(report.before.known_at)),
+            ("after", n(report.after.known_at)),
+            ("label", s(&report.before.label)),
+            ("effective_from", day(Some(report.before.effective_from))),
+            (
+                "effective_through",
+                day(Some(report.before.effective_through)),
+            ),
+            ("before_source_digest", h(&report.before_digest)),
+            ("after_source_digest", h(&report.after_digest)),
+            ("independent_request_matched", Json::Bool(true)),
+            (
+                "source_digest_basis",
+                s("complete original v2 equity report, including movement and case citations"),
+            ),
+            ("economic_treatment_verified", Json::Bool(false)),
+            ("approval_admission_verified", Json::Bool(false)),
+        ],
+    )];
+    for unit in &report.units {
+        for line in &unit.lines {
+            checks.push(Check::pass(
+                "equity_diff_line",
+                "recomputation",
+                vec![
+                    ("unit", n(u64::from(unit.unit_id))),
+                    ("code", s(line.code)),
+                    ("before", amount(line.before)),
+                    ("after", amount(line.after)),
+                    ("delta", amount(line.delta)),
+                ],
+            ));
+        }
+    }
+    for (side, source) in [("before", &report.before), ("after", &report.after)] {
+        for mut check in equity_checks(source) {
+            check.detail.insert(0, ("comparison_side", s(side)));
+            checks.push(check);
+        }
+    }
+    checks
+}
+
 fn equity_checks(report: &crate::report::VerifiedEquityRollForward) -> Vec<Check> {
     let accounts =
         |ids: &[u128]| Json::List(ids.iter().map(|id| s(format!("{id:032x}"))).collect());
@@ -4105,6 +4185,19 @@ fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
     checks
 }
 
+fn statement_trace_mode(trace: &crate::report::VerifiedStatementTrace) -> &'static str {
+    match (trace.summary.custom.is_some(), trace.summary.valuation) {
+        (false, crate::report::StatementDiffValuation::Native) => "statement_trace",
+        (true, crate::report::StatementDiffValuation::Native) => "custom_statement_trace",
+        (false, crate::report::StatementDiffValuation::Functional { .. }) => {
+            "functional_statement_trace"
+        }
+        (true, crate::report::StatementDiffValuation::Functional { .. }) => {
+            "functional_custom_statement_trace"
+        }
+    }
+}
+
 fn statement_trace_checks(
     trace: &crate::report::VerifiedStatementTrace,
     unit_universe_source: &str,
@@ -4130,6 +4223,28 @@ fn statement_trace_checks(
         ],
     )];
     checks.extend(statement_diff_checks(&trace.summary, unit_universe_source));
+    if trace.summary.custom.is_some() {
+        checks.push(Check::pass(
+            "custom_statement_trace_basis",
+            "recomputation",
+            vec![
+                (
+                    "selection",
+                    s("same original definition, activation, periods, comparatives and presentation at every frontier"),
+                ),
+                ("deltas", s("exact unrounded statement amounts")),
+                (
+                    "source_presentations",
+                    s("independently recomputed at every consecutive source frontier"),
+                ),
+                (
+                    "source_commitments",
+                    s("complete independently reconstructed exact statements"),
+                ),
+                ("human_activation_admission", s("not_judged")),
+            ],
+        ));
+    }
     if let crate::report::StatementDiffValuation::Functional {
         base_unit,
         book_parameters_source,
@@ -4950,6 +5065,31 @@ mod tests {
             statement_diff_mode(&comparison),
             "functional_custom_statement_diff"
         );
+        let mut trace = crate::report::VerifiedStatementTrace {
+            summary: comparison,
+            publications: Vec::new(),
+        };
+        assert_eq!(
+            statement_trace_mode(&trace),
+            "functional_custom_statement_trace"
+        );
+        let mut json = String::new();
+        for check in statement_trace_checks(&trace, "authenticated-registry") {
+            check.json().write(&mut json);
+        }
+        for expected in [
+            "custom_statement_trace_basis",
+            "same original definition, activation, periods, comparatives and presentation at every frontier",
+            "independently recomputed at every consecutive source frontier",
+            "exact unrounded statement amounts",
+            "exact Rate subset at every consecutive source frontier",
+            "\"human_activation_admission\":\"not_judged\"",
+            "\"approval_admission_verified\":false",
+        ] {
+            assert!(json.contains(expected), "{expected}: {json}");
+        }
+        trace.summary.valuation = StatementDiffValuation::Native;
+        assert_eq!(statement_trace_mode(&trace), "custom_statement_trace");
     }
 
     #[test]
@@ -6029,6 +6169,142 @@ mod tests {
         ]
         .map(str::to_string);
         assert_eq!(run(&malformed, &no_read).exit, EXIT_USAGE);
+    }
+
+    #[test]
+    fn equity_diff_request_input_preserves_digest_pin_and_refuses_conflicting_profiles() {
+        let key = key_hex();
+        let no_read = |_: &str| -> std::io::Result<Vec<u8>> {
+            panic!("conflicting equity request profiles must refuse before file I/O")
+        };
+        for extra in [
+            ["--units", "0"],
+            ["--base-unit", "1"],
+            ["--view", "detail"],
+            ["--equity-diff-request", "again"],
+        ] {
+            let args = [
+                "report",
+                "missing",
+                "--key",
+                &key,
+                "--equity-diff-request",
+                "request",
+                extra[0],
+                extra[1],
+            ]
+            .map(str::to_string);
+            assert_eq!(run(&args, &no_read).exit, EXIT_USAGE);
+        }
+        let args = [
+            "report",
+            "missing",
+            "--key",
+            &key,
+            "--equity-diff-request",
+            "request",
+            "--expect",
+            &"00".repeat(32),
+        ]
+        .map(str::to_string);
+        let malformed = |path: &str| {
+            assert_eq!(path, "request");
+            Ok(b"a bundle is not an independent accounting question".to_vec())
+        };
+        assert_eq!(run(&args, &malformed).exit, EXIT_USAGE);
+        let expected = crate::report::EquityRollForwardDiffRequest {
+            before: 7,
+            after: 8,
+            label: "Equity".into(),
+            effective_from: 10,
+            effective_through: 20,
+            units: vec![1],
+            issuance_accounts: vec![30],
+            distribution_accounts: vec![31],
+        }
+        .canonical_bytes()
+        .unwrap();
+        let files = |path: &str| {
+            if path == "request" {
+                Ok(expected.clone())
+            } else {
+                assert_eq!(path, "missing");
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "fixture"))
+            }
+        };
+        assert_eq!(run(&args, &files).exit, EXIT_IO);
+    }
+
+    #[test]
+    fn equity_diff_rendering_preserves_exact_amounts_source_sides_and_case_scope() {
+        use crate::report::{
+            EquityActivityKind, EquityMovement, EquityRollForwardDiffLine,
+            EquityRollForwardDiffUnit, VerifiedEquityRollForward, VerifiedEquityRollForwardDiff,
+        };
+        let before = VerifiedEquityRollForward {
+            format_version: 2,
+            book_id: [7; 16],
+            known_at: 7,
+            label: "Equity".into(),
+            effective_from: 10,
+            effective_through: 20,
+            source_certificate_digest: [1; 32],
+            issuance_accounts: vec![30],
+            distribution_accounts: vec![31],
+            accounts: vec![],
+            units: vec![],
+            movements: vec![],
+        };
+        let mut after = before.clone();
+        after.known_at = 8;
+        after.movements.push(EquityMovement {
+            entry_digest: [4; 32],
+            leg_index: 0,
+            recorded_seq: 8,
+            effective_day: 10,
+            class: 15,
+            kind: EquityActivityKind::PriorPeriodAdjustment,
+            account_id: 30,
+            unit_id: 1,
+            debits: 80,
+            credits: 0,
+            case_ordinal: Some(7),
+            relates_to: Some(("cy".into(), "FY2025".into())),
+        });
+        let comparison = VerifiedEquityRollForwardDiff {
+            before,
+            after,
+            before_digest: [2; 32],
+            after_digest: [3; 32],
+            units: vec![EquityRollForwardDiffUnit {
+                unit_id: 1,
+                lines: vec![EquityRollForwardDiffLine {
+                    code: "prior_period_adjustments",
+                    before: 0,
+                    after: -80,
+                    delta: -80,
+                }],
+            }],
+        };
+        let output = report("report", true, &equity_diff_checks(&comparison));
+        assert_eq!(output.exit, EXIT_VERIFIED);
+        for expected in [
+            "equity_diff_parameters",
+            "\"independent_request_matched\":true",
+            "\"economic_treatment_verified\":false",
+            "\"approval_admission_verified\":false",
+            "\"comparison_side\":\"before\"",
+            "\"comparison_side\":\"after\"",
+            "\"delta\":\"-80\"",
+            "\"case_ordinal\":7",
+            "FY2025",
+        ] {
+            assert!(
+                output.stdout.contains(expected),
+                "{expected}: {}",
+                output.stdout
+            );
+        }
     }
 
     #[test]

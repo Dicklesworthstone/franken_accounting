@@ -11,6 +11,8 @@ use fa_money::RoundingLaw;
 
 #[path = "custom_statement_diff_bundle.rs"]
 mod diff;
+#[path = "custom_statement_trace_bundle.rs"]
+mod trace;
 
 fn layout(version: u32) -> CustomStatementDefinition {
     let mut definition = CustomStatementDefinition::from_builtin(

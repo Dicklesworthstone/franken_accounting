@@ -3,6 +3,8 @@
 //! pending reservations, reversals and migration controls.
 #[path = "cash_flow.rs"]
 mod cash_flow;
+#[path = "equity_diff.rs"]
+mod equity_diff;
 #[path = "general_ledger.rs"]
 mod general_ledger;
 

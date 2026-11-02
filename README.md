@@ -229,8 +229,9 @@ This verifies computation and journal bindings. It does not independently prove
 historical Approval-row birth, Human profiles, separation of duties, policy
 admission or the definition object's atomic publication; the verifier exposes
 those limits explicitly. Native activation continues to enforce its dual-control
-checks. Custom issuance, statement comparisons and publication traces remain
-outside this report profile.
+checks. Custom statement comparisons and publication traces retain this same
+verification scope, including the original activation and presentation in every
+historical source.
 
 The MCP statement tool accepts the same `functional`, comparative and
 presentation options and transports review source inline. Embedded callers use
@@ -1862,9 +1863,82 @@ The independent verifier reconstructs both historical statements, their
 activation and chart bindings, presentations and original functional Rate
 sources before checking every delta and mapping change. It does not claim to
 prove historical Human approval admission or the economic truth of a
-restatement. For built-in statements,
-`fa statement trace --from-diff C:<oid> --certify` attributes the comparison
-to every intermediate publication; custom publication traces remain unsupported.
+restatement. `fa statement trace --from-diff C:<oid> --certify` attributes a
+built-in or custom comparison to every intermediate publication. It preserves
+both original endpoint certificates and certifies every intervening source,
+including zero-effect publications and changes that cancel before the end.
+Each line delta belongs to the whole atomic publication; associated entry
+links do not invent individual causal allocations.
+
+Custom traces can also start from explicit sequence bounds. This resolves the
+company layout once at `--before`; every later source retains that definition,
+activation, comparative and presentation, even if another layout becomes
+active during the interval. A layout absent or ineffective at the first
+frontier is refused. The same arguments are available through `fa_read_statement`.
+
+```bash
+fa statement trace --definition management-income --for FY2026-P03 \
+  --before 120 --after 145 --max-publications 32 --certify --book ./books/myco --json
+fa statement trace --from-diff C:<comparison-oid> --certify --book ./books/myco --json
+fa replay C:<trace-oid> --workpaper --book ./books/myco --json
+```
+
+`--functional` selects retained functional amounts for direct traces; a saved
+comparison supplies its own basis. Explicit custom presentation options use
+the same `--scale-digits`, rounding law and residual-line contract as the
+source reports, while attribution always compares exact unrounded amounts.
+Traces cover at most 256 publications and retain at most 64 MiB of certificate
+data; an insufficient limit refuses the whole request. Portable custom traces
+independently reconstruct every original layout, historical chart, presentation
+and valuation source before checking the complete publication chain. Migration
+publications and ambiguous legacy Replacement identities within the traced
+interval remain unsupported by offline attribution.
+
+### Comparing equity statements
+
+Two original v2 equity roll-forward certificates compare through the same
+saved-certificate command. The caller supplies the common date range, label,
+native units and explicit issuance/distribution account roles, together with
+both fixed recorded frontiers. Only recorded time may differ. The
+`equity_roll_forward_diff` result includes all fifteen equity fields before,
+after and as exact deltas, both original certificate digests, and both complete
+movement citation arrays. Prior-period adjustments, their exact reversals,
+case and source-period citations, and closing transfers retain each source's
+original classification.
+
+```bash
+equity_request='{"kind":"equity-roll-forward-diff","units":["USD"],"label":"Annual equity","from":"2026-01-01","through":"2026-12-31","known_at":120,"after_known_at":145,"issuance_accounts":["3100"],"distribution_accounts":["3200"]}'
+fa statement diff --before-certificate original-equity.cert \
+  --after-certificate revised-equity.cert --expect "$equity_request" \
+  --certify --request-out equity-request.bin --book ./books/myco --json
+fa replay C:<comparison-oid> --expect "$equity_request" --book ./books/myco --json
+```
+
+Omitting `--certify` computes the comparison under read authority without
+retaining a certificate. Missing roles, `HEAD` in either expected frontier,
+mixed report families and conflicting statement selectors refuse. The existing
+built-in and custom comparison paths keep their original selection contracts.
+
+Retain the canonical request when making or agreeing the comparison.
+`--request-out` creates a new file; MCP returns the same bytes inline in
+`verification_request_hex` and accepts the expectation through its `expect`
+argument. Once a checkpoint covers both sources, portable export and
+independent verification use that separately retained request:
+
+```bash
+fa bundle produce --certificate C:<comparison-oid> --expect "$equity_request" \
+  --out equity-diff.fab --receipt-out equity-diff.receipt --book ./books/myco --json
+fa-verify report equity-diff.fab --receipt equity-diff.receipt \
+  --key <trusted-checkpoint-public-key> --expect <comparison-oid> \
+  --equity-diff-request equity-request.bin --json
+```
+
+The recipient selects their own expected request and outer comparison digest.
+The verifier reconstructs both complete historical equity statements and every
+delta; the delivered bundle cannot choose the recipient's units or owner-account
+roles. Certificate status uses the same independent JSON expectation. Equity
+comparison does not issue a statement, create a publication trace, or complete
+automatic restatement-case disclosure coverage.
 
 ### Rendered documents
 
@@ -1946,8 +2020,8 @@ use the layouts applicable immediately before the case Post. A missing
 required historical layout or an account that the original layout cannot map
 causes a refusal. New disclosures bind the exact original issued source when
 it is sequence-selected, the complete expected question set and the fixed
-Post frontier. Broader case-specific cash-flow and equity coverage, and
-custom publication traces, remain separate work.
+Post frontier. Broader case-specific cash-flow and equity coverage remains
+separate work.
 
 Two more restatement views read a period at a reported coordinate. On `fa tb`,
 `fa statement` and `fa explain balance`:

@@ -12458,7 +12458,7 @@ fn tb_net(code: &str, debits: i128, credits: i128) -> Result<i128, Fail> {
 
 /// Complete report families admit their native input closure before loading
 /// history, including Produce when their existing retention contract needs it.
-fn prepare_certificate_history(
+pub(crate) fn prepare_certificate_history(
     book: &mut Book,
     capability: &Capability,
     additional_ops: &[fa_policy::Op],
@@ -13150,6 +13150,18 @@ pub(crate) fn render_statement_lint(
 }
 
 pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if let Some(flag) = ["--expect", "--request-out"]
+        .into_iter()
+        .find(|flag| args.flag(flag).is_some())
+        && !(args.positional.get(1).is_some_and(|name| name == "diff")
+            && (args.flag("--before-certificate").is_some()
+                || args.flag("--after-certificate").is_some()))
+    {
+        return Err(usage(
+            format!("{flag} applies to a comparison of two saved equity statements"),
+            "fa statement diff --before-certificate C:<before> --after-certificate C:<after> --expect '<equity-roll-forward-diff JSON>' [--request-out <new-file>] [--certify]",
+        ));
+    }
     if args.positional.len() == 2
         && (matches!(
             args.positional[1].as_str(),
@@ -13157,6 +13169,17 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         ) || (args.positional[1] == "lint" && args.flag("--file").is_some()))
     {
         return crate::custom_statement::command(ctx, args);
+    }
+    if args.positional.len() == 2
+        && args.positional[1] == "trace"
+        && args.flag("--from-diff").is_none()
+        && args.flag("--before-certificate").is_none()
+        && args.flag("--after-certificate").is_none()
+        && args
+            .flag("--definition")
+            .is_some_and(|name| StatementDefinition::embedded(name).is_err())
+    {
+        return crate::custom_statement::trace(ctx, args);
     }
     if args.flag("--file").is_some()
         || args.flag("--scale-digits").is_some()
@@ -13216,6 +13239,8 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "--before-certificate",
         "--after-certificate",
         "--from-diff",
+        "--expect",
+        "--request-out",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
@@ -13547,7 +13572,7 @@ const STATEMENT_CERTIFICATES_EXAMPLE: &str = "fa statement diff --before-certifi
 
 /// `--max-publications` for a statement trace (default 64); the library
 /// refuses a value outside 1..=256.
-fn max_publications(args: &Args) -> Result<usize, Fail> {
+pub(crate) fn max_publications(args: &Args) -> Result<usize, Fail> {
     args.flag("--max-publications")
         .unwrap_or("64")
         .parse()
@@ -13586,7 +13611,7 @@ pub(crate) fn emit_certified_statement_diff(
 
 /// Retain a certified statement trace (after its replay), then render the
 /// publications and the trace certificate.
-fn emit_certified_statement_trace(
+pub(crate) fn emit_certified_statement_trace(
     out: &Out,
     files: &Files,
     args: &Args,
@@ -13602,11 +13627,8 @@ fn emit_certified_statement_trace(
         out,
         args,
         &artifact,
-        if certified.certificate.uses_functional_valuations() {
-            "fa:functional-statement-trace:v1"
-        } else {
-            "fa:statement-trace:v1"
-        },
+        std::str::from_utf8(certified.certificate.output_format())
+            .map_err(|error| Fail::Internal(format!("statement trace format: {error}")))?,
         &bytes,
         &retained,
     );
@@ -13695,6 +13717,44 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             "--for FY2026-P03 --compare FY2026-P02, or omit both to accept the certificates' own periods",
         ));
     }
+    // The statement verb also serves date-, unit-, role- and regulatory-
+    // selected families. None may silently reinterpret a saved question.
+    // Check registered statement options only; global authority and output
+    // controls remain available. Frontier-specific errors above stay precise.
+    let registry = crate::verbs::registry().map_err(|error| Fail::Internal(error.into()))?;
+    let verb = registry
+        .verbs
+        .iter()
+        .find(|verb| verb.name == "statement")
+        .ok_or_else(|| Fail::Internal("statement verb is missing".into()))?;
+    const SAVED_FLAGS: &[&str] = &[
+        "--before-certificate",
+        "--after-certificate",
+        "--from-diff",
+        "--for",
+        "--compare",
+        "--definition",
+        "--max-publications",
+        "--certificate-out",
+        "--expect",
+        "--request-out",
+    ];
+    for flag in &verb.flags {
+        if args.flag(flag).is_some() && !SAVED_FLAGS.contains(&flag.as_str()) {
+            return Err(usage(
+                format!("{flag} does not apply to a statement selected by saved certificates"),
+                STATEMENT_CERTIFICATES_EXAMPLE,
+            ));
+        }
+    }
+    for switch in &verb.switches {
+        if args.switch(switch) && !["--certify", "--functional"].contains(&switch.as_str()) {
+            return Err(usage(
+                format!("{switch} does not apply to a statement selected by saved certificates"),
+                STATEMENT_CERTIFICATES_EXAMPLE,
+            ));
+        }
+    }
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let who = ctx.principal(args);
     match args.positional[1].as_str() {
@@ -13741,7 +13801,7 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                     None,
                 )
             })?;
-            let decode = fa::ReportCertificate::decode;
+            let decode = fa::ReportArtifact::decode;
             let before = notary::certificate_input(
                 &book,
                 &ctx.files,
@@ -13760,6 +13820,47 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 &capability,
                 decode,
             )?;
+            if let (Some(before), Some(after)) = (
+                before.equity_roll_forward_certificate(),
+                after.equity_roll_forward_certificate(),
+            ) {
+                return statement_equity_diff_from_certificates(
+                    &ctx.out,
+                    &ctx.files,
+                    args,
+                    &mut book,
+                    who,
+                    &capability,
+                    before,
+                    after,
+                    certify,
+                );
+            }
+            if before.family() != fa::ReportArtifactFamily::Native
+                || after.family() != fa::ReportArtifactFamily::Native
+            {
+                return Err(fa_journal::Refusal::new(
+                    fa::certificate::code::CERTIFICATE_INVALID,
+                    exit::VERIFICATION,
+                    format!(
+                        "statement comparison cannot combine {} and {} certificates",
+                        before.family().name(),
+                        after.family().name(),
+                    ),
+                    "plan §8.3 / §12.1 (both sources must answer the same typed statement question)",
+                    "pass two native/functional statement certificates, or two v2 equity-roll-forward certificates with the independently retained equity-roll-forward-diff --expect request",
+                ).into());
+            }
+            if let Some(flag) = ["--expect", "--request-out"]
+                .into_iter()
+                .find(|flag| args.flag(flag).is_some())
+            {
+                return Err(usage(
+                    format!("{flag} applies only to saved equity-roll-forward comparisons"),
+                    "omit --expect and --request-out for built-in or custom statement comparisons",
+                ));
+            }
+            let (before, after) = (before.source_certificate(), after.source_certificate());
             // Mismatched sources are the library's refusal; this checks only
             // the question the caller stated against the first source.
             statement_question_matches(args, &before.selection)?;
@@ -13774,7 +13875,7 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             }
             // Functional sources also need immutable Entry creation history
             // when their prefix is HEAD after reopening a checkpointed book.
-            for source in [&before, &after] {
+            for source in [before, after] {
                 if source.selection.uses_functional_valuations() {
                     let bytes = source.canonical_bytes().map_err(|error| {
                         Fail::Internal(format!("functional comparison source: {error}"))
@@ -13796,7 +13897,7 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             )??;
             if certify {
                 let certified =
-                    book.compare_statement_certificates(who, &capability, &before, &after)??;
+                    book.compare_statement_certificates(who, &capability, before, after)??;
                 return emit_certified_statement_diff(
                     &ctx.out,
                     &ctx.files,
@@ -13806,7 +13907,7 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                     &certified,
                 );
             }
-            let diff = book.diff_statement_certificates(who, &capability, &before, &after)??;
+            let diff = book.diff_statement_certificates(who, &capability, before, after)??;
             render_statement_diff(&ctx.out, &book, &diff, None)
         }
         "trace" => {
@@ -13844,12 +13945,6 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
                 &capability,
                 fa::StatementDiffCertificate::decode,
             )?;
-            if comparison.is_custom() {
-                return Err(usage(
-                    "publication tracing is not yet supported for custom statement comparisons",
-                    "fa replay C:<diff-oid> replays both saved company statements and their exact comparison",
-                ));
-            }
             statement_question_matches(args, &comparison.report_selection()?)?;
             if args.switch("--functional") && !comparison.uses_functional_valuations() {
                 return Err(fa_journal::Refusal::new(
@@ -20102,6 +20197,119 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward (--for FY2026-P01 | --from 2026-01-01 --to 2026-12-31) [--as-originally-reported | --as-currently-stated] [--issuance 3100 --distribution 3200] [--certify | --certificate-out <new-file>] --book <dir>";
 
+/// Compare the two original equity reports under a separately chosen question.
+/// A role, date or recorded frontier is never inferred from either artifact.
+#[allow(clippy::too_many_arguments)]
+fn statement_equity_diff_from_certificates(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut Book,
+    principal: VId,
+    capability: &Capability,
+    before: &fa::EquityRollForwardCertificate,
+    after: &fa::EquityRollForwardCertificate,
+    certify: bool,
+) -> Result<(), Fail> {
+    if let Some(flag) = ["--for", "--compare", "--definition"]
+        .into_iter()
+        .find(|flag| args.flag(flag).is_some())
+        .or_else(|| args.switch("--functional").then_some("--functional"))
+    {
+        return Err(usage(
+            format!("{flag} cannot replace the explicit equity comparison request"),
+            "select native units, dates, label, known_at, after_known_at and both owner-account roles in --expect JSON with kind equity-roll-forward-diff",
+        ));
+    }
+    if let Some(path) = args.flag("--request-out") {
+        if path.is_empty() || path == "-" {
+            return Err(usage(
+                "--request-out names a new canonical verification-request file",
+                "omit --request-out to retain verification_request_hex from the equity_roll_forward_diff event",
+            ));
+        }
+        if args
+            .flag("--certificate-out")
+            .is_some_and(|other| files.resolve(path) == files.resolve(other))
+        {
+            return Err(usage(
+                "--request-out and --certificate-out must name different new files",
+                "keep the independently chosen request separately from the delivered certificate",
+            ));
+        }
+    }
+    let expected = notary::equity_diff_expectation(args, book, principal, capability)?;
+    let request_bytes = expected.canonical_bytes()?;
+    book.prepare_report_history(
+        principal,
+        capability,
+        Some(before.known_at().min(after.known_at())),
+    )??;
+    out.at_book(book)?;
+    let write_request = || -> Result<(), Fail> {
+        if let Some(path) = args.flag("--request-out") {
+            write_new_output_file(
+                files,
+                path,
+                &request_bytes,
+                "equity verification request",
+                "--request-out",
+            )?;
+        }
+        Ok(())
+    };
+    if certify {
+        let certified = book.compare_equity_roll_forward_certificates(
+            principal, capability, before, after, &expected,
+        )??;
+        // Both original statements have replayed against the independent
+        // request before creating any file or retaining a comparison.
+        write_request()?;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        let (bytes, retained) = notary::retain_report_artifact_for(
+            book,
+            files,
+            args,
+            &artifact,
+            capability,
+            fa::ReportArtifactExpectation::EquityRollForwardDiff(&expected),
+        )?;
+        render_equity_roll_forward_diff(
+            out,
+            book,
+            &certified.report,
+            (before.digest(), after.digest()),
+            &request_bytes,
+            args.flag("--request-out"),
+            Some(&hex(certified.certificate.digest())),
+        )?;
+        let format = std::str::from_utf8(fa::EQUITY_DIFF_OUTPUT_FORMAT)
+            .map_err(|error| Fail::Internal(format!("equity comparison output format: {error}")))?;
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            &artifact,
+            format,
+            &bytes,
+            &retained,
+            &notary::equity_diff_expectation_json(&expected),
+        );
+        return Ok(());
+    }
+    let report = book
+        .diff_equity_roll_forward_certificates(principal, capability, before, after, &expected)??;
+    write_request()?;
+    render_equity_roll_forward_diff(
+        out,
+        book,
+        &report,
+        (before.digest(), after.digest()),
+        &request_bytes,
+        args.flag("--request-out"),
+        None,
+    )
+}
+
 /// `fa statement equity-roll-forward` (plan §12.1, bead fa-nzix): the
 /// statement of changes in equity over an inclusive effective window at one
 /// recorded prefix. It reads like the lead schedule it is built from: the
@@ -20312,17 +20520,6 @@ pub(crate) fn render_equity_roll_forward(
     let statement = &report.statement;
     out.known_at(CommitSeq(statement.known_at));
     let units = &book.context().units;
-    let codes: std::collections::BTreeMap<u128, &str> = report
-        .accounts
-        .iter()
-        .map(|a| (a.id, a.code.as_str()))
-        .collect();
-    let code = |id: u128| {
-        codes
-            .get(&id)
-            .copied()
-            .ok_or_else(|| Fail::Internal("equity roll-forward account missing".into()))
-    };
     let mut human = format!(
         "equity roll-forward `{}` ({}..={})",
         statement.label,
@@ -20384,7 +20581,42 @@ pub(crate) fn render_equity_roll_forward(
             ("tie_out_residual", s(fmt(u.equity_tie_out_residual)?)),
         ]));
     }
-    let movements = report
+    let movements = equity_movements_json(report, units)?;
+    out.event_with_certificate(
+        "equity_roll_forward",
+        vec![
+            ("label", s(&statement.label)),
+            ("known_at", Json::Int(i128::from(statement.known_at))),
+            ("effective_from", s(statement.effective_from.render())),
+            ("effective_through", s(statement.effective_through.render())),
+            ("units", Json::Arr(unit_rows)),
+            ("movement_count", Json::Int(report.movements.len() as i128)),
+            ("movements", Json::Arr(movements)),
+        ],
+        &human,
+        certificate,
+    );
+    Ok(())
+}
+
+/// Every original classified leg keeps its original account code, case and
+/// source-period citation on both sides of an equity comparison.
+fn equity_movements_json(
+    report: &fa::EquityRollForwardReport,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Json>, Fail> {
+    let codes: std::collections::BTreeMap<u128, &str> = report
+        .accounts
+        .iter()
+        .map(|a| (a.id, a.code.as_str()))
+        .collect();
+    let code = |id: u128| {
+        codes
+            .get(&id)
+            .copied()
+            .ok_or_else(|| Fail::Internal("equity roll-forward account missing".into()))
+    };
+    report
         .movements
         .iter()
         .map(|m| {
@@ -20431,17 +20663,92 @@ pub(crate) fn render_equity_roll_forward(
                 ),
             ]))
         })
-        .collect::<Result<Vec<_>, Fail>>()?;
+        .collect()
+}
+
+pub(crate) fn render_equity_roll_forward_diff(
+    out: &Out,
+    book: &Book,
+    report: &fa::EquityRollForwardDiff,
+    sources: (&[u8; 32], &[u8; 32]),
+    verification_request: &[u8],
+    request_file: Option<&str>,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let before = &report.before().statement;
+    let after = &report.after().statement;
+    let units = &book.context().units;
+    out.known_at(CommitSeq(after.known_at));
+    let mut human = format!(
+        "equity roll-forward diff `{}` ({}..={}) · {} -> {}",
+        after.label,
+        after.effective_from.render(),
+        after.effective_through.render(),
+        before.known_at,
+        after.known_at,
+    );
+    let mut unit_rows = Vec::with_capacity(report.units().len());
+    for unit in report.units() {
+        let id = fa_money::UnitId(unit.unit_id);
+        let code = registered_unit_code(id, units)?;
+        human.push_str(&format!("\n  {code}: before | after | delta"));
+        let mut lines = Vec::with_capacity(unit.lines.len());
+        for line in &unit.lines {
+            let original = render_amount(Amount::new(id, line.before), units)?;
+            let current = render_amount(Amount::new(id, line.after), units)?;
+            let delta = render_amount(Amount::new(id, line.delta), units)?;
+            human.push_str(&format!(
+                "\n    {}: {original} | {current} | {delta}",
+                line.code,
+            ));
+            lines.push(obj(vec![
+                ("code", s(line.code)),
+                ("before", s(original)),
+                ("after", s(current)),
+                ("delta", s(delta)),
+            ]));
+        }
+        unit_rows.push(obj(vec![("unit", s(code)), ("lines", Json::Arr(lines))]));
+    }
+    human.push_str(&format!(
+        "\nOriginal sources: {} -> {}",
+        hex(sources.0),
+        hex(sources.1),
+    ));
+    if let Some(path) = request_file {
+        human.push_str(&format!(
+            "\nIndependent verification request: {path}; retain it separately for fa-verify --equity-diff-request."
+        ));
+    }
     out.event_with_certificate(
-        "equity_roll_forward",
+        "equity_roll_forward_diff",
         vec![
-            ("label", s(&statement.label)),
-            ("known_at", Json::Int(i128::from(statement.known_at))),
-            ("effective_from", s(statement.effective_from.render())),
-            ("effective_through", s(statement.effective_through.render())),
+            ("label", s(&after.label)),
+            ("before_known_at", Json::Int(i128::from(before.known_at))),
+            ("after_known_at", Json::Int(i128::from(after.known_at))),
+            ("effective_from", s(after.effective_from.render())),
+            ("effective_through", s(after.effective_through.render())),
+            ("before_certificate", s(hex(sources.0))),
+            ("after_certificate", s(hex(sources.1))),
             ("units", Json::Arr(unit_rows)),
-            ("movement_count", Json::Int(report.movements.len() as i128)),
-            ("movements", Json::Arr(movements)),
+            (
+                "before_movement_count",
+                Json::Int(report.before().movements.len() as i128),
+            ),
+            (
+                "after_movement_count",
+                Json::Int(report.after().movements.len() as i128),
+            ),
+            (
+                "before_movements",
+                Json::Arr(equity_movements_json(report.before(), units)?),
+            ),
+            (
+                "after_movements",
+                Json::Arr(equity_movements_json(report.after(), units)?),
+            ),
+            ("verification_request_hex", s(hex(verification_request))),
+            ("request_file", request_file.map_or(Json::Null, s)),
         ],
         &human,
         certificate,

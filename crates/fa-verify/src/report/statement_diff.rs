@@ -264,7 +264,43 @@ pub(super) fn replay_custom(
     after: VerifiedCustomStatement,
     after_bytes: &[u8],
 ) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
-    if !request.custom
+    if !request.custom {
+        return Err(failed(
+            "statement_diff_selection",
+            "custom sources require the custom comparison family",
+        ));
+    }
+    let (report, output) = derive_custom(
+        request.functional,
+        before_certificate,
+        after_certificate,
+        before,
+        before_bytes,
+        after,
+        after_bytes,
+    )?;
+    if output != request.output {
+        return Err(failed(
+            "statement_diff_recomputation",
+            "custom statement commitments, complete lines, checked deltas, mappings or canonical bytes differ from independent replay",
+        ));
+    }
+    Ok((report, output))
+}
+
+/// Share exact custom comparison arithmetic with publication traces while
+/// retaining independently checked activation and presentation context.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn derive_custom(
+    functional: bool,
+    before_certificate: &NativeCertificate<'_>,
+    after_certificate: &NativeCertificate<'_>,
+    before: VerifiedCustomStatement,
+    before_bytes: &[u8],
+    after: VerifiedCustomStatement,
+    after_bytes: &[u8],
+) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
+    if !matches!(before_certificate.selection, Selection::CustomStatement(_))
         || before.activation != after.activation
         || before.functional_unit != after.functional_unit
         || before.book_parameters_source != after.book_parameters_source
@@ -279,8 +315,8 @@ pub(super) fn replay_custom(
         before_presented: before.presented,
         after_presented: after.presented,
     };
-    let (mut report, output) = replay(
-        request,
+    let (mut report, output) = derive(
+        functional,
         before_certificate,
         after_certificate,
         before.statement,

@@ -5436,6 +5436,22 @@ impl Book {
         )))
     }
 
+    /// Export both original equity sources and their exact comparison against
+    /// the caller's independently retained fixed question.
+    pub fn produce_equity_roll_forward_diff_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::EquityRollForwardDiffCertificate,
+        expected: &crate::EquityRollForwardDiffRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_equity_roll_forward_diff_bundle(
+            &purposes, principal, capability, state, certificate, expected,
+        )))
+    }
+
     /// Produce policy-classified direct cash flow for offline recomputation.
     /// Native replay derives each classification from complete original
     /// counterpart entries; the signed outer artifact preserves every policy
@@ -5815,6 +5831,50 @@ impl Book {
         expected: &crate::EquityRollForwardRequest,
     ) -> Outcome<crate::EquityRollForwardReport> {
         with_store!(&self.store, core => core.replay_equity_roll_forward(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
+    /// Read exact changes between two original equity certificates under
+    /// current authority and an independently selected common question.
+    pub fn diff_equity_roll_forward_certificates(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        before: &crate::EquityRollForwardCertificate,
+        after: &crate::EquityRollForwardCertificate,
+        expected: &crate::EquityRollForwardDiffRequest,
+    ) -> Outcome<crate::EquityRollForwardDiff> {
+        with_store!(&self.store, core => core.diff_equity_roll_forward_certificates(
+            &self.purposes(), principal, capability, before, after, expected
+        ))
+    }
+
+    /// Certify all fifteen equity row deltas, preserving the original source
+    /// certificates and their complete movement/case provenance.
+    pub fn compare_equity_roll_forward_certificates(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        before: &crate::EquityRollForwardCertificate,
+        after: &crate::EquityRollForwardCertificate,
+        expected: &crate::EquityRollForwardDiffRequest,
+    ) -> Outcome<crate::CertifiedEquityRollForwardDiff> {
+        with_store!(&self.store, core => core.compare_equity_roll_forward_certificates(
+            &self.purposes(), principal, capability, before, after, expected
+        ))
+    }
+
+    /// Replay both original v2 equity sources and the signed comparison against
+    /// independent dates, units, owner-account roles and fixed frontiers.
+    pub fn replay_equity_roll_forward_diff(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::EquityRollForwardDiffCertificate,
+        expected: &crate::EquityRollForwardDiffRequest,
+    ) -> Outcome<crate::EquityRollForwardDiff> {
+        with_store!(&self.store, core => core.replay_equity_roll_forward_diff(
             &self.purposes(), principal, capability, certificate, expected
         ))
     }
@@ -6379,6 +6439,58 @@ impl Book {
         with_store!(&self.store, core => core.compare_statement_certificates(
             &self.purposes(), principal, capability, before, after
         ))
+    }
+
+    /// Trace one approved custom layout through every publication in the
+    /// selected interval, preserving exact amounts beneath presentation.
+    pub fn custom_statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::StatementTrace> {
+        with_store!(&self.store, core => core.custom_statement_trace(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Retain the complete historical custom source chain and its attribution.
+    pub fn certify_custom_statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        with_store!(&self.store, core => core.certify_custom_statement_trace(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Trace a pinned custom layout using retained functional valuations.
+    pub fn functional_custom_statement_trace(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::StatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_custom_statement_trace(
+            &purposes, principal, capability, request,
+        )))
+    }
+
+    /// Retain every original functional custom source, including its valuation
+    /// evidence, activation and presentation, before returning any trace.
+    pub fn certify_functional_custom_statement_trace(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_custom_statement_trace(
+            &purposes, principal, capability, request,
+        )))
     }
 
     /// Reconcile a complete adjacent-publication trace to its net statement comparison.
