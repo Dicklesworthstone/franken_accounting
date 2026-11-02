@@ -141,8 +141,9 @@ pub fn assemble_with_registries(
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
     let explanation = explanation_certificate(certificate);
-    let custom =
-        custom_statement_certificate(certificate) || custom_statement_diff_certificate(certificate);
+    let custom = custom_statement_certificate(certificate)
+        || custom_statement_diff_certificate(certificate)
+        || custom_statement_trace_certificate(certificate);
     let expected: &[&str] = if explanation {
         &[
             "account_types",
@@ -638,12 +639,27 @@ fn statement_diff_family(certificate: &[u8], custom: bool) -> bool {
     certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
-/// A trace retains every consecutive v4 source, even a publication that has no
-/// monetary effect. The facade and independent verifier check the complete law.
+/// A trace retains every consecutive source, even a publication that has no
+/// monetary effect. Custom traces require v11 sources and the rounding registry;
+/// they cannot be routed through the built-in statement profile. The facade and
+/// independent verifier check the complete law.
 fn statement_trace_certificate(certificate: &[u8]) -> bool {
+    statement_trace_family(certificate, false) || custom_statement_trace_certificate(certificate)
+}
+
+fn custom_statement_trace_certificate(certificate: &[u8]) -> bool {
+    statement_trace_family(certificate, true)
+}
+
+fn statement_trace_family(certificate: &[u8], custom: bool) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "statement trace format")? != b"fa:statement-trace-certificate:v1" {
+        let format: &[u8] = if custom {
+            b"fa:custom-statement-trace-certificate:v1"
+        } else {
+            b"fa:statement-trace-certificate:v1"
+        };
+        if reader.bytes(64, "statement trace format")? != format {
             return Ok(false);
         }
         reader.u128("statement trace producer")?;
@@ -654,13 +670,18 @@ fn statement_trace_certificate(certificate: &[u8]) -> bool {
         }
         for _ in 0..n {
             let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "statement trace source")?;
-            if !certificate_format(source, b"fa:report-certificate:v4") {
+            let supported = if custom {
+                custom_statement_certificate(source)
+            } else {
+                certificate_format(source, b"fa:report-certificate:v4")
+            };
+            if !supported {
                 return Ok(false);
             }
         }
         Ok(true)
     };
-    header().unwrap_or(false)
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
@@ -1238,6 +1259,169 @@ mod format_tests {
                 &journal,
                 CommitSeq(9)
             ));
+        }
+    }
+
+    #[test]
+    fn custom_native_traces_keep_every_v11_source_in_the_rounding_profile() {
+        let native = native_header(11, "fa:custom-statement-report:v1", 9);
+        let wrap = |format: &[u8], sources: &[Vec<u8>]| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(format)
+                .u128(7)
+                .fixed(&[8; 32])
+                .list(sources, |writer, source| {
+                    writer.bytes(source);
+                });
+            writer.finish().unwrap()
+        };
+        let format = b"fa:custom-statement-trace-certificate:v1";
+        let sources = vec![native.clone(); 3];
+        let valid = wrap(format, &sources);
+        assert!(custom_statement_trace_certificate(&valid));
+        assert!(statement_trace_certificate(&valid));
+        assert!(!statement_trace_family(&valid, false));
+        assert!(!custom_statement_diff_certificate(&valid));
+        for wrong in [
+            native_header(4, "fa:statement:v1", 0),
+            native_header(5, "fa:functional-statement:v1", 3),
+            native_header(12, "fa:functional-custom-statement:v1", 10),
+            native_header(110, "fa:custom-statement-report:v1", 9),
+            native_header(11, "fa:custom-statement-report:v1", 10),
+            native_header(11, "fa:functional-custom-statement:v1", 9),
+            Vec::new(),
+        ] {
+            for index in 0..sources.len() {
+                let mut changed = sources.clone();
+                changed[index] = wrong.clone();
+                assert!(!statement_trace_certificate(&wrap(format, &changed)));
+            }
+        }
+        for wrong_format in [
+            b"fa:statement-trace-certificate:v1".as_slice(),
+            b"fa:functional-custom-statement-trace-certificate:v1".as_slice(),
+        ] {
+            assert!(!statement_trace_certificate(&wrap(wrong_format, &sources)));
+        }
+        for end in 0..valid.len() {
+            assert!(!statement_trace_certificate(&valid[..end]));
+        }
+        for count in [0, 1, 257, 258] {
+            assert_eq!(
+                custom_statement_trace_certificate(&wrap(format, &vec![native.clone(); count])),
+                matches!(count, 1 | 257)
+            );
+        }
+    }
+
+    #[test]
+    fn custom_functional_traces_route_every_original_v12_frontier() {
+        let journal =
+            Journal::from_records(fa_model::Id128([3; 16]), CommitSeq(300), Vec::new()).unwrap();
+        let source =
+            |version: u8, output: &str, book: [u8; 16], branch: [u8; 16], at: u64, selector: u8| {
+                let mut writer = Writer::new();
+                writer
+                    .fixed(format!("fa:report-certificate:v{version}").as_bytes())
+                    .str("fa-fold-over-prefix")
+                    .str("embedded-owner")
+                    .str(output)
+                    .fixed(&book)
+                    .fixed(&branch)
+                    .u64(at)
+                    .u8(selector);
+                writer.finish().unwrap()
+            };
+        let wrap = |format: &[u8], sources: &[Vec<u8>]| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(format)
+                .u128(7)
+                .fixed(&[8; 32])
+                .list(sources, |writer, source| {
+                    writer.bytes(source);
+                });
+            writer.finish().unwrap()
+        };
+        let format = b"fa:functional-custom-statement-trace-certificate:v1";
+        let output = "fa:functional-custom-statement:v1";
+        let sources: Vec<_> = (8..=10)
+            .map(|at| source(12, output, [3; 16], [0; 16], at, 10))
+            .collect();
+        let valid = wrap(format, &sources);
+        assert!(functional::trace_certificate(
+            &valid,
+            &journal,
+            CommitSeq(10)
+        ));
+        assert!(!statement_trace_certificate(&valid));
+        assert!(!functional::comparison_certificate(
+            &valid,
+            &journal,
+            CommitSeq(10)
+        ));
+        for wrong in [
+            source(5, "fa:functional-statement:v1", [3; 16], [0; 16], 9, 3),
+            source(11, "fa:custom-statement-report:v1", [3; 16], [0; 16], 9, 9),
+            source(120, output, [3; 16], [0; 16], 9, 10),
+            source(12, "fa:functional-statement:v1", [3; 16], [0; 16], 9, 10),
+            source(12, output, [4; 16], [0; 16], 9, 10),
+            source(12, output, [3; 16], [1; 16], 9, 10),
+            source(12, output, [3; 16], [0; 16], 9, 9),
+            source(12, output, [3; 16], [0; 16], 8, 10),
+            source(12, output, [3; 16], [0; 16], 10, 10),
+        ] {
+            let mut changed = sources.clone();
+            changed[1] = wrong;
+            assert!(!functional::trace_certificate(
+                &wrap(format, &changed),
+                &journal,
+                CommitSeq(10)
+            ));
+        }
+        for wrong_format in [
+            b"fa:functional-statement-trace-certificate:v1".as_slice(),
+            b"fa:custom-statement-trace-certificate:v1".as_slice(),
+        ] {
+            assert!(!functional::trace_certificate(
+                &wrap(wrong_format, &sources),
+                &journal,
+                CommitSeq(10)
+            ));
+        }
+        for at in [1, 9, 11] {
+            assert!(!functional::trace_certificate(
+                &valid,
+                &journal,
+                CommitSeq(at)
+            ));
+        }
+        let omitted = vec![sources[0].clone(), sources[2].clone()];
+        assert!(!functional::trace_certificate(
+            &wrap(format, &omitted),
+            &journal,
+            CommitSeq(10)
+        ));
+        for end in 0..valid.len() {
+            assert!(!functional::trace_certificate(
+                &valid[..end],
+                &journal,
+                CommitSeq(10)
+            ));
+        }
+        for count in [0, 1, 257, 258] {
+            let bounded: Vec<_> = (0..count)
+                .map(|at| source(12, output, [3; 16], [0; 16], at, 10))
+                .collect();
+            assert_eq!(
+                functional::trace_certificate(
+                    &wrap(format, &bounded),
+                    &journal,
+                    CommitSeq(count.saturating_sub(1))
+                ),
+                matches!(count, 1 | 257)
+            );
         }
     }
 

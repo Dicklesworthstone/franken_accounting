@@ -1567,14 +1567,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
                                 } else if let Some(trace) = &report.statement_trace {
-                                    match trace.summary.valuation {
-                                        crate::report::StatementDiffValuation::Native => {
-                                            "statement_trace"
-                                        }
-                                        crate::report::StatementDiffValuation::Functional {
-                                            ..
-                                        } => "functional_statement_trace",
-                                    }
+                                    statement_trace_mode(trace)
                                 } else if let Some(comparison) = &report.statement_diff {
                                     statement_diff_mode(comparison)
                                 } else if report.functional_trial_balance.is_some() {
@@ -4105,6 +4098,19 @@ fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
     checks
 }
 
+fn statement_trace_mode(trace: &crate::report::VerifiedStatementTrace) -> &'static str {
+    match (trace.summary.custom.is_some(), trace.summary.valuation) {
+        (false, crate::report::StatementDiffValuation::Native) => "statement_trace",
+        (true, crate::report::StatementDiffValuation::Native) => "custom_statement_trace",
+        (false, crate::report::StatementDiffValuation::Functional { .. }) => {
+            "functional_statement_trace"
+        }
+        (true, crate::report::StatementDiffValuation::Functional { .. }) => {
+            "functional_custom_statement_trace"
+        }
+    }
+}
+
 fn statement_trace_checks(
     trace: &crate::report::VerifiedStatementTrace,
     unit_universe_source: &str,
@@ -4130,6 +4136,28 @@ fn statement_trace_checks(
         ],
     )];
     checks.extend(statement_diff_checks(&trace.summary, unit_universe_source));
+    if trace.summary.custom.is_some() {
+        checks.push(Check::pass(
+            "custom_statement_trace_basis",
+            "recomputation",
+            vec![
+                (
+                    "selection",
+                    s("same original definition, activation, periods, comparatives and presentation at every frontier"),
+                ),
+                ("deltas", s("exact unrounded statement amounts")),
+                (
+                    "source_presentations",
+                    s("independently recomputed at every consecutive source frontier"),
+                ),
+                (
+                    "source_commitments",
+                    s("complete independently reconstructed exact statements"),
+                ),
+                ("human_activation_admission", s("not_judged")),
+            ],
+        ));
+    }
     if let crate::report::StatementDiffValuation::Functional {
         base_unit,
         book_parameters_source,
@@ -4950,6 +4978,31 @@ mod tests {
             statement_diff_mode(&comparison),
             "functional_custom_statement_diff"
         );
+        let mut trace = crate::report::VerifiedStatementTrace {
+            summary: comparison,
+            publications: Vec::new(),
+        };
+        assert_eq!(
+            statement_trace_mode(&trace),
+            "functional_custom_statement_trace"
+        );
+        let mut json = String::new();
+        for check in statement_trace_checks(&trace, "authenticated-registry") {
+            check.json().write(&mut json);
+        }
+        for expected in [
+            "custom_statement_trace_basis",
+            "same original definition, activation, periods, comparatives and presentation at every frontier",
+            "independently recomputed at every consecutive source frontier",
+            "exact unrounded statement amounts",
+            "exact Rate subset at every consecutive source frontier",
+            "\"human_activation_admission\":\"not_judged\"",
+            "\"approval_admission_verified\":false",
+        ] {
+            assert!(json.contains(expected), "{expected}: {json}");
+        }
+        trace.summary.valuation = StatementDiffValuation::Native;
+        assert_eq!(statement_trace_mode(&trace), "custom_statement_trace");
     }
 
     #[test]

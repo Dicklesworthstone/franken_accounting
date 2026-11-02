@@ -361,9 +361,10 @@ pub use statement_diff::{
 };
 pub use statement_diff_workpaper::{MAX_STATEMENT_DIFF_WORKPAPER_BYTES, StatementDiffWorkpaper};
 pub use statement_trace::{
-    CertifiedStatementTrace, MAX_STATEMENT_TRACE_BYTES, MAX_STATEMENT_TRACE_CERTIFICATE_BYTES,
-    MAX_STATEMENT_TRACE_PUBLICATIONS, StatementEntryEvent, StatementEntryLink,
-    StatementPublication, StatementTrace, StatementTraceCertificate, StatementTraceRequest,
+    CertifiedStatementTrace, CustomStatementTraceRequest, MAX_STATEMENT_TRACE_BYTES,
+    MAX_STATEMENT_TRACE_CERTIFICATE_BYTES, MAX_STATEMENT_TRACE_PUBLICATIONS, StatementEntryEvent,
+    StatementEntryLink, StatementPublication, StatementTrace, StatementTraceCertificate,
+    StatementTraceRequest,
 };
 pub use statements::{
     CertifiedStatement, RegulatorySelection, StatementSelection, UncorrectedLine,

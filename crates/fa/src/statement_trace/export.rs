@@ -168,12 +168,30 @@ fn render(
     emit!(out.begin("statement_trace"));
     emit!(out.string(
         "format",
-        if trace.is_functional() {
-            "fa:functional-statement-trace-jsonl:v1"
-        } else {
-            "fa:statement-trace-jsonl:v1"
+        match (trace.is_custom(), trace.is_functional()) {
+            (false, false) => "fa:statement-trace-jsonl:v1",
+            (false, true) => "fa:functional-statement-trace-jsonl:v1",
+            (true, false) => "fa:custom-statement-trace-jsonl:v1",
+            (true, true) => "fa:functional-custom-statement-trace-jsonl:v1",
         }
     ));
+    if let Some(source) = certificate.sources().first()
+        && let crate::ReportSelection::CustomStatement(selection) = &source.selection
+    {
+        emit!(out.boolean("custom", true));
+        emit!(out.string("activation", &format!("{:032x}", selection.activation.0)));
+        emit!(out.string("activated_at", &selection.activated_at.0.to_string()));
+        emit!(out.string("amount_basis", "exact-underlying-statement"));
+        emit!(out.boolean("presentation_retained", selection.presentation.is_some()));
+        if let Some(presentation) = &selection.presentation {
+            emit!(out.string("rounding_law", presentation.rounding_law.name()));
+            emit!(out.number(
+                "scale_reduction_digits",
+                presentation.scale_reduction_digits
+            ));
+            emit!(out.string("residual_line", &presentation.residual_line_code));
+        }
+    }
     if let Some(unit) = summary.functional_unit() {
         emit!(out.boolean("functional", true));
         emit!(out.number("base_unit_id", unit.0));

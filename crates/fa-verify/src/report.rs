@@ -71,6 +71,10 @@
 //! presentation rounding with explicit residuals. Their scope is recomputation:
 //! historical Approval-row admission, Human profiles, separation of duties and
 //! the definition object's atomic birth are not proved by the journal prefix.
+//! Custom comparisons and publication traces retain that original selection.
+//! Traces reconstruct every intermediate report and presentation, including
+//! zero-effect publications and offsetting changes hidden by the endpoint delta.
+//! Their exact source commitments never substitute rounded display amounts.
 
 mod aging;
 mod cash_flow;
@@ -1348,9 +1352,16 @@ fn verify_report_with_lots_input(
         });
     }
     if let Selection::CustomStatement(selection) = &cert.selection {
-        // Only the explicit custom comparison profile can compose this
-        // source. Every other outer family must retain its own replay path.
-        if let Some(comparison) = &statement_diff {
+        // Only explicit custom comparison and trace profiles can compose
+        // this source; they independently replay its original layout.
+        if let Some(trace) = &statement_trace {
+            if !trace.custom {
+                return Err(failed(
+                    "supported_report",
+                    "a custom source requires the matching complete custom trace family",
+                ));
+            }
+        } else if let Some(comparison) = &statement_diff {
             if !comparison.custom || before_statement.is_none() {
                 return Err(failed(
                     "supported_report",
@@ -1414,93 +1425,122 @@ fn verify_report_with_lots_input(
             })?;
         let effective_through = Some(current.effective_through);
         let periods = current.periods.clone();
-        let (custom_statement, statement_diff, output, output_digest) = if let (
-            Some(request),
-            Some(before_certificate),
-        ) =
-            (&statement_diff, &before_statement)
-        {
-            let Selection::CustomStatement(before_selection) = &before_certificate.selection else {
-                return Err(failed(
-                    "statement_diff_selection",
-                    "custom comparison has a noncustom source",
-                ));
-            };
-            let before_bodies = crate::migration_balance::report_bodies_at(
-                envelopes,
-                &records,
-                &bodies,
-                before_certificate.known_at,
-            )
-            .map_err(|error| failed("migration_visibility", error.to_string()))?;
-            let before_inputs =
-                historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
-            let before_valued = if cert.functional {
-                // The later source above checked the complete Rate closure.
-                // Project from original historical proposals, then check
-                // first use, imports and every retained amount again at the
-                // earlier source's own frontier.
-                let before_rates = functional::historical_rates(
-                    &functional_rates,
+        let (custom_statement, statement_diff, statement_trace, output, output_digest) =
+            if let Some(request) = &statement_trace {
+                let functional_inputs = if cert.functional {
+                    Some(statement_trace::FunctionalInputs {
+                        registry: functional_registry.as_ref().ok_or_else(|| {
+                            failed("registry_closure", "missing functional registries")
+                        })?,
+                        book: functional_book
+                            .ok_or_else(|| failed("functional_book", "missing Book parameters"))?,
+                        rates: &functional_rates,
+                    })
+                } else {
+                    None
+                };
+                let (trace, output) = statement_trace::replay(
+                    request,
+                    envelopes,
                     &records,
-                    &before_inputs.infos,
+                    &bodies,
+                    &legs,
+                    &units,
+                    functional_inputs,
                 )?;
-                Some(functional::statement_legs(
-                    before_certificate,
-                    functional_registry.as_ref().ok_or_else(|| {
-                        failed("registry_closure", "missing functional registries")
-                    })?,
-                    functional_book
-                        .ok_or_else(|| failed("functional_book", "missing Book parameters"))?,
-                    &before_rates,
+                let output_digest = hash_parts(b"fa:report-output:v1", &[&output]);
+                (None, None, Some(trace), output, output_digest)
+            } else if let (Some(request), Some(before_certificate)) =
+                (&statement_diff, &before_statement)
+            {
+                let Selection::CustomStatement(before_selection) = &before_certificate.selection
+                else {
+                    return Err(failed(
+                        "statement_diff_selection",
+                        "custom comparison has a noncustom source",
+                    ));
+                };
+                let before_bodies = crate::migration_balance::report_bodies_at(
+                    envelopes,
+                    &records,
+                    &bodies,
+                    before_certificate.known_at,
+                )
+                .map_err(|error| failed("migration_visibility", error.to_string()))?;
+                let before_inputs =
+                    historical_inputs(before_certificate, envelopes, &records, &before_bodies)?;
+                let before_valued = if cert.functional {
+                    // The later source above checked the complete Rate closure.
+                    // Project from original historical proposals, then check
+                    // first use, imports and every retained amount again at the
+                    // earlier source's own frontier.
+                    let before_rates = functional::historical_rates(
+                        &functional_rates,
+                        &records,
+                        &before_inputs.infos,
+                    )?;
+                    Some(functional::statement_legs(
+                        before_certificate,
+                        functional_registry.as_ref().ok_or_else(|| {
+                            failed("registry_closure", "missing functional registries")
+                        })?,
+                        functional_book
+                            .ok_or_else(|| failed("functional_book", "missing Book parameters"))?,
+                        &before_rates,
+                        &before_inputs.schema,
+                        envelopes,
+                        &records,
+                        &legs,
+                        &before_inputs.infos,
+                        &before_inputs.migration_activations,
+                    )?)
+                } else {
+                    None
+                };
+                let (before_units, before_legs) = match &before_valued {
+                    Some((base, values)) => (std::slice::from_ref(base), values.as_slice()),
+                    None => (units.as_slice(), legs.as_slice()),
+                };
+                let (before, before_output) = custom_statement::replay(
+                    before_selection,
+                    &before_certificate.book,
+                    &before_certificate.branch,
+                    before_certificate.known_at,
+                    before_units,
                     &before_inputs.schema,
                     envelopes,
                     &records,
-                    &legs,
                     &before_inputs.infos,
-                    &before_inputs.migration_activations,
-                )?)
+                    before_legs,
+                    &before_inputs.visible_migrations,
+                    &before_inputs.resolved,
+                )?;
+                if before_output != before_certificate.output {
+                    return Err(failed(
+                        "custom_statement_recomputation",
+                        "the earlier custom statement differs from its independently reconstructed historical source",
+                    ));
+                }
+                let (comparison, comparison_output) = statement_diff::replay_custom(
+                    request,
+                    before_certificate,
+                    &cert,
+                    before,
+                    &before_output,
+                    report,
+                    &output,
+                )?;
+                let output_digest = hash_parts(b"fa:report-output:v1", &[&comparison_output]);
+                (
+                    None,
+                    Some(comparison),
+                    None,
+                    comparison_output,
+                    output_digest,
+                )
             } else {
-                None
+                (Some(report), None, None, output, cert.output_digest)
             };
-            let (before_units, before_legs) = match &before_valued {
-                Some((base, values)) => (std::slice::from_ref(base), values.as_slice()),
-                None => (units.as_slice(), legs.as_slice()),
-            };
-            let (before, before_output) = custom_statement::replay(
-                before_selection,
-                &before_certificate.book,
-                &before_certificate.branch,
-                before_certificate.known_at,
-                before_units,
-                &before_inputs.schema,
-                envelopes,
-                &records,
-                &before_inputs.infos,
-                before_legs,
-                &before_inputs.visible_migrations,
-                &before_inputs.resolved,
-            )?;
-            if before_output != before_certificate.output {
-                return Err(failed(
-                    "custom_statement_recomputation",
-                    "the earlier custom statement differs from its independently reconstructed historical source",
-                ));
-            }
-            let (comparison, comparison_output) = statement_diff::replay_custom(
-                request,
-                before_certificate,
-                &cert,
-                before,
-                &before_output,
-                report,
-                &output,
-            )?;
-            let output_digest = hash_parts(b"fa:report-output:v1", &[&comparison_output]);
-            (None, Some(comparison), comparison_output, output_digest)
-        } else {
-            (Some(report), None, output, cert.output_digest)
-        };
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
@@ -1518,7 +1558,7 @@ fn verify_report_with_lots_input(
             custom_statement,
             statement_diff,
             dimension: None,
-            statement_trace: None,
+            statement_trace,
             open_items: None,
             lots: None,
             explanation: None,

@@ -6342,6 +6342,58 @@ impl Book {
         ))
     }
 
+    /// Trace one approved custom layout through every publication in the
+    /// selected interval, preserving exact amounts beneath presentation.
+    pub fn custom_statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::StatementTrace> {
+        with_store!(&self.store, core => core.custom_statement_trace(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Retain the complete historical custom source chain and its attribution.
+    pub fn certify_custom_statement_trace(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        with_store!(&self.store, core => core.certify_custom_statement_trace(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Trace a pinned custom layout using retained functional valuations.
+    pub fn functional_custom_statement_trace(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::StatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_custom_statement_trace(
+            &purposes, principal, capability, request,
+        )))
+    }
+
+    /// Retain every original functional custom source, including its valuation
+    /// evidence, activation and presentation, before returning any trace.
+    pub fn certify_functional_custom_statement_trace(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::CustomStatementTraceRequest,
+    ) -> Outcome<crate::CertifiedStatementTrace> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_custom_statement_trace(
+            &purposes, principal, capability, request,
+        )))
+    }
+
     /// Reconcile a complete adjacent-publication trace to its net statement comparison.
     pub fn statement_trace(
         &self,

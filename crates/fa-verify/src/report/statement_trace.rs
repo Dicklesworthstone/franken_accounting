@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 
 use super::{
     Certificate as NativeCertificate, MAX_REPORT_BUNDLE_BYTES, ReportError, Selection,
-    StatementLineChange, StatementMappingChange, VerifiedStatement, VerifiedStatementDiff, failed,
-    functional, metadata, registry, statement_diff,
+    StatementLineChange, StatementMappingChange, VerifiedCustomStatement, VerifiedStatement,
+    VerifiedStatementDiff, custom_statement, failed, functional, metadata, registry,
+    statement_diff,
 };
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
@@ -15,12 +16,21 @@ use crate::envelope::{KIND_ENTRY, LeafEnvelope, Leg, proposal_leg_details};
 
 const FORMAT: &[u8] = b"fa:statement-trace-certificate:v1";
 const FUNCTIONAL_FORMAT: &[u8] = b"fa:functional-statement-trace-certificate:v1";
+const CUSTOM_FORMAT: &[u8] = b"fa:custom-statement-trace-certificate:v1";
+const FUNCTIONAL_CUSTOM_FORMAT: &[u8] = b"fa:functional-custom-statement-trace-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-trace-certificate-digest:v1";
 const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-trace-certificate-digest:v1";
+const CUSTOM_DIGEST_DOMAIN: &[u8] = b"fa:custom-statement-trace-certificate-digest:v1";
+const FUNCTIONAL_CUSTOM_DIGEST_DOMAIN: &[u8] =
+    b"fa:functional-custom-statement-trace-certificate-digest:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-trace-source:v1";
 const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-trace-source:v1";
+const CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:custom-statement-trace-source:v1";
+const FUNCTIONAL_CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:functional-custom-statement-trace-source:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:statement-trace:v1";
 const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-trace:v1";
+const CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:custom-statement-trace:v1";
+const FUNCTIONAL_CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:functional-custom-statement-trace:v1";
 const MAX_SOURCES: usize = 257;
 const MAX_LINKS: usize = 65_536;
 const MAX_REFERENCES: usize = 4096;
@@ -58,6 +68,7 @@ pub struct VerifiedStatementTrace {
 
 pub(super) struct Certificate<'a> {
     pub functional: bool,
+    pub custom: bool,
     pub sources: Vec<&'a [u8]>,
     pub output: &'a [u8],
     pub digest: [u8; 32],
@@ -66,7 +77,21 @@ pub(super) struct Certificate<'a> {
 pub(super) fn recognizes(bytes: &[u8]) -> bool {
     Reader::new(bytes)
         .bytes(64, "statement_trace.format")
-        .is_ok_and(|format| format == FORMAT || format == FUNCTIONAL_FORMAT)
+        .is_ok_and(|format| {
+            matches!(
+                format,
+                FORMAT | FUNCTIONAL_FORMAT | CUSTOM_FORMAT | FUNCTIONAL_CUSTOM_FORMAT
+            )
+        })
+}
+
+fn output_format(custom: bool, functional: bool) -> &'static [u8] {
+    match (custom, functional) {
+        (false, false) => OUTPUT_FORMAT,
+        (false, true) => FUNCTIONAL_OUTPUT_FORMAT,
+        (true, false) => CUSTOM_OUTPUT_FORMAT,
+        (true, true) => FUNCTIONAL_CUSTOM_OUTPUT_FORMAT,
+    }
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
@@ -74,9 +99,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         return Err(failed("bounded_input", "statement trace exceeds 64 MiB"));
     }
     let mut r = Reader::new(bytes);
-    let functional = match r.bytes(64, "statement_trace.format")? {
-        FORMAT => false,
-        FUNCTIONAL_FORMAT => true,
+    let (custom, functional) = match r.bytes(64, "statement_trace.format")? {
+        FORMAT => (false, false),
+        FUNCTIONAL_FORMAT => (false, true),
+        CUSTOM_FORMAT => (true, false),
+        FUNCTIONAL_CUSTOM_FORMAT => (true, true),
         _ => {
             return Err(failed(
                 "supported_report",
@@ -97,25 +124,22 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut sources = Vec::with_capacity(n);
     for _ in 0..n {
         let source = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_trace.source")?;
-        let source_format = if functional {
-            super::FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
-        } else {
-            super::STATEMENT_CERTIFICATE_FORMAT
+        let source_format = match (custom, functional) {
+            (false, false) => super::STATEMENT_CERTIFICATE_FORMAT,
+            (false, true) => super::FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
+            (true, false) => custom_statement::NATIVE_FORMAT,
+            (true, true) => custom_statement::FUNCTIONAL_FORMAT,
         };
         if !source.starts_with(source_format) {
             return Err(failed(
                 "supported_report",
-                "trace sources must preserve the outer family's native v4 or functional v5 statement measure",
+                "trace sources must preserve the outer family's built-in v4/v5 or custom v11/v12 statement measure",
             ));
         }
         sources.push(source);
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "statement_trace.output")?;
-    let output_format = if functional {
-        FUNCTIONAL_OUTPUT_FORMAT
-    } else {
-        OUTPUT_FORMAT
-    };
+    let output_format = output_format(custom, functional);
     if Reader::new(output).bytes(64, "statement_trace.output_format")? != output_format {
         return Err(failed(
             "supported_report",
@@ -126,10 +150,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let digest = r.fixed::<32>("statement_trace.digest")?;
     r.finish("statement trace certificate")?;
     if hash_parts(
-        if functional {
-            FUNCTIONAL_DIGEST_DOMAIN
-        } else {
-            DIGEST_DOMAIN
+        match (custom, functional) {
+            (false, false) => DIGEST_DOMAIN,
+            (false, true) => FUNCTIONAL_DIGEST_DOMAIN,
+            (true, false) => CUSTOM_DIGEST_DOMAIN,
+            (true, true) => FUNCTIONAL_CUSTOM_DIGEST_DOMAIN,
         },
         &[&(body_len as u32).to_le_bytes(), &bytes[..body_len]],
     ) != digest
@@ -154,6 +179,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     Ok(Certificate {
         functional,
+        custom,
         sources,
         output,
         digest,
@@ -169,6 +195,52 @@ pub(super) struct FunctionalInputs<'a> {
     pub rates: &'a [([u8; 32], &'a [u8])],
 }
 
+#[derive(Clone)]
+enum ReplayedStatement {
+    BuiltIn(VerifiedStatement),
+    Custom(VerifiedCustomStatement),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compare(
+    functional: bool,
+    before_certificate: &NativeCertificate<'_>,
+    after_certificate: &NativeCertificate<'_>,
+    before: ReplayedStatement,
+    before_bytes: &[u8],
+    after: ReplayedStatement,
+    after_bytes: &[u8],
+) -> Result<(VerifiedStatementDiff, Vec<u8>), ReportError> {
+    match (before, after) {
+        (ReplayedStatement::BuiltIn(before), ReplayedStatement::BuiltIn(after)) => {
+            statement_diff::derive(
+                functional,
+                before_certificate,
+                after_certificate,
+                before,
+                before_bytes,
+                after,
+                after_bytes,
+            )
+        }
+        (ReplayedStatement::Custom(before), ReplayedStatement::Custom(after)) => {
+            statement_diff::derive_custom(
+                functional,
+                before_certificate,
+                after_certificate,
+                before,
+                before_bytes,
+                after,
+                after_bytes,
+            )
+        }
+        _ => Err(failed(
+            "statement_trace_sources",
+            "trace changes its custom or built-in definition family",
+        )),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn source(
     certificate: &NativeCertificate<'_>,
@@ -178,13 +250,7 @@ fn source(
     legs: &[Vec<Leg>],
     units: &[u32],
     functional_inputs: Option<&FunctionalInputs<'_>>,
-) -> Result<(VerifiedStatement, Vec<u8>), ReportError> {
-    let Selection::Statement(selection) = &certificate.selection else {
-        return Err(failed(
-            "supported_report",
-            "trace source is not a statement",
-        ));
-    };
+) -> Result<(ReplayedStatement, Vec<u8>), ReportError> {
     let source_bodies = crate::migration_balance::report_bodies_at(
         envelopes,
         records,
@@ -193,6 +259,56 @@ fn source(
     )
     .map_err(|error| failed("migration_visibility", error.to_string()))?;
     let inputs = super::historical_inputs(certificate, envelopes, records, &source_bodies)?;
+    if let Selection::CustomStatement(selection) = &certificate.selection {
+        let valued = if let Some(valuation) = functional_inputs {
+            let rates = functional::historical_rates(valuation.rates, records, &inputs.infos)?;
+            Some(functional::statement_legs(
+                certificate,
+                valuation.registry,
+                valuation.book,
+                &rates,
+                &inputs.schema,
+                envelopes,
+                records,
+                legs,
+                &inputs.infos,
+                &inputs.migration_activations,
+            )?)
+        } else {
+            None
+        };
+        let (units, legs) = match &valued {
+            Some((base, values)) => (std::slice::from_ref(base), values.as_slice()),
+            None => (units, legs),
+        };
+        let (statement, output) = custom_statement::replay(
+            selection,
+            &certificate.book,
+            &certificate.branch,
+            certificate.known_at,
+            units,
+            &inputs.schema,
+            envelopes,
+            records,
+            &inputs.infos,
+            legs,
+            &inputs.visible_migrations,
+            &inputs.resolved,
+        )?;
+        if output != certificate.output {
+            return Err(failed(
+                "custom_statement_recomputation",
+                "an intermediate custom trace source differs in its historical activation, exact statement, mappings or independently rounded presentation",
+            ));
+        }
+        return Ok((ReplayedStatement::Custom(statement), output));
+    }
+    let Selection::Statement(selection) = &certificate.selection else {
+        return Err(failed(
+            "supported_report",
+            "trace source is not a statement",
+        ));
+    };
     let (statement, output) = if let Some(valuation) = functional_inputs {
         let rates = functional::historical_rates(valuation.rates, records, &inputs.infos)?;
         let (report, output) = functional::replay_statement(
@@ -232,17 +348,22 @@ fn source(
             "an intermediate trace statement differs from its independently reconstructed historical source",
         ));
     }
-    Ok((statement, output))
+    Ok((ReplayedStatement::BuiltIn(statement), output))
 }
 
-fn source_digest(functional: bool, output: &[u8]) -> Result<[u8; 32], ReportError> {
-    let (domain, bytes) = if functional {
-        (
-            FUNCTIONAL_SOURCE_DOMAIN,
-            functional::statement_bytes(output)?,
-        )
+fn source_digest(custom: bool, functional: bool, output: &[u8]) -> Result<[u8; 32], ReportError> {
+    let domain = match (custom, functional) {
+        (false, false) => SOURCE_DOMAIN,
+        (false, true) => FUNCTIONAL_SOURCE_DOMAIN,
+        (true, false) => CUSTOM_SOURCE_DOMAIN,
+        (true, true) => FUNCTIONAL_CUSTOM_SOURCE_DOMAIN,
+    };
+    let bytes = if custom {
+        custom_statement::statement_bytes(output)?
+    } else if functional {
+        functional::statement_bytes(output)?
     } else {
-        (SOURCE_DOMAIN, output)
+        output
     };
     Ok(hash_parts(
         domain,
@@ -475,7 +596,7 @@ pub(super) fn replay(
             units,
             functional_inputs,
         )?;
-        let (diff, _) = statement_diff::derive(
+        let (diff, _) = compare(
             request.functional,
             &previous_certificate,
             &next_certificate,
@@ -491,8 +612,12 @@ pub(super) fn replay(
             .ok_or_else(|| failed("bounded_input", "trace exceeds 65536 total entry links"))?;
         let publication = VerifiedStatementPublication {
             recorded_at: next_certificate.known_at,
-            before_source_digest: source_digest(request.functional, &previous_bytes)?,
-            after_source_digest: source_digest(request.functional, &next_bytes)?,
+            before_source_digest: source_digest(
+                request.custom,
+                request.functional,
+                &previous_bytes,
+            )?,
+            after_source_digest: source_digest(request.custom, request.functional, &next_bytes)?,
             entries,
             changes: diff
                 .lines
@@ -512,7 +637,7 @@ pub(super) fn replay(
         previous = next;
         previous_bytes = next_bytes;
     }
-    let (summary, summary_bytes) = statement_diff::derive(
+    let (summary, summary_bytes) = compare(
         request.functional,
         &first_certificate,
         &previous_certificate,
@@ -521,11 +646,7 @@ pub(super) fn replay(
         previous,
         &previous_bytes,
     )?;
-    let output_format = if request.functional {
-        FUNCTIONAL_OUTPUT_FORMAT
-    } else {
-        OUTPUT_FORMAT
-    };
+    let output_format = output_format(request.custom, request.functional);
     let length = 12usize
         .checked_add(output_format.len())
         .and_then(|n| n.checked_add(summary_bytes.len()))

@@ -278,6 +278,8 @@ impl ReportArtifact {
             Artifact::StatementDiff(Box::new(StatementDiffCertificate::decode(bytes)?))
         } else if format == crate::statement_trace::CERTIFICATE_FORMAT
             || format == crate::statement_trace::FUNCTIONAL_CERTIFICATE_FORMAT
+            || format == crate::statement_trace::CUSTOM_CERTIFICATE_FORMAT
+            || format == crate::statement_trace::FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT
         {
             Artifact::StatementTrace(Box::new(StatementTraceCertificate::decode(bytes)?))
         } else if format == crate::aging::portfolio::CERTIFICATE_FORMAT {

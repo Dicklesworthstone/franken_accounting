@@ -32,20 +32,27 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    AsyncBook, BookError, Outcome, Statement, StatementDiff, StatementDiffRequest,
-    StatementLineChange, StatementMappingChange,
+    AsyncBook, BookError, CustomStatementSelection, Outcome, ReportSelection, Statement,
+    StatementDiff, StatementDiffRequest, StatementLineChange, StatementMappingChange,
 };
 
 mod certificate;
-pub(crate) use certificate::{CERTIFICATE_FORMAT, FUNCTIONAL_CERTIFICATE_FORMAT};
+pub(crate) use certificate::{
+    CERTIFICATE_FORMAT, CUSTOM_CERTIFICATE_FORMAT, FUNCTIONAL_CERTIFICATE_FORMAT,
+    FUNCTIONAL_CUSTOM_CERTIFICATE_FORMAT,
+};
 pub use certificate::{
     CertifiedStatementTrace, MAX_STATEMENT_TRACE_CERTIFICATE_BYTES, StatementTraceCertificate,
 };
 
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-trace:v1";
 pub const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-trace:v1";
+pub const CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:custom-statement-trace:v1";
+pub const FUNCTIONAL_CUSTOM_OUTPUT_FORMAT: &[u8] = b"fa:functional-custom-statement-trace:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-trace-source:v1";
 const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-trace-source:v1";
+const CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:custom-statement-trace-source:v1";
+const FUNCTIONAL_CUSTOM_SOURCE_DOMAIN: &[u8] = b"fa:functional-custom-statement-trace-source:v1";
 pub const MAX_STATEMENT_TRACE_PUBLICATIONS: usize = 256;
 pub const MAX_STATEMENT_TRACE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_LINKS: usize = 65_536;
@@ -58,6 +65,69 @@ const MAX_REFERENCES: usize = 4096;
 pub struct StatementTraceRequest {
     pub comparison: StatementDiffRequest,
     pub max_publications: usize,
+}
+
+/// One fully pinned company layout over a bounded publication interval. The
+/// original activation and presentation remain fixed at every frontier; later
+/// activations of the same name never replace this accounting question.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomStatementTraceRequest {
+    pub selection: CustomStatementSelection,
+    pub before: CommitSeq,
+    pub after: Option<CommitSeq>,
+    pub max_publications: usize,
+}
+
+/// Shared resolved source walk for built-in and company-defined layouts.
+struct SourceRequest {
+    selection: ReportSelection,
+    before: CommitSeq,
+    after: CommitSeq,
+}
+
+impl SourceRequest {
+    fn builtin(request: StatementDiffRequest, functional: bool) -> Result<Self, Refusal> {
+        let after = request
+            .after
+            .ok_or_else(|| invalid("trace interval was not resolved"))?;
+        let selection = if functional {
+            ReportSelection::FunctionalStatement(Box::new(request.selection))
+        } else {
+            ReportSelection::Statement(Box::new(request.selection))
+        };
+        Ok(Self {
+            selection,
+            before: request.before,
+            after,
+        })
+    }
+
+    fn custom(
+        request: &CustomStatementTraceRequest,
+        head: CommitSeq,
+        functional: bool,
+    ) -> Result<Self, Refusal> {
+        let after = resolve_interval(
+            request.before,
+            request.after,
+            request.max_publications,
+            head,
+        )?;
+        let selection = request.selection.clone().normalize();
+        if !selection.is_canonical()
+            || selection.functional != functional
+            || selection.activated_at > request.before
+        {
+            return Err(invalid(
+                "custom trace needs one canonical layout activated by its first frontier and the requested valuation basis",
+            ));
+        }
+        Ok(Self {
+            selection: ReportSelection::CustomStatement(Box::new(selection)),
+            before: request.before,
+            after,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,11 +373,17 @@ impl StatementTrace {
     }
 
     #[must_use]
+    pub fn is_custom(&self) -> bool {
+        self.summary.is_custom()
+    }
+
+    #[must_use]
     pub fn output_format(&self) -> &'static [u8] {
-        if self.is_functional() {
-            FUNCTIONAL_OUTPUT_FORMAT
-        } else {
-            OUTPUT_FORMAT
+        match (self.is_custom(), self.is_functional()) {
+            (false, false) => OUTPUT_FORMAT,
+            (false, true) => FUNCTIONAL_OUTPUT_FORMAT,
+            (true, false) => CUSTOM_OUTPUT_FORMAT,
+            (true, true) => FUNCTIONAL_CUSTOM_OUTPUT_FORMAT,
         }
     }
 
@@ -363,7 +439,7 @@ impl StatementTrace {
 // definition, mapping, unit and arithmetic laws.
 fn admit_source(source: &Statement) -> Result<(), Refusal> {
     if source.columns.len() > 8
-        || source.lines.len() > 64 * 4096
+        || source.lines.len() > 128 * 4096
         || source.mappings.len() > 1_000_000
     {
         return Err(invalid(
@@ -524,10 +600,11 @@ impl Builder {
         }
         incoming = size([incoming, changes_size(&[], diff.mapping_changes())?])?;
         let bytes = size([self.step_bytes, incoming])?;
-        let source_domain = if self.functional {
-            FUNCTIONAL_SOURCE_DOMAIN
-        } else {
-            SOURCE_DOMAIN
+        let source_domain = match (diff.is_custom(), self.functional) {
+            (false, false) => SOURCE_DOMAIN,
+            (false, true) => FUNCTIONAL_SOURCE_DOMAIN,
+            (true, false) => CUSTOM_SOURCE_DOMAIN,
+            (true, true) => FUNCTIONAL_CUSTOM_SOURCE_DOMAIN,
         };
         let step = StatementPublication {
             recorded_at: CommitSeq(next.known_at),
@@ -607,17 +684,12 @@ fn resolved(
     head: CommitSeq,
 ) -> Result<StatementDiffRequest, Refusal> {
     let before = request.comparison.before;
-    let after = request.comparison.after.unwrap_or(head);
-    if request.max_publications == 0
-        || request.max_publications > MAX_STATEMENT_TRACE_PUBLICATIONS
-        || before > after
-        || after > head
-        || after.0 - before.0 > request.max_publications as u64
-    {
-        return Err(invalid(
-            "trace needs before <= after <= head and a sufficient explicit limit in 1..=256",
-        ));
-    }
+    let after = resolve_interval(
+        before,
+        request.comparison.after,
+        request.max_publications,
+        head,
+    )?;
     let selection = request.comparison.selection.clone().normalize();
     if !selection.is_canonical() {
         return Err(invalid(
@@ -629,6 +701,26 @@ fn resolved(
         before,
         after: Some(after),
     })
+}
+
+fn resolve_interval(
+    before: CommitSeq,
+    after: Option<CommitSeq>,
+    max_publications: usize,
+    head: CommitSeq,
+) -> Result<CommitSeq, Refusal> {
+    let after = after.unwrap_or(head);
+    if max_publications == 0
+        || max_publications > MAX_STATEMENT_TRACE_PUBLICATIONS
+        || before > after
+        || after > head
+        || after.0 - before.0 > max_publications as u64
+    {
+        return Err(invalid(
+            "trace needs before <= after <= head and a sufficient explicit limit in 1..=256",
+        ));
+    }
+    Ok(after)
 }
 
 fn references(entry: &Entry) -> Result<Vec<EntryRef>, Refusal> {
@@ -756,6 +848,58 @@ fn publication_entries<V: Vfs + Clone, B: Vfs + Clone>(
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Trace an approved custom layout in separate native units. Presentation
+    /// is recomputed at every frontier, while attribution uses exact amounts.
+    pub fn custom_statement_trace(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &CustomStatementTraceRequest,
+    ) -> Outcome<StatementTrace> {
+        let head = match authorize(self, cx, principal, capability, false)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match SourceRequest::custom(request, head, false) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        read_custom_trace(self, cx, capability, &request)
+    }
+
+    /// Trace the same approved custom layout using retained functional
+    /// valuations. Hydrate history once under authority before the source walk.
+    pub async fn functional_custom_statement_trace(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &CustomStatementTraceRequest,
+    ) -> Outcome<StatementTrace> {
+        let head = match self.admit_functional_report(cx, principal, capability, None, false)? {
+            Ok(head) => head,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match SourceRequest::custom(request, head, true) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self
+            .prepare_functional_report(cx, principal, capability, Some(request.after), false)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = read_custom_trace(self, cx, capability, &request)?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, Some(request.after), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
     /// Reconcile a complete adjacent-publication trace to its net statement
     /// comparison. Authority precedes even selector/frontier observation.
     /// This method is read-only; it is not a retained-history certificate.
@@ -871,6 +1015,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(builder.finish())
     }
+}
+
+fn read_custom_trace<V: Vfs + Clone, B: Vfs + Clone>(
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    capability: &Capability,
+    request: &SourceRequest,
+) -> Outcome<StatementTrace> {
+    let ReportSelection::CustomStatement(selection) = &request.selection else {
+        return Ok(Err(invalid("custom trace needs an approved custom layout")));
+    };
+    let first =
+        match book.custom_statement(cx, capability, (**selection).clone(), Some(request.before))? {
+            Ok(report) => report.statement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+    let mut builder = match Builder::with_basis(first, request.after, selection.functional) {
+        Ok(builder) => builder,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    for offset in 1..=request.after.0 - request.before.0 {
+        let at = CommitSeq(request.before.0 + offset);
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        let report = match book.custom_statement(cx, capability, (**selection).clone(), Some(at))? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let entries = match publication_entries(book, cx, at)? {
+            Ok(entries) => entries,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = builder.push(report.statement, entries) {
+            return Ok(Err(refusal));
+        }
+    }
+    cx.query().checkpoint().map_err(BookError::Context)?;
+    Ok(builder.finish())
 }
 
 #[cfg(test)]

@@ -4,6 +4,9 @@
 
 use super::*;
 
+#[path = "trace.rs"]
+mod trace;
+
 const BEFORE: u64 = 5;
 const AFTER: u64 = 7;
 
@@ -85,11 +88,20 @@ fn units(functional: bool) -> Vec<u32> {
 }
 
 fn output(functional: bool, at: u64, activation: u128, defect: u8) -> Output {
+    output_with_amounts(functional, at, activation, amounts(functional, at), defect)
+}
+
+fn output_with_amounts(
+    functional: bool,
+    at: u64,
+    activation: u128,
+    exact_values: [i128; 3],
+    defect: u8,
+) -> Output {
     let definition = layout(1);
     let digest = definition_digest(&definition);
     let selected_units = units(functional);
     let active = u32::from(!functional);
-    let exact_values = amounts(functional, at);
     // Both sources have the SAME presented amounts despite a real expense:
     // 9 -> 8 native, or 14 -> 12 base, each rounds to 1 at scale ten.
     let shown = [1_i128, 0, 1];
@@ -263,6 +275,20 @@ fn source(fixture: &Fixture, functional: bool, at: u64, output: &Output, defect:
 }
 
 fn bridge(functional: bool, before: &Output, after: &Output, false_delta: bool) -> Vec<u8> {
+    bridge_at(
+        functional,
+        (BEFORE, before, amounts(functional, BEFORE)),
+        (AFTER, after, amounts(functional, AFTER)),
+        false_delta,
+    )
+}
+
+fn bridge_at(
+    functional: bool,
+    before: (u64, &Output, [i128; 3]),
+    after: (u64, &Output, [i128; 3]),
+    false_delta: bool,
+) -> Vec<u8> {
     let mut w = Writer::default();
     w.bytes(if functional {
         b"fa:functional-custom-statement-diff:v1"
@@ -279,10 +305,10 @@ fn bridge(functional: bool, before: &Output, after: &Output, false_delta: bool) 
     };
     w.fixed(&BOOK)
         .fixed(&[0; 16])
-        .u64(BEFORE)
-        .u64(AFTER)
-        .fixed(&framed_hash(source_domain, &[&before.inner]))
-        .fixed(&framed_hash(source_domain, &[&after.inner]))
+        .u64(before.0)
+        .u64(after.0)
+        .fixed(&framed_hash(source_domain, &[&before.1.inner]))
+        .fixed(&framed_hash(source_domain, &[&after.1.inner]))
         .fixed(&definition_digest(&layout(1)));
     columns(&mut w);
     let selected_units = units(functional);
@@ -297,12 +323,12 @@ fn bridge(functional: bool, before: &Output, after: &Output, false_delta: bool) 
     {
         for &unit in &selected_units {
             let old = if unit == u32::from(!functional) {
-                amounts(functional, BEFORE)[index]
+                before.2[index]
             } else {
                 0
             };
             let new = if unit == u32::from(!functional) {
-                amounts(functional, AFTER)[index]
+                after.2[index]
             } else {
                 0
             };
@@ -381,7 +407,7 @@ fn bundle(
     let checkpoint = Checkpoint {
         book_id: BOOK,
         branch_id: [0; 16],
-        through_seq: 9,
+        through_seq: fixture.records.last().unwrap().envelope.commit_seq,
         leaf_count: all.len() as u64,
         root: root_of(&all.iter().map(|bytes| leaf_hash(bytes)).collect::<Vec<_>>()),
     };
