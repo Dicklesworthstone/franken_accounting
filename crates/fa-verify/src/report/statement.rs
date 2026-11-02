@@ -2,7 +2,7 @@
 //! Account mappings include every covered leaf, even without a balance. Lines
 //! use the complete bound unit table and retain current/comparative ordering.
 mod arithmetic;
-mod definition;
+pub(super) mod definition;
 #[cfg(test)]
 mod tests;
 
@@ -52,13 +52,20 @@ pub struct VerifiedStatement {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Selection {
-    definition: Definition,
+    pub definition: Definition,
     pub periods: Vec<String>,
     pub comparative: Vec<String>,
 }
 impl Selection {
     pub fn new(
         bytes: &[u8],
+        periods: Vec<String>,
+        comparative: Vec<String>,
+    ) -> Result<Self, ReportError> {
+        Self::from_definition(Definition::decode(bytes)?, periods, comparative)
+    }
+    pub fn from_definition(
+        definition: Definition,
         periods: Vec<String>,
         comparative: Vec<String>,
     ) -> Result<Self, ReportError> {
@@ -69,7 +76,7 @@ impl Selection {
             ));
         }
         Ok(Self {
-            definition: Definition::decode(bytes)?,
+            definition,
             periods,
             comparative,
         })
@@ -158,6 +165,9 @@ fn mappings(
     definition: &Definition,
     schema: &metadata::Schema,
 ) -> Result<Vec<StatementMapping>, ReportError> {
+    if definition.digest_domain == super::custom_statement::definition::FORMAT {
+        return super::custom_statement::definition::mappings(definition, schema);
+    }
     if schema.accounts.len() > 1_000_000 {
         return Err(failed(
             "statement_partition",
@@ -420,11 +430,16 @@ pub(super) fn replay(
                 }
             }
             if let Some(&index) = account_lines.get(&account) {
-                let Source::Accounts { credit, .. } = definition.lines[index].source else {
-                    return Err(failed(
-                        "statement_partition",
-                        "mapped account names a formula",
-                    ));
+                let credit = match &definition.lines[index].source {
+                    Source::Accounts { credit, .. } | Source::CustomAccounts { credit, .. } => {
+                        *credit
+                    }
+                    Source::Formula { .. } => {
+                        return Err(failed(
+                            "statement_partition",
+                            "mapped account names a formula",
+                        ));
+                    }
                 };
                 sums[index]
                     .add(gross[0], credit)
@@ -501,7 +516,7 @@ pub(super) fn replay(
         },
         units: units.to_vec(),
         definition_digest: hash_parts(
-            b"fa:statement-definition:v1",
+            definition.digest_domain,
             &[
                 &(definition.bytes.len() as u32).to_le_bytes(),
                 &definition.bytes,

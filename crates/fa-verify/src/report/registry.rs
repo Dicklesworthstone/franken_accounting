@@ -483,6 +483,53 @@ pub(super) fn verify(
     ))
 }
 
+/// Company layouts add the presentation-law registry to the complete native
+/// closure. Its arithmetic is interpreted here, never supplied by the bundle.
+pub(super) fn verify_custom(
+    inputs: &[(&str, &[u8])],
+    expected: &[u8; 32],
+) -> Result<Vec<u32>, ReportError> {
+    const CUSTOM_NAMES: [&str; 5] = [
+        "account_types",
+        "entry_classes",
+        "units",
+        "foundations",
+        "rounding_laws",
+    ];
+    if inputs.iter().map(|(name, _)| *name).ne(CUSTOM_NAMES) {
+        return Err(invalid(
+            "custom statements require all five canonical registries in certificate order",
+        ));
+    }
+    let mut transcript = Vec::new();
+    let mut docs = Vec::with_capacity(inputs.len());
+    for (name, bytes) in inputs {
+        docs.push(document(bytes)?);
+        transcript.extend_from_slice(name.as_bytes());
+        transcript.push(0);
+        transcript.extend_from_slice(&hash_parts(b"fa:registry-canonical-digest:v1", &[bytes]));
+    }
+    if hash_parts(b"fa:report-registry-closure:v2", &[&transcript]) != *expected {
+        return Err(invalid(
+            "custom statement registries differ from the certificate's exact closure",
+        ));
+    }
+    account_types(&docs[0])?;
+    entry_classes(&docs[1])?;
+    presentation_rounding(&docs[4])?;
+    units(&docs[2])
+}
+
+/// Functional custom statements use the existing six-document closure, but
+/// can select any of the nine presentation laws rather than only HalfEven.
+pub(super) fn verify_custom_rounding(inputs: &[(&str, &[u8])]) -> Result<(), ReportError> {
+    let (_, bytes) = inputs
+        .iter()
+        .find(|(name, _)| *name == "rounding_laws")
+        .ok_or_else(|| invalid("missing custom statement rounding registry"))?;
+    presentation_rounding(&document(bytes)?)
+}
+
 /// Authenticated unit kinds used by the native-cost lot schedule profile.
 pub(super) struct LotUnits {
     pub currencies: BTreeSet<u32>,
@@ -799,6 +846,30 @@ fn functional_rounding(doc: &Document) -> Result<(), ReportError> {
     }
     Ok(())
 }
+
+fn presentation_rounding(doc: &Document) -> Result<(), ReportError> {
+    functional_rounding(doc)?;
+    let definitions = [
+        "Round half toward positive infinity.",
+        "Round half toward negative infinity.",
+        "Banker's rounding: ties to the even neighbour (sign-symmetric).",
+        "Ties away from zero (commercial rounding).",
+        "Ties toward zero.",
+        "Toward positive infinity.",
+        "Toward negative infinity.",
+        "Truncate toward zero.",
+        "Away from zero.",
+    ];
+    for (row, expected) in rows(doc, "law")?.iter().zip(definitions) {
+        if string(row, "definition")? != expected {
+            return Err(invalid(
+                "custom presentation rounding law differs from the independently implemented semantics",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn verify_functional(
     inputs: &[(&str, &[u8])],
     expected: &[u8; 32],

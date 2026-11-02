@@ -1558,6 +1558,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     } else {
                                         "consolidation"
                                     }
+                                } else if let Some(custom) = &report.custom_statement {
+                                    if custom.functional_unit.is_some() {
+                                        "functional_custom_statement"
+                                    } else {
+                                        "custom_statement"
+                                    }
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
                                 } else if let Some(trace) = &report.statement_trace {
@@ -1634,6 +1640,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 } else if let Some(group) = &report.consolidation {
                                     group.balance_sheet.lines.len()
                                         + group.income_statement.lines.len()
+                                } else if let Some(custom) = &report.custom_statement {
+                                    custom.statement.lines.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
                                 } else if let Some(trace) = &report.statement_trace {
@@ -1725,6 +1733,13 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
+                    if let Some(custom) = &report.custom_statement {
+                        checks.extend(custom_statement_checks(custom));
+                        checks.extend(statement_checks(
+                            &custom.statement,
+                            report.unit_universe_source,
+                        ));
                     }
                     if let Some(group) = &report.consolidation {
                         checks.extend(consolidation_checks(group));
@@ -2966,6 +2981,109 @@ fn consolidation_checks(report: &crate::report::VerifiedConsolidation) -> Vec<Ch
                 ),
             ],
         ));
+    }
+    checks
+}
+
+fn custom_statement_checks(report: &crate::report::VerifiedCustomStatement) -> Vec<Check> {
+    let activation = &report.activation;
+    let mut checks = vec![Check::pass(
+        "custom_statement_recomputation",
+        "recomputation",
+        vec![
+            ("definition_digest", h(&report.statement.definition_digest)),
+            ("activation", s(format!("{:032x}", activation.activation))),
+            ("activated_at", n(activation.activated_at)),
+            ("effective_from", day(Some(activation.effective_from))),
+            ("reviewed_chart_digest", h(&activation.chart_digest)),
+            (
+                "definition_binding",
+                s("exact definition digest and identity in the authenticated activation control"),
+            ),
+            (
+                "mapping_partition",
+                s("complete reviewed chart and every exact report column"),
+            ),
+            (
+                "approval_references",
+                n(activation.approval_refs.len() as u64),
+            ),
+            (
+                "approval_admission_verified",
+                Json::Bool(activation.approval_admission_verified),
+            ),
+            (
+                "definition_birth_verified",
+                Json::Bool(activation.definition_birth_verified),
+            ),
+            ("approval_row_birth", s("not_judged")),
+            ("human_profiles", s("not_judged")),
+            ("separation_of_duties", s("not_judged")),
+            ("security_policy_admission", s("not_judged")),
+            ("registry_activation", s("not_judged")),
+        ],
+    )];
+    if let Some(base_unit) = report.functional_unit {
+        checks.push(Check::pass(
+            "functional_custom_statement_basis",
+            "recomputation",
+            vec![
+                ("base_unit", n(u64::from(base_unit))),
+                ("valuation_basis", s("retained-base-amounts")),
+                (
+                    "rate_visibility",
+                    s("complete authenticated import history at or before first use"),
+                ),
+                (
+                    "book_parameters_source",
+                    report.book_parameters_source.map_or(Json::Null, s),
+                ),
+                ("genesis_registration", s("not_judged")),
+                ("external_rate_truth", s("not_judged")),
+            ],
+        ));
+    }
+    if let Some(presented) = &report.presented {
+        checks.push(Check::pass(
+            "custom_statement_presentation",
+            "recomputation",
+            vec![
+                ("rounding_law", n(u64::from(presented.rounding_law))),
+                (
+                    "scale_reduction_digits",
+                    n(u64::from(presented.scale_reduction_digits)),
+                ),
+                ("divisor", amount(presented.divisor)),
+                (
+                    "rounding_errors",
+                    s("presented mantissas times the declared divisor minus exact mantissas"),
+                ),
+            ],
+        ));
+        for line in &presented.lines {
+            checks.push(Check::pass(
+                "custom_statement_presented_line",
+                "recomputation",
+                vec![
+                    ("code", s(&line.code)),
+                    ("label", s(&line.label)),
+                    ("unit", n(u64::from(line.unit))),
+                    (
+                        "exact_amounts",
+                        Json::List(line.exact_amounts.iter().copied().map(amount).collect()),
+                    ),
+                    (
+                        "presented_amounts",
+                        Json::List(line.presented_amounts.iter().copied().map(amount).collect()),
+                    ),
+                    (
+                        "rounding_errors",
+                        Json::List(line.rounding_errors.iter().copied().map(amount).collect()),
+                    ),
+                    ("is_residual_line", Json::Bool(line.is_residual_line)),
+                ],
+            ));
+        }
     }
     checks
 }
@@ -4506,6 +4624,89 @@ pub fn run(args: &[String], read: Read<'_>) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_statement_checks_separate_journal_binding_from_human_admission_and_rounding() {
+        use crate::report::{
+            PresentedStatementLine, VerifiedCustomActivation, VerifiedCustomStatement,
+            VerifiedPresentedStatement, VerifiedStatement,
+        };
+        let mut custom = VerifiedCustomStatement {
+            activation: VerifiedCustomActivation {
+                activation: 19,
+                activated_at: 11,
+                effective_from: 0,
+                chart_digest: [4; 32],
+                approval_refs: vec![(21, [5; 32]), (22, [5; 32])],
+                approval_admission_verified: false,
+                definition_birth_verified: false,
+            },
+            statement: VerifiedStatement {
+                definition_name: "company-income".into(),
+                definition_version: 2,
+                definition_digest: [3; 32],
+                kind: "IncomeStatement",
+                units: vec![7],
+                columns: vec![],
+                lines: vec![],
+                mappings: vec![],
+            },
+            functional_unit: Some(7),
+            presented: Some(VerifiedPresentedStatement {
+                rounding_law: 3,
+                scale_reduction_digits: 2,
+                divisor: 100,
+                lines: vec![PresentedStatementLine {
+                    code: "rounding.total".into(),
+                    label: "Presentation rounding".into(),
+                    unit: 7,
+                    exact_amounts: vec![0],
+                    presented_amounts: vec![-1],
+                    rounding_errors: vec![-100],
+                    is_residual_line: true,
+                }],
+            }),
+            book_parameters_source: Some(
+                "certificate-bound-report-parameters; genesis-registration-not-proved",
+            ),
+        };
+        let checks = custom_statement_checks(&custom);
+        let rendered = report("report", true, &checks);
+        assert_eq!(rendered.exit, EXIT_VERIFIED);
+        for expected in [
+            "custom_statement_recomputation",
+            "\"approval_references\":2",
+            "\"approval_admission_verified\":false",
+            "\"definition_birth_verified\":false",
+            "\"approval_row_birth\":\"not_judged\"",
+            "\"human_profiles\":\"not_judged\"",
+            "\"separation_of_duties\":\"not_judged\"",
+            "\"security_policy_admission\":\"not_judged\"",
+            "\"genesis_registration\":\"not_judged\"",
+            "\"external_rate_truth\":\"not_judged\"",
+            "\"base_unit\":7",
+            "\"valuation_basis\":\"retained-base-amounts\"",
+            "\"rounding_law\":3",
+            "\"divisor\":\"100\"",
+            "\"exact_amounts\":[\"0\"]",
+            "\"presented_amounts\":[\"-1\"]",
+            "\"rounding_errors\":[\"-100\"]",
+            "\"is_residual_line\":true",
+        ] {
+            assert!(
+                rendered.stdout.contains(expected),
+                "{expected}: {}",
+                rendered.stdout
+            );
+        }
+        assert!(checks.iter().all(|check| check.scope == "recomputation"));
+        custom.functional_unit = None;
+        custom.book_parameters_source = None;
+        custom.presented = None;
+        let native = custom_statement_checks(&custom);
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].name, "custom_statement_recomputation");
+    }
 
     #[test]
     fn functional_statement_trace_discloses_every_frontier_and_retained_rate_premises() {
