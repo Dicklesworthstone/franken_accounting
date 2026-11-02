@@ -2051,6 +2051,7 @@ mod bound_tests {
             // Plain detail and roll-forward judge a complete recorded prefix.
             ("gl", Some("detail")),
             ("gl", Some("roll-forward")),
+            ("gl", Some("aging")),
             ("statement", Some("equity-roll-forward")),
             ("sample", Some("mus")),
             ("sample", Some("evaluate")),
@@ -2068,7 +2069,8 @@ mod bound_tests {
             ),
             // Certification keeps the earlier whole-head rule.
             ("gl", Some("detail"), &["--certify"][..]),
-            ("gl", Some("aging"), &[][..]),
+            ("gl", Some("aging"), &["--reconcile"][..]),
+            ("gl", Some("aging"), &["--certify"][..]),
             ("event", Some("record"), &[][..]),
             ("document", Some("read"), &[][..]),
             ("verify", Some("periods"), &[][..]),

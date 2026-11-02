@@ -1279,7 +1279,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         crate::cli::render_aging(&ctx.out, &book, &report, Some(&digest))?;
         true
     } else if let Some(report) = due_date_aging {
-        crate::cli::render_due_date_aging(&ctx.out, &book, &report, Some(&digest))?;
+        crate::cli::render_due_date_aging(&ctx.out, &book, &capability, &report, Some(&digest))?;
         true
     } else if let Some(report) = equity {
         crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;

@@ -6248,6 +6248,15 @@ subcommands = ["detail", "roll-forward"]
 ops = ["read"]
 reach = "judged"
 
+# Plain aging folds the same complete prefix before applying its account and
+# effective-date selection. Reconciliation and certification keep head reach.
+[[bound]]
+verbs = ["gl"]
+subcommands = ["aging"]
+unless_any = ["--reconcile"]
+ops = ["read"]
+reach = "judged"
+
 [[bound]]
 verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor", "jet", "benford", "trace"]
 ops = ["read"]

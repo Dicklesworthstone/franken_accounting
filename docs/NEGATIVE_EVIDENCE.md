@@ -1532,3 +1532,25 @@ six observed kernel fields in `vec![...]`; it changes no accounting effect,
 counter value, assertion, gate or dependency. The failed transcript is
 retained as `expiry-reads-f86-fad-lib-20261101.log` in the session artifacts.
 Runtime and full-tree qualification of the corrected feature remain required.
+
+## 2026-11-02 — Plain aging could not serve a known-at capability
+
+At `26ad42fd2`, plain ledger detail and roll-forward admitted an auditor's
+recorded prefix, while `gl aging` still required head reach. Both aging
+renderers also loaded the head chart and then filtered its creation dates.
+That observation cannot serve a token restricted to an earlier prefix.
+
+Plain aging now uses the existing complete-prefix admission before its fold,
+and effective-date and due-date rendering use the capability-checked chart
+at the report's own sequence. Certification and reconciliation retain their
+whole-head admission. Account, period and effective-date caveats are still
+refused; report filters do not become authorization predicates.
+
+The real-binary regression selects the March prefix while April has another
+open item. It requires the owner's exact historical answer, one original
+5.00 USD item rather than the head's two, one AccessEvent per admitted token
+read, unchanged publication state on refusals, no retained certificate,
+and current revocation even at the old prefix. This is authored acceptance;
+native execution, an old-admission counterexample and final-tree gates are
+still pending. There is no substrate read-counter or independent-verifier
+claim from source inspection.

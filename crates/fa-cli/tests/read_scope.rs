@@ -107,10 +107,15 @@ impl Fixture {
             .unwrap()
             .check_line(lines[0])
             .unwrap_or_else(|error| panic!("robot schema: {error}\n{stdout}\n{stderr}"));
-        (
-            output.status.code().unwrap_or(-1),
-            json::parse(lines[0]).unwrap(),
-        )
+        let exit = output.status.code().unwrap_or(-1);
+        let event = json::parse(lines[0]).unwrap();
+        eprintln!(
+            "read-scope argv={args:?} exit={exit} event={:?} refusal={:?} known_at={:?}\nstdout={stdout}\nstderr={stderr}",
+            event.get("event"),
+            data(&event).get("refusal_id"),
+            event.get("coordinate").and_then(|c| c.get("known_at")),
+        );
+        (exit, event)
     }
 
     fn ok(&self, args: &[&str]) -> Json {
@@ -1372,6 +1377,155 @@ fn pinned_auditors_read_plain_ledger_detail_and_roll_forward_at_their_prefix() {
             &pin_text,
         ]);
         assert_eq!(exit, 7, "{error:?}");
+        assert_eq!(text(data(&error), "refusal_id"), "FA-REF-023");
+        assert_eq!(error.get("book"), Some(&Json::Null));
+        assert_eq!(error.get("coordinate"), Some(&Json::Null));
+    }
+    assert_eq!(head(&f), revoked_head);
+}
+
+/// Plain aging admits its entire recorded prefix before folding or resolving
+/// historical account metadata. Presentation filters are not scope predicates.
+#[test]
+fn pinned_auditors_read_plain_aging_at_their_prefix() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at");
+    let pin_text = pin.to_string();
+    let later = (pin + 1).to_string();
+    let (pinned, commitment) = f.issue_ops(
+        "aging-pinned",
+        &["read", "produce"],
+        &["--known-at-most", &pin_text],
+    );
+    let head = |f: &Fixture| {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    let before = head(&f);
+    for basis in [None, Some("effective-date"), Some("due-date")] {
+        let mut selected = vec!["gl", "aging", "--account", "1000", "--as-of", "2026-04-30"];
+        if let Some(basis) = basis {
+            selected.extend(["--basis", basis]);
+        }
+        let current = f.ok(&selected);
+        let mut historical = selected.clone();
+        historical.extend(["--as-known-at", pin_text.as_str()]);
+        let expected = f.ok(&historical);
+        let mut scoped = vec!["--token", pinned.as_str()];
+        scoped.extend(historical);
+        let read = f.ok(&scoped);
+        assert_eq!(data(&read), data(&expected));
+        assert_eq!(number(read.get("coordinate").unwrap(), "known_at"), pin);
+        // This is an accounting difference, not just a different coordinate:
+        // April contributes a second open item only at the head. Without
+        // contractual terms, due-date aging retains honest unscheduled items.
+        let item_key = if basis == Some("due-date") {
+            "unscheduled"
+        } else {
+            "items"
+        };
+        let items = |event: &Json| match data(event).get(item_key) {
+            Some(Json::Arr(items)) => items.clone(),
+            _ => panic!("missing {item_key}: {event:?}"),
+        };
+        assert_eq!(items(&read).len(), 1, "{read:?}");
+        assert_eq!(items(&current).len(), 2, "{current:?}");
+        assert_eq!(text(&items(&read)[0], "original"), "5.00 USD");
+        eprintln!(
+            "pinned-aging argv={scoped:?} exit=0 event={} known_at={pin} items=1 head_items=2",
+            text(&read, "event")
+        );
+
+        let settled = head(&f);
+        for suffix in [
+            vec![],
+            vec!["--as-known-at", "HEAD"],
+            vec!["--as-known-at", later.as_str()],
+            vec!["--as-known-at", "2026-03-31T00:00:00Z"],
+        ] {
+            let mut outside = vec!["--token", pinned.as_str()];
+            outside.extend_from_slice(&selected);
+            outside.extend(suffix);
+            f.out_of_scope(&outside, "known_at");
+        }
+        let mut reconcile = scoped.clone();
+        reconcile.push("--reconcile");
+        f.out_of_scope(&reconcile, "known_at");
+        let output = format!("refused-aging-{}.certificate", basis.unwrap_or("default"));
+        let mut retaining = scoped.clone();
+        retaining.extend(["--certificate-out", output.as_str()]);
+        f.out_of_scope(&retaining, "known_at");
+        assert!(!f.dir.join(output).exists());
+        assert_eq!(head(&f), settled, "refusals publish no AccessEvent");
+    }
+    let recorded = number(
+        data(&f.ok(&["access", "log", "--since", &before.to_string()])),
+        "count",
+    );
+    assert_eq!(recorded, 3, "one AccessEvent per admitted token read");
+    assert_eq!(head(&f), before + recorded);
+
+    for (holder, scope, caveat) in [
+        ("aging-march", vec!["--period", "FY2026-P03"], "periods"),
+        (
+            "aging-through",
+            vec!["--effective-through", "2026-04-30"],
+            "effective",
+        ),
+        ("aging-account", vec!["--account", "1000"], "accounts"),
+    ] {
+        let (token, _) = f.issue(holder, &scope);
+        let before = head(&f);
+        for basis in ["effective-date", "due-date"] {
+            f.out_of_scope(
+                &[
+                    "--token",
+                    &token,
+                    "gl",
+                    "aging",
+                    "--account",
+                    "1000",
+                    "--as-of",
+                    "2026-04-30",
+                    "--basis",
+                    basis,
+                    "--as-known-at",
+                    &pin_text,
+                ],
+                caveat,
+            );
+        }
+        assert_eq!(head(&f), before);
+    }
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let revoked_head = head(&f);
+    for basis in ["effective-date", "due-date"] {
+        let args = [
+            "--token",
+            &pinned,
+            "gl",
+            "aging",
+            "--account",
+            "1000",
+            "--as-of",
+            "2026-04-30",
+            "--basis",
+            basis,
+            "--as-known-at",
+            &pin_text,
+        ];
+        let (exit, error) = f.run(&args);
+        assert_eq!(exit, 7, "{args:?}: {error:?}");
         assert_eq!(text(data(&error), "refusal_id"), "FA-REF-023");
         assert_eq!(error.get("book"), Some(&Json::Null));
         assert_eq!(error.get("coordinate"), Some(&Json::Null));

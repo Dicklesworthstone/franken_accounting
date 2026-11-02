@@ -17925,6 +17925,7 @@ fn aging_source_flags(
 pub(crate) fn render_due_date_aging(
     out: &Out,
     book: &Book,
+    capability: &Capability,
     aging: &fa::DueDateAging,
     digest: Option<&str>,
 ) -> Result<(), Fail> {
@@ -17932,9 +17933,8 @@ pub(crate) fn render_due_date_aging(
     out.effective(format!("as-of:{}", aging.effective_through));
     let units = &book.context().units;
     let accounts_by_vid: std::collections::BTreeMap<VId, String> = book
-        .accounts()?
+        .accounts_at(aging.known_at, capability)??
         .into_iter()
-        .filter(|r| r.created_at <= aging.known_at)
         .map(|r| (r.vid, r.code))
         .collect();
     if let Some(acc) = aging.account
@@ -18167,7 +18167,7 @@ fn gl_due_date_aging_reconciliation(
     let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
     out.known_at(report.known_at());
     out.effective(format!("as-of:{}", report.effective_through()));
-    render_due_date_aging(out, book, report.aging(), digest.as_deref())?;
+    render_due_date_aging(out, book, capability, report.aging(), digest.as_deref())?;
     let item_count: u64 = report.rows().iter().map(|row| row.open_item_count).sum();
     out.event_with_certificate(
         "aging_reconciled",
@@ -18649,7 +18649,9 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let admit_report = |book: &mut Book| -> Result<(), Fail> {
         if certify {
             gl_certificate_preflight(book, &ctx.files, args, &capability)?;
-        } else if matches!(sub, Some("detail" | "roll-forward")) {
+        } else if matches!(sub, Some("detail" | "roll-forward"))
+            || sub == Some("aging") && !args.switch("--reconcile")
+        {
             // These plain reports read one complete recorded prefix before
             // projecting their account/date selection. Admit that prefix,
             // never the selected output rows, and keep all non-temporal
@@ -19114,7 +19116,13 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         &capability,
                     )?;
                     let digest = hex(artifact.digest());
-                    render_due_date_aging(out, &book, &certified.report, Some(&digest))?;
+                    render_due_date_aging(
+                        out,
+                        &book,
+                        &capability,
+                        &certified.report,
+                        Some(&digest),
+                    )?;
                     notary::emit_report_artifact_for(
                         out,
                         args,
@@ -19127,7 +19135,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     return Ok(());
                 }
                 let report = book.due_date_aging(account, day, known_at, &buckets)?;
-                return render_due_date_aging(out, &book, &report, None);
+                return render_due_date_aging(out, &book, &capability, &report, None);
             }
             if reconcile {
                 // One code keeps the single-leaf report. Several codes, or the
@@ -19305,12 +19313,9 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 };
                 let (artifact, aging_request) = artifact.unzip();
                 out.known_at(aging.known_at);
-                let chart = book.accounts()?;
-                let accounts_by_vid: std::collections::BTreeMap<VId, String> = chart
-                    .into_iter()
-                    .filter(|r| r.created_at <= aging.known_at)
-                    .map(|r| (r.vid, r.code))
-                    .collect();
+                let chart = book.accounts_at(aging.known_at, &capability)??;
+                let accounts_by_vid: std::collections::BTreeMap<VId, String> =
+                    chart.into_iter().map(|r| (r.vid, r.code)).collect();
                 if let Some(acc) = account
                     && !accounts_by_vid.contains_key(&acc)
                 {
