@@ -5717,11 +5717,19 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 APPROVAL_GROUP_EXAMPLE,
             ));
         }
-        // Parse the complete request before loading a key or publishing anything.
-        let digests = read_approval_group(&ctx.files, input)?;
-        let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
         let capability = ctx.capability(args, &["approve"])?;
+        let routed_through_daemon = ctx.routed_through_daemon();
         let mut book = ctx.books.open(args)?;
+        // Admit current launch authority before observing group input or the
+        // client key. Validate the complete selection before loading that key
+        // or publishing the first native approval.
+        let digests = read_approval_group(&ctx.files, input)?;
+        let key = crate::principal::load_principal_key_from_files(
+            &ctx.files,
+            routed_through_daemon,
+            args,
+            "--sign-key",
+        )?;
         for digest in digests {
             // Each native transaction rechecks current authority, revocation,
             // policy epoch and signing key before its idempotency lookup.

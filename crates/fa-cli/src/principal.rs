@@ -10,7 +10,7 @@
 use fa_time::DateDay;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, date_flag, hex, usage};
+use crate::cli::{Ctx, Fail, Files, date_flag, hex, usage};
 use crate::json::{Json, s};
 
 const NEW_EXAMPLE: &str = "fa principal key new --out <new key file> --json";
@@ -32,7 +32,11 @@ pub(crate) fn principal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
 
 /// A signing key is the client's: refuse to read one inside `fad`.
 pub(crate) fn refuse_in_daemon(ctx: &Ctx<'_>, flag: &str) -> Result<(), Fail> {
-    if ctx.routed_through_daemon() {
+    refuse_daemon_key(ctx.routed_through_daemon(), flag)
+}
+
+fn refuse_daemon_key(routed_through_daemon: bool, flag: &str) -> Result<(), Fail> {
+    if routed_through_daemon {
         return Err(usage(
             format!(
                 "{flag} names a principal's signing key, which the client holds and fad never reads"
@@ -49,12 +53,22 @@ pub(crate) fn load_principal_key(
     args: &Args,
     flag: &str,
 ) -> Result<Option<fa::SigningKey>, Fail> {
+    load_principal_key_from_files(&ctx.files, ctx.routed_through_daemon(), args, flag)
+}
+
+/// Read the client key after current admission while the caller holds its
+/// Book. The ordinary loader above keeps the same validation and daemon rule.
+pub(crate) fn load_principal_key_from_files(
+    files: &Files,
+    routed_through_daemon: bool,
+    args: &Args,
+    flag: &str,
+) -> Result<Option<fa::SigningKey>, Fail> {
     match args.flag_all(flag).as_slice() {
         [] => Ok(None),
         [path] => {
-            refuse_in_daemon(ctx, flag)?;
-            crate::notary::load_key_file(&ctx.files, path, "a principal key file", KEY_FIX)
-                .map(Some)
+            refuse_daemon_key(routed_through_daemon, flag)?;
+            crate::notary::load_key_file(files, path, "a principal key file", KEY_FIX).map(Some)
         }
         _ => Err(usage(format!("only one {flag}"), ADD_EXAMPLE)),
     }
