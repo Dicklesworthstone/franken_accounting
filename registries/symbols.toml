@@ -566,6 +566,13 @@ name = "AssetSchedule"
 id = 62
 name = "CloseTask"
 
+# Immutable canonical MigrationRun body fragments, published with the Open
+# control. These are accounting source records, retained in scratch replay;
+# unlike the root they carry no lifecycle state.
+[[label]]
+id = 63
+name = "MigrationRunFragment"
+
 # CloseTask -> prerequisite CloseTask, within the same CloseRun.
 [[relation]]
 id = 38

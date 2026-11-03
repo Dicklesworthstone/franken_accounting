@@ -29,6 +29,7 @@ pub enum ObjectKind {
     RegisterCheckpoint = 6,
     StatementDefinition = 7,
     PeriodPlan = 8,
+    MigrationRun = 9,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -141,7 +142,49 @@ pub fn read<V: Vfs + Clone>(
     at: CommitSeq,
     max_bytes: usize,
 ) -> Result<Vec<u8>, KernelError> {
-    cx.checkpoint().map_err(WriteTxnError::Interrupted)?;
+    read_checked(db, book, root, label, kind, at, max_bytes, || {
+        cx.checkpoint().map_err(WriteTxnError::Interrupted)?;
+        Ok(())
+    })
+}
+
+/// Bounded reassembly for the existing synchronous migration readers, whose
+/// public APIs predate an explicit `QueryCx`. Preserve their synchronous use
+/// without manufacturing a runtime or authority. During normal facade execution
+/// the installed caller context supplies cancellation checkpoints; both paths
+/// enforce the same byte, birth and content checks before returning any bytes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_bounded<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    root: &VertexRow,
+    label: LabelId,
+    kind: ObjectKind,
+    at: CommitSeq,
+    max_bytes: usize,
+) -> Result<Vec<u8>, KernelError> {
+    let current = asupersync::Cx::current();
+    read_checked(db, book, root, label, kind, at, max_bytes, || {
+        if let Some(cx) = &current {
+            cx.checkpoint()
+                .map_err(|error| WriteTxnError::Interrupted(Box::new(error)))?;
+        }
+        Ok(())
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_checked<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    root: &VertexRow,
+    label: LabelId,
+    kind: ObjectKind,
+    at: CommitSeq,
+    max_bytes: usize,
+    mut checkpoint: impl FnMut() -> Result<(), KernelError>,
+) -> Result<Vec<u8>, KernelError> {
+    checkpoint()?;
     let Some(CanonicalScalar::Bytes(encoded)) = prop(root, property::FA_PAYLOAD) else {
         return Err(corrupt(root.vid, "missing canonical payload"));
     };
@@ -180,7 +223,7 @@ pub fn read<V: Vfs + Clone>(
     );
     let mut bytes = Vec::with_capacity(size);
     for index in 0..size.div_ceil(CHUNK_BYTES) {
-        cx.checkpoint().map_err(WriteTxnError::Interrupted)?;
+        checkpoint()?;
         let vid = fragment_vid(book, root.vid, object, index);
         let Some(row) = db.vertex_at(vid, at)? else {
             return Err(corrupt(root.vid, "missing or retired fragment"));
@@ -244,6 +287,7 @@ mod tests {
             ObjectKind::RegisterCheckpoint,
             ObjectKind::StatementDefinition,
             ObjectKind::PeriodPlan,
+            ObjectKind::MigrationRun,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -321,7 +365,8 @@ mod tests {
                 | ObjectKind::RegistryEpoch
                 | ObjectKind::RegisterCheckpoint
                 | ObjectKind::StatementDefinition
-                | ObjectKind::PeriodPlan => ObjectKind::PostPlan,
+                | ObjectKind::PeriodPlan
+                | ObjectKind::MigrationRun => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -506,6 +551,7 @@ mod tests {
                 ObjectKind::StatementDefinition as i128,
             ),
             ("period_plan_kind", ObjectKind::PeriodPlan as i128),
+            ("migration_run_kind", ObjectKind::MigrationRun as i128),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);
         }

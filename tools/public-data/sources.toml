@@ -1,0 +1,91 @@
+schema_version = 1
+
+# Original government publication bytes, verified 2026-11-02. These controls
+# were calculated independently with csv.DictReader and decimal.Decimal.
+# They describe the complete published extracts, not a complete general ledger.
+
+[datasets.hmrc-2025-03]
+publisher = "HM Revenue & Customs"
+title = "HMRC spending over £25,000, March 2025"
+publication_url = "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025"
+url = "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+schema_url = "https://www.gov.uk/government/collections/hmrc-spending-over-25000"
+license_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+sha256 = "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a"
+byte_length = 213348
+max_bytes = 8388608
+encoding = "cp1252"
+period_start = "2025-03-01"
+period_end = "2025-04-01"
+amount_style = "decimal"
+published_amount_precision = "pence"
+headers = ["Department family", "Entity", "Date", "Expense type", "Expense area", "Supplier", "Transaction number", "Amount", "Description", "Supplier Postcode"]
+date_column = "Date"
+amount_column = "Amount"
+expense_type_column = "Expense type"
+expense_area_column = "Expense area"
+supplier_column = "Supplier"
+transaction_column = "Transaction number"
+limits = "Paid invoice lines over the publication threshold, including split lines and credit notes. Values are gross including VAT; dates are payment dates. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied."
+
+[datasets.hmrc-2025-03.controls]
+row_count = 1430
+positive_rows = 1305
+negative_rows = 125
+zero_rows = 0
+positive_minor = "29516704656"
+negative_minor = "-942246241"
+net_minor = "28574458415"
+min_minor = "-321224815"
+max_minor = "1507727368"
+duplicate_rows = 1
+transaction_count = 1321
+split_transaction_count = 71
+max_transaction_rows = 12
+expense_type_count = 134
+expense_area_count = 42
+supplier_count = 160
+date_count = 21
+
+[datasets.dwp-2025-01]
+publisher = "Department for Work and Pensions"
+title = "DWP spending over £25,000, January 2025"
+publication_url = "https://www.gov.uk/government/publications/dwp-spending-over-25000-january-2025"
+url = "https://assets.publishing.service.gov.uk/media/68b84d92d723ba6f74dba95a/dwp-spending-over-25000-january-2025.csv"
+schema_url = "https://www.gov.uk/government/publications/dwp-monthly-payments-explanatory-notes/dwp-monthly-payments-explanatory-notes"
+license_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+sha256 = "b6477bc3ea1afeac5d97caa581369b78c2c473360c2fe4a7493a26da847583b1"
+byte_length = 1935610
+max_bytes = 8388608
+encoding = "cp1252"
+period_start = "2025-01-01"
+period_end = "2025-02-01"
+amount_style = "sterling_whole_pounds"
+published_amount_precision = "whole pounds as published; undisclosed pence are not reconstructed"
+headers = ["Invoice Paid Date", "Invoice Cost Centre Description", "Invoice Account Description", "Supplier Name", "Payment Number", "Transparency Invoice Amount"]
+date_column = "Invoice Paid Date"
+amount_column = "Transparency Invoice Amount"
+expense_type_column = "Invoice Account Description"
+expense_area_column = "Invoice Cost Centre Description"
+supplier_column = "Supplier Name"
+transaction_column = "Payment Number"
+limits = "Published payment components over the publication threshold. Staff salaries are excluded and recoverable VAT is excluded. Whole-pound source values are preserved without reconstructing undisclosed pence. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied."
+
+[datasets.dwp-2025-01.controls]
+row_count = 13099
+positive_rows = 12682
+negative_rows = 283
+zero_rows = 134
+positive_minor = "31233332000"
+negative_minor = "-456922600"
+net_minor = "30776409400"
+min_minor = "-143436900"
+max_minor = "1496642800"
+duplicate_rows = 31
+transaction_count = 578
+split_transaction_count = 291
+max_transaction_rows = 1204
+expense_type_count = 83
+expense_area_count = 1830
+supplier_count = 187
+date_count = 22

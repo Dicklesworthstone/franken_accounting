@@ -17,6 +17,7 @@ pub mod ads;
 pub mod bank;
 pub mod beancount;
 pub mod conformance;
+mod csv;
 pub mod csv_gl;
 pub mod fwc;
 pub mod legacy;

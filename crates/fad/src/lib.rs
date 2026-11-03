@@ -36,7 +36,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use asupersync::Cx;
-use asupersync::cx::{ChildRegion, ChildRegionError, ChildRegionSpec};
 use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
 use asupersync::types::Time;
 use fa::book::Book;
@@ -1047,27 +1046,6 @@ pub fn line(json: bool, event: &str, data: Json, at: Option<&cli::At>, text: &st
     }
 }
 
-enum ConnRegion {
-    Owned(ChildRegion),
-    Inherited,
-}
-
-impl ConnRegion {
-    async fn open(parent: &Cx) -> std::io::Result<Self> {
-        match parent.open_child_region(ChildRegionSpec::inherit()).await {
-            Ok(region) => Ok(Self::Owned(region)),
-            Err(ChildRegionError::NoRuntimeGateway) => Ok(Self::Inherited),
-            Err(e) => Err(std::io::Error::other(format!("connection region: {e:?}"))),
-        }
-    }
-
-    async fn close(self) {
-        if let Self::Owned(region) = self {
-            let _ = region.close().await;
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 enum AfterWrite {
     Continue,
@@ -1118,9 +1096,17 @@ enum ConnStep {
     Ended(Ended),
 }
 
+/// A socket and its session state owned by the serving loop's region.
+///
+/// Frame I/O, deadlines and dispatch all use the serving `Cx`; no connection
+/// spawns independent work. Dropping this slot releases its stream and token.
+/// Do not allocate an empty child region here: at the pinned asupersync
+/// revision 78b64636, closed child regions leave stale governor envelopes and
+/// exhaust the 1,000-region admission limit over a daemon's lifetime. The
+/// actual serving region remains structured, and simultaneous sockets remain
+/// bounded by `MAX_DAEMON_CONNECTIONS`, with unchanged authority and deadlines.
 struct ConnSlot<S> {
     id: u64,
-    region: ConnRegion,
     stream: S,
     peer: Option<PeerCred>,
     started_ns: u64,
@@ -1417,12 +1403,7 @@ where
     serve_with(cx, listener, limits, &dir, &mut service).await
 }
 
-async fn finish_connection<S, H: Service>(
-    cx: &Cx,
-    conn: ConnSlot<S>,
-    ended: Ended,
-    service: &mut H,
-) {
+fn finish_connection<S, H: Service>(cx: &Cx, conn: ConnSlot<S>, ended: Ended, service: &mut H) {
     let now_ns = clock::timer(cx).map_or(conn.started_ns, |t| t.now().as_nanos());
     service.on_connection_closed(ConnectionTiming {
         conn_id: conn.id,
@@ -1432,7 +1413,6 @@ async fn finish_connection<S, H: Service>(
         elapsed_ns: now_ns.saturating_sub(conn.started_ns),
         ended,
     });
-    conn.region.close().await;
 }
 
 async fn serve_with<L: Listener, H: Service>(
@@ -1449,9 +1429,7 @@ async fn serve_with<L: Listener, H: Service>(
 
     loop {
         if let Err(e) = cx.checkpoint() {
-            for conn in connections.drain(..) {
-                conn.region.close().await;
-            }
+            connections.clear();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
                 format!("{e:?}"),
@@ -1460,7 +1438,7 @@ async fn serve_with<L: Listener, H: Service>(
 
         if service.should_stop() {
             for remaining in connections.drain(..) {
-                finish_connection(cx, remaining, Ended::Closed, service).await;
+                finish_connection(cx, remaining, Ended::Closed, service);
             }
             return Ok(());
         }
@@ -1561,9 +1539,7 @@ async fn serve_with<L: Listener, H: Service>(
         let ready = match ready {
             Ok(r) => r,
             Err(e) => {
-                for conn in connections.drain(..) {
-                    conn.region.close().await;
-                }
+                connections.clear();
                 return Err(e);
             }
         };
@@ -1571,7 +1547,7 @@ async fn serve_with<L: Listener, H: Service>(
         match ready {
             Ready::Stop => {
                 for remaining in connections.drain(..) {
-                    finish_connection(cx, remaining, Ended::Closed, service).await;
+                    finish_connection(cx, remaining, Ended::Closed, service);
                 }
                 return Ok(());
             }
@@ -1583,7 +1559,7 @@ async fn serve_with<L: Listener, H: Service>(
                 while i < connections.len() {
                     if connections[i].deadline().is_some_and(|at| now >= at) {
                         let expired = connections.remove(i);
-                        finish_connection(cx, expired, Ended::Idle, service).await;
+                        finish_connection(cx, expired, Ended::Idle, service);
                     } else {
                         i += 1;
                     }
@@ -1594,14 +1570,12 @@ async fn serve_with<L: Listener, H: Service>(
             }
             Ready::Accepted(stream, peer) => {
                 next_conn_id = next_conn_id.saturating_add(1);
-                let region = ConnRegion::open(cx).await?;
                 let started_ns = clock::timer(cx).map_or(0, |t| t.now().as_nanos());
                 let phase = Phase::new_reading(cx, limits.idle).map_err(|e| {
                     std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))
                 })?;
                 let mut slot = ConnSlot {
                     id: next_conn_id,
-                    region,
                     stream,
                     peer,
                     started_ns,
@@ -1621,7 +1595,7 @@ async fn serve_with<L: Listener, H: Service>(
                     if let Err(ended) =
                         slot.queue_write(reply.as_bytes(), limits.max_frame_bytes, after)
                     {
-                        finish_connection(cx, slot, ended, service).await;
+                        finish_connection(cx, slot, ended, service);
                     } else {
                         connections.push(slot);
                     }
@@ -1641,7 +1615,7 @@ async fn serve_with<L: Listener, H: Service>(
                             after,
                         ) {
                             let conn = connections.remove(idx);
-                            finish_connection(cx, conn, ended, service).await;
+                            finish_connection(cx, conn, ended, service);
                         }
                     }
                     ConnStep::FrameRead(payload) => {
@@ -1659,7 +1633,7 @@ async fn serve_with<L: Listener, H: Service>(
                                     after,
                                 ) {
                                     let conn = connections.remove(idx);
-                                    finish_connection(cx, conn, ended, service).await;
+                                    finish_connection(cx, conn, ended, service);
                                 }
                                 continue;
                             }
@@ -1681,7 +1655,7 @@ async fn serve_with<L: Listener, H: Service>(
                                 after,
                             ) {
                                 let conn = connections.remove(idx);
-                                finish_connection(cx, conn, ended, service).await;
+                                finish_connection(cx, conn, ended, service);
                             }
                             continue;
                         }
@@ -1733,7 +1707,7 @@ async fn serve_with<L: Listener, H: Service>(
                             after,
                         ) {
                             let conn = connections.remove(idx);
-                            finish_connection(cx, conn, ended, service).await;
+                            finish_connection(cx, conn, ended, service);
                         }
                     }
                     ConnStep::WriteDone => match Phase::new_reading(cx, limits.idle) {
@@ -1745,17 +1719,16 @@ async fn serve_with<L: Listener, H: Service>(
                                 conn,
                                 Ended::Fault(WaitError::Clock(e).frame()),
                                 service,
-                            )
-                            .await;
+                            );
                         }
                     },
                     ConnStep::Ended(ended) => {
                         let is_stop = ended == Ended::Stop;
                         let conn = connections.remove(idx);
-                        finish_connection(cx, conn, ended, service).await;
+                        finish_connection(cx, conn, ended, service);
                         if is_stop {
                             for remaining in connections.drain(..) {
-                                finish_connection(cx, remaining, Ended::Closed, service).await;
+                                finish_connection(cx, remaining, Ended::Closed, service);
                             }
                             return Ok(());
                         }
