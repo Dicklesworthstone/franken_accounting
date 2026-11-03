@@ -101,6 +101,8 @@ pub enum FormatError {
     XbrlCalculationInconsistency {
         parent_concept: String,
         unit_code: String,
+        /// Common decimal scale of the reported and computed mantissas.
+        scale: u8,
         reported_mantissa: i128,
         computed_children_mantissa: i128,
     },
@@ -200,12 +202,13 @@ impl fmt::Display for FormatError {
             Self::XbrlCalculationInconsistency {
                 parent_concept,
                 unit_code,
+                scale,
                 reported_mantissa,
                 computed_children_mantissa,
             } => {
                 write!(
                     f,
-                    "XBRL calculation linkbase inconsistency on {parent_concept} ({unit_code}): reported {reported_mantissa}, weighted children sum to {computed_children_mantissa}"
+                    "XBRL calculation linkbase inconsistency on {parent_concept} ({unit_code}, scale {scale}): reported {reported_mantissa}, weighted children sum to {computed_children_mantissa}"
                 )
             }
             Self::BankContinuity { format, detail } => {

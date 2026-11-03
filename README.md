@@ -418,6 +418,26 @@ proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_x
 Current-source execution status must be taken from the corresponding gate,
 not from this format description.
 
+### Exact XBRL calculation values
+
+Calculation-linkbase checks compare monetary facts at a common decimal scale,
+using checked integer arithmetic. For example, `100.00 - 25.0000 = 75` passes,
+while `1.0000 = 100.00` fails even though the two stored mantissas are both
+`10000`. Each calculation report and inconsistency names the scale of its
+reported, computed and difference amounts. An unrepresentable rescaling or
+weighted sum is an explicit overflow error; it is never rounded to make a
+calculation agree.
+
+Facts are keyed by concept, context and unit. Repeated facts with exactly equal
+numeric values count once, including equal values expressed at different
+scales. Conflicting duplicates are refused before calculation, regardless of
+their order or whether that concept participates in a calculation arc. The
+reader and validator implement this repository's exact-value XBRL profile;
+they do not select among different values merely because their XBRL accuracy
+intervals overlap. General filing accuracy and duplicate-resolution semantics
+remain outside this profile. The executable controls are in
+[formats_conformance.rs](crates/fa-formats/tests/formats_conformance.rs).
+
 ### Dimension-preserving accounting extracts
 
 Native journal exports retain each leg's exact dimension kind and value
