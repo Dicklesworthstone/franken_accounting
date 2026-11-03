@@ -623,7 +623,7 @@ fn a_requires_dry_run_token_cannot_publish_an_unrehearsed_bank_confirmation() {
         .unwrap_err();
     assert_eq!(
         (refused.code, refused.exit),
-        (code::CAPABILITY, exit::SAFETY)
+        (refusal::code::CAPABILITY, exit::SAFETY)
     );
     assert!(refused.message.contains("requires_dry_run"));
     assert_eq!(h.head(), before);
@@ -1412,7 +1412,7 @@ fn a_requires_dry_run_token_cannot_publish_an_unrehearsed_bank_unmatch() {
         .unwrap_err();
     assert_eq!(
         (refusal.code, refusal.exit),
-        (code::CAPABILITY, exit::SAFETY)
+        (refusal::code::CAPABILITY, exit::SAFETY)
     );
     assert!(refusal.message.contains("requires_dry_run"));
     assert_eq!(h.head(), before);
