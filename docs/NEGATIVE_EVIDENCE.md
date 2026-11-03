@@ -1967,3 +1967,25 @@ The original red logs are retained too. The updated producing test must
 actually pass before the campaign is reported repaired, and final-source
 repository qualification remains separate. This is witness maintenance,
 with no performance or new product-capability credit.
+
+## 2026-11-03 — Cash-flow prefix admission needs both dispatch stages
+
+The issued-token regression first ran on clean 2bc74616 plus only its new
+test. It failed at its first positive request: a read-only token pinned at
+sequence 7 requested that same prefix, but `fa gl cash-flow` refused with
+FA-REF-011, exit 7, because the bound command reached the whole-book HEAD
+default. Exactly one case executed and failed; eleven were filtered.
+
+The initial handler repair in ff6632ec was incomplete. The complete
+read-scope target on 0b9315dd ran eleven passes and one failure, with no
+ignored or filtered tests, and the same first positive cash-flow request
+was still refused. I had extended the report handler's complete-prefix
+admission without extending the earlier verb-registry dispatch rule.
+
+The existing judged-prefix `gl` rule now includes `cash-flow`, matching
+the report handler. The earlier certification rule still requires Read
+and Produce and whole-head admission. The real binary regression keeps
+its original success, exact amount, temporal and non-temporal refusal,
+AccessEvent and current revocation assertions. Neither failed execution
+is reported as a repaired-source pass; native re-execution and full
+repository qualification remain required.
