@@ -13270,61 +13270,6 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["period", "open", "FY2026-P03"]);
 
-    run2(&[
-        "dimension",
-        "add",
-        "cost_center",
-        "EVENTS",
-        "--name",
-        "Events cost center",
-    ]);
-    let dimension_source = write(
-        &dir,
-        "events-dimension-source.txt",
-        "Invoice for the tagged event fixture",
-    );
-    let (_, dimension_document) = run2(&[
-        "document",
-        "add",
-        &dimension_source,
-        "--kind",
-        "Invoice",
-        "--grade",
-        "HumanUpload",
-    ]);
-    let dimension_document = doc(&dimension_document);
-    let dimension_post = write(
-        &dir,
-        "events-dimension-post.json",
-        r#"{"effective_date":"2026-03-15","idempotency_key":"events-functional-dimension","legs":[{"side":"debit","account":"6000","amount":"1.00 USD","dimensions":{"cost_center":"EVENTS"}},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
-    );
-    run2(&[
-        "post",
-        "--intent",
-        &dimension_post,
-        "--evidence",
-        text(&dimension_document, "oid"),
-    ]);
-    let (_, dimension_report) = run2(&[
-        "tb",
-        "--period",
-        "FY2026-P03",
-        "--dimension",
-        "cost_center=EVENTS",
-        "--functional",
-    ]);
-    assert_eq!(
-        field(&dimension_report, "event"),
-        Some("functional_dimension_trial_balance")
-    );
-    let dimension_report = doc(&dimension_report);
-    assert_eq!(arr(&dimension_report, "rows").len(), 1);
-    assert_eq!(
-        text(&arr(&dimension_report, "rows")[0], "debits"),
-        "1.00 USD"
-    );
-    assert_eq!(dimension_report.get("balanced"), Some(&Json::Bool(false)));
-
     run2(&["tb", "--summary", "--period", "FY2026-P03"]);
     run2(&[
         "gl",
@@ -13829,6 +13774,62 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let ev_commitment = field(&issued, "commitment").unwrap_or_default().to_string();
     run2(&["capability", "list"]);
     run2(&["capability", "show", "--commitment", &ev_commitment]);
+    // The earlier cash-flow policies deliberately describe an empty book.
+    // Add the nonempty dimension fixture after those workflows finish.
+    run2(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "EVENTS",
+        "--name",
+        "Events cost center",
+    ]);
+    let dimension_source = write(
+        &dir,
+        "events-dimension-source.txt",
+        "Invoice for the tagged event fixture",
+    );
+    let (_, dimension_document) = run2(&[
+        "document",
+        "add",
+        &dimension_source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let dimension_document = doc(&dimension_document);
+    let dimension_post = write(
+        &dir,
+        "events-dimension-post.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"events-functional-dimension","legs":[{"side":"debit","account":"6000","amount":"1.00 USD","dimensions":{"cost_center":"EVENTS"}},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    run2(&[
+        "post",
+        "--intent",
+        &dimension_post,
+        "--evidence",
+        text(&dimension_document, "oid"),
+    ]);
+    let (_, dimension_report) = run2(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--dimension",
+        "cost_center=EVENTS",
+        "--functional",
+    ]);
+    assert_eq!(
+        field(&dimension_report, "event"),
+        Some("functional_dimension_trial_balance")
+    );
+    let dimension_report = doc(&dimension_report);
+    assert_eq!(arr(&dimension_report, "rows").len(), 1);
+    assert_eq!(
+        text(&arr(&dimension_report, "rows")[0], "debits"),
+        "1.00 USD"
+    );
+    assert_eq!(dimension_report.get("balanced"), Some(&Json::Bool(false)));
     let demo_dir = dir.join("demo-ev");
     let demo_args = [
         "demo",

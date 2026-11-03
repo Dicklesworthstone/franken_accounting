@@ -2217,3 +2217,23 @@ In the same run, cross-target passed 2 and restatement passed 12 cases;
 refusal-fix execution passed 2, applying 41 of 154 codes and explicitly
 documenting the remaining 113. These passing targets do not turn the
 four-target invocation's actual exit 101 into a passing repository verdict.
+
+## 2026-11-03 — A new event-fixture posting invalidated an earlier empty-book policy
+
+The complete four-target packet on d0861d2e2 exited 101: cross-target
+2 passed, restatement 12 passed, CLI 157 passed and 1 failed, and refusal
+fixes 2 passed, with no ignored or filtered tests. The newly exercised
+functional certificate and both solvency version fixtures passed. The
+event fixture failed earlier than grouped staging: its new tagged cash
+posting preceded existing cash-flow policies with empty assignments.
+The direct cash-flow command correctly refused FA-REF-100, exit 2,
+because the selected cash leg was unclassified. This was a fixture
+ordering error introduced in the repair, not an accounting-law defect.
+
+The same tagged posting and all its nonempty functional-report assertions
+now run after the existing book's earlier workflows. The original cash-flow
+policies and exit-0 requirements are unchanged, as are the grouped-stage
+approval, zero-publication and exact-retry checks. No production predicate,
+amount, refusal, gate or registry changes. The reordered complete CLI
+target still requires native execution; the prior 157 passes do not
+qualify its previously unreached grouped-stage checks.
