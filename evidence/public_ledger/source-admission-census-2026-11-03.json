@@ -1,0 +1,1855 @@
+{
+  "format": "fa-omes-project-fund-source-census-v1",
+  "scope": "Read-only streaming census of the complete pinned FY2024 Q4 monthly-activity distribution. No native book execution, rounding, balancing legs, or selection of balanced months.",
+  "source": {
+    "path": "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+    "bytes": 113856733,
+    "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "data_rows": 373357
+  },
+  "repository_head_at_investigation_start": "68b80d4e6c916013582832626f92edb0d50be08e",
+  "project_agencies": 10,
+  "multi_fund_agencies": 22,
+  "union_agencies": 28,
+  "all_three_months_balanced_agencies": 34,
+  "admissible_project_or_multi_fund_complete_agencies": 0,
+  "registered_max_legs_per_entry": 4096,
+  "candidates": [
+    {
+      "agency": "00000",
+      "names": [
+        "STATE OF OKLAHOMA"
+      ],
+      "source_rows": 511,
+      "monetary_rows": 495,
+      "zero_rows": 16,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 2,
+        "fund": 3,
+        "product": 5,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 120,
+      "periods": [
+        {
+          "credit_mills": 775569269710,
+          "debit_mills": 774154882060,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 175,
+          "net_mills": -1414387650,
+          "rows": 181
+        },
+        {
+          "credit_mills": 1241538145910,
+          "debit_mills": 1241519248310,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 162,
+          "net_mills": -18897600,
+          "rows": 166
+        },
+        {
+          "credit_mills": 1040960790590,
+          "debit_mills": 1040960790590,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 158,
+          "net_mills": 0,
+          "rows": 164
+        }
+      ],
+      "strict_groups": 71,
+      "strict_unbalanced": 3,
+      "max_monthly_legs": 175,
+      "max_strict_group_legs": 124,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "04900",
+      "names": [
+        "ATTORNEY GENERAL"
+      ],
+      "source_rows": 1670,
+      "monetary_rows": 1653,
+      "zero_rows": 17,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 23,
+        "fund": 2,
+        "product": 8,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 110,
+      "periods": [
+        {
+          "credit_mills": 17309439920,
+          "debit_mills": 17378481750,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 545,
+          "net_mills": 69041830,
+          "rows": 549
+        },
+        {
+          "credit_mills": 9133068960,
+          "debit_mills": 9062240160,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 553,
+          "net_mills": -70828800,
+          "rows": 560
+        },
+        {
+          "credit_mills": 8693828360,
+          "debit_mills": 8698411420,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 555,
+          "net_mills": 4583060,
+          "rows": 561
+        }
+      ],
+      "strict_groups": 78,
+      "strict_unbalanced": 34,
+      "max_monthly_legs": 555,
+      "max_strict_group_legs": 184,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "09000",
+      "names": [
+        "OFFICE OF MANAGEMENT AND ENTERPRISE SERV"
+      ],
+      "source_rows": 9213,
+      "monetary_rows": 9193,
+      "zero_rows": 20,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 50,
+        "fund": 10,
+        "product": 14,
+        "project": 344
+      },
+      "project_rows": 8834,
+      "account_count": 182,
+      "periods": [
+        {
+          "credit_mills": 67556665390,
+          "debit_mills": 55191076160,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 3136,
+          "net_mills": -12365589230,
+          "rows": 3147
+        },
+        {
+          "credit_mills": 72795611420,
+          "debit_mills": 67543053080,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 2973,
+          "net_mills": -5252558340,
+          "rows": 2977
+        },
+        {
+          "credit_mills": 55592887210,
+          "debit_mills": 56333357000,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 3084,
+          "net_mills": 740469790,
+          "rows": 3089
+        }
+      ],
+      "strict_groups": 120,
+      "strict_unbalanced": 64,
+      "max_monthly_legs": 3136,
+      "max_strict_group_legs": 1243,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "09200",
+      "names": [
+        "TOBACCO SETTLEMENT ENDMT TRUST"
+      ],
+      "source_rows": 394,
+      "monetary_rows": 384,
+      "zero_rows": 10,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 20,
+        "fund": 2,
+        "product": 1,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 70,
+      "periods": [
+        {
+          "credit_mills": 57624106400,
+          "debit_mills": 12863828850,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 145,
+          "net_mills": -44760277550,
+          "rows": 151
+        },
+        {
+          "credit_mills": 8374190980,
+          "debit_mills": 9014400370,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 119,
+          "net_mills": 640209390,
+          "rows": 121
+        },
+        {
+          "credit_mills": 9479033640,
+          "debit_mills": 7060590570,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 120,
+          "net_mills": -2418443070,
+          "rows": 122
+        }
+      ],
+      "strict_groups": 16,
+      "strict_unbalanced": 4,
+      "max_monthly_legs": 145,
+      "max_strict_group_legs": 138,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "12500",
+      "names": [
+        "DEPARTMENT OF MINES"
+      ],
+      "source_rows": 390,
+      "monetary_rows": 381,
+      "zero_rows": 9,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 5,
+        "fund": 2,
+        "product": 2,
+        "project": 5
+      },
+      "project_rows": 198,
+      "account_count": 70,
+      "periods": [
+        {
+          "credit_mills": 607364850,
+          "debit_mills": 602750300,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 135,
+          "net_mills": -4614550,
+          "rows": 139
+        },
+        {
+          "credit_mills": 534451310,
+          "debit_mills": 532538810,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 121,
+          "net_mills": -1912500,
+          "rows": 123
+        },
+        {
+          "credit_mills": 465250990,
+          "debit_mills": 465250990,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 125,
+          "net_mills": 0,
+          "rows": 128
+        }
+      ],
+      "strict_groups": 25,
+      "strict_unbalanced": 2,
+      "max_monthly_legs": 135,
+      "max_strict_group_legs": 76,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "13100",
+      "names": [
+        "DEPARTMENT OF CORRECTIONS"
+      ],
+      "source_rows": 9555,
+      "monetary_rows": 9534,
+      "zero_rows": 21,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 229,
+        "fund": 3,
+        "product": 66,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 199,
+      "periods": [
+        {
+          "credit_mills": 101883412830,
+          "debit_mills": 104087485660,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 3260,
+          "net_mills": 2204072830,
+          "rows": 3265
+        },
+        {
+          "credit_mills": 107368057930,
+          "debit_mills": 103897009620,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 3156,
+          "net_mills": -3471048310,
+          "rows": 3167
+        },
+        {
+          "credit_mills": 106332296990,
+          "debit_mills": 104933605940,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 3118,
+          "net_mills": -1398691050,
+          "rows": 3123
+        }
+      ],
+      "strict_groups": 54,
+      "strict_unbalanced": 23,
+      "max_monthly_legs": 3260,
+      "max_strict_group_legs": 2082,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "16000",
+      "names": [
+        "DEPARTMENT OF COMMERCE"
+      ],
+      "source_rows": 3568,
+      "monetary_rows": 3470,
+      "zero_rows": 98,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 38,
+        "fund": 1,
+        "product": 2,
+        "project": 327
+      },
+      "project_rows": 3463,
+      "account_count": 97,
+      "periods": [
+        {
+          "credit_mills": 17146053240,
+          "debit_mills": 17146319760,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 1627,
+          "net_mills": 266520,
+          "rows": 1654
+        },
+        {
+          "credit_mills": 12315240760,
+          "debit_mills": 13806276540,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 769,
+          "net_mills": 1491035780,
+          "rows": 800
+        },
+        {
+          "credit_mills": 83479998080,
+          "debit_mills": 83197924980,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 1074,
+          "net_mills": -282073100,
+          "rows": 1114
+        }
+      ],
+      "strict_groups": 57,
+      "strict_unbalanced": 28,
+      "max_monthly_legs": 1627,
+      "max_strict_group_legs": 683,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "18500",
+      "names": [
+        "CORPORATION COMMISSION"
+      ],
+      "source_rows": 3078,
+      "monetary_rows": 3067,
+      "zero_rows": 11,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 28,
+        "fund": 3,
+        "product": 2,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 152,
+      "periods": [
+        {
+          "credit_mills": 34933023920,
+          "debit_mills": 32739405220,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 983,
+          "net_mills": -2193618700,
+          "rows": 985
+        },
+        {
+          "credit_mills": 34278598220,
+          "debit_mills": 34235360690,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 1021,
+          "net_mills": -43237530,
+          "rows": 1027
+        },
+        {
+          "credit_mills": 28730669970,
+          "debit_mills": 28759916730,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 1063,
+          "net_mills": 29246760,
+          "rows": 1066
+        }
+      ],
+      "strict_groups": 70,
+      "strict_unbalanced": 11,
+      "max_monthly_legs": 1063,
+      "max_strict_group_legs": 339,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "22000",
+      "names": [
+        "DISTRICT ATTORNEYS COUNCIL"
+      ],
+      "source_rows": 6974,
+      "monetary_rows": 6685,
+      "zero_rows": 289,
+      "subcent_rows": 20,
+      "dimensions": {
+        "department": 55,
+        "fund": 1,
+        "product": 28,
+        "project": 104
+      },
+      "project_rows": 2656,
+      "account_count": 100,
+      "periods": [
+        {
+          "credit_mills": 18250387260,
+          "debit_mills": 18299841160,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 2402,
+          "net_mills": 49453900,
+          "rows": 2588
+        },
+        {
+          "credit_mills": 22149764008,
+          "debit_mills": 22881360998,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 2246,
+          "net_mills": 731596990,
+          "rows": 2311
+        },
+        {
+          "credit_mills": 25075813080,
+          "debit_mills": 24614236940,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 2037,
+          "net_mills": -461576140,
+          "rows": 2075
+        }
+      ],
+      "strict_groups": 63,
+      "strict_unbalanced": 32,
+      "max_monthly_legs": 2402,
+      "max_strict_group_legs": 1621,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "29000",
+      "names": [
+        "EMPLOYMENT SECURITY COMMISSION"
+      ],
+      "source_rows": 34009,
+      "monetary_rows": 32959,
+      "zero_rows": 1050,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 12,
+        "fund": 2,
+        "product": 7,
+        "project": 64
+      },
+      "project_rows": 33907,
+      "account_count": 109,
+      "periods": [
+        {
+          "credit_mills": 139036092100,
+          "debit_mills": 139116651940,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 9086,
+          "net_mills": 80559840,
+          "rows": 9499
+        },
+        {
+          "credit_mills": 138692185740,
+          "debit_mills": 140182152270,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 12246,
+          "net_mills": 1489966530,
+          "rows": 12347
+        },
+        {
+          "credit_mills": 48130429120,
+          "debit_mills": 43806263870,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 11627,
+          "net_mills": -4324165250,
+          "rows": 12163
+        }
+      ],
+      "strict_groups": 27,
+      "strict_unbalanced": 10,
+      "max_monthly_legs": 12246,
+      "max_strict_group_legs": 12123,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "29200",
+      "names": [
+        "DEPT. OF ENVIRONMENTAL QUALITY"
+      ],
+      "source_rows": 11897,
+      "monetary_rows": 11194,
+      "zero_rows": 703,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 16,
+        "fund": 1,
+        "product": 60,
+        "project": 370
+      },
+      "project_rows": 11830,
+      "account_count": 142,
+      "periods": [
+        {
+          "credit_mills": 12278558000,
+          "debit_mills": 12040459390,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 3753,
+          "net_mills": -238098610,
+          "rows": 4034
+        },
+        {
+          "credit_mills": 11555370280,
+          "debit_mills": 12162379990,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 3487,
+          "net_mills": 607009710,
+          "rows": 3724
+        },
+        {
+          "credit_mills": 10107155770,
+          "debit_mills": 9104547670,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 3954,
+          "net_mills": -1002608100,
+          "rows": 4139
+        }
+      ],
+      "strict_groups": 41,
+      "strict_unbalanced": 19,
+      "max_monthly_legs": 3954,
+      "max_strict_group_legs": 2143,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "32000",
+      "names": [
+        "DEPARTMENT OF WILDLIFE CONSERVATION"
+      ],
+      "source_rows": 9642,
+      "monetary_rows": 9370,
+      "zero_rows": 272,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 9,
+        "fund": 1,
+        "product": 11,
+        "project": 80
+      },
+      "project_rows": 8048,
+      "account_count": 157,
+      "periods": [
+        {
+          "credit_mills": 10038031020,
+          "debit_mills": 7702858890,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 3224,
+          "net_mills": -2335172130,
+          "rows": 3233
+        },
+        {
+          "credit_mills": 6596300080,
+          "debit_mills": 7271062790,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 2158,
+          "net_mills": 674762710,
+          "rows": 2160
+        },
+        {
+          "credit_mills": 6948429140,
+          "debit_mills": 6615039440,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 3988,
+          "net_mills": -333389700,
+          "rows": 4249
+        }
+      ],
+      "strict_groups": 24,
+      "strict_unbalanced": 21,
+      "max_monthly_legs": 3988,
+      "max_strict_group_legs": 3817,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "34000",
+      "names": [
+        "OKLAHOMA STATE DEPARTMENT OF HEALTH"
+      ],
+      "source_rows": 140108,
+      "monetary_rows": 131683,
+      "zero_rows": 8425,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 141,
+        "fund": 1,
+        "product": 77,
+        "project": 258
+      },
+      "project_rows": 133296,
+      "account_count": 206,
+      "periods": [
+        {
+          "credit_mills": 53350630640,
+          "debit_mills": 53505648400,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 48812,
+          "net_mills": 155017760,
+          "rows": 49452
+        },
+        {
+          "credit_mills": 64897764320,
+          "debit_mills": 63598752260,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 39410,
+          "net_mills": -1299012060,
+          "rows": 46871
+        },
+        {
+          "credit_mills": 58253902240,
+          "debit_mills": 56942784690,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 43461,
+          "net_mills": -1311117550,
+          "rows": 43785
+        }
+      ],
+      "strict_groups": 86,
+      "strict_unbalanced": 51,
+      "max_monthly_legs": 48812,
+      "max_strict_group_legs": 27179,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "34500",
+      "names": [
+        "DEPARTMENT OF TRANSPORTATION"
+      ],
+      "source_rows": 6617,
+      "monetary_rows": 6603,
+      "zero_rows": 14,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 14,
+        "fund": 3,
+        "product": 54,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 187,
+      "periods": [
+        {
+          "credit_mills": 325623430430,
+          "debit_mills": 324864861150,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 2173,
+          "net_mills": -758569280,
+          "rows": 2178
+        },
+        {
+          "credit_mills": 294756631630,
+          "debit_mills": 298817512690,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 2202,
+          "net_mills": 4060881060,
+          "rows": 2206
+        },
+        {
+          "credit_mills": 320191596890,
+          "debit_mills": 313730605940,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 2228,
+          "net_mills": -6460990950,
+          "rows": 2233
+        }
+      ],
+      "strict_groups": 58,
+      "strict_unbalanced": 19,
+      "max_monthly_legs": 2228,
+      "max_strict_group_legs": 2041,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "38500",
+      "names": [
+        "OKLAHOMA INSURANCE DEPARTMENT"
+      ],
+      "source_rows": 1219,
+      "monetary_rows": 1208,
+      "zero_rows": 11,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 8,
+        "fund": 2,
+        "product": 3,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 102,
+      "periods": [
+        {
+          "credit_mills": 57780430810,
+          "debit_mills": 57780430810,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 407,
+          "net_mills": 0,
+          "rows": 411
+        },
+        {
+          "credit_mills": 79069881120,
+          "debit_mills": 79069881120,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 419,
+          "net_mills": 0,
+          "rows": 423
+        },
+        {
+          "credit_mills": 81269129750,
+          "debit_mills": 81268516700,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 382,
+          "net_mills": -613050,
+          "rows": 385
+        }
+      ],
+      "strict_groups": 27,
+      "strict_unbalanced": 1,
+      "max_monthly_legs": 419,
+      "max_strict_group_legs": 303,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "40000",
+      "names": [
+        "OFFICE OF JUVENILE AFFAIRS"
+      ],
+      "source_rows": 4558,
+      "monetary_rows": 4533,
+      "zero_rows": 25,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 78,
+        "fund": 2,
+        "product": 8,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 155,
+      "periods": [
+        {
+          "credit_mills": 20644867440,
+          "debit_mills": 20582449150,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 1599,
+          "net_mills": -62418290,
+          "rows": 1611
+        },
+        {
+          "credit_mills": 21089698970,
+          "debit_mills": 20673204470,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 1494,
+          "net_mills": -416494500,
+          "rows": 1501
+        },
+        {
+          "credit_mills": 19684486460,
+          "debit_mills": 19183656990,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 1440,
+          "net_mills": -500829470,
+          "rows": 1446
+        }
+      ],
+      "strict_groups": 52,
+      "strict_unbalanced": 24,
+      "max_monthly_legs": 1599,
+      "max_strict_group_legs": 1171,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "41600",
+      "names": [
+        "OK. LAW ENFORCE. RET. SYSTEM"
+      ],
+      "source_rows": 172,
+      "monetary_rows": 163,
+      "zero_rows": 9,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 3,
+        "fund": 2,
+        "product": 0,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 61,
+      "periods": [
+        {
+          "credit_mills": 25140112070,
+          "debit_mills": 25137276570,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 52,
+          "net_mills": -2835500,
+          "rows": 55
+        },
+        {
+          "credit_mills": 27445814520,
+          "debit_mills": 27448650020,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 56,
+          "net_mills": 2835500,
+          "rows": 59
+        },
+        {
+          "credit_mills": 19876463090,
+          "debit_mills": 19876463090,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 55,
+          "net_mills": 0,
+          "rows": 58
+        }
+      ],
+      "strict_groups": 18,
+      "strict_unbalanced": 2,
+      "max_monthly_legs": 56,
+      "max_strict_group_legs": 40,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "45200",
+      "names": [
+        "MENTAL HEALTH AND SUBSTANCE ABUSE SERV."
+      ],
+      "source_rows": 17672,
+      "monetary_rows": 17508,
+      "zero_rows": 164,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 148,
+        "fund": 2,
+        "product": 61,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 208,
+      "periods": [
+        {
+          "credit_mills": 88006594970,
+          "debit_mills": 87758822470,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 5833,
+          "net_mills": -247772500,
+          "rows": 5880
+        },
+        {
+          "credit_mills": 74472678690,
+          "debit_mills": 74271964910,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 5891,
+          "net_mills": -200713780,
+          "rows": 5944
+        },
+        {
+          "credit_mills": 75901613460,
+          "debit_mills": 75845041830,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 5784,
+          "net_mills": -56571630,
+          "rows": 5848
+        }
+      ],
+      "strict_groups": 120,
+      "strict_unbalanced": 22,
+      "max_monthly_legs": 5891,
+      "max_strict_group_legs": 2570,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "47700",
+      "names": [
+        "OKLA. BUREAU OF NARCOTICS AND DANGEROUS"
+      ],
+      "source_rows": 945,
+      "monetary_rows": 916,
+      "zero_rows": 29,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 21,
+        "fund": 2,
+        "product": 3,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 102,
+      "periods": [
+        {
+          "credit_mills": 3621212570,
+          "debit_mills": 3634233070,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 331,
+          "net_mills": 13020500,
+          "rows": 336
+        },
+        {
+          "credit_mills": 5809864140,
+          "debit_mills": 5792918580,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 291,
+          "net_mills": -16945560,
+          "rows": 298
+        },
+        {
+          "credit_mills": 4550729240,
+          "debit_mills": 4550618750,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 294,
+          "net_mills": -110490,
+          "rows": 311
+        }
+      ],
+      "strict_groups": 38,
+      "strict_unbalanced": 8,
+      "max_monthly_legs": 331,
+      "max_strict_group_legs": 158,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "51500",
+      "names": [
+        "OK. PUBLIC EMPLOYEES RET. SYS."
+      ],
+      "source_rows": 473,
+      "monetary_rows": 461,
+      "zero_rows": 12,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 7,
+        "fund": 5,
+        "product": 0,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 79,
+      "periods": [
+        {
+          "credit_mills": 144974060910,
+          "debit_mills": 144803860910,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 155,
+          "net_mills": -170200000,
+          "rows": 160
+        },
+        {
+          "credit_mills": 149939322560,
+          "debit_mills": 149939322560,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 148,
+          "net_mills": 0,
+          "rows": 152
+        },
+        {
+          "credit_mills": 142507228800,
+          "debit_mills": 142507661570,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 158,
+          "net_mills": 432770,
+          "rows": 161
+        }
+      ],
+      "strict_groups": 46,
+      "strict_unbalanced": 3,
+      "max_monthly_legs": 158,
+      "max_strict_group_legs": 87,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "56600",
+      "names": [
+        "DEPARTMENT OF TOURISM AND RECREATION"
+      ],
+      "source_rows": 8444,
+      "monetary_rows": 8334,
+      "zero_rows": 110,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 16,
+        "fund": 1,
+        "product": 80,
+        "project": 67
+      },
+      "project_rows": 4086,
+      "account_count": 168,
+      "periods": [
+        {
+          "credit_mills": 12268529420,
+          "debit_mills": 12312637440,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 2950,
+          "net_mills": 44108020,
+          "rows": 2975
+        },
+        {
+          "credit_mills": 11657894220,
+          "debit_mills": 12042349280,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 2748,
+          "net_mills": 384455060,
+          "rows": 2823
+        },
+        {
+          "credit_mills": 11373668190,
+          "debit_mills": 11985784570,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 2636,
+          "net_mills": 612116380,
+          "rows": 2646
+        }
+      ],
+      "strict_groups": 47,
+      "strict_unbalanced": 23,
+      "max_monthly_legs": 2950,
+      "max_strict_group_legs": 1791,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "58500",
+      "names": [
+        "DEPARTMENT OF PUBLIC SAFETY"
+      ],
+      "source_rows": 4657,
+      "monetary_rows": 4615,
+      "zero_rows": 42,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 94,
+        "fund": 2,
+        "product": 64,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 168,
+      "periods": [
+        {
+          "credit_mills": 33862965410,
+          "debit_mills": 32960302250,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 1536,
+          "net_mills": -902663160,
+          "rows": 1550
+        },
+        {
+          "credit_mills": 27326030310,
+          "debit_mills": 27664828330,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 1544,
+          "net_mills": 338798020,
+          "rows": 1565
+        },
+        {
+          "credit_mills": 34064835980,
+          "debit_mills": 33710094630,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 1535,
+          "net_mills": -354741350,
+          "rows": 1542
+        }
+      ],
+      "strict_groups": 68,
+      "strict_unbalanced": 22,
+      "max_monthly_legs": 1544,
+      "max_strict_group_legs": 738,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "65000",
+      "names": [
+        "DEPARTMENT OF VETERANS AFFAIRS"
+      ],
+      "source_rows": 2514,
+      "monetary_rows": 2457,
+      "zero_rows": 57,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 30,
+        "fund": 3,
+        "product": 5,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 152,
+      "periods": [
+        {
+          "credit_mills": 35349858280,
+          "debit_mills": 35063434990,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 886,
+          "net_mills": -286423290,
+          "rows": 902
+        },
+        {
+          "credit_mills": 23153507410,
+          "debit_mills": 22317148160,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 801,
+          "net_mills": -836359250,
+          "rows": 831
+        },
+        {
+          "credit_mills": 30067498900,
+          "debit_mills": 29650511020,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 770,
+          "net_mills": -416987880,
+          "rows": 781
+        }
+      ],
+      "strict_groups": 88,
+      "strict_unbalanced": 27,
+      "max_monthly_legs": 886,
+      "max_strict_group_legs": 309,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "69500",
+      "names": [
+        "OKLAHOMA TAX COMMISSION"
+      ],
+      "source_rows": 1433,
+      "monetary_rows": 1426,
+      "zero_rows": 7,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 21,
+        "fund": 2,
+        "product": 1,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 169,
+      "periods": [
+        {
+          "credit_mills": 4454091205340,
+          "debit_mills": 4452881841440,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 480,
+          "net_mills": -1209363900,
+          "rows": 482
+        },
+        {
+          "credit_mills": 3707235188980,
+          "debit_mills": 3708239019700,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 484,
+          "net_mills": 1003830720,
+          "rows": 486
+        },
+        {
+          "credit_mills": 3463281056830,
+          "debit_mills": 3462289070420,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 462,
+          "net_mills": -991986410,
+          "rows": 465
+        }
+      ],
+      "strict_groups": 77,
+      "strict_unbalanced": 15,
+      "max_monthly_legs": 484,
+      "max_strict_group_legs": 168,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "80500",
+      "names": [
+        "DEPARTMENT OF REHABILITATION SERVICES"
+      ],
+      "source_rows": 2149,
+      "monetary_rows": 2100,
+      "zero_rows": 49,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 64,
+        "fund": 2,
+        "product": 14,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 160,
+      "periods": [
+        {
+          "credit_mills": 15683684480,
+          "debit_mills": 15628106940,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 687,
+          "net_mills": -55577540,
+          "rows": 701
+        },
+        {
+          "credit_mills": 20068441130,
+          "debit_mills": 20390724780,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 716,
+          "net_mills": 322283650,
+          "rows": 731
+        },
+        {
+          "credit_mills": 20293885610,
+          "debit_mills": 19851649550,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 697,
+          "net_mills": -442236060,
+          "rows": 717
+        }
+      ],
+      "strict_groups": 47,
+      "strict_unbalanced": 17,
+      "max_monthly_legs": 716,
+      "max_strict_group_legs": 628,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "83000",
+      "names": [
+        "DEPARTMENT OF HUMAN SERVICES"
+      ],
+      "source_rows": 12710,
+      "monetary_rows": 12691,
+      "zero_rows": 19,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 82,
+        "fund": 2,
+        "product": 1,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 194,
+      "periods": [
+        {
+          "credit_mills": 445856470640,
+          "debit_mills": 454859532510,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 4205,
+          "net_mills": 9003061870,
+          "rows": 4211
+        },
+        {
+          "credit_mills": 486648944560,
+          "debit_mills": 483922078000,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 4250,
+          "net_mills": -2726866560,
+          "rows": 4258
+        },
+        {
+          "credit_mills": 517354536950,
+          "debit_mills": 516356796730,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 4236,
+          "net_mills": -997740220,
+          "rows": 4241
+        }
+      ],
+      "strict_groups": 77,
+      "strict_unbalanced": 12,
+      "max_monthly_legs": 4250,
+      "max_strict_group_legs": 4007,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "83500",
+      "names": [
+        "WATER RESOURCES BOARD"
+      ],
+      "source_rows": 1903,
+      "monetary_rows": 1754,
+      "zero_rows": 149,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 37,
+        "fund": 3,
+        "product": 2,
+        "project": 96
+      },
+      "project_rows": 1728,
+      "account_count": 95,
+      "periods": [
+        {
+          "credit_mills": 110492207130,
+          "debit_mills": 110499337050,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 620,
+          "net_mills": 7129920,
+          "rows": 650
+        },
+        {
+          "credit_mills": 89496794280,
+          "debit_mills": 128326044440,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 547,
+          "net_mills": 38829250160,
+          "rows": 599
+        },
+        {
+          "credit_mills": 296636439620,
+          "debit_mills": 257617732940,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 587,
+          "net_mills": -39018706680,
+          "rows": 654
+        }
+      ],
+      "strict_groups": 70,
+      "strict_unbalanced": 17,
+      "max_monthly_legs": 620,
+      "max_strict_group_legs": 143,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    },
+    {
+      "agency": "86500",
+      "names": [
+        "WORKER'S COMP. COMMISSION"
+      ],
+      "source_rows": 283,
+      "monetary_rows": 270,
+      "zero_rows": 13,
+      "subcent_rows": 0,
+      "dimensions": {
+        "department": 5,
+        "fund": 2,
+        "product": 22,
+        "project": 0
+      },
+      "project_rows": 0,
+      "account_count": 67,
+      "periods": [
+        {
+          "credit_mills": 758839010,
+          "debit_mills": 742843050,
+          "key": [
+            "2024",
+            "10",
+            "ACTUALS"
+          ],
+          "monetary": 87,
+          "net_mills": -15995960,
+          "rows": 95
+        },
+        {
+          "credit_mills": 757991460,
+          "debit_mills": 756631640,
+          "key": [
+            "2024",
+            "11",
+            "ACTUALS"
+          ],
+          "monetary": 91,
+          "net_mills": -1359820,
+          "rows": 94
+        },
+        {
+          "credit_mills": 788485050,
+          "debit_mills": 804041360,
+          "key": [
+            "2024",
+            "12",
+            "ACTUALS"
+          ],
+          "monetary": 92,
+          "net_mills": 15556310,
+          "rows": 94
+        }
+      ],
+      "strict_groups": 27,
+      "strict_unbalanced": 5,
+      "max_monthly_legs": 92,
+      "max_strict_group_legs": 62,
+      "dimension_conflict_count": 0,
+      "invalid_dimension_count": 0,
+      "account_conflict_count": 0,
+      "unsupported_accounts": [],
+      "transfer_name_mismatch": []
+    }
+  ],
+  "preparation_observations": {
+    "method": "Actual public_ledger.preparation_artifacts(full_csv, agency, balance_boundary=boundary), read-only. Each selected agency was called under both fund-class and agency-period.",
+    "agencies": [
+      "12500",
+      "38500",
+      "41600",
+      "83500"
+    ],
+    "boundaries": [
+      "fund-class",
+      "agency-period"
+    ],
+    "all_eight_outcomes": "SourceError before native execution",
+    "launch_metadata_scope": "No separate immutable launch record was created for these source-only calls; this census is not a native acceptance result."
+  },
+  "conclusion": "All 28 complete project-bearing or multi-fund agencies are genuinely imbalanced in at least one published month. The current adapter correctly refuses them. Another complete balanced publication is required for positive project or multi-fund acceptance."
+}
