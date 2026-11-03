@@ -316,25 +316,24 @@ reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
 
-# GPT-root-20261103: the whole procedure is A because unresolved_attribution sums
-# unattributed cash per unit across the book and truncates the combined cites.
-# Individual principal amounts are per party; cohort text is not this A basis.
-# GPT-principal-review-20261103: independently read v5 without the prior tier row;
-# S-party for the case projection of an investor's amount, which depends only on
-# its posted cash/principal margins and entry partitions; cohort text is excluded.
-# Preserve the more conservative whole-procedure A on this scope disagreement.
-# Both readers found no document, evidence or attestation reads.
+# Fresh code readings for the role-summary clarification, with plan section 2.5.
+# IvoryHorizon: A for book-wide per-unit unresolved_attribution aggregation and
+# combined-citation truncation; the previous tier row was visible context.
+# StormyLion (mail 6367): independently A before seeing IvoryHorizon's answer;
+# party-disjoint transfer shapes can refuse the whole run. Per-party figures
+# alone are S-party, but that does not classify the whole procedure.
+# Both found no document, evidence or attestation reads. No algorithm changed.
 [[tier]]
 procedure = "ponzi.net_investment"
 version = 5
-row_digest = "7f828e28437ec472114658e374312ff503eb4d17fc4d01dbf19ca06aff380d44"
+row_digest = "5e6fc2be7058cae828b16925234e2f0f3caeb115ce87cedebb91c7bdeb6fb7fc"
 tier = "A"
 code_location = "crates/fa-lantern/src/cutoff.rs:2731"
-reader = "GPT-root-20261103"
+reader = "IvoryHorizon-20261103"
 reader_tier = "A"
-second_reader = "GPT-principal-review-20261103"
-second_reader_tier = "S-party"
-disagreement = true
+second_reader = "StormyLion-20261103"
+second_reader_tier = "A"
+disagreement = false
 reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
