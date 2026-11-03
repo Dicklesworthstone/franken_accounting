@@ -5933,26 +5933,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let reach = fa_policy::Reach::whole_book(true);
         // A production writes nothing, so it is admitted as a read: an
         // Agent-profile capability holding `produce` may produce.
-        if let Err(denial) = fa_policy::admit_within(
-            capability,
-            &fa_policy::Intent {
-                principal,
-                trunk: false,
-                op: fa_policy::Op::Produce,
-                book: self.context.book_id,
-                legs: &[],
-            },
-            &reach,
-            None,
-        ) {
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Produce,
+                    "producing a proof bundle",
+                )
+            })
+            .and_then(|()| fa_policy::reach(capability, &reach, None))
+        {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         // A bundle discloses its scope's entries (every leaf of a Prefix
         // scope), so producing one also needs whole-book read authority, as
         // a proof export does: `produce` alone never discloses the journal.
-        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id) {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
         let at = self.head(cx)?;
         if let Err(denial) = fa_policy::current(capability, at) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
@@ -6391,7 +6386,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         query.checkpoint().map_err(BookError::Context)?;
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
             .and_then(|()| {
-                fa_policy::admit(
+                fa_policy::admit_for_post(
                     capability,
                     &fa_policy::Intent {
                         principal,

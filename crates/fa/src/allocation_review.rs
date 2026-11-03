@@ -365,7 +365,7 @@ fn reviewed_intent(
         .iter()
         .map(|leg| (leg.amount.unit, leg.amount.mantissa))
         .collect();
-    fa_policy::admit(
+    fa_policy::admit_for_post(
         capability,
         &fa_policy::Intent {
             principal: review.proposal().principal_ref,

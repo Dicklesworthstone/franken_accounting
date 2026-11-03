@@ -178,7 +178,7 @@ fn admit(
 ) -> Result<(), Refusal> {
     fa_policy::admit_read(capability, capability.holder(), book)
         .map_err(|denial| fa_journal::policy::refusal(&denial))?;
-    fa_policy::admit(
+    fa_policy::admit_for_post(
         capability,
         &fa_policy::Intent {
             principal,

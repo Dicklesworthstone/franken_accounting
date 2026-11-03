@@ -217,6 +217,7 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
     cx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(denial) = fa_policy::require(capability, Op::Post, "uploading evidence")
         .and_then(|()| fa_policy::scope(capability, book.book_id))
+        .and_then(|()| fa_policy::admit_control_write(capability))
         .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
     {
         return Ok(Err(policy::refusal(&denial)));

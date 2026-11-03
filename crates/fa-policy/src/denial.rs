@@ -432,6 +432,7 @@ impl Denial {
                 hex(enforced)
             ),
             Self::OutOfScope { caveat, .. } => match *caveat {
+                "requires_dry_run" => "rehearse a posting with `fa post --intent <intent> --dry-run`, then commit its verified plan with the same token; control writes remain unavailable under this caveat until their verified rehearsal protocol is supported".into(),
                 "known_at" => "select a recorded frontier at or below the pin (--as-known-at <seq>); a pinned capability reads and never writes".into(),
                 "branch" => "act on the branch the capability names; drafts land with fa-s7x, so a branch-confined capability cannot act on trunk in this build".into(),
                 "accounts" => "name only accounts inside the capability's subtrees; an act on the whole book (a tick, sweep, approval, attestation, checkpoint or full fold) needs a capability without an `accounts` caveat".into(),

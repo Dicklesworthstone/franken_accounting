@@ -1102,17 +1102,6 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
             | Admission::Promote(_)
             | Admission::ScratchDraft(_)
     );
-    let scope = match authorize_effects(
-        db,
-        book,
-        &req.capability,
-        proposal.principal_ref,
-        proposal,
-        planning,
-    )? {
-        Ok(scope) => scope,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
     if matches!(
         admission,
         Admission::Commit | Admission::Case(_) | Admission::Recurring(_)
@@ -1124,6 +1113,17 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
             value: "a direct commit without a verified plan certificate".into(),
         })));
     }
+    let scope = match authorize_effects(
+        db,
+        book,
+        &req.capability,
+        proposal.principal_ref,
+        proposal,
+        planning,
+    )? {
+        Ok(scope) => scope,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     Ok(Ok(scope))
 }
 
@@ -1146,7 +1146,7 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
     let admit_base = if planning {
         fa_policy::admit_base_for_plan
     } else {
-        fa_policy::admit_base
+        fa_policy::admit_base_for_post
     };
     if let Err(denial) = admit_base(
         capability,

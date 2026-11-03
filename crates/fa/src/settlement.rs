@@ -203,7 +203,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .iter()
             .map(|leg| (leg.amount.unit, leg.amount.mantissa))
             .collect();
-        if let Err(denial) = fa_policy::admit(
+        if let Err(denial) = fa_policy::admit_for_post(
             capability,
             &fa_policy::Intent {
                 principal,

@@ -78,6 +78,15 @@ fn token(holder: &str, ops: &[Op], seed: u8) -> CapabilityToken {
     CapabilityToken::new(holder, capability, secret).unwrap()
 }
 
+fn requiring_dry_run(token: &CapabilityToken) -> CapabilityToken {
+    CapabilityToken::new(
+        token.principal(),
+        token.capability().clone().with_requires_dry_run(),
+        *token.secret(),
+    )
+    .unwrap()
+}
+
 struct Fixture {
     dir: PathBuf,
     book: Book,
@@ -118,6 +127,7 @@ impl Fixture {
                     "reopen",
                     "approve",
                     "witness",
+                    "hold",
                 ],
             )
             .unwrap(),
@@ -234,6 +244,229 @@ fn operator_action(event: &Json, book: &Path) {
             .unwrap()
             .contains("original token file")
     );
+}
+
+#[test]
+fn a_requires_dry_run_token_cannot_close_a_period_without_a_supported_rehearsal() {
+    let mut f = Fixture::new(0xb5);
+    let ordinary = token("rehearsed-controller", &[Op::Read, Op::Close], 30);
+    let restricted = f.issue(&requiring_dry_run(&ordinary));
+    let unflagged = f.issue(&ordinary);
+    let words = ["period", "close", PERIOD, "--reason", "Scheduled", "--yes"];
+    let refused = f.refused(&restricted, &words, "FA-REF-011");
+    assert!(text(&refused, "message").contains("requires_dry_run"));
+    assert_eq!(text(&f.ok(&unflagged, &words, None), "to"), "Closed");
+}
+
+#[test]
+fn a_requires_dry_run_token_cannot_place_a_legal_hold_without_a_supported_rehearsal() {
+    let mut f = Fixture::new(0xb6);
+    std::fs::write(
+        f.dir.join("order.txt"),
+        "Court order preserving source evidence",
+    )
+    .unwrap();
+    let order = f.owner(&[
+        "document",
+        "add",
+        "order.txt",
+        "--kind",
+        "CourtOrder",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let document = text(&order, "oid").to_string();
+    let ordinary = token("rehearsed-investigator", &[Op::Hold], 31);
+    let restricted = f.issue(&requiring_dry_run(&ordinary));
+    let unflagged = f.issue(&ordinary);
+    let words = [
+        "document",
+        "hold",
+        "place",
+        "--authority",
+        &document,
+        "--subject",
+        &document,
+    ];
+    let refused = f.refused(&restricted, &words, "FA-REF-011");
+    assert!(text(&refused, "message").contains("requires_dry_run"));
+    let placed = f.ok(&unflagged, &words, None);
+    assert_eq!(text(&placed, "event"), "legal_hold_placed");
+}
+
+#[test]
+fn a_requires_dry_run_token_cannot_record_an_approval_without_a_supported_rehearsal() {
+    let mut f = Fixture::new(0xb7);
+    let ordinary = token("rehearsed-reviewer", &[Op::Approve], 32);
+    let restricted = f.issue(&requiring_dry_run(&ordinary));
+    let unflagged = f.issue(&ordinary);
+    let words = ["approve", "--proposal", &"12".repeat(32)];
+    let refused = f.refused(&restricted, &words, "FA-REF-011");
+    assert!(text(&refused, "message").contains("requires_dry_run"));
+    assert_eq!(text(&f.ok(&unflagged, &words, None), "event"), "approved");
+}
+
+#[test]
+fn a_requires_dry_run_token_cannot_issue_a_capability_without_a_supported_rehearsal() {
+    let mut f = Fixture::new(0xb8);
+    let ordinary = token("rehearsed-issuer", &[Op::Read, Op::IssueCapability], 33);
+    let restricted = requiring_dry_run(&ordinary);
+    f.issue(&restricted);
+    f.issue(&ordinary);
+    let child = Capability::new(
+        principal_vid("child-auditor"),
+        Profile::Human,
+        &[Op::Read],
+        ordinary.capability().holder(),
+    )
+    .unwrap()
+    .with_requires_dry_run()
+    .holder_bound(possession_digest(&[34; 32]));
+    let before = f.book.head().unwrap();
+    let refused = f
+        .book
+        .issue_capability(
+            restricted.capability().clone(),
+            child.clone(),
+            DateDay::parse("2026-03-15").unwrap(),
+            b"requires-rehearsal-child",
+            "reviewed delegation",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-011", 7));
+    assert!(refused.message.contains("requires_dry_run"));
+    assert_eq!(f.book.head().unwrap(), before);
+    f.book
+        .issue_capability(
+            ordinary.capability().clone(),
+            child,
+            DateDay::parse("2026-03-15").unwrap(),
+            b"requires-rehearsal-child",
+            "reviewed delegation",
+        )
+        .unwrap()
+        .unwrap();
+    assert!(f.book.head().unwrap() > before);
+}
+
+#[test]
+fn a_requires_dry_run_token_cannot_publish_an_unrehearsed_document_upload() {
+    let mut f = Fixture::new(0xba);
+    std::fs::write(
+        f.dir.join("receipt.txt"),
+        "Evidence to be admitted before publication",
+    )
+    .unwrap();
+    let ordinary = token("rehearsed-uploader", &[Op::Post], 36);
+    let restricted = f.issue(&requiring_dry_run(&ordinary));
+    let unflagged = f.issue(&ordinary);
+    let words = ["document", "add", "receipt.txt", "--kind", "Receipt"];
+    let refused = f.refused(&restricted, &words, "FA-REF-011");
+    assert!(text(&refused, "message").contains("requires_dry_run"));
+    assert_eq!(text(&f.ok(&unflagged, &words, None), "event"), "document");
+}
+
+#[test]
+fn a_requires_dry_run_capability_still_produces_a_read_only_proof_bundle() {
+    let mut f = Fixture::new(0xbb);
+    let ordinary = Capability::embedded(
+        principal_vid(ISSUER),
+        &["read", "produce", "witness", "privileged"],
+    )
+    .unwrap();
+    let checkpoint = f
+        .book
+        .checkpoint(ordinary.holder(), &ordinary)
+        .unwrap()
+        .unwrap();
+    let before = f.book.head().unwrap();
+    let restricted = ordinary.with_requires_dry_run();
+    let produced = f
+        .book
+        .produce_bundle(
+            restricted.holder(),
+            &restricted,
+            Some(checkpoint.checkpoint.checkpoint.body.state_oid),
+            &fa::BundleRequest {
+                scope: fa::BundleScope::Prefix,
+                balances: Vec::new(),
+                inline_documents: true,
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!produced.bundle.bytes.is_empty());
+    let verified = fa_verify::verify_bundle(
+        &produced.bundle.bytes,
+        &[f.book.checkpoint_public_key()],
+        Some(&produced.receipt),
+    )
+    .unwrap();
+    assert_eq!(verified.digest, produced.bundle.digest);
+    assert_eq!(f.book.head().unwrap(), before);
+}
+
+#[test]
+fn a_requires_dry_run_token_still_reads_and_commits_its_verified_posting_plan() {
+    let mut f = Fixture::new(0xb9);
+    std::fs::write(f.dir.join("chart.json"), r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#).unwrap();
+    f.owner(&["chart", "import", "chart.json"]);
+    std::fs::write(
+        f.dir.join("receipt.txt"),
+        "Source for an exactly rehearsed posting",
+    )
+    .unwrap();
+    let document = f.owner(&[
+        "document",
+        "add",
+        "receipt.txt",
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = text(&document, "oid").to_string();
+    let authority = f.issue(&requiring_dry_run(&token(
+        "rehearsed-preparer",
+        &[Op::Read, Op::Post],
+        35,
+    )));
+    f.ok(&authority, &["chart", "list"], None);
+    let intent = r#"{"effective_date":"2026-03-15","idempotency_key":"rehearsed-post","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"4000","amount":"5.00 USD"}]}"#;
+    let words = ["post", "--intent", "-", "--evidence", &evidence];
+    let before = f.book.head().unwrap();
+    let (exit, refused) = f.run(&authority, &words, Some(intent));
+    assert_eq!(exit, 7, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-011");
+    assert!(text(&refused, "message").contains("requires_dry_run"));
+    assert_eq!(f.book.head().unwrap(), before);
+    let plan = f.ok(
+        &authority,
+        &[
+            "post",
+            "--intent",
+            "-",
+            "--evidence",
+            &evidence,
+            "--dry-run",
+        ],
+        Some(intent),
+    );
+    let committed = f.ok(
+        &authority,
+        &["commit", "--plan", "-"],
+        Some(text(&plan, "bytes")),
+    );
+    assert_eq!(text(&committed, "event"), "plan_committed");
+    let recorded = f.book.head().unwrap();
+    f.ok(
+        &authority,
+        &["commit", "--plan", "-"],
+        Some(text(&plan, "bytes")),
+    );
+    assert_eq!(f.book.head().unwrap(), recorded);
 }
 
 #[test]

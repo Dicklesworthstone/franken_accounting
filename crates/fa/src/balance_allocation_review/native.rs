@@ -47,7 +47,7 @@ fn checked_review_digest(
     } else {
         proposal.principal_ref
     };
-    fa_policy::admit(
+    fa_policy::admit_for_post(
         capability,
         &fa_policy::Intent {
             principal,

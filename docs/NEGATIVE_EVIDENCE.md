@@ -1786,3 +1786,53 @@ Native execution of the explicit trial-balance control and the new saved
 pin remains pending on the final source containing the Oklahoma correction.
 The earlier component and compile passes do not qualify that later tree,
 the full repository or the original broader Beads acceptance.
+
+**Subsequent execution, 05:07 UTC:** frozen
+`ac419fca4ab762fa26b295cf8eb60b887f87f369`, tree
+`020163f548e5a979a4bb3641d8f0486d0ce8fca9`, passed all seven complete CLI
+targets: cli 157, closing 27, legacy_migration 29, GL certificates 5, proofs
+51, read_scope 11 and robot_schema 2. All 282 cases passed, with none
+failed, ignored or filtered; remote and frontend exit 0. This includes the
+actual Oklahoma prepare/import/replay, the explicit wrong-family control,
+the schema pin, and historical aging. The first identical attempt reached
+the unchanged 1800-second compile limit before executing tests; its 137
+receipt remains. The continuation kept the same source, worker, profile,
+targets and limits. Exact-tree Tier 0 also passed. The original full proof
+on this tree is pending. Concurrent canonical merges and subsequent work
+are different sources, and receive none of these qualifications.
+
+## 2026-11-03 — control writes ignore the required-rehearsal caveat (fa-d48q)
+
+The registered live `requires_dry_run` caveat promises a rehearsal before
+any requested write commit. Posting and automatic reversal paths check it,
+but ordinary shared control admission did not, and approvals, uploads and
+bank-match confirmations also bypassed that shared admission. Existing
+control previews are not, by themselves, an implemented admission protocol
+for this caveat.
+
+The selected repair is the Bead's fail-closed option (a). Shared ordinary
+write admission refuses the explicit caveat before observing storage.
+Approvals, uploads and bank confirmations invoke the same check on their
+separate paths. The posting kernel explicitly retains its existing base
+authority checks and verified posting-plan protocol; that entrypoint cannot
+exempt a non-Post operation. Nonpublishing source factories retain posting
+authority checks without falsely being admitted as control commits. Pure
+proof-bundle production uses Read/Produce admission and its existing whole
+book reach. Read admission and mandatory access receipts remain separate.
+The refusal names `requires_dry_run` and explains the
+supported posting-plan path and the unsupported control path.
+
+Six tests in the existing operator-token target exercise issued, holder-bound
+authority: flagged close, legal hold, approval, issuance and upload must
+refuse without advancing the head, paired unflagged authority succeeds,
+and flagged read plus posting rehearsal and verified commit still work.
+Issuance is tested through the native Book API; the other requests use the
+ordinary CLI handlers. The policy test covers every registered operation's
+unrehearsed admission. The existing native bank-match harness also tests a
+flagged confirmation over real retained sources, unchanged head on refusal,
+and a paired ordinary confirmation with the exact original entry reference.
+An additional native Book test produces a real proof bundle under the caveat
+without advancing the head.
+These are authored tests, not execution evidence;
+native execution, any old-code counterexample, and full qualification of
+this newer tree remain pending. The original Bead stays in progress.

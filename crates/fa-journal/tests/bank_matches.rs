@@ -611,6 +611,29 @@ fn rebind(request: &mut BankMatchRequest) {
 }
 
 #[test]
+fn a_requires_dry_run_token_cannot_publish_an_unrehearsed_bank_confirmation() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE-17", b"cash");
+    let (import, line) = h.imported(" wire-17 ", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let before = h.head();
+    let ordinary = cap(CONFIRMER);
+    let refused = h
+        .confirm(&ordinary.clone().with_requires_dry_run(), request.clone())
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.exit),
+        (code::CAPABILITY, exit::SAFETY)
+    );
+    assert!(refused.message.contains("requires_dry_run"));
+    assert_eq!(h.head(), before);
+    let recorded = h.confirm(&ordinary, request).unwrap();
+    assert_eq!(recorded.recorded_at.0, before.0 + 1);
+    assert_eq!(recorded.confirmation.entry_ref, entry);
+    assert_eq!(recorded.confirmation.confirmed_by, CONFIRMER);
+}
+
+#[test]
 fn native_confirmation_retains_the_original_fact_across_retries_and_historical_reads() {
     let mut h = Harness::new();
     let entry = h.entry(&[10_000], "WIRE-17", b"cash");

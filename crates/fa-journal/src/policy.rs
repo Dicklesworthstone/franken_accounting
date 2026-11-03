@@ -450,6 +450,7 @@ pub async fn record_signed_approval<V: asupersync::fs::Vfs + Clone>(
     // book: a scoped token cannot judge what it approves and is refused.
     if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval")
         .and_then(|()| fa_policy::scope(&req.capability, book.book_id))
+        .and_then(|()| fa_policy::admit_control_write(&req.capability))
         .and_then(|()| fa_policy::reach(&req.capability, &Reach::whole_book(true), None))
     {
         return Ok(Err(refusal(&d)));

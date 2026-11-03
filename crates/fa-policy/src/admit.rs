@@ -107,8 +107,8 @@ pub struct Intent<'a> {
 /// Admit or deny an act on the whole book before any storage observation.
 /// Order: the capability is the actor's; an Agent never writes trunk; the
 /// op is held; the book is in scope; every leg is within its unit's
-/// ceiling; the scope caveats admit the whole book (a scoped token is
-/// refused).
+/// ceiling; unrehearsed controls cannot carry `requires_dry_run`; the scope
+/// caveats admit the whole book (a scoped token is refused).
 pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_within(cap, intent, &Reach::whole_book(intent.trunk), None)
 }
@@ -125,20 +125,53 @@ pub fn admit_within(
     reach(cap, r, accounts)
 }
 
-/// The checks that precede every reach: the capability is the actor's, an
+/// Ordinary control-write checks before reach: the capability is the actor's, an
 /// Agent never writes trunk, the op is held, the book is in scope, and
 /// every leg is within its unit's ceiling. A kernel that compiles the
 /// `accounts` caveat (compiling reads the chart) runs this first, so
 /// nothing is read for a token that may not act here at all, then [`reach`].
 pub fn admit_base(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
+    admit_base_as(cap, intent, false)?;
+    admit_control_write(cap)
+}
+
+/// Admit a control write that has no verified rehearsal-certificate protocol.
+/// Controls may offer previews, but a preview alone does not discharge the
+/// `requires_dry_run` caveat. Run this before observing storage; read admission
+/// and its mandatory access receipts are independent of this write check.
+pub fn admit_control_write(cap: &Capability) -> Result<(), Denial> {
+    if cap.has_requires_dry_run_caveat() {
+        return Err(out_of_scope(
+            "requires_dry_run",
+            "a control write without a supported verified rehearsal certificate".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Base authority checks for the posting kernel, which separately verifies
+/// the posting plan certificate at commit. This does not admit a control or
+/// establish that a posting has been rehearsed.
+pub fn admit_base_for_post(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
+    if intent.op != Op::Post {
+        return admit_base(cap, intent);
+    }
     admit_base_as(cap, intent, false)
 }
 
-/// [`admit_base`] for a dry run, which writes nothing: every check except
-/// the Agent's trunk denial (plan §15.3, `fa post --dry-run` is implied for
-/// Agent-profile capabilities). The plan binds this capability, and
-/// committing it runs [`admit`] again, which still refuses an Agent on
-/// trunk, so no Agent plan can publish.
+/// Whole-book posting authority for nonpublishing source factories. Planning
+/// and publication still use the posting kernel's certificate protocol.
+/// A control operation receives ordinary control admission instead.
+pub fn admit_for_post(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
+    admit_base_for_post(cap, intent)?;
+    reach(cap, &Reach::whole_book(intent.trunk), None)
+}
+
+/// Base posting checks for a dry run, which writes nothing. Unlike control
+/// admission, this allows a required rehearsal and the Agent's trunk preview
+/// (plan §15.3). The plan binds this capability; committing it runs the posting
+/// kernel's certificate checks and [`admit_base_for_post`], which still refuses
+/// an Agent on trunk, so no Agent plan can publish.
 pub fn admit_base_for_plan(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_base_as(cap, intent, true)
 }
@@ -664,6 +697,37 @@ mod tests {
                 .kind(),
             "missing_op"
         );
+    }
+
+    #[test]
+    fn requires_dry_run_admits_reads_and_posting_rehearsal_but_no_unrehearsed_control() {
+        let capability = Capability::new(VId(5), Profile::Human, &Op::ALL, VId(1))
+            .unwrap()
+            .with_requires_dry_run();
+        assert_eq!(admit_read(&capability, VId(5), BOOK), Ok(()));
+        for op in Op::ALL {
+            let intent = Intent {
+                op,
+                ..intent(VId(5), &[])
+            };
+            let denial = admit(&capability, &intent).unwrap_err();
+            assert!(matches!(
+                denial,
+                Denial::OutOfScope {
+                    caveat: "requires_dry_run",
+                    ..
+                }
+            ));
+            assert!(denial.fix().contains("verified plan"));
+            if op == Op::Post {
+                assert_eq!(admit_base_for_post(&capability, &intent), Ok(()));
+                assert_eq!(admit_for_post(&capability, &intent), Ok(()));
+                assert_eq!(admit_base_for_plan(&capability, &intent), Ok(()));
+            } else {
+                assert!(admit_base_for_post(&capability, &intent).is_err());
+                assert!(admit_for_post(&capability, &intent).is_err());
+            }
+        }
     }
 
     #[test]
