@@ -2256,6 +2256,12 @@ record byte-for-byte. No kernel admission, hold-anchor policy, registered
 skew limit, original test or gate is weakened. Native execution and the
 old-predicate negative control are pending; source agreement is not a pass.
 
+Execution update: the complete fa-reference library at fb6d93f00 passed 34
+tests. Restoring only the old predicate in a6c30e915 compiled and produced
+33 passes and the intended earlier-baseline failure. These ran on different
+x86 workers; they do not qualify the incomplete wider journal campaign or
+change the unresolved timed-hold bootstrap policy.
+
 ## 2026-11-03 — A late-ready transport result could hide the request deadline
 
 The client checked its absolute deadline before polling the socket operation,
@@ -2277,3 +2283,52 @@ all three transport phases and observations before, at and after expiry;
 an already expired deadline must not poll the operation, and registrations
 are released. Native execution and a restored pre-poll-only fault control
 remain pending. No gate or timeout limit has been increased.
+
+Execution update: precheck-only control f89a5f51f compiled and the late-ready
+test failed with Frame(Truncated) instead of Timeout. The unchanged client
+component at b932d46fa then passed its entire 82-test library, including both
+new deterministic controls and the original socket/backpressure tests. Its
+overall multi-target invocation remained red for three other assertions.
+
+## 2026-11-03 — Migration closure control expected an obsolete diagnostic
+
+The unfiltered native facade library on b932d46fa compiled, then
+`migration_fragment_closure_is_exact_and_legacy_prefixes_remain_replayable`
+failed at context_tests.rs:381. The forged certificate was refused; the
+assertion still required "omits migration body fragments". Production's
+source-closure guard now covers canonical Entry storage as well as migration
+storage and emits a different, fixed diagnostic. No production validator is
+changed to accommodate this fixture.
+
+The control now requires that exact current diagnostic, FA-REF-150, exit 8
+and an unchanged book frontier. Its valid-fragment replay, query/snapshot/
+duplicate corruption negatives, and original-prefix replay remain. This
+admits the intended closure refusal while continuing to reject a different
+failure class, diagnostic or publication. The repaired native test still
+requires execution; the observed failed invocation is not a passing gate.
+
+## 2026-11-03 — Retire the proved storage-gap refusal after its replacement ran
+
+`schema_valid_bulk_entry_exposes_native_row_capacity_without_partial_publication`
+captured fa-fdt's old defect: 512 schema-valid legs encoded to 24,497 canonical
+bytes and needed a 27,875-byte row against the unchanged 16,384-byte substrate
+limit. It executed twice on 3d1fe2a7e; the complete Genesis target passed 382
+tests. That source, native transcript and verified recovery pack are retained.
+
+The repaired Entry representation has now executed its replacement acceptance
+on b932d46fa: `large_entry_certificates_bind_fragments_and_replay_offline_after_reopen`
+passed within the complete 58-test facade statements target. It posts the 512
+legs once, preserves canonical bytes and retry identity, compares maintained,
+rebuilt and literal folds, rejects missing/reordered certified fragments,
+reopens the disk book and independently verifies the bundle with fa-verify.
+The old refusal test's own instruction was to replace it after this acceptance.
+
+Only that obsolete gap test is retired. Newly admitted: schema-valid large
+Entries whose immutable fragments fit native rows in one original publication.
+Still refused: unbalanced entries, changed-payload key reuse, corrupt or
+restored fragments, and noncanonical or incomplete verification closure. The
+kernel entry-storage controls remain, including the stronger original-key
+conflict check; their final complete Genesis run is still required. No schema,
+capsule or row limit, verifier, gate, timeout, amount or publication law changes.
+fa-fdt remains open behind its original fa-nd7g dependency; neither the broad
+object-layer acceptance nor the full repository gate is claimed complete.

@@ -373,12 +373,19 @@ fn migration_fragment_closure_is_exact_and_legacy_prefixes_remain_replayable() {
     missing.inputs.pop();
     let missing = missing.resealed_under(missing.registry_digest);
     assert!(super::ReportCertificate::decode(&missing.canonical_bytes().unwrap()).is_ok());
+    let before_missing = h.head();
     let refusal = h
         .book
         .replay_report(&h.cx(), &missing)
         .unwrap()
         .unwrap_err();
-    assert!(refusal.message.contains("omits migration body fragments"));
+    assert_eq!(refusal.code, super::code::CERTIFICATE_INVALID);
+    assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+    assert_eq!(
+        refusal.message,
+        "native input closure omits canonical entry or migration storage at the certified prefix"
+    );
+    assert_eq!(h.head(), before_missing, "refused replay must not publish");
 
     for changed in ["query", "snapshot", "duplicate"] {
         let mut malformed = decoded.clone();
