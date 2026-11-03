@@ -17,7 +17,9 @@ use std::process::Command;
 use fa_model::{Id128, Oid, domain_digest};
 
 use crate::StatementError;
-use crate::markdown::{ColumnAlignment, FootingRule, MarkdownTable, StatementMarkdownIr};
+use crate::markdown::{
+    ColumnAlignment, FootingRule, MarkdownRow, MarkdownTable, StatementMarkdownIr,
+};
 
 /// Target output format for a rendered statement or exhibit (`fa-cet`, `fa-949`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,11 +500,22 @@ pub fn render_svg(
     Ok(svg.into_bytes())
 }
 
-fn build_pdf_content_stream(
+/// The lowest baseline a table row is drawn at; a row below it starts a
+/// new page.
+const PDF_BOTTOM: i64 = 48;
+
+/// What every page dictionary holds besides its parent and contents.
+const PAGE_DICT_TAIL: &str = "/MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >>";
+
+/// One content stream per page. A table that does not fit continues on the
+/// next page with its unit line and column headers repeated: no row is ever
+/// dropped, and a statement that fits one page renders exactly as before.
+fn build_pdf_content_streams(
     ir: &StatementMarkdownIr,
     created_iso: &str,
     ir_digest_hex: &str,
-) -> String {
+) -> Vec<String> {
+    let mut pages = Vec::new();
     let mut s = String::new();
     let mut y: i64 = 750;
     s.push_str("BT /F1 11 Tf 36 766 Td (");
@@ -524,17 +537,66 @@ fn build_pdf_content_stream(
     y -= 20;
 
     for table in &ir.tables {
-        y = render_pdf_table(&mut s, table, y);
+        y = render_pdf_table(&mut pages, &mut s, ir, table, y);
         y -= 12;
     }
-    s
+    pages.push(s);
+    pages
 }
 
-fn render_pdf_table(s: &mut String, table: &MarkdownTable, mut y: i64) -> i64 {
+/// Close the current page and open the next one under a continuation line;
+/// returns the first baseline below it.
+fn next_pdf_page(pages: &mut Vec<String>, s: &mut String, ir: &StatementMarkdownIr) -> i64 {
+    pages.push(std::mem::take(s));
+    s.push_str("BT /F1 8 Tf 36 766 Td (");
+    s.push_str(&escape_pdf_string(&format!(
+        "{} (v{}), continued: page {}",
+        ir.definition_name,
+        ir.definition_version,
+        pages.len() + 1
+    )));
+    s.push_str(") Tj ET\n");
+    750
+}
+
+fn render_pdf_table(
+    pages: &mut Vec<String>,
+    s: &mut String,
+    ir: &StatementMarkdownIr,
+    table: &MarkdownTable,
+    mut y: i64,
+) -> i64 {
+    // The unit line and the column headers take 28 points above the first
+    // row; a table whose first row would fall below the margin starts on a
+    // new page.
+    if !table.rows.is_empty() && y - 28 < PDF_BOTTOM {
+        y = next_pdf_page(pages, s, ir);
+    }
+    y = render_pdf_table_heading(s, table, y, false);
+    for row in &table.rows {
+        if y < PDF_BOTTOM {
+            y = next_pdf_page(pages, s, ir);
+            y = render_pdf_table_heading(s, table, y, true);
+        }
+        render_pdf_row(s, table, row, y);
+        y -= 14;
+    }
+    y
+}
+
+fn render_pdf_table_heading(
+    s: &mut String,
+    table: &MarkdownTable,
+    mut y: i64,
+    continued: bool,
+) -> i64 {
     s.push_str(&format!("BT /F1 9 Tf 36 {y} Td ("));
     s.push_str(&escape_pdf_string(&format!(
-        "Unit: {} (id={}, scale={})",
-        table.unit_code, table.unit_id, table.unit_scale
+        "Unit: {} (id={}, scale={}){}",
+        table.unit_code,
+        table.unit_id,
+        table.unit_scale,
+        if continued { ", continued" } else { "" }
     )));
     s.push_str(") Tj ET\n");
     y -= 14;
@@ -565,56 +627,53 @@ fn render_pdf_table(s: &mut String, table: &MarkdownTable, mut y: i64) -> i64 {
     s.push_str(&format!(
         "1 w 36 {header_line_y} m 576 {header_line_y} l S\n"
     ));
-    y -= 14;
+    y - 14
+}
 
-    for row in &table.rows {
-        if y < 48 {
-            break;
-        }
-        if matches!(row.footing, FootingRule::Single | FootingRule::Double) {
-            let top_y = y + 9;
-            s.push_str(&format!("1 w 36 {top_y} m 576 {top_y} l S\n"));
-        }
-        for (idx, cell) in row.cells.iter().enumerate() {
-            let align = table
-                .alignments
-                .get(idx)
-                .copied()
-                .unwrap_or(ColumnAlignment::Left);
-            let x = match align {
-                ColumnAlignment::Left => 36 + (idx as i64) * col_width,
-                ColumnAlignment::Right => {
-                    let right_edge = 36 + ((idx as i64) + 1) * col_width - 6;
-                    let text_w = (cell.chars().count() as i64) * 5;
-                    (right_edge - text_w).max(36 + (idx as i64) * col_width)
-                }
-            };
+fn render_pdf_row(s: &mut String, table: &MarkdownTable, row: &MarkdownRow, y: i64) {
+    let col_count = table.headers.len().max(1) as i64;
+    let col_width = 540 / col_count;
+    if matches!(row.footing, FootingRule::Single | FootingRule::Double) {
+        let top_y = y + 9;
+        s.push_str(&format!("1 w 36 {top_y} m 576 {top_y} l S\n"));
+    }
+    for (idx, cell) in row.cells.iter().enumerate() {
+        let align = table
+            .alignments
+            .get(idx)
+            .copied()
+            .unwrap_or(ColumnAlignment::Left);
+        let x = match align {
+            ColumnAlignment::Left => 36 + (idx as i64) * col_width,
+            ColumnAlignment::Right => {
+                let right_edge = 36 + ((idx as i64) + 1) * col_width - 6;
+                let text_w = (cell.chars().count() as i64) * 5;
+                (right_edge - text_w).max(36 + (idx as i64) * col_width)
+            }
+        };
+        s.push_str(&format!(
+            "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
+            escape_pdf_string(cell)
+        ));
+    }
+    match row.footing {
+        FootingRule::None => {}
+        FootingRule::Single => {
+            let bot_y = y - 3;
             s.push_str(&format!(
-                "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
-                escape_pdf_string(cell)
+                "% footing:single {}\n1 w 36 {bot_y} m 576 {bot_y} l S\n",
+                row.line_code
             ));
         }
-        match row.footing {
-            FootingRule::None => {}
-            FootingRule::Single => {
-                let bot_y = y - 3;
-                s.push_str(&format!(
-                    "% footing:single {}\n1 w 36 {bot_y} m 576 {bot_y} l S\n",
-                    row.line_code
-                ));
-            }
-            FootingRule::Double => {
-                let bot1 = y - 2;
-                let bot2 = y - 5;
-                s.push_str(&format!(
-                    "% footing:double {}\n1 w 36 {bot1} m 576 {bot1} l 36 {bot2} m 576 {bot2} l S\n",
-                    row.line_code
-                ));
-            }
+        FootingRule::Double => {
+            let bot1 = y - 2;
+            let bot2 = y - 5;
+            s.push_str(&format!(
+                "% footing:double {}\n1 w 36 {bot1} m 576 {bot1} l 36 {bot2} m 576 {bot2} l S\n",
+                row.line_code
+            ));
         }
-        y -= 14;
     }
-    y
 }
 
 fn render_pdf_internal(
@@ -626,7 +685,15 @@ fn render_pdf_internal(
     let ir_digest_hex = hex_bytes(&ir_digest.0);
     let created_iso = format_utc_epoch_iso8601(creation_epoch_secs);
     let created_pdf = format_utc_epoch_pdf_date(creation_epoch_secs);
-    let content_stream = build_pdf_content_stream(ir, &created_iso, &ir_digest_hex);
+    let content_streams = build_pdf_content_streams(ir, &created_iso, &ir_digest_hex);
+    let content_stream = &content_streams[0];
+    // Page 1 keeps objects 3 (page) and 8 (contents); every later page is a
+    // (page, contents) pair numbered from 10, after the Info object.
+    let more_pages = &content_streams[1..];
+    let kids = std::iter::once("3 0 R".to_string())
+        .chain((0..more_pages.len()).map(|i| format!("{} 0 R", 10 + 2 * i)))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let xmp_packet = format!(
         "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
@@ -668,10 +735,14 @@ fn render_pdf_internal(
         "<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R >>".to_string()
     };
 
-    let objects: Vec<Vec<u8>> = vec![
+    let mut objects: Vec<Vec<u8>> = vec![
         catalog_obj.into_bytes(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 8 0 R >>".to_vec(),
+        format!(
+            "<< /Type /Pages /Kids [{kids}] /Count {} >>",
+            content_streams.len()
+        )
+        .into_bytes(),
+        format!("<< /Type /Page /Parent 2 0 R {PAGE_DICT_TAIL} /Contents 8 0 R >>").into_bytes(),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>".to_vec(),
         format!(
             "<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n{}\nendstream",
@@ -698,8 +769,23 @@ fn render_pdf_internal(
         )
         .into_bytes(),
     ];
+    for (i, stream) in more_pages.iter().enumerate() {
+        let contents = 11 + 2 * i;
+        objects.push(
+            format!("<< /Type /Page /Parent 2 0 R {PAGE_DICT_TAIL} /Contents {contents} 0 R >>")
+                .into_bytes(),
+        );
+        objects.push(
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                stream.len(),
+                stream
+            )
+            .into_bytes(),
+        );
+    }
 
-    let mut out = Vec::with_capacity(4096 + content_stream.len());
+    let mut out = Vec::with_capacity(4096 + content_streams.iter().map(String::len).sum::<usize>());
     out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
 
     let mut offsets = Vec::with_capacity(objects.len());
@@ -1790,5 +1876,64 @@ mod tests {
             render_flow_of_funds_diagram(Id128([0x44; 16]), 15, "USD", 2, &nodes, &bad_edge,)
                 .is_err()
         );
+    }
+
+    /// A trial balance longer than one page continues on later pages with
+    /// its unit line and column headers repeated. Before, the PDF was one
+    /// page and every row below its margin, the TOTAL row included, was
+    /// silently dropped while the document still carried the full IR digest.
+    #[test]
+    fn a_pdf_longer_than_one_page_keeps_every_row_and_the_total() {
+        let rows: Vec<TrialBalanceIrRow> = (0..120)
+            .map(|n| TrialBalanceIrRow {
+                account_code: format!("{}", 1000 + n),
+                account_name: format!("Account {n}"),
+                unit_id: 1,
+                debits: if n % 2 == 0 { 100 } else { 0 },
+                credits: if n % 2 == 0 { 0 } else { 100 },
+            })
+            .collect();
+        let ir = render_trial_balance_ir(
+            &TrialBalanceIrInput {
+                book_id: Id128([0x44; 16]),
+                branch_id: Id128::TRUNK,
+                known_at: 25,
+                effective_label: "FY2026-P03".into(),
+                activity_only: false,
+                rows,
+            },
+            &sample_units(),
+        )
+        .unwrap();
+        let table = &ir.tables[0];
+        assert_eq!(table.rows.len(), 121, "120 accounts and the TOTAL row");
+        let epoch: u64 = 1_792_454_400;
+        for pdfa in [false, true] {
+            let bytes = if pdfa {
+                render_pdfa(&ir, epoch)
+            } else {
+                render_pdf(&ir, epoch)
+            }
+            .unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            for row in &table.rows {
+                for cell in &row.cells {
+                    let drawn = format!("({}) Tj", escape_pdf_string(cell));
+                    assert!(text.contains(&drawn), "pdfa={pdfa}: {cell} is not drawn");
+                }
+            }
+            // 47 rows fit under the title, 49 on a continued page.
+            assert!(text.contains("/Count 3 >>"), "pdfa={pdfa}");
+            assert_eq!(text.matches("/Type /Page /Parent").count(), 3);
+            let continued = format!(
+                "({}) Tj",
+                escape_pdf_string("Unit: USD (id=1, scale=2), continued")
+            );
+            assert_eq!(text.matches(&continued).count(), 2, "pdfa={pdfa}");
+            assert_eq!(text.matches("% footing:double").count(), 1);
+            if pdfa {
+                validate_pdfa2b(&bytes).unwrap();
+            }
+        }
     }
 }

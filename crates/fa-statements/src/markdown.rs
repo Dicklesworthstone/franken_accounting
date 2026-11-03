@@ -267,14 +267,36 @@ fn classify_footing(
     }
 }
 
+/// A cell as table data: an account name may hold `|` or a line break,
+/// which would otherwise split the row and shift every later amount under
+/// another column's header. A backslash is escaped too, so a name's own
+/// `\|` cannot reopen the delimiter.
+fn table_cell(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '|' => out.push_str("\\|"),
+            '\n' | '\r' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn render_table_markdown(table: &MarkdownTable) -> String {
     let col_count = table.headers.len();
     let mut widths = vec![3usize; col_count];
     for (idx, h) in table.headers.iter().enumerate() {
         widths[idx] = widths[idx].max(h.chars().count());
     }
-    for row in &table.rows {
-        for (idx, cell) in row.cells.iter().enumerate() {
+    let rows: Vec<Vec<String>> = table
+        .rows
+        .iter()
+        .map(|row| row.cells.iter().map(|cell| table_cell(cell)).collect())
+        .collect();
+    for (row, cells) in table.rows.iter().zip(&rows) {
+        for (idx, cell) in cells.iter().enumerate() {
             let extra = match (idx >= 2, row.footing) {
                 (true, FootingRule::Double) => 4, // `=== ` prefix or suffix marker
                 (true, FootingRule::Single) => 2,
@@ -323,9 +345,9 @@ fn render_table_markdown(table: &MarkdownTable) -> String {
     out.push('\n');
 
     // Data rows with footing indicators
-    for row in &table.rows {
+    for (row, cells) in table.rows.iter().zip(&rows) {
         out.push('|');
-        for (idx, cell) in row.cells.iter().enumerate() {
+        for (idx, cell) in cells.iter().enumerate() {
             let w = widths[idx];
             let decorated = match (idx >= 2, row.footing) {
                 (true, FootingRule::Double) => format!("=={cell}=="),
@@ -1279,5 +1301,72 @@ mod tests {
             "-1701411834604692317316873037158841057.28"
         );
         assert!(format_scaled_i128(100, 39).is_err());
+    }
+
+    /// An account name is table data. A `|` or a line break in it used to
+    /// split its row, so every later amount sat under another column's
+    /// header (the Debits column showed part of the name).
+    #[test]
+    fn account_names_cannot_split_a_markdown_table_row() {
+        let row = |code: &str, name: &str, debits: i128, credits: i128| TrialBalanceIrRow {
+            account_code: code.into(),
+            account_name: name.into(),
+            unit_id: 1,
+            debits,
+            credits,
+        };
+        let ir = render_trial_balance_ir(
+            &TrialBalanceIrInput {
+                book_id: Id128([0x44; 16]),
+                branch_id: Id128::TRUNK,
+                known_at: 25,
+                effective_label: "FY2026-P03".into(),
+                activity_only: false,
+                rows: vec![
+                    row("1300", "Due to | affiliates", 10_000, 0),
+                    row("1400", "Line\nbreak \\| kept", 0, 10_000),
+                ],
+            },
+            &[UnitFormatSpec {
+                unit_id: 1,
+                code: "USD".into(),
+                scale: 2,
+            }],
+        )
+        .unwrap();
+        // A delimiter is a `|` not escaped by a backslash.
+        let delimiters = |line: &str| {
+            let mut count = 0;
+            let mut escaped = false;
+            for c in line.chars() {
+                match (escaped, c) {
+                    (false, '\\') => escaped = true,
+                    (false, '|') => count += 1,
+                    _ => escaped = false,
+                }
+            }
+            count
+        };
+        let header = ir.markdown.lines().find(|l| l.starts_with("| ")).unwrap();
+        let columns = delimiters(header);
+        let rows: Vec<&str> = ir
+            .markdown
+            .lines()
+            .filter(|l| l.contains("1300") || l.contains("1400"))
+            .collect();
+        assert_eq!(rows.len(), 2, "{}", ir.markdown);
+        for line in rows {
+            assert_eq!(delimiters(line), columns, "{line}");
+        }
+        assert!(
+            ir.markdown.contains("Due to \\| affiliates"),
+            "{}",
+            ir.markdown
+        );
+        assert!(
+            ir.markdown.contains("Line break \\\\\\| kept"),
+            "{}",
+            ir.markdown
+        );
     }
 }
