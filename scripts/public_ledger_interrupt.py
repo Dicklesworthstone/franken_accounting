@@ -5,6 +5,9 @@ No native response is mocked. The partial-stage boundary submits the first
 member of the already retained approved selection through the ordinary native
 single-chunk command, then raises the driver's normal failure. The finalization
 boundary raises only after a real new finalization has returned successfully.
+The package-before-binding boundary executes the requested bound preparation
+without its binding switch, retaining the real unbound package receipt before
+the ordinary driver failure. It represents the CLI's two-publication gap.
 These are controlled orchestration interruptions, not mid-transaction crashes.
 """
 from __future__ import annotations
@@ -22,13 +25,14 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--driver', type=Path, required=True)
-    parser.add_argument('--boundary', choices=['partial-stage', 'after-finalize'], required=True)
+    parser.add_argument('--boundary', choices=['partial-stage', 'after-finalize',
+                                               'after-package-before-bind'], required=True)
     parser.add_argument('--marker', type=Path, required=True)
     parser.add_argument('driver_args', nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     driver = args.driver.resolve(strict=True)
     if args.marker.exists() or not args.marker.parent.is_dir():
         parser.error('--marker must name a new file in an existing directory')
@@ -65,6 +69,35 @@ def main() -> int:
 
     def injected(native, *command, **kwargs):
         words = list(map(str, command))
+        if (args.boundary == 'after-package-before-bind' and not interrupted
+                and words[:4] == ['migrate', 'import', '--action', 'prepare']):
+            replay.require(words.count('--bind-source') == 1
+                           and not any(word.startswith('--bind-source=') for word in words),
+                           'controlled package-before-binding needs exactly one canonical --bind-source switch')
+            pins = replay.read_fact(native.output / 'recovery/pins.json')
+            replay.require(pins.get('format') == 'fa-public-ledger-recovery-v1'
+                           and pins.get('bind_source') is True,
+                           'controlled package-before-binding needs an originally source-bound run')
+            actual = [word for word in command if str(word) != '--bind-source']
+            event = ordinary(native, *actual, **kwargs)
+            data = event.get('data') if isinstance(event, dict) else None
+            replay.require(isinstance(data, dict)
+                           and event.get('event') == 'migration_import_prepared'
+                           and data.get('run_state') == 'Open'
+                           and type(data.get('recorded_count')) is int
+                           and data['recorded_count'] == 0
+                           and data.get('already_recorded') is False
+                           and 'source_binding' in data and data['source_binding'] is None
+                           and 'source_binding_receipt' in data and data['source_binding_receipt'] is None
+                           and isinstance(data.get('chunks'), list) and data['chunks']
+                           and all(isinstance(chunk, dict) and 'recorded_at' in chunk
+                                   and chunk['recorded_at'] is None for chunk in data['chunks']),
+                           'controlled package-before-binding did not obtain a new Open unbound package with zero recorded chunks')
+            stop(native, command, actual, event, {
+                'scope': 'Controlled orchestration stop after a real unbound preparation published its package; '
+                         'represents the CLI package/source-binding publication gap, not a native internal crash.',
+                'source_binding_expected_on_resume': True,
+            })
         if (args.boundary == 'partial-stage' and not interrupted
                 and words[:4] == ['migrate', 'import', '--action', 'stage']
                 and '--intent' in words):

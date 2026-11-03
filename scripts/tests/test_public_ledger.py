@@ -1359,9 +1359,9 @@ class ReplayRecoveryTests(unittest.TestCase):
         self.book_info = {"book_id": "a" * 32, "base_unit": "USD",
                           "calendar": "fixture-calendar", "entities": []}
 
-    def new_recovery(self, name="run"):
+    def new_recovery(self, name="run", *, bind_source=False):
         recovery = replay.ReplayRecovery(self.root / name, self.fixture, "31500",
-                                         self.binary, self.binary, resume=False)
+                                         self.binary, self.binary, resume=False, bind_source=bind_source)
         self.addCleanup(recovery.close)
         recovery.restore_inputs()
         return recovery
@@ -1397,6 +1397,8 @@ class ReplayRecoveryTests(unittest.TestCase):
             package = native_package(case, run)
             package.update(package_oid=package_oid, run_vid=run_vid, run_key=key,
                            run_body_digest=f"{3000 + run_index:064x}", source_oid=source_oid,
+                           source_commit=f"{5000 + run_index:064x}", package_commit=f"{6000 + run_index:064x}",
+                           source_binding=None,
                            mode="FullDetail", run_state="Open",
                            recorded_count=len(package["chunks"]) if recorded else 0,
                            ties_out=recorded)
@@ -1404,6 +1406,8 @@ class ReplayRecoveryTests(unittest.TestCase):
                 chunk.update(entry_vid=f"{10000 + run_index * 100 + chunk_index:032x}",
                              proposal_digest=f"{20000 + run_index * 100 + chunk_index:064x}",
                              recorded_at=1000 + run_index * 100 + chunk_index if recorded else None)
+            if recovery.bind_source:
+                self.bind_package(package, run_index=run_index)
             inventory["runs"][key] = {
                 "run_key": key, "run_vid": run_vid, "source_system": replay.SOURCE_SYSTEM,
                 "mode": "FullDetail", "state": "Open", "opening_date": "2024-07-01",
@@ -1456,6 +1460,20 @@ class ReplayRecoveryTests(unittest.TestCase):
         native.tb = mock.Mock(return_value={})
         return native, inventory
 
+    def bind_package(self, package, *, run_index=0):
+        """Native-shaped binding, deliberately not a computed native proof."""
+        package["source_binding"] = {
+            "manifest_vid": f"{7000 + run_index:032x}",
+            "manifest_digest": f"{8000 + run_index:064x}", "book_id": self.book_info["book_id"],
+            **{key: package[key] for key in ("run_vid", "run_body_digest", "source_oid", "source_commit",
+                                           "package_oid", "package_commit")},
+            "source_rows": package["row_count"], "expected_chunks": package["chunk_count"],
+            "recorded_chunks": package["recorded_count"],
+            "missing_chunks": sorted(chunk["entry_vid"] for chunk in package["chunks"]
+                                     if chunk["recorded_at"] is None),
+            "unexpected_chunks": [], "complete": package["recorded_count"] == package["chunk_count"],
+        }
+
     @staticmethod
     def plan(actual):
         # Deliberately only a call-contract fixture, not a real native proposal.
@@ -1471,6 +1489,73 @@ class ReplayRecoveryTests(unittest.TestCase):
         self.assertEqual(manifest, recovery.manifest)
         self.assertEqual(artifacts, recovery.artifacts)
         self.assertEqual(self.files(recovery.output), before)
+
+    def test_source_binding_mode_is_pinned_before_native_execution_and_inherited_on_resume(self):
+        for flag, enabled in (([], False), (["--no-bind-source"], False), (["--bind-source"], True)):
+            with self.subTest(flag=flag):
+                output = self.root / ("default" if not flag else flag[0][2:])
+
+                def reached_native(*args, recovery, **kwargs):
+                    saved = replay.read_fact(recovery.directory / "pins.json")
+                    self.assertEqual(saved["format"], "fa-public-ledger-recovery-v1")
+                    self.assertIs(recovery.bind_source, enabled)
+                    self.assertIs(saved.get("bind_source", False), enabled)
+                    self.assertEqual("bind_source" in saved, enabled)
+                    raise replay.ReplayError("stop before any native operation")
+
+                with mock.patch.object(replay, "run_native", side_effect=reached_native) as execute, \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(replay.main([
+                        "run", "--source", str(self.fixture), "--out", str(output),
+                        "--fa", str(self.binary), "--fa-verify", str(self.binary), *flag,
+                    ]), 1)
+                    execute.assert_called_once()
+                    before = self.files(output)
+                    execute.reset_mock()
+                    self.assertEqual(replay.main(["run", "--resume", "--out", str(output)]), 1)
+                    execute.assert_called_once()
+                    self.assertTrue(execute.call_args.kwargs["recovery"].resumed)
+                    self.assertEqual(self.files(output), before)
+
+    def test_resume_source_binding_mode_changes_refuse_before_native_or_any_write(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                recovery = self.new_recovery(str(enabled), bind_source=enabled)
+                recovery.close()
+                before = self.files(recovery.output)
+                with mock.patch.object(replay, "run_native") as execute, \
+                        mock.patch.object(replay, "Native") as native, \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                    result = replay.main([
+                        "run", "--resume", "--out", str(recovery.output),
+                        "--no-bind-source" if enabled else "--bind-source",
+                    ])
+                self.assertEqual(result, 1)
+                self.assertIn("source-binding mode differs", errors.getvalue())
+                execute.assert_not_called()
+                native.assert_not_called()
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_non_boolean_binding_pin_and_conflicting_mode_flags_refuse(self):
+        recovery = self.new_recovery(bind_source=True)
+        recovery.close()
+        pins_path = recovery.directory / "pins.json"
+        pins = replay.read_fact(pins_path)
+        pins["bind_source"] = 1
+        pins_path.write_bytes(replay.json_bytes({
+            "sha256": hashlib.sha256(replay.json_bytes(pins)).hexdigest(), "value": pins,
+        }))
+        before = self.files(recovery.output)
+        with mock.patch.object(replay, "run_native") as execute, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(replay.main(["run", "--resume", "--out", str(recovery.output)]), 1)
+            with self.assertRaises(SystemExit) as refusal:
+                replay.main(["run", "--out", str(self.root / "never-created"),
+                             "--bind-source", "--no-bind-source"])
+            self.assertEqual(refusal.exception.code, 2)
+            execute.assert_not_called()
+        self.assertEqual(self.files(recovery.output), before)
+        self.assertFalse((self.root / "never-created").exists())
 
     def test_resume_pin_or_retained_input_mismatch_refuses_before_native_or_any_write(self):
         for change in ("source", "chart", "manifest", "column_map", "normalized", "original", "binary", "dynamic", "checkpoint"):
@@ -1592,6 +1677,185 @@ class ReplayRecoveryTests(unittest.TestCase):
                 self.assertEqual(self.files(recovery.output), before)
                 self.assertFalse(any(call.args[:2] in (("migrate", "open"), ("document", "add"))
                                      for call in native.call.call_args_list))
+
+    def test_bound_preflight_validates_partial_source_coverage_without_writing(self):
+        recovery = self.new_recovery(bind_source=True)
+        native, inventory = self.native_inventory(recovery)
+        key = next(iter(inventory["runs"]))
+        package = next(iter(inventory["packages"].values()))
+        first = package["chunks"][0]
+        first["recorded_at"] = 73
+        package["recorded_count"] = 1
+        self.bind_package(package)
+        inventory["runs"][key].update(chunk_count=1, chunks=[{
+            "vid": first["entry_vid"], "proposal_digest": first["proposal_digest"], "recorded_at": 73,
+        }])
+        before = self.files(recovery.output)
+        recovered = replay.preflight_recovery(native, recovery)
+        self.assertEqual(recovered[key]["source_binding"]["recorded_chunks"], 1)
+        self.assertEqual(recovered[key]["source_binding"]["missing_chunks"],
+                         sorted(chunk["entry_vid"] for chunk in package["chunks"][1:]))
+        self.assertEqual(self.files(recovery.output), before)
+
+    def test_bound_preflight_refuses_mismatched_source_identity_and_coverage_before_writing(self):
+        mutations = {
+            "book_id": "b" * 32, "run_vid": "b" * 32, "run_body_digest": "b" * 64,
+            "source_oid": "b" * 64, "source_commit": "b" * 64,
+            "package_oid": "b" * 64, "package_commit": "b" * 64,
+            "source_rows": 999999, "expected_chunks": 999999, "recorded_chunks": 1,
+            "missing_chunks": [], "unexpected_chunks": ["b" * 32], "complete": True,
+            "manifest_vid": "invalid", "manifest_digest": "B" * 64,
+            "unrecognized_field": "value",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                recovery = self.new_recovery(field, bind_source=True)
+                native, inventory = self.native_inventory(recovery)
+                package = next(iter(inventory["packages"].values()))
+                package["source_binding"][field] = value
+                before = self.files(recovery.output)
+                with self.assertRaises(replay.ReplayError):
+                    replay.preflight_recovery(native, recovery)
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_bound_preflight_allows_missing_binding_only_at_the_exact_unstaged_prepare_boundary(self):
+        for state in ("pending", "staged", "finalized", "receipt_without_count"):
+            with self.subTest(state=state):
+                recovery = self.new_recovery(state, bind_source=True)
+                native, inventory = self.native_inventory(recovery, recorded=state == "staged")
+                key = next(iter(inventory["runs"]))
+                package = next(iter(inventory["packages"].values()))
+                package["source_binding"] = None
+                if state == "finalized":
+                    inventory["runs"][key]["state"] = package["run_state"] = "Finalized"
+                if state == "receipt_without_count":
+                    package["chunks"][0]["recorded_at"] = 53
+                before = self.files(recovery.output)
+                if state == "pending":
+                    recovered = replay.preflight_recovery(native, recovery)
+                    self.assertIsNone(recovered[key]["source_binding"])
+                else:
+                    with self.assertRaisesRegex(replay.ReplayError, "missing outside the unstaged"):
+                        replay.preflight_recovery(native, recovery)
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_unbound_original_pins_cannot_adopt_wrapper_bound_native_packages(self):
+        recovery = self.new_recovery()
+        native, inventory = self.native_inventory(recovery)
+        self.bind_package(next(iter(inventory["packages"].values())))
+        before = self.files(recovery.output)
+        with self.assertRaisesRegex(replay.ReplayError, "unbound recovery pin cannot adopt"):
+            replay.preflight_recovery(native, recovery)
+        self.assertEqual(self.files(recovery.output), before)
+
+    def test_every_native_package_must_explicitly_report_its_binding_profile(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                recovery = self.new_recovery(str(enabled), bind_source=enabled)
+                native, inventory = self.native_inventory(recovery)
+                next(iter(inventory["packages"].values())).pop("source_binding")
+                before = self.files(recovery.output)
+                with self.assertRaisesRegex(replay.ReplayError, "omits its source-binding profile"):
+                    replay.preflight_recovery(native, recovery)
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_preparation_completes_the_original_pending_binding_and_reuses_its_native_receipt(self):
+        recovery = self.new_recovery(bind_source=True)
+        native, inventory = self.native_inventory(recovery)
+        run = recovery.manifest["runs"][0]
+        package = next(iter(inventory["packages"].values()))
+        pending = deepcopy(package)
+        pending["source_binding"] = None
+        receipt = {"control_entry": "d" * 32, "recorded_at": 41, "already_recorded": False}
+        package.update(already_recorded=True, source_binding_receipt=receipt)
+        prepared = deepcopy(package)
+        retried = deepcopy(prepared)
+        retried["source_binding_receipt"]["already_recorded"] = True
+        native.call = mock.Mock(side_effect=[{"data": prepared}, {"data": retried}])
+        values = fixture_dimension_values(read_csv(self.fixture, "cp1252"))
+        intent_path = recovery.output / f"{run['name']}-import.json"
+        first = replay.prepare_import(native, recovery, run, intent_path, values, previous=pending)
+        again = replay.prepare_import(native, recovery, run, intent_path, values, previous=first)
+        self.assertEqual(replay.package_identity(first), replay.package_identity(again))
+        self.assertEqual(again["source_binding_receipt"], {**receipt, "already_recorded": True})
+        self.assertEqual(native.call.call_args_list, [mock.call(
+            "migrate", "import", "--action", "prepare", "--intent", intent_path, "--bind-source",
+        )] * 2)
+
+    def test_preparation_retry_refuses_changed_binding_or_original_publication(self):
+        recovery = self.new_recovery(bind_source=True)
+        native, inventory = self.native_inventory(recovery)
+        run = recovery.manifest["runs"][0]
+        original = next(iter(inventory["packages"].values()))
+        original.update(already_recorded=True, source_binding_receipt={
+            "control_entry": "d" * 32, "recorded_at": 41, "already_recorded": True,
+        })
+        values = fixture_dimension_values(read_csv(self.fixture, "cp1252"))
+        intent_path = recovery.output / f"{run['name']}-import.json"
+        for field in ("manifest_digest", "manifest_vid", "control_entry", "recorded_at", "already_recorded", "missing"):
+            with self.subTest(field=field):
+                changed = deepcopy(original)
+                if field in ("manifest_digest", "manifest_vid"):
+                    changed["source_binding"][field] = "b" * (64 if field == "manifest_digest" else 32)
+                elif field == "missing":
+                    changed["source_binding"] = None
+                else:
+                    changed["source_binding_receipt"][field] = {
+                        "control_entry": "b" * 32, "recorded_at": 42, "already_recorded": False,
+                    }[field]
+                native.call = mock.Mock(return_value={"data": changed})
+                with self.assertRaises(replay.ReplayError):
+                    replay.prepare_import(native, recovery, run, intent_path, values, previous=original)
+                native.call.assert_called_once()
+
+    def test_unbound_preparation_never_adds_the_binding_switch(self):
+        recovery = self.new_recovery()
+        native, inventory = self.native_inventory(recovery)
+        run = recovery.manifest["runs"][0]
+        package = next(iter(inventory["packages"].values()))
+        package["source_binding_receipt"] = None
+        native.call = mock.Mock(return_value={"data": package})
+        values = fixture_dimension_values(read_csv(self.fixture, "cp1252"))
+        intent_path = recovery.output / f"{run['name']}-import.json"
+        replay.prepare_import(native, recovery, run, intent_path, values, previous=package)
+        native.call.assert_called_once_with("migrate", "import", "--action", "prepare", "--intent", intent_path)
+
+    def test_activation_membership_retains_binding_identity_but_not_changing_coverage(self):
+        recovery = self.new_recovery(bind_source=True)
+        _, inventory = self.native_inventory(recovery)
+        package = next(iter(inventory["packages"].values()))
+        original = replay.package_identity(package)
+        for index, chunk in enumerate(package["chunks"]):
+            chunk["recorded_at"] = 100 + index
+        package.update(recorded_count=len(package["chunks"]), ties_out=True)
+        self.bind_package(package)
+        self.assertEqual(replay.package_identity(package), original)
+        membership = replay.activation_membership([{"name": "run-000", "package": package}])
+        self.assertEqual(membership["run-000"]["source_binding"], original["source_binding"])
+        self.assertEqual(membership["run-000"]["recorded_at"], list(range(100, 100 + len(package["chunks"]))))
+
+    def test_finalized_bound_recovery_retains_original_binding_and_preactivation_identity(self):
+        recovery = self.new_recovery(bind_source=True)
+        native, inventory = self.native_inventory(recovery, recorded=True)
+        first_key = next(iter(inventory["runs"]))
+        first = inventory["runs"][first_key]
+        package = next(iter(inventory["packages"].values()))
+        first["state"] = package["run_state"] = "Finalized"
+        prepared = [{"name": run["name"], "package": inventory["packages"][f"{1000 + i:064x}"]}
+                    for i, run in enumerate(recovery.manifest["runs"])]
+        recovery.save("preactivation", {"known_at": 9000, "packages": replay.activation_membership(prepared)})
+        first_name = recovery.manifest["runs"][0]["name"]
+        recovery.save(f"plan-{first_name}", {"plan": self.plan(first)})
+        recovery.input_json(f"{first_name}-finalize-approvals.json",
+                            {"proposal_digest": "b" * 64, "approvals": ["1" * 32, "2" * 32]})
+        before = self.files(recovery.output)
+        replay.preflight_recovery(native, recovery)
+        self.assertEqual(replay.activation_prefix(native, recovery, prepared), 9000)
+        self.assertEqual(self.files(recovery.output), before)
+        package["source_binding"]["manifest_digest"] = "f" * 64
+        with self.assertRaisesRegex(replay.ReplayError, "preactivation package membership differs"):
+            replay.preflight_recovery(native, recovery)
+        self.assertEqual(self.files(recovery.output), before)
 
     def test_native_abandonment_foreign_package_and_extra_chunk_refuse_without_writing(self):
         for change in ("abandoned", "foreign", "duplicate", "extra_chunk", "source_mapping"):

@@ -259,6 +259,40 @@ including independent ADS proof verification with dimension coverage and
 amount-only and dimension-only negative controls. Resuming a completed run
 refuses and points to that existing report.
 
+### Recoverable source-bound imports
+
+The canonical driver now accepts `run --bind-source`. It records that choice
+in the immutable recovery pins before native work, binds each complete
+normalized monetary-row population before staging, and checks the original
+source, package, manifest and publication identities on every retry.
+
+```bash
+python3 scripts/public_ledger.py run --agency 20400 --bind-source \
+  --out artifacts/museum-bound --fa target/debug/fa --fa-verify target/debug/fa-verify
+
+# After an interrupted attempt, inherit its source, executables and binding mode.
+python3 scripts/public_ledger.py run --resume --out artifacts/museum-bound
+```
+
+An explicit `--no-bind-source` cannot downgrade a bound recovery, and
+`--bind-source` cannot adopt an originally unbound book. The original source,
+normalizer, driver and executable pins still apply; this does not upgrade old
+fresh-only companion runs whose pins never declared their source-binding mode.
+
+Native preparation publishes its package and source binding in separate
+publications. Recovery admits the intervening state only for an originally
+bound, exact **Open package with zero staged chunks**. It completes that
+original binding and authenticates the complete population before staging.
+A missing binding on a staged or finalized package refuses. The controlled
+interruption helper's `after-package-before-bind`, `partial-stage` and
+`after-finalize` boundaries exercise these distinct durable states; they do
+not simulate a torn native transaction.
+
+The source-bound convenience entry point remains fresh-only and delegates to
+the canonical flag. Use the canonical `run --resume` command for recovery.
+Native acceptance of the new recovery path is separate from its unit checks
+and the earlier fresh source-bound runs recorded below.
+
 The resume tests cover source/model/binary mismatch, a directory-creation
 race, lost setup and approval acknowledgements, native package discovery,
 mixed old/new chunk receipts, immutable snapshot reuse, and checkpoint

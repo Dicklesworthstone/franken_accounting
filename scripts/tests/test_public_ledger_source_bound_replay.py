@@ -77,19 +77,21 @@ class SourceBoundAdmissionTests(unittest.TestCase):
             result = binding.main()
         self.assertEqual(result, 23)
         resolve.assert_called_once_with(strict=True)
-        driver.main.assert_called_once_with(arguments)
-        self.assertTrue(issubclass(driver.Native, original_native))
-        return driver.Native()
+        driver.main.assert_called_once_with([arguments[0], '--bind-source', *arguments[1:]])
+        self.assertIs(driver.Native, original_native)
 
-    def test_fresh_arguments_and_native_source_binding_are_preserved(self):
+    def test_fresh_arguments_delegate_to_the_pinned_canonical_source_binding_mode(self):
         arguments = ['run', '--agency', '80700', '--balance-boundary', 'agency-period',
                      '--out', '/fresh-output', '--fa', '/pinned-fa', '--fa-verify', '/pinned-verifier']
-        native = self.invoke_fresh(arguments)
-        prepare = ['migrate', 'import', '--action', 'prepare', '--intent', Path('source.json')]
-        for _ in range(2):
-            self.assertEqual(native.command(*prepare), [*prepare, '--bind-source'])
-        stage = ['migrate', 'import', '--action', 'stage', '--package', 'package-oid']
-        self.assertEqual(native.command(*stage), stage)
+        self.invoke_fresh(arguments)
+
+    def test_negative_binding_mode_and_abbreviations_refuse_before_observation(self):
+        for option in ('--no-bind-source', '--no-bind-sourc', '--no-bind', '--no', '--n', '--no-bind-source=false'):
+            with self.subTest(option=option):
+                error = self.assert_refused_before_observation([
+                    '--repo', '/unobserved-repository', 'run', '--out', '/unobserved-output', option,
+                ])
+                self.assertIn('--no-bind-source is not supported here', error)
 
     def test_resume_like_path_values_are_forwarded_unchanged(self):
         self.invoke_fresh(['run', '--source=--resume', '--out=/fresh/--res-data', '--agency', '80700'])
