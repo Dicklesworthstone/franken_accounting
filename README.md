@@ -418,6 +418,30 @@ proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_x
 Current-source execution status must be taken from the corresponding gate,
 not from this format description.
 
+### Dimension-preserving accounting extracts
+
+Native journal exports retain each leg's exact dimension kind and value
+identities. Canonical CSV, ADS, SAF-T, NDJSON, Beancount and hledger carry an
+additive, versioned representation; exports without dimensions retain their
+existing bytes and content digests. A dimension-only change changes the
+extended journal digest even when every monetary amount is unchanged.
+
+ADS and SAF-T proof verification compares these tags with the authenticated
+native proposals. The verifier reports `dimension_rows` when that comparison
+is available. Historical exports without the extension remain readable and
+report `null` for this coverage; a successful monetary check alone does not
+establish departmental attribution. The public-ledger driver requires the
+stronger check and independently compares the export with original source
+rows, including a negative case that changes only a dimension value.
+
+The exported values are book-local native identities. Human-readable names
+and codes remain separate metadata; importing into another book requires an
+explicit mapping, and native legacy preparation refuses transplanted IDs.
+These representations are FrankenAccounting extensions, not a claim that
+external accounting tools or the underlying audit standards interpret them.
+Their exact wire and digest rules are recorded in
+[`registries/formats.toml`](registries/formats.toml).
+
 ### Authentic public-ledger replay
 
 The [public-ledger workflow](docs/public_ledger.md) adds checksum-pinned
@@ -432,9 +456,11 @@ original department codes, checks every native leg's attribution, and compares
 monthly and cumulative departmental net and gross balances to the source.
 Blank department values remain untagged; leading zeros remain significant.
 
-The entire 373,357-row publication has been profiled; normalization and all 46
-Python checks pass. **Native replay remains unverified:** prerequisite Rust
-compilation exceeded the execution environment's memory limit. The documentation
+The entire 373,357-row publication has been profiled; normalization and all 55
+public-ledger Python checks pass. Together with the 17 Development Finance
+Authority helper checks below, 72 Python tests pass. **Native replay remains
+unverified:** prerequisite Rust compilation exceeded the execution
+environment's memory limit. The documentation
 records the validation boundary and the commands needed to complete it. These
 published records are monthly activity aggregates, with their actual detail
 retained; they do not contain the agencies' original transaction-level journals

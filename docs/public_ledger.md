@@ -4,9 +4,11 @@ The public-ledger driver provides a native replay workflow for complete agency
 selections from Oklahoma's published general-ledger data. It is designed to check
 every monthly account balance against an independent integer fold of the source,
 including department account balances and their gross debit/credit activity.
-It exercises migration staging and retries, and asks the standalone `fa-verify`
-binary to verify an exported ADS package. It also corrupts a copy of that export
-and requires the verifier to reject it.
+It exercises migration staging and retries, checks every exported CSV and ADS
+leg against its original source row, and asks the standalone `fa-verify` binary
+to authenticate the ADS monetary fields and native dimension identities. Two
+separate copies change one cent and one department identity respectively; both
+must be rejected, including the case where every monetary amount is unchanged.
 
 This work extends plan §§5.8, 8.6, 9 and 16 and the `fa-yugf` public-record case
 workstream. Existing WorldCom, Enron and Lehman cases remain useful bounded
@@ -16,9 +18,9 @@ workflow.
 
 ## Validation status
 
-**All 46 public-ledger Python tests pass. Native end-to-end execution remains
+**All 55 public-ledger Python tests pass. Native end-to-end execution remains
 unverified.** The separate Development Finance Authority helper has 17 passing
-tests, for 63 passing helper tests across the two workloads.
+tests, for 72 passing helper tests across the two workloads.
 
 The official 113,856,733-byte resource was downloaded through its actual HTTPS
 redirect and verified against the fixed SHA-256. The complete 373,357-row file
@@ -28,12 +30,16 @@ projection enabled. Complete manifests differ only in their declared input
 kind and input hash; source-row mappings, department inventories, monthly
 department/account net and gross controls, and every other field agree.
 
-The Python tests independently fold the original source fields and include
-negatives that change only a department while preserving every monetary
-amount. They also check leading zeros, blank values, missing dimension tags,
-wrong native identities, zero-net/nonzero-gross activity, scope and exact
-report-replay comparisons. Constructed native-shaped payloads in those tests
-are not evidence that the accounting engine ran.
+The Python tests independently fold the original source fields and build CSV
+and ADS assertion fixtures directly from the original records for all three
+complete agencies. Neither normalized run files nor the manifest supply those
+fixtures' monetary amounts or department codes. Negatives change only a
+department while preserving every monetary amount. They also check leading
+zeros, blank values, missing dimension tags, wrong native identities,
+zero-net/nonzero-gross activity, scope, export row coverage and order, declared
+dimension coverage, and exact report-replay comparisons. Constructed
+native-shaped payloads and exports in those tests are not evidence that the
+accounting engine or its real exporter ran.
 
 The pinned formatter accepted the Rust importer and persisted regressions.
 Native builds and the workspace metadata check have been killed while
@@ -221,8 +227,12 @@ transcript and writes `failure.json`; it never emits a partial success report.
    Compare each department's monthly and cumulative account cells, including
    both gross sides; retain and replay each department's final-quarter report.
    Read the earlier recorded prefix again, advance and verify native registers,
-   produce ADS with proofs, verify it using the independent `fa-verify` binary,
-   and require exit 8 for a corrupted copy of the extract.
+   and produce canonical CSV and ADS. Re-read both native coordinate
+   certificates and compare every exported leg's account, side, amount, date
+   and dimension set against the source manifest and actual native identities.
+   Verify ADS with proofs using the independent `fa-verify` binary, require
+   dimension coverage for every monetary row, and require exit 8 for each of
+   the money-only and dimension-only corrupted copies.
 
 The account-type crosswalk follows the manual's prefixes 1 assets, 2 liabilities,
 3 fund balance, 4 revenues and 5 expenditures. Source account `631100`,
@@ -276,6 +286,52 @@ published historical attribution. Native migration retains that attribution
 without applying today's required-dimension or value-effectivity policy to old
 records. Fund, class funding, project and other chartfields remain in evidence;
 this adapter does not yet project them into native dimensions.
+
+## Preserve attribution through CSV, ADS and offline proof verification
+
+The native format journal carries every leg's complete dimension set, including
+an empty set for an untagged leg. Canonical CSV adds `dimension_set_v1` and ADS
+adds `FA_Dimension_Set_V1` when at least one exported leg has a tag. The extra
+column then appears on **every** monetary row, including an empty field for an
+untagged row. CSV's coordinate header and `ADS_Coordinate_Certificate.toml`
+declare `dimension_encoding = "fa-dimension-ids-v1"` using their respective
+metadata syntax. Historical exports without this extension keep their
+13-column representation.
+
+The encoding is an ordered, unique list of native kind IDs and 128-bit native
+value VIDs, for example:
+
+```text
+3:0000000000000000000000000000000a;7:0000000000000000000000000000000b
+```
+
+The decimal kind IDs and 32-digit lowercase hexadecimal value VIDs are exact
+identities. This field does not embed a department code, display name or a
+dictionary proving what a source code means. The driver obtains native
+identities from its actual department registrations and independently binds
+them to the retained original `DEPTID` values. It also binds the original
+aggregate entry IDs to the actual prepared native proposals. Both CSV and ADS
+are checked against that source mapping, rather than against each other.
+Losing, inventing, substituting or reordering a source leg fails the run;
+changing its department fails even when the whole-agency trial balance agrees.
+
+The independent verifier compares each exported dimension set directly with
+the corresponding leg in its authenticated native proposal. Its JSON
+`ads_extract` check reports `detail.dimension_rows`: a number when the declared
+extension covers every row, or `null` for a historical 13-column extract. The
+public-ledger run requires the number to equal the complete agency's monetary
+row count before it can produce `PASS`; monetary verification alone does not
+satisfy that condition.
+
+The output retains the accepted `gl.csv` and `ads/` package, plus two independent
+negative controls. `ads-tampered/` changes one cent.
+`ads-dimension-tampered/` changes one native value VID in a tagged row, preserving
+all 13 monetary and text fields, every other dimension, and the original line
+ending. The actual `fa-verify ads` process must reject each with exit 8.
+`report.json` records the source comparisons, explicit dimension coverage,
+exact tamper mutations and verifier responses. The dimension proof establishes
+agreement with native journal history; the separate source oracle establishes
+agreement with this published source's attribution.
 
 ## What the complete statewide profile reveals
 

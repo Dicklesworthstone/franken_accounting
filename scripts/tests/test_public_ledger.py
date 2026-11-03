@@ -88,6 +88,55 @@ def native_package(case, run):
             "chunk_count": len(chunks), "chunks": chunks}
 
 
+def write_export_fixture(case, path, format_name, transform=None):
+    """An export-shaped assertion fixture built only from original source rows.
+
+    Neither the normalized run files nor manifest row mappings supply amounts,
+    group membership or department codes. Identities stand in for native
+    registrations; this fixture makes no claim that the real exporter ran.
+    """
+    grouped = defaultdict(list)
+    for row in case["originals"]:
+        if cents(row[source.AMOUNT_COLUMN]) == 0:
+            continue
+        key = ":".join(["OK", row["BUSINESS_UNIT"], row["FISCAL_YEAR"],
+                        row["ACCOUNTING_PERIOD"], row["LEDGER"], row["FUND_CODE"], row["CLASS_FLD"]])
+        grouped[key].append(row)
+    entry_ids = {key: f"{index + 1000:032x}" for index, key in enumerate(sorted(grouped))}
+    rows = []
+    for index, (key, originals) in enumerate(sorted(grouped.items())):
+        for ordinal, row in enumerate(originals, 1):
+            amount = Decimal(row[source.AMOUNT_COLUMN])
+            if row["DEPTID"].strip():
+                value = case["department_values"][row["DEPTID"]]
+                dimensions = f"{value['dimension']}:{value['value']}"
+            else:
+                dimensions = ""
+            rows.append([
+                entry_ids[key], str(ordinal), DATES[row["ACCOUNTING_PERIOD"]],
+                str(index + 100), "12", row["ACCOUNT"], "C" if amount < 0 else "D",
+                f"{abs(amount):.2f}", "USD", "2", 'Source, "quoted"\nperiod activity'
+                if format_name == "csv-gl" else "Source\\pquoted\\nperiod activity",
+                key, "", dimensions,
+            ])
+    if transform is not None:
+        transform(rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if format_name == "csv-gl":
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            stream.write("# fa_csv_gl_v1|book=original-source-oracle|dimension_encoding=fa-dimension-ids-v1\n")
+            writer = csv.writer(stream, lineterminator="\n")
+            writer.writerow(replay.CSV_GL_COLUMNS)
+            writer.writerows(rows)
+    else:
+        (path.parent / "ADS_Coordinate_Certificate.toml").write_text(
+            'schema_version = 1\nformat = "aicpa_ads_gl_v3"\n'
+            'dimension_encoding = "fa-dimension-ids-v1"\n', encoding="utf-8")
+        path.write_text("|".join(replay.ADS_GL_COLUMNS) + "\n"
+                        + "".join("|".join(row) + "\n" for row in rows), encoding="utf-8")
+    return entry_ids
+
+
 class PinnedAgencyNormalizationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -399,6 +448,88 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
                     replay.verify_prepared_legs(case["manifest"], run, changed, case["department_values"])
 
+    def test_export_oracles_match_every_original_agency_row_in_csv_and_ads(self):
+        for agency, case in self.cases.items():
+            for format_name in ("csv-gl", "ads"):
+                with self.subTest(agency=agency, format=format_name):
+                    path = Path(self.directory.name) / "exports" / agency / format_name / "GL_Detail.txt"
+                    identities = write_export_fixture(case, path, format_name)
+                    checked = replay.verify_exported_legs(
+                        case["manifest"], identities, case["department_values"], path, format_name)
+                    source_rows = [r for r in case["originals"] if cents(r[source.AMOUNT_COLUMN])]
+                    tagged = sum(bool(r["DEPTID"].strip()) for r in source_rows)
+                    self.assertEqual(checked, {
+                        "format": format_name, "rows": len(source_rows), "tagged_rows": tagged,
+                        "untagged_rows": len(source_rows) - tagged,
+                        "dimension_encoding": "fa-dimension-ids-v1",
+                    })
+
+    def test_export_oracles_refuse_dimension_only_changes_with_every_amount_unchanged(self):
+        case = self.cases["31500"]
+        for format_name in ("csv-gl", "ads"):
+            for mutation in ("substitute", "drop", "invent_for_blank", "wrong_kind"):
+                with self.subTest(format=format_name, mutation=mutation):
+                    def change(rows):
+                        original_money = [row[:13] for row in rows]
+                        tagged = next(row for row in rows if row[13])
+                        untagged = next(row for row in rows if not row[13])
+                        kind, value = tagged[13].split(":")
+                        if mutation == "substitute":
+                            tagged[13] = f"{kind}:{int(value, 16) ^ 1:032x}"
+                        elif mutation == "drop":
+                            tagged[13] = ""
+                        elif mutation == "invent_for_blank":
+                            untagged[13] = tagged[13]
+                        else:
+                            tagged[13] = f"{int(kind) + 1}:{value}"
+                        self.assertEqual([row[:13] for row in rows], original_money)
+                    path = Path(self.directory.name) / "mutated-exports" / format_name / mutation / "GL_Detail.txt"
+                    identities = write_export_fixture(case, path, format_name, change)
+                    with self.assertRaisesRegex(replay.ReplayError, "changed dimension attribution"):
+                        replay.verify_exported_legs(
+                            case["manifest"], identities, case["department_values"], path, format_name)
+
+    def test_export_oracles_refuse_lost_duplicate_reordered_and_monetarily_changed_legs(self):
+        case = self.cases["31500"]
+        for format_name in ("csv-gl", "ads"):
+            for mutation in ("omit", "duplicate", "reorder", "amount"):
+                with self.subTest(format=format_name, mutation=mutation):
+                    def change(rows):
+                        if mutation == "omit":
+                            rows.pop()
+                        elif mutation == "duplicate":
+                            rows.append(list(rows[-1]))
+                        elif mutation == "reorder":
+                            self.assertEqual(rows[0][0], rows[1][0])
+                            rows[0], rows[1] = rows[1], rows[0]
+                        else:
+                            rows[0][7] = f"{Decimal(rows[0][7]) + Decimal('0.01'):.2f}"
+                    path = Path(self.directory.name) / "changed-exports" / format_name / mutation / "GL_Detail.txt"
+                    identities = write_export_fixture(case, path, format_name, change)
+                    with self.assertRaises(replay.ReplayError):
+                        replay.verify_exported_legs(
+                            case["manifest"], identities, case["department_values"], path, format_name)
+
+    def test_export_oracles_require_explicit_dimension_metadata_and_complete_schema(self):
+        case = self.cases["31500"]
+        for format_name in ("csv-gl", "ads"):
+            for mutation in ("marker", "column"):
+                with self.subTest(format=format_name, mutation=mutation):
+                    path = Path(self.directory.name) / "downgraded-exports" / format_name / mutation / "GL_Detail.txt"
+                    identities = write_export_fixture(case, path, format_name)
+                    if mutation == "marker" and format_name == "ads":
+                        certificate = path.parent / "ADS_Coordinate_Certificate.toml"
+                        certificate.write_text('schema_version = 1\nformat = "aicpa_ads_gl_v3"\n', encoding="utf-8")
+                    elif mutation == "marker":
+                        path.write_text(path.read_text(encoding="utf-8").replace(
+                            "|dimension_encoding=fa-dimension-ids-v1", "", 1), encoding="utf-8")
+                    else:
+                        column = ",dimension_set_v1\n" if format_name == "csv-gl" else "|FA_Dimension_Set_V1\n"
+                        path.write_text(path.read_text(encoding="utf-8").replace(column, "\n", 1), encoding="utf-8")
+                    with self.assertRaises(replay.ReplayError):
+                        replay.verify_exported_legs(
+                            case["manifest"], identities, case["department_values"], path, format_name)
+
     def test_chartfields_remain_distinct_and_codes_are_not_numeric_coercions(self):
         case = self.cases["66000"]
         for column, expected_count in [("CLASS_FLD", 9), ("DEPTID", 9), ("PRODUCT", 10), ("CHARTFIELD1", 11)]:
@@ -617,6 +748,108 @@ class ReplayRefusalTests(unittest.TestCase):
         self.assertEqual(replay.account_spec("631100", "Appropriated Transfers In")["type"], "Equity")
         with self.assertRaisesRegex(replay.ReplayError, "explicit classification"):
             replay.account_spec("633110", "Payroll Withholding")
+
+    def test_export_dimension_wire_accepts_only_bounded_canonical_native_identities(self):
+        first, second = "0" * 31 + "a", "f" * 32
+        self.assertEqual(replay.parse_dimension_set(""), [])
+        self.assertEqual(replay.parse_dimension_set(f"0:{first};4294967295:{second}"), [
+            {"dimension": 0, "value": first}, {"dimension": 4294967295, "value": second},
+        ])
+        maximum = ";".join(f"{kind}:{first}" for kind in range(64))
+        self.assertEqual(len(replay.parse_dimension_set(maximum)), 64)
+        for wire in [f"03:{first}", f"3:{first.upper()}", f"3:{first};3:{second}",
+                     f"7:{first};3:{second}", f"4294967296:{first}", f"-1:{first}",
+                     f"3:{first} ", f" 3:{first}", f"3:{first[:-1]}",
+                     f"3:{first};", maximum + f";64:{first}"]:
+            with self.subTest(wire=wire), self.assertRaises(replay.ReplayError):
+                replay.parse_dimension_set(wire)
+
+    def test_ads_proof_requires_independent_dimension_coverage_for_every_source_row(self):
+        verified = {"tool": "fa-verify", "command": "ads", "verdict": "verified", "checks": [
+            {"check": "ads_extract", "result": "pass", "detail": {"rows": 131, "dimension_rows": 131}},
+        ]}
+        replay.require_ads_dimension_proof(verified, 131)
+        for coverage in (None, 0, 130, 132, True, "131"):
+            with self.subTest(coverage=coverage):
+                changed = deepcopy(verified)
+                changed["checks"][0]["detail"]["dimension_rows"] = coverage
+                with self.assertRaisesRegex(replay.ReplayError, "did not authenticate dimensions"):
+                    replay.require_ads_dimension_proof(changed, 131)
+        for mutation in ("missing", "wrong_rows", "failed", "duplicate", "different_check", "unverified"):
+            with self.subTest(mutation=mutation):
+                changed = deepcopy(verified)
+                if mutation == "missing":
+                    del changed["checks"][0]["detail"]["dimension_rows"]
+                elif mutation == "wrong_rows":
+                    changed["checks"][0]["detail"]["rows"] = 130
+                elif mutation == "failed":
+                    changed["checks"][0]["result"] = "fail"
+                elif mutation == "duplicate":
+                    changed["checks"].append(deepcopy(changed["checks"][0]))
+                elif mutation == "different_check":
+                    changed["checks"][0]["check"] = "bundle"
+                else:
+                    changed["verdict"] = "unverified"
+                with self.assertRaises(replay.ReplayError):
+                    replay.require_ads_dimension_proof(changed, 131)
+
+    def test_ads_dimension_tamper_preserves_money_other_tags_text_and_newlines(self):
+        header = "|".join(replay.ADS_GL_COLUMNS) + "\r\n"
+        fields = ["a" * 32, "1", "2024-04-30", "43", "12", "101000", "D",
+                  "90071992547409.93", "USD", "2", "Source\\pdescription – unchanged",
+                  "source-entry", "source\\nmemo", ""]
+        untagged = "|".join(fields) + "\n"
+        fields[1] = "2"
+        fields[-1] = "3:" + "0" * 31 + "2;7:" + "e" * 32
+        path = self.root / "GL_Detail.txt"
+        for ending in ("\r\n", "\n", ""):
+            with self.subTest(ending=repr(ending)):
+                path.write_bytes((header + untagged + "|".join(fields) + ending).encode("utf-8"))
+                mutation = replay.tamper_ads_dimension(path)
+                lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+                self.assertEqual(lines[:2], [header, untagged])
+                changed = lines[2].rstrip("\r\n").split("|")
+                self.assertEqual(changed[:13], fields[:13])
+                self.assertEqual(changed[-1], "3:" + "0" * 31 + "3;7:" + "e" * 32)
+                self.assertEqual(lines[2], "|".join(changed) + ending)
+                self.assertEqual(mutation, {"line": 3, "entry_id": "a" * 32, "leg": 2,
+                                          "dimension": 3, "old_value": "0" * 31 + "2",
+                                          "new_value": "0" * 31 + "3"})
+
+    def test_ads_dimension_tamper_refuses_absent_or_malformed_tags_without_writing(self):
+        path = self.root / "GL_Detail.txt"
+        fields = ["a" * 32, "1", "2024-04-30", "43", "12", "101000", "D",
+                  "100.00", "USD", "2", "Source", "source-entry", "", ""]
+        for mutation in ("untagged", "legacy", "ragged", "noncanonical"):
+            with self.subTest(mutation=mutation):
+                header = list(replay.ADS_GL_COLUMNS)
+                changed = list(fields)
+                if mutation == "legacy":
+                    header.pop()
+                    changed.pop()
+                elif mutation == "ragged":
+                    changed.pop()
+                elif mutation == "noncanonical":
+                    changed[-1] = "03:" + "a" * 32
+                raw = ("|".join(header) + "\r\n" + "|".join(changed) + "\r\n").encode("utf-8")
+                path.write_bytes(raw)
+                with self.assertRaises(replay.ReplayError):
+                    replay.tamper_ads_dimension(path)
+                self.assertEqual(path.read_bytes(), raw)
+
+    def test_ads_amount_tamper_preserves_the_dimension_extension(self):
+        header = "|".join(replay.ADS_GL_COLUMNS) + "\n"
+        fields = ["a" * 32, "1", "2024-04-30", "43", "12", "101000", "D",
+                  "100.00", "USD", "2", "Source", "source-entry", "", "3:" + "f" * 32]
+        path = self.root / "GL_Detail.txt"
+        path.write_text(header + "|".join(fields) + "\n", encoding="utf-8")
+        replay.tamper_ads_amount(path)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], header.rstrip("\n"))
+        changed = lines[1].split("|")
+        self.assertEqual(changed[:7], fields[:7])
+        self.assertEqual(changed[7], "100.01")
+        self.assertEqual(changed[8:], fields[8:])
 
     def test_ads_tamper_changes_one_cent_preserving_schema_other_fields_and_newlines(self):
         header = (

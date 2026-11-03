@@ -16,10 +16,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 
 import public_ledger_source as source
 
@@ -28,6 +30,17 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "crates/fa-oracles/fixtures/public_ledger"
 SOURCE_SYSTEM = "oklahoma-omes-period-activity-v1"
 PERIODS = ["FY2024-P10", "FY2024-P11", "FY2024-P12"]
+DIMENSION_ENCODING = "fa-dimension-ids-v1"
+CSV_GL_COLUMNS = (
+    "entry_id", "line_no", "effective_date", "recorded_seq", "entry_class",
+    "account_code", "side", "amount", "currency", "unit_scale", "description",
+    "migrated_from", "memo", "dimension_set_v1",
+)
+ADS_GL_COLUMNS = (
+    "Journal_ID", "Journal_Entry_Line_Number", "Effective_Date", "Recorded_Seq", "Entry_Class",
+    "GL_Account_Number", "Debit_Credit_Indicator", "Amount", "Transaction_Currency", "Unit_Scale",
+    "JE_Header_Description", "Migrated_From", "Line_Description", "FA_Dimension_Set_V1",
+)
 COLUMN_MAP = '''[columns]
 source_system = "oklahoma-omes-period-activity-v1"
 entry_id_column = "entry_id"
@@ -433,12 +446,132 @@ def same_cells(actual: dict[str, int], expected: dict[str, int], label: str) -> 
     require(not mismatches, f"{label}: account-cell mismatch: {json.dumps(mismatches, sort_keys=True)}")
 
 
+def parse_dimension_set(text: str) -> list[dict]:
+    """Read the declared native-identity wire; no value code is inferred from a VID."""
+    if not text:
+        return []
+    items = text.split(";")
+    require(len(items) <= 64, "exported dimension set exceeds its native bound")
+    dimensions = []
+    previous = -1
+    for item in items:
+        match = re.fullmatch(r"(0|[1-9][0-9]*):([0-9a-f]{32})", item, re.ASCII)
+        require(match is not None, "exported dimension set has a noncanonical identity")
+        kind, value = match.groups()
+        kind = int(kind)
+        require(previous < kind <= 0xFFFFFFFF, "exported dimension kinds are repeated, unordered or out of range")
+        dimensions.append({"dimension": kind, "value": value})
+        previous = kind
+    return dimensions
+
+
+def exported_rows(path: Path, format_name: str):
+    """Read monetary fields and exact IDs from the public workload's exports.
+
+    CSV uses logical records. ADS text escaping never inserts a literal pipe
+    or newline inside a field; its text columns remain opaque here. The native
+    round-trip reader separately checks descriptions, memos and certificates.
+    """
+    require(format_name in ("csv-gl", "ads"), "unsupported public-ledger export oracle")
+    with path.open(encoding="utf-8", newline="") as stream:
+        if format_name == "csv-gl":
+            encoding = None
+            header = None
+            for line in stream:
+                if line.startswith("#"):
+                    if line.startswith("# fa_csv_gl_v1|"):
+                        require(encoding is None, "CSV export repeats its coordinate header")
+                        fields = line.rstrip("\r\n").split("|")
+                        marker = [field for field in fields if field.startswith("dimension_encoding=")]
+                        require(marker == [f"dimension_encoding={DIMENSION_ENCODING}"],
+                                "CSV export does not declare native dimension identities")
+                        encoding = DIMENSION_ENCODING
+                    continue
+                if line.strip():
+                    header = next(csv.reader([line], strict=True))
+                    break
+            require(encoding == DIMENSION_ENCODING and header == list(CSV_GL_COLUMNS),
+                    "CSV export lacks its complete dimension-bearing schema")
+            records = csv.reader(stream, strict=True)
+        else:
+            certificate = tomllib.loads((path.parent / "ADS_Coordinate_Certificate.toml").read_text(encoding="utf-8"))
+            require(certificate.get("dimension_encoding") == DIMENSION_ENCODING,
+                    "ADS export does not declare native dimension identities")
+            require(certificate.get("format") in ("aicpa_ads_gl_v2", "aicpa_ads_gl_v3"),
+                    "ADS export uses an unknown text encoding")
+            require(stream.readline().rstrip("\r\n").split("|") == list(ADS_GL_COLUMNS),
+                    "ADS export lacks its complete dimension-bearing schema")
+            records = (line.rstrip("\r\n").split("|") for line in stream)
+        for fields in records:
+            require(len(fields) == len(CSV_GL_COLUMNS), "exported GL row has the wrong field count")
+            yield dict(zip(CSV_GL_COLUMNS, fields, strict=True))
+
+
+def verify_exported_legs(manifest: dict, entry_ids: dict[str, str], department_values: dict[str, dict],
+                         path: Path, format_name: str) -> dict:
+    """Check every export leg against its original record and native registration.
+
+    The source-to-entry identity map comes from the actual prepared proposals.
+    Amounts and departments come from the independently checked source manifest,
+    rather than another export or an account-level net balance.
+    """
+    source_entries = {row["entry_id"] for row in manifest["row_mapping"]}
+    require(set(entry_ids) == source_entries and len(set(entry_ids.values())) == len(entry_ids),
+            "export identity map does not cover each source entry exactly once")
+    expected = {}
+    for original in manifest["row_mapping"]:
+        key = (entry_ids[original["entry_id"]], str(original["leg"]))
+        require(key not in expected, "source manifest repeats an export leg")
+        expected[key] = original
+    require(len(expected) == manifest["monetary_rows"], "source manifest monetary row count differs")
+    seen = set()
+    ordinals: dict[str, int] = defaultdict(int)
+    tagged = 0
+    for row in exported_rows(path, format_name):
+        key = (row["entry_id"], row["line_no"])
+        require(key in expected and key not in seen, "export substituted, repeated or added a source leg")
+        original = expected[key]
+        ordinals[key[0]] += 1
+        require(row["line_no"] == str(ordinals[key[0]]), "export reordered a source entry's legs")
+        code = original["department"]
+        require(code is None or code in department_values, "export source department is not registered")
+        dimensions = [] if code is None else [department_values[code]]
+        actual_dimensions = parse_dimension_set(row["dimension_set_v1"])
+        require(actual_dimensions == dimensions,
+                f"{format_name} changed dimension attribution of source record {original['source_record']}")
+        period = int(original["entry_id"].split(":")[3])
+        require(row["effective_date"] == period_end(period)
+                and row["entry_class"] == "12"
+                and row["account_code"] == original["account"]
+                and row["side"] == ("D" if original["cents"] > 0 else "C")
+                and row["amount"] == money(abs(original["cents"]))
+                and row["currency"] == "USD" and row["unit_scale"] == "2",
+                f"{format_name} changed monetary fields of source record {original['source_record']}")
+        seen.add(key)
+        tagged += bool(actual_dimensions)
+    require(seen == set(expected), "export omitted original source legs")
+    return {"format": format_name, "rows": len(seen), "tagged_rows": tagged,
+            "untagged_rows": len(seen) - tagged, "dimension_encoding": DIMENSION_ENCODING}
+
+
+def require_ads_dimension_proof(report: dict, rows: int) -> None:
+    require(report.get("tool") == "fa-verify" and report.get("command") == "ads"
+            and report.get("verdict") == "verified", "ADS verification did not succeed")
+    checks = [check for check in report.get("checks", []) if check.get("check") == "ads_extract"]
+    require(len(checks) == 1 and checks[0].get("result") == "pass",
+            "ADS verifier did not prove the extract")
+    detail = checks[0].get("detail", {})
+    coverage = detail.get("dimension_rows")
+    require(type(coverage) is int and coverage == rows and detail.get("rows") == rows,
+            "ADS verifier did not authenticate dimensions on every exported source row")
+
+
 def tamper_ads_amount(path: Path) -> dict:
     """Change one cent without changing the extract's schema or other fields."""
     lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
     for index, line in enumerate(lines[1:], 1):
         fields = line.rstrip("\r\n").split("|")
-        if len(fields) != 13 or fields[8:10] != ["USD", "2"]:
+        if len(fields) not in (13, 14) or fields[8:10] != ["USD", "2"]:
             continue
         old = fields[7]
         fields[7] = money(source.amount_cents(old) + 1)
@@ -447,6 +580,30 @@ def tamper_ads_amount(path: Path) -> dict:
         path.write_bytes("".join(lines).encode("utf-8"))
         return {"line": index + 1, "old_amount": old, "new_amount": fields[7], "delta_cents": 1}
     raise ReplayError("ADS export has no USD-cent monetary row for the tamper control")
+
+
+def tamper_ads_dimension(path: Path) -> dict:
+    """Change one native value identity, preserving every monetary and text field."""
+    lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+    require(bool(lines) and lines[0].rstrip("\r\n").split("|") == list(ADS_GL_COLUMNS),
+            "ADS dimension tamper control requires the dimension-bearing schema")
+    for index, line in enumerate(lines[1:], 1):
+        fields = line.rstrip("\r\n").split("|")
+        require(len(fields) == len(ADS_GL_COLUMNS), "ADS dimension tamper control found a ragged row")
+        dimensions = parse_dimension_set(fields[-1])
+        if not dimensions:
+            continue
+        first = dimensions[0]
+        old = first["value"]
+        new = f"{int(old, 16) ^ 1:032x}"
+        fields[-1] = ";".join(f"{value['dimension']}:{new if ordinal == 0 else value['value']}"
+                              for ordinal, value in enumerate(dimensions))
+        newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+        lines[index] = "|".join(fields) + newline
+        path.write_bytes("".join(lines).encode("utf-8"))
+        return {"line": index + 1, "entry_id": fields[0], "leg": int(fields[1]),
+                "dimension": first["dimension"], "old_value": old, "new_value": new}
+    raise ReplayError("ADS export has no tagged row for the dimension tamper control")
 
 
 def verify_prepared_legs(manifest: dict, run: dict, package: dict, department_values: dict[str, dict]) -> None:
@@ -522,6 +679,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
     empty_oid = native.document(empty)
     prepared = []
     retries = []
+    entry_ids: dict[str, str] = {}
     checks = ["pinned_source_bytes", "complete_agency_row_coverage", "all_source_groups_balance_exactly",
               "no_subcent_rounding", "all_original_chartfields_retained"]
     for run in manifest["runs"]:
@@ -552,6 +710,11 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
         write_json(intent_path, intent)
         package = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
         verify_prepared_legs(manifest, run, package, department_values)
+        for source_id, chunk in zip(run["entry_ids"], package["chunks"], strict=True):
+            require(source_id not in entry_ids, "source entry occurs in more than one native migration")
+            require(re.fullmatch(r"[0-9a-f]{32}", chunk["entry_vid"], re.ASCII) is not None,
+                    "native proposal has an invalid entry identity")
+            entry_ids[source_id] = chunk["entry_vid"]
         if not prepared:
             head = native.head()
             again = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
@@ -617,19 +780,35 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
     native.call("checkpoint", "create", "--grant", "witness")
     native.call("verify", "accumulator")
     checks.extend(["native_projections_match_payloads", "signed_accumulator_checkpoint"])
+    csv_export = output / "gl.csv"
+    native.call("export", "csv-gl", "--as-of", "2024-06-30", "--out", csv_export)
+    native.call("verify", "export", "csv-gl", csv_export)
     exported = native.call("export", "ads", "--as-of", "2024-06-30", "--out", output / "ads", "--with-proofs")
+    native.call("verify", "export", "ads", output / "ads")
+    export_oracles = [
+        verify_exported_legs(manifest, entry_ids, department_values, csv_export, "csv-gl"),
+        verify_exported_legs(manifest, entry_ids, department_values, output / "ads/GL_Detail.txt", "ads"),
+    ]
+    checks.extend(["native_csv_and_ads_reread_certificates", "every_exported_leg_preserves_source_department_or_absence"])
     trusted_key = exported["data"]["proof"]["checkpoint_public_key"]
     # This is the caller's just-created test book's trusted key, not a key read
     # from an untrusted incoming bundle. Production recipients need their own
     # separately authenticated anchor; this harness does not establish one.
     verification = native.execute([str(native.verifier), "ads", str(output / "ads"), "--key", trusted_key, "--json"])
-    checks.append("independent_fa_verify_ads_proof")
+    require_ads_dimension_proof(verification, manifest["monetary_rows"])
+    checks.extend(["independent_fa_verify_ads_proof", "independent_fa_verify_authenticates_every_exported_dimension_set"])
     # Mutate a COPY, leaving the accepted evidence and production book intact.
     tampered = output / "ads-tampered"
     shutil.copytree(output / "ads", tampered)
     mutation = tamper_ads_amount(tampered / "GL_Detail.txt")
     rejected = native.execute([str(native.verifier), "ads", str(tampered), "--key", trusted_key, "--json"], expect=8)
     checks.append("independent_verifier_rejects_tampered_extract")
+    dimension_tampered = output / "ads-dimension-tampered"
+    shutil.copytree(output / "ads", dimension_tampered)
+    dimension_mutation = tamper_ads_dimension(dimension_tampered / "GL_Detail.txt")
+    dimension_rejected = native.execute([str(native.verifier), "ads", str(dimension_tampered),
+                                         "--key", trusted_key, "--json"], expect=8)
+    checks.append("independent_verifier_rejects_dimension_only_tampering")
     return {"status": "PASS", "scope": SCOPE, "agency": manifest["agency"],
             "source_sha256": source.SOURCE_SHA256, "source_rows": manifest["source_rows"],
             "monetary_rows": manifest["monetary_rows"], "source_columns": manifest["source_columns"],
@@ -641,6 +820,9 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
              "department_scope": "Exact nonblank DEPTID values; source blanks stay untagged, and departmental slices need not balance",
             "independent_verification": verification, "tamper_refusal": rejected,
             "tamper_mutation": mutation,
+            "export_source_oracles": export_oracles,
+            "dimension_tamper_refusal": dimension_rejected, "dimension_tamper_mutation": dimension_mutation,
+            "dimension_export_scope": "Exact native kind IDs and value VIDs, including explicit empty sets; source codes are checked separately against retained source and native registration, not inferred from a VID",
             "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
             "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"}
 
