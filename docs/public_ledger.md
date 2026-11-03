@@ -26,10 +26,21 @@ validation records; a successful source check does not establish a native pass.
 
 ## Native replay validation (2026-11-03)
 
+The [latest execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
+tracks the complete-chartfield driver, its successful museum and pension runs,
+controlled recovery, and the university's preserved oversized-Entry refusal.
+It distinguishes old-engine execution from acceptance of the repaired engine;
+a queued build is not a native pass. The current 84 public-ledger Python checks
+cover the broader dimension and source/export contract. The earlier campaigns
+below retain their original, narrower scope.
+
+### Earlier account-level campaign
+
 **Earlier account-level native replays passed for all three complete agency
 fixtures, including independent accumulator proof verification and rejection of a one-cent
-corrupted extract.** The current grouped-staging and department/export extensions
-require their own native replay; the measurements below do not validate them.
+corrupted extract.** The measurements in this subsection precede grouped staging
+and department-aware exports; they do not validate those later extensions, which
+have their own later execution record.
 The actual `fa` and `fa-verify` binaries executed 608 commands against fresh
 on-disk books. Every monthly account cell, cumulative account cell, and gross
 debit/credit account cell agreed with the original-source oracle.
@@ -86,20 +97,26 @@ ledger. **These native measurements precede grouped staging, department
 projection and the source/export dimension checks described below. They do not
 establish execution of those additional checks.**
 
-### Grouped staging and department extension validation boundary
+### Grouped staging and department extension
 
-The department extension arrived concurrently with the native account-level
-validation. All 61 integrated public-ledger Python checks pass, covering
+The department extension initially passed 61 integrated Python checks covering
 source/export department negatives, grouped staging receipts, source custody and
-document review. Development Finance Authority helper validation is recorded
-separately. These helper checks do not establish a native grouped-staging or
-department PASS.
+document review. It then passed native replays for all three complete agencies,
+including two controlled pension-import interruptions, retained publication
+receipts and independent rejection of monetary and dimension-only changes.
+The [department-aware execution record](../evidence/public_ledger/validation-2026-11-03-93714f77.json)
+and [reproduction guide](public_ledger_workload.md#reproduce-the-controlled-recovery-boundaries)
+retain those results. This department-only campaign does not establish the
+subsequent fund/product/project and large-Entry acceptance results.
 
 The Development Finance Authority helper's 18 offline tests include the native
 column-map contract: generated TOML contains only the declared columns, while
 the native intent supplies the account mapping once. The earlier native attempt
-exposed a duplicate `account_map`; the corrected workflow needs its own native
-rerun before it can be recorded as a PASS.
+exposed a duplicate `account_map`; the corrected complete-selection native
+regression subsequently passed. It passed again with both Oklahoma tests in the
+[hosted run at `5a8f078`](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41654052154).
+That run also passed the department and party/entity regressions; its separate
+XBRL fixture failures mean the whole workflow was not successful.
 
 The official 113,856,733-byte resource was downloaded through its actual HTTPS
 redirect and verified against the fixed SHA-256. The complete 373,357-row file

@@ -520,20 +520,27 @@ are monthly activity aggregates with all original detail retained; they do not
 contain the agencies' original transaction-level journals or opening balances.
 Automatic uploads retain native `AgentUpload` custody; explicit review and
 approval principals are same-harness fixture roles, not independent human audits.
-These executed results precede native department projection and dimension-aware
-export verification; the new checks require their own native rerun and are not
-covered by that evidence. The 61 public-ledger Python checks and 17 Development
-Finance Authority helper checks passed for the dimension-preserving source
-oracles. Constructed export fixtures do not establish native execution.
+The subsequent [department-aware campaign](evidence/public_ledger/validation-2026-11-03-93714f77.json)
+also passed all three agencies with grouped staging, dimension-aware exports
+and controlled pension-import recovery. The current driver extends that scope
+to every populated department, fund, product and project value. Its 84 Python
+checks pass; native museum and pension runs also pass with the earlier pinned
+engine. The university run with all dimensions exposed the large-Entry limit
+described above. The [current execution record](evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
+separates those completed results and the preserved failure from acceptance of
+the repaired engine. Constructed export fixtures do not establish native execution.
 
 A complementary [complete Development Finance Authority regression](docs/public_ledger_workload.md)
 retains all 312 source records with original byte-offset lineage and prepares
 306 exact legs in 104 balanced groups for one native migration run. Its 18
 Python checks pass, including the native column-map contract, and full-resource
-versus retained-slice byte parity was verified. The
-new Rust regression covers staging, independent approvals, activation,
-source-derived balances, known-at visibility and certified report replay;
-native execution remains pending the required build and test gates.
+versus retained-slice byte parity was verified. Its native Rust regression
+passed, covering staging, distinct approval principals, activation,
+source-derived balances, known-at visibility and certified report replay.
+The [hosted execution at `5a8f078`](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41654052154)
+passed both Oklahoma tests, both department tests and all three party/entity
+tests. That workflow's separate XBRL fixture failures are recorded separately;
+the workflow as a whole was not a pass.
 
 ### Real bankruptcy account histories
 
@@ -602,6 +609,16 @@ not labelled fraud outcomes or independent audit assurance. The
 and [measured execution record](evidence/blmis/record_silent_validation_2026-11-03.json)
 state the actual run coverage and distinguish native analytics replay from
 standalone accounting-proof verification.
+
+The latest seven-procedure campaign completed fresh Glantz and Square One
+workflows. Magnify completed through a separately pinned continuation after a
+disk-full interruption: it revalidated the original source, postings and
+certificates, completed every remaining retry, verified all 272 monthly
+registers, matched every exported leg and passed independent proof verification
+with both amount-only and party-only tamper refusals. The original interrupted
+attempt remains recorded as incomplete; the
+[recovery guide](docs/blmis_magnify_workload.md#continue-the-preserved-exact-retry-interruption)
+explains that execution boundary and the helper's strict source/book checks.
 
 The [source-bound migration workload](docs/blmis_migration.md) exercises a second
 native admission path. `--include-magnify` combines all **seven exact-footing

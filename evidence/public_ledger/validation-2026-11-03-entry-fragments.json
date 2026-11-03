@@ -1,0 +1,1781 @@
+{
+  "format": "fa-public-ledger-entry-fragment-validation-v1",
+  "recorded_on": "2026-11-03",
+  "status": "AWAITING_REPAIRED_ENGINE_EXECUTION",
+  "boundary": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+  "trust_scope": "Caller-trusted public checkpoint key of each fresh test book; no OMES publisher signature or externally authenticated ledger claim.",
+  "review_scope": "Original source and helper documents retain AgentUpload custody. Distinct local fixture principals exercise native Reviewed attestations and dual control, not independently authenticated human review.",
+  "dimension_scope": {
+    "native_attribution": {
+      "DEPTID": "department (3)",
+      "PROJECT_ID": "project (4)",
+      "PRODUCT": "product (5)",
+      "FUND_CODE": "fund (7)"
+    },
+    "unmapped_chartfields": [
+      "CLASS_FLD",
+      "PROGRAM_CODE"
+    ],
+    "policy": "Exact nonblank source values; whitespace-only values remain untagged and nonblank surrounding whitespace is refused. Other chartfields remain in source evidence. Dimension slices need not balance; no native balancing-dimension policy is asserted."
+  },
+  "source_distribution": {
+    "url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+    "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "complete_agency_fixture_directory": "crates/fa-oracles/fixtures/public_ledger"
+  },
+  "driver": {
+    "path": "scripts/public_ledger.py",
+    "sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+    "bytes": 93688,
+    "content_present_in_commit": "9700db7711c91cc959983b3d04e06772829d943e",
+    "source_helper": {
+      "path": "scripts/public_ledger_source.py",
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+      "bytes": 17814
+    },
+    "interruption_helper": {
+      "path": "scripts/public_ledger_interrupt.py",
+      "sha256": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+      "bytes": 5996
+    }
+  },
+  "prior_engine": {
+    "source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+    "workflow_run": 41637134396,
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41637134396",
+    "cargo_lock_git_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "provenance_files": {
+      "native-source.txt": {
+        "sha256": "434e12f0ae8fb68f38ec561b70aaff5b00d3e484c16f7a841fcc04c5bba7677a",
+        "bytes": 41
+      },
+      "native-lock.txt": {
+        "sha256": "7a2b745cd7da4313e68dde2e65a3acf91e0fbe39a3e42138c8e8df9b3f72c119",
+        "bytes": 41
+      },
+      "native-binaries.sha256": {
+        "sha256": "64db55b13a24cb4842ba81f12b7ea85890b922e3f7ea7e98f12360233da40d14",
+        "bytes": 171
+      }
+    },
+    "binaries": {
+      "fa": {
+        "sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+        "bytes": 235234192
+      },
+      "fa-verify": {
+        "sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05",
+        "bytes": 20221104
+      }
+    },
+    "scope": "These runs used the later dimension-preserving Python driver with the 3f947 native engine. They do not execute the 9700 EntryFragment repair."
+  },
+  "preserved_original_failure": {
+    "status": "FAIL_PRESERVED",
+    "engine_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+    "agency": "66000",
+    "agency_name": "S. E. OKLA. ST. UNIV.",
+    "source_rows": 1055,
+    "source_columns": 36,
+    "monetary_legs": 1051,
+    "zero_rows_retained_in_evidence": 4,
+    "account_count": 223,
+    "planned_migration_runs": 9,
+    "planned_migration_entries": 27,
+    "dimension_value_counts": {
+      "department": 8,
+      "fund": 1,
+      "product": 9,
+      "project": 0
+    },
+    "input": {
+      "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+      "sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+      "original_selection_sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537"
+    },
+    "runtime_pins": {
+      "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+      "fa_sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+      "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05",
+      "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+      "python_version": [
+        3,
+        12,
+        14
+      ]
+    },
+    "native_exit": 5,
+    "observed_prefix": 201,
+    "native_error": "substrate transaction: Write(VertexStorageAdmission { vid: VId(192816063929535737180134618068725873073), source: RowExceedsStorageLimit { bytes: 18470, limit: 16384 } })",
+    "storage_admission": {
+      "encoded_vertex_row_bytes": 18470,
+      "row_limit_bytes": 16384,
+      "entry_payload_bytes": null,
+      "measurement_scope": "The native refusal measured the complete encoded vertex row, not the standalone Entry payload."
+    },
+    "failed_entry": {
+      "source_entry_id": "OK:66000:2024:10:ACTUALS:9000:70000",
+      "source_legs": 157,
+      "source_leg_dimension_count_distribution": {
+        "1": 1,
+        "2": 88,
+        "3": 68
+      },
+      "native_entry_vid": "910f05ebb8c11d8f661ba98a52b139b1",
+      "source_group": {
+        "name": "run-006",
+        "source": "run-006.csv",
+        "sha256": "7a7c6ca0a698c323552e953d66e415d035d24195439d51a5f53eb8cc6a28a86e",
+        "rows": 408,
+        "entry_ids": [
+          "OK:66000:2024:10:ACTUALS:9000:70000",
+          "OK:66000:2024:11:ACTUALS:9000:70000",
+          "OK:66000:2024:12:ACTUALS:9000:70000"
+        ]
+      }
+    },
+    "native_progress": {
+      "atomic": false,
+      "chunks": [],
+      "completed_count": 0,
+      "coordinate_refreshed": true,
+      "failed_chunk_index": 0,
+      "package_oid": "b8b0d08e4aec3e3ae0155a4f4636bc6dc37b3606746aac0b3f921e10ca8b36d4",
+      "phase": "posting",
+      "resume_hint": "inspect --action show, then retry the same selection with this retained package and the original approvals; completed chunks are durable and staging remains invisible until independently approved finalization",
+      "run_vid": "0dce9ad342395522440d5e160f01ad08",
+      "selected_count": 3
+    },
+    "failed_native_command": [
+      "/tmp/franken-native-3f947ac/fa",
+      "--book",
+      "/tmp/omes-university-dimensions-20261103/book",
+      "migrate",
+      "import",
+      "--action",
+      "stage",
+      "--package",
+      "b8b0d08e4aec3e3ae0155a4f4636bc6dc37b3606746aac0b3f921e10ca8b36d4",
+      "--intent",
+      "/tmp/omes-university-dimensions-20261103/run-006-stage.json",
+      "--json"
+    ],
+    "failure_report": {
+      "sha256": "3eb29e46880859e9cd38e095657d94a2a4db9afb133549ba89f0233c27625297",
+      "bytes": 2111,
+      "local_path": "/tmp/omes-university-dimensions-20261103/attempts/000001/failure.json"
+    },
+    "manifest": {
+      "sha256": "25e7032a428abad37ed5917659e9e211b3b09e6d0484ce2b0c190090607d7151",
+      "bytes": 641959,
+      "local_path": "/tmp/omes-university-dimensions-20261103/manifest.json"
+    },
+    "recovery_pins_file": {
+      "sha256": "1da37a07a76941d5c4df9f7739ce00a74579eab3eef4e5cdafcb0d66390d6bb3",
+      "bytes": 2162,
+      "local_path": "/tmp/omes-university-dimensions-20261103/recovery/pins.json"
+    },
+    "transcripts": [
+      {
+        "sha256": "25552e85eca68f7ca4d7bcd5d6b69ad1e37de28bee73f2469e904781f49baeb4",
+        "bytes": 695124,
+        "local_path": "/tmp/omes-university-dimensions-20261103/attempts/000001/commands.jsonl",
+        "attempt": "000001",
+        "native_command_receipts": 200,
+        "exit_counts": {
+          "0": 199,
+          "5": 1
+        }
+      }
+    ],
+    "external_driver_log": {
+      "sha256": "becf5273c5e22ee5c8e507d8c7c49ee7eea1b2cf92338e8a50e80b84b0cb1aaa",
+      "bytes": 2105,
+      "local_path": "/tmp/omes-university-dimensions-20261103.log"
+    },
+    "scope": "Stopped during staging before whole-selection finalization, source-oracle folds, export or proof acceptance. The failed selected run posted zero of its three selected chunks; earlier durable work remains in the preserved book.",
+    "reproduction": {
+      "working_directory": "repository root at driver.content_present_in_commit",
+      "fresh_output_required": true,
+      "commands": [
+        [
+          "python3",
+          "-B",
+          "scripts/public_ledger.py",
+          "run",
+          "--agency",
+          "66000",
+          "--out",
+          "/tmp/omes-university-prior-row-limit-reproduce",
+          "--fa",
+          "/tmp/franken-native-3f947ac/fa",
+          "--fa-verify",
+          "/tmp/franken-native-3f947ac/fa-verify"
+        ]
+      ]
+    }
+  },
+  "prior_engine_passes": [
+    {
+      "case": "museum-prior-dimensions",
+      "status": "PASS",
+      "engine_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+      "agency": "20400",
+      "agency_name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+      "source_rows": 125,
+      "source_columns": 36,
+      "monetary_legs": 121,
+      "zero_rows_retained_in_evidence": 4,
+      "account_count": 43,
+      "migration_runs": 5,
+      "migration_entries": 15,
+      "dimension_value_counts": {
+        "department": 3,
+        "fund": 1,
+        "product": 0,
+        "project": 0
+      },
+      "largest_source_entry_legs": 19,
+      "dimension_certificates": {
+        "department": [
+          {
+            "source_value": "1000001",
+            "period": "FY2024-P12",
+            "certificate_oid": "af41701bca8225a4e574d2cb7fb2f545e75cda80011b566f3ae9adc66e97a145"
+          },
+          {
+            "source_value": "7999999",
+            "period": "FY2024-P12",
+            "certificate_oid": "96fbe10f76e0c264ffec847d6abcfe1e644f10975a190dfd1603ffbcd23efb21"
+          },
+          {
+            "source_value": "8800010",
+            "period": "FY2024-P12",
+            "certificate_oid": "648aa64c9c94e1e4d70e22a42c8d14397ea8d58c8831556823087ffe5870d81e"
+          }
+        ],
+        "fund": [
+          {
+            "source_value": "1000",
+            "period": "FY2024-P12",
+            "certificate_oid": "49d4c31d37bd70a4e4508a9d9ebe38f73c9bfdee91b4ee3a41212b102097331e"
+          }
+        ],
+        "product": [],
+        "project": []
+      },
+      "input": {
+        "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+        "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+        "original_selection_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+      },
+      "runtime_pins": {
+        "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+        "fa_sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+        "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05",
+        "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+        "python_version": [
+          3,
+          12,
+          14
+        ]
+      },
+      "report": {
+        "sha256": "7a29937a6a5facdb37bd1102d36bad0c2fba61819cda23bf0ae2abcb466b1089",
+        "bytes": 383654,
+        "local_path": "/tmp/omes-museum-dimensions-20261103/report.json"
+      },
+      "manifest": {
+        "sha256": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+        "bytes": 89219,
+        "local_path": "/tmp/omes-museum-dimensions-20261103/manifest.json"
+      },
+      "recovery_pins_file": {
+        "sha256": "8d988e069342acc443c93f4a030972d7c1438b4dc19d7218e653e2bdc5e9956c",
+        "bytes": 1806,
+        "local_path": "/tmp/omes-museum-dimensions-20261103/recovery/pins.json"
+      },
+      "prepared_artifact_sha256": {
+        "chart.json": "ed338b94a7ff8c05e110d00d7a8a020a18e1b2389243c94fb0c140d0fe57d9a6",
+        "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+        "manifest.json": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+        "original-agency.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+        "run-000.csv": "147521e31f393c9d93eeb5e454c0827d61da2edf5c93c5f66d2e218c2ca9c6f0",
+        "run-001.csv": "99f3414e1d6bf23f8bc7587f3eaca961a8d6029db4c52ef4f6b81b828d4d57cb",
+        "run-002.csv": "9dca8b24e4dc3170ac43312dad560d69ba8ac741562e14367c6c2e2ea019517b",
+        "run-003.csv": "a2af34e9406c0dc76277d63c5d40a7e52908bd87dd68acb490c418f896474251",
+        "run-004.csv": "90cf19ea4c8d7d800b2c37afba9cdcdf545b829068d0abf826c950d4d527ff55"
+      },
+      "recovery": {
+        "attempt": "attempts/000001",
+        "book_id": "e815779b2f4020ae727e73d99b3f3322",
+        "native_packages_recovered": 0,
+        "original_preactivation_seq": 124,
+        "resumed": false
+      },
+      "driver_commands_in_completed_attempt": 235,
+      "elapsed_seconds_in_completed_attempt": 20.674,
+      "transcripts": [
+        {
+          "sha256": "82e9b02ca215ff34a3e9f75046a3532958b97ac52802dbf65920ee84c463fe2a",
+          "bytes": 770154,
+          "local_path": "/tmp/omes-museum-dimensions-20261103/attempts/000001/commands.jsonl",
+          "attempt": "000001",
+          "native_command_receipts": 235,
+          "exit_counts": {
+            "0": 232,
+            "8": 3
+          }
+        }
+      ],
+      "ads_files": {
+        "ADS_Coordinate_Certificate.toml": {
+          "sha256": "116cc2899330c0d62636f2c04829ca0fa742b076d6e395d3a51d9040203a11e4",
+          "bytes": 422
+        },
+        "ADS_Proof.fab": {
+          "sha256": "98849ee85d10c450f7e61ecab6bb50f6080dd1f298e28f47457ac5b4419004bd",
+          "bytes": 1153900
+        },
+        "ADS_Proof.receipt": {
+          "sha256": "5bdabb681f5ba5c35cefd6a6b7b7d134c6e27543893447b2bf6e50b803ca77d3",
+          "bytes": 219
+        },
+        "Chart_of_Accounts.txt": {
+          "sha256": "50bbfa246eeb25b38a4858d184502bb158b5d08b92961201c9d01dedd79c4416",
+          "bytes": 1914
+        },
+        "GL_Detail.txt": {
+          "sha256": "6fd9f84b49b07a5a723a8101250a9dd8b4490f8f7ca096d4117aac1e5103eeed",
+          "bytes": 38670
+        },
+        "Trial_Balance.txt": {
+          "sha256": "3154588b3086fb16b061c2b8b1f7862e65ce09a61fa72a3ac507d9d124a0098c",
+          "bytes": 1521
+        }
+      },
+      "positive_verification": {
+        "attempt": "000001",
+        "transcript_line": 232,
+        "exit": 0,
+        "verdict": "verified",
+        "extract": "ads"
+      },
+      "negative_controls": {
+        "amount": {
+          "mutation": {
+            "delta_cents": 1,
+            "line": 2,
+            "new_amount": "39583.01",
+            "old_amount": "39583.00"
+          },
+          "verification": {
+            "attempt": "000001",
+            "transcript_line": 233,
+            "exit": 8,
+            "verdict": "failed",
+            "extract": "ads-tampered"
+          },
+          "failed_checks": [
+            {
+              "check": "ads_extract",
+              "scope": "completeness",
+              "result": "fail",
+              "reason": "GL_Detail entry 644ee32acab7e73c76d1eae685685772 (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+            }
+          ]
+        },
+        "dimensions": {
+          "department": {
+            "mutation": {
+              "dimension": 3,
+              "entry_id": "d76b6ef32dacbb90eb1151978105ef2b",
+              "leg": 1,
+              "line": 8,
+              "new_value": "b82f2a2092cd45f171f430b171b733c2",
+              "old_value": "b82f2a2092cd45f171f430b171b733c3"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 235,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "ads-department-tampered"
+            },
+            "failed_checks": [
+              {
+                "check": "ads_extract",
+                "scope": "completeness",
+                "result": "fail",
+                "reason": "GL_Detail entry d76b6ef32dacbb90eb1151978105ef2b (recorded at 83) is no proven entry selected through 2024-06-30; a proven entry recorded at 83 (effective 2024-04-30, 17 legs) is missing from GL_Detail"
+              }
+            ]
+          },
+          "fund": {
+            "mutation": {
+              "dimension": 7,
+              "entry_id": "644ee32acab7e73c76d1eae685685772",
+              "leg": 1,
+              "line": 2,
+              "new_value": "a0e7e0912cb378576fc41b876afe8650",
+              "old_value": "a0e7e0912cb378576fc41b876afe8651"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 234,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "ads-dimension-tampered"
+            },
+            "failed_checks": [
+              {
+                "check": "ads_extract",
+                "scope": "completeness",
+                "result": "fail",
+                "reason": "GL_Detail entry 644ee32acab7e73c76d1eae685685772 (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+              }
+            ]
+          }
+        }
+      },
+      "checks": [
+        "pinned_source_bytes",
+        "complete_agency_row_coverage",
+        "all_source_groups_balance_exactly",
+        "no_subcent_rounding",
+        "all_original_chartfields_retained",
+        "source_and_helper_agent_uploads_have_native_local_reviews",
+        "preparation_retry_is_idempotent",
+        "all_staged_activity_is_invisible",
+        "native_approved_finalization",
+        "every_month_account_cell_matches_source",
+        "cumulative_balances_match_source",
+        "native_proposal_legs_preserve_every_source_row",
+        "gross_debit_credit_account_cells_match_source",
+        "historical_preactivation_prefix_stays_invisible",
+        "native_registers_equal_journal_fold",
+        "every_native_leg_preserves_source_department_or_absence",
+        "native_department_monthly_and_cumulative_net_and_gross_match_source",
+        "department_preactivation_history_stays_invisible",
+        "department_certificates_replay_exact_robot_reports",
+        "every_native_leg_preserves_complete_declared_source_dimensions",
+        "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+        "every_dimension_preactivation_history_stays_invisible",
+        "every_dimension_certificate_replays_exact_robot_report",
+        "all_finalized_chunk_retries_are_idempotent",
+        "native_upload_custody_preserved_and_fixture_reviews_recorded",
+        "native_projections_match_payloads",
+        "signed_accumulator_checkpoint",
+        "native_csv_and_ads_reread_certificates",
+        "every_exported_leg_preserves_source_department_or_absence",
+        "every_exported_leg_preserves_complete_declared_source_dimensions",
+        "independent_fa_verify_ads_proof",
+        "independent_fa_verify_authenticates_every_exported_dimension_set",
+        "independent_verifier_rejects_tampered_extract",
+        "independent_verifier_rejects_dimension_only_tampering",
+        "independent_verifier_rejects_each_source_dimension_kind_tamper",
+        "resume_inputs_and_native_book_identity_pinned",
+        "original_native_packages_and_publication_receipts_preserved",
+        "original_finalize_proposals_durable_before_approval"
+      ],
+      "reproduction": {
+        "working_directory": "repository root at driver.content_present_in_commit",
+        "fresh_output_required": true,
+        "commands": [
+          [
+            "python3",
+            "-B",
+            "scripts/public_ledger.py",
+            "run",
+            "--agency",
+            "20400",
+            "--out",
+            "/tmp/museum-prior-dimensions-reproduce",
+            "--fa",
+            "/tmp/franken-native-3f947ac/fa",
+            "--fa-verify",
+            "/tmp/franken-native-3f947ac/fa-verify"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "pension-prior-dimensions",
+      "status": "PASS",
+      "engine_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+      "agency": "31500",
+      "agency_name": "FIREFIGHTERS PENS. & RET. SYST.",
+      "source_rows": 137,
+      "source_columns": 36,
+      "monetary_legs": 131,
+      "zero_rows_retained_in_evidence": 6,
+      "account_count": 51,
+      "migration_runs": 2,
+      "migration_entries": 6,
+      "dimension_value_counts": {
+        "department": 3,
+        "fund": 1,
+        "product": 0,
+        "project": 0
+      },
+      "largest_source_entry_legs": 37,
+      "dimension_certificates": {
+        "department": [
+          {
+            "source_value": "0100001",
+            "period": "FY2024-P12",
+            "certificate_oid": "b2a8a21c90dc6eb71554ff74e3dd9e5d6f1e85118c17d4663dfb7e512fdf615f"
+          },
+          {
+            "source_value": "7999999",
+            "period": "FY2024-P12",
+            "certificate_oid": "162840ce26f451106fd55f06388a63a88d784ab2bdf15c137bad6fee14a7a444"
+          },
+          {
+            "source_value": "8800001",
+            "period": "FY2024-P12",
+            "certificate_oid": "b45b9da2be9f691abaf10706301777a1bbe9c7f654e28b9dfe48fe844828a3cc"
+          }
+        ],
+        "fund": [
+          {
+            "source_value": "6000",
+            "period": "FY2024-P12",
+            "certificate_oid": "aca816353a3169d0b02c93d671ba471a2023afa4f3e8ef0fd7d2c1c27f0f1f06"
+          }
+        ],
+        "product": [],
+        "project": []
+      },
+      "input": {
+        "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-31500.csv",
+        "sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+        "original_selection_sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249"
+      },
+      "runtime_pins": {
+        "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+        "fa_sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+        "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05",
+        "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+        "python_version": [
+          3,
+          12,
+          14
+        ]
+      },
+      "report": {
+        "sha256": "1a93310362a2d6f0afa5a975b3f0267be4c6e0ebd1be80b85ac8d535ba70fa21",
+        "bytes": 242192,
+        "local_path": "/tmp/omes-pension-dimensions-20261103/report.json"
+      },
+      "manifest": {
+        "sha256": "45bfefc60f4a1969482cf32f4d3ded7892de781ddfc53953fd57634b3816b0e9",
+        "bytes": 102424,
+        "local_path": "/tmp/omes-pension-dimensions-20261103/manifest.json"
+      },
+      "recovery_pins_file": {
+        "sha256": "264a26ae40b9a6199ab518a7fc4d574a44634957018b013f011d2cb72060d465",
+        "bytes": 1539,
+        "local_path": "/tmp/omes-pension-dimensions-20261103/recovery/pins.json"
+      },
+      "prepared_artifact_sha256": {
+        "chart.json": "5c41adf7e66f6058eb10a883b172cc01cef840f650bd59318826cfe785c8c855",
+        "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+        "manifest.json": "45bfefc60f4a1969482cf32f4d3ded7892de781ddfc53953fd57634b3816b0e9",
+        "original-agency.csv": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+        "run-000.csv": "9943523dd5b895e14c01a9a8a12c519365a1dfe49584ddb7d9651f6bfde5c626",
+        "run-001.csv": "b973626e0e4b0918468253b9b96d374dfc04b63cc8d30f6be22b2a175ee8eb96"
+      },
+      "recovery": {
+        "attempt": "attempts/000001",
+        "book_id": "4ca89b2361bca8f41850b0a20406bf85",
+        "native_packages_recovered": 0,
+        "original_preactivation_seq": 58,
+        "resumed": false
+      },
+      "driver_commands_in_completed_attempt": 151,
+      "elapsed_seconds_in_completed_attempt": 12.906,
+      "transcripts": [
+        {
+          "sha256": "e36e593a90ff590a8b4b3a22cbd4433f9b8687e5cec25772cbc3d73ade61ee2c",
+          "bytes": 660606,
+          "local_path": "/tmp/omes-pension-dimensions-20261103/attempts/000001/commands.jsonl",
+          "attempt": "000001",
+          "native_command_receipts": 151,
+          "exit_counts": {
+            "0": 148,
+            "8": 3
+          }
+        }
+      ],
+      "ads_files": {
+        "ADS_Coordinate_Certificate.toml": {
+          "sha256": "9e0c208f92bca5ab073b69734b79b623a54f575ae82ec0af9b57f24455ebbb7b",
+          "bytes": 420
+        },
+        "ADS_Proof.fab": {
+          "sha256": "e0c3959d23cbf36dc9bb3bc6ea12ed8812d55e22c86ae4276472f6cd8495d931",
+          "bytes": 1139634
+        },
+        "ADS_Proof.receipt": {
+          "sha256": "2551ecacd06706512e2e3aa727c950ede97f3c7cdad00f917eb351b383abdba6",
+          "bytes": 219
+        },
+        "Chart_of_Accounts.txt": {
+          "sha256": "13ac48a1678f09e70482db61ce567730ddfb2d0ba3911b269f8bded6cd71e508",
+          "bytes": 2291
+        },
+        "GL_Detail.txt": {
+          "sha256": "344dbc77d1657e6c51f6c1c77f127351d5e357c52010c409e9ac55a582ec13fa",
+          "bytes": 42598
+        },
+        "Trial_Balance.txt": {
+          "sha256": "d23ec8ae8b4e043463e4c3452b24dd44222753216d62da0b5c5862448717a5b8",
+          "bytes": 1847
+        }
+      },
+      "positive_verification": {
+        "attempt": "000001",
+        "transcript_line": 148,
+        "exit": 0,
+        "verdict": "verified",
+        "extract": "ads"
+      },
+      "negative_controls": {
+        "amount": {
+          "mutation": {
+            "delta_cents": 1,
+            "line": 2,
+            "new_amount": "626.01",
+            "old_amount": "626.00"
+          },
+          "verification": {
+            "attempt": "000001",
+            "transcript_line": 149,
+            "exit": 8,
+            "verdict": "failed",
+            "extract": "ads-tampered"
+          },
+          "failed_checks": [
+            {
+              "check": "ads_extract",
+              "scope": "completeness",
+              "result": "fail",
+              "reason": "GL_Detail entry 9a351b3c2586799a13415d8ebbf5856c (recorded at 41) is no proven entry selected through 2024-06-30; a proven entry recorded at 41 (effective 2024-04-30, 36 legs) is missing from GL_Detail"
+            }
+          ]
+        },
+        "dimensions": {
+          "department": {
+            "mutation": {
+              "dimension": 3,
+              "entry_id": "9a351b3c2586799a13415d8ebbf5856c",
+              "leg": 1,
+              "line": 2,
+              "new_value": "6ea33c344c2ea2a57488952f9c50be9a",
+              "old_value": "6ea33c344c2ea2a57488952f9c50be9b"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 150,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "ads-dimension-tampered"
+            },
+            "failed_checks": [
+              {
+                "check": "ads_extract",
+                "scope": "completeness",
+                "result": "fail",
+                "reason": "GL_Detail entry 9a351b3c2586799a13415d8ebbf5856c (recorded at 41) is no proven entry selected through 2024-06-30; a proven entry recorded at 41 (effective 2024-04-30, 36 legs) is missing from GL_Detail"
+              }
+            ]
+          },
+          "fund": {
+            "mutation": {
+              "dimension": 7,
+              "entry_id": "9a351b3c2586799a13415d8ebbf5856c",
+              "leg": 1,
+              "line": 2,
+              "new_value": "c4eb3d37be2a42454feeb7e07b2e63e7",
+              "old_value": "c4eb3d37be2a42454feeb7e07b2e63e6"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 151,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "ads-fund-tampered"
+            },
+            "failed_checks": [
+              {
+                "check": "ads_extract",
+                "scope": "completeness",
+                "result": "fail",
+                "reason": "GL_Detail entry 9a351b3c2586799a13415d8ebbf5856c (recorded at 41) is no proven entry selected through 2024-06-30; a proven entry recorded at 41 (effective 2024-04-30, 36 legs) is missing from GL_Detail"
+              }
+            ]
+          }
+        }
+      },
+      "checks": [
+        "pinned_source_bytes",
+        "complete_agency_row_coverage",
+        "all_source_groups_balance_exactly",
+        "no_subcent_rounding",
+        "all_original_chartfields_retained",
+        "source_and_helper_agent_uploads_have_native_local_reviews",
+        "preparation_retry_is_idempotent",
+        "all_staged_activity_is_invisible",
+        "native_approved_finalization",
+        "every_month_account_cell_matches_source",
+        "cumulative_balances_match_source",
+        "native_proposal_legs_preserve_every_source_row",
+        "gross_debit_credit_account_cells_match_source",
+        "historical_preactivation_prefix_stays_invisible",
+        "native_registers_equal_journal_fold",
+        "every_native_leg_preserves_source_department_or_absence",
+        "native_department_monthly_and_cumulative_net_and_gross_match_source",
+        "department_preactivation_history_stays_invisible",
+        "department_certificates_replay_exact_robot_reports",
+        "every_native_leg_preserves_complete_declared_source_dimensions",
+        "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+        "every_dimension_preactivation_history_stays_invisible",
+        "every_dimension_certificate_replays_exact_robot_report",
+        "all_finalized_chunk_retries_are_idempotent",
+        "native_upload_custody_preserved_and_fixture_reviews_recorded",
+        "native_projections_match_payloads",
+        "signed_accumulator_checkpoint",
+        "native_csv_and_ads_reread_certificates",
+        "every_exported_leg_preserves_source_department_or_absence",
+        "every_exported_leg_preserves_complete_declared_source_dimensions",
+        "independent_fa_verify_ads_proof",
+        "independent_fa_verify_authenticates_every_exported_dimension_set",
+        "independent_verifier_rejects_tampered_extract",
+        "independent_verifier_rejects_dimension_only_tampering",
+        "independent_verifier_rejects_each_source_dimension_kind_tamper",
+        "resume_inputs_and_native_book_identity_pinned",
+        "original_native_packages_and_publication_receipts_preserved",
+        "original_finalize_proposals_durable_before_approval"
+      ],
+      "reproduction": {
+        "working_directory": "repository root at driver.content_present_in_commit",
+        "fresh_output_required": true,
+        "commands": [
+          [
+            "python3",
+            "-B",
+            "scripts/public_ledger.py",
+            "run",
+            "--agency",
+            "31500",
+            "--out",
+            "/tmp/pension-prior-dimensions-reproduce",
+            "--fa",
+            "/tmp/franken-native-3f947ac/fa",
+            "--fa-verify",
+            "/tmp/franken-native-3f947ac/fa-verify"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "museum-prior-dimensions-resume",
+      "status": "PASS",
+      "engine_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+      "agency": "20400",
+      "agency_name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+      "source_rows": 125,
+      "source_columns": 36,
+      "monetary_legs": 121,
+      "zero_rows_retained_in_evidence": 4,
+      "account_count": 43,
+      "migration_runs": 5,
+      "migration_entries": 15,
+      "dimension_value_counts": {
+        "department": 3,
+        "fund": 1,
+        "product": 0,
+        "project": 0
+      },
+      "largest_source_entry_legs": 19,
+      "dimension_certificates": {
+        "department": [
+          {
+            "source_value": "1000001",
+            "period": "FY2024-P12",
+            "certificate_oid": "37a77e38fcf9af32a6b511f77089fbae9d6da2d33e829e85bcdbc9a23826e844"
+          },
+          {
+            "source_value": "7999999",
+            "period": "FY2024-P12",
+            "certificate_oid": "b3113f89e1ff322d15960669c42cdedba60b3eb864e086086f5bad4ef62461f1"
+          },
+          {
+            "source_value": "8800010",
+            "period": "FY2024-P12",
+            "certificate_oid": "82bf5a244908b44705fe4cfe79735abf67b0c6e36656a6bc6bca49be27d80556"
+          }
+        ],
+        "fund": [
+          {
+            "source_value": "1000",
+            "period": "FY2024-P12",
+            "certificate_oid": "a7b5aa30e7875a7c95156a89298e1f63bf763c7b8eb310d953fb64638496479b"
+          }
+        ],
+        "product": [],
+        "project": []
+      },
+      "input": {
+        "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+        "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+        "original_selection_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+      },
+      "runtime_pins": {
+        "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+        "fa_sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+        "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05",
+        "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+        "python_version": [
+          3,
+          12,
+          14
+        ]
+      },
+      "report": {
+        "sha256": "8e557f6be3b4648de9aa417a7e1fc060cadceb1f7896f81f838f2e79999aff2d",
+        "bytes": 383653,
+        "local_path": "/tmp/omes-museum-dimensions-resume-20261103/report.json"
+      },
+      "manifest": {
+        "sha256": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+        "bytes": 89219,
+        "local_path": "/tmp/omes-museum-dimensions-resume-20261103/manifest.json"
+      },
+      "recovery_pins_file": {
+        "sha256": "8d988e069342acc443c93f4a030972d7c1438b4dc19d7218e653e2bdc5e9956c",
+        "bytes": 1806,
+        "local_path": "/tmp/omes-museum-dimensions-resume-20261103/recovery/pins.json"
+      },
+      "prepared_artifact_sha256": {
+        "chart.json": "ed338b94a7ff8c05e110d00d7a8a020a18e1b2389243c94fb0c140d0fe57d9a6",
+        "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+        "manifest.json": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+        "original-agency.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+        "run-000.csv": "147521e31f393c9d93eeb5e454c0827d61da2edf5c93c5f66d2e218c2ca9c6f0",
+        "run-001.csv": "99f3414e1d6bf23f8bc7587f3eaca961a8d6029db4c52ef4f6b81b828d4d57cb",
+        "run-002.csv": "9dca8b24e4dc3170ac43312dad560d69ba8ac741562e14367c6c2e2ea019517b",
+        "run-003.csv": "a2af34e9406c0dc76277d63c5d40a7e52908bd87dd68acb490c418f896474251",
+        "run-004.csv": "90cf19ea4c8d7d800b2c37afba9cdcdf545b829068d0abf826c950d4d527ff55"
+      },
+      "recovery": {
+        "attempt": "attempts/000002",
+        "book_id": "eb861fcf287961785d1ae45240b67440",
+        "native_packages_recovered": 5,
+        "original_preactivation_seq": 124,
+        "resumed": true
+      },
+      "driver_commands_in_completed_attempt": 245,
+      "elapsed_seconds_in_completed_attempt": 19.498,
+      "transcripts": [
+        {
+          "sha256": "8b719ee013d1c652485a5da168de0e5ccc21e98b6358440c586af2fcdd658625",
+          "bytes": 118598,
+          "local_path": "/tmp/omes-museum-dimensions-resume-20261103/attempts/000001/commands.jsonl",
+          "attempt": "000001",
+          "native_command_receipts": 75,
+          "exit_counts": {
+            "0": 75
+          }
+        },
+        {
+          "sha256": "41fc16971b79ba1dbd71bd14199d6baff9c496fe0c949667b3de51a1a61f3c3f",
+          "bytes": 765791,
+          "local_path": "/tmp/omes-museum-dimensions-resume-20261103/attempts/000002/commands.jsonl",
+          "attempt": "000002",
+          "native_command_receipts": 228,
+          "exit_counts": {
+            "0": 225,
+            "8": 3
+          }
+        }
+      ],
+      "ads_files": {
+        "ADS_Coordinate_Certificate.toml": {
+          "sha256": "6231a795c6ac4c0ec43c36f2249dbcc7e0a8574ee3819b1ebf4d32bd8c2ea75e",
+          "bytes": 422
+        },
+        "ADS_Proof.fab": {
+          "sha256": "c418c94dec5856e2f8a6fb4994498548832b114a9bb8fac7f59d531b47f650c9",
+          "bytes": 1153900
+        },
+        "ADS_Proof.receipt": {
+          "sha256": "7b8ffb02fa687bd0e4063d962120a178f443aa22cbb0ca67fb0e4ce224f37850",
+          "bytes": 219
+        },
+        "Chart_of_Accounts.txt": {
+          "sha256": "50bbfa246eeb25b38a4858d184502bb158b5d08b92961201c9d01dedd79c4416",
+          "bytes": 1914
+        },
+        "GL_Detail.txt": {
+          "sha256": "25b4c3ed71c2ea9dba730bab78c18fa9dd57df88510877eaffb328ce431865ad",
+          "bytes": 38670
+        },
+        "Trial_Balance.txt": {
+          "sha256": "3154588b3086fb16b061c2b8b1f7862e65ce09a61fa72a3ac507d9d124a0098c",
+          "bytes": 1521
+        }
+      },
+      "positive_verification": {
+        "attempt": "000002",
+        "transcript_line": 225,
+        "exit": 0,
+        "verdict": "verified",
+        "extract": "ads"
+      },
+      "negative_controls": {
+        "amount": {
+          "mutation": {
+            "delta_cents": 1,
+            "line": 2,
+            "new_amount": "39583.01",
+            "old_amount": "39583.00"
+          },
+          "verification": {
+            "attempt": "000002",
+            "transcript_line": 226,
+            "exit": 8,
+            "verdict": "failed",
+            "extract": "ads-tampered"
+          },
+          "failed_checks": [
+            {
+              "check": "ads_extract",
+              "scope": "completeness",
+              "result": "fail",
+              "reason": "GL_Detail entry 8d75cbaab2ea3f0f6e7080b81253a5e3 (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+            }
+          ]
+        },
+        "dimensions": {
+          "department": {
+            "mutation": {
+              "dimension": 3,
+              "entry_id": "571923ccb887473b0d30031418fcf1e0",
+              "leg": 1,
+              "line": 8,
+              "new_value": "730d36687d0226d7d4893d0e7e3573e3",
+              "old_value": "730d36687d0226d7d4893d0e7e3573e2"
+            },
+            "verification": {
+              "attempt": "000002",
+              "transcript_line": 228,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "ads-department-tampered"
+            },
+            "failed_checks": [
+              {
+                "check": "ads_extract",
+                "scope": "completeness",
+                "result": "fail",
+                "reason": "GL_Detail entry 571923ccb887473b0d30031418fcf1e0 (recorded at 83) is no proven entry selected through 2024-06-30; a proven entry recorded at 83 (effective 2024-04-30, 17 legs) is missing from GL_Detail"
+              }
+            ]
+          },
+          "fund": {
+            "mutation": {
+              "dimension": 7,
+              "entry_id": "8d75cbaab2ea3f0f6e7080b81253a5e3",
+              "leg": 1,
+              "line": 2,
+              "new_value": "a8a36365718eaf4db5a124c702ea07bd",
+              "old_value": "a8a36365718eaf4db5a124c702ea07bc"
+            },
+            "verification": {
+              "attempt": "000002",
+              "transcript_line": 227,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "ads-dimension-tampered"
+            },
+            "failed_checks": [
+              {
+                "check": "ads_extract",
+                "scope": "completeness",
+                "result": "fail",
+                "reason": "GL_Detail entry 8d75cbaab2ea3f0f6e7080b81253a5e3 (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+              }
+            ]
+          }
+        }
+      },
+      "checks": [
+        "pinned_source_bytes",
+        "complete_agency_row_coverage",
+        "all_source_groups_balance_exactly",
+        "no_subcent_rounding",
+        "all_original_chartfields_retained",
+        "source_and_helper_agent_uploads_have_native_local_reviews",
+        "preparation_retry_is_idempotent",
+        "all_staged_activity_is_invisible",
+        "native_approved_finalization",
+        "every_month_account_cell_matches_source",
+        "cumulative_balances_match_source",
+        "native_proposal_legs_preserve_every_source_row",
+        "gross_debit_credit_account_cells_match_source",
+        "historical_preactivation_prefix_stays_invisible",
+        "native_registers_equal_journal_fold",
+        "every_native_leg_preserves_source_department_or_absence",
+        "native_department_monthly_and_cumulative_net_and_gross_match_source",
+        "department_preactivation_history_stays_invisible",
+        "department_certificates_replay_exact_robot_reports",
+        "every_native_leg_preserves_complete_declared_source_dimensions",
+        "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+        "every_dimension_preactivation_history_stays_invisible",
+        "every_dimension_certificate_replays_exact_robot_report",
+        "all_finalized_chunk_retries_are_idempotent",
+        "native_upload_custody_preserved_and_fixture_reviews_recorded",
+        "native_projections_match_payloads",
+        "signed_accumulator_checkpoint",
+        "native_csv_and_ads_reread_certificates",
+        "every_exported_leg_preserves_source_department_or_absence",
+        "every_exported_leg_preserves_complete_declared_source_dimensions",
+        "independent_fa_verify_ads_proof",
+        "independent_fa_verify_authenticates_every_exported_dimension_set",
+        "independent_verifier_rejects_tampered_extract",
+        "independent_verifier_rejects_dimension_only_tampering",
+        "independent_verifier_rejects_each_source_dimension_kind_tamper",
+        "resume_inputs_and_native_book_identity_pinned",
+        "original_native_packages_and_publication_receipts_preserved",
+        "original_finalize_proposals_durable_before_approval"
+      ],
+      "reproduction": {
+        "working_directory": "repository root at driver.content_present_in_commit",
+        "fresh_output_required": true,
+        "commands": [
+          [
+            "python3",
+            "-B",
+            "scripts/public_ledger_interrupt.py",
+            "--driver",
+            "scripts/public_ledger.py",
+            "--boundary",
+            "partial-stage",
+            "--marker",
+            "/tmp/museum-prior-dimensions-resume-reproduce-interruption.json",
+            "--",
+            "run",
+            "--agency",
+            "20400",
+            "--out",
+            "/tmp/museum-prior-dimensions-resume-reproduce",
+            "--fa",
+            "/tmp/franken-native-3f947ac/fa",
+            "--fa-verify",
+            "/tmp/franken-native-3f947ac/fa-verify"
+          ],
+          [
+            "python3",
+            "-B",
+            "scripts/public_ledger.py",
+            "run",
+            "--resume",
+            "--out",
+            "/tmp/museum-prior-dimensions-resume-reproduce"
+          ]
+        ]
+      },
+      "controlled_interruption": {
+        "boundary": "partial-stage",
+        "scope": "Controlled stop after a completed real native command; not a mid-transaction crash.",
+        "marker": {
+          "sha256": "db91fb638db4872915b7d3def1fcc711c9cfbde6ac5e7d57d54fbd9806580519",
+          "bytes": 2237,
+          "local_path": "/tmp/omes-dimensions-interruption-20261103.json"
+        },
+        "native_receipt": {
+          "authority": {
+            "ops": null,
+            "posture": "embedded-owner",
+            "principal": "operator",
+            "profile": "Human"
+          },
+          "book": "eb861fcf287961785d1ae45240b67440",
+          "certificate": null,
+          "coordinate": {
+            "branch": "trunk",
+            "effective": "all",
+            "known_at": 71,
+            "time_evidence": null
+          },
+          "data": {
+            "already_recorded": false,
+            "chunk_count": 3,
+            "chunk_index": 0,
+            "entry_vid": "8d75cbaab2ea3f0f6e7080b81253a5e3",
+            "package_oid": "493f47ba94914bc44faac13d26a3094fa133362b7b7561f639dc89fcceb2cca8",
+            "proposal_digest": "1aa88fe3a6baa377401b40f62a1e8a3847ee02d4a38caed1e1c25a4107a26674",
+            "ready_to_finalize": false,
+            "recorded_at": 71,
+            "recorded_count": 1,
+            "run_state": "Open",
+            "run_vid": "8ce1307aeb429d4075d381e5ce47d628"
+          },
+          "event": "migration_import_staged",
+          "next_actions": [],
+          "v": 1,
+          "warnings": []
+        },
+        "selected_chunk_count": 3,
+        "saved_complete_selection_sha256": "909594d1d6a16593bd610fad189f4ff0a63af8060ab307a7fcc2122e673ac6a1",
+        "pins_sha256_at_interruption": "8d988e069342acc443c93f4a030972d7c1438b4dc19d7218e653e2bdc5e9956c",
+        "pins_unchanged_after_resume": true,
+        "interruption_helper_sha256": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+        "driver_exits": [
+          1,
+          0
+        ]
+      }
+    }
+  ],
+  "repaired_engine": {
+    "target_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "production_change_commit": "9700db7711c91cc959983b3d04e06772829d943e",
+    "target_scope": "Production Rust and the public-ledger driver are unchanged from 9700. The f3f1 commit corrects only an XBRL test fixture envelope and records completed BLMIS evidence/documentation.",
+    "workflow_run": 41664093934,
+    "workflow_job": 126017782741,
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41664093934",
+    "status": "AWAITING_VERIFIED_ARTIFACT",
+    "cases": [],
+    "pending_acceptance": [
+      "Fresh complete museum selection, dimensions, source oracles, certified reports, exports and independent tamper controls.",
+      "Fresh complete pension selection with the same native and independent acceptance.",
+      "Controlled durable partial-stage interruption and resume with unchanged source, driver, helper and binary pins.",
+      "Copy the completed 3f947 museum book; replay one retained department certificate and verify its corresponding historical report with the repaired engine, preserving the original book.",
+      "Fresh university selection through the unchanged stock driver, including the previously failing 157-leg source entry.",
+      "Separate fresh source-bound university selection and a portable trial-balance proof covering MigrationRunFragment, MigrationSource and EntryFragment inputs."
+    ],
+    "superseded_target": {
+      "source_commit": "9700db7711c91cc959983b3d04e06772829d943e",
+      "workflow_run": 41659104697,
+      "reason": "Use the later exact source artifact with the corrected XBRL test fixture; no successful runtime EntryFragment claim was recorded for the earlier target."
+    }
+  },
+  "evidence_notes": [
+    "Only public-source identities, aggregate counts, native receipt metadata and artifact hashes are committed here. Private signing keys and bulky native books stay outside the repository.",
+    "Report and transcript SHA256 values bind complete local artifacts; local paths identify retained session evidence and are not promised as permanent public downloads.",
+    "Completed-attempt driver command counts can differ from transcript counts because resume preflight runs before the new attempt transcript is opened. Interrupted attempts remain separately preserved.",
+    "Each negative control edits a separate ADS copy and must independently produce fa-verify exit 8. Identical refusal JSON is distinguished by the executed extract path and transcript line.",
+    "The original failed university book is retained with its original engine/runtime pins. Repaired-engine validation must use fresh output on the preserved tmpfs workspace; resume never weakens source, driver or binary identity checks.",
+    "Controlled interruption is after a durable real native command. It does not assert recovery from an abrupt process kill or a torn storage transaction.",
+    "Durations are observed execution times in this session, not a comparative performance result or service-level claim.",
+    "After the overlay became full, the verified writable checkout and all new outputs moved to /dev/shm/franken-accounting-preserved-69d8c2fe02b1. Original paths in earlier records still identify preserved original evidence; no old book is rewritten to change its engine pins."
+  ],
+  "prior_engine_source_bound_preflight": {
+    "case": "museum-prior-source-bound-preflight",
+    "status": "PASS",
+    "engine_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+    "agency": "20400",
+    "agency_name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+    "source_rows": 125,
+    "source_columns": 36,
+    "monetary_legs": 121,
+    "zero_rows_retained_in_evidence": 4,
+    "account_count": 43,
+    "migration_runs": 5,
+    "migration_entries": 15,
+    "dimension_value_counts": {
+      "department": 3,
+      "fund": 1,
+      "product": 0,
+      "project": 0
+    },
+    "largest_source_entry_legs": 19,
+    "dimension_certificates": {
+      "department": [
+        {
+          "source_value": "1000001",
+          "period": "FY2024-P12",
+          "certificate_oid": "f92050a494186defe9b899b2af74382c78246b7274dd4f2f84770129ed96f095"
+        },
+        {
+          "source_value": "7999999",
+          "period": "FY2024-P12",
+          "certificate_oid": "c7e3dd2fbdb2894e9f1a2499d367067598dfddd2d31645132006ae1b6378ba5a"
+        },
+        {
+          "source_value": "8800010",
+          "period": "FY2024-P12",
+          "certificate_oid": "f9e626224826dc4d1704a48ef633b96a3998b22e345c7ba996602dfcb55e2a9c"
+        }
+      ],
+      "fund": [
+        {
+          "source_value": "1000",
+          "period": "FY2024-P12",
+          "certificate_oid": "da5f1ca9657275a3de30b193e20c7ef5e44cf3ee957af3185a44d944af7cbc61"
+        }
+      ],
+      "product": [],
+      "project": []
+    },
+    "input": {
+      "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+      "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+      "original_selection_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+    },
+    "runtime_pins": {
+      "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+      "fa_sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+      "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05",
+      "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+      "python_version": [
+        3,
+        12,
+        14
+      ]
+    },
+    "report": {
+      "sha256": "2d8221628227b7e41a4df578dfd3b4d85fcf0da4cfaa3093cbefe343c37006ab",
+      "bytes": 408784,
+      "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/report.json"
+    },
+    "manifest": {
+      "sha256": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+      "bytes": 89219,
+      "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/manifest.json"
+    },
+    "recovery_pins_file": {
+      "sha256": "6373333375419cc271814abf8511b56c3e05ef91e0ab9b50a89d999ac3fe06c3",
+      "bytes": 1811,
+      "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/recovery/pins.json"
+    },
+    "prepared_artifact_sha256": {
+      "chart.json": "ed338b94a7ff8c05e110d00d7a8a020a18e1b2389243c94fb0c140d0fe57d9a6",
+      "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+      "manifest.json": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+      "original-agency.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+      "run-000.csv": "147521e31f393c9d93eeb5e454c0827d61da2edf5c93c5f66d2e218c2ca9c6f0",
+      "run-001.csv": "99f3414e1d6bf23f8bc7587f3eaca961a8d6029db4c52ef4f6b81b828d4d57cb",
+      "run-002.csv": "9dca8b24e4dc3170ac43312dad560d69ba8ac741562e14367c6c2e2ea019517b",
+      "run-003.csv": "a2af34e9406c0dc76277d63c5d40a7e52908bd87dd68acb490c418f896474251",
+      "run-004.csv": "90cf19ea4c8d7d800b2c37afba9cdcdf545b829068d0abf826c950d4d527ff55"
+    },
+    "recovery": {
+      "attempt": "attempts/000001",
+      "book_id": "d54fbac277da7b7b7e7edd7996a0b7a1",
+      "native_packages_recovered": 0,
+      "original_preactivation_seq": 129,
+      "resumed": false
+    },
+    "driver_commands_in_completed_attempt": 235,
+    "elapsed_seconds_in_completed_attempt": 23.715,
+    "transcripts": [
+      {
+        "sha256": "a8782fddd9bf3b52ef014866680471559340ad87b0021ef34d3a0421139efa6c",
+        "bytes": 821489,
+        "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/attempts/000001/commands.jsonl",
+        "attempt": "000001",
+        "native_command_receipts": 235,
+        "exit_counts": {
+          "0": 232,
+          "8": 3
+        }
+      }
+    ],
+    "ads_files": {
+      "ADS_Coordinate_Certificate.toml": {
+        "sha256": "261c5fc8d358d6d70da2f864f4761dd20d7f38bfaefe2dcfcf8e6716f2a68472",
+        "bytes": 422
+      },
+      "ADS_Proof.fab": {
+        "sha256": "f508d5e00722515b0d80b1ec340b0a11deb60ff863d577e1f8688d57b5d000bc",
+        "bytes": 3066378
+      },
+      "ADS_Proof.receipt": {
+        "sha256": "73b3e7cd7ee43d5ed3787f3f5100478b10f3c9c4f4bb55b7ee976555bd91a0a1",
+        "bytes": 219
+      },
+      "Chart_of_Accounts.txt": {
+        "sha256": "50bbfa246eeb25b38a4858d184502bb158b5d08b92961201c9d01dedd79c4416",
+        "bytes": 1914
+      },
+      "GL_Detail.txt": {
+        "sha256": "03bcf82df5ff76f66dc83a75a712f399c5f5bb08f4744c69e5969a55569d4b7f",
+        "bytes": 38709
+      },
+      "Trial_Balance.txt": {
+        "sha256": "3154588b3086fb16b061c2b8b1f7862e65ce09a61fa72a3ac507d9d124a0098c",
+        "bytes": 1521
+      }
+    },
+    "positive_verification": {
+      "attempt": "000001",
+      "transcript_line": 232,
+      "exit": 0,
+      "verdict": "verified",
+      "extract": "ads"
+    },
+    "negative_controls": {
+      "amount": {
+        "mutation": {
+          "delta_cents": 1,
+          "line": 2,
+          "new_amount": "39583.01",
+          "old_amount": "39583.00"
+        },
+        "verification": {
+          "attempt": "000001",
+          "transcript_line": 233,
+          "exit": 8,
+          "verdict": "failed",
+          "extract": "ads-tampered"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "scope": "completeness",
+            "result": "fail",
+            "reason": "GL_Detail entry b10b266d891634c3a790b6007e6104bb (recorded at 76) is no proven entry selected through 2024-06-30; a proven entry recorded at 76 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+          }
+        ]
+      },
+      "dimensions": {
+        "department": {
+          "mutation": {
+            "dimension": 3,
+            "entry_id": "2397ad846e1e388e818e85cf5ded4243",
+            "leg": 1,
+            "line": 8,
+            "new_value": "44de64ed5f0293876996dd1f0e5e0d2a",
+            "old_value": "44de64ed5f0293876996dd1f0e5e0d2b"
+          },
+          "verification": {
+            "attempt": "000001",
+            "transcript_line": 235,
+            "exit": 8,
+            "verdict": "failed",
+            "extract": "ads-department-tampered"
+          },
+          "failed_checks": [
+            {
+              "check": "ads_extract",
+              "scope": "completeness",
+              "result": "fail",
+              "reason": "GL_Detail entry 2397ad846e1e388e818e85cf5ded4243 (recorded at 88) is no proven entry selected through 2024-06-30; a proven entry recorded at 88 (effective 2024-04-30, 17 legs) is missing from GL_Detail"
+            }
+          ]
+        },
+        "fund": {
+          "mutation": {
+            "dimension": 7,
+            "entry_id": "b10b266d891634c3a790b6007e6104bb",
+            "leg": 1,
+            "line": 2,
+            "new_value": "535bff1e8aceeebb49e48f6c742bcbf8",
+            "old_value": "535bff1e8aceeebb49e48f6c742bcbf9"
+          },
+          "verification": {
+            "attempt": "000001",
+            "transcript_line": 234,
+            "exit": 8,
+            "verdict": "failed",
+            "extract": "ads-dimension-tampered"
+          },
+          "failed_checks": [
+            {
+              "check": "ads_extract",
+              "scope": "completeness",
+              "result": "fail",
+              "reason": "GL_Detail entry b10b266d891634c3a790b6007e6104bb (recorded at 76) is no proven entry selected through 2024-06-30; a proven entry recorded at 76 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+            }
+          ]
+        }
+      }
+    },
+    "checks": [
+      "pinned_source_bytes",
+      "complete_agency_row_coverage",
+      "all_source_groups_balance_exactly",
+      "no_subcent_rounding",
+      "all_original_chartfields_retained",
+      "source_and_helper_agent_uploads_have_native_local_reviews",
+      "preparation_retry_is_idempotent",
+      "all_staged_activity_is_invisible",
+      "native_approved_finalization",
+      "every_month_account_cell_matches_source",
+      "cumulative_balances_match_source",
+      "native_proposal_legs_preserve_every_source_row",
+      "gross_debit_credit_account_cells_match_source",
+      "historical_preactivation_prefix_stays_invisible",
+      "native_registers_equal_journal_fold",
+      "every_native_leg_preserves_source_department_or_absence",
+      "native_department_monthly_and_cumulative_net_and_gross_match_source",
+      "department_preactivation_history_stays_invisible",
+      "department_certificates_replay_exact_robot_reports",
+      "every_native_leg_preserves_complete_declared_source_dimensions",
+      "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+      "every_dimension_preactivation_history_stays_invisible",
+      "every_dimension_certificate_replays_exact_robot_report",
+      "all_finalized_chunk_retries_are_idempotent",
+      "native_upload_custody_preserved_and_fixture_reviews_recorded",
+      "native_projections_match_payloads",
+      "signed_accumulator_checkpoint",
+      "native_csv_and_ads_reread_certificates",
+      "every_exported_leg_preserves_source_department_or_absence",
+      "every_exported_leg_preserves_complete_declared_source_dimensions",
+      "independent_fa_verify_ads_proof",
+      "independent_fa_verify_authenticates_every_exported_dimension_set",
+      "independent_verifier_rejects_tampered_extract",
+      "independent_verifier_rejects_dimension_only_tampering",
+      "independent_verifier_rejects_each_source_dimension_kind_tamper",
+      "resume_inputs_and_native_book_identity_pinned",
+      "original_native_packages_and_publication_receipts_preserved",
+      "original_finalize_proposals_durable_before_approval"
+    ],
+    "reproduction": {
+      "working_directory": "repository root at ec3d3706696ea4bcda3219283da69e3103891eb7 or a later identical helper snapshot",
+      "fresh_output_required": true,
+      "commands": [
+        [
+          "python3",
+          "-B",
+          "scripts/public_ledger_source_bound_replay.py",
+          "--repo",
+          ".",
+          "run",
+          "--agency",
+          "20400",
+          "--out",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/museum-prior-source-bound-preflight-reproduce",
+          "--fa",
+          "/tmp/franken-native-3f947ac/fa",
+          "--fa-verify",
+          "/tmp/franken-native-3f947ac/fa-verify"
+        ]
+      ]
+    },
+    "scope": "Complete published museum agency selection with every assertion of the stock dimension-preserving driver. A retained, separately hashed subclass adds only --bind-source to native import preparation. Executed with 3f947; this is source-binding companion preflight, not validation of EntryFragment storage or the repaired engine.",
+    "source_binding_harness": {
+      "executed_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/tooling/source_bound_public_ledger_replay.py",
+      "sha256": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+      "bytes": 1374,
+      "identical_repository_path": "scripts/public_ledger_source_bound_replay.py",
+      "repository_content_commit": "ec3d3706696ea4bcda3219283da69e3103891eb7",
+      "transformation": "Add the existing --bind-source flag to migrate import --action prepare, including its exact retry; leave all imported driver assertions unchanged.",
+      "pin_scope": "The stock recovery pins identify the imported driver and normalizer. The separate execution-wrapper hashes below also bind this subclass, source selection and both executables before and after execution."
+    },
+    "execution_wrapper": {
+      "sha256": "84e61db5ab7ec701eceb01f72162fe052f5f0596162ebec27262a037195f7e76",
+      "bytes": 2902,
+      "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac.execution.json",
+      "metadata": {
+        "binary_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+        "command": [
+          "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+          "-B",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/tooling/source_bound_public_ledger_replay.py",
+          "--repo",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo",
+          "run",
+          "--agency",
+          "20400",
+          "--out",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac",
+          "--fa",
+          "/tmp/franken-native-3f947ac/fa",
+          "--fa-verify",
+          "/tmp/franken-native-3f947ac/fa-verify"
+        ],
+        "elapsed_seconds": 24.053,
+        "exit_code": 0,
+        "files_unchanged": true,
+        "finished_utc": "2026-11-03T15:49:35.880900+00:00",
+        "scope": "Source-bound companion preflight on the complete museum selection with the previous engine; no EntryFragment implementation claim. Original ENOSPC attempt preserved separately.",
+        "sha256_after": {
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/tooling/source_bound_public_ledger_replay.py": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+          "/tmp/franken-native-3f947ac/fa": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+          "/tmp/franken-native-3f947ac/fa-verify": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05"
+        },
+        "sha256_before": {
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/tooling/source_bound_public_ledger_replay.py": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+          "/tmp/franken-native-3f947ac/fa": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+          "/tmp/franken-native-3f947ac/fa-verify": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05"
+        },
+        "started_utc": "2026-11-03T15:49:11.828055+00:00",
+        "status": "PASS"
+      }
+    },
+    "stdout_log": {
+      "sha256": "f3f031ff4afbf651d64e1f9b0770fb7971be04bf44ae523942d04c56c6c99eb5",
+      "bytes": 170,
+      "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac.stdout.log"
+    },
+    "stderr_log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "local_path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac.stderr.log"
+    },
+    "source_binding_observations": {
+      "prepare_invocations_including_retry": [
+        {
+          "transcript_line": 25,
+          "exit": 0,
+          "command": [
+            "/tmp/franken-native-3f947ac/fa",
+            "--book",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/book",
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/run-000-import.json",
+            "--bind-source",
+            "--json"
+          ]
+        },
+        {
+          "transcript_line": 27,
+          "exit": 0,
+          "command": [
+            "/tmp/franken-native-3f947ac/fa",
+            "--book",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/book",
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/run-000-import.json",
+            "--bind-source",
+            "--json"
+          ]
+        },
+        {
+          "transcript_line": 38,
+          "exit": 0,
+          "command": [
+            "/tmp/franken-native-3f947ac/fa",
+            "--book",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/book",
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/run-001-import.json",
+            "--bind-source",
+            "--json"
+          ]
+        },
+        {
+          "transcript_line": 48,
+          "exit": 0,
+          "command": [
+            "/tmp/franken-native-3f947ac/fa",
+            "--book",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/book",
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/run-002-import.json",
+            "--bind-source",
+            "--json"
+          ]
+        },
+        {
+          "transcript_line": 58,
+          "exit": 0,
+          "command": [
+            "/tmp/franken-native-3f947ac/fa",
+            "--book",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/book",
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/run-003-import.json",
+            "--bind-source",
+            "--json"
+          ]
+        },
+        {
+          "transcript_line": 68,
+          "exit": 0,
+          "command": [
+            "/tmp/franken-native-3f947ac/fa",
+            "--book",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/book",
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-museum-source-bound-prototype-3f947ac/run-004-import.json",
+            "--bind-source",
+            "--json"
+          ]
+        }
+      ],
+      "complete_native_bindings": [
+        {
+          "transcript_line": 79,
+          "event": "migration_import_package",
+          "binding": {
+            "book_id": "d54fbac277da7b7b7e7edd7996a0b7a1",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "65b34807ac86e946a8c3d2131c42cdcb2fb6f6c9e9868e29771c1e4c1a55ec27",
+            "manifest_vid": "1068622da8de51bb0ca4b6f4519c2806",
+            "missing_chunks": [],
+            "package_commit": "2d1b31d0f47b529d2526ee8cc6cfac04f10895a57f4355fb6f9025aef81fe9f1",
+            "package_oid": "a363d83ee951e73cd5c88699b0d78dfc18b5a72b0080edb060c068a53e410193",
+            "recorded_chunks": 3,
+            "run_body_digest": "db4919fffafa31f91eaebbf6a8e9ff042c9d80f0619c37598f3712d5d40b5730",
+            "run_vid": "17bad6a2b2f5a811024adc218ee77762",
+            "source_commit": "36df216b724912a5471b29189ef1acced2045e8b7541fb943c92f50d11229e19",
+            "source_oid": "acb04886c92afcbf83f835409b8ac5f2fb4f2e0e7a27929ad59fd85a9684379c",
+            "source_rows": 6,
+            "unexpected_chunks": []
+          }
+        },
+        {
+          "transcript_line": 90,
+          "event": "migration_import_package",
+          "binding": {
+            "book_id": "d54fbac277da7b7b7e7edd7996a0b7a1",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "87f88cdd5d28cd51c83a3c9136268a790174d6b2dd25689d78f5f9430c1fb7c5",
+            "manifest_vid": "e0ccae7f473d2144fe21fcf4ef7e2b40",
+            "missing_chunks": [],
+            "package_commit": "ea687be25ae8dd1413489600289ae05c720d632b5585a5b2017d3c69090c7fa5",
+            "package_oid": "aad4cdfd8dcb24d65c500d74cec6383d99a599855e9b77cb5ac7167bb193f2f0",
+            "recorded_chunks": 3,
+            "run_body_digest": "342a5f81ecfa88af73ede36c81cab6f044446acf8aa579750239ba3f7d0c764b",
+            "run_vid": "12605749839d8b1bb9cfb5c91839083c",
+            "source_commit": "5055c3bba60f1b64a8426df2a6676a10538391a8d8b1850fb81191a6b5096aa5",
+            "source_oid": "87c13510a8f45aa7fa44f5e570aadda80da225c88714e5d8fa333445eb37c564",
+            "source_rows": 50,
+            "unexpected_chunks": []
+          }
+        },
+        {
+          "transcript_line": 101,
+          "event": "migration_import_package",
+          "binding": {
+            "book_id": "d54fbac277da7b7b7e7edd7996a0b7a1",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "74f951772ab9f5334ca085c5b3b01c2323f8a14e6c5c0a179c203d9609d961b4",
+            "manifest_vid": "eef6fb884430db10bf8e341df9a9ed92",
+            "missing_chunks": [],
+            "package_commit": "a869c24178fb88a162c7f848a9cb9216cb41de211c375e111e16be823b8cd15a",
+            "package_oid": "59a125b10685a73e434c24bb79524995329a5d814f7cb3497b7684fb5938eb8c",
+            "recorded_chunks": 3,
+            "run_body_digest": "952783b2b3ca6c13a152b32bac4ab44e0b68c5ab841e2141e15b4a4a17a30a36",
+            "run_vid": "bad94586e46358867302d4429c536096",
+            "source_commit": "8bd72c48de36cfcc426192c7841c9592a926e229115595cae4cef3cd35d187fa",
+            "source_oid": "8812002ab5c7021b2257b80198befd8afc078ed8b5f5b897bfc4d2c90ad9ed1c",
+            "source_rows": 39,
+            "unexpected_chunks": []
+          }
+        },
+        {
+          "transcript_line": 112,
+          "event": "migration_import_package",
+          "binding": {
+            "book_id": "d54fbac277da7b7b7e7edd7996a0b7a1",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "61770e72dd0e0ebdfff1bc0efd1a4e65d9de43ef45b96c63b9209e624d7d7789",
+            "manifest_vid": "e8fd68aeca4d08c8cac0de5c11672d96",
+            "missing_chunks": [],
+            "package_commit": "4aa01f0b5e207f85c20cfb36ec339901b80478310a9db8df6a4c165ce7b9e72e",
+            "package_oid": "012c8b21fdee4ffc2062a49727bdb9298f6d0e3644a2af2f211402420e9263a6",
+            "recorded_chunks": 3,
+            "run_body_digest": "58746216caf17e97825a62713ece7753c73f05e6fc75e0c89ce0c2542c840bdc",
+            "run_vid": "caf7ee1c90ce60ae0e2af2714d90d491",
+            "source_commit": "9a0ed83186daec3ffe7c351e81c02c428aa0a6f7eae4dd8b67d108f4e9d1d384",
+            "source_oid": "bd3976b50151e9bcc1f469aa8b43dd27efb2ee86e6f4c0f3654e871b16c2a245",
+            "source_rows": 6,
+            "unexpected_chunks": []
+          }
+        },
+        {
+          "transcript_line": 123,
+          "event": "migration_import_package",
+          "binding": {
+            "book_id": "d54fbac277da7b7b7e7edd7996a0b7a1",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "e40b60e2a7d278bcac88eeba970157d6ac65d409bedb22ca07fcb4c13e282993",
+            "manifest_vid": "c5b1cf35b3b3518be60119ce3bb9b733",
+            "missing_chunks": [],
+            "package_commit": "1f215d90c369f74863914e1b7f30c2e54f8c636049ac4d8a896d7fe091b41cfa",
+            "package_oid": "5f5f9c5f966dfd4c880959b69414db63ad4160d653a2c10ee566026dcedae947",
+            "recorded_chunks": 3,
+            "run_body_digest": "c9dc0a41e34320333c3067413762425dc66f8e741ce5480abac2da480949caa7",
+            "run_vid": "244bee54e67a24b5b86b9b79b80a4ada",
+            "source_commit": "42cd0616f8c9fadfb8a7486a9d936ceafd2c1fa221caeee45d31bbc27d9330b2",
+            "source_oid": "b9106bfdf0a8126cc82870f07c3b9acf4fdf1b6f00eafc50cc3b1a9dc691bc86",
+            "source_rows": 20,
+            "unexpected_chunks": []
+          }
+        }
+      ]
+    }
+  },
+  "preserved_source_bound_environment_failure": {
+    "status": "FAIL_ENVIRONMENT_PRESERVED",
+    "engine_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+    "scope": "The earlier source-bound attempt failed at chart import before any source-bound prepare call because the overlay filesystem was full. The original output was preserved and the complete preflight was rerun in fresh tmpfs output.",
+    "driver_exit": 1,
+    "native_exit": 5,
+    "native_error": "substrate transaction: Write(Commit(Io(Os { code: 28, kind: StorageFull, message: \"No space left on device\" })))",
+    "failed_native_command": [
+      "/tmp/franken-native-3f947ac/fa",
+      "--book",
+      "/workspace/scratch/69d8c2fe02b1/native-validation-local-museum-source-bound-prototype-3f947ac/book",
+      "chart",
+      "import",
+      "/workspace/scratch/69d8c2fe02b1/native-validation-local-museum-source-bound-prototype-3f947ac/chart-000.json",
+      "--json"
+    ],
+    "execution_wrapper": {
+      "sha256": "60ca700daed1a5baa885ca3d1ed81cbca9b7c65cd6413920cded9e60e20398da",
+      "bytes": 2745,
+      "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-local-museum-source-bound-prototype-3f947ac.execution.json"
+    },
+    "failure_report": {
+      "sha256": "eb6d4cd2d837da377b0078084a144e0748a0966b2c8f068366db1b85afaf7439",
+      "bytes": 1101,
+      "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-local-museum-source-bound-prototype-3f947ac/attempts/000001/failure.json"
+    },
+    "transcripts": [
+      {
+        "sha256": "99b4d113b178709e4378c597f9cb15c9b982584f29746c11e0d6f39b123923a6",
+        "bytes": 3066,
+        "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-local-museum-source-bound-prototype-3f947ac/attempts/000001/commands.jsonl",
+        "attempt": "000001",
+        "native_command_receipts": 3,
+        "exit_counts": {
+          "0": 2,
+          "5": 1
+        }
+      }
+    ]
+  }
+}
