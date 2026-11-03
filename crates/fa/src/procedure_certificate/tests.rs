@@ -29,6 +29,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(seed: u8) -> Self {
+        Self::with_entities(seed, Vec::new())
+    }
+    fn with_entities(seed: u8, entities: Vec<fa_journal::genesis::LegalEntitySpec>) -> Self {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -47,7 +50,7 @@ impl Fixture {
                     base_unit: unit,
                     calendar: FiscalCalendar::monthly("procedure", 1, 0).unwrap(),
                     time_zone_policy: None,
-                    entities: Vec::new(),
+                    entities,
                     opening_date: None,
                 },
                 Entropy::deterministic(u64::from(seed)),

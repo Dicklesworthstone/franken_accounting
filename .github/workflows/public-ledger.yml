@@ -169,6 +169,18 @@ jobs:
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test statements large_entry_certificates_bind_fragments --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/entry-certificate-tests.log
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-verify --all-targets --jobs 1 2>&1 | tee artifacts/public-ledger/independent-verifier-tests.log
 
+      - name: Regress assertion drift period folds and retained certificates
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assertion_drift_status=0
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-lantern --test lantern assertion_drift --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/assertion-drift-lantern-tests.log || assertion_drift_status=$?
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --lib procedure_certificate::tests::extended::assertion_drift --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/assertion-drift-certificate-tests.log || assertion_drift_status=$?
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cases assertion_drift_reports_the_magnitude_of_the_summed_deltas --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/assertion-drift-case-tests.log || assertion_drift_status=$?
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test cases worldcom --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/worldcom-tests.log || assertion_drift_status=$?
+          exit "$assertion_drift_status"
+
       - name: Replay the complete finance-authority selection through native migration
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash

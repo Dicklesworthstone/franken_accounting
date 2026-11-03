@@ -95,6 +95,10 @@ pub struct Snapshot {
     /// Validated REA graph snapshot (`Party`, `Instrument`, `LegalEntity`,
     /// `ExternalId`, and valid-time `OWNS`/`CONTROLS`/`RELATED_TO` edges) at `known_at`.
     pub rea: fa_journal::rea::ReaSnapshot,
+    /// Balancing entities declared by the BookSpec at `known_at`, by code.
+    /// Informational REA entities do not implicitly become balancing entities.
+    /// Native procedure certificates bind this input through their Book witness.
+    pub declared_entities: BTreeMap<String, VId>,
     /// Journaled attestations (`Reviewed`, `ManualAssertion`, `RegisterEquals`,
     /// `Reconciled`)
     /// belonging to this book as known at `known_at`.
@@ -258,6 +262,26 @@ impl Snapshot {
                 (entry, list.into_iter().map(|(_, s)| s).collect())
             })
             .collect();
+        let declared_entities = match fa_journal::genesis::read_book_spec_at(db, seq)? {
+            Some(spec) => {
+                if spec.book_id != book.book_id {
+                    return Err(KernelError::Corrupt(
+                        "historical BookSpec belongs to another book".into(),
+                    )
+                    .into());
+                }
+                spec.entities
+                    .iter()
+                    .map(|entity| {
+                        (
+                            entity.code.clone(),
+                            fa_model::entity_value_vid(spec.book_id, &entity.code),
+                        )
+                    })
+                    .collect()
+            }
+            None => BTreeMap::new(),
+        };
         let rea = match fa_journal::rea::read_rea_at(db, book, seq) {
             Ok(s) => s,
             Err(KernelError::Corrupt(msg)) if msg.contains("no book spec") => {
@@ -308,6 +332,7 @@ impl Snapshot {
             transitions,
             open_items_as_of,
             rea,
+            declared_entities,
             attestations,
             documents,
             supplements,

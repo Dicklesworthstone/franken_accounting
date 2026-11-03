@@ -6386,6 +6386,303 @@ fn assertion_drift_cites_the_attestation_and_only_the_later_entries_that_move_it
     );
 }
 
+mod assertion_drift_period_tests {
+    use super::*;
+    use fa_journal::attestation::{
+        Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,
+        Subject,
+    };
+    use fa_lantern::assertion_drift::AssertionDrift;
+    use fa_lantern::snapshot::SnapshotEntry;
+
+    fn liability(
+        h: &mut Harness,
+        id: u128,
+        recorded: u64,
+        date: DateDay,
+        cents: i128,
+        reverses: Option<&SnapshotEntry>,
+    ) -> SnapshotEntry {
+        let period = h.period_code(date);
+        let usd = h.usd;
+        let (expense_side, liability_side) = if cents > 0 {
+            (Side::Debit, Side::Credit)
+        } else {
+            (Side::Credit, Side::Debit)
+        };
+        make_snapshot_entry(
+            h,
+            VId(id),
+            CommitSeq(recorded),
+            date,
+            &period,
+            if reverses.is_some() {
+                EntryClass::REVERSAL
+            } else {
+                EntryClass::ORIGINAL
+            },
+            vec![
+                ("6000", expense_side, usd, cents.abs()),
+                ("2000", liability_side, usd, cents.abs()),
+            ],
+            reverses
+                .map(|target| fa_model::Supersession {
+                    target: fa_model::EntryRef {
+                        vid: target.vid,
+                        entry_digest: target.entry.entry_digest,
+                    },
+                    kind: SupersessionKind::Reverses,
+                    reason_code: 1,
+                })
+                .into_iter()
+                .collect(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+    }
+
+    fn claim(h: &Harness, date: DateDay, cents: i128) -> RegisterEqualsClaim {
+        RegisterEqualsClaim {
+            account: h.account("2000"),
+            unit_id: h.usd.0,
+            period: h.period_code(date),
+            entity: None,
+            mantissa: cents,
+            as_of_effective: date,
+            evaluated_known_at: CommitSeq(10),
+            fold_digest: [0xAB; 32],
+        }
+    }
+
+    fn attest(h: &Harness, snapshot: &mut Snapshot, id: u128, claim: RegisterEqualsClaim) {
+        let cell = claim.cell_digest();
+        snapshot.attestations.insert(
+            VId(id),
+            StoredAttestation {
+                attestation: Attestation {
+                    book_id: h.book.book_id,
+                    claim: AttestationClaim::RegisterEquals(claim),
+                    subject: Subject::Cell(cell),
+                    principal: REVIEWER,
+                    evidence_refs: Vec::new(),
+                },
+                signed_digest: [0xCD; 32],
+                binding: CapabilityBinding {
+                    profile: Profile::Human,
+                    capability_commitment: [0xEF; 32],
+                },
+                signature: None,
+            },
+        );
+    }
+
+    #[test]
+    fn a_reversal_in_a_later_period_is_not_assertion_drift() {
+        let mut h = harness();
+        let mut snapshot = h.snapshot();
+        let accrual = liability(&mut h, 94_001, 10, day(2026, 1, 31), 5_000, None);
+        let reversal = liability(&mut h, 94_002, 20, day(2026, 2, 1), -5_000, Some(&accrual));
+        snapshot.entries = vec![accrual, reversal];
+        attest(
+            &h,
+            &mut snapshot,
+            95_101,
+            claim(&h, day(2026, 1, 31), -5_000),
+        );
+        let mut february = claim(&h, day(2026, 2, 28), 5_000);
+        february.evaluated_known_at = CommitSeq(20);
+        attest(&h, &mut snapshot, 95_102, february);
+
+        let procedure = AssertionDrift::new().unwrap();
+        let correct = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(correct.version, 2);
+        assert!(correct.findings.is_empty(), "{:?}", correct.findings);
+
+        // The control is not silenced: a zero attestation for February is
+        // wrong by the reversal's +50.00, and only that posting explains it.
+        attest(&h, &mut snapshot, 95_103, claim(&h, day(2026, 2, 28), 0));
+        let wrong = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(wrong.findings.len(), 1, "{:?}", wrong.findings);
+        assert_eq!(wrong.findings[0].severity, Severity::Critical);
+        assert_eq!(wrong.findings[0].statistic.value, 5_000);
+        assert_eq!(
+            wrong.findings[0].cites,
+            vec![
+                Cite::Attestation(VId(95_103)),
+                Cite::Account(h.account("2000")),
+                Cite::Period(h.period_code(day(2026, 2, 28))),
+                Cite::Entry(VId(94_002)),
+            ]
+        );
+        witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+    }
+
+    #[test]
+    fn same_period_reversals_respect_each_claims_effective_cutoff() {
+        let mut h = harness();
+        let mut snapshot = h.snapshot();
+        let accrual = liability(&mut h, 94_011, 10, day(2026, 1, 5), 5_000, None);
+        let reversal = liability(&mut h, 94_012, 20, day(2026, 1, 15), -5_000, Some(&accrual));
+        let restored = liability(&mut h, 94_013, 30, day(2026, 1, 25), 5_000, Some(&reversal));
+        snapshot.entries = vec![accrual, reversal, restored];
+        // One recorded snapshot contains all three effects. Each assertion
+        // nevertheless observes only the activity through its own as-of day.
+        attest(
+            &h,
+            &mut snapshot,
+            95_111,
+            claim(&h, day(2026, 1, 10), -5_000),
+        );
+        attest(&h, &mut snapshot, 95_112, claim(&h, day(2026, 1, 20), 0));
+        attest(
+            &h,
+            &mut snapshot,
+            95_113,
+            claim(&h, day(2026, 1, 31), -5_000),
+        );
+        let procedure = AssertionDrift::new().unwrap();
+        let correct = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert!(correct.findings.is_empty(), "{:?}", correct.findings);
+
+        // Retaining the pre-reversal amount as a January 20 assertion really
+        // does drift. The later reversal-of-reversal must not hide that fact.
+        attest(
+            &h,
+            &mut snapshot,
+            95_114,
+            claim(&h, day(2026, 1, 20), -5_000),
+        );
+        let wrong = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(wrong.findings.len(), 1, "{:?}", wrong.findings);
+        assert_eq!(wrong.findings[0].statistic.value, 5_000);
+        assert_eq!(wrong.findings[0].cites[0], Cite::Attestation(VId(95_114)));
+        assert_eq!(
+            wrong.findings[0].cites.last(),
+            Some(&Cite::Entry(VId(94_012)))
+        );
+        assert!(!wrong.findings[0].cites.contains(&Cite::Entry(VId(94_013))));
+        witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+    }
+
+    #[test]
+    fn gross_assertion_drift_keeps_entity_unit_and_day_boundaries() {
+        let mut h = harness();
+        let mut snapshot = h.snapshot();
+        for account in ["2000", "6000"] {
+            snapshot
+                .accounts
+                .get_mut(&h.account(account))
+                .unwrap()
+                .unit_policy = UnitPolicy::AnyCurrency;
+        }
+        let alpha = fa_model::entity_value_vid(h.book.book_id, "ALPHA");
+        let beta = fa_model::entity_value_vid(h.book.book_id, "BETA");
+        for (code, value, vid) in [("ALPHA", alpha, VId(93_001)), ("BETA", beta, VId(93_002))] {
+            snapshot.declared_entities.insert(code.into(), value);
+            snapshot.rea.legal_entities.insert(
+                vid,
+                fa_journal::rea::LegalEntityRow {
+                    vid,
+                    dimension_value_vid: value,
+                    code: code.into(),
+                    name: code.into(),
+                    jurisdiction: "US".into(),
+                    functional_unit: h.usd,
+                    formed: None,
+                    dissolved: None,
+                    external_ids: Vec::new(),
+                    created_at: CommitSeq(1),
+                },
+            );
+        }
+        let with_entity = |mut e: SnapshotEntry, value: VId, unit: UnitId| {
+            let mut proposal = e.entry.proposal;
+            for leg in &mut proposal.legs {
+                leg.dimension_set = vec![(fa_model::LEGAL_ENTITY_DIMENSION, value)];
+                leg.amount.unit = unit;
+            }
+            proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+            e.entry = proposal.seal(Vec::new(), None).unwrap();
+            e
+        };
+        let usd = h.usd;
+        let eur = h.book.units.lookup("EUR").unwrap();
+        let accrual = with_entity(
+            liability(&mut h, 94_021, 10, day(2026, 1, 5), 5_000, None),
+            alpha,
+            usd,
+        );
+        let reversal = with_entity(
+            liability(&mut h, 94_022, 20, day(2026, 2, 1), -5_000, Some(&accrual)),
+            alpha,
+            usd,
+        );
+        let other_entity = with_entity(
+            liability(&mut h, 94_023, 21, day(2026, 1, 10), 700, None),
+            beta,
+            usd,
+        );
+        let other_unit = with_entity(
+            liability(&mut h, 94_024, 22, day(2026, 1, 10), 900, None),
+            alpha,
+            eur,
+        );
+        let after_cutoff = with_entity(
+            liability(&mut h, 94_025, 23, day(2026, 1, 25), 300, None),
+            alpha,
+            usd,
+        );
+        snapshot.entries = vec![accrual, reversal, other_entity, other_unit, after_cutoff];
+        let mut alpha_claim = claim(&h, day(2026, 1, 20), -5_000);
+        alpha_claim.entity = Some("ALPHA".into());
+        attest(&h, &mut snapshot, 95_121, alpha_claim.clone());
+        // None is the unassigned cell, not a wildcard for ALPHA plus BETA.
+        attest(&h, &mut snapshot, 95_123, claim(&h, day(2026, 1, 31), 0));
+        let procedure = AssertionDrift::new().unwrap();
+        let correct = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert!(correct.findings.is_empty(), "{:?}", correct.findings);
+
+        alpha_claim.as_of_effective = day(2026, 1, 31);
+        attest(&h, &mut snapshot, 95_122, alpha_claim);
+        let wrong = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(wrong.findings.len(), 1, "{:?}", wrong.findings);
+        assert_eq!(wrong.findings[0].statistic.value, 300);
+        assert_eq!(wrong.findings[0].cites[0], Cite::Attestation(VId(95_122)));
+        assert_eq!(
+            wrong.findings[0].cites.last(),
+            Some(&Cite::Entry(VId(94_025)))
+        );
+        assert_eq!(wrong.findings[0].cites.len(), 4);
+        witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+    }
+
+    #[test]
+    fn drift_without_later_recorded_entries_does_not_invent_an_original_prefix_verdict() {
+        let mut h = harness();
+        let mut snapshot = h.snapshot();
+        snapshot.entries = vec![liability(&mut h, 94_031, 10, day(2026, 1, 5), 5_000, None)];
+        attest(&h, &mut snapshot, 95_131, claim(&h, day(2026, 1, 31), 0));
+        let run = run_over(&snapshot, &h.book, &AssertionDrift::new().unwrap()).unwrap();
+        assert_eq!(run.findings.len(), 1);
+        let finding = &run.findings[0];
+        assert_eq!(finding.severity, Severity::Critical);
+        assert_eq!(finding.statistic.value, 5_000);
+        assert_eq!(
+            finding.cites.len(),
+            3,
+            "no later-recorded posting is invented"
+        );
+        assert!(
+            finding
+                .narrative
+                .contains("does not re-evaluate the original prefix")
+        );
+        assert!(!finding.narrative.contains("never matched"));
+    }
+}
+
 /// fa-kxc4: the role each role-selected procedure reads in code is exactly
 /// what `registries/account_roles.toml` lists as that role's consumers, and
 /// each such procedure's registry summary says it selects by role.

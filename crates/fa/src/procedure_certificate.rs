@@ -625,7 +625,7 @@ impl ProcedureCertificate {
     }
     fn request(&self) -> Result<ProcedureRequest, Refusal> {
         if !supported(&self.report.procedure, self.report.version)
-            && !extended::supported(&self.report.procedure, self.report.version)
+            && !extended::has_retained_closure(&self.report.procedure, self.report.version)
             && !bank::supported(&self.report.procedure, self.report.version)
         {
             return Err(invalid(

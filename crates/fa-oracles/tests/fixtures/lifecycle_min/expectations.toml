@@ -49,7 +49,7 @@ book_variant = "native"
 statement_template = "D.detection"
 basis = ["D-1"]
 granularity = "journal_entry"
-capabilities = ["procedure:recon.assertion_drift@1"]
+capabilities = ["procedure:recon.assertion_drift@2"]
 procedure = "recon.assertion_drift"
 version = 1
 

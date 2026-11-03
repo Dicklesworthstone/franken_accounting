@@ -339,17 +339,17 @@ reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
 
-# StormyLion: RegisterEquals attestations vs the cell's fold (account, unit, entity, period)
-# MaroonCat: the fold of the attested cell (account, unit, optional entity, period, effective <= as_of) against the RegisterEquals attestation; drift and later-entry cites come from the cell only (assertion_drift.rs:56-115)
+# root-2026-11-03: gross posted account/unit/declared-entity/period/as-of cell versus its RegisterEquals attestation; implicit sole-entity and exact None semantics match the native register. Population count is excluded by case plan section 5.4. Static code review, not runtime evidence.
+# native-replay-validation-2026-11-03: verdict, severity, drift and cited postings depend on that exact cell and its attestation. Historical BookSpec entities exclude informational REA entities; the original evaluated prefix is not re-executed. Independent static code review, not runtime evidence.
 [[tier]]
 procedure = "recon.assertion_drift"
-version = 1
-row_digest = "8af4d6fbc7ec1215481139e62b636226b98f4b9c5d22ba2e0269ed178dc45117"
+version = 2
+row_digest = "98208cf128ca41e42c49d4a9ea148a2367da4fd06cceb3371f334a9634187bdf"
 tier = "S-acct"
-code_location = "crates/fa-lantern/src/assertion_drift.rs:42"
-reader = "StormyLion"
+code_location = "crates/fa-lantern/src/assertion_drift.rs:44"
+reader = "root-2026-11-03"
 reader_tier = "S-acct"
-second_reader = "MaroonCat"
+second_reader = "native-replay-validation-2026-11-03"
 second_reader_tier = "S-acct"
 disagreement = false
 reads_evidence = true
