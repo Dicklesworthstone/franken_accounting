@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -76,7 +77,8 @@ def native_package(case, run):
             amount = Decimal(row[source.AMOUNT_COLUMN])
             legs.append({"index": ordinal, "account": row["ACCOUNT"],
                          "side": "credit" if amount.is_signed() else "debit",
-                         "amount": f"{abs(amount):.2f} USD"})
+                         "amount": f"{abs(amount):.2f} USD",
+                         "dimensions": [case["department_values"][row["DEPTID"]]] if row["DEPTID"].strip() else []})
         chunks.append({"index": index, "effective_date": DATES[period],
                        "document_date": DATES[period],
                        "effective_period": f"FY{year}-P{int(period):02}",
@@ -98,6 +100,10 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
             out = Path(cls.directory.name) / agency
             manifest = replay.normalize(fixture, agency, out)
             originals = read_csv(fixture, "cp1252")
+            department_values = {
+                code: {"dimension": 17, "value": f"{index + 1:032x}"}
+                for index, code in enumerate(sorted({row["DEPTID"] for row in originals if row["DEPTID"].strip()}))
+            }
             source_rows = {
                 position["record_index"]: row
                 for position, row in zip(provenance["source_records"], originals, strict=True)
@@ -111,6 +117,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 "fixture": fixture, "provenance": provenance, "out": out,
                 "manifest": manifest, "originals": originals,
                 "source_rows": source_rows, "normalized": normalized,
+                "department_values": department_values,
             }
 
     def test_original_byte_extracts_match_independently_pinned_distribution_slices(self):
@@ -237,7 +244,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
         for agency, case in self.cases.items():
             for run in case["manifest"]["runs"]:
                 with self.subTest(agency=agency, run=run["name"]):
-                    replay.verify_prepared_legs(case["manifest"], run, native_package(case, run))
+                    replay.verify_prepared_legs(case["manifest"], run, native_package(case, run), case["department_values"])
 
     def test_native_leg_assertion_rejects_same_account_opposing_mutations_that_preserve_net(self):
         case = self.cases["31500"]
@@ -262,7 +269,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
         self.assertEqual(net_by_account(package), net_by_account(before))
         self.assertEqual(package["row_count"], before["row_count"])
         with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
-            replay.verify_prepared_legs(case["manifest"], run, package)
+            replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
 
     def test_native_leg_assertion_rejects_substitution_drop_duplicate_and_reorder(self):
         case = self.cases["31500"]
@@ -290,7 +297,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                     # original row order rather than an invalid index alone.
                     legs[0]["index"], legs[1]["index"] = 0, 1
                 with self.assertRaises(replay.ReplayError):
-                    replay.verify_prepared_legs(case["manifest"], run, package)
+                    replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
 
     def test_native_leg_assertion_rejects_wrong_scope_dates_and_counts(self):
         case = self.cases["31500"]
@@ -309,17 +316,88 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 package = deepcopy(original)
                 package["chunks"][0][field] = changed
                 with self.assertRaises(replay.ReplayError):
-                    replay.verify_prepared_legs(case["manifest"], run, package)
+                    replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
         for field in ("row_count", "chunk_count"):
             with self.subTest(field=field):
                 package = deepcopy(original)
                 package[field] += 1
                 with self.assertRaises(replay.ReplayError):
-                    replay.verify_prepared_legs(case["manifest"], run, package)
+                    replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
         package = deepcopy(original)
         package["chunks"].pop()
         with self.assertRaisesRegex(replay.ReplayError, "omitted a chunk"):
-            replay.verify_prepared_legs(case["manifest"], run, package)
+            replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
+
+    def test_every_department_account_month_matches_independent_decimal_source_fold(self):
+        for agency, case in self.cases.items():
+            with self.subTest(agency=agency):
+                expected = {period: {} for period in replay.PERIODS}
+                names = {}
+                for row in case["originals"]:
+                    department = row["DEPTID"] if row["DEPTID"].strip() else ""
+                    if department:
+                        names[department] = row["DEPTDESCR"]
+                    period = f"FY2024-P{row['ACCOUNTING_PERIOD']}"
+                    bucket = expected[period].setdefault(department, {
+                        "rows": 0, "monetary_rows": 0, "account_nets": {}, "gross_cents": {},
+                    })
+                    amount = cents(row[source.AMOUNT_COLUMN])
+                    account = row["ACCOUNT"]
+                    side = "credit" if amount < 0 else "debit"
+                    bucket["rows"] += 1
+                    bucket["monetary_rows"] += int(amount != 0)
+                    bucket["account_nets"][account] = bucket["account_nets"].get(account, 0) + amount
+                    key = f"{account}:{side}"
+                    bucket["gross_cents"][key] = bucket["gross_cents"].get(key, 0) + abs(amount)
+                manifest = case["manifest"]
+                self.assertEqual(manifest["department_activity"], expected)
+                self.assertEqual(manifest["departments"], [{"code": code, "name": name} for code, name in sorted(names.items())])
+                for mapped in manifest["row_mapping"]:
+                    raw = case["source_rows"][mapped["source_record"]]["DEPTID"]
+                    self.assertEqual(mapped["department"], raw if raw.strip() else None)
+                for period, departments in expected.items():
+                    net, gross = defaultdict(int), defaultdict(int)
+                    for bucket in departments.values():
+                        for account, value in bucket["account_nets"].items():
+                            net[account] += value
+                        for key, value in bucket["gross_cents"].items():
+                            gross[key] += value
+                    self.assertEqual(dict(net), manifest["activity_cents"][period])
+                    self.assertEqual(dict(gross), manifest["activity_gross_cents"][period])
+                mapping = tomllib.loads((case["out"] / "column_map.toml").read_text())
+                self.assertEqual(mapping["dimension_columns"], {"department": "original_DEPTID"})
+        pension = self.cases["31500"]["manifest"]
+        self.assertIn("0100001", {row["code"] for row in pension["departments"]})
+        self.assertNotIn("100001", {row["code"] for row in pension["departments"]})
+        self.assertEqual(len(self.cases["66000"]["manifest"]["departments"]), 8)
+        # A department and untagged cash can legitimately be opposite sides.
+        self.assertTrue(any(sum(bucket["account_nets"].values()) != 0
+                            for period in pension["department_activity"].values()
+                            for bucket in period.values()))
+
+    def test_native_leg_assertion_rejects_dimension_only_changes_to_balanced_money(self):
+        case = self.cases["31500"]
+        run = next(run for run in case["manifest"]["runs"] if run["key"][2] == "8315A")
+        original = native_package(case, run)
+        source_legs = original["chunks"][0]["legs"]
+        tagged = next(i for i, leg in enumerate(source_legs) if leg["dimensions"])
+        untagged = next(i for i, leg in enumerate(source_legs) if not leg["dimensions"])
+        for mutation in ("substitute", "drop", "invent_for_blank", "wrong_kind"):
+            with self.subTest(mutation=mutation):
+                changed = deepcopy(original)
+                legs = changed["chunks"][0]["legs"]
+                if mutation == "substitute":
+                    legs[tagged]["dimensions"][0]["value"] = "f" * 32
+                elif mutation == "drop":
+                    legs[tagged]["dimensions"] = []
+                elif mutation == "invent_for_blank":
+                    legs[untagged]["dimensions"] = deepcopy(legs[tagged]["dimensions"])
+                else:
+                    legs[tagged]["dimensions"][0]["dimension"] += 1
+                self.assertEqual([(r["account"], r["side"], r["amount"]) for r in source_legs],
+                                 [(r["account"], r["side"], r["amount"]) for r in legs])
+                with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
+                    replay.verify_prepared_legs(case["manifest"], run, changed, case["department_values"])
 
     def test_chartfields_remain_distinct_and_codes_are_not_numeric_coercions(self):
         case = self.cases["66000"]
@@ -405,6 +483,122 @@ class ReplayRefusalTests(unittest.TestCase):
             self.assertEqual(native.tb("FY2024-P10"), {"101000": 0})
             with self.assertRaisesRegex(replay.ReplayError, "gross debit/credit activity"):
                 native.tb("FY2024-P10", expected_gross=expected_gross)
+
+    def test_department_missing_values_leading_zeros_and_ambiguous_metadata(self):
+        for value in ("", " ", "\t \r\n"):
+            self.assertIsNone(replay.department_code(value))
+        self.assertEqual(replay.department_code("0100001"), "0100001")
+        for value in (" 0100001", "0100001 ", "01 001", "\x00", "é", "A" * 65, 100001):
+            with self.subTest(value=value), self.assertRaises(replay.ReplayError):
+                replay.department_code(value)
+        rows = [{"fields": {"DEPTID": "0100001", "DEPTDESCR": "General Administration"}},
+                {"fields": {"DEPTID": " ", "DEPTDESCR": ""}}]
+        self.assertEqual(replay.department_specs(rows), [{"code": "0100001", "name": "General Administration"}])
+        rows.append({"fields": {"DEPTID": "0100001", "DEPTDESCR": "Another department"}})
+        with self.assertRaisesRegex(replay.ReplayError, "conflicting source descriptions"):
+            replay.department_specs(rows)
+
+    def test_department_oracle_retains_zero_net_nonzero_gross_and_unbalanced_slices(self):
+        def row(code, amount):
+            return {"fields": {"FISCAL_YEAR": "2024", "ACCOUNTING_PERIOD": "10", "DEPTID": code,
+                               "ACCOUNT": "101000", source.AMOUNT_COLUMN: amount}}
+        actual = replay.department_oracle([row("0100001", "100.00"), row("0100001", "-100.00"),
+                                           row("0100001", "3.00"), row(" ", "-3.00"), row(" ", "0")])
+        self.assertEqual(actual["FY2024-P10"]["0100001"], {
+            "rows": 3, "monetary_rows": 3, "account_nets": {"101000": 300},
+            "gross_cents": {"101000:debit": 10300, "101000:credit": 10000},
+        })
+        self.assertEqual(actual["FY2024-P10"][""]["account_nets"], {"101000": -300})
+        self.assertEqual(actual["FY2024-P10"][""]["rows"], 2)
+        canceling = replay.department_oracle([row("0100001", "100.00"), row("0100001", "-100.00")])
+        self.assertEqual(canceling["FY2024-P10"]["0100001"]["account_nets"], {"101000": 0})
+        self.assertEqual(canceling["FY2024-P10"]["0100001"]["gross_cents"],
+                         {"101000:debit": 10000, "101000:credit": 10000})
+
+    def test_native_department_registration_keeps_exact_codes_and_refuses_identity_aliases(self):
+        native = object.__new__(replay.Native)
+        specs = [{"code": "0100001", "name": "General Administration"}, {"code": "100001", "name": "Distinct code"}]
+        responses = [{"data": {"value": {"dimension": "department", "code": spec["code"],
+                       "dimension_id": 17, "vid": f"{index + 1:032x}"}}} for index, spec in enumerate(specs)]
+        with mock.patch.object(native, "call", side_effect=responses) as call:
+            values = native.register_departments(specs)
+        self.assertEqual(set(values), {"0100001", "100001"})
+        self.assertNotEqual(values["0100001"], values["100001"])
+        self.assertEqual(call.call_args_list[0].args,
+                         ("dimension", "add", "department", "0100001", "--name", "General Administration"))
+        changed = deepcopy(responses)
+        changed[1]["data"]["value"]["vid"] = changed[0]["data"]["value"]["vid"]
+        with mock.patch.object(native, "call", side_effect=changed):
+            with self.assertRaisesRegex(replay.ReplayError, "share a native value identity"):
+                native.register_departments(specs)
+        changed = deepcopy(responses)
+        changed[0]["data"]["value"]["code"] = "100001"
+        with mock.patch.object(native, "call", side_effect=changed):
+            with self.assertRaisesRegex(replay.ReplayError, "changed source code"):
+                native.register_departments(specs)
+
+    def test_department_tb_checks_scope_and_both_gross_sides_even_when_net_is_zero(self):
+        native = object.__new__(replay.Native)
+        gross = {"101000:debit": 10000, "101000:credit": 10000}
+        row = {"code": "101000", "debits": "100.00 USD", "credits": "100.00 USD", "net": "0.00 USD"}
+        data = {"dimension": {"dimension": "department", "value": "0100001", "values": ["0100001"]}, "rows": [row]}
+        with mock.patch.object(native, "call", return_value={"data": data}) as call:
+            self.assertEqual(native.tb("FY2024-P10", department="0100001", expected_gross=gross), {"101000": 0})
+            self.assertEqual(call.call_args.args, ("tb", "--period", "FY2024-P10", "--dimension", "department=0100001"))
+        changed = deepcopy(data)
+        changed["dimension"]["value"] = "100001"
+        with mock.patch.object(native, "call", return_value={"data": changed}):
+            with self.assertRaisesRegex(replay.ReplayError, "different department scope"):
+                native.tb("FY2024-P10", department="0100001", expected_gross=gross)
+        changed = deepcopy(data)
+        changed["rows"] = []
+        with mock.patch.object(native, "call", return_value={"data": changed}):
+            with self.assertRaisesRegex(replay.ReplayError, "gross debit/credit activity"):
+                native.tb("FY2024-P10", department="0100001", expected_gross=gross)
+
+    def test_department_certificate_requires_exact_robot_replay_and_matching_scope(self):
+        native = object.__new__(replay.Native)
+        native.binary, native.book = Path("fa"), self.root / "book"
+        oid = "a" * 64
+        data = {"dimension": {"dimension": "department", "value": "0100001", "values": ["0100001"]},
+                "rows": [{"code": "101000", "debits": "100.00 USD", "credits": "100.00 USD", "net": "0.00 USD"}]}
+        report = {"event": "trial_balance", "certificate": oid, "data": data}
+        certificate = {"event": "report_certificate", "data": {"oid": oid, "output_format": "fa:dimension-trial-balance:v1"}}
+        first = json.dumps(report) + "\n"
+        original = first + json.dumps(certificate) + "\n"
+        gross = {"101000:debit": 10000, "101000:credit": 10000}
+        with mock.patch.object(native, "execute_events", side_effect=[([report, certificate], original), ([report], first)]) as execute:
+            self.assertEqual(native.certified_department_tb("FY2024-P12", "0100001", gross), ({"101000": 0}, oid))
+            self.assertIn("department=0100001", execute.call_args_list[0].args[0])
+            self.assertIn(f"C:{oid}", execute.call_args_list[1].args[0])
+        # Parsed JSON is unchanged; changing its robot bytes still fails replay.
+        with mock.patch.object(native, "execute_events", side_effect=[([report, certificate], original), ([report], " " + first)]):
+            with self.assertRaisesRegex(replay.ReplayError, "exact robot report"):
+                native.certified_department_tb("FY2024-P12", "0100001", gross)
+        changed = deepcopy(certificate)
+        changed["data"]["output_format"] = "fa:trial-balance:v1"
+        with mock.patch.object(native, "execute_events", return_value=([report, changed], original)):
+            with self.assertRaisesRegex(replay.ReplayError, "another report format"):
+                native.certified_department_tb("FY2024-P12", "0100001", gross)
+
+    def test_native_multi_event_reader_preserves_single_event_contract_and_failures(self):
+        native = replay.Native(Path(sys.executable), Path(sys.executable), self.root)
+        raw = '{"event":"trial_balance","data":{}}\n{"event":"report_certificate","data":{}}\n'
+        result = replay.subprocess.CompletedProcess(["fa"], 0, stdout=raw, stderr="")
+        with mock.patch.object(replay.subprocess, "run", return_value=result):
+            events, observed = native.execute_events(["fa", "tb", "--certify"])
+            self.assertEqual(observed, raw)
+            self.assertEqual([event["event"] for event in events], ["trial_balance", "report_certificate"])
+            with self.assertRaisesRegex(replay.ReplayError, "one robot envelope"):
+                native.execute(["fa", "book", "info"])
+        result = replay.subprocess.CompletedProcess(["fa"], 8, stdout=raw, stderr="verification failed")
+        with mock.patch.object(replay.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(replay.ReplayError, "exited 8, expected 0"):
+                native.execute_events(["fa", "replay"])
+        result = replay.subprocess.CompletedProcess(["fa"], 0, stdout='{"event":"trial_balance"}\nnot-json\n', stderr="")
+        with mock.patch.object(replay.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(replay.ReplayError, "invalid native JSON"):
+                native.execute_events(["fa", "tb", "--certify"])
 
     def test_money_round_trip_above_binary_float_exact_integer_range(self):
         self.assertEqual(replay.money(2**53 + 1), "90071992547409.93")

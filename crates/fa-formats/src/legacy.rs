@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::{BookContext, RunBody, RunMode, TrialBalanceLine};
 use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid,
-    PeriodRef, account_vid,
+    PeriodRef, account_vid, dimension_kind, dimension_value_vid,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
@@ -177,15 +177,20 @@ pub struct LegacyColumnMap {
     pub entered_by_column: Option<String>,
     pub approved_by_column: Option<String>,
     pub account_mappings: BTreeMap<String, String>,
+    /// Registered dimension kind -> source column containing its value code.
+    /// Blank cells omit the dimension; nonblank codes are preserved exactly.
+    pub dimension_columns: BTreeMap<String, String>,
 }
 
 impl LegacyColumnMap {
-    /// Parse a declared column-map configuration file (TOML subset with `[columns]` and `[account_map]`).
+    /// Parse a declared column map (`[columns]`, `[account_map]` and optional
+    /// `[dimension_columns]`, for example `department = "Department"`).
     pub fn parse_toml(src: &str) -> Result<Self, FormatError> {
         const FMT: &str = "legacy_column_map.toml";
         let mut section = "";
         let mut cols: BTreeMap<String, String> = BTreeMap::new();
         let mut account_mappings: BTreeMap<String, String> = BTreeMap::new();
+        let mut dimension_columns: BTreeMap<String, String> = BTreeMap::new();
 
         for (line_idx, raw_line) in src.lines().enumerate() {
             let line = raw_line.trim();
@@ -194,11 +199,11 @@ impl LegacyColumnMap {
             }
             if line.starts_with('[') && line.ends_with(']') {
                 section = &line[1..line.len() - 1];
-                if !matches!(section, "columns" | "account_map") {
+                if !matches!(section, "columns" | "account_map" | "dimension_columns") {
                     return Err(FormatError::Parse {
                         format: FMT,
                         detail: format!(
-                            "line {}: unknown section [{section}] (expected [columns] or [account_map])",
+                            "line {}: unknown section [{section}] (expected [columns], [account_map] or [dimension_columns])",
                             line_idx + 1
                         ),
                     });
@@ -228,6 +233,26 @@ impl LegacyColumnMap {
                             format: FMT,
                             detail: format!(
                                 "line {}: repeated legacy account mapping {k:?}",
+                                line_idx + 1
+                            ),
+                        });
+                    }
+                }
+                "dimension_columns" => {
+                    if dimension_kind(&k).is_none() || v.trim().is_empty() || v.trim() != v {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!(
+                                "line {}: dimension mapping {k:?} must name a registered dimension kind and an exact nonblank source column",
+                                line_idx + 1
+                            ),
+                        });
+                    }
+                    if dimension_columns.insert(k.clone(), v).is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!(
+                                "line {}: repeated dimension column mapping {k:?}",
                                 line_idx + 1
                             ),
                         });
@@ -299,6 +324,7 @@ impl LegacyColumnMap {
             entered_by_column: opt("entered_by_column"),
             approved_by_column: opt("approved_by_column"),
             account_mappings,
+            dimension_columns,
         })
     }
 
@@ -534,6 +560,52 @@ pub struct LegacyChunkEntry {
     pub effective_date: DateDay,
     pub description: String,
     pub legs: Vec<FormatLeg>,
+    /// Sparse zero-based leg ordinals -> registered dimension kind/value codes.
+    /// This source projection belongs to legacy import, not canonical `FormatLeg`.
+    pub leg_dimensions: BTreeMap<usize, BTreeMap<String, String>>,
+}
+
+fn dimension_value_problem(kind: &str, code: &str) -> Option<String> {
+    // Reuse the native declaration's identifier contract. This validates a
+    // reference only; importing history never creates or renames its value.
+    fa_journal::dimension::DimensionValueSpec {
+        dimension: kind.to_owned(),
+        code: code.to_owned(),
+        name: code.to_owned(),
+        parent: None,
+        valid_from: None,
+        valid_to: None,
+    }
+    .problem()
+}
+
+impl LegacyChunkEntry {
+    fn validate_dimensions(&self, format: &'static str) -> Result<(), FormatError> {
+        for (ordinal, values) in &self.leg_dimensions {
+            if *ordinal >= self.legs.len() || values.is_empty() {
+                return Err(FormatError::Parse {
+                    format,
+                    detail: format!(
+                        "entry {:?}: dimension projection must name an existing leg and at least one value",
+                        self.provenance.source_id
+                    ),
+                });
+            }
+            for (kind, code) in values {
+                if let Some(problem) = dimension_value_problem(kind, code) {
+                    return Err(FormatError::Parse {
+                        format,
+                        detail: format!(
+                            "entry {:?}, leg {}: {problem}",
+                            self.provenance.source_id,
+                            ordinal + 1
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Complete result of parsing a legacy GL export: ordered `LegacyChunkEntry` items,
@@ -623,13 +695,26 @@ impl LegacyImportBatch {
     {
         let mut proposals = Vec::with_capacity(self.chunks.len());
         for (idx, chunk) in self.chunks.iter().enumerate() {
+            chunk.validate_dimensions(self.format.registry_name())?;
             let mut legs = Vec::with_capacity(chunk.legs.len());
-            for leg in &chunk.legs {
+            for (ordinal, leg) in chunk.legs.iter().enumerate() {
                 let mut payload = LegPayload::simple(
                     leg.side,
                     account_vid(book.book_id, &leg.account_code),
                     leg.amount,
                 );
+                if let Some(values) = chunk.leg_dimensions.get(&ordinal) {
+                    for (kind, code) in values {
+                        let kind = dimension_kind(kind).ok_or_else(|| FormatError::Parse {
+                            format: self.format.registry_name(),
+                            detail: format!("unregistered dimension kind {kind:?}"),
+                        })?;
+                        payload
+                            .dimension_set
+                            .push((kind.id, dimension_value_vid(book.book_id, kind.code, code)));
+                    }
+                    payload.dimension_set.sort_by_key(|(kind, _)| *kind);
+                }
                 payload.memo = leg.memo.as_deref().map(&mut seal).transpose()?;
                 legs.push(payload);
             }
@@ -718,6 +803,7 @@ fn finalize_legacy_batch(
 
     let mut tb_fold: BTreeMap<(String, UnitId), i128> = BTreeMap::new();
     for chunk in &chunks {
+        chunk.validate_dimensions(fmt_name)?;
         if chunk.legs.len() < 2 {
             return Err(FormatError::Parse {
                 format: fmt_name,
@@ -838,6 +924,25 @@ fn finalize_legacy_batch(
         att.update(l.account_code.as_bytes());
         att.update(&l.unit.0.to_le_bytes());
         att.update(&l.mantissa.to_le_bytes());
+    }
+    // Preserve dimension-free v1 attestations exactly. A dimension projection
+    // appends its own framed domain so changed mappings cannot share a digest.
+    if chunks.iter().any(|chunk| !chunk.leg_dimensions.is_empty()) {
+        att.update(b"fa:formats:legacy-import-dimensions:v1");
+        att.update(&(chunks.len() as u64).to_le_bytes());
+        for chunk in &chunks {
+            att.update(&(chunk.leg_dimensions.len() as u64).to_le_bytes());
+            for (ordinal, values) in &chunk.leg_dimensions {
+                att.update(&(*ordinal as u64).to_le_bytes());
+                att.update(&(values.len() as u64).to_le_bytes());
+                for (kind, code) in values {
+                    att.update(&(kind.len() as u64).to_le_bytes());
+                    att.update(kind.as_bytes());
+                    att.update(&(code.len() as u64).to_le_bytes());
+                    att.update(code.as_bytes());
+                }
+            }
+        }
     }
     let attestation_digest = att.finalize().0;
 
@@ -1056,6 +1161,7 @@ pub fn parse_quickbooks_iif(
                         unit_scale: scale,
                         memo: (!memo.is_empty()).then(|| memo.to_owned()),
                     }],
+                    leg_dimensions: BTreeMap::new(),
                 });
             }
             "SPL" => {
@@ -1204,6 +1310,7 @@ pub fn parse_quickbooks_csv(
         entered_by_column: Some("Created By".to_owned()),
         approved_by_column: None,
         account_mappings: BTreeMap::new(),
+        dimension_columns: BTreeMap::new(),
     };
     parse_tabular_csv_with_format(
         LegacyFormat::QuickBooksCsv,
@@ -1245,6 +1352,7 @@ pub fn parse_xero_csv(
         entered_by_column: Some("CreatedBy".to_owned()),
         approved_by_column: None,
         account_mappings: BTreeMap::new(),
+        dimension_columns: BTreeMap::new(),
     };
     parse_tabular_csv_with_format(LegacyFormat::XeroCsv, src, &col_map, units, account_map)
 }
@@ -1280,6 +1388,7 @@ pub fn parse_netsuite_csv(
         entered_by_column: Some("Created By".to_owned()),
         approved_by_column: Some("Approved By".to_owned()),
         account_mappings: BTreeMap::new(),
+        dimension_columns: BTreeMap::new(),
     };
     parse_tabular_csv_with_format(LegacyFormat::NetSuiteCsv, src, &col_map, units, account_map)
 }
@@ -1313,6 +1422,16 @@ fn parse_tabular_csv_with_format(
     account_map: &AccountMap,
 ) -> Result<LegacyImportBatch, FormatError> {
     let fmt_name = format.registry_name();
+    for (kind, column) in &column_map.dimension_columns {
+        if dimension_kind(kind).is_none() || column.trim().is_empty() || column.trim() != column {
+            return Err(FormatError::Parse {
+                format: fmt_name,
+                detail: format!(
+                    "dimension mapping {kind:?} must name a registered dimension kind and an exact nonblank source column"
+                ),
+            });
+        }
+    }
     let mut header_idx: Option<BTreeMap<String, usize>> = None;
     let mut entry_order: Vec<String> = Vec::new();
     let mut entries_by_id: BTreeMap<String, LegacyChunkEntry> = BTreeMap::new();
@@ -1390,6 +1509,16 @@ fn parse_tabular_csv_with_format(
                             ),
                         });
                     }
+                }
+            }
+            for column in column_map.dimension_columns.values() {
+                if !map.contains_key(column) {
+                    return Err(FormatError::Parse {
+                        format: fmt_name,
+                        detail: format!(
+                            "line {line_no}: missing declared dimension CSV header column {column:?}"
+                        ),
+                    });
                 }
             }
             let has = |column: &Option<String>| {
@@ -1605,6 +1734,22 @@ fn parse_tabular_csv_with_format(
             let v = get_opt(&column_map.approved_by_column);
             (!v.is_empty()).then(|| v.to_owned())
         };
+        let mut dimensions = BTreeMap::new();
+        for (kind, column) in &column_map.dimension_columns {
+            let code = get_text(column);
+            if code.trim().is_empty() {
+                continue;
+            }
+            if let Some(problem) = dimension_value_problem(kind, code) {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {line_no}: dimension {kind:?}: {problem}; nonblank identifiers are never trimmed"
+                    ),
+                });
+            }
+            dimensions.insert(kind.clone(), code.to_owned());
+        }
 
         if !entries_by_id.contains_key(entry_id) {
             entry_order.push(entry_id.to_owned());
@@ -1625,6 +1770,7 @@ fn parse_tabular_csv_with_format(
                         desc.to_owned()
                     },
                     legs: Vec::new(),
+                    leg_dimensions: BTreeMap::new(),
                 },
             );
         }
@@ -1659,6 +1805,9 @@ fn parse_tabular_csv_with_format(
             line_idx + 1,
             "approved-by identity",
         )?;
+        if !dimensions.is_empty() {
+            chunk.leg_dimensions.insert(chunk.legs.len(), dimensions);
+        }
         chunk.legs.push(FormatLeg {
             account_code,
             side,
@@ -2035,6 +2184,7 @@ fn finish_ledger_txn(
         effective_date: txn.date,
         description: txn.description,
         legs,
+        leg_dimensions: BTreeMap::new(),
     })
 }
 
@@ -2432,6 +2582,158 @@ mod tests {
             "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\n{extra}"
         ))
         .expect("declared columns")
+    }
+
+    #[test]
+    fn legacy_csv_dimensions_preserve_source_leg_identity_and_bind_the_projection() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns(
+            "memo_column = \"memo\"\n[dimension_columns]\nproduct = \"product\"\ndepartment = \"department\"\n",
+        );
+        let source = concat!(
+            "entry,date,account,amount,memo,department,product\r\n",
+            "A,2025-12-31,1000,12.50,\"first\r\nsecond\",0100001,01\r\n",
+            "B,2025-12-31,1000,2.00,other,8800001,\r\n",
+            "A,2025-12-31,3000,-12.50,capital, ,\r\n",
+            "B,2025-12-31,3000,-2.00,capital,8800001,\r\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 4);
+        assert_eq!(batch.chunks[0].provenance.source_id, "A");
+        assert_eq!(batch.chunks[1].provenance.source_id, "B");
+        assert_eq!(batch.chunks[0].leg_dimensions.len(), 1);
+        assert_eq!(batch.chunks[0].leg_dimensions[&0]["department"], "0100001");
+        assert_eq!(batch.chunks[0].leg_dimensions[&0]["product"], "01");
+        assert_eq!(batch.chunks[1].leg_dimensions[&1]["department"], "8800001");
+        assert_eq!(
+            batch.chunks[0].legs[0].memo.as_deref(),
+            Some("first\r\nsecond")
+        );
+
+        let book = BookContext {
+            book_id: Id128([0x64; 16]),
+            calendar: FiscalCalendar::monthly("cal", 1, 1).unwrap(),
+            units: UnitRegistry::with_defaults(),
+            seal_key: SealKey([0x44; 32]),
+            symbols: SymbolTable::compiled(),
+        };
+        let mut counter = 0_u64;
+        let proposals = batch
+            .to_chunk_proposals_with_sealer(
+                &book,
+                VId(1),
+                DateDay::parse("2026-01-01").unwrap(),
+                Some("FY2026-OPEN"),
+                PRINCIPAL,
+                Oid([0x82; 32]),
+                Vec::new(),
+                |text| {
+                    counter += 1;
+                    let mut salt = [0x91; 32];
+                    salt[..8].copy_from_slice(&counter.to_le_bytes());
+                    let mut nonce = [0x92; 24];
+                    nonce[..8].copy_from_slice(&counter.to_le_bytes());
+                    Ok::<_, FormatError>(Erasable::seal(
+                        &text.to_owned(),
+                        None,
+                        &book.seal_key,
+                        salt,
+                        nonce,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            proposals[0].legs[0].dimension_set,
+            vec![
+                (
+                    3,
+                    dimension_value_vid(book.book_id, "department", "0100001")
+                ),
+                (5, dimension_value_vid(book.book_id, "product", "01")),
+            ]
+        );
+        assert!(proposals[0].legs[1].dimension_set.is_empty());
+
+        let mut no_projection = columns.clone();
+        no_projection.dimension_columns.clear();
+        let plain = parse_generic_csv(source, &no_projection, &units, &accounts).unwrap();
+        assert_eq!(batch.source_bytes_digest, plain.source_bytes_digest);
+        assert_eq!(batch.trial_balance, plain.trial_balance);
+        assert_ne!(batch.attestation_digest, plain.attestation_digest);
+        let mut reassigned = columns;
+        reassigned
+            .dimension_columns
+            .insert("department".into(), "product".into());
+        let changed = parse_generic_csv(source, &reassigned, &units, &accounts).unwrap();
+        assert_ne!(batch.attestation_digest, changed.attestation_digest);
+    }
+
+    #[test]
+    fn legacy_csv_empty_dimension_projection_preserves_dimension_free_attestations() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let source = "entry,date,account,amount,department\nA,2025-12-31,1000,1.00, \nA,2025-12-31,3000,-1.00,\n";
+        let plain = parse_generic_csv(source, &csv_columns(""), &units, &accounts).unwrap();
+        let mapped = parse_generic_csv(
+            source,
+            &csv_columns("[dimension_columns]\ndepartment = \"department\"\n"),
+            &units,
+            &accounts,
+        )
+        .unwrap();
+        assert_eq!(
+            plain, mapped,
+            "absent values do not change historical import bytes or digests"
+        );
+    }
+
+    #[test]
+    fn legacy_csv_dimension_mappings_refuse_ambiguity_missing_columns_and_invalid_codes() {
+        for declaration in [
+            "[dimension_columns]\ndepartment = \"department\"\ndepartment = \"other\"\n",
+            "[dimension_columns]\nunknown_kind = \"department\"\n",
+            "[dimension_columns]\nparty = \"party\"\n",
+            "[dimension_columns]\ndepartment = \" \"\n",
+            "[dimension_columns]\ndepartment = \" department\"\n",
+        ] {
+            let text = format!(
+                "[columns]\nentry_id_column=\"entry\"\neffective_date_column=\"date\"\naccount_column=\"account\"\nsigned_amount_column=\"amount\"\n{declaration}"
+            );
+            assert!(LegacyColumnMap::parse_toml(&text).is_err(), "{declaration}");
+        }
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("[dimension_columns]\ndepartment = \"department\"\n");
+        let missing =
+            "entry,date,account,amount\nA,2025-12-31,1000,1.00\nA,2025-12-31,3000,-1.00\n";
+        let error = parse_generic_csv(missing, &columns, &units, &accounts).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing declared dimension CSV header")
+        );
+        for invalid_code in [" 0100001", "0100001 ", "01 00001", "café", "01\t00001"] {
+            let source = format!(
+                "entry,date,account,amount,department\nA,2025-12-31,1000,1.00,{invalid_code}\nA,2025-12-31,3000,-1.00,\n"
+            );
+            let error = parse_generic_csv(&source, &columns, &units, &accounts).unwrap_err();
+            assert!(
+                error.to_string().contains("line 2: dimension"),
+                "{invalid_code:?}: {error}"
+            );
+        }
+        let mut batch = parse_generic_csv(
+            "entry,date,account,amount,department\nA,2025-12-31,1000,1.00,0100001\nA,2025-12-31,3000,-1.00,\n",
+            &columns, &units, &accounts,
+        ).unwrap();
+        let values = batch.chunks[0].leg_dimensions[&0].clone();
+        batch.chunks[0].leg_dimensions.insert(2, values);
+        assert!(
+            batch.chunks[0].validate_dimensions("csv").is_err(),
+            "no dimension may silently lose its source leg"
+        );
     }
 
     #[test]

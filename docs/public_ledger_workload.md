@@ -210,8 +210,8 @@ files for this complete agency population.
 
 All 17 tests for this helper pass, including independent Decimal controls,
 source and row-index tampering, output preservation, and complete package
-creation. The broader public-ledger helper suite also passes all 38 tests,
-including the three redirect controls. Full-source versus retained-fixture
+creation. The broader public-ledger helper suite also passes all 46 tests,
+including the three redirect controls and eight department-projection checks. Full-source versus retained-fixture
 normalization was separately compared for its museum, pension and university
 populations; their source CSV, chart and normalized run files agree exactly.
 

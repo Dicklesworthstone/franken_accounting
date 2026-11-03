@@ -426,7 +426,13 @@ agency fixtures for a pension system, a university, and a museum. It preserves
 the original source fields and exact amounts, refuses unbalanced or subcent
 selections, and provides a native migration-to-report-to-proof replay driver.
 
-The entire 373,357-row publication has been profiled; normalization and all 38
+Generic CSV mappings can project registered native dimensions through an
+optional `[dimension_columns]` section. The public replay driver preserves
+original department codes, checks every native leg's attribution, and compares
+monthly and cumulative departmental net and gross balances to the source.
+Blank department values remain untagged; leading zeros remain significant.
+
+The entire 373,357-row publication has been profiled; normalization and all 46
 Python checks pass. **Native replay remains unverified:** prerequisite Rust
 compilation exceeded the execution environment's memory limit. The documentation
 records the validation boundary and the commands needed to complete it. These

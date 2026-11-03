@@ -2081,6 +2081,359 @@ fn set_field(value: &mut Json, key: &str, replacement: Json) {
     }
 }
 
+fn assert_department_cells(
+    fixture: &Fixture,
+    period: &str,
+    department: &str,
+    activity: bool,
+    known_at: Option<i128>,
+    expected: &[[&str; 4]],
+) {
+    let selected = format!("department={department}");
+    let known_at = known_at.map(|at| at.to_string());
+    let mut args = vec!["tb", "--period", period, "--dimension", &selected];
+    if activity {
+        args.push("--activity");
+    }
+    if let Some(at) = &known_at {
+        args.extend(["--as-known-at", at]);
+    }
+    let output = ok(&fixture.book, &args);
+    let actual: Vec<[String; 4]> = rows(data(&output), "rows")
+        .iter()
+        .map(|row| ["code", "debits", "credits", "net"].map(|key| text(row, key).to_owned()))
+        .collect();
+    let expected: Vec<[String; 4]> = expected.iter().map(|row| row.map(str::to_owned)).collect();
+    assert_eq!(
+        actual, expected,
+        "{period}: {selected}, activity={activity}"
+    );
+}
+
+#[test]
+fn generic_csv_departments_survive_full_detail_migration_reopen_and_retry() {
+    let (mut fixture, _) = Fixture::full_detail(false, "Spreadsheet");
+    let original = full_detail_source(false);
+    let mut source = String::new();
+    for (index, line) in original.lines().enumerate() {
+        if index == 0 {
+            source.push_str(&format!("{line},DEPTID\n"));
+            continue;
+        }
+        // This fixed fixture has no quoted fields. Preserve every amount and
+        // original journal boundary; only add explicit source department cells.
+        let fields: Vec<_> = line.split(',').collect();
+        let department = if fields[2] == LEGACY_EQUITY {
+            " "
+        } else if fields[0] == "private-full-january-sale" || fields[0] == "private-full-march-sale"
+        {
+            "8800001"
+        } else {
+            "0100001"
+        };
+        source.push_str(&format!("{line},{department}\n"));
+    }
+    fixture.format = "csv".into();
+    fixture.source = fixture.document("department-full-detail.csv", &source, "Spreadsheet");
+    let columns = concat!(
+        "[columns]\nsource_system = \"quickbooks-csv\"\n",
+        "entry_id_column = \"Transaction ID\"\neffective_date_column = \"Date\"\n",
+        "account_column = \"Account\"\ndebit_column = \"Debit\"\ncredit_column = \"Credit\"\n",
+        "unit_column = \"Currency\"\nmemo_column = \"Memo/Description\"\n",
+        "recorded_at_column = \"Created At\"\nentered_by_column = \"Created By\"\n",
+        "[dimension_columns]\ndepartment = \"DEPTID\"\n",
+    );
+    let mut intent = fixture.intent();
+    set_field(&mut intent, "column_map", s(columns));
+    let path = fixture.file("department-import.json", &intent.render());
+    let mut values = std::collections::BTreeMap::new();
+    for code in ["0100001", "8800001"] {
+        let recorded = ok(
+            &fixture.book,
+            &[
+                "dimension",
+                "add",
+                "department",
+                code,
+                "--name",
+                code,
+                "--from",
+                "2025-01-01",
+            ],
+        );
+        let value = data(&recorded).get("value").unwrap();
+        assert_eq!(integer(value, "dimension_id"), 3);
+        values.insert(code, text(value, "vid").to_owned());
+    }
+    let prepared = ok(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    let package = text(data(&prepared), "package_oid");
+    let mut blank_legs = 0;
+    let mut tagged_legs = 0;
+    for chunk in rows(data(&prepared), "chunks") {
+        for leg in rows(chunk, "legs") {
+            let dimensions = rows(leg, "dimensions");
+            if text(leg, "account") == "3000" {
+                assert!(
+                    dimensions.is_empty(),
+                    "a blank source cell must stay absent"
+                );
+                blank_legs += 1;
+            } else {
+                assert_eq!(dimensions.len(), 1);
+                assert_eq!(integer(&dimensions[0], "dimension"), 3);
+                assert!(
+                    values
+                        .values()
+                        .any(|value| value == text(&dimensions[0], "value"))
+                );
+                tagged_legs += 1;
+            }
+        }
+    }
+    assert!(blank_legs > 0 && tagged_legs > 0);
+
+    // A changed projection is not a retry, even when every account total ties.
+    let mut changed = intent.clone();
+    set_field(
+        &mut changed,
+        "column_map",
+        s(columns.replace("department =", "cost_center =")),
+    );
+    let changed_path = fixture.file("changed-department-import.json", &changed.render());
+    let before = head(&fixture.book);
+    let (status, refusal) = run(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            &changed_path,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refusal.render());
+    assert_eq!(head(&fixture.book), before);
+
+    let forged = rewrite_package(&fixture, package, |book, proposals| {
+        proposals[0].legs[0].dimension_set[0].1 =
+            fa_model::dimension_value_vid(book.context().book_id, "department", "8800001");
+    });
+    let before = head(&fixture.book);
+    let (status, refusal) = run(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "show",
+            "--package",
+            &forged,
+        ],
+    );
+    assert_eq!(status, 8, "{}", refusal.render());
+    assert_eq!(head(&fixture.book), before);
+
+    let approvals = stage_full_detail(&fixture, &prepared, "FY2026-P03");
+    let before_finalize = head(&fixture.book);
+    for department in values.keys() {
+        assert_department_cells(&fixture, "FY2026-P03", department, false, None, &[]);
+    }
+    fixture.finalize("department-finalize.plan");
+    for period in ["FY2026-P01", "FY2026-P02", "FY2026-P03"] {
+        assert_department_cells(
+            &fixture,
+            period,
+            "0100001",
+            false,
+            None,
+            &[
+                ["1000", "120.00 USD", "3.00 USD", "117.00 USD"],
+                ["6000", "3.00 USD", "0.00 USD", "3.00 USD"],
+            ],
+        );
+        let total = if period == "FY2026-P03" {
+            "15.00 USD"
+        } else {
+            "5.00 USD"
+        };
+        let credit = if period == "FY2026-P03" {
+            "-15.00 USD"
+        } else {
+            "-5.00 USD"
+        };
+        assert_department_cells(
+            &fixture,
+            period,
+            "8800001",
+            false,
+            None,
+            &[
+                ["1000", total, "0.00 USD", total],
+                ["4000", "0.00 USD", total, credit],
+            ],
+        );
+        for department in values.keys() {
+            assert_department_cells(
+                &fixture,
+                period,
+                department,
+                false,
+                Some(before_finalize),
+                &[],
+            );
+        }
+    }
+    assert_department_cells(
+        &fixture,
+        "FY2026-P01",
+        "0100001",
+        true,
+        None,
+        &[
+            ["1000", "0.00 USD", "3.00 USD", "-3.00 USD"],
+            ["6000", "3.00 USD", "0.00 USD", "3.00 USD"],
+        ],
+    );
+    assert_department_cells(&fixture, "FY2026-P02", "8800001", true, None, &[]);
+    assert_department_cells(
+        &fixture,
+        "FY2026-P03",
+        "8800001",
+        true,
+        None,
+        &[
+            ["1000", "10.00 USD", "0.00 USD", "10.00 USD"],
+            ["4000", "0.00 USD", "10.00 USD", "-10.00 USD"],
+        ],
+    );
+    assert_department_cells(&fixture, "FY2025-P12", "0100001", false, None, &[]);
+    assert_eq!(fixture.cash_at("FY2026-P03", None), "132.00 USD");
+    ok(
+        &fixture.book,
+        &["registers", "advance", "--period", "FY2026-P03"],
+    );
+    ok(
+        &fixture.book,
+        &["verify", "registers", "--period", "FY2026-P03"],
+    );
+    let before_retry = head(&fixture.book);
+    let again = ok(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    assert_eq!(text(data(&again), "package_oid"), package);
+    for (index, (first, second)) in approvals.iter().enumerate() {
+        let retried = fixture.stage(package, index, &[first, second]);
+        assert_eq!(
+            data(&retried).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
+    }
+    assert_eq!(head(&fixture.book), before_retry);
+}
+
+#[test]
+fn generic_csv_departments_require_native_values_and_preserve_historical_dimension_law() {
+    let source = concat!(
+        "entry,date,account,amount,department\n",
+        "legacy,2025-12-30,Private legacy checking account,125.50,0100001\n",
+        "legacy,2025-12-30,Private legacy opening equity,-125.50, \n",
+    );
+    let fixture = Fixture::new("csv", source, "USD", "Spreadsheet", "2026-07-01");
+    let columns = concat!(
+        "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\n",
+        "account_column = \"account\"\nsigned_amount_column = \"amount\"\n",
+        "[dimension_columns]\ndepartment = \"department\"\n",
+    );
+    let mut intent = fixture.intent();
+    set_field(&mut intent, "column_map", s(columns));
+    let path = fixture.file("department-reference-import.json", &intent.render());
+    let prepared = ok(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
+    );
+    let package = text(data(&prepared), "package_oid");
+    let chunk = &rows(data(&prepared), "chunks")[0];
+    let first = fixture.approve(text(chunk, "proposal_digest"), "department-reviewer-one");
+    let second = fixture.approve(text(chunk, "proposal_digest"), "department-reviewer-two");
+    let before = head(&fixture.book);
+    let (status, refusal) = run(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "stage",
+            "--package",
+            package,
+            "--chunk",
+            "0",
+            "--approval",
+            &first,
+            "--approval",
+            &second,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refusal.render());
+    assert!(refusal.render().contains("does not exist in this book"));
+    assert_eq!(head(&fixture.book), before);
+    assert_eq!(integer(data(&fixture.show(package)), "recorded_count"), 0);
+
+    // The Migration class preserves historical values, just like the native
+    // law already dictates. Current value windows and required dimensions do
+    // not rewrite old attribution or invent a value for a blank source cell.
+    ok(
+        &fixture.book,
+        &[
+            "dimension",
+            "add",
+            "department",
+            "0100001",
+            "--name",
+            "General Administration",
+            "--from",
+            "2026-02-01",
+        ],
+    );
+    ok(
+        &fixture.book,
+        &["dimension", "require", "department", "3000"],
+    );
+    let staged = fixture.stage(package, 0, &[&first, &second]);
+    assert_eq!(text(data(&staged), "entry_vid"), text(chunk, "entry_vid"));
+    assert_eq!(fixture.cash(None), "0.00 USD");
+    fixture.finalize("department-reference-finalize.plan");
+    assert_department_cells(
+        &fixture,
+        OPENING,
+        "0100001",
+        false,
+        None,
+        &[["1000", "125.50 USD", "0.00 USD", "125.50 USD"]],
+    );
+    let before_retry = head(&fixture.book);
+    let retried = fixture.stage(package, 0, &[&first, &second]);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        data(&retried).get("recorded_at"),
+        data(&staged).get("recorded_at")
+    );
+    assert_eq!(head(&fixture.book), before_retry);
+}
+
 #[test]
 fn invalid_source_mapping_and_trial_balance_never_publish_a_partial_package() {
     let fixture = Fixture::quickbooks();

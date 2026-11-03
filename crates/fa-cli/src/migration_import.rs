@@ -1654,6 +1654,10 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
                             "amount",
                             s(render_amount(leg.amount, &book.context().units)?),
                         ),
+                        (
+                            "dimensions",
+                            crate::cli::plan_dimensions_json(&leg.dimension_set),
+                        ),
                     ]))
                 })
                 .collect::<Result<Vec<_>, Fail>>()?;
@@ -1790,12 +1794,27 @@ fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
                 lines.push("  retained historical detail; excluded from balances and open items after finalization".into());
             }
         }
-        for (leg, source) in proposal.legs.iter().zip(&source.legs) {
+        for (ordinal, (leg, source_leg)) in proposal.legs.iter().zip(&source.legs).enumerate() {
+            let dimensions =
+                source
+                    .leg_dimensions
+                    .get(&ordinal)
+                    .map_or_else(String::new, |values| {
+                        format!(
+                            " [{}]",
+                            values
+                                .iter()
+                                .map(|(kind, code)| format!("{kind}={code}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    });
             lines.push(format!(
-                "  {} {} {}",
+                "  {} {} {}{}",
                 side_name(leg.side),
-                source.account_code,
-                render_amount(leg.amount, &book.context().units)?
+                source_leg.account_code,
+                render_amount(leg.amount, &book.context().units)?,
+                dimensions,
             ));
         }
     }

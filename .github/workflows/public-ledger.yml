@@ -92,6 +92,13 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test legacy_migration oklahoma:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/finance-authority-tests.log
 
+      - name: Regress native department migration and source mapping integrity
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test legacy_migration generic_csv_departments --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/department-migration-tests.log
+
       - name: Replay the complete firefighters pension selection
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash

@@ -3,7 +3,8 @@
 The public-ledger driver provides a native replay workflow for complete agency
 selections from Oklahoma's published general-ledger data. It is designed to check
 every monthly account balance against an independent integer fold of the source,
-exercises migration staging and retries, and asks the standalone `fa-verify`
+including department account balances and their gross debit/credit activity.
+It exercises migration staging and retries, and asks the standalone `fa-verify`
 binary to verify an exported ADS package. It also corrupts a copy of that export
 and requires the verifier to reject it.
 
@@ -13,32 +14,37 @@ reconstructions. This dataset adds actual published ledger activity, with an
 automated download, preserved original records and a repeatable source-to-report
 workflow.
 
-## Validation status of this change (2026-11-02)
+## Validation status
 
-**Source acquisition, full-distribution profiling, normalization, and the 35
-Python tests passed. Native end-to-end execution has not been completed.**
+**All 46 public-ledger Python tests pass. Native end-to-end execution remains
+unverified.** The separate Development Finance Authority helper has 17 passing
+tests, for 63 passing helper tests across the two workloads.
 
-The original 113,856,733-byte distribution was downloaded and verified, all
-373,357 rows were profiled, and `prepare` succeeded for all three complete
-agency selections. The Python suite exercises the acquisition and normalization
-code, independent source totals, strict refusal cases, and native-output
-assertion helpers. Its constructed native-shaped test payloads are not evidence
-that the accounting engine executed the workflow.
+The official 113,856,733-byte resource was downloaded through its actual HTTPS
+redirect and verified against the fixed SHA-256. The complete 373,357-row file
+and the committed museum, pension and university selections produce identical
+original CSVs, charts, column maps and normalized run CSVs with the department
+projection enabled. Complete manifests differ only in their declared input
+kind and input hash; source-row mappings, department inventories, monthly
+department/account net and gross controls, and every other field agree.
 
-Rust formatting passed, and the standalone `fa-verify` binary built and ran its
-help command. Three attempts to compile the native CLI or prerequisite test
-dependencies were killed while compiling `asupersync` in an environment with
-an 8 GiB memory limit. Consequently, the new Rust regression tests did not
-execute and no agency has a native replay `PASS` report from this session.
-A subsequent Tier0 attempt passed formatting but failed at check; full disk
-prevented its diagnostic and summary files from being written. Tier0 did not
-pass. Repository gate requirements and dependency pins were not changed.
+The Python tests independently fold the original source fields and include
+negatives that change only a department while preserving every monetary
+amount. They also check leading zeros, blank values, missing dimension tags,
+wrong native identities, zero-net/nonzero-gross activity, scope and exact
+report-replay comparisons. Constructed native-shaped payloads in those tests
+are not evidence that the accounting engine ran.
 
-The next acceptance step is to build on a sufficiently provisioned machine,
-run the three commands below, and inspect each native `report.json` and
-`commands.jsonl`. See
-[the recorded validation status](../evidence/public_ledger/validation-2026-11-02.json)
-for the exact separation of completed and unexecuted checks.
+The pinned formatter accepted the Rust importer and persisted regressions.
+Native builds and the workspace metadata check have been killed while
+compiling the pinned asupersync dependency under shared resource pressure,
+before the importer tests executed. No native replay, proof-verifier result or
+repository-wide gate PASS is claimed for the current feature.
+
+The [earlier validation record](../evidence/public_ledger/validation-2026-11-02.json)
+describes the original source-only implementation. Current native acceptance
+requires running the workflows below and inspecting their real
+`report.json` and `commands.jsonl` outputs.
 
 ## What the publisher actually provides
 
@@ -194,8 +200,10 @@ transcript and writes `failure.json`; it never emits a partial success report.
    but remains in the original retained CSV and the manifest's explicit zero-row
    list. All 36 original fields also appear in each normalized nonzero row with
    `original_` column prefixes. The manifest binds each source ordinal to its
-   aggregate entry, leg ordinal, account and cents. Original and normalized
-   sources are not confused: their hashes are separate.
+   aggregate entry, leg ordinal, account, department and cents. Nonblank
+   `DEPTID` values are registered as native departments, and the explicit
+   `column_map.toml` maps `original_DEPTID` to each corresponding native leg.
+   Original and normalized sources have separate hashes.
 5. **Use native migration semantics.** A fresh activity-only book has a July
    fiscal year and a 2024-07-01 go-live. Each actual fund/class gets one
    `FullDetail` run with three contiguous historical periods and no opening
@@ -210,6 +218,8 @@ transcript and writes `failure.json`; it never emits a partial success report.
    staging before activation and exact retry identities after finalization.
 7. **Compare and verify.** Compare every monthly account cell and cumulative
    account cell to a separate integer-cent fold of the original source fields.
+   Compare each department's monthly and cumulative account cells, including
+   both gross sides; retain and replay each department's final-quarter report.
    Read the earlier recorded prefix again, advance and verify native registers,
    produce ADS with proofs, verify it using the independent `fa-verify` binary,
    and require exit 8 for a corrupted copy of the extract.
@@ -226,6 +236,46 @@ Native source and control documents preserve provenance, but the controls are
 parser and ledger fold, not independent audited agency statements. Similarly,
 the two test principal labels exercise the native separation-of-duties rule;
 they do not prove that two independent humans authenticated an approval.
+
+## Query the original departments
+
+The import projects the source `DEPTID` into the native `department` dimension.
+It registers the source code and description before preparing migration
+proposals, then checks every prepared leg's native dimension identity against
+its original record. The pension's `0100001` remains the string `0100001`;
+it is never converted to the distinct identifier `100001`.
+
+For the pension book produced by the commands above:
+
+```bash
+fa --book artifacts/omes-pension/book tb --period FY2024-P10 \
+  --dimension department=0100001 --activity --json
+
+fa --book artifacts/omes-pension/book tb --period FY2024-P12 \
+  --dimension department=0100001 --certify --json
+```
+
+The second command returns the cumulative department trial balance followed by
+its retained report certificate. `fa replay C:<certificate-oid>` reproduces
+that report at its original recorded prefix. The driver checks this replay for
+every registered department, as well as the empty preactivation views and all
+three months of departmental net and gross activity. A wrong department tag
+must fail even when every whole-agency account balance remains unchanged.
+
+Department slices may be unbalanced: a cash or fund leg can have a blank
+department while its counterpart names a department. Blank and whitespace-only
+source values remain **untagged**. They are retained under the empty key in the
+manifest's `department_activity` oracle, not assigned to an invented native
+value. No department is forced to balance. Nonblank codes with surrounding
+whitespace, invalid native code characters, or conflicting source descriptions
+are refused explicitly. All original fields remain available in retained
+evidence; a missing description uses the explicit label `OMES department <code>`.
+
+This import checks registered department identities and agreement with the
+published historical attribution. Native migration retains that attribution
+without applying today's required-dimension or value-effectivity policy to old
+records. Fund, class funding, project and other chartfields remain in evidence;
+this adapter does not yet project them into native dimensions.
 
 ## What the complete statewide profile reveals
 
@@ -256,9 +306,9 @@ The profile reports the affected groups and source ordinals for investigation.
   extract checks for its complete published selection. Native execution is
   still unverified as recorded above. Even a successful run would not establish
   completeness of the publisher's internal system or original transaction history.
-- All chartfields remain available in retained evidence. Only original account
-  codes are projected into the native chart by this adapter. It does not claim
-  that departments, projects and fund dimensions are native queryable dimensions.
+- All chartfields remain available in retained evidence. Original account codes
+  and nonblank departments are projected into the native chart and dimension
+  values. Other chartfields are not yet native queryable dimensions.
 - Run boundaries follow real fund/class boundaries to keep native control
   payloads bounded. Each migration activates atomically; finalizing the entire
   agency across several runs is not one atomic publication. The preactivation

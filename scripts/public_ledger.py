@@ -35,6 +35,9 @@ effective_date_column = "effective_date"
 account_column = "account_code"
 signed_amount_column = "signed_amount"
 description_column = "description"
+
+[dimension_columns]
+department = "original_DEPTID"
 '''
 SCOPE = (
     "Complete published FY2024 Q4 activity for one agency, all chartfields. "
@@ -157,6 +160,58 @@ def gross_oracle(rows: list[dict]) -> dict[str, dict[str, int]]:
     return {period: dict(cells) for period, cells in result.items()}
 
 
+def department_code(value: str) -> str | None:
+    """Preserve an identifier exactly; a whitespace-only source field is absent."""
+    require(isinstance(value, str), "source department must be a string")
+    if not value.strip():
+        return None
+    require(value == value.strip(), f"nonblank department code has surrounding whitespace: {value!r}")
+    require(1 <= len(value) <= 64 and all("!" <= character <= "~" for character in value),
+            "department code must be 1..64 printable ASCII characters without spaces")
+    return value
+
+
+def department_specs(rows: list[dict]) -> list[dict[str, str]]:
+    names: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        fields = row["fields"]
+        code = department_code(fields["DEPTID"])
+        if code is None:
+            continue
+        descriptions = names[code]
+        if fields["DEPTDESCR"].strip():
+            descriptions.add(fields["DEPTDESCR"])
+        require(len(descriptions) <= 1, f"department {code} has conflicting source descriptions")
+    return [{"code": code, "name": next(iter(labels)) if labels else f"OMES department {code}"}
+            for code, labels in sorted(names.items())]
+
+
+def department_oracle(rows: list[dict]) -> dict[str, dict[str, dict]]:
+    """Fold raw DEPTID/account/month cells; the empty key denotes untagged rows.
+
+    Departments need not balance individually. No missing value is assigned to
+    an invented department to make a departmental trial balance balance.
+    """
+    result: dict[str, dict[str, dict]] = {period: {} for period in PERIODS}
+    for row in rows:
+        fields = row["fields"]
+        period = f"FY{fields['FISCAL_YEAR']}-P{int(fields['ACCOUNTING_PERIOD']):02}"
+        require(period in result, f"unexpected source period {period}")
+        code = department_code(fields["DEPTID"]) or ""
+        bucket = result[period].setdefault(code, {
+            "rows": 0, "monetary_rows": 0, "account_nets": {}, "gross_cents": {},
+        })
+        amount = source.amount_cents(fields[source.AMOUNT_COLUMN])
+        account = fields["ACCOUNT"]
+        bucket["rows"] += 1
+        bucket["monetary_rows"] += int(amount != 0)
+        bucket["account_nets"][account] = bucket["account_nets"].get(account, 0) + amount
+        side = "credit" if amount < 0 else "debit"
+        cell = f"{account}:{side}"
+        bucket["gross_cents"][cell] = bucket["gross_cents"].get(cell, 0) + abs(amount)
+    return result
+
+
 def normalize(path: Path, agency: str, output: Path) -> dict:
     provenance, record_map = input_provenance(path, agency)
     selected = source.prepare_agency(path, agency, source_records=record_map)
@@ -164,6 +219,8 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
     require(bool(rows), f"no published rows for agency {agency}")
     require({r["fields"]["FISCAL_YEAR"] for r in rows} == {"2024"}, "unexpected fiscal year")
     require({r["fields"]["ACCOUNTING_PERIOD"] for r in rows} == {"10", "11", "12"}, "agency must cover all three quarter periods")
+    departments = department_specs(rows)
+    department_activity = department_oracle(rows)
     output.mkdir(parents=True, exist_ok=False)
     original = output / "original-agency.csv"
     extract_original(path, original, agency)
@@ -171,6 +228,8 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
     accounts = sorted({r["fields"]["ACCOUNT"]: r["fields"]["ACCTDESCR"] for r in rows}.items())
     chart = [account_spec(code, name) for code, name in accounts]
     write_json(output / "chart.json", {"accounts": chart})
+    with (output / "column_map.toml").open("x", encoding="utf-8", newline="\n") as stream:
+        stream.write(COLUMN_MAP)
 
     # Separate native migration runs follow actual fund/class boundaries.
     # Each source monetary row is one leg. No row is split or netted away.
@@ -220,7 +279,8 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
                     writer.writerow(values)
                     run_rows.append(row)
                     mapping.append({"source_record": record, "run": name, "entry_id": entry_id,
-                                    "leg": leg_index, "account": original_fields["ACCOUNT"], "cents": cents})
+                                    "leg": leg_index, "account": original_fields["ACCOUNT"], "cents": cents,
+                                    "department": department_code(original_fields["DEPTID"])})
         runs.append({"name": name, "key": list(key), "source": normalized.name,
                      "sha256": sha256(normalized), "entry_ids": group_ids,
                      "rows": len(run_rows), "activity_cents": oracle(run_rows)})
@@ -236,9 +296,10 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
         "monetary_rows": len(used), "zero_rows": sorted(omitted_zero),
         "row_mapping": mapping, "runs": runs, "activity_cents": activity,
         "activity_gross_cents": gross_oracle(rows),
+        "departments": departments, "department_activity": department_activity,
         "date_policy": "FY2024 periods 10/11/12 map to 2024-04-30/05-31/06-30; source has no transaction dates",
         "chart_policy": "OMES prefixes 1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense; explicit 631100 Other Financing Sources/Uses -> Equity in the activity-only test book",
-        "dimension_policy": "Every chartfield retained in original and normalized sources; native account code preserved; no claim of native dimension projection",
+        "dimension_policy": "original_DEPTID maps to native department; nonblank codes stay exact strings, whitespace-only is absent, and surrounding whitespace on a nonblank code is refused. Every other chartfield remains in retained evidence, without native projection. An empty department oracle key denotes untagged source rows; it is never a native value.",
         "oracle_policy": "Integer-cent fold of original source fields; not an audited agency opening/closing trial balance",
     }
     write_json(output / "manifest.json", manifest)
@@ -257,7 +318,7 @@ class Native:
         self.environment.pop("FA_TOKEN", None)
         self.environment.update(NO_COLOR="1", CI="1")
 
-    def execute(self, command: list[str], expect: int = 0) -> dict:
+    def execute_events(self, command: list[str], expect: int = 0) -> tuple[list[dict], str]:
         self.commands += 1
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
                                 env=self.environment, timeout=600, check=False)
@@ -268,15 +329,23 @@ class Native:
                 f"native command exited {result.returncode}, expected {expect}: {command!r}\n{result.stdout}\n{result.stderr}")
         try:
             lines = result.stdout.splitlines()
-            require(len(lines) == 1, f"native command did not return one robot envelope: {command!r}")
-            value = json.loads(lines[0])
+            require(bool(lines), f"native command returned no robot envelope: {command!r}")
+            values = [json.loads(line) for line in lines]
         except (ValueError, IndexError) as error:
             raise ReplayError(f"invalid native JSON from {command!r}") from error
-        require(isinstance(value, dict), "native result is not a JSON object")
-        return value
+        require(all(isinstance(value, dict) for value in values), "native result is not a JSON object")
+        return values, result.stdout
+
+    def execute(self, command: list[str], expect: int = 0) -> dict:
+        values, _ = self.execute_events(command, expect)
+        require(len(values) == 1, f"native command did not return one robot envelope: {command!r}")
+        return values[0]
+
+    def command(self, *args: object) -> list[str]:
+        return [str(self.binary), "--book", str(self.book), *map(str, args), "--json"]
 
     def call(self, *args: object, expect: int = 0) -> dict:
-        return self.execute([str(self.binary), "--book", str(self.book), *map(str, args), "--json"], expect)
+        return self.execute(self.command(*args), expect)
 
     def document(self, path: Path, kind: str = "Spreadsheet", mime: str = "text/csv") -> str:
         return self.call("document", "add", path, "--kind", kind, "--mime", mime,
@@ -289,28 +358,73 @@ class Native:
         return [self.call("approve", "--proposal", digest, "--as", f"public-data-{label}-{reviewer}")
                 ["data"]["approval_vid"] for reviewer in ("a", "b")]
 
+    def register_departments(self, specifications: list[dict]) -> dict[str, dict]:
+        values = {}
+        for spec in specifications:
+            code = spec["code"]
+            require(department_code(code) == code and code not in values,
+                    "department registry contains a blank or repeated source code")
+            value = self.call("dimension", "add", "department", code, "--name", spec["name"])["data"]["value"]
+            require(value["dimension"] == "department" and value["code"] == code,
+                    f"native department registration changed source code {code}")
+            values[code] = {"dimension": value["dimension_id"], "value": value["vid"]}
+        require(len({value["value"] for value in values.values()}) == len(values),
+                "distinct source departments share a native value identity")
+        return values
+
     def tb(self, period: str, *, activity: bool = False, known_at: int | None = None,
-           expected_gross: dict[str, int] | None = None) -> dict[str, int]:
+           expected_gross: dict[str, int] | None = None,
+           department: str | None = None) -> dict[str, int]:
         args: list[object] = ["tb", "--period", period]
         if activity:
             args.append("--activity")
         if known_at is not None:
             args.extend(["--as-known-at", known_at])
-        rows = self.call(*args)["data"]["rows"]
-        cells = {}
-        gross = {}
-        for row in rows:
-            amount, unit = row["net"].rsplit(" ", 1)
-            require(unit == "USD", f"unexpected native TB unit {unit}")
-            require(row["code"] not in cells, "native TB repeats an account")
-            cells[row["code"]] = source.amount_cents(amount)
-            for field, side in (("debits", "debit"), ("credits", "credit")):
-                amount, unit = row[field].rsplit(" ", 1)
-                require(unit == "USD", f"unexpected native TB gross unit {unit}")
-                gross[f"{row['code']}:{side}"] = source.amount_cents(amount)
-        if expected_gross is not None:
-            same_cells(gross, expected_gross, f"{period} gross debit/credit activity")
+        if department is not None:
+            args.extend(["--dimension", f"department={department}"])
+        cells, _ = trial_balance_cells(self.call(*args)["data"], period, expected_gross, department)
         return cells
+
+    def certified_department_tb(self, period: str, department: str,
+                                expected_gross: dict[str, int]) -> tuple[dict[str, int], str]:
+        command = self.command("tb", "--period", period, "--dimension", f"department={department}", "--certify")
+        events, original = self.execute_events(command)
+        require(len(events) == 2 and events[0].get("event") == "trial_balance"
+                and events[1].get("event") == "report_certificate",
+                "certified department TB must return its report and retained certificate")
+        cells, _ = trial_balance_cells(events[0]["data"], period, expected_gross, department)
+        certificate = events[1]["data"]
+        require(certificate["output_format"] == "fa:dimension-trial-balance:v1",
+                "department certificate has another report format")
+        oid = certificate["oid"]
+        require(events[0].get("certificate") == oid, "department report does not bind its retained certificate")
+        replayed, replay_bytes = self.execute_events(self.command("replay", f"C:{oid}"))
+        require(len(replayed) == 1 and replay_bytes == original.splitlines(keepends=True)[0],
+                f"department {department} certificate did not replay the exact robot report")
+        return cells, oid
+
+
+def trial_balance_cells(data: dict, period: str, expected_gross: dict[str, int] | None,
+                        department: str | None = None) -> tuple[dict[str, int], dict[str, int]]:
+    if department is not None:
+        require(data.get("dimension") == {"dimension": "department", "value": department, "values": [department]},
+                f"native TB returned a different department scope than {department}")
+    cells = {}
+    gross = {}
+    for row in data["rows"]:
+        amount, unit = row["net"].rsplit(" ", 1)
+        require(unit == "USD", f"unexpected native TB unit {unit}")
+        require(row["code"] not in cells, "native TB repeats an account")
+        cells[row["code"]] = source.amount_cents(amount)
+        for field, side in (("debits", "debit"), ("credits", "credit")):
+            amount, unit = row[field].rsplit(" ", 1)
+            require(unit == "USD", f"unexpected native TB gross unit {unit}")
+            gross[f"{row['code']}:{side}"] = source.amount_cents(amount)
+        require(cells[row["code"]] == gross[f"{row['code']}:debit"] - gross[f"{row['code']}:credit"],
+                f"native TB net disagrees with debit/credit amounts for {row['code']}")
+    if expected_gross is not None:
+        same_cells(gross, expected_gross, f"{period} department {department} gross debit/credit activity")
+    return cells, gross
 
 
 def same_cells(actual: dict[str, int], expected: dict[str, int], label: str) -> None:
@@ -335,7 +449,7 @@ def tamper_ads_amount(path: Path) -> dict:
     raise ReplayError("ADS export has no USD-cent monetary row for the tamper control")
 
 
-def verify_prepared_legs(manifest: dict, run: dict, package: dict) -> None:
+def verify_prepared_legs(manifest: dict, run: dict, package: dict, department_values: dict[str, dict]) -> None:
     """Check native proposals row-for-row; a matching net alone is insufficient."""
     require(package["row_count"] == run["rows"], "native parser omitted or added source rows")
     require(package["chunk_count"] == len(run["entry_ids"]), "native parser changed source group count")
@@ -352,9 +466,41 @@ def verify_prepared_legs(manifest: dict, run: dict, package: dict) -> None:
         require(chunk["leg_count"] == len(expected) == len(chunk["legs"]), "native leg count differs")
         for ordinal, (actual, row) in enumerate(zip(chunk["legs"], expected, strict=True)):
             side = "debit" if row["cents"] > 0 else "credit"
+            code = row["department"]
+            require(code is None or code in department_values,
+                    f"source department {code} has no registered native value")
+            dimensions = [] if code is None else [department_values[code]]
             require(actual == {"index": ordinal, "account": row["account"], "side": side,
-                               "amount": f"{money(abs(row['cents']))} USD"},
+                               "amount": f"{money(abs(row['cents']))} USD", "dimensions": dimensions},
                     f"native proposal differs from original source record {row['source_record']}")
+
+
+def verify_department_balances(native: Native, manifest: dict, before_finalize: int) -> list[dict]:
+    cumulative = {row["code"]: defaultdict(int) for row in manifest["departments"]}
+    cumulative_gross = {code: defaultdict(int) for code in cumulative}
+    for period in PERIODS:
+        for code in cumulative:
+            expected = manifest["department_activity"][period].get(code, {})
+            net = expected.get("account_nets", {})
+            gross = expected.get("gross_cents", {})
+            same_cells(native.tb(period, activity=True, department=code, expected_gross=gross),
+                       net, f"{period} department {code} activity")
+            for account, cents in net.items():
+                cumulative[code][account] += cents
+            for cell, cents in gross.items():
+                cumulative_gross[code][cell] += cents
+            same_cells(native.tb(period, department=code, expected_gross=dict(cumulative_gross[code])),
+                       dict(cumulative[code]), f"{period} department {code} cumulative")
+            same_cells(native.tb(period, department=code, known_at=before_finalize), {},
+                       f"{period} department {code} immutable preactivation history")
+    certificates = []
+    for code in cumulative:
+        net, oid = native.certified_department_tb(PERIODS[-1], code, dict(cumulative_gross[code]))
+        same_cells(net, dict(cumulative[code]), f"certified quarter activity for department {code}")
+        certificates.append({"department": code, "period": PERIODS[-1], "certificate_oid": oid,
+                             "account_nets": dict(cumulative[code]),
+                             "gross_cents": dict(cumulative_gross[code])})
+    return certificates
 
 
 def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> dict:
@@ -367,6 +513,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
         chart_file = output / f"chart-{index:03}.json"
         write_json(chart_file, {"accounts": accounts[index:index + 32]})
         native.call("chart", "import", chart_file)
+    department_values = native.register_departments(manifest["departments"])
     native.call("period", "create", "--fiscal-year", "2024")
     raw_oid = native.document(output / "original-agency.csv", mime="text/csv; charset=windows-1252")
     manifest_oid = native.document(output / "manifest.json", "Workpaper", "application/json")
@@ -404,7 +551,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
         intent_path = output / f"{name}-import.json"
         write_json(intent_path, intent)
         package = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
-        verify_prepared_legs(manifest, run, package)
+        verify_prepared_legs(manifest, run, package, department_values)
         if not prepared:
             head = native.head()
             again = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
@@ -453,6 +600,12 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
     checks.extend(["every_month_account_cell_matches_source", "cumulative_balances_match_source",
                    "native_proposal_legs_preserve_every_source_row", "gross_debit_credit_account_cells_match_source",
                    "historical_preactivation_prefix_stays_invisible", "native_registers_equal_journal_fold"])
+    department_certificates = verify_department_balances(native, manifest, before_finalize)
+    checks.append("every_native_leg_preserves_source_department_or_absence")
+    if department_values:
+        checks.extend(["native_department_monthly_and_cumulative_net_and_gross_match_source",
+                       "department_preactivation_history_stays_invisible",
+                       "department_certificates_replay_exact_robot_reports"])
     # Retry every saved chunk after finalization, across separate process opens.
     head = native.head()
     for command, recorded_at in retries:
@@ -483,6 +636,9 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             "account_count": manifest["account_count"], "migration_runs": len(prepared),
             "migration_entries": len(retries), "commands": native.commands, "checks": checks,
             "activity_cents": manifest["activity_cents"], "final_cumulative_cents": dict(cumulative),
+             "department_value_count": len(department_values),
+             "department_certificates": department_certificates,
+             "department_scope": "Exact nonblank DEPTID values; source blanks stay untagged, and departmental slices need not balance",
             "independent_verification": verification, "tamper_refusal": rejected,
             "tamper_mutation": mutation,
             "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
