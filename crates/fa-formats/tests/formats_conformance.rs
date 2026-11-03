@@ -1797,11 +1797,13 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
 }
 
 fn xbrl_calculation_instance(facts: &str) -> XbrlInstance {
+    // Keep the monetary literals independent of the exporter while matching
+    // the reader's documented emitted-instance envelope.
     read_xbrl_instance_xml(&format!(
         r#"<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:us-gaap="http://fasb.org/us-gaap/2026" xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
 <xbrli:context id="ctx_current">
 <xbrli:entity>
-<xbrli:identifier scheme="https://example.org/entity">SCALE-CONTROL</xbrli:identifier>
+<xbrli:identifier scheme="http://frankenaccounting.org/entity">SCALE-CONTROL</xbrli:identifier>
 </xbrli:entity>
 <xbrli:period>
 <xbrli:instant>2026-03-31</xbrli:instant>

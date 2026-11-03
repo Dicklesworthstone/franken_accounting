@@ -296,6 +296,63 @@ The independent source predicates and native certificate replays establish
 their stated checks; this feature does not claim that standalone `fa-verify`
 recomputes these analytics offline.
 
+### Observed M7 native results (2026-11-03)
+
+The [compact execution record](../evidence/blmis/record_silent_validation_2026-11-03.json)
+binds these completed runs to their original PDF pins, source and helper hashes,
+native command transcripts, reports and source-resolved workpapers. All used
+the verified `fa` and `fa-verify` binaries from
+[`3f947acbe31d89e74feec05891aa49b7400e7260`](https://github.com/Dicklesworthstone/franken_accounting/commit/3f947acbe31d89e74feec05891aa49b7400e7260).
+They do not establish acceptance of the later `9700db7` Rust storage changes.
+
+| Execution | Source observations / monetary entries / retained nonposting observations | Native commands | Seconds | Observed result |
+|---|---|---:|---:|---|
+| Complete six-account Glantz pipeline | 379 / 372 / 7 | 1,305 | 548.713 | Exit 0; full accounting pipeline completed |
+| Glantz final-helper analytics recheck | The same completed book and source population | 37 | 43.562 | Exit 0; all seven strict comparisons and certificate replays passed |
+| Complete Square One pipeline | 1,050 / 340 / 710 | 986 | 396.186 | Exit 0; final helper unchanged throughout the run |
+
+The initial Glantz process imported the helper before its last strengthening.
+Its workpaper hashes the file on disk at serialization, which cannot establish
+the code already imported by that process. The separate 37-command recheck
+used the frozen final helper, recomputed every source finding and replayed all
+seven certificates at recorded prefix 718. Its complete source findings equal
+the initial run's, but it did not repeat PDF extraction, posting or ADS export.
+Square One ran the final helper throughout, with all six module hashes checked
+before and after execution; its analytics prefix was 441.
+
+| Procedure | Glantz final recheck | Square One |
+|---|---:|---:|
+| `jet.round_amounts` | 311 | 37 |
+| `jet.weekend` | 0 | 0 |
+| `duplicates.same_same_same` | 0 | 0 |
+| `duplicates.same_same_different` | 14 | 3 |
+| `numbers.relative_size_factor` | 1 | 0 |
+| `numbers.round_amount_density` | 2 | 0 |
+| `benford.first_digit` | 1 Info notice: population 372 < 500 | 1 Info notice: population 340 < 500 |
+
+These counts matched the independent exact source predicates. Every final-helper
+certificate replay remained byte-identical after later findings were recorded.
+The complete accounting pipelines also checked all 372 and 340 posting retries,
+17 and 10 annual controls, and 143 and 72 monthly registers, respectively.
+Standalone `fa-verify` accepted the original ADS exports with complete native
+leg identities on all 744 and 680 rows, then exited 8 for each amount-only and
+party-only mutation. Those portable accounting proofs are distinct from the
+source predicate comparisons and native analytics certificate replays.
+
+No source difference was repaired by the import. Glantz preserved 50 discrepant
+printed balances in `1ZR010` (closing difference +$9) and 12 in `1ZR176`
+(intermediate difference −$1, closing difference zero). Square One preserved
+1,010 discrepant printed balances and a closing difference of −$3: source
+movements produce $2,244,425 against the printed $2,244,428. Its 710 nonposting
+observations include all 709 starred withholding exclusions with their explicit
+footnote premises. The finding counts remain record-silent observations under
+the scope above; the Benford notices make no conformity claim.
+
+Magnify's separate complete native run is still pending; this record makes no
+measured Magnify completion claim. Reproduction commands and local artifact
+hashes are in the execution record. Generated private keys, whole PDFs and
+native books are excluded from the committed summary.
+
 ## Default single-account workload
 
 The following sections describe the unchanged 1ZA192 source scope and its

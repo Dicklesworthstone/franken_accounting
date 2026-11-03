@@ -1,0 +1,844 @@
+{
+  "format": "fa-blmis-record-silent-native-execution-summary-v1",
+  "recorded_date_utc": "2026-11-03",
+  "evidence_class": "Observed native execution of original-PDF accounting workloads and independent source predicates; hashes bind retained local execution artifacts.",
+  "scope": "All six Glantz Exhibit B account histories and the complete Square One account 1FR048 table. M7 subset: seven record-silent procedures, with unchanged registered versions and thresholds. No completion of the entire forensic case-study plan or bead closure is claimed.",
+  "native_binary_provenance": {
+    "repository": "Dicklesworthstone/franken_accounting",
+    "source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+    "source_url": "https://github.com/Dicklesworthstone/franken_accounting/commit/3f947acbe31d89e74feec05891aa49b7400e7260",
+    "binary_sha256": {
+      "fa_sha256": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+      "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05"
+    },
+    "retained_source_manifest": {
+      "bytes": 41,
+      "sha256": "434e12f0ae8fb68f38ec561b70aaff5b00d3e484c16f7a841fcc04c5bba7677a"
+    },
+    "binding": "Verified hosted native artifact copied byte-for-byte to /tmp/franken-native-3f947ac/fa and fa-verify. These executions use source 3f947ac, not the subsequent 9700db7 large-Entry storage repair. They do not validate that newer Rust implementation."
+  },
+  "final_analytics_helper": {
+    "commit": "5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+    "path": "scripts/blmis_analytics.py",
+    "sha256": "77a742fda836a6f6211b062bba03b31122f640bf59efbecbc5e97a65c6c1dc5e",
+    "procedures": {
+      "jet.round_amounts": {
+        "version": 1,
+        "parameters": {
+          "round_power": 3
+        }
+      },
+      "jet.weekend": {
+        "version": 1,
+        "parameters": {}
+      },
+      "duplicates.same_same_same": {
+        "version": 1,
+        "parameters": {}
+      },
+      "duplicates.same_same_different": {
+        "version": 1,
+        "parameters": {
+          "window_days": 30
+        }
+      },
+      "numbers.relative_size_factor": {
+        "version": 1,
+        "parameters": {
+          "min_rsf_bps": 50000,
+          "min_subset_size": 3
+        }
+      },
+      "numbers.round_amount_density": {
+        "version": 1,
+        "parameters": {
+          "round_power": 2,
+          "min_legs": 20,
+          "z_squared": 9
+        }
+      },
+      "benford.first_digit": {
+        "version": 2,
+        "parameters": {
+          "min_population": 500,
+          "mad_close": 6,
+          "mad_acceptable": 12,
+          "mad_marginal": 15,
+          "currency_iso4217": 840,
+          "side": 0,
+          "account_type": 0
+        }
+      }
+    }
+  },
+  "verification_boundaries": {
+    "independent_source_predicates": "Amounts are decoded from original published whole-dollar literals and dates independently of the posting adapter. Exact integers and rational arithmetic determine complete finding sets, severities, statistics, narratives and source citations. Native receipts bind identity and publication order only.",
+    "native_certificates": "Each procedure is run and recorded at one fixed recorded prefix. Retained certificates reproduce the checked native report; every certificate is replayed again after later finding records, requiring byte-identical output. The procedures have no effective-through cutoff.",
+    "standalone_ads": "The actual fa-verify process independently validates exported accounting proof and complete native leg dimensions. Amount-only and party-only mutations must fail with exit 8. This is separate from the source predicate oracle and native analytics replay; no offline fa-verify analytic recomputation is claimed.",
+    "source_scope": "Analysis accounts reconstruct the published principal/cash/credited-transfer movements. Original BLMIS general ledgers, trial balances and complete firm-wide records are not available in these exhibits. Trustee transfer credits, named same-day ordering and withholding footnotes remain explicit premises.",
+    "inference_limits": "The litigation-selected records do not label these technical predicates as fraud. Counts are record-silent observations, not fraud findings, false-positive rates, audit assurance or a legal determination. Source discrepancies are retained without tolerance, plug or invented precision.",
+    "workspace_gates": "No Rust workspace test, Tier 0/Tier 1 gate or newer-engine acceptance is inferred from these executions."
+  },
+  "runs": {
+    "glantz_complete_pipeline": {
+      "status": "PASS",
+      "observed_process_exit": 0,
+      "elapsed_seconds": 548.713,
+      "commands": 1305,
+      "native_exit_counts": {
+        "0": 1303,
+        "8": 2
+      },
+      "process_time_evidence": "Exit 0 and final stdout were observed in the execution tool. Separate launch UTC timestamps, wrapper stdout/stderr files and launch-time module snapshots were not retained; no timestamps are inferred from file modification times.",
+      "helper_provenance": {
+        "driver_sha256_reported": "c3f61901ec54a76fd9a969f54384d0ec792bf5b0bfc0264817444c16c060758a",
+        "oracle_sha256_reported_at_serialization": "77a742fda836a6f6211b062bba03b31122f640bf59efbecbc5e97a65c6c1dc5e",
+        "loaded_helper_sha256": null,
+        "frozen_helper_execution": false,
+        "qualification": "This process imported the helper before its final strengthening. The helper file changed while the full pipeline ran; its recorded SHA-256 is read from disk when the workpaper is serialized and does not establish the bytes already imported by this process. The final frozen-helper recheck below supplies the strict final analytics result; it is not a repeat of original PDF ingestion or the whole pipeline."
+      },
+      "source": {
+        "url": "https://www.madofftrustee.com/document/dockets/008796-glantzcomplaint10-05394docket93.pdf",
+        "original_pdf_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+        "pdf_pages": [
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40
+        ],
+        "extraction_mode": "original_pdf_extracted_this_run",
+        "extraction_command": [
+          "pdftotext",
+          "-layout",
+          "-f",
+          "27",
+          "-l",
+          "40",
+          "-",
+          "-"
+        ],
+        "retained_hashes": {
+          "extracted-source/layout.txt": {
+            "bytes": 88638,
+            "sha256": "258f770d126b7c8cb8a0216fcca98259ce75b3ae86806638f7a2711c8176033f"
+          },
+          "extracted-source/rows.csv": {
+            "bytes": 68500,
+            "sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf"
+          },
+          "extracted-source/source.json": {
+            "bytes": 10877,
+            "sha256": "8da252a4e2307fa1fe0bcef6ffa5073d13a028ac9b26340ff4541df6a9aa6882"
+          },
+          "source.pdf": {
+            "bytes": 389586,
+            "sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1"
+          }
+        }
+      },
+      "population": {
+        "source_rows": 379,
+        "native_entries": 372,
+        "native_legs": 744,
+        "zero_principal_observations": 7
+      },
+      "source_account_comparisons": {
+        "1T0026": {
+          "source_rows": 117,
+          "native_lines": 112,
+          "native_closing_principal_cents": -737416500,
+          "printed_closing_principal_cents": -737416500,
+          "printed_balances_equal": true,
+          "zero_principal_observations": 5,
+          "printed_rows_off": 0,
+          "closing_gap_cents": 0,
+          "maximum_absolute_gap_cents": 0,
+          "classification": "exact",
+          "footer_gaps_cents": {}
+        },
+        "1ZA192": {
+          "source_rows": 75,
+          "native_lines": 74,
+          "native_closing_principal_cents": -994703100,
+          "printed_closing_principal_cents": -994703100,
+          "printed_balances_equal": true,
+          "zero_principal_observations": 1,
+          "printed_rows_off": 0,
+          "closing_gap_cents": 0,
+          "maximum_absolute_gap_cents": 0,
+          "classification": "exact",
+          "footer_gaps_cents": {}
+        },
+        "1ZB010": {
+          "source_rows": 61,
+          "native_lines": 61,
+          "native_closing_principal_cents": -50750000,
+          "printed_closing_principal_cents": -50750000,
+          "printed_balances_equal": true,
+          "zero_principal_observations": 0,
+          "printed_rows_off": 0,
+          "closing_gap_cents": 0,
+          "maximum_absolute_gap_cents": 0,
+          "classification": "exact_under_named_same_day_order",
+          "footer_gaps_cents": {}
+        },
+        "1ZB143": {
+          "source_rows": 51,
+          "native_lines": 50,
+          "native_closing_principal_cents": -1695468800,
+          "printed_closing_principal_cents": -1695468800,
+          "printed_balances_equal": true,
+          "zero_principal_observations": 1,
+          "printed_rows_off": 0,
+          "closing_gap_cents": 0,
+          "maximum_absolute_gap_cents": 0,
+          "classification": "exact",
+          "footer_gaps_cents": {}
+        },
+        "1ZR010": {
+          "source_rows": 57,
+          "native_lines": 57,
+          "native_closing_principal_cents": -332798000,
+          "printed_closing_principal_cents": -332798900,
+          "printed_balances_equal": false,
+          "zero_principal_observations": 0,
+          "printed_rows_off": 50,
+          "closing_gap_cents": 900,
+          "maximum_absolute_gap_cents": 900,
+          "classification": "printed_source_discrepancy",
+          "footer_gaps_cents": {
+            "deposits": 900,
+            "printed_balance": 900
+          }
+        },
+        "1ZR176": {
+          "source_rows": 18,
+          "native_lines": 18,
+          "native_closing_principal_cents": -281796500,
+          "printed_closing_principal_cents": -281796500,
+          "printed_balances_equal": false,
+          "zero_principal_observations": 0,
+          "printed_rows_off": 12,
+          "closing_gap_cents": 0,
+          "maximum_absolute_gap_cents": 100,
+          "classification": "printed_source_discrepancy",
+          "footer_gaps_cents": {}
+        }
+      },
+      "source_diagnostic_scope": {
+        "gap_convention": "cumulative source fold minus printed balance; local gaps use printed delta minus source movement",
+        "printed_rows_off_total": 62,
+        "transfer_rows": 17,
+        "recomputed_transfer_pairs": 2,
+        "unpaired_transfer_rows": 13,
+        "named_same_day_order": "same_day_display_reorder"
+      },
+      "accounting_checks": {
+        "exact_entry_retries": 372,
+        "annual_controls": 17,
+        "verified_monthly_registers": 143,
+        "certified_account_ledgers": 6,
+        "export_source_oracles": [
+          {
+            "dimension_encoding": "fa-dimension-ids-v1",
+            "format": "csv-gl",
+            "parties": [
+              "BLMIS-1T0026",
+              "BLMIS-1ZA192",
+              "BLMIS-1ZB010",
+              "BLMIS-1ZB143",
+              "BLMIS-1ZR010",
+              "BLMIS-1ZR176"
+            ],
+            "rows": 744,
+            "tagged_rows": 372,
+            "untagged_rows": 372
+          },
+          {
+            "dimension_encoding": "fa-dimension-ids-v1",
+            "format": "ads",
+            "parties": [
+              "BLMIS-1T0026",
+              "BLMIS-1ZA192",
+              "BLMIS-1ZB010",
+              "BLMIS-1ZB143",
+              "BLMIS-1ZR010",
+              "BLMIS-1ZR176"
+            ],
+            "rows": 744,
+            "tagged_rows": 372,
+            "untagged_rows": 372
+          }
+        ],
+        "completed_checks": [
+          "pinned_original_pdf",
+          "native_source_intake_and_custody_receipts",
+          "complete_six_account_379_row_population",
+          "all_372_monetary_entries_and_744_legs",
+          "all_seven_zero_principal_observations_retained",
+          "every_native_running_balance_vs_source_and_explicit_gap",
+          "named_same_day_display_reorder",
+          "both_transfer_credits_from_certified_originating_principal",
+          "exact_certified_ledger_replay",
+          "immutable_preimport_prefix",
+          "every_annual_all_account_control",
+          "every_exact_retry_without_new_history",
+          "native_registers_equal_fold",
+          "native_projections",
+          "all_six_native_party_bindings",
+          "all_six_native_principal_outcomes",
+          "missing_transfer_role_control_for_all_accounts",
+          "historical_missing_role_result_unchanged",
+          "seven_record_silent_source_predicates_and_certified_replays",
+          "all_exported_money_and_party_dimensions_vs_original_source",
+          "signed_accumulator_checkpoint",
+          "independent_ads_verification_and_dimension_coverage",
+          "one_cent_tamper_rejected",
+          "party_only_tamper_rejected"
+        ]
+      },
+      "analytics_initial": {
+        "source_known_at": 560,
+        "finding_counts": {
+          "benford.first_digit": 1,
+          "duplicates.same_same_different": 14,
+          "duplicates.same_same_same": 0,
+          "jet.round_amounts": 311,
+          "jet.weekend": 0,
+          "numbers.relative_size_factor": 1,
+          "numbers.round_amount_density": 2
+        },
+        "all_historical_replays_byte_identical": true,
+        "final_strict_result_reference": "glantz_final_frozen_helper_recheck"
+      },
+      "standalone_ads_verification": {
+        "ads": {
+          "process_exit": 0,
+          "verdict": "verified",
+          "extract_result": "pass",
+          "dimension_coverage": "complete_native_leg_identities",
+          "entries": 372,
+          "rows": 744,
+          "dimension_rows": 744,
+          "known_at_seq": 717,
+          "effective_through": "2008-10-30"
+        },
+        "ads-amount-tampered": {
+          "process_exit": 8,
+          "verdict": "failed",
+          "extract_result": "fail",
+          "dimension_coverage": "not_authenticated"
+        },
+        "ads-party-tampered": {
+          "process_exit": 8,
+          "verdict": "failed",
+          "extract_result": "fail",
+          "dimension_coverage": "not_authenticated"
+        }
+      },
+      "artifacts": {
+        "local_run_directory": "/workspace/scratch/69d8c2fe02b1/native-validation-local-glantz-six-analytics",
+        "files": {
+          "report.json": {
+            "bytes": 4377492,
+            "sha256": "1e9e807331b7ecffb7ceb503b122a5db167aaa0c64b254739ed178d1fad9067c"
+          },
+          "commands.jsonl": {
+            "bytes": 4777204,
+            "sha256": "15e4c9f1589c849e5f6ffaec01ab96a6312ec0b440c80d44690e6173ff247482"
+          },
+          "record-silent-analytics.json": {
+            "bytes": 841354,
+            "sha256": "69a34277caa2f0e9d43b2e8b4f0cf47e15d152710ad7681c803454b3975d1287"
+          },
+          "extraction.json": {
+            "bytes": 1457,
+            "sha256": "cabe8e4732f33a1748ce2ce570be067e28f10a6e5b1e6ce36065a7da6f522a51"
+          },
+          "manifest.json": {
+            "bytes": 174351,
+            "sha256": "0b658ec84d993fd3eb4b1dd5202829a14e6a9e2a7d765567750d46bda0246439"
+          }
+        }
+      },
+      "executed_command": [
+        "python3",
+        "-B",
+        "scripts/blmis_replay.py",
+        "run",
+        "--account",
+        "all",
+        "--pdf",
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-3f947ac/reports/glantz-source.pdf",
+        "--out",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-local-glantz-six-analytics",
+        "--fa",
+        "/tmp/franken-native-3f947ac/fa",
+        "--fa-verify",
+        "/tmp/franken-native-3f947ac/fa-verify"
+      ],
+      "reproduce_with_final_helper": "python3 -B scripts/blmis_replay.py run --account all --pdf /path/to/pinned-glantz.pdf --out /path/to/new-glantz-six --fa /path/to/fa --fa-verify /path/to/fa-verify"
+    },
+    "glantz_final_frozen_helper_recheck": {
+      "status": "PASS",
+      "observed_process_exit": 0,
+      "elapsed_seconds": 43.56226061699999,
+      "commands": 37,
+      "native_exit_counts": {
+        "0": 37
+      },
+      "execution_scope": "The final helper ran against the completed six-account book and original extracted rows/entry receipts. It rechecked all seven complete source finding sets and recorded/replayed their certificates at prefix 718. PDF extraction, original postings, retries, annual controls and ADS exports were not rerun in these 37 commands.",
+      "helper_sha256_captured": {
+        "scripts/blmis_analytics.py": "77a742fda836a6f6211b062bba03b31122f640bf59efbecbc5e97a65c6c1dc5e",
+        "scripts/blmis_replay.py": "c3f61901ec54a76fd9a969f54384d0ec792bf5b0bfc0264817444c16c060758a"
+      },
+      "source_and_book_reference": "glantz_complete_pipeline",
+      "complete_source_findings_equal_initial_run": true,
+      "analytics": {
+        "status": "PASS",
+        "source_known_at": 718,
+        "source_observations": 379,
+        "monetary_entries": 372,
+        "native_legs": 744,
+        "zero_principal_observations": 7,
+        "source_accounts": [
+          "1T0026",
+          "1ZA192",
+          "1ZB010",
+          "1ZB143",
+          "1ZR010",
+          "1ZR176"
+        ],
+        "procedures": {
+          "jet.round_amounts": {
+            "finding_count": 311,
+            "severity_counts": {
+              "Medium": 311
+            },
+            "certificate": "da9d8401d4e367d22136cccaa1b9ce2f618db1259e0df7f478d5d5eb9c96a09e",
+            "findings_digest": "e2e949c00fdbfe2a97046b4e369227fc66092f145015c07db4c7882382303d5e",
+            "recorded_at": 720,
+            "historical_replay_byte_identical": true
+          },
+          "jet.weekend": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "32d8139cfa25139b794137afdb7fbdf948a9fcd6fb38667d9d64df69e94c2683",
+            "findings_digest": "0a4dcfa32e4355760ad13ada1b27eecfea2fb675c7bb67bf7c4f3dc35d077b74",
+            "recorded_at": 722,
+            "historical_replay_byte_identical": true
+          },
+          "duplicates.same_same_same": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "d7a89bb6d82188e0b586e83868404f9df28f4c6cb9e9bcbce9c29f25baccc263",
+            "findings_digest": "4ce713ef5244cddcaca8c3b1b59251ccd55d7803f637505a062c63e509481b07",
+            "recorded_at": 724,
+            "historical_replay_byte_identical": true
+          },
+          "duplicates.same_same_different": {
+            "finding_count": 14,
+            "severity_counts": {
+              "Low": 14
+            },
+            "certificate": "540f95f9ba0c787b82fbd073bf34a022555f4f688e6e830a52292fccbbefde6a",
+            "findings_digest": "a9040d403823ab268895bae081f5d961ac1c5fcf0ff5b03e8b55ec6499fca7aa",
+            "recorded_at": 726,
+            "historical_replay_byte_identical": true
+          },
+          "numbers.relative_size_factor": {
+            "finding_count": 1,
+            "severity_counts": {
+              "Medium": 1
+            },
+            "certificate": "c64890d0d9e6d44e551710a87cc1b87b4b17d5f7a6ffb5dc69d377566d45b01b",
+            "findings_digest": "86bae715301854172ebc77fae0430e23b0a89ddf6f6c8fc2408b0fd6660e0f1d",
+            "recorded_at": 728,
+            "historical_replay_byte_identical": true
+          },
+          "numbers.round_amount_density": {
+            "finding_count": 2,
+            "severity_counts": {
+              "Medium": 2
+            },
+            "certificate": "92124e74370b3e4e10396c17d77e164d3dbda1e020b63fa16af9b87a9a56f329",
+            "findings_digest": "0c516343c4a78ef6d4089036ad4207e1c6f0e75a5fc12c269aa8b94be5251c5b",
+            "recorded_at": 730,
+            "historical_replay_byte_identical": true
+          },
+          "benford.first_digit": {
+            "finding_count": 1,
+            "severity_counts": {
+              "Info": 1
+            },
+            "certificate": "1b376f7da8ba047355c05cca36260ce66d39d69c6781edf39fb7be9d4bdd70db",
+            "findings_digest": "33163705e5ea62270b81c296c53c0dab817e3f8bacf76c7490df29123a8e0dca",
+            "recorded_at": 732,
+            "historical_replay_byte_identical": true
+          }
+        },
+        "benford_result": {
+          "statistic": {
+            "name": "population",
+            "population": 372,
+            "scale": 0,
+            "value": 372
+          },
+          "severity": "Info",
+          "narrative": "population 372 is below the registered minimum 500; no conformity is claimed"
+        }
+      },
+      "artifacts": {
+        "local_run_directory": "/workspace/scratch/69d8c2fe02b1/native-validation-glantz-final-analytics",
+        "files": {
+          "validation.json": {
+            "bytes": 894976,
+            "sha256": "5a3a1f65237158fe2305d77098b7efedfcf8702fc1c64f80717b7557a4cdcb3b"
+          },
+          "commands.jsonl": {
+            "bytes": 901098,
+            "sha256": "e6dc3af5620ef2d0ebd850dac756cd905bd38d6630cd04fee2c979691c606181"
+          },
+          "record-silent-analytics.json": {
+            "bytes": 841354,
+            "sha256": "48bf0fa81b63b8a6e76232422aa842767888a792a3d256db4435bcf2f475fb3c"
+          }
+        }
+      },
+      "reproduce": {
+        "method": "Run the following Python from the repository root using the pinned final helper and binary artifacts, after a complete Glantz run. Use a new output directory; the completed book receives finding records. A new execution can have a later recorded prefix and different certificate IDs.",
+        "python": "import json, sys\nfrom pathlib import Path\nsys.path.insert(0, 'scripts')\nimport blmis_source, blmis_analytics, public_ledger\ncompleted = Path('/path/to/completed-glantz-six')\noutput = Path('/path/to/new-glantz-strict-recheck')\noutput.mkdir(parents=True, exist_ok=False)\nrows, _ = blmis_source.load_glantz_fixture(completed)\nrows = blmis_source.glantz_computation_order(rows)\nposted = json.loads((completed / 'report.json').read_text())['entry_receipts']\nnative = public_ledger.Native(Path('/path/to/fa'), Path('/path/to/fa-verify'), output)\nnative.book = completed / 'book'\nresult = blmis_analytics.run_native(native, rows, posted)\nprint(json.dumps({'status': result['status'], 'commands': native.commands}))"
+      }
+    },
+    "square_one_complete_pipeline": {
+      "status": "PASS",
+      "observed_process_exit": 0,
+      "elapsed_seconds": 396.186,
+      "wrapper_elapsed_seconds": 396.53,
+      "started_utc": "2026-11-03T14:51:47.257903+00:00",
+      "finished_utc": "2026-11-03T14:58:24.092856+00:00",
+      "commands": 986,
+      "native_exit_counts": {
+        "0": 984,
+        "8": 2
+      },
+      "helper_provenance": {
+        "workspace_commit_at_start": "5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+        "module_sha256": {
+          "scripts/blmis_square_one_replay.py": "3e503dea597afedacd3537a63476c9bca55e8b2b1370efb0eee783603a1c970b",
+          "scripts/blmis_square_one.py": "a3ded339f5c08c850058ec0f631250d203523b074767373a94bbf4248c9731f6",
+          "scripts/blmis_replay.py": "c3f61901ec54a76fd9a969f54384d0ec792bf5b0bfc0264817444c16c060758a",
+          "scripts/blmis_source.py": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2",
+          "scripts/blmis_analytics.py": "77a742fda836a6f6211b062bba03b31122f640bf59efbecbc5e97a65c6c1dc5e",
+          "scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548"
+        },
+        "module_hashes_unchanged": true
+      },
+      "source": {
+        "url": "https://www.madofftrustee.com/document/dockets/009665-squareonecomplaint10-04330docket0167.pdf",
+        "original_pdf_sha256": "396af6d399fb75fc966254b29f9f6e2e1fb0df5bd4ce9d4a48134fe38d56897b",
+        "pdf_pages": [
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78
+        ],
+        "extraction_mode": "original_pdf_extracted_this_run",
+        "extraction_command": [
+          "pdftotext",
+          "-layout",
+          "-f",
+          "60",
+          "-l",
+          "78",
+          "-",
+          "-"
+        ],
+        "retained_hashes": {
+          "extracted-source/layout.txt": {
+            "bytes": 397489,
+            "sha256": "744be3807393eadd0742e4402f209d89909047e8e98c60db3f97c0cc5ebae03d"
+          },
+          "extracted-source/rows.csv": {
+            "bytes": 246442,
+            "sha256": "0b3d9666f7a55926333b53241d51e30a3ce4e3b417da7f072c4fcfc3d4a34afd"
+          },
+          "extracted-source/source.json": {
+            "bytes": 5648,
+            "sha256": "56b89c945d4b463c9929f8470a3625e58024adaeba67f656735399f892cf9284"
+          },
+          "source.pdf": {
+            "bytes": 1190822,
+            "sha256": "396af6d399fb75fc966254b29f9f6e2e1fb0df5bd4ce9d4a48134fe38d56897b"
+          }
+        }
+      },
+      "population": {
+        "source_rows": 1050,
+        "native_entries": 340,
+        "native_legs": 680,
+        "zero_principal_observations": 710,
+        "starred_withholding_exclusions": 709
+      },
+      "source_comparison": {
+        "all_printed_balances_equal": false,
+        "closing_gap_cents": -300,
+        "maximum_printed_gap_cents": 300,
+        "native_closing_principal_cents": 224442500,
+        "native_lines": 340,
+        "native_matches_source_movements_exactly": true,
+        "printed_closing_principal_cents": 224442800,
+        "printed_rows_off": 1010,
+        "source_rows": 1050,
+        "starred_exclusions": 709,
+        "zero_principal_observations": 710,
+        "compared_observations": 1050
+      },
+      "accounting_checks": {
+        "exact_entry_retries": 340,
+        "annual_controls": 10,
+        "verified_monthly_registers": 72,
+        "export_source_oracles": [
+          {
+            "dimension_encoding": "fa-dimension-ids-v1",
+            "format": "csv-gl",
+            "party": "BLMIS-1FR048",
+            "rows": 680,
+            "tagged_rows": 340,
+            "untagged_rows": 340
+          },
+          {
+            "dimension_encoding": "fa-dimension-ids-v1",
+            "format": "ads",
+            "party": "BLMIS-1FR048",
+            "rows": 680,
+            "tagged_rows": 340,
+            "untagged_rows": 340
+          }
+        ],
+        "completed_checks": [
+          "original_pdf_extracted_this_run",
+          "all_1050_source_observations",
+          "independent_decimal_raw_literal_fold",
+          "all_709_starred_exclusions_have_footnote_premises",
+          "all_710_zero_principal_observations_compared",
+          "all_340_entries_and_680_legs",
+          "every_source_discrepancy_reported_without_tolerance_or_plug",
+          "exact_certified_ledger_replay",
+          "immutable_preimport_prefix",
+          "every_exact_retry_without_new_history",
+          "all_annual_source_controls",
+          "native_principal_analysis",
+          "all_posting_month_registers",
+          "seven_record_silent_source_predicates_and_certified_replays",
+          "native_projections",
+          "unchanged_original_document_custody",
+          "signed_accumulator_checkpoint",
+          "all_exported_legs_text_and_party_dimensions_vs_source",
+          "independent_ads_proofs",
+          "one_cent_tamper_rejected",
+          "party_only_tamper_rejected"
+        ]
+      },
+      "analytics": {
+        "status": "PASS",
+        "source_known_at": 441,
+        "source_observations": 1050,
+        "monetary_entries": 340,
+        "native_legs": 680,
+        "zero_principal_observations": 710,
+        "source_accounts": [
+          "1FR048"
+        ],
+        "procedures": {
+          "benford.first_digit": {
+            "finding_count": 1,
+            "severity_counts": {
+              "Info": 1
+            },
+            "certificate": "4b5b833c3a20224631b02b8a9ab120c5b4812909b98b1a1a1f25800638d556e8",
+            "findings_digest": "dcbe1a7db3bf794265fbbfeb580bbcab35f8c23dedfe38ac458513840112ea3a",
+            "recorded_at": 455,
+            "historical_replay_byte_identical": true
+          },
+          "duplicates.same_same_different": {
+            "finding_count": 3,
+            "severity_counts": {
+              "Low": 3
+            },
+            "certificate": "43ae241fe22ddbfc11509e05a49e662b1e8bead22a6e52b1c692884ff08fc9ca",
+            "findings_digest": "af0d2a67284b9dec77f57f017a86f9b7d76f45fecccf0a498fa53e4bc0ee5f46",
+            "recorded_at": 449,
+            "historical_replay_byte_identical": true
+          },
+          "duplicates.same_same_same": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "fe3f058a301c0df6442571a5dc4de4d76936729ffbc757e66944161187193703",
+            "findings_digest": "976ad5bfa80ce5e18e6c98dd767882ff773d74c6268df39b1a79c8d6b4d0ab54",
+            "recorded_at": 447,
+            "historical_replay_byte_identical": true
+          },
+          "jet.round_amounts": {
+            "finding_count": 37,
+            "severity_counts": {
+              "Medium": 37
+            },
+            "certificate": "6d1330bbcab1b1366300e5472022001084d6b33c0aa5d08b9750113c2455d3ec",
+            "findings_digest": "c798fdd9d6508abf0d84ea4024d7d9bad3537c6571c10fac3725ccd4811bbc1f",
+            "recorded_at": 443,
+            "historical_replay_byte_identical": true
+          },
+          "jet.weekend": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "27843424d724440396cbf6bc74282b7e691011069358a88bf66de8668d7a539f",
+            "findings_digest": "fbb5c67561f61f30b48a12dcf23db3d4fbac984a6b08a9b80d59b548b1ca8967",
+            "recorded_at": 445,
+            "historical_replay_byte_identical": true
+          },
+          "numbers.relative_size_factor": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "b8b91e46d90b86df84ed76e58c33bc6baff550f6d8f1afeb6b633efc0cd2df3d",
+            "findings_digest": "888587d8f42592ccf1bec0898f4bc085b37e8b1f8723553bf9337458d7d8ff7d",
+            "recorded_at": 451,
+            "historical_replay_byte_identical": true
+          },
+          "numbers.round_amount_density": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "88cc300c33c16026f86e7d43dca6a96da581bd7cf319021f46d6cf6341b7db97",
+            "findings_digest": "23bcede9870b729d0d4d8104ccae954e51e1b0d35bd59e64fbd44f6fb11950b7",
+            "recorded_at": 453,
+            "historical_replay_byte_identical": true
+          }
+        },
+        "benford_result": {
+          "statistic": {
+            "name": "population",
+            "population": 340,
+            "scale": 0,
+            "value": 340
+          },
+          "severity": "Info",
+          "narrative": "population 340 is below the registered minimum 500; no conformity is claimed"
+        }
+      },
+      "standalone_ads_verification": {
+        "ads": {
+          "process_exit": 0,
+          "verdict": "verified",
+          "extract_result": "pass",
+          "dimension_coverage": "complete_native_leg_identities",
+          "entries": 340,
+          "rows": 680,
+          "dimension_rows": 680,
+          "known_at_seq": 527,
+          "effective_through": "2008-12-03"
+        },
+        "ads-amount-tampered": {
+          "process_exit": 8,
+          "verdict": "failed",
+          "extract_result": "fail",
+          "dimension_coverage": "not_authenticated"
+        },
+        "ads-party-tampered": {
+          "process_exit": 8,
+          "verdict": "failed",
+          "extract_result": "fail",
+          "dimension_coverage": "not_authenticated"
+        }
+      },
+      "artifacts": {
+        "local_run_directory": "/workspace/scratch/69d8c2fe02b1/native-validation-local-square-one-analytics",
+        "files": {
+          "report.json": {
+            "bytes": 3857157,
+            "sha256": "7a0ebb0fd06926de44c7cceb410c043c9aee611812f53096ba00dd5a79ab64d6"
+          },
+          "commands.jsonl": {
+            "bytes": 3389494,
+            "sha256": "35e255bc97fc6331f329bc70cea1ac6d4a59d22fd8bbab73cb8cf4e8caccd1b8"
+          },
+          "record-silent-analytics.json": {
+            "bytes": 109228,
+            "sha256": "025944211ab8f23f39fad09b712b02b71e9bdcd7ae7bc8caa8a8848803496a88"
+          },
+          "execution.json": {
+            "bytes": 2222,
+            "sha256": "182b333cc773d99627333a9a375c27823e4391925971f6e3a635aedcd9ab3d00"
+          },
+          "extraction.json": {
+            "bytes": 1487,
+            "sha256": "a13df72fed451721110cd510cefe30666a26bea3b0054422ac1e512cb86e4b03"
+          },
+          "manifest.json": {
+            "bytes": 245459,
+            "sha256": "ca88de7305ceae8f94b3692a34ef0990eb4bba00d08b68ef0eb24f6078394122"
+          },
+          "observations.json": {
+            "bytes": 314152,
+            "sha256": "c1d0ee24a1974868c805473def961526e78fd8674216f13cfeb9c0b1c9ee3daa"
+          }
+        }
+      },
+      "wrapper_logs": {
+        "native-validation-local-square-one-analytics.stdout.log": {
+          "bytes": 108,
+          "sha256": "a04bccfcbae1edd3a18dc5f73f4acb2abe0771001e1a2bd103a36b76899c2e40"
+        },
+        "native-validation-local-square-one-analytics.stderr.log": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "executed_command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-B",
+        "scripts/blmis_square_one_replay.py",
+        "run",
+        "--pdf",
+        "/workspace/scratch/69d8c2fe02b1/square-one-source.pdf",
+        "--out",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-local-square-one-analytics",
+        "--fa",
+        "/tmp/franken-native-3f947ac/fa",
+        "--fa-verify",
+        "/tmp/franken-native-3f947ac/fa-verify"
+      ],
+      "reproduce": "python3 -B scripts/blmis_square_one_replay.py run --pdf /path/to/pinned-square-one.pdf --out /path/to/new-square-one --fa /path/to/fa --fa-verify /path/to/fa-verify"
+    },
+    "magnify_complete_pipeline": {
+      "status": "PENDING",
+      "scope": "A separate fresh original-PDF native run with the final helper is still in progress. No measured result, finding count or completion claim is recorded until its execution finishes."
+    }
+  },
+  "artifact_retention": "Only this compact execution summary is committed. Complete native command stdout/stderr, source-resolved workpapers and reports remain in the named local run directories, identified by hashes. Whole PDFs, generated private keys and bulky native books are excluded. Paths identify this execution environment, not a public artifact download.",
+  "reproduction_notes": "Use the exact binary hashes and final helper commit above, verify the original PDF pins, and provide new output directories. Commands reproduce the scope and checks; random book/signing identities and later native prefixes can change certificate and output-file hashes. Missing local execution artifacts cannot be reconstructed from their hashes alone."
+}
