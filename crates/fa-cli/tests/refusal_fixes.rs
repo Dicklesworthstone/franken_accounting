@@ -1823,6 +1823,22 @@ const UNTRIGGERED_WITH_REASON: &[(&str, &str)] = &[
         "FA-REF-201",
         "batch canonical LogicalDeltaTemplate exceeds max_batch_template_bytes (14,439,152 B)",
     ),
+    (
+        "FA-REF-203",
+        "multi-principal Posted RestatementCase, retained original-report comparisons and reviewed Disclosure; exercised in fa/tests/restatement_case.rs, outside this single-step loop",
+    ),
+    (
+        "FA-REF-204",
+        "principal key generation, proof of possession and endorsed rotation; exercised in cli/principal_key.rs, outside this single-step loop",
+    ),
+    (
+        "FA-REF-205",
+        "keyed principal approval signing and rotation; exercised in cli/principal_key.rs, outside this single-step loop",
+    ),
+    (
+        "FA-REF-206",
+        "keyed principal attestation signing and rotation; exercised in cli/principal_key.rs, outside this single-step loop",
+    ),
 ];
 
 #[test]

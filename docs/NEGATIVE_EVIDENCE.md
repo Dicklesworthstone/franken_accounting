@@ -2110,3 +2110,53 @@ The peer reported old-code failures and 62 repaired-source passes. Those are
 peer results; this combined source still requires its own native and full
 qualification. The original renderer bead fa-cet is reopened with its original
 acceptance and historical cross-machine evidence preserved.
+
+The combined candidate 4887e49e1fc18e48203dcae72777d653c257ba61 subsequently
+passed Tier 0 on its exact tree and all 1,693 cases in the six-library,
+seven-integration-target native run. The first native attempt reached its
+original cap and returned 137; the identical continuation completed with 0.
+The complete model library includes the strengthened historical digest
+assertion. These results do not qualify the later b2dc173b3 merge or supply
+the renderer's original cross-machine acceptance or a full Tier 1 verdict.
+
+## 2026-11-03 — GOLDEN-CHANGE: migration symbols change certificate inputs
+
+The unchanged cross-target target on 39f088a7 actually ran one pass and
+one failure. Its fold, report bytes, exact arithmetic, allocation and FX
+checks passed; three certificate hashes and the bundle hash differed.
+The planted target-dependent encoding negative also passed.
+
+The clean historical baseline a68f7f007 reproduced all eight previously
+measured digests. It retained its older expectations and therefore still
+returned 101. Sealed counterfactual abcb8dad1158725d388a6b20ac35eb0a67c78858
+adds only compiled labels 63–65 and their registry rows to that baseline.
+Its unchanged test reproduced all eight 39f digests, again returning 101
+against the retained old expectation. Only the three certificate digests
+and bundle digest move; the four fold/report-byte digests do not. Original
+capped attempts and both complete one-pass/one-failure controls are retained.
+
+The four metadata pins now reflect that attributed input change. Their old
+values were 5db0d090…, f58eada5…, 4a13915e… and 1054c7ea…; new values are
+82ff1447…, 69fe5d7b…, f5d6a23a… and abb3ff02…, respectively. Full vectors,
+source identities and log checksums are retained in the external
+cross-symbol-causal-20261103/actual-eight-vector-comparison.json receipt.
+No arithmetic, fold/report-byte assertion, planted negative, production
+predicate or gate changes. This is metadata-fixture maintenance on x86_64;
+the corrected source still needs execution, and aarch64 remains unrun.
+
+## 2026-11-03 — Four new refusal classes were absent from the harness partition
+
+The peer's retained probe152 downstream run reached all existing refusal-fix
+cases, then failed the catalog partition at FA-REF-203: one pass, one failure,
+remote exit 101. This was a missing partition entry, not a failed application
+of a tested fix. Codes 203–206 had been added without either a single-step
+case or a documented multi-step reason.
+
+The existing non-single-step list now names these four classes and their
+case-disclosure/key-lifecycle fixtures. No previously triggered code is
+excluded, no test or assertion is removed, and the unknown-verb and unchanged
+refusal controls remain. All catalog entries still must be partitioned.
+The admitted set changes only by these four explicit multi-step reasons;
+it does not count them as executable fixes. fa-wgsj is reopened for this
+reproduced regression, retaining its original acceptance. The corrected harness and referenced native workflows
+still require execution on the final source.

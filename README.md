@@ -536,11 +536,12 @@ Each destination must be new. `--pdf` accepts an already acquired pinned
 original; otherwise the driver downloads it. `--fa` and `--fa-verify` select
 explicit executable paths. PDF extraction requires `pdftotext`.
 
-These are complete native accounting paths: original-document custody,
-postings, exact retries, historical reads, certified ledger replay, source
-controls, maintained registers, principal analysis, full CSV/ADS export and
-independent proof verification. Zero-principal observations remain in the
-comparison census. The helpers preserve 1,426 footnote-governed tax exclusions,
+These replay helpers exercise native original-document custody, postings,
+exact retries, historical reads, certified ledger replay, source controls,
+maintained registers, principal analysis and full CSV/ADS export. They run
+the standalone, std-only verifier on the exported bundles (FA-INV-14).
+Zero-principal observations remain in the comparison census. The helpers
+preserve 1,426 footnote-governed tax exclusions,
 positive withdrawal cancellations, detached annotations, different table
 layouts and published balance discrepancies. Every native cent must equal the
 independent source-movement fold; a published discrepancy never becomes a
