@@ -31,6 +31,19 @@ The earlier complete [native execution result](../../evidence/public_spend/hmrc-
 remains unchanged: 588 calls, 402.144 seconds and 18 completed checks. These are
 separate development-host observations, not a controlled speed comparison.
 
+A subsequent complete run enabled only `--batch-approvals`, retaining direct
+CLI transport and 64-chunk staging groups: **219 native calls, 65.599 seconds
+and all 22 checks passed**, with process exit zero on frozen
+`f543eae8b535fc0b37936bc5094a459add26c5a3` binaries. Its six native approval-group
+calls include the exact first-group retry by both issued reviewer principals;
+two finalization approvals and all 127 evidence attachments remain separate.
+The [approval-batch execution evidence](../../evidence/public_spend/hmrc-2025-03-batch-approvals-native-2026-11-03.json)
+retains source/helper/native hashes, every earlier source/proof check, 256 fresh
+approval receipts and 128 exact retry receipts. The source remains all 1,430
+rows, 127 entries and 2,860 legs. The comparison with 463 calls and 113.172
+seconds is diagnostic evidence from separate shared-host executions; both
+earlier records remain unchanged.
+
 The native report covers the explicitly modeled GBP expenditure and offset
 accounts. Supplier, area, reference and other original fields remain in retained
 source/provenance evidence and source-side controls; this runner does not claim
@@ -144,6 +157,42 @@ number of approval-group requests, including the explicit first-group retry.
 The ordinary per-proposal path remains the default and supports existing
 binaries. Batch approval also works with `--fad` through the same bounded stdin
 contract, where the execution environment permits native daemon sockets.
+
+### Attach complete source evidence in bounded native groups
+
+Add `--batch-evidence` to attach the original CSV, transformation receipt,
+row provenance and complete normalized records to each staged entry through
+[`document attach --entries`](../../docs/evidence_groups.md). It works
+independently of approval batching; enable both for a large direct CLI run:
+
+```bash
+python3 tools/public-data/run_live.py \
+  --prepared /tmp/fa-public-dwp --dataset dwp-2025-01 \
+  --out /tmp/fa-public-dwp-batched \
+  --fa /absolute/path/to/fa --fa-verify /absolute/path/to/fa-verify \
+  --stage-group-size 64 --batch-approvals --batch-evidence
+```
+
+One bounded request holds the book open while each target receives its ordinary
+native supplemental-evidence transaction. Current authority and target read
+scope are rechecked for every member. The complete request is limited to
+4,096 distinct targets, 1 MiB of target JSON and 16,384 target/citation pairs,
+which bounds both processing and the repeated document details in the response.
+The runner forwards the ordered entry array through retained stdin bytes and
+checks every returned entry, source document OID, original document commitment
+and evidence role. Every supplement must have a distinct native identity and a
+publication sequence later than the complete staged group. The runner uses
+the fixture book owner for attachments, including tokenless owner requests via
+`fad`. It retries the first group and requires the original supplement IDs, body/entry commitments and sequences,
+with no movement in the book frontier.
+
+Each supplement remains individually durable. A refused later attachment leaves
+its actual completed prefix in the transcript and the workload at `FAIL`.
+`result.json` records the chosen mode and attachment-group request count. The
+default individual attachment mode remains available for existing binaries;
+there is no automatic authority change or fallback on a grouped refusal.
+Grouping appends the same source-evidence records and leaves finalization,
+source-to-export comparisons and independent proof verification in the workflow.
 
 The same native interface can resume an interrupted import:
 

@@ -8,6 +8,8 @@
 //! CLI, decides whether a citation names a held document under its exact
 //! commitment and whether the class's minimum is met.
 
+use std::io::Read;
+
 use crate::json::{Json, obj, s};
 use fa::{BookError, PostIntent};
 use fa_journal::custody::CustodyBody;
@@ -23,8 +25,8 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::args::{Args, nearest};
 use crate::cli::{
-    Ctx, Fail, build_proposal_from_intent, hex, parse_json, read_plan_bytes, restore_post_review,
-    unhandled, usage, write_post_plan,
+    Ctx, Fail, Files, Out, Stdin, build_proposal_from_intent, hex, parse_json, read_plan_bytes,
+    restore_post_review, unhandled, usage, write_post_plan,
 };
 use crate::proof::write_new;
 
@@ -500,31 +502,13 @@ pub(crate) fn parse_evidence(
         }
     }
     for raw in args.flag_all("--evidence") {
-        let stripped = raw.strip_prefix("D:").unwrap_or(raw);
-        let (oid, role) = match stripped.split_once(':') {
-            Some((oid, r)) => (oid, Role::Name(r.to_string())),
-            None => (stripped, Role::Name(DEFAULT_ROLE.into())),
-        };
-        cited.push((oid.to_string(), None, role));
+        let (oid, role) = evidence_flag(raw);
+        cited.push((oid.to_string(), None, Role::Name(role.to_string())));
     }
     let mut refs = Vec::with_capacity(cited.len());
     for (oid_hex, commit_hex, role) in cited {
         let oid = Oid(hex32(&oid_hex, "evidence document_oid")?);
-        let role = match role {
-            Role::Name(name) => policy.role_by_name(&name).ok_or_else(|| {
-                let names: Vec<&str> = policy.roles.iter().map(|r| r.name.as_str()).collect();
-                named("evidence role", &name, &names)
-            })?,
-            Role::Tag(tag) => u8::try_from(tag)
-                .ok()
-                .and_then(|t| policy.role_by_tag(t))
-                .ok_or_else(|| {
-                    usage(
-                        format!("evidence role tag {tag} is not registered"),
-                        role_list(&policy),
-                    )
-                })?,
-        };
+        let role = evidence_role(&policy, role)?;
         let doc_commit = match commit_hex {
             Some(h) => hex32(&h, "evidence doc_commit")?,
             None => book.document_commitment(&oid)?.unwrap_or([0u8; 32]),
@@ -532,17 +516,62 @@ pub(crate) fn parse_evidence(
         refs.push(EvidenceRef {
             document_oid: oid,
             doc_commit,
-            role: role.tag,
+            role,
         });
     }
     refs.sort_unstable();
     if refs.windows(2).any(|w| w[0] == w[1]) {
-        return Err(usage(
-            "the same document is cited twice in the same role",
-            "cite each document once per role",
-        ));
+        return Err(duplicate_evidence());
     }
     Ok(refs)
+}
+
+fn evidence_flag(raw: &str) -> (&str, &str) {
+    let stripped = raw.strip_prefix("D:").unwrap_or(raw);
+    stripped.split_once(':').unwrap_or((stripped, DEFAULT_ROLE))
+}
+
+fn evidence_role(policy: &EvidencePolicy, role: Role) -> Result<u8, Fail> {
+    let role = match role {
+        Role::Name(name) => policy.role_by_name(&name).ok_or_else(|| {
+            let names: Vec<&str> = policy.roles.iter().map(|r| r.name.as_str()).collect();
+            named("evidence role", &name, &names)
+        })?,
+        Role::Tag(tag) => u8::try_from(tag)
+            .ok()
+            .and_then(|tag| policy.role_by_tag(tag))
+            .ok_or_else(|| {
+                usage(
+                    format!("evidence role tag {tag} is not registered"),
+                    role_list(policy),
+                )
+            })?,
+    };
+    Ok(role.tag)
+}
+
+fn duplicate_evidence() -> Fail {
+    usage(
+        "the same document is cited twice in the same role",
+        "cite each document once per role",
+    )
+}
+
+/// Validate shared flag syntax before an admitted open can record a bound
+/// caller's AccessEvent. Commitments still come from `parse_evidence` after
+/// current read admission, and the kernel authenticates them per attachment.
+fn validate_attachment_citations(args: &Args) -> Result<(), Fail> {
+    let policy = policy()?;
+    let mut seen = std::collections::BTreeSet::new();
+    for raw in args.flag_all("--evidence") {
+        let (oid, role) = evidence_flag(raw);
+        let oid = Oid(hex32(oid, "evidence document_oid")?);
+        let role = evidence_role(&policy, Role::Name(role.to_string()))?;
+        if !seen.insert((oid, role)) {
+            return Err(duplicate_evidence());
+        }
+    }
+    Ok(())
 }
 
 /// `fa document attach <entry> --evidence <oid>[:role]...` (plan §9.2
@@ -554,41 +583,200 @@ pub(crate) fn parse_evidence(
 fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     const EXAMPLE: &str =
         "fa document attach <entry-vid> --evidence <oid>[:role]... --book <dir> --json";
-    let raw = args
-        .positional
-        .get(2)
-        .ok_or_else(|| usage("`fa document attach` needs the entry's vid", EXAMPLE))?;
-    if let Some(extra) = args.positional.get(3) {
-        return Err(usage(format!("unexpected argument `{extra}`"), EXAMPLE));
-    }
-    if args.flag_all("--evidence").is_empty() {
+    let cited_count = args.flag_all("--evidence").len();
+    let targets = if let Some(input) = args.flag("--entries") {
+        if args.flag_all("--entries").len() != 1 || args.positional.len() != 2 {
+            return Err(usage(
+                "--entries occurs once and cannot be combined with a positional entry",
+                ATTACHMENT_GROUP_EXAMPLE,
+            ));
+        }
+        let targets = read_attachment_group(&ctx.files, input)?;
+        if cited_count > fa_model::limits::MAX_EVIDENCE_PER_ENTRY
+            || targets
+                .len()
+                .checked_mul(cited_count)
+                .is_none_or(|total| total > MAX_ATTACHMENT_GROUP_CITATIONS)
+        {
+            return Err(usage(
+                "attachment group exceeds 1024 citations per entry or 16384 total citations",
+                ATTACHMENT_GROUP_EXAMPLE,
+            ));
+        }
+        validate_attachment_citations(args)?;
+        targets
+    } else {
+        let raw = args
+            .positional
+            .get(2)
+            .ok_or_else(|| usage("`fa document attach` needs the entry's vid", EXAMPLE))?;
+        if let Some(extra) = args.positional.get(3) {
+            return Err(usage(format!("unexpected argument `{extra}`"), EXAMPLE));
+        }
+        vec![parse_vid_arg(raw, "entry")?]
+    };
+    if cited_count == 0 {
         return Err(usage(
             "name each supporting document with --evidence <oid>[:role]",
             EXAMPLE,
         ));
     }
-    let vid = parse_vid_arg(raw, "entry")?;
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read", "post"])?;
-    let mut book = ctx.books.open_admitted(args, |book| {
-        // Authorization precedes observation (doctrine 8): post on trunk,
-        // then a read of the whole entry the supplement names.
-        fa_policy::admit(
-            &capability,
-            &fa_policy::Intent {
-                principal: who,
-                trunk: true,
-                op: fa_policy::Op::Post,
-                book: book.context().book_id,
-                legs: &[],
-            },
-        )
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-        book.read_scope(who, &capability)??
-            .admit_whole_book(None)??;
-        Ok(())
-    })?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_attachment(book, who, &capability))?;
+    // A bound open records its ordinary AccessEvent after admission. That
+    // publication may itself reach expiry: re-admit before metadata resolution.
+    admit_attachment(&mut book, who, &capability)?;
+    // Resolve shared commitments before the first attachment; group syntax
+    // was checked before opening. Only these immutable identities are reused:
+    // the kernel resolves each document and its custody witnesses inside each
+    // ordinary attachment transaction.
     let documents = parse_evidence(&obj(Vec::new()), args, &mut book)?;
+    let policy = policy()?;
+    for vid in targets {
+        attach_entry(
+            &ctx.out,
+            &mut book,
+            &capability,
+            who,
+            vid,
+            &documents,
+            &policy,
+        )?;
+    }
+    Ok(())
+}
+
+const ATTACHMENT_GROUP_EXAMPLE: &str = "fa document attach --entries '<JSON array of entry VIDs>' --evidence <oid>[:role]... --json, or --entries - for stdin; 1 to 4096 unique entries, 1 MiB input, and at most 16384 total citations";
+const MAX_ATTACHMENT_GROUP_BYTES: usize = 1024 * 1024;
+const MAX_ATTACHMENT_GROUP_MEMBERS: usize = 4096;
+const MAX_ATTACHMENT_GROUP_CITATIONS: usize = 16384;
+
+fn read_attachment_group(files: &Files, input: &str) -> Result<Vec<VId>, Fail> {
+    let oversized = || usage("attachment group exceeds 1 MiB", ATTACHMENT_GROUP_EXAMPLE);
+    let bytes = if input == "-" {
+        match &files.stdin {
+            Stdin::Forwarded(bytes) => {
+                if bytes.len() > MAX_ATTACHMENT_GROUP_BYTES {
+                    return Err(oversized());
+                }
+                bytes.clone()
+            }
+            Stdin::Missing => {
+                return Err(usage(
+                    "--entries - needs forwarded stdin",
+                    ATTACHMENT_GROUP_EXAMPLE,
+                ));
+            }
+            Stdin::Process => {
+                let mut bytes = Vec::new();
+                std::io::stdin()
+                    .lock()
+                    .take(MAX_ATTACHMENT_GROUP_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| {
+                        usage(
+                            format!("attachment group stdin: {error}"),
+                            ATTACHMENT_GROUP_EXAMPLE,
+                        )
+                    })?;
+                bytes
+            }
+        }
+    } else {
+        if input.len() > MAX_ATTACHMENT_GROUP_BYTES {
+            return Err(oversized());
+        }
+        input.as_bytes().to_vec()
+    };
+    if bytes.len() > MAX_ATTACHMENT_GROUP_BYTES {
+        return Err(oversized());
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        usage(
+            "attachment group must be UTF-8 JSON",
+            ATTACHMENT_GROUP_EXAMPLE,
+        )
+    })?;
+    let Json::Arr(values) = crate::json::parse(text).map_err(|error| {
+        usage(
+            format!("invalid attachment group JSON: {error}"),
+            ATTACHMENT_GROUP_EXAMPLE,
+        )
+    })?
+    else {
+        return Err(usage(
+            "attachment group must be a JSON array",
+            ATTACHMENT_GROUP_EXAMPLE,
+        ));
+    };
+    if values.is_empty() || values.len() > MAX_ATTACHMENT_GROUP_MEMBERS {
+        return Err(usage(
+            "attachment group needs 1 to 4096 entries",
+            ATTACHMENT_GROUP_EXAMPLE,
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let text = value.as_str().ok_or_else(|| {
+                usage(
+                    format!("attachment group member {index} must be an entry VID string"),
+                    ATTACHMENT_GROUP_EXAMPLE,
+                )
+            })?;
+            let vid = parse_vid_arg(text, &format!("attachment group member {index}"))?;
+            if !seen.insert(vid) {
+                return Err(usage(
+                    format!("duplicate attachment group entry at member {index}"),
+                    ATTACHMENT_GROUP_EXAMPLE,
+                ));
+            }
+            Ok(vid)
+        })
+        .collect()
+}
+
+fn admit_attachment(
+    book: &mut fa::Book,
+    who: VId,
+    capability: &fa_policy::Capability,
+) -> Result<(), Fail> {
+    // Authorization precedes observation (doctrine 8): post on trunk, then
+    // a currently admitted read of the whole entry the supplement names.
+    fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal: who,
+            trunk: true,
+            op: fa_policy::Op::Post,
+            book: book.context().book_id,
+            legs: &[],
+        },
+    )
+    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.read_scope(who, capability)??
+        .admit_whole_book(None)??;
+    Ok(())
+}
+
+fn attach_entry(
+    out: &Out,
+    book: &mut fa::Book,
+    capability: &fa_policy::Capability,
+    who: VId,
+    vid: VId,
+    documents: &[EvidenceRef],
+    policy: &EvidencePolicy,
+) -> Result<(), Fail> {
+    // Earlier members may advance past a capability's expiry. Re-admit
+    // before observing even the next target's existence, including retries.
+    // The kernel independently rechecks authority before its idempotency read.
+    admit_attachment(book, who, capability)?;
     let Some((entry, _)) = book.read_entry(vid)? else {
         return Err(usage(
             format!("no entry {:032x} in this book", vid.0),
@@ -601,12 +789,11 @@ fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             vid,
             entry_digest: entry.entry_digest,
         },
-        documents,
+        documents: documents.to_vec(),
         attached_by: who,
     };
-    let attached = book.attach_evidence(&capability, &supplement)??;
-    ctx.out.at_book(&book)?;
-    let policy = policy()?;
+    let attached = book.attach_evidence(capability, &supplement)??;
+    out.at_book(book)?;
     let cited: Vec<Json> = supplement
         .documents
         .iter()
@@ -624,7 +811,7 @@ fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })
         .collect();
     let supplement_hex = format!("{:032x}", attached.vid.0);
-    ctx.out.event(
+    out.event(
         "evidence_attached",
         vec![
             ("supplement_vid", s(&supplement_hex)),

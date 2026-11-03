@@ -45,6 +45,24 @@ def approval_events(principal: str, *, retry: bool = False) -> list[dict]:
             for index, proposal in enumerate(["a" * 64, "b" * 64])]
 
 
+EVIDENCE_DOCUMENTS = {"a" * 64: "1" * 64, "b" * 64: "2" * 64}
+EVIDENCE_ENTRIES = [f"{index:032x}" for index in (1, 2)]
+EVIDENCE_STAGED_AT = dict(zip(EVIDENCE_ENTRIES, (50, 51), strict=True))
+
+
+def evidence_events(*, retry: bool = False) -> list[dict]:
+    """Constructed transport fixtures, separate from native corpus receipts."""
+    citations = [{"document_oid": oid, "doc_commit": commitment, "role": "Source"}
+                 for oid, commitment in EVIDENCE_DOCUMENTS.items()]
+    return [{"event": "evidence_attached", "book": "c" * 32,
+             "authority": {"principal": "operator"}, "coordinate": {"known_at": 200 if retry else 70 + index},
+             "data": {"entry": entry, "supplement_vid": f"{100 + index:032x}",
+                      "entry_digest": f"{300 + index:064x}", "body_digest": f"{400 + index:064x}",
+                      "recorded_at": 70 + index, "already_recorded": retry,
+                      "documents": copy.deepcopy(citations)}}
+            for index, entry in enumerate(EVIDENCE_ENTRIES)]
+
+
 class LiveOracleControls(unittest.TestCase):
     @staticmethod
     def native_fixture(root: Path, *, daemon: bool = False):
@@ -414,6 +432,149 @@ class LiveOracleControls(unittest.TestCase):
                                  ["read", "approve"])
             with self.assertRaisesRegex(run_live.CheckError, "already been issued"):
                 native.start_bulk()
+
+    def test_evidence_group_binds_every_entry_to_exact_source_commitments_and_roles(self):
+        good = evidence_events()
+        parameters = dict(documents=EVIDENCE_DOCUMENTS, book_id="c" * 32, principal="operator",
+                          staged_at=EVIDENCE_STAGED_AT, previous={})
+        self.assertEqual(run_live.check_evidence_group(good, EVIDENCE_ENTRIES, **parameters),
+                         [event["data"] for event in good])
+        mutations = [
+            lambda events: events.pop(),
+            lambda events: events.append(copy.deepcopy(events[0])),
+            lambda events: events.reverse(),
+            lambda events: events[1].update(event="unrelated"),
+            lambda events: events[1].update(book="d" * 32),
+            lambda events: events[1]["authority"].update(principal="other"),
+            lambda events: events[1]["data"].update(entry="9" * 32),
+            lambda events: events[1]["data"].update(supplement_vid=events[0]["data"]["supplement_vid"]),
+            lambda events: events[1]["data"].update(supplement_vid="malformed"),
+            lambda events: events[1]["data"].update(recorded_at=True),
+            lambda events: events[1]["data"].update(recorded_at=50),
+            lambda events: events[1]["data"].update(recorded_at=70),
+            lambda events: (events[1]["data"].update(recorded_at=65), events[1]["coordinate"].update(known_at=65)),
+            lambda events: events[1]["data"].update(body_digest=None),
+            lambda events: events[1]["data"].update(entry_digest="unknown"),
+            lambda events: events[1]["data"].update(already_recorded=0),
+            lambda events: events[1]["data"].update(already_recorded=True),
+            lambda events: events[1]["coordinate"].update(known_at=70),
+            lambda events: events[1]["coordinate"].update(known_at=200),
+            lambda events: events[1]["data"]["documents"].pop(),
+            lambda events: events[1]["data"]["documents"].append(copy.deepcopy(events[1]["data"]["documents"][0])),
+            lambda events: events[1]["data"]["documents"][1].update(document_oid="e" * 64),
+            lambda events: events[1]["data"]["documents"][1].update(doc_commit="f" * 64),
+            lambda events: events[1]["data"]["documents"][1].update(role="Review"),
+            lambda events: events[1]["data"]["documents"][1].update(doc_commit=None),
+            lambda events: events[1]["data"]["documents"].__setitem__(1, copy.deepcopy(events[1]["data"]["documents"][0])),
+        ]
+        for index, mutate in enumerate(mutations):
+            wrong = copy.deepcopy(good)
+            mutate(wrong)
+            with self.subTest(mutation=index), self.assertRaises(run_live.CheckError):
+                run_live.check_evidence_group(wrong, EVIDENCE_ENTRIES, **parameters)
+        later_stage = {EVIDENCE_ENTRIES[0]: 50, EVIDENCE_ENTRIES[1]: 70}
+        with self.assertRaisesRegex(run_live.CheckError, "complete staged group"):
+            run_live.check_evidence_group(good, EVIDENCE_ENTRIES, **{**parameters, "staged_at": later_stage})
+
+    def test_evidence_retries_keep_original_supplement_and_source_commitments_at_later_head(self):
+        original = evidence_events()
+        previous = {event["data"]["entry"]: event["data"] for event in original}
+        retry = evidence_events(retry=True)
+        parameters = dict(documents=EVIDENCE_DOCUMENTS, book_id="c" * 32, principal="operator",
+                          staged_at=EVIDENCE_STAGED_AT, previous=previous)
+        run_live.check_evidence_group(retry, EVIDENCE_ENTRIES, **parameters)
+        mutations = [
+            lambda data: data.update(supplement_vid="d" * 32),
+            lambda data: data.update(recorded_at=150),
+            lambda data: data.update(entry_digest="e" * 64),
+            lambda data: data.update(body_digest="f" * 64),
+            lambda data: data.update(already_recorded=False),
+        ]
+        for index, mutate in enumerate(mutations):
+            wrong = copy.deepcopy(retry)
+            mutate(wrong[1]["data"])
+            with self.subTest(mutation=index), self.assertRaises(run_live.CheckError):
+                run_live.check_evidence_group(wrong, EVIDENCE_ENTRIES, **parameters)
+
+    def test_evidence_group_uses_one_retained_stdin_request_and_reexecutes_exact_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            native.batch_evidence, native.book_id, native.owner_principal = True, "c" * 32, "operator"
+            native.document_commitments = EVIDENCE_DOCUMENTS.copy()
+            observed = []
+            def execute(command, **kwargs):
+                retry = bool(observed)
+                observed.append((command, kwargs["input"]))
+                stdout = ("".join(json.dumps(event) + "\n" for event in evidence_events(retry=retry))).encode()
+                return run_live.subprocess.CompletedProcess(command, 0, stdout, b"")
+            with mock.patch.object(run_live.subprocess, "run", side_effect=execute):
+                for _ in range(2):
+                    native.attach_sources(EVIDENCE_ENTRIES, list(EVIDENCE_DOCUMENTS), staged_at=EVIDENCE_STAGED_AT)
+            self.assertEqual(native.evidence_group_requests, 2)
+            self.assertEqual(len(native.evidence_receipts), 2)
+            request = run_live.json_bytes(EVIDENCE_ENTRIES)
+            for command, forwarded in observed:
+                self.assertEqual(forwarded, request)
+                self.assertEqual(command[command.index("--entries") + 1], "-")
+                self.assertEqual([command[index + 1] for index, value in enumerate(command) if value == "--evidence"],
+                                 list(EVIDENCE_DOCUMENTS))
+            records = [json.loads(line) for line in (native.out / "commands.jsonl").read_text().splitlines()]
+            for record in (record for record in records if record["state"] == "started"):
+                self.assertEqual(record["stdin_sha256"], run_live.digest(request))
+                self.assertEqual((native.out / record["stdin_path"]).read_bytes(), request)
+
+    def test_evidence_prefix_refusal_or_invalid_last_receipt_is_retained_without_accepting_group(self):
+        for refused in (False, True):
+            with self.subTest(refusal=refused), tempfile.TemporaryDirectory() as directory:
+                native = self.native_fixture(Path(directory))
+                native.batch_evidence, native.book_id, native.owner_principal = True, "c" * 32, "operator"
+                native.document_commitments = EVIDENCE_DOCUMENTS.copy()
+                events = evidence_events()
+                if refused:
+                    events[1] = {"event": "error", "data": {"message": "post capability expired"}}
+                else:
+                    events[1]["data"]["documents"][1]["doc_commit"] = "f" * 64
+                stdout = ("".join(json.dumps(event) + "\n" for event in events)).encode()
+                completed = run_live.subprocess.CompletedProcess([], 6 if refused else 0, stdout, b"")
+                with mock.patch.object(run_live.subprocess, "run", return_value=completed) as execute:
+                    with self.assertRaises(run_live.CheckError):
+                        native.attach_sources(EVIDENCE_ENTRIES, list(EVIDENCE_DOCUMENTS), staged_at=EVIDENCE_STAGED_AT)
+                    execute.assert_called_once()
+                self.assertEqual(native.evidence_receipts, {})
+                self.assertEqual((native.out / "transcript/00001.stdout.jsonl").read_bytes(), stdout)
+
+    def test_evidence_groups_require_complete_staging_and_uploaded_document_bindings_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            native.batch_evidence, native.book_id, native.owner_principal = True, "c" * 32, "operator"
+            native.document_commitments = EVIDENCE_DOCUMENTS.copy()
+            invalid = [([], list(EVIDENCE_DOCUMENTS), {}),
+                       (EVIDENCE_ENTRIES * 2, list(EVIDENCE_DOCUMENTS), EVIDENCE_STAGED_AT),
+                       (EVIDENCE_ENTRIES, ["e" * 64], EVIDENCE_STAGED_AT),
+                       (EVIDENCE_ENTRIES, list(EVIDENCE_DOCUMENTS) * 2, EVIDENCE_STAGED_AT),
+                       (EVIDENCE_ENTRIES, list(EVIDENCE_DOCUMENTS), {EVIDENCE_ENTRIES[0]: 50}),
+                       (EVIDENCE_ENTRIES, list(EVIDENCE_DOCUMENTS), {key: True for key in EVIDENCE_ENTRIES})]
+            many_entries = [f"{index:032x}" for index in range(4096)]
+            documents = [f"{index:064x}" for index in range(5)]
+            native.document_commitments.update({oid: "f" * 64 for oid in documents})
+            invalid.append((many_entries, documents, {entry: index + 1 for index, entry in enumerate(many_entries)}))
+            with mock.patch.object(run_live.subprocess, "run") as execute:
+                for entries, documents, staged_at in invalid:
+                    with self.subTest(entries=len(entries), documents=len(documents)), self.assertRaises(run_live.CheckError):
+                        native.attach_sources(entries, documents, staged_at=staged_at)
+                execute.assert_not_called()
+            self.assertEqual(native.calls, 0)
+
+    def test_default_evidence_path_keeps_legacy_individual_attachment_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            with mock.patch.object(native, "one", return_value={}) as attach:
+                native.attach_sources(EVIDENCE_ENTRIES, list(EVIDENCE_DOCUMENTS), staged_at=EVIDENCE_STAGED_AT)
+            self.assertEqual(attach.call_count, 2)
+            for entry, call in zip(EVIDENCE_ENTRIES, attach.call_args_list, strict=True):
+                self.assertEqual(call.args[0], ["document", "attach", entry, "--evidence", "a" * 64,
+                                               "--evidence", "b" * 64])
+            self.assertEqual(native.evidence_group_requests, 0)
 
     def test_group_selection_reaches_daemon_as_retained_stdin_and_failure_keeps_receipts(self):
         # Replace only the book setup and native subprocess. Exercise the actual

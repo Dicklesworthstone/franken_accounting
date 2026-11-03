@@ -1,0 +1,104 @@
+{
+  "format": "fa_native_group_execution_evidence_v1",
+  "mcp_approval_detectors": {
+    "actual_process_exit": 0,
+    "command": "cargo -Zprofile-rustflags test --locked -j 1 -p fa-mcp --lib detect::tests -- --test-threads=1 --nocapture",
+    "exec_session_id": 78198,
+    "failed_test_names": [],
+    "filtered_out": 49,
+    "kind": "focused-test-execution",
+    "log_path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/mcp-approval-group-detectors.log",
+    "log_sha256": "f6fc6ff65b7065dbc08e4da5111cf0b8dd120e4696e6eb973dba9f1c92d9334c",
+    "passed_test_names": [
+      "detect::tests::a_redated_intent_after_a_period_law_refusal_is_caught_never_suggested",
+      "detect::tests::approval_groups_detect_every_canonical_member_under_the_bound_principal",
+      "detect::tests::approval_groups_detector_decoding_matches_native_bounds_and_duplicates",
+      "detect::tests::approval_groups_inspect_untrusted_members_without_exempting_raw_parent_text",
+      "detect::tests::approval_groups_mcp_invocation_is_inline_and_has_no_hidden_stdin_channel",
+      "detect::tests::broadcast_scope_catches_wildcard_and_all_on_write_tools",
+      "detect::tests::floats_positive_and_negative",
+      "detect::tests::instants_positive_and_negative",
+      "detect::tests::looks_like_reversal_catches_unlinked_mirror_image_original_post",
+      "detect::tests::placeholders_positive_and_negative",
+      "detect::tests::self_approval_of_a_proposal_planned_here_is_caught",
+      "detect::tests::summary_accounts_are_caught_with_their_leaves_listed",
+      "detect::tests::untrusted_copy_positive_and_negative"
+    ],
+    "scope": "Focused MCP detector tests only; not a whole-workspace or Tier0 verdict.",
+    "source_base_commit": "fad9981a94bd616234bec8a43f03a732e13af21b",
+    "source_sha256": {
+      "crates/fa-cli/src/cli.rs": "073878a68264eb6e900d909316f51686c00287e8c3bfb2394db0d4620f6fad12",
+      "crates/fa-cli/tests/legacy_migration.rs": "720692606bf580a814781ba70cf84734d59b645e7457e8730d522bfd8940ee48",
+      "crates/fa-cli/tests/legacy_migration/approval_groups.rs": "b5ae68a6f6e8a4aa8c8024ba41ba05211b96940c72c288162809c8e1ec9faece",
+      "crates/fa-mcp/src/detect.rs": "54a2a3adfbc47e9aa1ea84c7410a33cd42881932d423e1be8793d1a5a1a9b1f6",
+      "registries/verbs.toml": "46f96c0e9dda4bb02ba275eae921d1d598524382fe23a6cf459c6911794cb07d"
+    },
+    "source_state": "base commit plus frozen approval-group/MCP patch; before incoming retained-equity merge"
+  },
+  "native_document_groups": {
+    "actual_process_exit": 0,
+    "command": "cargo -Zprofile-rustflags test --locked -j 1 -p fa-cli --test document -- --test-threads=1 --nocapture",
+    "earlier_attempt": {
+      "actual_process_exit": 101,
+      "diagnostic": "crate fa_statements required to be available in rlib format, but was not found in this form",
+      "exec_session_id": 34807,
+      "log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/document-attachment-groups-focused.log",
+      "log_sha256": "19f4a169bec7829f1c05403a2f0c765cf7415f80b2b70d8c53771eadf28436b4",
+      "repair": "Rebuilt fa-statements and dependents by advancing only source-file timestamp; source SHA256 remained222bcc0c47564658943be4b4db7817b38e40b4875058a085130d61555f4c0bdd. No source content, dependency, assertion or gate changed.",
+      "tests_reached": false
+    },
+    "exec_session_id": 76265,
+    "failed_test_names": [],
+    "focused_new_tests": {
+      "actual_process_exit": 0,
+      "exec_session_id": 2989,
+      "log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/document-attachment-groups-rebuild.log",
+      "log_sha256": "a1c4edd9558076b6e0b82928e093181fc8ee7b1dcaa086964d7b862813f36d99",
+      "passed": 7
+    },
+    "kind": "focused-integration-test-execution",
+    "log_path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/document-with-attachment-groups.log",
+    "log_sha256": "2bedb534b2a7f3d8f035d4034ee17e77cec8de8dfa1697334cb876425094120a",
+    "passed_test_names": [
+      "a_receivership_fork_holds_the_pre_appointment_trunk_and_opens_the_estate_branch",
+      "assert_balance_records_a_true_assertion_and_refuses_a_false_one",
+      "attach_creates_supplemental_evidence",
+      "attachment_groups::attachment_groups_bound_the_real_daemon_frame_and_remain_outside_mcp",
+      "attachment_groups::attachment_groups_preserve_order_native_identities_and_durable_evidence",
+      "attachment_groups::attachment_groups_prevalidate_every_target_and_shared_citation_before_writing",
+      "attachment_groups::attachment_groups_read_real_stdin_at_the_exact_limit_and_keep_roles_distinct",
+      "attachment_groups::attachment_groups_recheck_expiry_before_target_existence_and_exact_retry",
+      "attachment_groups::attachment_groups_record_and_retry_1091_targets_with_one_held_book",
+      "attachment_groups::attachment_groups_retain_a_native_prefix_and_retry_it_without_new_history",
+      "documents_are_recorded_once_and_entries_must_cite_them",
+      "extract_records_a_pdf_text_layer_as_a_derived_document",
+      "extract_runs_the_owner_ocr_tool_and_refuses_when_it_is_absent",
+      "search_finds_documents_by_their_own_or_extracted_text"
+    ],
+    "scope": "Complete fa-cli document integration target only; not a whole-workspace or Tier0 verdict.",
+    "source_base_commit": "f543eae8b535fc0b37936bc5094a459add26c5a3",
+    "source_sha256": {
+      "crates/fa-cli/src/document.rs": "f796f7d87e82f63de0afdc87e437889e64f3b8f4666b5d8ccde846ca9d06372c",
+      "crates/fa-cli/tests/document.rs": "4bb660cd1b7ff623cbc06c32dfccffb6537d16c362dd10a7966c9dd4a8c674e1",
+      "crates/fa-cli/tests/document/attachment_groups.rs": "79ecfaba2dfa799b5dd44227111e62c784df926b38298d1dba003c4aecd76427",
+      "registries/verbs.toml": "7e36e624eb4498ca8b82e816aec17b3fd9436bdfff3ad6ce97ae7dd72c50e033"
+    },
+    "source_state": "base commit plus frozen reviewed attachment patch and helper integration",
+    "workspace_fmt_actual_exit": 0
+  },
+  "native_migration_suite": {
+    "actual_process_exit": 0,
+    "failed": 0,
+    "ignored": 0,
+    "log_sha256": "5f8012a0128c402d5d7f28c9e0e146f74a8099fed1e51624413803f921005417",
+    "passed": 46,
+    "source_scope": "Base fad9981 plus the frozen CLI approval-group changes, before the incoming retained-equity and source-population changes."
+  },
+  "public_data_python": {
+    "exit_code": 0,
+    "log_sha256": "b9a7d6fd40e3b396b67a69b915a4ab9987c08fde0bb0ee2151ed8391b6adf0b6",
+    "scope": "public-data source and runner Python unit tests; not native execution"
+  },
+  "repository_wide_verdict": "Unpassed; targeted executions are not a replacement for full workspace gates.",
+  "scope": "Executed scoped targets, not a complete workspace or Tier0 verdict."
+}

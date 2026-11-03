@@ -1,0 +1,487 @@
+{
+  "approval_group_requests": 6,
+  "batch_approvals": true,
+  "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+  "build_scope": {
+    "debug_info": "0",
+    "measurement": "One complete execution on a shared development host; not a release throughput benchmark or controlled comparison",
+    "profile": "dev",
+    "runtime_override": "asupersync opt-level=0; hint-mostly-unused; -Zthreads=1; -Zmir-opt-level=0",
+    "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)"
+  },
+  "bulk_transport": "direct_cli",
+  "bundle_sha256": "dc4cbca715bffc8b25eede65e5e0e4ddcde7be8edde9e7bc84a82b3e2fc14958",
+  "certificate_digest": "865cb258061e2b36e1772f2a858a4f8e21ac1f531d6bb158ab259d58293b5b4c",
+  "checkpoint_public_key": "c9b37a5f157be98b904ee7dc7aa3233c4257190fae734a456fdfb57b2805dc8a",
+  "checks": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "approval_groups_bound_to_each_digest_and_reviewer",
+    "approval_group_retry_without_publication",
+    "executable_identity_guards"
+  ],
+  "dataset": "hmrc-2025-03",
+  "diagnostic_comparison": {
+    "approval_receipts": {
+      "new": 256,
+      "retry": 128
+    },
+    "attachment_receipts": {
+      "new": 127
+    },
+    "baseline_checks_retained": 20,
+    "baseline_command_families": {
+      "approve single": {
+        "calls": 256,
+        "observed_native_seconds": 41.629
+      },
+      "attach single": {
+        "calls": 127,
+        "observed_native_seconds": 40.582
+      },
+      "book create": {
+        "calls": 1,
+        "observed_native_seconds": 0.073
+      },
+      "book info": {
+        "calls": 11,
+        "observed_native_seconds": 3.039
+      },
+      "bundle produce": {
+        "calls": 1,
+        "observed_native_seconds": 0.872
+      },
+      "chart import": {
+        "calls": 1,
+        "observed_native_seconds": 0.208
+      },
+      "checkpoint create": {
+        "calls": 1,
+        "observed_native_seconds": 0.387
+      },
+      "document add": {
+        "calls": 17,
+        "observed_native_seconds": 1.351
+      },
+      "document attest": {
+        "calls": 17,
+        "observed_native_seconds": 1.125
+      },
+      "document read": {
+        "calls": 6,
+        "observed_native_seconds": 0.714
+      },
+      "export csv-gl": {
+        "calls": 1,
+        "observed_native_seconds": 0.412
+      },
+      "independent verifier": {
+        "calls": 2,
+        "observed_native_seconds": 0.464
+      },
+      "migrate finalize": {
+        "calls": 2,
+        "observed_native_seconds": 1.122
+      },
+      "migrate import prepare": {
+        "calls": 2,
+        "observed_native_seconds": 0.815
+      },
+      "migrate import show": {
+        "calls": 1,
+        "observed_native_seconds": 0.648
+      },
+      "migrate open": {
+        "calls": 1,
+        "observed_native_seconds": 0.215
+      },
+      "period create": {
+        "calls": 1,
+        "observed_native_seconds": 0.076
+      },
+      "proof signed-checkpoint": {
+        "calls": 1,
+        "observed_native_seconds": 0.419
+      },
+      "registers advance": {
+        "calls": 1,
+        "observed_native_seconds": 0.928
+      },
+      "replay": {
+        "calls": 1,
+        "observed_native_seconds": 0.878
+      },
+      "stage group": {
+        "calls": 3,
+        "observed_native_seconds": 12.542
+      },
+      "stage single retry": {
+        "calls": 1,
+        "observed_native_seconds": 0.78
+      },
+      "tb": {
+        "calls": 6,
+        "observed_native_seconds": 2.143
+      },
+      "verify export": {
+        "calls": 1,
+        "observed_native_seconds": 0.6
+      },
+      "verify registers": {
+        "calls": 1,
+        "observed_native_seconds": 0.666
+      }
+    },
+    "baseline_commands_sha256": "e31b2781544f6ecc174abd983e00baa0bd425817c9df4032648559390b9da476",
+    "baseline_elapsed_seconds": 113.172,
+    "baseline_evidence": "hmrc-2025-03-grouped-confirmation-2026-11-03.json",
+    "baseline_native_calls": 463,
+    "baseline_native_source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "baseline_result_sha256": "3fcf0a73a2d9e219fd490925cda82e59b1c242cafcbc34f64c756f7acc0ee1fb",
+    "candidate_command_families": {
+      "approve group": {
+        "calls": 6,
+        "observed_native_seconds": 2.471
+      },
+      "approve single": {
+        "calls": 2,
+        "observed_native_seconds": 0.824
+      },
+      "attach single": {
+        "calls": 127,
+        "observed_native_seconds": 34.811
+      },
+      "book create": {
+        "calls": 1,
+        "observed_native_seconds": 0.051
+      },
+      "book info": {
+        "calls": 13,
+        "observed_native_seconds": 2.855
+      },
+      "bundle produce": {
+        "calls": 1,
+        "observed_native_seconds": 0.87
+      },
+      "capability issue": {
+        "calls": 2,
+        "observed_native_seconds": 0.125
+      },
+      "chart import": {
+        "calls": 1,
+        "observed_native_seconds": 0.169
+      },
+      "checkpoint create": {
+        "calls": 1,
+        "observed_native_seconds": 0.421
+      },
+      "document add": {
+        "calls": 17,
+        "observed_native_seconds": 0.919
+      },
+      "document attest": {
+        "calls": 17,
+        "observed_native_seconds": 0.82
+      },
+      "document read": {
+        "calls": 6,
+        "observed_native_seconds": 0.637
+      },
+      "export csv-gl": {
+        "calls": 1,
+        "observed_native_seconds": 0.548
+      },
+      "independent verifier": {
+        "calls": 2,
+        "observed_native_seconds": 0.411
+      },
+      "migrate finalize": {
+        "calls": 2,
+        "observed_native_seconds": 0.992
+      },
+      "migrate import prepare": {
+        "calls": 2,
+        "observed_native_seconds": 0.584
+      },
+      "migrate import show": {
+        "calls": 1,
+        "observed_native_seconds": 0.627
+      },
+      "migrate open": {
+        "calls": 1,
+        "observed_native_seconds": 0.1
+      },
+      "period create": {
+        "calls": 1,
+        "observed_native_seconds": 0.059
+      },
+      "proof signed-checkpoint": {
+        "calls": 1,
+        "observed_native_seconds": 0.487
+      },
+      "registers advance": {
+        "calls": 1,
+        "observed_native_seconds": 0.825
+      },
+      "replay": {
+        "calls": 1,
+        "observed_native_seconds": 0.808
+      },
+      "stage group": {
+        "calls": 3,
+        "observed_native_seconds": 10.383
+      },
+      "stage single retry": {
+        "calls": 1,
+        "observed_native_seconds": 0.678
+      },
+      "tb": {
+        "calls": 6,
+        "observed_native_seconds": 2.478
+      },
+      "verify export": {
+        "calls": 1,
+        "observed_native_seconds": 0.728
+      },
+      "verify registers": {
+        "calls": 1,
+        "observed_native_seconds": 0.521
+      }
+    },
+    "checks_added": [
+      "approval_group_retry_without_publication",
+      "approval_groups_bound_to_each_digest_and_reviewer"
+    ],
+    "elapsed_seconds_change": -47.573,
+    "measurement_scope": "Separate complete executions on a shared development host; no controlled throughput or causal speedup claim.",
+    "native_call_change": -244,
+    "native_identity_scope": "Each native book's generated identities are retained and verified within that run. Different fresh books need not share entry, package, certificate, or checkpoint identities.",
+    "same_pinned_source_and_full_leg_census": true
+  },
+  "document_custody": {
+    "byte_identical_source_readbacks": 6,
+    "grade": "AgentUpload",
+    "review_principal": "public-data-fixture-reviewer-a",
+    "review_scope": "Distinct same-harness fixture principal; not independent human review",
+    "reviewed_attestations": 17,
+    "self_sourced": true,
+    "uploaded_documents": 17
+  },
+  "documents": {
+    "expected_tb.json": "e644c04e454000e47aca035620cec02412c6affbee24e010dd737b1b63f3c05a",
+    "legacy.csv": "55e5ef55601942963a21138e3672014a7b103e28fc097db21defbe4cc53b5cf1",
+    "provenance.jsonl": "6b1556ba8dce66e3a333c513fd331434f0af570167583fdfcdad5966eef49886",
+    "raw.csv": "d9c58c05187e061096e6b322ffc353b1cc51a980cf9eef5088f52fc8bc6a342e",
+    "receipt.json": "810c3ffedfec618a14938f790b0f43c4be9a4b06ac7c3993f36a8a0215d91ab1",
+    "records.jsonl": "84429bee78579de70acda607395b23cb5554e5f8b289f2b3cab3123a652c09c3"
+  },
+  "elapsed_seconds": 65.599,
+  "executed_helpers": {
+    "tools/public-data/public_spend.py": {
+      "bytes": 23968,
+      "sha256": "ed376231ce90bb14bc33f1a4eae9d3d84e4b1fc3e3c58768c467fb4624bc03f3"
+    },
+    "tools/public-data/run_live.py": {
+      "bytes": 46470,
+      "sha256": "a723d5a0b7ff388f67bba9351427dd83b1532047b293e900e3be86d11e1641ef"
+    },
+    "tools/public-data/sources.toml": {
+      "bytes": 4124,
+      "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7"
+    }
+  },
+  "fa_sha256": "10cb2c500a90d9651ffe4bbdfaed90d4869aa2397baab4aba40fe1937ac17ff2",
+  "fa_verify_sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8",
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "commands.jsonl": {
+      "bytes": 159615,
+      "sha256": "356df374d0e9cb7975bb65d406411dae37752a85b88deec68674e56c927e5d90"
+    },
+    "finalize.plan": {
+      "bytes": 451,
+      "sha256": "e6101f5bb51dcec1c82081e86653cb469bb3561f045594d9faf3a2c86b6ca4e8"
+    },
+    "native.csv": {
+      "bytes": 931898,
+      "sha256": "ce6dab74e34c501634ee112f047db60a14e8dbf696493951510675ba18870d4a"
+    },
+    "replayed.report": {
+      "bytes": 21588,
+      "sha256": "a5ede3eb65780a01e8f28bdc70d3629d5039c53d5f9116566673b064109fb60f"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "sha256": "7dd43fb1e4783aed7b1b4f750e6368333018f6c9a367d923d6a458b08c19b989"
+    },
+    "result.json": {
+      "bytes": 3210,
+      "sha256": "f940c8e254bece080c90cad355baeb231665d8ab098205f62969535803942019"
+    },
+    "tampered-trial-balance.fab": {
+      "bytes": 1081775,
+      "sha256": "3939a95571d253b98faf1e71cb6961414e3faee2e71e17bb3f4a4b7873e4027e"
+    },
+    "trial-balance.fab": {
+      "bytes": 1081775,
+      "sha256": "dc4cbca715bffc8b25eede65e5e0e4ddcde7be8edde9e7bc84a82b3e2fc14958"
+    },
+    "trial-balance.receipt": {
+      "bytes": 219,
+      "sha256": "7eeb57b732c0ca786e07ed42b7b3b6a19df2f0b66df48a8873192c9e573a2724"
+    }
+  },
+  "independent_verification": {
+    "check_counts": [
+      {
+        "check": "canonical_report",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "report_bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "trial_balance_row",
+        "count": 135,
+        "result": "pass"
+      }
+    ],
+    "exit_code": 0,
+    "report_bundle": {
+      "bundle_digest": "a64eaabeaef80791654cbf7ddbf2a904be83eff84c87cd9660968a627edd6b9b",
+      "certificate_digest": "865cb258061e2b36e1772f2a858a4f8e21ac1f531d6bb158ab259d58293b5b4c",
+      "effective_through": 20178,
+      "known_at": 553,
+      "native_read_attestations": "retained; not used as outsider proofs",
+      "output_digest": "08e76ce90e9338f1cf84fa9ed58af7441f3b875953b4af561462f6024da31e11",
+      "records": 295,
+      "report_mode": "stock",
+      "rows": 135,
+      "unit_universe_source": "not-applicable"
+    },
+    "verdict": "verified"
+  },
+  "migration_run": "a2106e38852e9bfba706645769b4c0e3",
+  "model_scope": {
+    "historical_span": "March 2025 source activity is carried through empty scoped months to January 1, 2026 go-live; no claim is made about later actual HMRC activity or closing balances.",
+    "native_account_categories": 134,
+    "native_offset_account": {
+      "code": "published-payment-offset",
+      "meaning": "Explicit modeled counterpart; no bank-cash balance is inferred",
+      "type": "Equity"
+    },
+    "source_fields": "Every source field, duplicate row and row identity remains in retained raw/normalized/provenance evidence. Source area, supplier, reference and other dimensions are not asserted to be native queryable dimension tags by this runner.",
+    "verification_trust": "The independently verified report is from this locally created analysis book and caller-trusted checkpoint key; it is not a HMRC-signed or audited ledger."
+  },
+  "native_calls": 219,
+  "native_exit_counts": {
+    "0": 218,
+    "8": 1
+  },
+  "native_export": {
+    "entries": 127,
+    "legs": 2860
+  },
+  "native_source_commit": "f543eae8b535fc0b37936bc5094a459add26c5a3",
+  "native_source_tree": "8fe342ec2007c8999332b7855cbc1ba6839a8a5a",
+  "observed_execution": {
+    "completed_utc": "2026-11-03T04:34:10.423687+00:00",
+    "launcher_elapsed_seconds": 65.763,
+    "log_sha256": "80ee1886fd35ec6401daad6dae7884da1f85af9491c44eaa6190855e46282c7d",
+    "observed_process_exit": 0,
+    "started_utc": "2026-11-03T04:33:04.660496+00:00"
+  },
+  "observed_process_exit": 0,
+  "output_digest": "08e76ce90e9338f1cf84fa9ed58af7441f3b875953b4af561462f6024da31e11",
+  "package_oid": "876527d3470fd908f286e5be62c223069e665fc5022611b55510765761c7347f",
+  "period": "FY2025-P03",
+  "recorded_utc": "2026-11-03T04:34:55.408245+00:00",
+  "report_coordinates": {
+    "book_id": "33df81bf8c7ec7b51502f84925dd4769",
+    "certified_report_known_at": 553,
+    "finalization_control_entry": "d74972405d4f6bdf7a104946d5f505ab",
+    "finalization_recorded_at": 552,
+    "head_after_finalization_approvals": 551,
+    "historical_empty_tb_known_at": 549,
+    "pre_finalization_known_at": 549
+  },
+  "reproduce": "python3 -B tools/public-data/run_live.py --prepared /path/to/complete-hmrc-2025-03 --dataset hmrc-2025-03 --out /path/to/new-native-execution --fa /path/to/frozen/fa --fa-verify /path/to/frozen/fa-verify --stage-group-size 64 --timeout 300 --batch-approvals",
+  "source": {
+    "byte_length": 213348,
+    "encoding": "cp1252",
+    "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "limits": "Paid invoice lines over the publication threshold, including split lines and credit notes. Values are gross including VAT; dates are payment dates. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied.",
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "publisher": "HM Revenue & Customs",
+    "title": "HMRC spending over \u00a325,000, March 2025",
+    "url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+  "source_stats": {
+    "date_count": 21,
+    "duplicate_rows": 1,
+    "expense_area_count": 42,
+    "expense_type_count": 134,
+    "max_minor": "1507727368",
+    "max_transaction_rows": 12,
+    "min_minor": "-321224815",
+    "negative_minor": "-942246241",
+    "negative_rows": 125,
+    "net_minor": "28574458415",
+    "positive_minor": "29516704656",
+    "positive_rows": 1305,
+    "row_count": 1430,
+    "split_transaction_count": 71,
+    "supplier_count": 160,
+    "transaction_count": 1321,
+    "zero_rows": 0
+  },
+  "stage_group_size": 64,
+  "stage_requests": 2,
+  "status": "PASS",
+  "tamper_refusal": {
+    "exit_code": 8,
+    "failed_checks": [
+      {
+        "check": "record_derivation",
+        "detail": {},
+        "reason": "Digest { which: \"supplement.body_digest\" }",
+        "result": "fail",
+        "scope": "recomputation"
+      }
+    ],
+    "mutation": "Flip one bit at the midpoint of the authentic report-bundle bytes; retain the original trusted key, checkpoint, receipt and expected certificate digest",
+    "verdict": "failed"
+  },
+  "transcript_scope": "commands.jsonl binds all 219 started/completed commands, their stdout/stderr SHA-256 values and each exact forwarded stdin request. All referenced transcript file hashes and stdin lengths were independently rechecked when preparing this summary."
+}
