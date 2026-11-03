@@ -86,6 +86,14 @@ its portable report has major 1/minor 0, and it must not be described as a
 source-bound run. All 283 negative rows, 134 zero observations and 31 additional
 exact duplicate rows remain accounted for in the source controls and evidence.
 
+A [separate complete DWP confirmation](../../evidence/public_spend/dwp-2025-01-grouped-confirmation-2026-11-03.json)
+passed all **20 checks for 13,099 rows, 1,091 entries and 25,930 legs** in
+**5,980.011 seconds**. That direct-CLI run used the same frozen `93714f77`
+binaries and helpers, 18 staging groups of at most 64 chunks, and individual
+approvals and source attachments, with distinct book and proof identities.
+Both DWP timings are individual shared-host observations, not benchmarks;
+neither run exercises native source binding or the later batching features.
+
 A separate complete DWP run then enabled all three options,
 `--batch-approvals --batch-evidence --bind-source`: **168 native calls,
 541.794 seconds and all 29 checks passed**, with process exit zero on the frozen

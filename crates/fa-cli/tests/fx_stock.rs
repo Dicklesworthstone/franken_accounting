@@ -19,6 +19,8 @@ use fgdb_types::{CanonicalScalar, CommitSeq};
 
 #[path = "fx_stock/custom_statement.rs"]
 mod custom_statement;
+#[path = "fx_stock/issuance.rs"]
+mod issuance;
 
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
@@ -792,14 +794,6 @@ fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_r
         ],
         vec![
             "statement",
-            "balance-sheet",
-            "--functional",
-            "--for",
-            "FY2026-P01",
-            "--as-originally-reported",
-        ],
-        vec![
-            "statement",
             "equity-roll-forward",
             "--functional",
             "--from",
@@ -810,6 +804,23 @@ fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_r
     ] {
         assert_eq!(run(&fixture.book, &args).0, 2, "{args:?}");
     }
+    // Issued functional views are supported, but an unissued and unlocked
+    // period still has no original reporting coordinate.
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--as-originally-reported",
+        ],
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-161");
+    assert_eq!(head(&fixture.book), before);
     // Functional two-frontier diffs are supported. Sequence 1 predates
     // this period, so that query is a law refusal, not an unsupported verb.
     let before = head(&fixture.book);
