@@ -1057,8 +1057,26 @@ mod tests {
             );
             publish_epoch(&mut h, &archived);
             h.retain(&historical).unwrap();
-            let h = h.reopen();
+            let mut h = h.reopen();
             let stored = h.read(&historical.digest).unwrap();
+            // A checkpoint-opened book has not loaded its retained delta window.
+            // Use the admitted preparation seam a report host uses, keeping the
+            // full native-history checks in replay rather than bypassing them.
+            assert!(h.book.db.delta_since(CommitSeq(0)).is_err());
+            let at = h.head();
+            let cx = h.cx();
+            let reader = fa_policy::Capability::embedded(VId(1), &["read"]).unwrap();
+            h.runtime
+                .block_on(h.book.prepare_report_history(
+                    &cx,
+                    VId(1),
+                    &reader,
+                    Some(stored.known_at),
+                ))
+                .unwrap()
+                .unwrap();
+            assert!(h.book.db.delta_since(CommitSeq(0)).is_ok());
+            assert_eq!(h.head(), at, "history preparation must not publish");
             assert_eq!(
                 h.book
                     .replay_report(&h.cx(), &stored)

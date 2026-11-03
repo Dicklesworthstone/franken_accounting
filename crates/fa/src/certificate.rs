@@ -2092,7 +2092,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         .ne(required.iter())
     {
         return Ok(Err(invalid(
-            "native input closure omits migration body or source storage at the certified prefix",
+            "native input closure omits migration body fragments or migration source storage at the certified prefix",
         )));
     }
     let current = match registry_digest(&certificate.selection) {

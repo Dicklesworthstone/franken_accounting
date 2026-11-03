@@ -483,10 +483,51 @@ fn equity_comparison_zero_interval_preserves_identity_and_refuses_v1() {
         .unwrap()
         .unwrap();
     assert_eq!(other.report, source.report);
-    assert_ne!(
+    assert_eq!(
         other.certificate, source.certificate,
-        "producer capability remains original provenance"
+        "the original source format binds the accounting inputs, not the reader's extra permissions"
     );
+    let other_comparison = h
+        .book
+        .compare_equity_roll_forward_certificates(
+            &h.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce", "post"]),
+            &source.certificate,
+            &source.certificate,
+            &expected,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(other_comparison.report, identical.report);
+    assert_eq!(
+        other_comparison.certificate.sources(),
+        identical.certificate.sources()
+    );
+    assert_ne!(
+        other_comparison.certificate.capability_commitment(),
+        identical.certificate.capability_commitment(),
+        "the comparison retains its producer capability as original provenance"
+    );
+
+    // A canonical, rehashed frame may still omit original provenance. Keep
+    // the exact same question, native source and statement amounts so the
+    // equal-frontier identity guard is exercised independently of scope refusals.
+    let mut omitted = source.report.clone();
+    assert_eq!(omitted.movements.len(), 1);
+    omitted.movements.clear();
+    assert_eq!(omitted.statement, source.report.statement);
+    let different = equity_frame(
+        &source.certificate,
+        &omitted.canonical_bytes().unwrap(),
+        false,
+    );
+    assert_eq!(different.request(), source.certificate.request());
+    assert_eq!(
+        different.source_certificate(),
+        source.certificate.source_certificate()
+    );
+    assert_ne!(different, source.certificate);
     assert!(
         h.book
             .diff_equity_roll_forward_certificates(
@@ -494,7 +535,7 @@ fn equity_comparison_zero_interval_preserves_identity_and_refuses_v1() {
                 PRINCIPAL,
                 &cap(&["read"]),
                 &source.certificate,
-                &other.certificate,
+                &different,
                 &expected,
             )
             .unwrap()
@@ -505,7 +546,7 @@ fn equity_comparison_zero_interval_preserves_identity_and_refuses_v1() {
     assert!(
         diff_frame(
             &source.certificate,
-            &other.certificate,
+            &different,
             identical.certificate.output()
         )
         .is_err()

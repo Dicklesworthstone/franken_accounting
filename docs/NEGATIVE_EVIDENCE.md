@@ -1890,3 +1890,41 @@ The original verifier exits 0 after recovery for stable **RED/partial** note
 `82ff122f30cef96bfc0f351ccfac739256ebfeed`. Integrity is not a PASS or resume
 authority. Native and full qualification of this newer correction remain
 pending; predicted failures from source review are not executed counterexamples.
+
+## 2026-11-03 — Native replay and equity fixtures failed on their actual contracts
+
+The original native run on f6a34cf8 executed all seven selected harnesses:
+1,451 passed and four failed, with no ignored or filtered tests. The facade
+library contributed 705 passes and four failures. All 15 original fa-d48q
+acceptance cases passed; this does not qualify later intake changes or the
+whole repository, and the Bead remains open.
+
+The migration-fragment negative still refused, but the newer source-storage
+closure message omitted the specific noun its existing assertion required.
+The production message now names migration body fragments and migration
+source storage; its predicate, code, exit and test assertion are unchanged.
+
+The reopened custom-epoch fixture called synchronous replay with its retained
+native history still outside the loaded window. It now invokes the existing
+authorized `prepare_report_history` seam, as the report host and the adjacent
+historical-context fixture do. Added assertions require the cold window to
+become readable without advancing the head. Native history, registry-source
+validation and every original exact-output assertion remain required; no
+empty-population escape or retained-history exemption is introduced.
+
+The equity zero-interval fixture incorrectly expected an extra `post`
+permission to change an original source certificate. That source format
+contains accounting inputs; producer capability is a field of the comparison
+certificate. The corrected fixture checks source-byte equality and the actual
+comparison capability commitment. It preserves both original distinct-source
+refusals using a canonical, rehashed source with the same request, native
+inputs and statement amounts but omitted movement provenance. Explicit
+same-header assertions keep that negative independent of scope mismatch.
+No production comparison guard or durable format changes. This admits the
+valid deterministic recertification while retaining rejection of different
+originals at one recorded frontier, including decode-time rejection.
+
+These are authored repairs, with native re-execution and full qualification
+pending. The fourth failure, the FA-ART-LAB-04 witness mismatch, remains red;
+its hashes are unchanged while a bounded symbol-addition attribution probe
+runs. The original failure and all source boundaries remain retained.
