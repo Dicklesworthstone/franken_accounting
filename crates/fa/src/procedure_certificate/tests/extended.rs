@@ -131,9 +131,11 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         let certified = f.certify(&f.request(id, source));
         // fa-6l8g moved the party-attributing procedures to version 3, and
         // fa-yugf.83 the investor-population ones on to version 4. As-of
-        // netting moved aging.inventory and the solvency tests to version 3.
+        // netting moved aging.inventory to version 3; cash-overdraft netting
+        // moved the cash-flow solvency screen to version 4.
         let version = match id {
-            "lookback.preferences" | "aging.inventory" | "solvency.cash_flow_test" => 3,
+            "lookback.preferences" | "aging.inventory" => 3,
+            "solvency.cash_flow_test" => 4,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,

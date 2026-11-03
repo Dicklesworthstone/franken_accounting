@@ -15,7 +15,7 @@ pub(super) const FORMAT: &[u8] = b"fa:procedure-certificate:v2";
 /// additions. The original 22 procedures retain their v1 encoding and closure.
 pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("trace.restitution_order", 1),
-    ("jet.unusual_accounts", 1),
+    ("jet.unusual_accounts", 2),
     ("jet.unusual_preparers", 1),
     ("jet.manual_vs_rule", 1),
     ("jet.large_round_reversals", 1),
@@ -48,9 +48,9 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("recon.attested_register_compare", 1),
     // Version 2 folds gross period activity, as RegisterEquals does.
     ("recon.assertion_drift", 2),
-    ("completeness.unrecorded_liabilities", 1),
+    ("completeness.unrecorded_liabilities", 2),
     // H18 (fa-yugf.98): a closed boundary is a period whose latest transition closed it.
-    ("events.subsequent", 2),
+    ("events.subsequent", 3),
     ("party.master_changes", 1),
     ("payroll.ghost", 2),
     ("expense.capitalization", 2),
@@ -60,7 +60,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("confirm.coverage", 2),
     // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
     ("solvency.balance_sheet_test", 3),
-    ("solvency.cash_flow_test", 3),
+    ("solvency.cash_flow_test", 4),
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),
