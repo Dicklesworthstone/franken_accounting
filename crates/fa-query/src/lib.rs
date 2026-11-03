@@ -1107,8 +1107,10 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
             )
         })?;
     let spans = &selectors.spans;
-    let (cut, returned, aggregation) = if law::check(lexed)? {
-        let (cut, returned, plan) = aggregate::plan(lexed, spans)?;
+    let amounts = law::check(lexed)?;
+    let (cut, returned, aggregation) = if amounts.aggregated {
+        let aliases: Vec<&str> = amounts.aliases.iter().map(String::as_str).collect();
+        let (cut, returned, plan) = aggregate::plan_with_amount_aliases(lexed, spans, &aliases)?;
         (cut, returned, Some(plan))
     } else {
         (lexed.text.len(), String::new(), None)

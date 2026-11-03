@@ -16,8 +16,13 @@
 //! or by its `IN_UNIT` unit `u` with `u.code = '<code>'` or
 //! `u.unit_id = <literal>`, as a top-level conjunct of a `WHERE` with no
 //! root `OR`, or in the pattern's own map (`(u:Unit {code: 'USD'})`). It is
-//! grouped by a non-aggregate item naming `x.unit_id`, `u.code`, `u.unit_id`
-//! or `u`. Anything the analysis cannot prove is refused, never admitted.
+//! grouped by a non-aggregate item that is exactly `x.unit_id`, `u.code`,
+//! `u.unit_id` or `u` (an expression that only mentions one, such as
+//! `x.unit_id * 0`, groups nothing). A pin holds in its scope: a `WITH`
+//! passes on only the bindings it projects unchanged, a `UNION` arm starts
+//! afresh, and an `OPTIONAL MATCH` (its map or its `WHERE`) pins nothing,
+//! since an unmatched row is null-extended, not dropped. Anything the
+//! analysis cannot prove is refused, never admitted.
 
 use std::collections::BTreeMap;
 
@@ -140,15 +145,22 @@ struct Pin {
     value: String,
 }
 
+/// What one scope proves about its bindings.
+#[derive(Default)]
 struct Facts {
     labels: BTreeMap<String, Vec<String>>,
     /// amount binding → its IN_UNIT units.
     units: BTreeMap<String, Vec<String>>,
     pins: BTreeMap<String, Pin>,
+    /// A binding a `WITH` passed on with the unit it was pinned to before.
+    carried: BTreeMap<String, Pin>,
 }
 
 impl Facts {
     fn pinned(&self, var: &str) -> Option<&Pin> {
+        if let Some(pin) = self.carried.get(var) {
+            return Some(pin);
+        }
         if let Some(pin) = self.pins.get(var).filter(|p| p.key == "unit_id") {
             return Some(pin);
         }
@@ -165,25 +177,214 @@ impl Facts {
             .is_some_and(|labels| labels.iter().any(|l| l == "Unit"))
     }
 
-    /// Tokens `[from, to)` name a unit key of `var`.
+    /// The item at tokens `[from, to)` is a unit key of `var` and nothing
+    /// else: `var.unit_id`, or its IN_UNIT unit `u`, `u.code` or
+    /// `u.unit_id`, optionally named with `AS` (and after the `DISTINCT` of
+    /// a first item). An expression that only mentions one, such as
+    /// `var.unit_id * 0` or `size(u.code)`, has one value for every unit.
     fn groups(&self, lexed: &Lexed<'_>, var: &str, from: usize, to: usize) -> bool {
-        let partners = self.units.get(var);
-        (from..to).any(|k| {
-            if lexed.kind(k) != Some(Kind::Word) || (k > 0 && lexed.punct(k - 1, '.')) {
-                return false;
-            }
-            let name = lexed.str(k);
-            let property = if lexed.punct(k + 1, '.') {
-                Some(lexed.str(k + 2))
+        let from = if lexed.word(from, "DISTINCT") {
+            from + 1
+        } else {
+            from
+        };
+        let to =
+            if to >= from + 3 && lexed.word(to - 2, "AS") && lexed.kind(to - 1) == Some(Kind::Word)
+            {
+                to - 2
             } else {
-                None
+                to
             };
-            if name == var {
-                return property == Some("unit_id");
+        let partner = |name: &str| {
+            self.units
+                .get(var)
+                .is_some_and(|units| units.iter().any(|u| u == name))
+        };
+        if lexed.kind(from) != Some(Kind::Word) {
+            return false;
+        }
+        let name = lexed.str(from);
+        match to.saturating_sub(from) {
+            1 => partner(name),
+            3 if lexed.punct(from + 1, '.') && lexed.kind(from + 2) == Some(Kind::Word) => {
+                let property = lexed.str(from + 2);
+                (name == var && property == "unit_id")
+                    || (partner(name) && matches!(property, "code" | "unit_id"))
             }
-            partners.is_some_and(|units| units.iter().any(|u| u == name))
-                && matches!(property, None | Some("code" | "unit_id"))
-        })
+            _ => false,
+        }
+    }
+
+    /// Every binding this scope knows.
+    fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .labels
+            .keys()
+            .chain(self.units.keys())
+            .chain(self.pins.keys())
+            .chain(self.carried.keys())
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// The facts a `WITH` at tokens `[start, end)` passes on to the scope
+    /// after it. Only a binding it projects unchanged (`v`, `v AS w` or `*`)
+    /// keeps its labels, its own pin, the unit it is pinned to here, and its
+    /// unit edges to units projected with it; every other name is new.
+    fn carry(&self, lexed: &Lexed<'_>, start: usize, end: usize) -> Facts {
+        let first = if lexed.word(start + 1, "DISTINCT") {
+            start + 2
+        } else {
+            start + 1
+        };
+        let mut from = first;
+        let mut items = Vec::new();
+        for k in first..end {
+            if lexed.root(k) && lexed.punct(k, ',') {
+                items.push(from..k);
+                from = k + 1;
+            }
+        }
+        items.push(from..end);
+        let mut renamed: Vec<(String, String)> = Vec::new();
+        for item in items {
+            if item.len() == 1 && lexed.punct(item.start, '*') {
+                renamed.extend(self.names().into_iter().map(|n| (n.clone(), n)));
+            } else if lexed.kind(item.start) == Some(Kind::Word)
+                && (item.len() == 1
+                    || (item.len() == 3
+                        && lexed.word(item.start + 1, "AS")
+                        && lexed.kind(item.start + 2) == Some(Kind::Word)))
+            {
+                renamed.push((
+                    lexed.str(item.start).to_string(),
+                    lexed.str(item.end - 1).to_string(),
+                ));
+            }
+        }
+        let new_names = |old: &str| -> Vec<String> {
+            renamed
+                .iter()
+                .filter(|(o, _)| o == old)
+                .map(|(_, n)| n.clone())
+                .collect()
+        };
+        let mut next = Facts::default();
+        for (old, new) in &renamed {
+            if let Some(labels) = self.labels.get(old) {
+                next.labels.insert(new.clone(), labels.clone());
+            }
+            if let Some(pin) = self.pins.get(old) {
+                next.pins.insert(new.clone(), pin.clone());
+            }
+            if let Some(pin) = self.pinned(old) {
+                next.carried.insert(new.clone(), pin.clone());
+            }
+            let units: Vec<String> = self
+                .units
+                .get(old)
+                .into_iter()
+                .flatten()
+                .flat_map(|u| new_names(u))
+                .collect();
+            if !units.is_empty() {
+                next.units.entry(new.clone()).or_default().extend(units);
+            }
+        }
+        next
+    }
+
+    /// A `MATCH` at tokens `[start, end)`: its labels, and unless it is
+    /// optional (where an unmatched row is null-extended, not dropped) its
+    /// IN_UNIT edges and the unit keys its maps fix.
+    fn pattern(&mut self, lexed: &Lexed<'_>, start: usize, end: usize, optional: bool) {
+        let found = nodes(lexed, start, end);
+        for node in &found {
+            if let Some(var) = &node.var {
+                self.labels
+                    .entry(var.clone())
+                    .or_default()
+                    .extend(node.labels.iter().cloned());
+            }
+        }
+        if optional {
+            return;
+        }
+        for (x, u) in unit_edges(lexed, &found) {
+            self.units.entry(x).or_default().push(u);
+        }
+        for node in &found {
+            let Some(var) = &node.var else { continue };
+            for (key, value) in &node.map {
+                let unit_key =
+                    key == "unit_id" || (key == "code" && node.labels.iter().any(|l| l == "Unit"));
+                if unit_key && matches!(lexed.kind(*value), Some(Kind::Digits | Kind::Quoted)) {
+                    self.pins.insert(
+                        var.clone(),
+                        Pin {
+                            key: key.clone(),
+                            value: lexed.str(*value).to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// A `WHERE` at tokens `[start, end)`: the unit keys its top-level
+    /// equality conjuncts fix, when it has no root `OR`.
+    fn where_pins(&mut self, lexed: &Lexed<'_>, start: usize, end: usize) {
+        let body = start + 1..end;
+        if body
+            .clone()
+            .any(|k| lexed.root(k) && (lexed.word(k, "OR") || lexed.word(k, "XOR")))
+        {
+            return;
+        }
+        let mut conjuncts = Vec::new();
+        let mut from = body.start;
+        for k in body.clone() {
+            if lexed.root(k) && lexed.word(k, "AND") {
+                conjuncts.push(from..k);
+                from = k + 1;
+            }
+        }
+        conjuncts.push(from..body.end);
+        for c in conjuncts {
+            if c.len() != 5 {
+                continue;
+            }
+            let s = c.start;
+            let (var, property, value) = if lexed.kind(s) == Some(Kind::Word)
+                && lexed.punct(s + 1, '.')
+                && lexed.punct(s + 3, '=')
+                && matches!(lexed.kind(s + 4), Some(Kind::Digits | Kind::Quoted))
+            {
+                (s, s + 2, s + 4)
+            } else if matches!(lexed.kind(s), Some(Kind::Digits | Kind::Quoted))
+                && lexed.punct(s + 1, '=')
+                && lexed.kind(s + 2) == Some(Kind::Word)
+                && lexed.punct(s + 3, '.')
+            {
+                (s + 2, s + 4, s)
+            } else {
+                continue;
+            };
+            let name = lexed.str(var).to_string();
+            let key = lexed.str(property).to_string();
+            if key == "unit_id" || (key == "code" && self.is_unit(&name)) {
+                self.pins.insert(
+                    name,
+                    Pin {
+                        key,
+                        value: lexed.str(value).to_string(),
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -253,100 +454,36 @@ fn clauses(lexed: &Lexed<'_>) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn facts(lexed: &Lexed<'_>, regions: &[(usize, usize)]) -> Facts {
-    let mut facts = Facts {
-        labels: BTreeMap::new(),
-        units: BTreeMap::new(),
-        pins: BTreeMap::new(),
-    };
-    for &(start, end) in regions {
-        if !(lexed.word(start, "MATCH") || lexed.word(start, "OPTIONAL")) {
-            continue;
-        }
-        let found = nodes(lexed, start, end);
-        for node in &found {
-            if let Some(var) = &node.var {
-                facts
-                    .labels
-                    .entry(var.clone())
-                    .or_default()
-                    .extend(node.labels.iter().cloned());
-            }
-        }
-        for (x, u) in unit_edges(lexed, &found) {
-            facts.units.entry(x).or_default().push(u);
-        }
-        for node in &found {
-            let Some(var) = &node.var else { continue };
-            for (key, value) in &node.map {
-                let unit_key =
-                    key == "unit_id" || (key == "code" && node.labels.iter().any(|l| l == "Unit"));
-                if unit_key && matches!(lexed.kind(*value), Some(Kind::Digits | Kind::Quoted)) {
-                    facts.pins.insert(
-                        var.clone(),
-                        Pin {
-                            key: key.clone(),
-                            value: lexed.str(*value).to_string(),
-                        },
-                    );
-                }
-            }
-        }
-    }
-    for &(start, end) in regions {
-        if !lexed.word(start, "WHERE") {
-            continue;
-        }
-        let body = start + 1..end;
-        if body
-            .clone()
-            .any(|k| lexed.root(k) && (lexed.word(k, "OR") || lexed.word(k, "XOR")))
-        {
-            continue;
-        }
-        let mut conjuncts = Vec::new();
-        let mut from = body.start;
-        for k in body.clone() {
-            if lexed.root(k) && lexed.word(k, "AND") {
-                conjuncts.push(from..k);
-                from = k + 1;
-            }
-        }
-        conjuncts.push(from..body.end);
-        for c in conjuncts {
-            if c.len() != 5 {
-                continue;
-            }
-            let s = c.start;
-            let (var, property, value) = if lexed.kind(s) == Some(Kind::Word)
-                && lexed.punct(s + 1, '.')
-                && lexed.punct(s + 3, '=')
-                && matches!(lexed.kind(s + 4), Some(Kind::Digits | Kind::Quoted))
-            {
-                (s, s + 2, s + 4)
-            } else if matches!(lexed.kind(s), Some(Kind::Digits | Kind::Quoted))
-                && lexed.punct(s + 1, '=')
-                && lexed.kind(s + 2) == Some(Kind::Word)
-                && lexed.punct(s + 3, '.')
-            {
-                (s + 2, s + 4, s)
-            } else {
-                continue;
+/// The facts of each scope, and the scope of each region. A `WITH` closes
+/// a scope (its own items still read the scope before it) and a `UNION`
+/// arm opens a new one with nothing carried over.
+fn scopes(lexed: &Lexed<'_>, regions: &[(usize, usize)]) -> (Vec<Facts>, Vec<usize>) {
+    let mut scopes = vec![Facts::default()];
+    let mut scope_of = Vec::with_capacity(regions.len());
+    for (n, &(start, end)) in regions.iter().enumerate() {
+        let current = scopes.len() - 1;
+        scope_of.push(current);
+        let optional = |at: usize| at > 0 && lexed.word(at - 1, "OPTIONAL");
+        if lexed.word(start, "UNION") {
+            scopes.push(Facts::default());
+        } else if lexed.word(start, "WITH") {
+            let next = scopes[current].carry(lexed, start, end);
+            scopes.push(next);
+        } else if lexed.word(start, "MATCH") {
+            scopes[current].pattern(lexed, start, end, optional(start));
+        } else if lexed.word(start, "WHERE") {
+            // An OPTIONAL MATCH's WHERE decides which rows are
+            // null-extended; it keeps every row of the bindings before it.
+            let after_optional = n > 0 && {
+                let before = regions[n - 1].0;
+                lexed.word(before, "MATCH") && optional(before)
             };
-            let name = lexed.str(var).to_string();
-            let key = lexed.str(property).to_string();
-            if key == "unit_id" || (key == "code" && facts.is_unit(&name)) {
-                facts.pins.insert(
-                    name,
-                    Pin {
-                        key,
-                        value: lexed.str(value).to_string(),
-                    },
-                );
+            if !after_optional {
+                scopes[current].where_pins(lexed, start, end);
             }
         }
     }
-    facts
+    (scopes, scope_of)
 }
 
 /// One amount reference: the binding (None for an alias), the tokens it
@@ -363,9 +500,18 @@ fn refused(lexed: &Lexed<'_>, i: usize, message: String, fix: &str) -> Refusal {
     Refusal::new(Law::Amount, at, &message, fix)
 }
 
-/// Check the amount law. `Ok(true)`: the statement aggregates an amount,
-/// which the profile computes itself ([`crate::aggregate`]).
-pub(crate) fn check(lexed: &Lexed<'_>) -> Result<bool, Refusal> {
+/// What the amount law found in an admitted statement.
+pub(crate) struct Amounts {
+    /// The statement aggregates an amount, which the profile computes
+    /// itself ([`crate::aggregate`]).
+    pub aggregated: bool,
+    /// The names a `RETURN` or `WITH` item gives an amount: aggregating one
+    /// is aggregating an amount, so a null in it is refused, never skipped.
+    pub aliases: Vec<String>,
+}
+
+/// Check the amount law.
+pub(crate) fn check(lexed: &Lexed<'_>) -> Result<Amounts, Refusal> {
     check_with_amount_aliases(lexed, &[])
 }
 
@@ -374,14 +520,15 @@ pub(crate) fn check(lexed: &Lexed<'_>) -> Result<bool, Refusal> {
 pub(crate) fn check_with_amount_aliases(
     lexed: &Lexed<'_>,
     amounts: &[(&str, &str)],
-) -> Result<bool, Refusal> {
+) -> Result<Amounts, Refusal> {
     let regions = clauses(lexed);
-    let facts = facts(lexed, &regions);
+    let (scopes, scope_of) = scopes(lexed, &regions);
     let mut sums_amounts = false;
     // Amount-valued aliases a RETURN or WITH item defines, with the unit
     // pin its source carries.
     let mut aliases: BTreeMap<String, Option<Pin>> = BTreeMap::new();
-    for &(start, end) in &regions {
+    for (n, &(start, end)) in regions.iter().enumerate() {
+        let facts = &scopes[scope_of[n]];
         let projection = lexed.word(start, "RETURN") || lexed.word(start, "WITH");
         let pattern = lexed.word(start, "MATCH") || lexed.word(start, "OPTIONAL");
         if pattern {
@@ -454,6 +601,9 @@ pub(crate) fn check_with_amount_aliases(
                     && !lexed.punct(k + 1, '(')
                     && !(k > 0 && lexed.word(k - 1, "AS"))
                 {
+                    // `WITH l.amount AS x ... MAX(x)` aggregates an amount
+                    // as `MAX(l.amount)` does.
+                    sums_amounts |= aggregated(lexed, k);
                     references.push(Reference {
                         var: None,
                         pin: pin.clone(),
@@ -555,5 +705,8 @@ pub(crate) fn check_with_amount_aliases(
             ));
         }
     }
-    Ok(sums_amounts)
+    Ok(Amounts {
+        aggregated: sums_amounts,
+        aliases: aliases.into_keys().collect(),
+    })
 }

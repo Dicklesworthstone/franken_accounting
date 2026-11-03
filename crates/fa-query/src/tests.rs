@@ -848,6 +848,91 @@ fn an_amount_aggregate_returns_its_keys_and_arguments_for_exact_aggregation() {
     assert!(r.message.contains("across units"), "{r:?}");
 }
 
+/// fa-2zf5: an amount aggregate is admitted only when its unit is proved in
+/// scope. An item that only mentions a unit key groups nothing; a pin from
+/// an `OPTIONAL MATCH` null-extends instead of dropping rows; a `WITH` passes
+/// on only the bindings it projects; and a `UNION` arm proves nothing about
+/// the other. Each refused form summed or ordered amounts of several units.
+#[test]
+fn cross_unit_aggregates_are_refused_whatever_the_grouping_or_pin_scope() {
+    for (text, says) in [
+        (
+            "MATCH (l:Leg) RETURN l.unit_id * 0 AS k, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN size(u.code) AS n, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit) WHERE u.code = 'USD' RETURN SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit {code: 'USD'}) RETURN SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WITH COUNT(*) AS n MATCH (l:Leg) RETURN n, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH l MATCH (u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) WHERE l.unit_id = 1 RETURN l UNION MATCH (l:Leg) RETURN l ORDER BY l.amount",
+            "across units",
+        ),
+    ] {
+        let r = refused(text);
+        assert_eq!(r.law, Law::Amount, "{text}: {r:?}");
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+    // A unit key itself, or a binding a WITH projects unchanged, still proves
+    // the unit.
+    for text in [
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u, SUM(l.amount) AS total",
+        "MATCH (l:Leg) RETURN l.unit_id AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WITH l MATCH (l)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, SUM(l.amount) AS total",
+        "MATCH (l:Leg) WHERE l.unit_id = 1 WITH l AS m RETURN SUM(m.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH l, u RETURN u.code AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH * RETURN u.code AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH l, u WHERE u.code = 'USD' RETURN SUM(l.amount) AS total",
+    ] {
+        let (_, n) = native(text);
+        assert!(n.aggregation().is_some(), "{text}");
+    }
+}
+
+/// fa-2zf5: an aggregate over a `WITH` alias of an amount is an amount
+/// aggregate. It ran natively, where `MAX` skips a null mirror; the profile
+/// now computes it exactly, as it does `MAX(l.amount)`, refusing a null.
+#[test]
+fn an_aggregate_over_an_amount_alias_is_computed_exactly() {
+    let (_, n) = native(
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WITH l.amount AS x RETURN MAX(x) AS top",
+    );
+    let plan = n.aggregation().expect("an exact aggregation");
+    assert_eq!(
+        plan.columns[0].value,
+        Value::Aggregate {
+            function: Function::Max,
+            native: Some(0),
+            amount: true
+        }
+    );
+    // Unpinned, the alias adds every unit, as its source would.
+    let r = refused("MATCH (l:Leg) WITH l.amount AS x RETURN MAX(x) AS top");
+    assert_eq!(r.law, Law::Amount, "{r:?}");
+    assert!(r.message.contains("adds amounts of every unit"), "{r:?}");
+}
+
 /// fa-5c1, the runtime graph: `CALL fa.access_log` is the AccessEvent read
 /// itself, at trunk's head, optionally one reader's; every coordinate it
 /// cannot honour is refused with the admissible form, never ignored.
