@@ -88,6 +88,7 @@ symbols!(
         (LOT_POLICY, "LotPolicy", 60),
         (ASSET_SCHEDULE, "AssetSchedule", 61),
         (CLOSE_TASK, "CloseTask", 62),
+        (MIGRATION_RUN_FRAGMENT, "MigrationRunFragment", 63),
     ]
 );
 

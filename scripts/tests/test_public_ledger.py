@@ -484,6 +484,35 @@ class ReplayRefusalTests(unittest.TestCase):
             with self.assertRaisesRegex(replay.ReplayError, "gross debit/credit activity"):
                 native.tb("FY2024-P10", expected_gross=expected_gross)
 
+    def test_native_document_preserves_automated_custody_and_binds_its_fixture_review(self):
+        native = replay.Native(Path(sys.executable), Path(sys.executable), self.root)
+        oid = "ab" * 32
+        added = {"oid": oid, "grade": "AgentUpload", "self_sourced": True,
+                 "doc_commit": "cd" * 32, "recorded_at": 1}
+        reviewed = {"claim": "Reviewed", "subject": oid,
+                    "attestation_vid": "ef" * 16, "recorded_at": 2}
+        with mock.patch.object(native, "call", side_effect=[{"data": added}, {"data": reviewed}]) as call:
+            self.assertEqual(native.document(self.root / "source.csv"), oid)
+            self.assertNotIn("--grade", call.call_args_list[0].args)
+            self.assertEqual(call.call_args_list[1].args, (
+                "document", "attest", "review", "--document", oid,
+                "--as", "public-data-fixture-document-reviewer", "--grant", "approve",
+            ))
+        self.assertEqual(native.document_custody[0]["intake_grade"], "AgentUpload")
+        self.assertEqual(native.document_custody[0]["review_attestation_vid"], reviewed["attestation_vid"])
+        for grade, self_sourced in [("HumanUpload", False), ("AgentUpload", False)]:
+            with self.subTest(grade=grade, self_sourced=self_sourced):
+                wrong = dict(added, grade=grade, self_sourced=self_sourced)
+                with mock.patch.object(native, "call", return_value={"data": wrong}) as call:
+                    with self.assertRaisesRegex(replay.ReplayError, "self-sourced AgentUpload"):
+                        native.document(self.root / "source.csv")
+                    self.assertEqual(call.call_count, 1)
+        for wrong in [dict(reviewed, subject="00" * 32), dict(reviewed, claim="Confirmed")]:
+            with mock.patch.object(native, "call", side_effect=[{"data": added}, {"data": wrong}]):
+                with self.assertRaisesRegex(replay.ReplayError, "does not bind"):
+                    native.document(self.root / "source.csv")
+        self.assertEqual(len(native.document_custody), 1)
+
     def test_department_missing_values_leading_zeros_and_ambiguous_metadata(self):
         for value in ("", " ", "\t \r\n"):
             self.assertIsNone(replay.department_code(value))

@@ -449,6 +449,164 @@ fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negati
 }
 
 #[test]
+fn csv_gl_round_trip_preserves_real_world_text_and_escaped_metadata() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = sample_multi_unit_journal();
+    let mut accounts = original.accounts.clone();
+    accounts[0].name = "  Cash | Treasury, \"North\"\r\nCafé  ".into();
+    accounts[1].name = "Literal %7C and %0A remain literal".into();
+    let mut entries = original.entries.clone();
+    entries[0].entry_id = "# invoice,\"2025\"".into();
+    entries[0].description = "  Supplier, \"North\"\r\n# line two  ".into();
+    entries[0].migrated_from = Some("source,1\nledger | 2025".into());
+    entries[0].legs[0].memo = Some("invoice, tax\r\nallocation \"A\"".into());
+    entries[0].legs[1].memo = Some(" trailing space ".into());
+    let c = &original.coordinate;
+    let journal = FormatJournal::new(
+        "Public | records\nFY2025 % archive",
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        accounts,
+        entries,
+        original.assertions.clone(),
+    )
+    .unwrap();
+    let csv = write_csv_gl(&journal);
+    assert!(csv.starts_with("# fa_csv_text_encoding_v1|percent-utf8\n"));
+    let restored = read_csv_gl(&csv, &units).expect("quoted source text survives extraction");
+    verify_round_trip_identity("csv_gl_v1", &journal, &restored).unwrap();
+    assert_eq!(restored.coordinate, journal.coordinate);
+    assert_eq!(restored.accounts, journal.accounts);
+    assert_eq!(restored.entries, journal.entries);
+    assert_eq!(write_csv_gl(&restored), csv, "canonical output is stable");
+    for bad in [
+        csv.replacen("Public%20", "Public%GG", 1),
+        csv.replacen("Public%20", "Public%FF", 1),
+        csv.replacen("percent-utf8", "unknown", 1),
+        format!("# fa_csv_text_encoding_v1|percent-utf8\n{csv}"),
+    ] {
+        read_csv_gl(&bad, &units).expect_err("invalid or repeated metadata codec is refused");
+    }
+    let plain = write_csv_gl(&original);
+    assert!(plain.starts_with("# fa_csv_gl_v1|"));
+    verify_round_trip_identity(
+        "csv_gl_v1",
+        &original,
+        &read_csv_gl(&plain, &units).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn csv_gl_refuses_changed_row_identity_and_truncated_certificate_metadata() {
+    let units = UnitCatalog::embedded().unwrap();
+    let source = write_csv_gl(&sample_multi_unit_journal());
+    let first = source
+        .lines()
+        .find(|line| line.starts_with("E-0001,"))
+        .unwrap();
+    let columns = first.split(',').collect::<Vec<_>>();
+    assert_eq!(columns.len(), 13);
+    for (column, replacement, expected) in [
+        (1, "2", "consecutive line_no"),
+        (9, "3", "registered scale"),
+    ] {
+        let mut changed = columns.clone();
+        changed[column] = replacement;
+        let bad = source.replacen(first, &changed.join(","), 1);
+        let error = read_csv_gl(&bad, &units).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    // The second leg must repeat its entry metadata, even if that field
+    // would have been ignored by the old first-row-wins decoder.
+    let second = source
+        .lines()
+        .find(|line| line.starts_with("E-0001,2,"))
+        .unwrap();
+    let mut changed = second.split(',').collect::<Vec<_>>();
+    changed[10] = "substituted narration";
+    let bad = source.replacen(second, &changed.join(","), 1);
+    let error = read_csv_gl(&bad, &units).unwrap_err();
+    assert!(
+        error.to_string().contains("conflicting metadata"),
+        "{error}"
+    );
+
+    let bad = source.replacen("|entries=3|", "|entries=4|", 1);
+    assert_ne!(bad, source);
+    let error = read_csv_gl(&bad, &units).unwrap_err();
+    assert!(error.to_string().contains("header declares 4"), "{error}");
+    let first_line = source.lines().next().unwrap();
+    let truncated = first_line.split("|certificate_digest=").next().unwrap();
+    let bad = source.replacen(first_line, truncated, 1);
+    let error = read_csv_gl(&bad, &units).unwrap_err();
+    assert!(
+        error.to_string().contains("must be supplied together"),
+        "{error}"
+    );
+    // A declared coordinate is evidence, not a default that later rows may
+    // silently repair back to the original certified date.
+    let bad = source.replacen(
+        "effective_through=2026-03-25",
+        "effective_through=2026-03-01",
+        1,
+    );
+    assert_ne!(bad, source);
+    assert!(matches!(
+        read_csv_gl(&bad, &units).unwrap_err(),
+        FormatError::CertificateMismatch { .. }
+    ));
+}
+
+#[test]
+fn csv_gl_distinguishes_empty_optional_text_from_absent_text() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = sample_multi_unit_journal();
+    let mut entries = original.entries.clone();
+    entries[0].migrated_from = Some(String::new());
+    entries[0].legs[0].memo = Some(String::new());
+    entries[0].legs[1].memo = Some("occupied".into());
+    entries[1].migrated_from = None;
+    entries[1].legs[0].memo = None;
+    let c = &original.coordinate;
+    let journal = FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        original.accounts.clone(),
+        entries,
+        original.assertions.clone(),
+    )
+    .unwrap();
+    let source = write_csv_gl(&journal);
+    let migrated = "# fa_csv_empty_optional_v1|1|0|migrated_from\n";
+    let memo = "# fa_csv_empty_optional_v1|1|1|memo\n";
+    assert!(source.contains(migrated));
+    assert!(source.contains(memo));
+    let restored = read_csv_gl(&source, &units).unwrap();
+    verify_round_trip_identity("csv_gl_v1", &journal, &restored).unwrap();
+    assert_eq!(restored.entries, journal.entries);
+    assert_eq!(write_csv_gl(&restored), source);
+    for bad in [
+        source.replace(migrated, ""),
+        source.replace(memo, ""),
+        source.replace(memo, &format!("{memo}{memo}")),
+        source.replace(memo, "# fa_csv_empty_optional_v1|99|1|memo\n"),
+        source.replace(memo, "# fa_csv_empty_optional_v1|1|99|memo\n"),
+        source.replace(memo, "# fa_csv_empty_optional_v1|1|0|memo\n"),
+        source.replace(memo, "# fa_csv_empty_optional_v1|1|2|memo\n"),
+        format!("{}{memo}", source.replace(memo, "")),
+    ] {
+        read_csv_gl(&bad, &units)
+            .expect_err("ambiguous or substituted optional text must not verify");
+    }
+}
+
+#[test]
 fn canonical_csv_round_trip_preserves_quoted_source_text() {
     let units = UnitCatalog::embedded().unwrap();
     let original = sample_multi_unit_journal();

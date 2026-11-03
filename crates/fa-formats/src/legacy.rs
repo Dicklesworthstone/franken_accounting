@@ -28,6 +28,7 @@ use fa_time::DateDay;
 use fgdb_crypto::Hasher;
 use fgdb_types::VId;
 
+use crate::csv::{CsvRecord, CsvRecords};
 use crate::{FormatError, FormatLeg, UnitCatalog, parse_date_iso, parse_exact_decimal};
 
 /// Domain separator for legacy import opening-balance tie-out attestations.
@@ -348,163 +349,6 @@ fn unquote_toml_str(format: &'static str, line_no: usize, s: &str) -> Result<Str
             format,
             detail: format!("line {line_no}: invalid string literal {s:?}"),
         })
-    }
-}
-
-/// Logical CSV records preserve quoted newlines and original field text.
-/// Legacy imports recognize comments only before their header; canonical
-/// exports also carry explicit metadata comments. The modes never reinterpret
-/// quoted text as metadata, and the original source supplies the import digest.
-pub(crate) struct CsvRecords<'a> {
-    remaining: &'a str,
-    line: usize,
-    preamble: bool,
-    comments: CsvComments,
-    format: &'static str,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum CsvComments {
-    Preamble,
-    Metadata,
-}
-
-pub(crate) enum CsvRecord<'a> {
-    Comment { line: usize, text: &'a str },
-    Data { line: usize, fields: Vec<String> },
-}
-
-impl<'a> CsvRecords<'a> {
-    pub(crate) fn new(src: &'a str, format: &'static str, comments: CsvComments) -> Self {
-        Self {
-            remaining: src.strip_prefix('\u{feff}').unwrap_or(src),
-            line: 1,
-            preamble: true,
-            comments,
-            format,
-        }
-    }
-
-    pub(crate) fn next_record(&mut self) -> Result<Option<CsvRecord<'a>>, FormatError> {
-        while !self.remaining.is_empty() {
-            let end = self
-                .remaining
-                .find(['\r', '\n'])
-                .unwrap_or(self.remaining.len());
-            let remaining = self.remaining;
-            let line = &remaining[..end];
-            let comment = (self.preamble || matches!(self.comments, CsvComments::Metadata))
-                && line.trim_start().starts_with('#');
-            if !line.trim().is_empty() && !comment {
-                break;
-            }
-            let suffix = &remaining[end..];
-            let newline_bytes = if suffix.starts_with("\r\n") {
-                2
-            } else {
-                usize::from(!suffix.is_empty())
-            };
-            self.remaining = &suffix[newline_bytes..];
-            let start_line = self.line;
-            self.line += usize::from(newline_bytes != 0);
-            if comment {
-                return Ok(Some(CsvRecord::Comment {
-                    line: start_line,
-                    text: line.trim(),
-                }));
-            }
-        }
-        if self.remaining.is_empty() {
-            return Ok(None);
-        }
-
-        let start_line = self.line;
-        let mut fields = Vec::new();
-        let mut field = String::new();
-        let mut quoted = false;
-        let mut closed_quote = false;
-        let mut chars = self.remaining.char_indices().peekable();
-        while let Some((offset, ch)) = chars.next() {
-            if quoted {
-                if ch == '"' {
-                    if chars.peek().is_some_and(|(_, next)| *next == '"') {
-                        let _ = chars.next();
-                        field.push('"');
-                    } else {
-                        quoted = false;
-                        closed_quote = true;
-                    }
-                } else {
-                    field.push(ch);
-                    if ch == '\r' {
-                        if chars.peek().is_some_and(|(_, next)| *next == '\n') {
-                            let _ = chars.next();
-                            field.push('\n');
-                        }
-                        self.line += 1;
-                    } else if ch == '\n' {
-                        self.line += 1;
-                    }
-                }
-                continue;
-            }
-            match ch {
-                ',' | '\r' | '\n' => {
-                    fields.push(std::mem::take(&mut field));
-                    closed_quote = false;
-                    if ch != ',' {
-                        let mut end = offset + ch.len_utf8();
-                        if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
-                            end += 1;
-                        }
-                        self.remaining = &self.remaining[end..];
-                        self.line += 1;
-                        self.preamble = false;
-                        return Ok(Some(CsvRecord::Data {
-                            line: start_line,
-                            fields,
-                        }));
-                    }
-                }
-                ' ' | '\t' if closed_quote => {}
-                '"' if !closed_quote && field.trim().is_empty() => {
-                    field.clear();
-                    quoted = true;
-                }
-                '"' => {
-                    return Err(FormatError::Parse {
-                        format: self.format,
-                        detail: format!(
-                            "line {} (record starts at line {start_line}): unexpected quote in an unquoted CSV field",
-                            self.line
-                        ),
-                    });
-                }
-                _ if closed_quote => {
-                    return Err(FormatError::Parse {
-                        format: self.format,
-                        detail: format!(
-                            "line {} (record starts at line {start_line}): unexpected text after a quoted CSV field",
-                            self.line
-                        ),
-                    });
-                }
-                _ => field.push(ch),
-            }
-        }
-        if quoted {
-            return Err(FormatError::Parse {
-                format: self.format,
-                detail: format!("line {start_line}: unterminated quoted CSV field"),
-            });
-        }
-        fields.push(field);
-        self.remaining = "";
-        self.preamble = false;
-        Ok(Some(CsvRecord::Data {
-            line: start_line,
-            fields,
-        }))
     }
 }
 
@@ -1437,16 +1281,11 @@ fn parse_tabular_csv_with_format(
     let mut entries_by_id: BTreeMap<String, LegacyChunkEntry> = BTreeMap::new();
     let mut row_count = 0usize;
 
-    let mut records = CsvRecords::new(src, fmt_name, CsvComments::Preamble);
-    while let Some(record) = records.next_record()? {
-        let CsvRecord::Data {
-            line: line_no,
-            fields,
-        } = record
-        else {
+    for record in CsvRecords::legacy(src, fmt_name) {
+        let CsvRecord::Row { line, fields } = record? else {
             continue;
         };
-        let line_idx = line_no - 1;
+        let line_idx = line - 1;
         if header_idx.is_none() {
             let mut map = BTreeMap::new();
             for (i, h) in fields.iter().enumerate() {
@@ -1454,13 +1293,13 @@ fn parse_tabular_csv_with_format(
                 if name.is_empty() {
                     return Err(FormatError::Parse {
                         format: fmt_name,
-                        detail: format!("line {line_no}: empty CSV header column {}", i + 1),
+                        detail: format!("line {line}: empty CSV header column {}", i + 1),
                     });
                 }
                 if map.insert(name.to_owned(), i).is_some() {
                     return Err(FormatError::Parse {
                         format: fmt_name,
-                        detail: format!("line {line_no}: duplicate CSV header column {name:?}"),
+                        detail: format!("line {line}: duplicate CSV header column {name:?}"),
                     });
                 }
             }
@@ -1479,11 +1318,9 @@ fn parse_tabular_csv_with_format(
                     });
                 }
             }
-            // The generic mapping is an explicit promise about this source,
-            // including its provenance columns. A misspelled mapped header
-            // must not silently discard author, reviewer, currency or memo.
-            // Built-in vendor formats allow their optional metadata columns
-            // to be absent, as older exports have always done.
+            // An explicit generic mapping promises these source columns;
+            // misspellings must not silently discard provenance. Built-in
+            // vendor profiles retain their historical optional-column support.
             if format == LegacyFormat::GenericCsv {
                 for column in [
                     &column_map.recorded_at_column,
@@ -1505,7 +1342,7 @@ fn parse_tabular_csv_with_format(
                         return Err(FormatError::Parse {
                             format: fmt_name,
                             detail: format!(
-                                "line {line_no}: missing declared CSV header column {column:?}"
+                                "line {line}: missing declared CSV header column {column:?}"
                             ),
                         });
                     }
@@ -1516,7 +1353,7 @@ fn parse_tabular_csv_with_format(
                     return Err(FormatError::Parse {
                         format: fmt_name,
                         detail: format!(
-                            "line {line_no}: missing declared dimension CSV header column {column:?}"
+                            "line {line}: missing declared dimension CSV header column {column:?}"
                         ),
                     });
                 }
@@ -1529,7 +1366,7 @@ fn parse_tabular_csv_with_format(
             {
                 return Err(FormatError::Parse {
                     format: fmt_name,
-                    detail: format!("line {line_no}: CSV amount column pairs must both be present"),
+                    detail: format!("line {line}: CSV amount column pairs must both be present"),
                 });
             }
             if !has(&column_map.debit_column)
@@ -1539,7 +1376,7 @@ fn parse_tabular_csv_with_format(
                 return Err(FormatError::Parse {
                     format: fmt_name,
                     detail: format!(
-                        "line {line_no}: CSV header has no declared amount representation"
+                        "line {line}: CSV header has no declared amount representation"
                     ),
                 });
             }
@@ -1552,25 +1389,26 @@ fn parse_tabular_csv_with_format(
             return Err(FormatError::Parse {
                 format: fmt_name,
                 detail: format!(
-                    "line {line_no}: CSV record has {} columns; header declares {}",
+                    "line {line}: CSV record has {} columns; header declares {}",
                     fields.len(),
                     headers.len()
                 ),
             });
         }
-        let get_text = |col: &str| -> &str {
+        let get_raw = |col: &str| -> &str {
             headers
                 .get(col)
                 .and_then(|&i| fields.get(i))
                 .map(String::as_str)
                 .unwrap_or("")
         };
-        let get = |col: &str| -> &str { get_text(col).trim() };
+        let get = |col: &str| -> &str { get_raw(col).trim() };
         let get_opt = |col: &Option<String>| -> &str { col.as_deref().map(get).unwrap_or("") };
+        let get_text = |col: &Option<String>| -> &str { col.as_deref().map(get_raw).unwrap_or("") };
 
         row_count += 1;
-        let entry_id = get(&column_map.entry_id_column);
-        if entry_id.is_empty() {
+        let entry_id = get_raw(&column_map.entry_id_column);
+        if entry_id.trim().is_empty() {
             return Err(FormatError::Parse {
                 format: fmt_name,
                 detail: format!("line {}: empty entry_id", line_idx + 1),
@@ -1640,9 +1478,7 @@ fn parse_tabular_csv_with_format(
                     Side::Credit,
                     signed.checked_neg().ok_or_else(|| FormatError::Overflow {
                         format: fmt_name,
-                        detail: format!(
-                            "line {line_no}: signed CSV amount magnitude overflows i128"
-                        ),
+                        detail: format!("line {line}: signed CSV amount magnitude overflows i128"),
                     })?,
                 )
             }
@@ -1683,9 +1519,8 @@ fn parse_tabular_csv_with_format(
             });
         };
 
-        // Some real exports include both debit/credit columns and a signed
-        // amount (Xero's Gross, for example). All supplied representations
-        // must agree exactly; a priority order must not hide a contradiction.
+        // Every supplied amount representation is evidence. A priority rule
+        // must not hide contradictory gross, signed, or side/amount columns.
         if !signed_str.is_empty() {
             let expected = if side == Side::Debit {
                 mantissa
@@ -1695,7 +1530,7 @@ fn parse_tabular_csv_with_format(
             if parse_exact_decimal(fmt_name, signed_str, scale)? != expected {
                 return Err(FormatError::Parse {
                     format: fmt_name,
-                    detail: format!("line {line_no}: conflicting CSV amount representations"),
+                    detail: format!("line {line}: conflicting CSV amount representations"),
                 });
             }
         }
@@ -1710,33 +1545,25 @@ fn parse_tabular_csv_with_format(
             {
                 return Err(FormatError::Parse {
                     format: fmt_name,
-                    detail: format!("line {line_no}: conflicting CSV amount representations"),
+                    detail: format!("line {line}: conflicting CSV amount representations"),
                 });
             }
         }
 
-        let desc = column_map
-            .description_column
-            .as_deref()
-            .map(get_text)
-            .unwrap_or("");
-        let memo = column_map
-            .memo_column
-            .as_deref()
-            .map(get_text)
-            .unwrap_or("");
+        let desc = get_text(&column_map.description_column);
+        let memo = get_text(&column_map.memo_column);
         let ts_ns = parse_legacy_timestamp_ns(fmt_name, get_opt(&column_map.recorded_at_column))?;
         let entered_by = {
-            let v = get_opt(&column_map.entered_by_column);
+            let v = get_text(&column_map.entered_by_column);
             (!v.is_empty()).then(|| v.to_owned())
         };
         let approved_by = {
-            let v = get_opt(&column_map.approved_by_column);
+            let v = get_text(&column_map.approved_by_column);
             (!v.is_empty()).then(|| v.to_owned())
         };
         let mut dimensions = BTreeMap::new();
         for (kind, column) in &column_map.dimension_columns {
-            let code = get_text(column);
+            let code = get_raw(column);
             if code.trim().is_empty() {
                 continue;
             }
@@ -1744,7 +1571,7 @@ fn parse_tabular_csv_with_format(
                 return Err(FormatError::Parse {
                     format: fmt_name,
                     detail: format!(
-                        "line {line_no}: dimension {kind:?}: {problem}; nonblank identifiers are never trimmed"
+                        "line {line}: dimension {kind:?}: {problem}; nonblank identifiers are never trimmed"
                     ),
                 });
             }
@@ -1764,7 +1591,7 @@ fn parse_tabular_csv_with_format(
                         source_approved_by: None,
                     },
                     effective_date: eff_date,
-                    description: if desc.trim().is_empty() {
+                    description: if desc.is_empty() {
                         entry_id.to_owned()
                     } else {
                         desc.to_owned()
@@ -1814,7 +1641,7 @@ fn parse_tabular_csv_with_format(
             amount: Amount::new(uid, mantissa),
             unit_code: unit_code.to_owned(),
             unit_scale: scale,
-            memo: (!memo.trim().is_empty()).then(|| memo.to_owned()),
+            memo: (!memo.is_empty()).then(|| memo.to_owned()),
         });
     }
 
@@ -3223,6 +3050,135 @@ ENTRY-1,2025-12-31,,4000,-25.00,Revenue,,
         assert!(
             parse_xero_csv(&xero.replace(",-12.34", ",12.34"), &units, &accounts, "USD").is_err()
         );
+    }
+
+    #[test]
+    fn legacy_csv_multiline_records_preserve_text_and_source_identity() {
+        let units = UnitCatalog::embedded().expect("units");
+        let accounts = test_account_map();
+        let columns = LegacyColumnMap::parse_toml(
+            "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\ndescription_column = \"memo\"\nmemo_column = \"memo\"\n",
+        ).unwrap();
+        let source = "\u{feff}# retained source\r\nentry,date,account,amount,memo\r\n\"# allocation\",2025-12-31,5000,125.50,\"  Café, \"\"North\"\"\r\n# invoice continuation  \"\r\n\"# allocation\",2025-12-31,1000,-125.50,\"settled\nby transfer\"\r\n";
+        let imported = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(
+            imported.row_count, 2,
+            "logical postings, not physical lines"
+        );
+        assert_eq!(imported.chunks.len(), 1);
+        let entry = &imported.chunks[0];
+        assert_eq!(entry.provenance.source_id, "# allocation");
+        assert_eq!(
+            entry.description,
+            "  Café, \"North\"\r\n# invoice continuation  "
+        );
+        assert_eq!(
+            entry.legs[0].memo.as_deref(),
+            Some(entry.description.as_str())
+        );
+        assert_eq!(entry.legs[1].memo.as_deref(), Some("settled\nby transfer"));
+        assert_eq!(entry.legs[0].amount.mantissa, 12_550);
+        assert_eq!(entry.legs[1].side, Side::Credit);
+        assert_eq!(entry.legs[1].amount.mantissa, 12_550);
+        // The retained bytes remain the source identity even when the text
+        // differs only in an embedded line-ending convention.
+        let lf =
+            parse_generic_csv(&source.replace("\r\n", "\n"), &columns, &units, &accounts).unwrap();
+        assert_ne!(imported.source_bytes_digest, lf.source_bytes_digest);
+        assert_eq!(imported.trial_balance, lf.trial_balance);
+        let whitespace = parse_generic_csv(
+            &source.replace("settled\nby transfer", " \t "),
+            &columns,
+            &units,
+            &accounts,
+        )
+        .unwrap();
+        assert_eq!(whitespace.chunks[0].legs[1].memo.as_deref(), Some(" \t "));
+    }
+
+    #[test]
+    fn legacy_csv_refuses_ambiguous_headers_ragged_records_and_malformed_quotes() {
+        let units = UnitCatalog::embedded().expect("units");
+        let accounts = test_account_map();
+        let columns = LegacyColumnMap::parse_toml(
+            "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\nmemo_column = \"memo\"\n",
+        ).unwrap();
+        let source = "entry,date,account,amount,memo\nA,2025-12-31,1000,10.00,cash\nA,2025-12-31,3000,-10.00,capital\n";
+        parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        for (bad, expected) in [
+            (
+                source.replace("amount,memo", "amount,amount"),
+                "duplicate CSV header",
+            ),
+            (source.replace("amount,memo", "amount,"), "empty CSV header"),
+            (
+                source.replace("amount,memo", "missing,memo"),
+                "missing declared CSV header column",
+            ),
+            (
+                source.replace("10.00,cash", "10.00,cash,discarded"),
+                "line 2: CSV record has 6 columns; header declares 5",
+            ),
+            (
+                source.replace("10.00,cash", "10.00"),
+                "line 2: CSV record has 4 columns; header declares 5",
+            ),
+            (
+                source.replace("cash", "\"cash\"trailing"),
+                "unexpected text after",
+            ),
+            (source.replace("cash", "ca\"sh"), "unexpected quote"),
+            (
+                source.replace("capital", "\"capital"),
+                "unterminated quoted",
+            ),
+        ] {
+            let error = parse_generic_csv(&bad, &columns, &units, &accounts)
+                .expect_err("malformed source cannot silently lose columns or text");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected}: {error}"
+            );
+        }
+        let multiline = source
+            .replace("cash", "\"cash\ncontinued\"")
+            .replace("-10.00,capital", "-10.00,capital,extra");
+        let error = parse_generic_csv(&multiline, &columns, &units, &accounts).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("line 4: CSV record has 6 columns; header declares 5")
+        );
+    }
+
+    #[test]
+    fn legacy_csv_never_trims_distinct_journal_or_principal_identities() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = LegacyColumnMap::parse_toml(
+            "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\nentered_by_column = \"entered\"\napproved_by_column = \"approved\"\n",
+        ).unwrap();
+        let source = "entry,date,account,amount,entered,approved\nA,2025-12-31,1000,10.00, Alice , Carol \nA,2025-12-31,3000,-10.00,,\n\" A\",2025-12-31,1000,20.00,Bob,Dana\n\" A\",2025-12-31,3000,-20.00,,\n";
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.chunks.len(), 2, "source IDs cannot silently merge");
+        assert_eq!(batch.chunks[0].provenance.source_id, "A");
+        assert_eq!(batch.chunks[1].provenance.source_id, " A");
+        assert_eq!(batch.chunks[0].legs.len(), 2);
+        assert_eq!(batch.chunks[1].legs.len(), 2);
+        assert_eq!(
+            batch.chunks[0].provenance.source_entered_by.as_deref(),
+            Some(" Alice ")
+        );
+        assert_eq!(
+            batch.chunks[0].provenance.source_approved_by.as_deref(),
+            Some(" Carol ")
+        );
+        let conflicting = source.replace("-10.00,,", "-10.00,Alice,");
+        let error = parse_generic_csv(&conflicting, &columns, &units, &accounts).unwrap_err();
+        assert!(error.to_string().contains("entered-by identity"), "{error}");
+        let blank = source.replace("\" A\"", "\"   \"");
+        let error = parse_generic_csv(&blank, &columns, &units, &accounts).unwrap_err();
+        assert!(error.to_string().contains("empty entry_id"), "{error}");
     }
 
     #[test]
