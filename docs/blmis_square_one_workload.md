@@ -211,3 +211,69 @@ test result alone does not claim that posting, certificates or outsider bundle
 verification ran. This workload advances the Square One source population in
 case-plan §9 and bead `fa-yugf.71`; it does not by itself close that bead's wider
 case-harness and expectation-loading requirements.
+
+## Run the complete native accounting path
+
+The companion driver uses the real `fa` and independent `fa-verify` executables.
+It acquires and extracts the original PDF in the same invocation, creates a new
+analysis book, and posts all 340 nonzero movements. It also compares all 710
+nonposting observations at their precise source positions, so a withholding
+exclusion or printed zero cannot disappear from the comparison census.
+
+```bash
+python3 -B scripts/blmis_square_one_replay.py run \
+  --pdf /absolute/path/to/009665-squareonecomplaint10-04330docket0167.pdf \
+  --out artifacts/square-one-native \
+  --fa target/debug/fa \
+  --fa-verify target/debug/fa-verify
+```
+
+Omit `--pdf` to download the pinned original. The destination must be new. A
+missing binary, unavailable download or missing PDF extractor returns `UNRUN`;
+the driver never replaces native execution with a simulated success.
+
+The native comparison has two independent obligations. First, every journal
+amount and running balance must equal a separate `Decimal` interpretation of
+the original printed movement literals, with the exact withholding footnote
+premise attached to every star. Second, every difference from the independently
+printed balance must survive unchanged in the report. A one-cent native error
+fails even when it falls within the source's three-dollar discrepancy. The
+source discrepancy is never an error tolerance or permission to auto-balance.
+
+The run additionally checks:
+
+- The exact two-account chart and the source account's distinct native party
+  and party-dimension identities.
+- Native intake and custody of the complete PDF, extracted text, transaction
+  cells, metadata, observation census, extraction receipt and manifest.
+- Every source posting and exact retry; retries preserve native identities and
+  append no history, while a report at the preimport coordinate remains empty.
+- A certified general ledger and byte-identical replay, all ten annual source
+  controls, the native principal-analysis procedure, and every posting month's
+  maintained registers.
+- Native projections, original document custody, the signed accumulator
+  checkpoint, and exact CSV and ADS exports of all 680 legs, including source
+  descriptions, page-and-line citations and party dimensions.
+- Independent ADS proof verification by `fa-verify`, followed by actual
+  refusals of a one-cent amount mutation and a party-dimension-only mutation.
+
+`report.json` is written with `PASS` only after all these checks finish. It
+retains all 1,050 source/native comparisons, every printed discrepancy,
+certificate and entry receipts, custody records, annual controls, export
+comparisons, verifier results and binary hashes. `commands.jsonl` contains the
+actual process arguments, exit codes and native responses. A failed run keeps
+its book, transcript and `failure.json` for diagnosis; it does not overwrite a
+previous run. The proof's trust root is the explicitly supplied checkpoint key
+of this local analysis book, not a trustee or court signature.
+
+The driver checks are available separately:
+
+```bash
+python3 -B -m unittest discover -s scripts/tests \
+  -p 'test_blmis_square_one_replay.py' -v
+```
+
+Those tests exercise independent source arithmetic, omitted and reordered
+observations, altered footnote premises, one-cent native errors, extra native
+postings, source citations, cancellation signs and annual controls. They are
+driver tests; a native `PASS` still requires the complete command above.

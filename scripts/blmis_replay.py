@@ -38,7 +38,7 @@ def usd(value: str) -> int:
     return ledger.source.amount_cents(amount)
 
 
-def normalized_entries(path: Path, rows: list[dict]) -> list[dict]:
+def normalized_entries(path: Path, rows: list[dict], *, source_id: str = source.SOURCE_ID) -> list[dict]:
     """Check source-to-intent coverage before any native book is created."""
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream, strict=True)
@@ -66,7 +66,7 @@ def normalized_entries(path: Path, rows: list[dict]) -> list[dict]:
             ledger.require(offset < len(normalized), "normalized CSV dropped a source leg")
             actual = normalized[offset]
             offset += 1
-            expected_memo = (f"analysis counterpart; {source.SOURCE_ID} Exhibit {row.get('exhibit', 'B-2')} "
+            expected_memo = (f"analysis counterpart; {source_id} Exhibit {row.get('exhibit', 'B-2')} "
                              f"PDF p{row['pdf_page']} line {row['source_line']}")
             ledger.require(actual["entry_id"] == actual["source_row"] == row["row_id"]
                            and actual["effective_date"] == row["date"]
@@ -200,7 +200,8 @@ def verify_principal_analysis(native: ledger.Native, rows: list[dict]) -> dict:
 
 
 def verify_source_export(path: Path, format_name: str, rows: list[dict],
-                         posted: dict[str, dict], party: dict) -> dict:
+                         posted: dict[str, dict], party: dict, *,
+                         source_id: str = source.SOURCE_ID) -> dict:
     """Match every exported leg and its source citation to the original rows."""
     absent_provenance = ""
     if format_name == "ads":
@@ -245,7 +246,7 @@ def verify_source_export(path: Path, format_name: str, rows: list[dict],
         # no ADS text escapes, so both ADS versions retain these exact bytes.
         # Native certificate replay authenticates stored text; this independent
         # comparison also rejects text lost or changed before it was stored.
-        expected_memo = (f"analysis counterpart; {source.SOURCE_ID} Exhibit {row.get('exhibit', 'B-2')} "
+        expected_memo = (f"analysis counterpart; {source_id} Exhibit {row.get('exhibit', 'B-2')} "
                          f"PDF p{row['pdf_page']} line {row['source_line']}")
         ledger.require(actual["description"] == row["description"]
                        and actual["memo"] == expected_memo
