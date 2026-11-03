@@ -10324,6 +10324,73 @@ fn batch_plan_authentication_binds_order_previews_effects_and_current_authority(
 }
 
 #[test]
+fn single_and_correction_plans_satisfy_required_dry_run_without_admitting_direct_writes() {
+    let mut h = harness();
+    let capability = Capability::embedded(PRINCIPAL, &["post"])
+        .unwrap()
+        .with_requires_dry_run();
+    let proposal = h.proposal(
+        h.rent_legs(100),
+        b"required-single-plan",
+        EntryClass::ORIGINAL,
+    );
+    let mut request = h.request(proposal, &["post"]);
+    request.capability = capability.clone();
+    let before = h.db.frontier().unwrap();
+    let refusal = h.post(request.clone()).unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let plan = h.post_plan(request).unwrap();
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let mut certificate = plan.certificate().clone();
+    certificate.authentication[0] ^= 1;
+    let forged = fa_intents::PostPlan::new(
+        plan.intent().clone(),
+        plan.prepared_entry().clone(),
+        certificate,
+    )
+    .unwrap();
+    assert_eq!(
+        h.publish_plan(forged, &capability).unwrap_err().code,
+        "FA-REF-034"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let original = h.publish_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(original.recorded_at().0, before.0 + 1);
+    assert!(matches!(
+        h.publish_plan(plan, &capability).unwrap(),
+        Posted::AlreadyRecorded { .. }
+    ));
+
+    let (mut reversal, mut replacement) = h.planned_rent_correction(original.entry_ref());
+    reversal.capability = capability.clone();
+    replacement.capability = capability.clone();
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .post_pair(reversal.clone(), replacement.clone())
+        .unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let correction = h.replacement_plan(reversal, replacement).unwrap();
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let (reversed, replaced) = h
+        .publish_replacement_plan(correction.clone(), &capability)
+        .unwrap();
+    assert_eq!(reversed.recorded_at(), replaced.recorded_at());
+    assert_eq!(reversed.recorded_at().0, before.0 + 1);
+    let retry = h.publish_replacement_plan(correction, &capability).unwrap();
+    assert!(matches!(
+        retry,
+        (
+            Posted::AlreadyRecorded { .. },
+            Posted::AlreadyRecorded { .. }
+        )
+    ));
+    assert_eq!(h.db.frontier().unwrap(), reversed.recorded_at());
+}
+
+#[test]
 fn batch_plan_satisfies_required_dry_run_without_weakening_direct_commit_admission() {
     let mut h = harness();
     let capability = Capability::embedded(PRINCIPAL, &["post"])

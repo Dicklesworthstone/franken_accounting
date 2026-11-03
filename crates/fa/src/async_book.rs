@@ -4438,7 +4438,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     },
                 )
             })
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None));
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| fa_policy::admit_direct_write(capability));
         if let Err(denial) = admitted {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -4629,6 +4630,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 legs: &[],
             },
         ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if let Err(denial) = fa_policy::current(capability, self.head(cx)?) {
@@ -6661,6 +6665,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )
             })
             .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| fa_policy::admit_direct_write(capability))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }

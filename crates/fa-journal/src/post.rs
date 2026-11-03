@@ -1039,6 +1039,10 @@ pub(crate) enum Admission {
     /// binding. The caller still needs their own trunk authority; the token
     /// satisfies only the capability's required dry-run prerequisite.
     VerifiedBatch(crate::batch::VerifiedBatchPlan),
+    /// A single-entry or atomic correction plan authenticated by its
+    /// verifier. The private token satisfies only the rehearsal caveat;
+    /// current authority and every native accounting law still run.
+    VerifiedPlan(crate::plan::VerifiedPostPlan),
     /// A fixed occurrence derived by the approved recurring scheduler.
     Recurring(crate::recurring::Executing),
     /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
@@ -1363,6 +1367,29 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         req,
         None,
         Admission::Commit,
+        None,
+        None,
+        &mut None,
+    )
+}
+
+/// Restage an authenticated single-entry rehearsal under ordinary current
+/// commit authority. Only the plan verifier can construct `verified` and
+/// it compares the resulting effects before retaining and publishing them.
+pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+    verified: crate::plan::VerifiedPostPlan,
+) -> Outcome<PostPreparation> {
+    prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        Admission::VerifiedPlan(verified),
         None,
         None,
         &mut None,
@@ -2026,14 +2053,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         if (carried.is_some() && asset_charge_batch.is_none())
             || replacement_basis.is_some()
-            || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(
-                    admission,
-                    Admission::VerifiedBatch(_)
-                        | Admission::PlanDraft(_)
-                        | Admission::Promote(_)
-                        | Admission::ScratchDraft(_)
-                ) && asset_charge_batch.is_some()))
+            || !(matches!(
+                admission,
+                Admission::Commit | Admission::Plan | Admission::VerifiedPlan(_)
+            ) || (matches!(
+                admission,
+                Admission::VerifiedBatch(_)
+                    | Admission::PlanDraft(_)
+                    | Admission::Promote(_)
+                    | Admission::ScratchDraft(_)
+            ) && asset_charge_batch.is_some()))
         {
             return Ok(Err(crate::asset_cost::unsupported_batch()));
         }
@@ -2049,14 +2078,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         if (carried.is_some() && disposal_batch.is_none())
             || replacement_basis.is_some()
-            || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(
-                    admission,
-                    Admission::VerifiedBatch(_)
-                        | Admission::PlanDraft(_)
-                        | Admission::Promote(_)
-                        | Admission::ScratchDraft(_)
-                ) && disposal_batch.is_some()))
+            || !(matches!(
+                admission,
+                Admission::Commit | Admission::Plan | Admission::VerifiedPlan(_)
+            ) || (matches!(
+                admission,
+                Admission::VerifiedBatch(_)
+                    | Admission::PlanDraft(_)
+                    | Admission::Promote(_)
+                    | Admission::ScratchDraft(_)
+            ) && disposal_batch.is_some()))
         {
             return Ok(Err(crate::disposal::unsupported_batch()));
         }
@@ -2101,11 +2132,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         if carried.is_some()
             || replacement_basis.is_some()
-            || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(
-                    admission,
-                    Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
-                ) && revaluation_draft.is_some()))
+            || !(matches!(
+                admission,
+                Admission::Commit | Admission::Plan | Admission::VerifiedPlan(_)
+            ) || (matches!(
+                admission,
+                Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+            ) && revaluation_draft.is_some()))
         {
             return Ok(Err(crate::revaluation::unsupported_batch()));
         }
@@ -2694,7 +2727,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     };
     // The capability is not revoked (plan §14.2): the first read, so a
     // revoked token learns nothing about the book, not even a recorded outcome.
-    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+    if let Err(r) = policy::capability_authority_witness(&txn, db, book, &req.capability)? {
         txn.abort();
         return Ok(Err(r));
     }
@@ -5598,8 +5631,8 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     prepare_replacement_pair_admitted(db, ctx, book, reversal_req, replacement_req, admission)
 }
 
-/// The draft module's unforgeable admission tokens authorize rehearsal or
-/// independent promotion without weakening the native atomic pair law.
+/// Private admission tokens authorize draft rehearsal, independent promotion,
+/// or an authenticated correction plan without weakening the native pair law.
 pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,

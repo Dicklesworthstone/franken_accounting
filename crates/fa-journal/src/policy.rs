@@ -1113,11 +1113,32 @@ fn admitted_issuance_ancestry(
     Ok(Ok(ancestry))
 }
 
-/// The capability is not revoked, as a point witness of `txn` (plan §14.2:
-/// authority is evaluated against current policy at commit). A revocation
-/// committed after this read makes the transaction a first-committer-wins
-/// conflict.
+/// Admit an ordinary control write, then point-witness its current
+/// authority. Control proposals and approval digests are not authenticated
+/// posting rehearsal certificates, so a `requires_dry_run` capability
+/// cannot publish them through this path. Keeping the check here also
+/// covers façade controls that stage their own transactions.
+///
+/// A revocation committed after the authority read makes the transaction
+/// a first-committer-wins conflict (plan §14.2).
 pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
+        return Ok(Err(refusal(&denial)));
+    }
+    capability_authority_witness(txn, db, book, capability)
+}
+
+/// Point-witness authority without deciding whether a write may publish.
+/// The posting pipeline verifies its rehearsal prerequisite separately;
+/// read-only reviews and control preparations defer publication admission.
+/// Prepared publishers must check their bound capability before committing.
+/// Ordinary control writers must use [`capability_witness`].
+pub(crate) fn capability_authority_witness<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
@@ -2177,6 +2198,12 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
         },
     ) {
         return Ok(Err(refusal(&d)));
+    }
+    // Issuance witnesses ancestry directly, rather than going through the
+    // ordinary control-write witness. Enforce the same rehearsal rule
+    // before observing or extending that authority chain.
+    if let Err(denial) = fa_policy::admit_direct_write(&req.capability) {
+        return Ok(Err(refusal(&denial)));
     }
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(refusal(&d)));

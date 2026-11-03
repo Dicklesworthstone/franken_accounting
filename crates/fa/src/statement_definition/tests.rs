@@ -255,6 +255,42 @@ impl Harness {
 }
 
 #[test]
+fn required_rehearsal_allows_statement_preapproval_but_refuses_unverified_activation() {
+    let mut harness = Harness::new();
+    let capability = cap(PREPARER, &["rule_change"]).with_requires_dry_run();
+    let before = harness.head();
+    let plan = harness
+        .book
+        .plan_statement_definition(
+            &harness.cx(),
+            &capability,
+            definition(1),
+            day(1),
+            b"required-layout-review",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(harness.head(), before);
+    let approvals = harness.approve(&plan);
+    let before = harness.head();
+    let cx = harness.cx();
+    let refusal = harness
+        .runtime
+        .block_on(harness.book.activate_statement_definition(
+            &cx,
+            &capability,
+            plan.clone(),
+            approvals.clone(),
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, fa_journal::exit::SAFETY, "{refusal}");
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(harness.head(), before);
+    harness.activate(plan, approvals).unwrap().unwrap();
+}
+
+#[test]
 fn chunked_definition_activates_atomically_survives_approval_commits_and_retries() {
     let mut harness = Harness::new();
     let mut layout = definition(1);

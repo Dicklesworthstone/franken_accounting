@@ -136,6 +136,47 @@ fn reopen(h: &mut Harness) {
 }
 
 #[test]
+fn required_rehearsal_allows_legacy_recovery_preview_but_refuses_publication() {
+    let (mut h, _, _) = legacy_pair();
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let cx = h.ctx();
+    let cap = Capability::embedded(PRINCIPAL, &["read", "schema_change"])
+        .unwrap()
+        .with_requires_dry_run();
+    let prepared = h
+        .runtime
+        .block_on(prepare_outcome_rebuild(&mut h.db, &cx, &h.book, cap))
+        .unwrap()
+        .unwrap();
+    assert_eq!(prepared.preview().basis, before);
+    assert_eq!(prepared.preview().outcomes_created, 2);
+    assert!(!prepared.preview().already_covered);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let refusal = h
+        .runtime
+        .block_on(publish_outcome_rebuild(&mut h.db, &cx, &h.book, prepared))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, 7, "{refusal}");
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(
+        h.db.vertex(fa_journal::outcome::coverage_vid(h.book.book_id))
+            .unwrap()
+            .is_none()
+    );
+
+    let result = rebuild(&mut h);
+    assert!(result.wrote);
+    assert_eq!(result.outcomes_created, 2);
+    assert_eq!(result.recorded_at, CommitSeq(before.0 + 1));
+}
+
+#[test]
 fn explicit_legacy_recovery_is_atomic_durable_and_unblocks_only_unused_keys() {
     let (mut h, original, reversal) = legacy_pair();
     let old_head = h.db.frontier().unwrap();

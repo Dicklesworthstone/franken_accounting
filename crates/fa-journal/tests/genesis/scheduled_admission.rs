@@ -450,6 +450,55 @@ fn commit_opening_plan(
 }
 
 #[test]
+fn required_rehearsal_allows_open_preview_but_refuses_staged_and_planned_publication() {
+    let mut h = fixture();
+    let capability = reviewing_closer().with_requires_dry_run();
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let plan = opening_plan(&mut h, &capability, b"required-opening-preview").unwrap();
+    let effects = plan.opening_effects.as_ref().unwrap();
+    assert!(effects.minted.is_empty());
+    assert!(effects.blocked.is_empty());
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let refusal = commit_opening_plan(&mut h, &plan, &capability).unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let ctx = h.ctx();
+    let description = h.statement("required staged Open", 149);
+    let prepared = fa_journal::period::prepare_transition(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        &h.april,
+        PeriodTransition::Open,
+        capability.holder(),
+        1,
+        b"required-staged-opening",
+        description,
+        &capability,
+        &[],
+    )
+    .unwrap()
+    .unwrap();
+    let refusal = h
+        .runtime
+        .block_on(prepared.commit(&mut h.db, &ctx))
+        .unwrap()
+        .unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert_eq!(h.period_state(&h.april), PeriodState::Future);
+
+    open(&mut h, &closer(), b"unrestricted-opening").unwrap();
+    assert_eq!(h.period_state(&h.april), PeriodState::Open);
+}
+
+#[test]
 fn opening_plan_rehearses_exact_reversals_without_writes_and_retries_its_original_effects() {
     let mut h = fixture();
     let target = accrue(&mut h, 100, b"reviewed-opening-accrual");
@@ -911,7 +960,6 @@ fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
             128,
             executor(&h).for_classes(&[EntryClass::ORIGINAL]).unwrap(),
         ),
-        (129, executor(&h).with_requires_dry_run()),
     ] {
         tick(&mut h, april(), nonce);
         let result = sweep(&mut h, cap).unwrap().unwrap();
@@ -920,6 +968,17 @@ fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
         assert_eq!(result.blocked[0].0, target);
         assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     }
+    // A blocked-only sweep still publishes its cursor. The explicit
+    // rehearsal caveat must refuse that control write as well as reversals.
+    tick(&mut h, april(), 129);
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let cap = executor(&h).with_requires_dry_run();
+    let refusal = sweep(&mut h, cap).unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     let cap = executor(&h);
     h.revoke(&cap, 130);
     tick(&mut h, april(), 131);

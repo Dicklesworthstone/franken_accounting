@@ -26,10 +26,17 @@ use crate::genesis::BookContext;
 use crate::object::{self, ObjectKind};
 use crate::policy;
 use crate::post::{
-    PostPreparation, PostRequest, Posted, prepare_plan, prepare_post, prepare_replacement_pair,
+    PostPreparation, PostRequest, Posted, prepare_plan, prepare_replacement_pair,
+    prepare_replacement_pair_admitted, prepare_verified_plan,
 };
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, replacement_vid, resolution_vid, reversal_vid, scalar_bytes};
+
+/// Only this module constructs the token, after authenticating a complete
+/// single-entry or atomic correction plan and binding its current caller.
+/// The native posting laws and effect comparison still decide publication.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VerifiedPostPlan(());
 
 fn invalidated(message: impl Into<String>) -> Refusal {
     Refusal::new(
@@ -602,7 +609,13 @@ pub async fn commit_plan<V: Vfs + Clone>(
             certificate.snapshot_seq.0,
         ))));
     }
-    let mut prepared = match prepare_post(db, ctx, book, request(plan.intent(), capability))? {
+    let mut prepared = match prepare_verified_plan(
+        db,
+        ctx,
+        book,
+        request(plan.intent(), capability),
+        VerifiedPostPlan(()),
+    )? {
         Err(refusal) => {
             return Ok(Err(invalidated(format!(
                 "production revalidation refused the plan: {} ({})",
@@ -1007,16 +1020,6 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
     if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
         return Ok(Err(policy::refusal(&denial)));
     }
-    for member in [plan.reversal(), plan.replacement()] {
-        if let Err(refusal) = crate::post::authorize_request(
-            db,
-            book,
-            &request(member.intent(), capability.clone()),
-            crate::post::Admission::Commit,
-        )? {
-            return Ok(Err(refusal));
-        }
-    }
     let commitment = capability
         .commitment()
         .map_err(|e| KernelError::Corrupt(e.to_string()))?;
@@ -1031,6 +1034,17 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
         return Ok(Err(invalidated(
             "the correction plan changed or belongs to a different acting capability",
         )));
+    }
+    let admission = crate::post::Admission::VerifiedPlan(VerifiedPostPlan(()));
+    for member in [plan.reversal(), plan.replacement()] {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(member.intent(), capability.clone()),
+            admission,
+        )? {
+            return Ok(Err(refusal));
+        }
     }
     ctx.query()
         .checkpoint()
@@ -1050,13 +1064,13 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             "the correction's accounting basis changed; rehearse the complete pair again",
         )));
     }
-    let preparation = prepare_replacement_pair(
+    let preparation = prepare_replacement_pair_admitted(
         db,
         ctx,
         book,
         request(plan.reversal().intent(), capability.clone()),
         request(plan.replacement().intent(), capability),
-        false,
+        admission,
     )?;
     let mut prepared = match preparation {
         Ok((None, PostPreparation::Ready(prepared))) => prepared,

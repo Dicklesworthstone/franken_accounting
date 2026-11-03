@@ -111,9 +111,10 @@ impl PreparedTransition {
         }
     }
 
-    /// Commit with the original witnesses and a fresh check of the same
-    /// acting capability's expiry. A changed period, revocation, approval,
-    /// or policy epoch is judged by the ordinary transaction validator.
+    /// Commit with the original witnesses and fresh checks of the same
+    /// acting capability's publication admission and expiry. A changed period,
+    /// revocation, approval, or policy epoch is judged by the ordinary
+    /// transaction validator.
     pub async fn commit<V: asupersync::fs::Vfs + Clone>(
         self,
         db: &mut Database<V>,
@@ -157,6 +158,10 @@ impl PreparedTransition {
             }
             PreparedTransitionState::Staged(staged) => *staged,
         };
+        if let Err(denial) = fa_policy::admit_direct_write(&capability) {
+            txn.abort();
+            return Ok(Err(policy::refusal(&denial)));
+        }
         if let Err(d) = fa_policy::current(&capability, db.frontier()?) {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
@@ -1702,8 +1707,10 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
     let pvid = period_vid(&book.calendar.id, period_code);
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
-    // Current authority: not revoked, under the witnessed policy epoch.
-    if let Err(r) = policy::capability_witness(&txn, db, book, capability)? {
+    // Open rehearsals also stage this exact transaction and then abort it.
+    // Witness current authority here; commit checks publication admission
+    // against the capability sealed inside StagedTransition.
+    if let Err(r) = policy::capability_authority_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(r));
     }

@@ -287,6 +287,25 @@ pub fn admit_read(cap: &Capability, principal: VId, book: Id128) -> Result<(), D
     scope(cap, book)
 }
 
+/// Admit a write that has no verified rehearsal certificate. This is
+/// separate from actor, operation, and reach admission: those checks also
+/// serve read-only preparation, which a rehearsal-required token may do.
+/// Control commit paths call this before staging any publication. A
+/// posting plan satisfies the caveat only through its authenticated,
+/// effect-revalidated commit path, never by skipping this check at a
+/// caller's request.
+pub fn admit_direct_write(cap: &Capability) -> Result<(), Denial> {
+    if cap.has_requires_dry_run_caveat() {
+        Err(out_of_scope(
+            "requires_dry_run",
+            "a write without a verified rehearsal certificate; this commit path does not verify one"
+                .into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn out_of_scope(caveat: &'static str, value: String) -> Denial {
     Denial::OutOfScope { caveat, value }
 }
@@ -342,6 +361,27 @@ mod tests {
             book: BOOK,
             legs,
         }
+    }
+
+    #[test]
+    fn required_rehearsal_refuses_direct_writes_without_blocking_read_or_plan_admission() {
+        let cap = Capability::embedded(VId(1), &["read", "post", "close"]).unwrap();
+        assert_eq!(admit_direct_write(&cap), Ok(()));
+        let cap = cap.with_requires_dry_run();
+        let denial = admit_direct_write(&cap).unwrap_err();
+        assert!(matches!(
+            denial,
+            Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            }
+        ));
+        assert_eq!(admit_read(&cap, VId(1), BOOK), Ok(()));
+        assert_eq!(admit_base_for_plan(&cap, &intent(VId(1), &[])), Ok(()));
+        // Controls prepare proposal digests for review without publishing.
+        let mut control = intent(VId(1), &[]);
+        control.op = Op::Close;
+        assert_eq!(admit(&cap, &control), Ok(()));
     }
 
     #[test]
