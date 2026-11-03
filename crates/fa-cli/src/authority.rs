@@ -293,9 +293,34 @@ impl LaunchAuthority {
     pub fn with_files(mut self, files: Option<PathBuf>) -> Result<Self, String> {
         self.files = match files {
             None => None,
-            Some(path) => Some(launch_files_root(path)?),
+            Some(path) => {
+                let root = launch_files_root(path)?;
+                if self.protected().iter().any(|book| root.starts_with(book)) {
+                    return Err(format!(
+                        "launch files root `{}` is inside the book directory `{}`",
+                        root.display(),
+                        self.book.display()
+                    ));
+                }
+                Some(root)
+            }
         };
         Ok(self)
+    }
+
+    /// The book directory and an explicit key file, as given and
+    /// canonicalized. The `--files` root may contain the book (the registry's
+    /// own layout), but no caller path may name these: they are the book's
+    /// storage and signing key, never host documents.
+    fn protected(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for path in std::iter::once(&self.book).chain(self.keys.as_ref()) {
+            if let Ok(canonical) = std::fs::canonicalize(path) {
+                paths.push(canonical);
+            }
+            paths.push(path.clone());
+        }
+        paths
     }
 
     #[must_use]
@@ -364,11 +389,17 @@ impl LaunchAuthority {
                 "`{raw}` does not name a file inside the --files launch root"
             ));
         }
+        let protected = self.protected();
         let mut cur = root.to_path_buf();
         let total = normal_segments.len();
         for (idx, seg) in normal_segments.into_iter().enumerate() {
             let is_last = idx + 1 == total;
             cur.push(seg);
+            if protected.iter().any(|path| cur.starts_with(path)) {
+                return Err(format!(
+                    "path `{raw}` names the book directory or its key file, which are never host files"
+                ));
+            }
             match std::fs::symlink_metadata(&cur) {
                 Ok(meta) => {
                     if meta.file_type().is_symlink() {
@@ -973,6 +1004,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The registry's own layout (`--book ./books/myco --files .`) puts the
+    /// book under the files root. Its storage and key file must stay out of
+    /// reach of every caller path, or `document add` could import the key.
+    #[test]
+    fn files_root_never_reaches_the_book_or_its_key_file() {
+        let base = std::env::temp_dir().join(format!(
+            "fa-authority-book-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let book = base.join("books").join("myco");
+        std::fs::create_dir_all(&book).expect("create book");
+        std::fs::write(book.join("book.keys"), b"secret").expect("write default keys");
+        let keys = base.join("keys").join("myco.keys");
+        std::fs::create_dir_all(base.join("keys")).expect("create keys dir");
+        std::fs::write(&keys, b"secret").expect("write explicit keys");
+        std::fs::write(base.join("invoice.txt"), b"invoice").expect("write invoice");
+        let authority = LaunchAuthority::new(
+            book.clone(),
+            Some(keys),
+            "agent-7",
+            LaunchProfile::Agent,
+            &[],
+        )
+        .unwrap()
+        .with_files(Some(base.clone()))
+        .expect("a root that contains the book is allowed");
+        // Positive: an ordinary document beside the book.
+        assert!(
+            authority
+                .resolve_in_files_root("invoice.txt", false)
+                .is_ok()
+        );
+        // Planted negatives: the book directory, its default key file and the
+        // explicit key file are never host files.
+        for raw in ["books/myco/book.keys", "books/myco", "keys/myco.keys"] {
+            let refused = authority.resolve_in_files_root(raw, false).unwrap_err();
+            assert!(
+                refused.contains("book directory or its key file"),
+                "{raw}: {refused}"
+            );
+        }
+        // A root inside the book directory is refused at launch.
+        let inside = LaunchAuthority::new(book.clone(), None, "agent-7", LaunchProfile::Agent, &[])
+            .unwrap()
+            .with_files(Some(book))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(inside.contains("inside the book directory"), "{inside}");
     }
 
     #[test]

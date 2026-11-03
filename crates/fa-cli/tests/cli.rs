@@ -14909,9 +14909,29 @@ fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::
     assert_eq!(code, 3, "{out}\n{err}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-090"), "{out}");
     let rent = intent("rent.json", "rent", "6000", "1000", "60.00");
-    ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
-    // A reservation is an outflow too: 40 available, 50 is refused, 30 holds.
-    let hold = intent("hold.json", "hold", "6000", "1000", "50.00");
+    let posted_rent = ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
+    // Correct the rent to 50.00: a Reversal (+60.00 to cash) and a
+    // Replacement (-50.00) both move the limited cell, and the refold must
+    // count the Replacement too, not only Original/Adjusting/Reversal.
+    let rent_vid = field(&posted_rent, "vid").unwrap_or_default().to_string();
+    let corrected = write(
+        &dir,
+        "rent-corrected.json",
+        r#"{"description":"rent, corrected","legs":[{"side":"debit","account":"6000","amount":"50.00 USD"},{"side":"credit","account":"1000","amount":"50.00 USD"}]}"#,
+    );
+    ok(&[
+        "reverse",
+        &rent_vid,
+        "--reason",
+        "WrongAmount",
+        "--replace-with",
+        &corrected,
+        "--evidence",
+        &ev,
+        "--json",
+    ]);
+    // A reservation is an outflow too: 50 available, 60 is refused, 30 holds.
+    let hold = intent("hold.json", "hold", "6000", "1000", "60.00");
     let (code, out, _) = fa(
         Some(&book),
         &["reserve", "--intent", &hold, "--evidence", &ev, "--json"],
@@ -14941,7 +14961,7 @@ fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::
             "1000",
             "debit",
             "0.00 USD",
-            "40.00 USD",
+            "50.00 USD",
             "30.00 USD",
             "0.00 USD"
         )
@@ -19317,6 +19337,31 @@ fn a_custom_thirteen_period_calendar_posts_and_closes() -> std::io::Result<()> {
     );
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(out.contains(r#""period":"FY2026-P13""#), "{out}");
+    // A date past the last declared year resolves to no period: the same
+    // law refusal as any unresolvable date (exit 3), never a foundation
+    // failure (exit 5), and nothing is written.
+    let (_, before, _) = fa(Some(&book), &["book", "info", "--json"]);
+    let undeclared = write(
+        &dir,
+        "undeclared.json",
+        r#"{"effective_date":"2027-03-01","description":"after the calendar","idempotency_key":"undeclared-1","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &undeclared, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-020"), "{out}");
+    assert!(out.contains("outside every fiscal year"), "{out}");
+    let (_, after, _) = fa(Some(&book), &["book", "info", "--json"]);
+    let known_at = |line: &str| {
+        robot_line(line)
+            .get("coordinate")
+            .and_then(|coordinate| coordinate.get("known_at"))
+            .cloned()
+    };
+    assert!(known_at(&before).is_some(), "{before}");
+    assert_eq!(known_at(&after), known_at(&before), "{after}");
     let tb = report(&book, &["tb", "--period", "FY2026-P13", "--json"]);
     assert!(tb.contains(r#""effective_through":"2027-01-02""#), "{tb}");
     assert!(tb.contains(r#""1300.00 USD""#), "{tb}");

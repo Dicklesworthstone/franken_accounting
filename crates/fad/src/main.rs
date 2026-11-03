@@ -676,9 +676,13 @@ fn stop(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         .map(PathBuf::from)
         .unwrap_or_else(|| dir.join("book.keys"));
     let mut req = request(Op::Stop, json);
-    req.stdin = BookKeys::load(&keys_file)
-        .ok()
-        .map(|keys| keys.owner_token().to_vec());
+    // A stop needs the owner token, so a key file that cannot be loaded (a
+    // bad mode, a wrong --keys) is the error to report, not a stop sent
+    // without it that the daemon can only refuse.
+    req.stdin = match BookKeys::load(&keys_file) {
+        Ok(keys) => Some(keys.owner_token().to_vec()),
+        Err(e) => return cli::book_error(argv, e, false).0,
+    };
     match client::call(&socket, &req, d) {
         Ok(response) => {
             print!("{}", response.stdout);

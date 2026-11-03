@@ -1693,20 +1693,18 @@ fn run_scoped_with(
         // The daemon never trusts a client working directory outside --files-root;
         // relative paths resolve only under --files-root (or a validated subdirectory
         // within it) (fa-udti).
+        // The file resolver refuses a directory leaf, so the client's
+        // directory is judged here: canonical, inside the root and outside
+        // the book directory. Each path is still checked on its own below.
         files.cwd = match (&daemon.files_root, &files.cwd) {
-            (Some(root), Some(client_cwd)) => client_cwd
-                .to_str()
-                .and_then(|raw| {
-                    crate::authority::resolve_in_daemon_files_root(
-                        root,
-                        &daemon.book_dir,
-                        raw,
-                        false,
-                    )
+            (Some(root), Some(client_cwd)) => {
+                let book = std::fs::canonicalize(&daemon.book_dir)
+                    .unwrap_or_else(|_| daemon.book_dir.clone());
+                std::fs::canonicalize(client_cwd)
                     .ok()
-                })
-                .filter(|path| path.is_dir())
-                .or_else(|| Some(root.clone())),
+                    .filter(|cwd| cwd.is_dir() && cwd.starts_with(root) && !cwd.starts_with(&book))
+                    .or_else(|| Some(root.clone()))
+            }
             (Some(root), None) => Some(root.clone()),
             (None, _) => None,
         };
@@ -2779,6 +2777,22 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         }
     }
     let sub = args.positional.get(1).map(String::as_str);
+    // Flags that read a host file only under one verb (elsewhere the same
+    // spelling names something else, e.g. `capability issue --template`).
+    let scoped: &[&'static str] = match (verb, sub, args.positional.get(2).map(String::as_str)) {
+        ("subledger", Some("detail"), _) => &["--input"],
+        ("schedule", Some("recurring"), Some("create")) => &["--template"],
+        ("case", Some("rehearse"), _) => &["--certificate"],
+        ("checkpoint", Some("witness"), _) => &["--key", "--previous", "--onto"],
+        _ => &[],
+    };
+    for &flag in scoped {
+        for value in args.flag_all(flag) {
+            if value != "-" {
+                paths.push((flag, value, HostPath::Input));
+            }
+        }
+    }
     // A custom calendar's period list (`fa case` uses --periods for period
     // codes, so only book create reads it as a file).
     if verb == "book"

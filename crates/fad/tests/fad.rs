@@ -1108,11 +1108,29 @@ fn concurrent_slow_client_does_not_starve_other_clients_and_unauthorized_stop_is
     );
 
     // An unauthorized `fad stop` (missing/wrong keys or raw unauthenticated wire stop) is refused.
-    let wrong_keys = write(
-        &dir,
-        "wrong.keys",
-        "0101010101010101010101010101010101010101010101010101010101010101\n0202020202020202020202020202020202020202020202020202020202020202\n0303030303030303030303030303030303030303030303030303030303030303\n",
+    let foreign_keys = "0101010101010101010101010101010101010101010101010101010101010101\n0202020202020202020202020202020202020202020202020202020202020202\n0303030303030303030303030303030303030303030303030303030303030303\n";
+    // A key file the client cannot load (here, wider than 0600) is reported
+    // as itself (FA-REF-155, exit 4), never sent on as a token-less stop.
+    let loose_keys = write(&dir, "loose.keys", foreign_keys);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&loose_keys, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen the key file");
+    }
+    let (code, loose_out, _) = fad(&["stop", "--book", &b, "--keys", &loose_keys, "--json"]);
+    assert_eq!(code, 4, "an unloadable key file: {loose_out}");
+    assert_eq!(
+        field(&loose_out, "refusal_id"),
+        Some("FA-REF-155"),
+        "{loose_out}"
     );
+    // A loadable key file of another book reaches the daemon, which refuses.
+    let wrong_keys = write(&dir, "wrong.keys", foreign_keys);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrong_keys, std::fs::Permissions::from_mode(0o600))
+            .expect("restrict the key file");
+    }
     let (code, refused_out, _) = fad(&["stop", "--book", &b, "--keys", &wrong_keys, "--json"]);
     assert_eq!(code, 7, "unauthorized fad stop must exit 7: {refused_out}");
     assert_eq!(
@@ -1314,6 +1332,16 @@ fn fad_confinement_refuses_host_file_paths_without_files_root_and_rejects_escape
         vec!["party", "add", outside_object.as_str()],
         vec!["instrument", "add", outside_object.as_str()],
         vec!["entity", "add", outside_object.as_str()],
+        // Flags that read a host file under one verb only.
+        vec!["subledger", "detail", "--input", outside_object.as_str()],
+        vec![
+            "schedule",
+            "recurring",
+            "create",
+            "--template",
+            outside_object.as_str(),
+        ],
+        vec!["case", "rehearse", "--certificate", outside_object.as_str()],
         vec![
             "reverse",
             "00000000000000000000000000000001",
@@ -1451,6 +1479,56 @@ fn fad_confinement_refuses_host_file_paths_without_files_root_and_rejects_escape
         "--json",
     ]);
     assert_eq!(field(&valid_added, "event"), Some("document"));
+
+    // A client working in a subdirectory of `--files-root` resolves its
+    // relative paths there. The file exists only in sub/, so falling back to
+    // the root (as before) refuses it instead of importing it.
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub).expect("create sub");
+    write(&sub, "sub-only.txt", "SUB DOC");
+    let sub_req = fa_cli::wire::Request {
+        op: fa_cli::wire::Op::Run,
+        argv: vec![
+            "document".into(),
+            "add".into(),
+            "sub-only.txt".into(),
+            "--kind".into(),
+            "Invoice".into(),
+            format!("--book={b}"),
+            "--json".into(),
+        ],
+        cwd: Some(sub.display().to_string()),
+        stdin: None,
+        token: None,
+    };
+    let mut sub_client =
+        std::os::unix::net::UnixStream::connect(&sock_path).expect("connect raw socket");
+    sub_client
+        .write_all(
+            &fa_cli::wire::encode(
+                sub_req.to_json(reg.daemon.protocol).render().as_bytes(),
+                reg.daemon.max_frame_bytes,
+            )
+            .expect("encode subdirectory request"),
+        )
+        .expect("write subdirectory request");
+    sub_client.flush().expect("flush subdirectory request");
+    let mut prefix = [0u8; 4];
+    sub_client
+        .read_exact(&mut prefix)
+        .expect("read reply prefix");
+    let mut payload = vec![0u8; u32::from_be_bytes(prefix) as usize];
+    sub_client
+        .read_exact(&mut payload)
+        .expect("read reply payload");
+    let reply = fa_cli::wire::Response::from_json(
+        &fa_cli::json::parse(&String::from_utf8_lossy(&payload)).expect("parse reply"),
+        reg.daemon.protocol,
+    )
+    .unwrap();
+    assert_eq!(reply.exit, 0, "a subdirectory cwd: {}", reply.stdout);
+    assert_eq!(field(&reply.stdout, "event"), Some("document"));
+    drop(sub_client);
 
     let (code, stopped, _) = fad(&["stop", "--book", &b, "--json"]);
     assert_eq!(code, 0, "{stopped}");
