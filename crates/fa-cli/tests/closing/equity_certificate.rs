@@ -624,7 +624,7 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     );
     assert_eq!(integer(&access, "count"), 1);
     let access = &get(&access, "events").as_arr().unwrap()[0];
-    assert_eq!(text(access, "command"), "statement diff");
+    assert_eq!(text(access, "command"), "statement");
     assert_eq!(text(access, "capability"), text(&issued, "commitment"));
     assert_eq!(integer(access, "observed_at"), before_read);
     assert_eq!(integer(access, "recorded_at"), retained_at);

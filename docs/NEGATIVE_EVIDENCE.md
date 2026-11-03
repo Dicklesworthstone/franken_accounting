@@ -1673,3 +1673,16 @@ Source inspection confirms these test defects:
 These are authored test corrections, not additional product capability or
 executed repair evidence. No registry, robot pin, gate, tolerance, test
 selection or production implementation was changed to obtain a pass.
+
+Independent source review (StormyLion, Agent Mail 6292; no build or test)
+confirmed the event and MCP corrections and caught an omission in my new
+token test: an absolute certificate path is forbidden by a token session's
+host-file boundary. The token calls now use the actually retained `C:<oid>`
+for both original sources; existing owner file-input comparisons remain.
+No host-path restriction was relaxed. The access log must identify exactly
+one `statement` read under the issued token's commitment, with the
+original observed frontier and its precise recording sequence. The refused
+certification must name FA-REF-011 and `produce`. The event smoke also
+requires one USD unit and all 15 comparison lines, so an empty report cannot
+pass its zero-delta assertions. These final review changes still await
+native execution; the review is source evidence only.
