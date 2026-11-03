@@ -122,6 +122,46 @@ def attributed_export(path, bundle, identities):
 
 
 class NativeAttributionControls(unittest.TestCase):
+    def test_registration_uses_bounded_keys_without_shortening_source_identity(self):
+        _, _, _, attribution, costs, parties, created, expected = attributed_fixture()
+        keys = []
+        with tempfile.TemporaryDirectory() as directory:
+            native = mock.Mock(out=Path(directory), book_id="c" * 32, owner_principal="operator")
+
+            def observed(args):
+                if args == ["dimension", "list", "cost_center"]:
+                    return {"data": {"values": costs}}
+                if args == ["party", "list"]:
+                    return {"data": {"parties": parties}}
+                if args[:2] == ["dimension", "add"]:
+                    kind, code = args[2:4]
+                    self.assertEqual(args[args.index("--name") + 1], created[kind][code]["value"]["name"])
+                    event, data = "dimension_value_recorded", copy.deepcopy(created[kind][code])
+                    default_key = f"dimension:{kind}:{code}"
+                else:
+                    self.assertEqual(args[:2], ["party", "add"])
+                    source = json.loads(Path(args[2]).read_bytes())
+                    kind, code = "party", source["code"]
+                    original = next(value for value in attribution["suppliers"] if value["code"] == code)
+                    self.assertEqual(source, {"code": code, "kind": "Counterparty", "name": original["name"]})
+                    event, data = "rea_recorded", {**created[kind][code], "object": "party", "code": code}
+                    default_key = f"party:{code}"
+                # Emulate the native key bound that rejected the complete HMRC
+                # workload, while keeping the exact full SHA-256 identity.
+                key = args[args.index("--key") + 1] if "--key" in args else default_key
+                self.assertLessEqual(len(key.encode("utf-8")), 64)
+                self.assertEqual(key, code)
+                self.assertEqual(len(code), 64)
+                self.assertNotIn(key, keys)
+                keys.append(key)
+                return {"event": event, "book": native.book_id,
+                        "authority": {"principal": native.owner_principal}, "data": data}
+
+            native.one.side_effect = observed
+            self.assertEqual(run_live.register_attribution(native, attribution), expected)
+            self.assertEqual(len(keys), len(attribution["cost_centers"]) + len(attribution["suppliers"]))
+            self.assertEqual(json.loads((native.out / "native-attribution-identities.json").read_bytes()), expected)
+
     def test_prepared_profiles_refuse_a_switch_or_rehashed_attribution_map(self):
         spec, raw, bundle, *_ = attributed_fixture()
         with tempfile.TemporaryDirectory() as directory:

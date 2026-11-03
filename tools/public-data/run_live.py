@@ -511,13 +511,16 @@ def register_attribution(native: Native, attribution: dict) -> dict[str, dict]:
     for kind, source_key in (("cost_center", "cost_centers"), ("party", "suppliers")):
         for value in attribution[source_key]:
             code, name = value["code"], value["name"]
+            # Codes already bind profile, dataset, kind and exact source label.
+            # Native default keys add a prefix to that 64-byte digest and would
+            # exceed the 64-byte idempotency limit; keep the full identity.
             if kind == "cost_center":
-                event = native.one(["dimension", "add", kind, code, "--name", name])
+                event = native.one(["dimension", "add", kind, code, "--name", name, "--key", code])
                 require(event.get("event") == "dimension_value_recorded", "native omitted the dimension receipt")
             else:
                 path = parties_dir / f"{code}.json"
                 write_new(path, json_bytes({"code": code, "kind": "Counterparty", "name": name}))
-                event = native.one(["party", "add", str(path)])
+                event = native.one(["party", "add", str(path), "--key", code])
                 require(event.get("event") == "rea_recorded" and body(event).get("object") == "party"
                         and body(event).get("code") == code, "native omitted the source-party receipt")
             require(event.get("book") == native.book_id
