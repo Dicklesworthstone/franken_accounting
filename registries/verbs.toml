@@ -3235,8 +3235,8 @@ fields = ["oid:hex", "kind:string", "mime:string", "grade:string", "size:int", "
 
 [[shape]]
 name = "party_summary"
-doc = "One party: its code, kind, vertex id, opened name (untrusted text, null when erased) and recorded sequence."
-fields = ["code:string", "kind:string", "vid:hex", "name:untrusted_text?", "created_at:seq"]
+doc = "One party: its code, kind, vertex id, native party dimension id and DimensionValue vertex id, opened name (untrusted text, null when erased) and recorded sequence. Exported leg dimensions name dimension_value_vid, not the Party vid; both identities are book-local."
+fields = ["code:string", "kind:string", "vid:hex", "dimension_id:int", "dimension_value_vid:hex", "name:untrusted_text?", "created_at:seq"]
 
 [[shape]]
 name = "legal_entity_summary"

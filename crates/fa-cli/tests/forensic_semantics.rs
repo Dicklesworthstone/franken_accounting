@@ -214,6 +214,138 @@ fn margins(findings: &[Json]) -> Vec<(String, i128)> {
 }
 
 #[test]
+fn principal_transfers_survive_native_roles_posting_and_retained_findings() {
+    let f = Fixture::new();
+    let parties = ok(&f.book, &["party", "list"]);
+    let book_id = fa_model::Id128(
+        u128::from_str_radix(text(&parties, "book"), 16)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    for party in rows(data(&parties), "parties") {
+        let code = text(party, "code");
+        assert_eq!(integer(party, "dimension_id"), 12);
+        assert_eq!(
+            text(party, "dimension_value_vid"),
+            format!("{:032x}", fa_model::party_value_vid(book_id, code).0)
+        );
+        assert_ne!(text(party, "vid"), text(party, "dimension_value_vid"));
+    }
+    let chart = f.file(
+        "transfer-chart.json",
+        r#"{"accounts":[
+{"code":"4000","name":"Principal transfer clearing","type":"Liability","unit":"USD","roles":["investor_transfer"]},
+{"code":"5000","name":"Unmarked fee income","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&f.book, &["chart", "import", &chart]);
+    f.post(
+        "a-cash-subscription",
+        "2026-01-10",
+        &[
+            ("debit", "1000", "100.00", None),
+            ("credit", "3000", "100.00", Some("INV-A")),
+        ],
+    );
+    // Each invocation reopens the persistent book. The two one-sided
+    // postings are the shape of the published BLMIS account transfers:
+    // credited principal crosses a declared clearing account, not cash.
+    f.post(
+        "a-principal-out",
+        "2026-02-01",
+        &[
+            ("debit", "3000", "40.00", Some("INV-A")),
+            ("credit", "4000", "40.00", None),
+        ],
+    );
+    f.post(
+        "b-principal-in",
+        "2026-02-01",
+        &[
+            ("debit", "4000", "40.00", None),
+            ("credit", "3000", "40.00", Some("INV-B")),
+        ],
+    );
+    let transferred = ok(&f.book, &["procedure", "run", "ponzi.net_investment"]);
+    assert_eq!(integer(data(&transferred), "version"), 5);
+    assert_eq!(
+        margins(rows(data(&transferred), "findings")),
+        vec![("INV-A".to_string(), 6_000), ("INV-B".to_string(), 4_000)],
+        "{}",
+        transferred.render()
+    );
+    for finding in rows(data(&transferred), "findings") {
+        let narrative = text(finding, "narrative");
+        if narrative.starts_with("investor INV-B ") {
+            assert!(narrative.contains("cash_in=0, cash_out=0"), "{narrative}");
+            assert!(narrative.contains("transfer_in=4000"), "{narrative}");
+        }
+    }
+
+    // The other supported shape moves principal directly between two
+    // explicitly named investor-capital legs in one balanced entry.
+    f.post(
+        "a-to-b-direct-principal",
+        "2026-02-02",
+        &[
+            ("debit", "3000", "10.00", Some("INV-A")),
+            ("credit", "3000", "10.00", Some("INV-B")),
+        ],
+    );
+    // A cash-free fee has neither a transfer-role contra nor a second
+    // investor. Its journal balance alone must not fabricate a transfer.
+    f.post(
+        "ordinary-fee-is-not-principal-transfer",
+        "2026-02-03",
+        &[
+            ("debit", "3000", "5.00", Some("INV-A")),
+            ("credit", "5000", "5.00", None),
+        ],
+    );
+    let recorded = ok(&f.book, &["finding", "record", "ponzi.net_investment"]);
+    let certificate = text(data(&recorded), "certificate").to_string();
+    assert_eq!(integer(data(&recorded), "finding_count"), 2);
+    let listed = ok(
+        &f.book,
+        &[
+            "finding",
+            "list",
+            "--certificate",
+            &format!("C:{certificate}"),
+        ],
+    );
+    let retained: Vec<Json> = rows(data(&listed), "findings")
+        .iter()
+        .map(|row| row.get("finding").expect("finding").clone())
+        .collect();
+    assert_eq!(
+        margins(&retained),
+        vec![("INV-A".to_string(), 5_000), ("INV-B".to_string(), 5_000)],
+        "{}",
+        listed.render()
+    );
+
+    // The transfer rule is specific to the net-investment procedure.
+    // Distribution v4 still uses its original cash contribution population.
+    let distribution = ok(
+        &f.book,
+        &[
+            "procedure",
+            "run",
+            "distribution.pro_rata",
+            "--param",
+            "distributable_pool=9000",
+        ],
+    );
+    assert_eq!(integer(data(&distribution), "version"), 4);
+    assert_eq!(
+        margins(rows(data(&distribution), "findings")),
+        vec![("INV-A".to_string(), 9_000)],
+        "{}",
+        distribution.render()
+    );
+}
+
+#[test]
 fn creditor_and_investor_margins_survive_public_workflow() {
     let f = Fixture::new();
     f.post(

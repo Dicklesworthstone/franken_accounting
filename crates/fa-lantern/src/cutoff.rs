@@ -2,6 +2,7 @@
 //! beads fa-nlu, fa-g6rj).
 
 mod attribution;
+mod investor_transfers;
 mod reconciliation_arithmetic;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -2448,6 +2449,8 @@ struct InvestorPosition {
     unit_id: u32,
     cash_in: i128,
     cash_out: i128,
+    transfer_in: i128,
+    transfer_out: i128,
     first_inflow_date: Option<DateDay>,
     first_entry_vid: VId,
     accounts: BTreeSet<VId>,
@@ -2473,14 +2476,22 @@ struct InvestorPopulation {
 /// whose own legs fund or receive it ([`attribution`], fa-6l8g); version 2
 /// gave every party an entry named its whole cash. Version 4 keeps in the
 /// population only parties with an investor movement (fa-yugf.83); version 3
-/// kept every party with attributed cash in.
+/// kept every party with attributed cash in. Only Ponzi version 5 enables
+/// `posted_principal_transfer_v1`; the version 4 distributions still use
+/// actual cash alone and never treat transfers as distributable cash.
 fn collect_investor_positions(
     procedure: &str,
     snapshot: &Snapshot,
     work: &mut Meter<'_>,
+    principal_transfers: bool,
 ) -> Result<InvestorPopulation, LanternError> {
     let cash = snapshot.required_role(procedure, "cash")?;
     let investor_capital = snapshot.role_accounts(procedure, "investor_capital")?;
+    let investor_transfer = if principal_transfers {
+        snapshot.role_accounts(procedure, "investor_transfer")?
+    } else {
+        BTreeSet::new()
+    };
     let through = snapshot.coordinate.effective_through;
     let mut live = snapshot.live_postings_through(through)?;
     live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
@@ -2505,6 +2516,7 @@ fn collect_investor_positions(
         payees: Vec<Leg>,
         investor_contra: bool,
         accounts: BTreeSet<VId>,
+        principal: investor_transfers::Partition,
     }
 
     for e in &live {
@@ -2527,6 +2539,30 @@ fn collect_investor_positions(
             let entity = crate::projection::scoped_entity(&scope, leg)?;
             let part = partitions.entry((u, entity)).or_default();
             part.accounts.insert(leg.account_ref);
+
+            if principal_transfers {
+                let investor =
+                    at == AccountType::EQUITY || investor_capital.contains(&leg.account_ref);
+                let clearing = investor_transfer.contains(&leg.account_ref);
+                if clearing && (cash.contains(&leg.account_ref) || investor) {
+                    return Err(LanternError::Parameter {
+                        procedure: procedure.into(),
+                        name: investor_transfers::RULE.into(),
+                        message:
+                            "an investor_transfer account cannot also be cash or investor capital"
+                                .into(),
+                    });
+                }
+                if cash.contains(&leg.account_ref) {
+                    part.principal.cash = true;
+                } else if investor {
+                    part.principal.investors.push((leg.side, one));
+                } else if clearing {
+                    part.principal.clearing.push((leg.side, one));
+                } else {
+                    part.principal.other = true;
+                }
+            }
 
             if cash.contains(&leg.account_ref) {
                 let balance = cash_balance_by_unit.entry(u).or_default();
@@ -2552,6 +2588,11 @@ fn collect_investor_positions(
         }
 
         for (&(unit_id, _), part) in &partitions {
+            let transfers = if principal_transfers {
+                part.principal.movements(procedure, e.vid, unit_id, work)?
+            } else {
+                BTreeMap::new()
+            };
             let inflow = attribute(&part.cash_in, &part.funders)?;
             let outflow = attribute(&part.cash_out, &part.payees)?;
             for (flow, cash_legs, group) in [
@@ -2569,15 +2610,20 @@ fn collect_investor_positions(
                     )?;
                 }
             }
-            let mut moved: BTreeMap<VId, (i128, i128)> = BTreeMap::new();
+            let mut moved: BTreeMap<VId, (i128, i128, i128, i128)> = BTreeMap::new();
             for (party_vid, share) in &inflow.parties {
                 moved.entry(*party_vid).or_default().0 = share.cash;
             }
             for (party_vid, share) in &outflow.parties {
                 moved.entry(*party_vid).or_default().1 = share.cash;
             }
-            for (party_vid, (dr, cr)) in moved {
-                if dr == 0 && cr == 0 {
+            for (party_vid, (incoming, outgoing)) in transfers {
+                let movement = moved.entry(party_vid).or_default();
+                movement.2 = incoming;
+                movement.3 = outgoing;
+            }
+            for (party_vid, (dr, cr, transfer_in, transfer_out)) in moved {
+                if dr == 0 && cr == 0 && transfer_in == 0 && transfer_out == 0 {
                     continue;
                 }
                 if part.investor_contra {
@@ -2593,6 +2639,8 @@ fn collect_investor_positions(
                             unit_id,
                             cash_in: 0,
                             cash_out: 0,
+                            transfer_in: 0,
+                            transfer_out: 0,
                             first_inflow_date: None,
                             first_entry_vid: e.vid,
                             accounts: BTreeSet::new(),
@@ -2606,9 +2654,11 @@ fn collect_investor_positions(
                         .cash_in
                         .checked_add(dr)
                         .ok_or(LanternError::Overflow("investor cash_in sum"))?;
-                    if pos.first_inflow_date.is_none_or(|d| eff < d) {
-                        pos.first_inflow_date = Some(eff);
-                    }
+                }
+                // First principal funding includes an admitted transfer-in;
+                // no source time or originating investor cohort is inferred.
+                if (dr > 0 || transfer_in > 0) && pos.first_inflow_date.is_none_or(|d| eff < d) {
+                    pos.first_inflow_date = Some(eff);
                 }
                 if cr > 0 {
                     pos.cash_out = pos
@@ -2616,6 +2666,9 @@ fn collect_investor_positions(
                         .checked_add(cr)
                         .ok_or(LanternError::Overflow("investor cash_out sum"))?;
                 }
+                pos.transfer_in = amount_sum(pos.transfer_in, transfer_in, "investor transfer in")?;
+                pos.transfer_out =
+                    amount_sum(pos.transfer_out, transfer_out, "investor transfer out")?;
                 pos.accounts.extend(part.accounts.iter().copied());
                 pos.entries.insert(e.vid);
             }
@@ -2664,7 +2717,12 @@ fn unrecovered_total(
 /// through each investor's own legs ([`collect_investor_positions`],
 /// fa-6l8g), marks an investor whose figures unresolved cash may touch
 /// `attribution=incomplete`, and reports that cash as
-/// `unresolved_attribution`.
+/// `unresolved_attribution`. Version 5 adds `posted_principal_transfer_v1`:
+/// explicitly declared cash-free principal transfers, at their posted amounts,
+/// move principal separately from cash. A transfer-in starts the recipient's
+/// funding cohort; no originating balance cap or legal transfer credit is
+/// inferred. The native principal record, including any source-supplied credit,
+/// remains the input rather than a conclusion established by this procedure.
 pub struct PonziNetInvestment {
     params: Params,
 }
@@ -2675,7 +2733,7 @@ impl Procedure for PonziNetInvestment {
         Self::ID
     }
     fn version(&self) -> u16 {
-        4
+        5
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2700,7 +2758,7 @@ impl Procedure for PonziNetInvestment {
             population,
             unresolved,
             ..
-        } = collect_investor_positions(Self::ID, snapshot, work)?;
+        } = collect_investor_positions(Self::ID, snapshot, work, true)?;
         if investors.is_empty() && unresolved.is_empty() {
             return Ok(Vec::new());
         }
@@ -2725,8 +2783,11 @@ impl Procedure for PonziNetInvestment {
         for pos in investors {
             work.compare(1)?;
             let attribution = complete(&pos);
-            let cohort = pos.first_inflow_date.map_or(1, |d| {
-                ((d.0 - earliest_inflow.0).max(0) as u32 / cohort_window_days) + 1
+            let cohort = pos.first_inflow_date.map_or(1u64, |d| {
+                // DateDay admits the entire i32 domain: its positive span
+                // fits u32, but a one-day cohort index can be 2^32.
+                let span = (i64::from(d.0) - i64::from(earliest_inflow.0)).max(0);
+                span.unsigned_abs() / u64::from(cohort_window_days) + 1
             });
             let mut cites: Vec<Cite> = pos.accounts.into_iter().map(Cite::Account).collect();
             for evid in pos.entries {
@@ -2735,8 +2796,10 @@ impl Procedure for PonziNetInvestment {
                 }
             }
             let scale = crate::unit_scale(book, pos.unit_id)?;
-            if pos.cash_out > pos.cash_in {
-                let clawback = amount_difference(pos.cash_out, pos.cash_in, "ponzi clawback")?;
+            let principal_in = amount_sum(pos.cash_in, pos.transfer_in, "ponzi principal in")?;
+            let principal_out = amount_sum(pos.cash_out, pos.transfer_out, "ponzi principal out")?;
+            if principal_out > principal_in {
+                let clawback = amount_difference(principal_out, principal_in, "ponzi clawback")?;
                 out.push(finding(
                     Self::ID,
                     Severity::High,
@@ -2748,12 +2811,12 @@ impl Procedure for PonziNetInvestment {
                     },
                     cites,
                     format!(
-                        "investor {} (cohort {cohort}, status=net_winner): cash_in={}, cash_out={}, fictitious_profit_clawback={clawback}, attribution={attribution}",
-                        pos.party_code, pos.cash_in, pos.cash_out
+                        "investor {} (cohort {cohort}, status=net_winner): cash_in={}, cash_out={}, transfer_in={}, transfer_out={}, fictitious_profit_clawback={clawback}, principal_rule={}, attribution={attribution}",
+                        pos.party_code, pos.cash_in, pos.cash_out, pos.transfer_in, pos.transfer_out, investor_transfers::RULE
                     ),
                 ));
-            } else if pos.cash_in > pos.cash_out {
-                let claim = amount_difference(pos.cash_in, pos.cash_out, "ponzi net equity")?;
+            } else if principal_in > principal_out {
+                let claim = amount_difference(principal_in, principal_out, "ponzi net equity")?;
                 out.push(finding(
                     Self::ID,
                     Severity::Medium,
@@ -2765,8 +2828,8 @@ impl Procedure for PonziNetInvestment {
                     },
                     cites,
                     format!(
-                        "investor {} (cohort {cohort}, status=net_loser): cash_in={}, cash_out={}, net_equity_claim={claim}, attribution={attribution}",
-                        pos.party_code, pos.cash_in, pos.cash_out
+                        "investor {} (cohort {cohort}, status=net_loser): cash_in={}, cash_out={}, transfer_in={}, transfer_out={}, net_equity_claim={claim}, principal_rule={}, attribution={attribution}",
+                        pos.party_code, pos.cash_in, pos.cash_out, pos.transfer_in, pos.transfer_out, investor_transfers::RULE
                     ),
                 ));
             }
@@ -3084,7 +3147,7 @@ impl Procedure for DistributionRisingTide {
             cash_by_unit,
             population,
             unresolved,
-        } = collect_investor_positions(Self::ID, snapshot, work)?;
+        } = collect_investor_positions(Self::ID, snapshot, work, false)?;
         let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
         for pos in investors {
             if pos.cash_in > pos.cash_out {
@@ -3257,7 +3320,7 @@ impl Procedure for DistributionProRata {
             cash_by_unit,
             population,
             unresolved,
-        } = collect_investor_positions(Self::ID, snapshot, work)?;
+        } = collect_investor_positions(Self::ID, snapshot, work, false)?;
         let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
         for pos in investors {
             if pos.cash_in > pos.cash_out {

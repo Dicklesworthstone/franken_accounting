@@ -133,7 +133,8 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         // fa-yugf.83 the investor-population ones on to version 4.
         let version = match id {
             "lookback.preferences" => 3,
-            "ponzi.net_investment" | "distribution.rising_tide" | "distribution.pro_rata" => 4,
+            "ponzi.net_investment" => 5,
+            "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,
         };
         assert_eq!(certified.report.version, version, "{id}");
@@ -146,6 +147,33 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
             "{id}"
         );
     }
+}
+
+#[test]
+fn ponzi_v5_certificates_refuse_the_old_cash_only_version_instead_of_reinterpreting_it() {
+    let mut f = Fixture::new(96);
+    f.assign_procedure_roles();
+    let (source, _) = f.post(1, "3000", "1000", 100, true);
+    let before = f.head();
+    let certified = f.certify(&f.request("ponzi.net_investment", source));
+    assert_eq!(certified.report.version, 5);
+    assert_eq!(
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    let mut old_method = certified.certificate;
+    old_method.report.version = 4;
+    let refusal = old_method.request().unwrap_err();
+    assert!(
+        refusal
+            .message
+            .contains("no complete registered native certificate closure")
+    );
+    assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
+    assert_eq!(f.head(), before, "method/version refusal cannot publish");
 }
 
 #[test]

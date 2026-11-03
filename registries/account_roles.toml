@@ -73,6 +73,12 @@ meaning = "Investor deposits or capital carried as a liability (Equity accounts 
 consumers = ["ponzi.net_investment", "graph.ponzi_motif", "distribution.rising_tide", "distribution.pro_rata"]
 
 [[role]]
+name = "investor_transfer"
+account_types = ["Asset", "Liability"]
+meaning = "An explicitly declared clearing counterpart for posted principal transferred into or out of an investor account; it is neither cash nor investor capital. A principal credit is an input, not an independent legal determination of transfer credit."
+consumers = ["ponzi.net_investment"]
+
+[[role]]
 name = "payroll"
 account_types = ["Asset", "Liability", "Expense"]
 meaning = "Payroll: wage and salary expense, payroll liabilities, or a payroll clearing account; an entry with a leg on one is a payroll posting."

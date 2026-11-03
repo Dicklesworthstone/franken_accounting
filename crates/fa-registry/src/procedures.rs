@@ -420,6 +420,26 @@ meaning = "power of ten"
     }
 
     #[test]
+    fn principal_transfers_have_a_new_net_investment_version_without_reinterpreting_distributions()
+    {
+        let procedures = Procedures::embedded().expect("procedures.toml");
+        let net = procedures
+            .get("ponzi.net_investment")
+            .expect("net investment");
+        assert_eq!(net.version, 5);
+        assert_eq!(net.claim, Claim::Statistical);
+        assert_eq!(net.calibration, Calibration::Uncalibrated);
+        assert_eq!(net.effective_through, EffectiveThrough::Optional);
+        assert_eq!(net.parameter("cohort_window_days").unwrap().default, 90);
+        for id in ["distribution.rising_tide", "distribution.pro_rata"] {
+            let distribution = procedures.get(id).expect("cash distribution");
+            assert_eq!(distribution.version, 4, "{id} keeps its cash-only version");
+            assert_eq!(distribution.claim, Claim::Statistical);
+            assert_eq!(distribution.calibration, Calibration::Uncalibrated);
+        }
+    }
+
+    #[test]
     fn each_procedure_declares_how_it_uses_the_effective_date() {
         let p = Procedures::embedded().unwrap();
         let date = |id: &str| p.get(id).unwrap().effective_through;
