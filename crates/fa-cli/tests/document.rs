@@ -6,6 +6,9 @@
 //! refused at intake. Every `--json` line is checked against its event schema
 //! in `registries/verbs.toml`.
 
+#[path = "document/attachment_groups.rs"]
+mod attachment_groups;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

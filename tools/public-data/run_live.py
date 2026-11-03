@@ -234,6 +234,64 @@ def check_approval_group(events: list[dict[str, Any]], proposals: list[str], *,
     return receipts
 
 
+def check_evidence_group(events: list[dict[str, Any]], entries: list[str], *,
+                         documents: dict[str, str], book_id: str, principal: str,
+                         staged_at: dict[str, int], previous: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bind every supplement to its staged entry and the retained source bytes."""
+    require(len(events) == len(entries), "native evidence group omitted or added an entry receipt")
+    expected = {(oid, commitment, "Source") for oid, commitment in documents.items()}
+    identifiers = {receipt["supplement_vid"] for receipt in previous.values()}
+    sequences = {receipt["recorded_at"] for receipt in previous.values()}
+    last_new_sequence = max(staged_at.values())
+    receipts = []
+    for event, entry in zip(events, entries, strict=True):
+        require(event.get("event") == "evidence_attached", "native evidence group emitted a different event")
+        require(event.get("book") == book_id, "native evidence receipt belongs to another book")
+        authority = event.get("authority")
+        require(isinstance(authority, dict) and authority.get("principal") == principal,
+                "native evidence receipt belongs to another principal")
+        receipt = body(event)
+        require(receipt.get("entry") == entry, "native evidence group changed target order or entry identity")
+        for field in ("body_digest", "entry_digest"):
+            require(isinstance(receipt.get(field), str) and re.fullmatch(r"[0-9a-f]{64}", receipt[field]) is not None,
+                    f"native evidence receipt has an invalid {field}")
+        identifier, sequence = receipt.get("supplement_vid"), receipt.get("recorded_at")
+        require(isinstance(identifier, str) and re.fullmatch(r"[0-9a-f]{32}", identifier) is not None,
+                "native evidence supplement has an invalid identifier")
+        require(type(sequence) is int and sequence > staged_at[entry],
+                "native evidence has an invalid sequence or precedes its staged entry")
+        coordinate = event.get("coordinate")
+        require(isinstance(coordinate, dict) and type(coordinate.get("known_at")) is int
+                and coordinate["known_at"] >= sequence, "native evidence receipt is beyond its recorded coordinate")
+        citations = receipt.get("documents")
+        require(isinstance(citations, list) and len(citations) == len(expected),
+                "native evidence supplement has an incomplete source-document census")
+        actual = set()
+        for citation in citations:
+            require(isinstance(citation, dict)
+                    and all(isinstance(citation.get(key), str) for key in ("document_oid", "doc_commit", "role")),
+                    "native evidence citation is malformed")
+            actual.add((citation["document_oid"], citation["doc_commit"], citation["role"]))
+        require(actual == expected, "native evidence supplement changed source documents, commitments or roles")
+        prior = previous.get(entry)
+        if prior is None:
+            require(receipt.get("already_recorded") is False, "new source attachment unexpectedly returned an existing supplement")
+            require(coordinate["known_at"] == sequence and sequence > last_new_sequence,
+                    "new evidence receipts do not follow the complete staged group in native publication order")
+            require(identifier not in identifiers and sequence not in sequences,
+                    "different source attachments share a native identity")
+            last_new_sequence = sequence
+        else:
+            require(receipt.get("already_recorded") is True, "evidence retry did not return an existing native receipt")
+            require(all(receipt[field] == prior[field] for field in
+                        ("supplement_vid", "recorded_at", "entry_digest", "body_digest", "documents")),
+                    "evidence retry changed its original native commitment or identity")
+        identifiers.add(identifier)
+        sequences.add(sequence)
+        receipts.append(dict(receipt))
+    return receipts
+
+
 def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[str, int]:
     """Compare every exported native leg, including its source identity and memo.
 
@@ -281,7 +339,7 @@ def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[s
 
 class Native:
     def __init__(self, fa: Path, verifier: Path, out: Path, timeout: int, fad: Path | None = None,
-                 stage_group_size: int = 64, batch_approvals: bool = False):
+                 stage_group_size: int = 64, batch_approvals: bool = False, batch_evidence: bool = False):
         self.fa, self.verifier, self.out, self.timeout = fa, verifier, out, timeout
         require(type(stage_group_size) is int and 1 <= stage_group_size <= 4096,
                 "stage group size must be an integer between 1 and 4096")
@@ -291,6 +349,12 @@ class Native:
         self.approval_group_requests = 0
         self.approval_receipts: dict[tuple[str, str], dict[str, Any]] = {}
         self.book_id: str | None = None
+        require(type(batch_evidence) is bool, "batch evidence must be explicitly enabled or disabled")
+        self.batch_evidence = batch_evidence
+        self.evidence_group_requests = 0
+        self.evidence_receipts: dict[str, dict[str, Any]] = {}
+        self.document_commitments: dict[str, str] = {}
+        self.owner_principal: str | None = None
         self.fad = fad
         self.book = out / "book"
         self.calls = 0
@@ -392,7 +456,16 @@ class Native:
     def document(self, path: Path, kind: str, mime: str) -> str:
         # The native upload records the actual launch posture's custody. The
         # harness never relabels its uploads as human or third-party evidence.
-        oid = body(self.one(["document", "add", str(path), "--kind", kind, "--mime", mime]))["oid"]
+        uploaded = body(self.one(["document", "add", str(path), "--kind", kind, "--mime", mime]))
+        oid = uploaded["oid"]
+        if self.batch_evidence:
+            commitment = uploaded.get("doc_commit")
+            require(isinstance(oid, str) and re.fullmatch(r"[0-9a-f]{64}", oid) is not None
+                    and isinstance(commitment, str) and re.fullmatch(r"[0-9a-f]{64}", commitment) is not None,
+                    "native upload returned no source-document commitment")
+            require(oid not in self.document_commitments or self.document_commitments[oid] == commitment,
+                    "native upload changed an earlier document commitment")
+            self.document_commitments[oid] = commitment
         # A separate fixture principal exercises the actual native review law.
         # This is automated test-role separation, not independent human review;
         # the original AgentUpload/Generated custody remains unchanged.
@@ -430,6 +503,33 @@ class Native:
                                           for proposal, receipt in zip(proposals, receipts, strict=True)})
             by_reviewer.append([receipt["approval_vid"] for receipt in receipts])
         return [list(pair) for pair in zip(*by_reviewer, strict=True)]
+
+    def attach_sources(self, entries: list[str], documents: list[str], *, staged_at: dict[str, int]) -> None:
+        evidence_args = [item for oid in documents for item in ("--evidence", oid)]
+        if not self.batch_evidence:
+            for entry in entries:
+                self.one(["document", "attach", entry, *evidence_args])
+            return
+        require(1 <= len(entries) <= 4096
+                and all(isinstance(entry, str) and re.fullmatch(r"[0-9a-f]{32}", entry) for entry in entries)
+                and len(set(entries)) == len(entries), "evidence group needs 1..4096 distinct native entry identities")
+        require(1 <= len(documents) <= 1024 and len(entries) * len(documents) <= 16384
+                and all(isinstance(oid, str) and re.fullmatch(r"[0-9a-f]{64}", oid)
+                        and oid in self.document_commitments for oid in documents)
+                and len(set(documents)) == len(documents),
+                "evidence group needs independently retained source commitments within the native citation bound")
+        require(set(staged_at) == set(entries) and all(type(value) is int and value > 0 for value in staged_at.values()),
+                "evidence group has no exact native staging receipt census")
+        require(isinstance(self.book_id, str) and re.fullmatch(r"[0-9a-f]{32}", self.book_id) is not None
+                and isinstance(self.owner_principal, str) and bool(self.owner_principal),
+                "evidence group has no independently observed book and caller identity")
+        self.evidence_group_requests += 1
+        events = self.execute(["document", "attach", "--entries", "-", *evidence_args], request_bytes=json_bytes(entries))
+        receipts = check_evidence_group(events, entries,
+                                       documents={oid: self.document_commitments[oid] for oid in documents},
+                                       book_id=self.book_id, principal=self.owner_principal,
+                                       staged_at=staged_at, previous=self.evidence_receipts)
+        self.evidence_receipts.update(dict(zip(entries, receipts, strict=True)))
 
     def start_bulk(self) -> None:
         """Optionally hold the same native book through its existing daemon.
@@ -527,6 +627,8 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     created = native.one(["book", "create", "--name", f"Published expenditure model: {dataset}",
                           "--base-unit", "GBP", "--opening-date", go_live])
     native.book_id = created.get("book")
+    authority = created.get("authority")
+    native.owner_principal = authority.get("principal") if isinstance(authority, dict) else None
     native.one(["chart", "import", str(prepared / "chart.json")])
     native.one(["period", "create", "--fiscal-year", str(start.year)])
     docs = {}
@@ -610,10 +712,14 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
         receipts = check_staged_group(native.one(args, request_bytes=request_bytes), selected, start=start, total=len(chunks),
                                       package=package, run_vid=run_vid)
         stage_requests += 1
-        for staged in receipts:
-            native.one(["document", "attach", staged["entry_vid"], "--evidence", docs["raw.csv"],
-                        "--evidence", docs["receipt.json"], "--evidence", docs["provenance.jsonl"],
-                        "--evidence", docs["records.jsonl"]])
+        entries = [staged["entry_vid"] for staged in receipts]
+        staged_at = {staged["entry_vid"]: staged["recorded_at"] for staged in receipts}
+        evidence = [docs[name] for name in ("raw.csv", "receipt.json", "provenance.jsonl", "records.jsonl")]
+        native.attach_sources(entries, evidence, staged_at=staged_at)
+        if start == 0 and native.batch_evidence:
+            before = native.head()
+            native.attach_sources(entries, evidence, staged_at=staged_at)
+            require(native.head() == before, "source evidence group retry published a duplicate")
         if start == 0:
             before = native.head()
             retry = check_staged_group(native.one(args, request_bytes=request_bytes), selected, start=start, total=len(chunks),
@@ -687,6 +793,7 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
             "source_stats": expected["source_stats"], "native_export": census, "native_calls": native.calls,
             "stage_group_size": native.stage_group_size, "stage_requests": stage_requests,
             "batch_approvals": native.batch_approvals, "approval_group_requests": native.approval_group_requests,
+            "batch_evidence": native.batch_evidence, "evidence_group_requests": native.evidence_group_requests,
             "period": period, "migration_run": run_vid, "package_oid": package, "documents": docs,
             "certificate_digest": certificate["oid"], "output_digest": certificate["output_digest"],
             "checkpoint_public_key": signed["checkpoint_public_key"], "bundle_sha256": digest(bundle_path.read_bytes()),
@@ -698,7 +805,9 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
                        "native_csv_export_verification", "every_dated_exported_leg_and_memo", "native_certificate_replay",
                        "independent_fa_verify_report", "tampered_bundle_refused"]
                       + (["approval_groups_bound_to_each_digest_and_reviewer", "approval_group_retry_without_publication"]
-                         if native.batch_approvals else []),
+                         if native.batch_approvals else [])
+                      + (["group_evidence_binds_every_entry_and_source_commitment", "evidence_group_retry_without_publication"]
+                         if native.batch_evidence else []),
             "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance."}
 
 
@@ -723,6 +832,8 @@ def main() -> int:
                         help="independently approved chunks per source-authenticated request (1..4096; default 64)")
     parser.add_argument("--batch-approvals", action="store_true",
                         help="approve each staging group in two token-bound native calls; requires fa approve --proposals")
+    parser.add_argument("--batch-evidence", action="store_true",
+                        help="attach source documents to each staging group in one native call; requires document attach --entries")
     args = parser.parse_args()
     if args.timeout < 1:
         parser.error("--timeout must be positive")
@@ -742,7 +853,8 @@ def main() -> int:
                            "may have committed; retry the exact retained selections. No unexecuted native check passed.")}
     code = 1
     try:
-        native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size, args.batch_approvals)
+        native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size,
+                        args.batch_approvals, args.batch_evidence)
         result = run(native, prepared, args.dataset, expected)
         code = 0
     except KeyboardInterrupt:
@@ -777,6 +889,8 @@ def main() -> int:
     result["bulk_transport"] = "native_fad" if args.fad is not None else "direct_cli"
     result["batch_approvals"] = args.batch_approvals
     result["approval_group_requests"] = native.approval_group_requests if native is not None else 0
+    result["batch_evidence"] = args.batch_evidence
+    result["evidence_group_requests"] = native.evidence_group_requests if native is not None else 0
     write_new(out / "result.json", json_bytes(result))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return code
