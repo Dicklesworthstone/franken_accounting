@@ -1,0 +1,223 @@
+{
+  "format": "fa-camt-counterparty-validation-v1",
+  "recorded_on": "2026-11-03",
+  "status": "FORMAT_AND_COMPILE_PASS_RUNTIME_UNRUN",
+  "base_commit": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+  "defect": "The prior parser selected the first descendant Nm under an entry, so an agent, account holder or unrelated role could replace the transaction counterparty even when monetary continuity passed.",
+  "production_profile": {
+    "incoming": "ordinary CRDT: NtryDtls/TxDtls/RltdPties/Dbtr",
+    "outgoing": "ordinary DBIT: NtryDtls/TxDtls/RltdPties/Cdtr",
+    "name_choices": [
+      "role/Nm",
+      "role/Pty/Nm"
+    ],
+    "batch": "One bank line per Ntry; all TxDtls must supply identical selected text, with matching declared population and directions. No entity-identity inference.",
+    "refused": [
+      "conflicting or incomplete named batches",
+      "contradictory declared population or direction",
+      "ambiguous role choices",
+      "positive reversal indicator",
+      "return information"
+    ],
+    "legacy": "Direct Ntry/Nm remains admitted without transaction details or when it agrees with complete structured attribution.",
+    "historical": "Immutable earlier imports are not rewritten. A formerly incorrect attribution can fail source-interpretation verification under the corrected parser."
+  },
+  "toolchain": {
+    "name": "nightly-2026-08-31",
+    "rustc": "1.100.0-nightly (908501772 2026-08-30)",
+    "official_distribution_manifest_sha256": "928d1af06f68fe9eb49a986bc661f474d42c51d5a428c05a19ec6ca84aad085e"
+  },
+  "source_files": [
+    {
+      "path": "crates/fa-formats/src/bank.rs",
+      "bytes": 137294,
+      "git_blob": "40c8043ae43d3104a27a048dc1f7eb34da3cf75d",
+      "sha256": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc"
+    },
+    {
+      "path": "crates/fa-cli/tests/bank.rs",
+      "bytes": 163403,
+      "git_blob": "7044e6156c7efb1c6f00f338ea79c833ba5acc3e",
+      "sha256": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e"
+    }
+  ],
+  "observed_checks": {
+    "workspace_format": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "elapsed_seconds": 15.215,
+      "exit": 0,
+      "finished_utc": "2026-11-03T17:34:29.039962+00:00",
+      "stderr": "",
+      "stdout": ""
+    },
+    "import_models_and_formats_all_targets": {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "-Z",
+        "bindeps",
+        "-Z",
+        "git=shallow-deps",
+        "-p",
+        "fa-model",
+        "-p",
+        "fa-verbs",
+        "-p",
+        "fa-formats",
+        "--all-targets",
+        "--jobs",
+        "1"
+      ],
+      "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+      "elapsed_seconds": 738.419,
+      "exit": 0,
+      "finished_utc": "2026-11-03T17:38:26.766566+00:00",
+      "head": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+      "inputs_unchanged": true,
+      "log_sha256": "10efa4fc4892d32a713b4582cf8c5ddd8483a3ebdef31a6c1e24da7f3b29b15e",
+      "pid": 5,
+      "source_after": {
+        "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+        "Cargo.toml": "f3f720218d374f1f21d5e111f4be4dc28b934b1588a89a1659c121cb70381185",
+        "crates/fa-cli/tests/bank.rs": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e",
+        "crates/fa-formats/src/bank.rs": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc"
+      },
+      "source_before": {
+        "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+        "Cargo.toml": "f3f720218d374f1f21d5e111f4be4dc28b934b1588a89a1659c121cb70381185",
+        "crates/fa-cli/tests/bank.rs": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e",
+        "crates/fa-formats/src/bank.rs": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc"
+      },
+      "started_utc": "2026-11-03T17:26:08.341130+00:00",
+      "status": "PASS",
+      "toolchain_bin": "/workspace/scratch/69d8c2fe02b1/rust-toolchain-restore-2026-11-03/toolchain/bin"
+    },
+    "native_bank_test_compilation": {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "-Z",
+        "bindeps",
+        "-Z",
+        "git=shallow-deps",
+        "-p",
+        "fa-cli",
+        "--test",
+        "bank",
+        "--jobs",
+        "1"
+      ],
+      "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+      "elapsed_seconds": 240.826,
+      "exit": 0,
+      "finished_utc": "2026-11-03T17:43:17.184012+00:00",
+      "head": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+      "inputs_unchanged": true,
+      "log_sha256": "73187a95f20d3a738a48324764629c53150385392bd04e102a97a3611cac0885",
+      "pid": 5,
+      "source_after": {
+        "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+        "Cargo.toml": "f3f720218d374f1f21d5e111f4be4dc28b934b1588a89a1659c121cb70381185",
+        "crates/fa-cli/tests/bank.rs": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e",
+        "crates/fa-formats/src/bank.rs": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc",
+        "crates/fa-journal/src/sweep.rs": "a6e025180fe8beb0f5274d3c1b60f4840446ce469d505357c72c41e8d23950c0",
+        "crates/fa-journal/tests/genesis.rs": "93f7dfadc1da5425114056358ed2463533b8480f249da88fcd64f57e88765a3c",
+        "crates/fa-journal/tests/genesis/entry_storage.rs": "5421545a37e61a782d12da8d77c5827020620c1ac74039c031a8845673001dfe"
+      },
+      "source_before": {
+        "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+        "Cargo.toml": "f3f720218d374f1f21d5e111f4be4dc28b934b1588a89a1659c121cb70381185",
+        "crates/fa-cli/tests/bank.rs": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e",
+        "crates/fa-formats/src/bank.rs": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc",
+        "crates/fa-journal/src/sweep.rs": "a6e025180fe8beb0f5274d3c1b60f4840446ce469d505357c72c41e8d23950c0",
+        "crates/fa-journal/tests/genesis.rs": "93f7dfadc1da5425114056358ed2463533b8480f249da88fcd64f57e88765a3c",
+        "crates/fa-journal/tests/genesis/entry_storage.rs": "5421545a37e61a782d12da8d77c5827020620c1ac74039c031a8845673001dfe"
+      },
+      "started_utc": "2026-11-03T17:39:16.348860+00:00",
+      "status": "PASS",
+      "toolchain_bin": "/workspace/scratch/69d8c2fe02b1/rust-toolchain-restore-2026-11-03/toolchain/bin"
+    },
+    "related_entry_storage_fixture_compilation": {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "-Z",
+        "bindeps",
+        "-Z",
+        "git=shallow-deps",
+        "-p",
+        "fa-journal",
+        "--lib",
+        "--test",
+        "genesis",
+        "--jobs",
+        "1"
+      ],
+      "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+      "elapsed_seconds": 53.905,
+      "exit": 0,
+      "finished_utc": "2026-11-03T17:44:11.257274+00:00",
+      "head": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+      "inputs_unchanged": true,
+      "log_sha256": "aacfe999c0f4b2a046c3fa1a8d4f12982534588b9112e137c98ba9354ba52ffe",
+      "pid": 57,
+      "source_after": {
+        "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+        "Cargo.toml": "f3f720218d374f1f21d5e111f4be4dc28b934b1588a89a1659c121cb70381185",
+        "crates/fa-cli/tests/bank.rs": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e",
+        "crates/fa-formats/src/bank.rs": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc",
+        "crates/fa-journal/src/sweep.rs": "a6e025180fe8beb0f5274d3c1b60f4840446ce469d505357c72c41e8d23950c0",
+        "crates/fa-journal/tests/genesis.rs": "93f7dfadc1da5425114056358ed2463533b8480f249da88fcd64f57e88765a3c",
+        "crates/fa-journal/tests/genesis/entry_storage.rs": "5421545a37e61a782d12da8d77c5827020620c1ac74039c031a8845673001dfe"
+      },
+      "source_before": {
+        "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+        "Cargo.toml": "f3f720218d374f1f21d5e111f4be4dc28b934b1588a89a1659c121cb70381185",
+        "crates/fa-cli/tests/bank.rs": "c0d2243272b92d851a416f5ea35208231255b769a3058f5607a791e2e12ff48e",
+        "crates/fa-formats/src/bank.rs": "e86736e7ae98d33e29bb4a3c765499452001e065efb36e7bda0a80f21e37e7bc",
+        "crates/fa-journal/src/sweep.rs": "a6e025180fe8beb0f5274d3c1b60f4840446ce469d505357c72c41e8d23950c0",
+        "crates/fa-journal/tests/genesis.rs": "93f7dfadc1da5425114056358ed2463533b8480f249da88fcd64f57e88765a3c",
+        "crates/fa-journal/tests/genesis/entry_storage.rs": "5421545a37e61a782d12da8d77c5827020620c1ac74039c031a8845673001dfe"
+      },
+      "started_utc": "2026-11-03T17:43:17.252378+00:00",
+      "status": "PASS",
+      "toolchain_bin": "/workspace/scratch/69d8c2fe02b1/rust-toolchain-restore-2026-11-03/toolchain/bin"
+    }
+  },
+  "new_regressions": {
+    "format_tests": [
+      "bank::tests::camt_counterparty_uses_scoped_roles_in_both_directions",
+      "bank::tests::camt_counterparty_missing_role_never_borrows_another_name",
+      "bank::tests::camt_counterparty_legacy_name_requires_consistent_structured_attribution",
+      "bank::tests::camt_counterparty_homogeneous_batches_preserve_entry_amount_and_census",
+      "bank::tests::camt_counterparty_refuses_partial_distinct_and_mixed_batches",
+      "bank::tests::camt_counterparty_refuses_returns_and_reversals_without_original_attribution"
+    ],
+    "native_test": "camt_counterparty_roles_survive_native_import_and_ambiguous_inputs_refuse",
+    "native_assertions": [
+      "CAMT052 and CAMT053 retained-source cold readback",
+      "exact decoded names, amounts, directions, references and source links",
+      "one atomic import publication",
+      "original exact-retry identity and unchanged head",
+      "four ambiguous sources refuse before head, document or line changes"
+    ]
+  },
+  "runtime": {
+    "status": "UNRUN",
+    "reason": "Current local execution compiled the regression targets but did not execute them. The dependency frontend reached approximately 6.7 GB RSS under a shared 8 GiB memory limit; no further full-codegen attempt was launched after the measured compile checks.",
+    "hosted_workflow": ".github/workflows/public-ledger.yml",
+    "commands": [
+      "cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --lib camt --jobs 1 -- --nocapture",
+      "cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test bank camt --jobs 1 -- --nocapture"
+    ],
+    "boundary": "The f3f1 public-ledger native artifact predates this repair and does not establish CAMT or FWC runtime acceptance. These compile checks do not establish whole-workspace Tier0 or a full test-suite verdict."
+  }
+}

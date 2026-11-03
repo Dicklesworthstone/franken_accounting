@@ -523,6 +523,152 @@ fn camt_side(format: &'static str, xml: &str) -> Result<Side, FormatError> {
     }
 }
 
+/// Select the reported party name from one debtor/creditor role. Older
+/// messages put Nm directly under the role; newer Party40Choice messages use
+/// Pty/Nm. Account, agent, ultimate-party and contact names are not substitutes.
+fn camt_role_name(
+    format: &'static str,
+    role: CamtBlock<'_>,
+) -> Result<Option<String>, FormatError> {
+    let direct = camt_optional(format, role.body, "Nm")?;
+    let party = camt_optional(format, role.body, "Pty")?;
+    let agent = camt_optional(format, role.body, "Agt")?;
+    if (direct.is_some() && (party.is_some() || agent.is_some()))
+        || (party.is_some() && agent.is_some())
+    {
+        return Err(camt_error(
+            format,
+            "CAMT party mixes direct Nm, Pty or Agt choices",
+        ));
+    }
+    let name = if let Some(party) = party {
+        camt_optional(format, party.body, "Nm")?
+    } else {
+        direct
+    };
+    name.map(|name| camt_text(format, name).map(Cow::into_owned))
+        .transpose()
+}
+
+/// The supported attribution profile is an ordinary entry: incoming funds use
+/// NtryDtls/TxDtls/RltdPties/Dbtr, outgoing funds use the corresponding Cdtr.
+/// One unnamed transaction stays unnamed. Multiple details must all supply the
+/// same selected name, with no missing detail groups or contradictory direction;
+/// any declared batch count must equal the supplied transaction population.
+/// This preserves one entry-level bank line and does not resolve party identity
+/// or manufacture a transaction-level allocation of its amount.
+///
+/// A direct legacy Ntry/Nm is accepted without transaction details, or when it
+/// agrees with complete structured attribution. It cannot fill a missing role.
+/// Positive reversal indicators and return information need a separately
+/// declared original-transaction attribution profile and are refused. The
+/// current credit/debit sign alone is insufficient to recover those party roles.
+/// See Westpac's camt.053.001.02 guide, ReportEntry2/ReversalIndicator, and ISO
+/// Bank-to-Customer Cash Management V08, Party40Choice/TransactionParties.
+fn camt_counterparty(format: &'static str, ntry: &str, side: Side) -> Result<String, FormatError> {
+    for indicator in camt_blocks(format, ntry, "RvslInd", true)? {
+        match camt_text(format, indicator)?.as_ref() {
+            "false" | "0" => {}
+            "true" | "1" => {
+                return Err(camt_error(
+                    format,
+                    "CAMT reversal entries require an explicit original-transaction attribution profile",
+                ));
+            }
+            _ => return Err(camt_error(format, "invalid CAMT RvslInd boolean")),
+        }
+    }
+    if !camt_blocks(format, ntry, "RtrInf", true)?.is_empty() {
+        return Err(camt_error(
+            format,
+            "CAMT return information requires an explicit original-transaction attribution profile",
+        ));
+    }
+    let legacy = camt_optional(format, ntry, "Nm")?
+        .map(|name| camt_text(format, name).map(Cow::into_owned))
+        .transpose()?;
+    let role = match side {
+        Side::Credit => "Dbtr",
+        Side::Debit => "Cdtr",
+    };
+    let mut names = Vec::new();
+    let mut empty_detail_group = false;
+    for details in camt_blocks(format, ntry, "NtryDtls", false)? {
+        let transactions = camt_blocks(format, details.body, "TxDtls", false)?;
+        empty_detail_group |= transactions.is_empty();
+        if let Some(batch) = camt_optional(format, details.body, "Btch")? {
+            if let Some(count) = camt_optional(format, batch.body, "NbOfTxs")? {
+                let text = camt_text(format, count)?;
+                let declared = text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit())
+                    .then(|| text.parse::<usize>().ok())
+                    .flatten();
+                if declared.is_none_or(|count| count == 0 || count != transactions.len()) {
+                    return Err(camt_error(
+                        format,
+                        "CAMT batch transaction count differs from its complete TxDtls population",
+                    ));
+                }
+            }
+            if camt_optional(format, batch.body, "CdtDbtInd")?.is_some()
+                && camt_side(format, batch.body)? != side
+            {
+                return Err(camt_error(
+                    format,
+                    "CAMT batch direction differs from its entry; mixed-direction batches need an explicit split",
+                ));
+            }
+        }
+        for transaction in transactions {
+            if camt_optional(format, transaction.body, "CdtDbtInd")?.is_some()
+                && camt_side(format, transaction.body)? != side
+            {
+                return Err(camt_error(
+                    format,
+                    "CAMT transaction direction differs from its entry; mixed-direction batches need an explicit split",
+                ));
+            }
+            let name = if let Some(parties) = camt_optional(format, transaction.body, "RltdPties")?
+            {
+                if let Some(party) = camt_optional(format, parties.body, role)? {
+                    camt_role_name(format, party)?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            names.push(name);
+        }
+    }
+    let structured = match names.as_slice() {
+        [] => return Ok(legacy.unwrap_or_default()),
+        [name] if !empty_detail_group => name.as_deref(),
+        [first, ..]
+            if !empty_detail_group && first.is_some() && names.iter().all(|name| name == first) =>
+        {
+            first.as_deref()
+        }
+        _ => {
+            return Err(camt_error(
+                format,
+                "CAMT batch needs one complete common counterparty name; distinct or unnamed transactions require an explicit split",
+            ));
+        }
+    };
+    if legacy
+        .as_deref()
+        .is_some_and(|name| Some(name) != structured)
+    {
+        return Err(camt_error(
+            format,
+            "CAMT direct Ntry/Nm conflicts with structured counterparty attribution",
+        ));
+    }
+    Ok(structured.unwrap_or_default().to_owned())
+}
+
 fn parse_camt(
     xml: &str,
     units: &UnitCatalog,
@@ -656,13 +802,7 @@ fn parse_camt(
             .map(|date| camt_date(format, date))
             .transpose()?
             .unwrap_or(booking_date);
-        let names = camt_blocks(format, ntry, "Nm", true)?;
-        let counterparty = names
-            .first()
-            .copied()
-            .map(|name| camt_text(format, name).map(Cow::into_owned))
-            .transpose()?
-            .unwrap_or_default();
+        let counterparty = camt_counterparty(format, ntry, side)?;
         let reference = camt_optional(format, ntry, "AcctSvcrRef")?
             .map(|reference| camt_text(format, reference).map(Cow::into_owned))
             .transpose()?
@@ -2426,6 +2566,238 @@ mod tests {
         assert_eq!(report.instrument_account_id, "ACCT-001");
         assert_eq!(report.closing_balance, statement.closing_balance);
         assert_eq!(report.lines[0].value_date, statement.lines[0].value_date);
+    }
+
+    fn camt_with_incoming_details(details: &str) -> String {
+        let start = CAMT053.find("<NtryDtls>").unwrap();
+        let end = start + CAMT053[start..].find("</NtryDtls>").unwrap() + "</NtryDtls>".len();
+        format!("{}{}{}", &CAMT053[..start], details, &CAMT053[end..])
+    }
+
+    #[test]
+    fn camt_counterparty_uses_scoped_roles_in_both_directions() {
+        let units = UnitCatalog::embedded().unwrap();
+        for modern in [false, true] {
+            for creditor_first in [false, true] {
+                let role = |kind: &str, name: &str| {
+                    if modern {
+                        format!("<{kind}><Pty><Nm>{name}</Nm></Pty></{kind}>")
+                    } else {
+                        format!("<{kind}><Nm>{name}</Nm></{kind}>")
+                    }
+                };
+                let parties = |debtor: &str, creditor: &str| {
+                    let debtor = role("Dbtr", debtor);
+                    let creditor = role("Cdtr", creditor);
+                    let ordered = if creditor_first {
+                        format!("{creditor}{debtor}")
+                    } else {
+                        format!("{debtor}{creditor}")
+                    };
+                    format!(
+                        "<RltdPties><InitgPty><Nm>Initiator</Nm></InitgPty>\
+                         <DbtrAcct><Nm>Account label</Nm></DbtrAcct>\
+                         <UltmtDbtr><Nm>Ultimate debtor</Nm></UltmtDbtr>\
+                         <UltmtCdtr><Nm>Ultimate creditor</Nm></UltmtCdtr>\
+                         {ordered}</RltdPties>"
+                    )
+                };
+                let incoming = parties("Acme &#xE9; &amp; &#x1F680;", "Our Company");
+                let outgoing = parties("Our Company", "Payee &quot;Europe&quot; &#x20AC;");
+                let details = |parties: &str| {
+                    format!(
+                        "<NtryDtls><TxDtls>\
+                         <RltdAgts><DbtrAgt><FinInstnId><Nm>Agent bank</Nm>\
+                         </FinInstnId></DbtrAgt></RltdAgts>{parties}</TxDtls></NtryDtls>"
+                    )
+                };
+                let xml = camt_with_incoming_details(&details(&incoming))
+                    .replace("<Nm>Cloud Hosting</Nm>", &details(&outgoing));
+                let parsed = parse_camt053(&xml, &units).unwrap();
+                assert_eq!(parsed.lines.len(), 2);
+                assert_eq!(parsed.lines[0].counterparty, "Acme é & 🚀");
+                assert_eq!(parsed.lines[1].counterparty, "Payee \"Europe\" €");
+                assert_eq!(parsed.lines[0].side, Side::Credit);
+                assert_eq!(parsed.lines[1].side, Side::Debit);
+                assert_eq!(parsed.lines[0].amount.mantissa, 50_000);
+                assert_eq!(parsed.lines[1].amount.mantissa, 25_000);
+                assert_eq!(parsed.opening_balance, 100_000);
+                assert_eq!(parsed.closing_balance, 125_000);
+                assert_eq!(parsed.lines[0].reference, "INV-100");
+                assert_eq!(parsed.lines[1].reference, "BILL-200");
+
+                let prefixed = xml
+                    .replace('<', "<c:")
+                    .replace("<c:/", "</c:")
+                    .replace("<c:?", "<?")
+                    .replace("<c:!", "<!")
+                    .replace("xmlns=", "xmlns:c=");
+                assert_eq!(parse_camt053(&prefixed, &units).unwrap(), parsed);
+                let intraday = xml
+                    .replace("camt.053", "camt.052")
+                    .replace("BkToCstmrStmt", "BkToCstmrAcctRpt")
+                    .replace("<Stmt>", "<Rpt>")
+                    .replace("</Stmt>", "</Rpt>")
+                    .replace("<Cd>CLBD</Cd>", "<Cd>ITBD</Cd>");
+                let mut expected = parsed;
+                expected.format_name = "iso20022_camt052";
+                assert_eq!(parse_camt052(&intraday, &units).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn camt_counterparty_missing_role_never_borrows_another_name() {
+        let units = UnitCatalog::embedded().unwrap();
+        for selected in [
+            "",
+            "<Dbtr><Pty><Id><OrgId><AnyBIC>ABCDEFGH</AnyBIC></OrgId></Id></Pty></Dbtr>",
+            "<Dbtr><Agt><FinInstnId><Nm>Agent only</Nm></FinInstnId></Agt></Dbtr>",
+        ] {
+            let xml = camt_with_incoming_details(&format!(
+                "<NtryDtls><TxDtls>\
+                 <RltdAgts><CdtrAgt><FinInstnId><Nm>Bank</Nm></FinInstnId></CdtrAgt></RltdAgts>\
+                 <RltdPties><Cdtr><Nm>Our Company</Nm></Cdtr>\
+                 <UltmtDbtr><Nm>Ultimate debtor</Nm></UltmtDbtr>\
+                 <DbtrAcct><Nm>Account name</Nm></DbtrAcct>{selected}</RltdPties>\
+                 <RmtInf><Ustrd>Unrelated text</Ustrd></RmtInf></TxDtls></NtryDtls>"
+            ));
+            let parsed = parse_camt053(&xml, &units).unwrap();
+            assert_eq!(parsed.lines[0].counterparty, "");
+            assert_eq!(parsed.lines[1].counterparty, "Cloud Hosting");
+            assert_eq!(parsed.lines.len(), 2);
+            assert_eq!(parsed.closing_balance, 125_000);
+        }
+        let unrelated = camt_with_incoming_details(
+            "<NtryDtls><TxDtls><SplmtryData><RltdPties>\
+             <Dbtr><Nm>Wrong scope</Nm></Dbtr></RltdPties></SplmtryData>\
+             </TxDtls></NtryDtls>",
+        );
+        assert_eq!(
+            parse_camt053(&unrelated, &units).unwrap().lines[0].counterparty,
+            ""
+        );
+    }
+
+    #[test]
+    fn camt_counterparty_legacy_name_requires_consistent_structured_attribution() {
+        let units = UnitCatalog::embedded().unwrap();
+        let details = "<NtryDtls><TxDtls><RltdPties><Dbtr><Nm>Acme &amp; Co</Nm>\
+                       </Dbtr></RltdPties></TxDtls></NtryDtls>";
+        let consistent = camt_with_incoming_details(&format!("<Nm>Acme &amp; Co</Nm>{details}"));
+        let parsed = parse_camt053(&consistent, &units).unwrap();
+        assert_eq!(parsed.lines[0].counterparty, "Acme & Co");
+        assert_eq!(parsed.lines[1].counterparty, "Cloud Hosting");
+        for invalid in [
+            camt_with_incoming_details(&format!("<Nm>Different party</Nm>{details}")),
+            camt_with_incoming_details(
+                "<Nm>Guess</Nm><NtryDtls><TxDtls><RltdPties>\
+                 <Cdtr><Nm>Our Company</Nm></Cdtr></RltdPties></TxDtls></NtryDtls>",
+            ),
+            CAMT053.replace(
+                "<Nm>Cloud Hosting</Nm>",
+                "<Nm>Cloud Hosting</Nm><Nm>Other name</Nm>",
+            ),
+            camt_with_incoming_details(
+                "<NtryDtls><TxDtls><RltdPties><Dbtr>\
+                 <Nm>Direct name</Nm><Pty><Nm>Wrapped name</Nm></Pty>\
+                 </Dbtr></RltdPties></TxDtls></NtryDtls>",
+            ),
+            camt_with_incoming_details(
+                "<NtryDtls><TxDtls><RltdPties><Dbtr>\
+                 <Pty><Nm>Party</Nm></Pty><Agt><FinInstnId><Nm>Agent</Nm></FinInstnId></Agt>\
+                 </Dbtr></RltdPties></TxDtls></NtryDtls>",
+            ),
+        ] {
+            assert!(parse_camt053(&invalid, &units).is_err());
+        }
+    }
+
+    #[test]
+    fn camt_counterparty_homogeneous_batches_preserve_entry_amount_and_census() {
+        let units = UnitCatalog::embedded().unwrap();
+        let direct = "<TxDtls><CdtDbtInd>CRDT</CdtDbtInd><RltdPties>\
+                      <Dbtr><Nm>Acme &amp; Co</Nm></Dbtr></RltdPties></TxDtls>";
+        let modern = "<TxDtls><RltdPties><Dbtr><Pty><Nm>Acme &#38; Co</Nm></Pty>\
+                      </Dbtr></RltdPties></TxDtls>";
+        for details in [
+            format!(
+                "<NtryDtls><Btch><NbOfTxs>2</NbOfTxs><CdtDbtInd>CRDT</CdtDbtInd>\
+                 </Btch>{direct}{modern}</NtryDtls>"
+            ),
+            format!(
+                "<NtryDtls><Btch><NbOfTxs>1</NbOfTxs></Btch>{direct}</NtryDtls>\
+                 <NtryDtls><Btch><NbOfTxs>1</NbOfTxs></Btch>{modern}</NtryDtls>"
+            ),
+        ] {
+            let parsed = parse_camt053(&camt_with_incoming_details(&details), &units).unwrap();
+            assert_eq!(parsed.lines.len(), 2, "one bank line per Ntry");
+            assert_eq!(parsed.lines[0].counterparty, "Acme & Co");
+            assert_eq!(parsed.lines[0].amount.mantissa, 50_000);
+            assert_eq!(parsed.lines[1].amount.mantissa, 25_000);
+            assert_eq!(parsed.closing_balance, 125_000);
+        }
+    }
+
+    #[test]
+    fn camt_counterparty_refuses_partial_distinct_and_mixed_batches() {
+        let units = UnitCatalog::embedded().unwrap();
+        let named = "<TxDtls><RltdPties><Dbtr><Nm>Acme</Nm></Dbtr></RltdPties></TxDtls>";
+        let other = named.replace("Acme", "Different party");
+        for details in [
+            format!("<NtryDtls>{named}{other}</NtryDtls>"),
+            format!("<NtryDtls>{named}<TxDtls/></NtryDtls>"),
+            "<NtryDtls><TxDtls/><TxDtls/></NtryDtls>".into(),
+            format!("<NtryDtls>{named}</NtryDtls><NtryDtls/>"),
+            format!(
+                "<NtryDtls>{named}<TxDtls><CdtDbtInd>DBIT</CdtDbtInd>\
+                 <RltdPties><Dbtr><Nm>Acme</Nm></Dbtr></RltdPties></TxDtls></NtryDtls>"
+            ),
+            format!("<NtryDtls><Btch><CdtDbtInd>DBIT</CdtDbtInd></Btch>{named}</NtryDtls>"),
+        ] {
+            assert!(
+                parse_camt053(&camt_with_incoming_details(&details), &units).is_err(),
+                "ambiguous batch accepted: {details}"
+            );
+        }
+        for count in ["0", "2", "+1", "one", "999999999999999999999999999999"] {
+            let details =
+                format!("<NtryDtls><Btch><NbOfTxs>{count}</NbOfTxs></Btch>{named}</NtryDtls>");
+            assert!(
+                parse_camt053(&camt_with_incoming_details(&details), &units).is_err(),
+                "invalid or incomplete batch count accepted: {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn camt_counterparty_refuses_returns_and_reversals_without_original_attribution() {
+        let units = UnitCatalog::embedded().unwrap();
+        let details = "<NtryDtls><TxDtls><RltdPties><Dbtr><Nm>Acme</Nm></Dbtr>\
+                       <Cdtr><Nm>Our Company</Nm></Cdtr></RltdPties></TxDtls></NtryDtls>";
+        let ordinary = camt_with_incoming_details(details);
+        let expected = parse_camt053(&ordinary, &units).unwrap();
+        for boolean in ["false", "0"] {
+            let xml = camt_with_incoming_details(&format!("<RvslInd>{boolean}</RvslInd>{details}"));
+            assert_eq!(parse_camt053(&xml, &units).unwrap(), expected);
+        }
+        for marker in [
+            "<RvslInd>true</RvslInd>",
+            "<RvslInd>1</RvslInd>",
+            "<RvslInd>yes</RvslInd>",
+            "<RvslInd>2</RvslInd>",
+            "<RvslInd/>",
+            "<RtrInf><Rsn><Cd>AC01</Cd></Rsn></RtrInf>",
+            "<RvslInd>false</RvslInd><RtrInf/>",
+        ] {
+            let at_entry = camt_with_incoming_details(&format!("{marker}{details}"));
+            let at_transaction = camt_with_incoming_details(
+                &details.replace("<TxDtls>", &format!("<TxDtls>{marker}")),
+            );
+            for xml in [at_entry, at_transaction] {
+                assert!(parse_camt053(&xml, &units).is_err(), "accepted {marker}");
+            }
+        }
     }
 
     #[test]

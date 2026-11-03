@@ -671,6 +671,18 @@ debit/credit columns, explicit date formats, and dot or comma decimals. See
 [declared CSV layouts](docs/bank_csv_layouts.md) for a complete example and the
 inline MCP form. Omitting `--layout` keeps the canonical twelve-column parser.
 
+### CAMT counterparty attribution
+
+CAMT052 and CAMT053 bank imports select the transaction's scoped debtor for an
+ordinary incoming credit and creditor for an ordinary outgoing debit. Both
+direct party names and modern `Pty/Nm` names retain decoded Unicode and XML
+entities. Agent-bank, account-holder and ultimate-party names cannot replace
+that selected role. Batches require complete, agreeing counterparty names and
+consistent direction/counts; ambiguous batches, reversals and returns are
+explicitly refused until an appropriate attribution profile is supplied.
+The [CAMT guide](docs/camt_bank_counterparties.md) explains the supported profile,
+native source/retry checks and historical-interpretation compatibility.
+
 ### Lossless normalized bank feeds
 
 Saved `plaid-sync` responses and supervised `fwc` intake use structural JSON
