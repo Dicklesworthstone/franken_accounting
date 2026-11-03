@@ -40,6 +40,28 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def executable_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def executable_identity(path: Path) -> dict[str, Any]:
+    """Bind a run to the bytes that existed before its first native command.
+
+    Stat checks detect ordinary concurrent rebuilds without rehashing several
+    hundred megabytes before every command. This is an execution consistency
+    guard, not protection against a hostile actor racing filesystem metadata.
+    """
+    before = executable_fingerprint(path)
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(block)
+    require(executable_fingerprint(path) == before,
+            f"native executable changed while its initial identity was read: {path}")
+    return {"path": str(path), "sha256": hasher.hexdigest(), "fingerprint": before}
+
+
 def json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 
@@ -208,7 +230,8 @@ class Native:
     def __init__(self, fa: Path, verifier: Path, out: Path, timeout: int, fad: Path | None = None,
                  stage_group_size: int = 64):
         self.fa, self.verifier, self.out, self.timeout = fa, verifier, out, timeout
-        require(1 <= stage_group_size <= 4096, "stage group size must be between 1 and 4096")
+        require(type(stage_group_size) is int and 1 <= stage_group_size <= 4096,
+                "stage group size must be an integer between 1 and 4096")
         self.stage_group_size = stage_group_size
         self.fad = fad
         self.book = out / "book"
@@ -219,19 +242,38 @@ class Native:
         self.reviewer_tokens: list[Path] = []
         self.env = {key: value for key, value in os.environ.items() if not key.startswith("FA_")}
         self.env.update(NO_COLOR="1", TERM="dumb")
+        paths = {"fa": self.fa, "fa_verify": self.verifier}
+        if self.fad is not None:
+            paths["fad"] = self.fad
+        self.identities = {key: executable_identity(path) for key, path in paths.items()}
         (out / "transcript").mkdir()
+
+    def check_executable(self, key: str) -> None:
+        identity = self.identities[key]
+        path = Path(identity["path"])
+        try:
+            unchanged = executable_fingerprint(path) == identity["fingerprint"]
+        except OSError as error:
+            raise CheckError(f"native executable became unavailable during this run: {path}") from error
+        require(unchanged, f"native executable changed during this run: {path}")
+
+    def check_executables(self) -> None:
+        for key in self.identities:
+            self.check_executable(key)
 
     def execute(self, args: list[str], *, verifier: bool = False,
                 expected_exit: int = 0, token: Path | None = None,
                 daemon_control: bool = False, request_bytes: bytes | None = None) -> list[dict[str, Any]]:
-        self.calls += 1
         if daemon_control:
             require(self.fad is not None and token is None and not verifier, "invalid daemon control request")
+            executable = "fad"
             command = [str(self.fad), *args, "--book", str(self.book), "--json"]
         elif verifier:
             require(token is None, "standalone verifier cannot receive a book token")
+            executable = "fa_verify"
             command = [str(self.verifier), *args, "--json"]
         else:
+            executable = "fa"
             command = [str(self.fa), "--book", str(self.book)]
             if self.daemon is not None:
                 require(self.daemon.poll() is None, "native daemon exited during the bulk import")
@@ -239,12 +281,18 @@ class Native:
             if token is not None:
                 command += ["--token", str(token)]
             command += args + ["--json"]
+        self.check_executable(executable)
+        self.calls += 1
         stem = f"{self.calls:05d}"
         started = time.monotonic()
+        input_path = self.out / "transcript" / f"{stem}.stdin.bin"
+        if request_bytes is not None:
+            write_new(input_path, request_bytes)
         with (self.out / "commands.jsonl").open("a", encoding="utf-8") as log:
             request = {"call": self.calls, "argv": command, "state": "started"}
             if request_bytes is not None:
-                request.update(stdin_sha256=digest(request_bytes), stdin_bytes=len(request_bytes))
+                request.update(stdin_sha256=digest(request_bytes), stdin_bytes=len(request_bytes),
+                               stdin_path=str(input_path.relative_to(self.out)))
             log.write(json.dumps(request) + "\n")
         try:
             completed = subprocess.run(command, input=request_bytes, capture_output=True,
@@ -260,6 +308,7 @@ class Native:
                                   "seconds": round(time.monotonic() - started, 3),
                                   "stdout_sha256": digest(completed.stdout),
                                   "stderr_sha256": digest(completed.stderr)}) + "\n")
+        self.check_executable(executable)
         require(completed.returncode == expected_exit,
                 f"native command {args} exited {completed.returncode}, expected {expected_exit}: "
                 + completed.stdout.decode(errors="replace")[-3000:]
@@ -311,6 +360,7 @@ class Native:
         if self.fad is None:
             return
         require(self.daemon is None, "native daemon is already running")
+        self.check_executable("fad")
         for who in ("public-data-fixture-reviewer-a", "public-data-fixture-reviewer-b"):
             token = self.out / f"{who}.token"
             self.one(["capability", "issue", "--holder", who, "--profile", "human",
@@ -343,6 +393,7 @@ class Native:
                 except (UnicodeError, json.JSONDecodeError):
                     continue  # A concurrently written final line can be incomplete.
                 if isinstance(event, dict) and event.get("event") == "fad_serving":
+                    self.check_executable("fad")
                     return
             time.sleep(0.1)
         raise CheckError(f"native daemon did not become ready within {self.timeout}s")
@@ -589,12 +640,14 @@ def main() -> int:
     except (OSError, ValueError, CheckError) as error:
         print(f"public-data preflight refused: {error}", file=sys.stderr)
         return 2
-    native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size)
+    native: Native | None = None
     started = time.monotonic()
     result = {"status": "FAIL", "dataset": args.dataset,
-              "boundary": "Only completed commands in commands.jsonl ran. No unexecuted native check passed."}
+              "boundary": ("Only completed commands have confirmed outcomes. An interrupted started command "
+                           "may have committed; retry the exact retained selections. No unexecuted native check passed.")}
     code = 1
     try:
+        native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size)
         result = run(native, prepared, args.dataset, expected)
         code = 0
     except KeyboardInterrupt:
@@ -606,19 +659,27 @@ def main() -> int:
         # An interrupted or unexpectedly failed run must not leave its daemon
         # holding the book's writer lease. Preserve the primary failure too.
         try:
-            native.stop_bulk()
+            if native is not None:
+                native.stop_bulk()
         except Exception as error:
             result["status"] = "FAIL"
             result["daemon_shutdown_error"] = f"{type(error).__name__}: {error}"
             if code == 0:
                 code = 1
-    result["native_calls"] = native.calls
+    if native is not None:
+        try:
+            native.check_executables()
+        except CheckError as error:
+            result["status"] = "FAIL"
+            result["executable_identity_error"] = str(error)
+            if code == 0:
+                code = 1
+        result.update({key + "_sha256": identity["sha256"] for key, identity in native.identities.items()})
+        if code == 0:
+            result["checks"].append("executable_identity_guards")
+    result["native_calls"] = native.calls if native is not None else 0
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
-    result["fa_sha256"] = digest(args.fa.read_bytes())
-    result["fa_verify_sha256"] = digest(args.fa_verify.read_bytes())
     result["bulk_transport"] = "native_fad" if args.fad is not None else "direct_cli"
-    if args.fad is not None:
-        result["fad_sha256"] = digest(args.fad.read_bytes())
     write_new(out / "result.json", json_bytes(result))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return code

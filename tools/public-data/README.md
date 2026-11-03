@@ -66,6 +66,21 @@ certificate/checkpoint/bundle and a final `result.json`. It emits `PASS` only
 after all required native observations succeed. A failed run preserves the
 completed command evidence and identifies the first failed step.
 
+The runner records the initial SHA-256 identities of `fa`, `fa-verify` and,
+when used, `fad` before its first native command. It checks filesystem identity,
+size and timestamps before and after each invocation and checks all executable
+paths again before accepting `PASS`. A detected replacement, rebuild or missing
+executable makes the run fail, and `result.json` retains the original hashes.
+Keep the supplied binaries unchanged for the entire run; a separate copy of a
+completed build lets development continue elsewhere. These checks detect
+ordinary concurrent changes, not hostile filesystem races.
+
+Each forwarded stdin request is retained verbatim as a transcript `.stdin.bin`
+file. Its path, byte length and SHA-256 appear in the corresponding `started`
+record in `commands.jsonl`; the `completed` record is written only after the
+process returns. If a command times out, its available partial stdout and
+stderr are retained too.
+
 The runner stages up to 64 independently approved chunks per request by default.
 `--stage-group-size 1..4096` changes that bound. Each request authenticates the
 complete retained source, mapping, proposals and required trial-balance
@@ -101,6 +116,15 @@ and selection with valid proposal-bound approvals; already committed chunks
 return their original sequences. Staged money remains invisible until the
 separately approved native finalization activates the complete run. Malformed,
 duplicate or out-of-range selections are rejected before any chunk is posted.
+
+A `started` command without a completed receipt may still have committed one
+or more chunks. After an interruption, inspect the retained package with
+`--action show`, then retry its exact saved selection with valid approvals.
+Do not infer the durable count from acknowledged receipts alone. The runner
+keeps an incomplete execution at `FAIL`; recovering staged entries does not
+establish that the remaining finalization, reports and verification checks
+passed. It always requires a new `--out` directory; native commands provide the
+recovery path for an existing retained book.
 
 Before the first book mutation, the runner rebuilds every prepared file from
 the pinned original and requires byte-for-byte agreement. It then drives native

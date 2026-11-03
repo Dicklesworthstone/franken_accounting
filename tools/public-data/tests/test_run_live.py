@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -34,6 +35,124 @@ def report() -> dict:
 
 
 class LiveOracleControls(unittest.TestCase):
+    @staticmethod
+    def native_fixture(root: Path, *, daemon: bool = False):
+        paths = [root / name for name in ("fa", "fa-verify", "fad")]
+        for path in paths:
+            path.write_bytes(("test executable bytes: " + path.name).encode())
+            path.chmod(0o755)
+        out = root / "execution"
+        out.mkdir()
+        return run_live.Native(paths[0], paths[1], out, 10, paths[2] if daemon else None)
+
+    def test_initial_executable_hash_is_retained_and_replacement_prevents_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            original = native.fa.read_bytes()
+            self.assertEqual(native.identities["fa"]["sha256"], hashlib.sha256(original).hexdigest())
+            native.fa.write_bytes(b"different executable")
+            with mock.patch.object(run_live.subprocess, "run") as execute:
+                with self.assertRaisesRegex(run_live.CheckError, "executable changed"):
+                    native.execute(["book", "info"])
+                execute.assert_not_called()
+            self.assertEqual(native.calls, 0)
+            self.assertFalse((native.out / "commands.jsonl").exists())
+            self.assertEqual(native.identities["fa"]["sha256"], hashlib.sha256(original).hexdigest())
+
+    def test_replacement_during_command_retains_completed_output_but_refuses_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            stdout = b'{"event":"book_info","data":{}}\n'
+            def replace_during_command(*args, **kwargs):
+                native.fa.write_bytes(b"replacement installed while native command ran")
+                return run_live.subprocess.CompletedProcess(args[0], 0, stdout, b"")
+            with mock.patch.object(run_live.subprocess, "run", side_effect=replace_during_command):
+                with self.assertRaisesRegex(run_live.CheckError, "executable changed"):
+                    native.execute(["book", "info"])
+            records = [json.loads(line) for line in (native.out / "commands.jsonl").read_text().splitlines()]
+            self.assertEqual([record["state"] for record in records], ["started", "completed"])
+            self.assertEqual(records[-1]["exit"], 0)
+            self.assertEqual((native.out / "transcript" / "00001.stdout.jsonl").read_bytes(), stdout)
+
+    def test_changed_fa_does_not_prevent_cleanup_with_unchanged_fad(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory), daemon=True)
+            native.fa.write_bytes(b"replacement fa")
+            completed = run_live.subprocess.CompletedProcess([], 0, b'{"event":"fad_stopped"}\n', b"")
+            with mock.patch.object(run_live.subprocess, "run", return_value=completed) as execute:
+                self.assertEqual(native.execute(["stop"], daemon_control=True), [{"event": "fad_stopped"}])
+                self.assertEqual(execute.call_args.args[0][0], str(native.fad))
+            with self.assertRaisesRegex(run_live.CheckError, "executable changed"):
+                native.check_executables()
+
+    def test_timeout_keeps_exact_stdin_and_partial_receipts_without_confirming_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            request = b'{"chunks":[{"index":0,"approvals":["A:exact-reference"]}]}\n'
+            partial = b'{"event":"migration_import_progress","data":{"completed_count":1}}\n'
+            timeout = run_live.subprocess.TimeoutExpired("fa", 10, output=partial, stderr=b"interrupted\n")
+            with mock.patch.object(run_live.subprocess, "run", side_effect=timeout):
+                with self.assertRaisesRegex(run_live.CheckError, "timed out"):
+                    native.execute(["migrate", "import", "--action", "stage", "--intent", "-"], request_bytes=request)
+            records = [json.loads(line) for line in (native.out / "commands.jsonl").read_text().splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["state"], "started")
+            self.assertEqual((native.out / records[0]["stdin_path"]).read_bytes(), request)
+            self.assertEqual(records[0]["stdin_sha256"], hashlib.sha256(request).hexdigest())
+            self.assertEqual((native.out / "transcript" / "00001.stdout.jsonl").read_bytes(), partial)
+            self.assertEqual((native.out / "transcript" / "00001.stderr.txt").read_bytes(), b"interrupted\n")
+
+    def test_final_identity_check_prevents_pass_and_records_original_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fa, verifier = root / "fa", root / "fa-verify"
+            for path in (fa, verifier):
+                path.write_bytes(("initial " + path.name).encode())
+                path.chmod(0o755)
+            initial = hashlib.sha256(verifier.read_bytes()).hexdigest()
+            out = root / "execution"
+            def complete_then_replace(native, *_):
+                verifier.write_bytes(b"new verifier installed before result publication")
+                return {"status": "PASS", "checks": []}
+            arguments = ["run_live.py", "--prepared", str(root), "--dataset", "fixture", "--out", str(out),
+                         "--fa", str(fa), "--fa-verify", str(verifier)]
+            with (mock.patch.object(sys, "argv", arguments),
+                  mock.patch.object(run_live, "verify_prepared", return_value=({}, {})),
+                  mock.patch.object(run_live, "run", side_effect=complete_then_replace),
+                  mock.patch.object(sys, "stdout", io.StringIO())):
+                self.assertEqual(run_live.main(), 1)
+            result = json.loads((out / "result.json").read_bytes())
+            self.assertEqual(result["status"], "FAIL")
+            self.assertIn("executable changed", result["executable_identity_error"])
+            self.assertEqual(result["fa_verify_sha256"], initial)
+            self.assertNotIn("executable_identity_guards", result["checks"])
+
+    def test_initial_identity_failure_records_no_native_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "fa"
+            executable.write_bytes(b"fixture")
+            executable.chmod(0o755)
+            out = root / "execution"
+            arguments = ["run_live.py", "--prepared", str(root), "--dataset", "fixture", "--out", str(out),
+                         "--fa", str(executable), "--fa-verify", str(executable)]
+            with (mock.patch.object(sys, "argv", arguments),
+                  mock.patch.object(run_live, "verify_prepared", return_value=({}, {})),
+                  mock.patch.object(run_live, "executable_identity", side_effect=run_live.CheckError("unstable initial executable")),
+                  mock.patch.object(run_live, "run") as run,
+                  mock.patch.object(sys, "stdout", io.StringIO())):
+                self.assertEqual(run_live.main(), 1)
+                run.assert_not_called()
+            result = json.loads((out / "result.json").read_bytes())
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(result["native_calls"], 0)
+            self.assertIn("may have committed", result["boundary"])
+
+    def test_group_size_must_be_an_integer_before_any_execution(self):
+        for invalid in (True, 1.0, 0, 4097):
+            with self.subTest(size=invalid), self.assertRaisesRegex(run_live.CheckError, "must be an integer"):
+                run_live.Native(Path("fa"), Path("verify"), Path("unused"), 10, stage_group_size=invalid)
+
     def test_group_selection_reaches_daemon_as_retained_stdin_and_failure_keeps_receipts(self):
         # Replace only the book setup and native subprocess. Exercise the actual
         # run loop, Native.one and Native.execute at the new transport boundary.
@@ -52,6 +171,8 @@ class LiveOracleControls(unittest.TestCase):
                         "entries": [{"entry_id": "first"}, {"entry_id": "second"}]}
             chunks = [{"entry_vid": "first", "proposal_digest": "a" * 64, "leg_count": 2},
                       {"entry_vid": "second", "proposal_digest": "b" * 64, "leg_count": 2}]
+            for name in ("fa", "fa-verify", "fad"):
+                (root / name).write_bytes(("test executable bytes: " + name).encode())
             native = run_live.Native(root / "fa", root / "fa-verify", out, 10,
                                      root / "fad", stage_group_size=2)
             daemon = mock.Mock()
@@ -106,6 +227,7 @@ class LiveOracleControls(unittest.TestCase):
             calls = [json.loads(line) for line in (out / "commands.jsonl").read_text().splitlines()]
             self.assertEqual(calls[0]["stdin_sha256"], run_live.digest(request_bytes))
             self.assertEqual(calls[0]["stdin_bytes"], len(request_bytes))
+            self.assertEqual((out / calls[0]["stdin_path"]).read_bytes(), request_bytes)
             self.assertEqual(calls[1]["exit"], 6)
             self.assertEqual((out / "transcript" / "00001.stdout.jsonl").read_bytes(), stdout)
             self.assertEqual((out / "transcript" / "00001.stderr.txt").read_bytes(), b"native refusal\n")

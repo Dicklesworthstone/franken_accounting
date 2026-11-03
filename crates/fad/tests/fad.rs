@@ -22,6 +22,9 @@ use fa_cli::wire::{Op, Request};
 #[path = "fad/session_admission.rs"]
 mod session_admission;
 
+#[path = "fad/grouped_stage.rs"]
+mod grouped_stage;
+
 fn tmp(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {

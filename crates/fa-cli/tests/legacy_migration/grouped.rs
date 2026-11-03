@@ -140,6 +140,159 @@ fn grouped_staging_preserves_approvals_visibility_and_retry_sequences() {
 }
 
 #[test]
+fn grouped_staging_rechecks_token_expiry_between_individual_publications() {
+    use fa_model::principal_vid;
+    use fa_policy::{CapabilityToken, Op, Profile, possession_digest};
+    use fa_time::DateDay;
+    use fgdb_types::CommitSeq;
+
+    let fixture = Fixture::quickbooks();
+    let prepared = fixture.prepare();
+    let package = text(data(&prepared), "package_oid");
+    let expected = rows(data(&prepared), "chunks");
+    let approvals = approve(&fixture, &prepared);
+    assert_eq!(expected.len(), 2);
+    let body = obj(vec![(
+        "chunks",
+        Json::Arr(vec![chunk(0, &approvals[0]), chunk(1, &approvals[1])]),
+    )])
+    .render();
+
+    let mut book = fixture.open();
+    let issuer = Capability::embedded(
+        principal_vid("group-expiry-issuer"),
+        &["issue_capability", "read", "post", "migrate"],
+    )
+    .unwrap();
+    // Issuance consumes one sequence. The first chunk consumes the next,
+    // placing the head exactly at expiry before the second chunk is posted.
+    // The holder matches the already-retained proposals; no proposal, source
+    // document or approval is regenerated to accommodate this capability.
+    let before_issue = book.head().unwrap();
+    let expires_at = CommitSeq(before_issue.0 + 2);
+    let secret = [0xb7; 32];
+    let capability = Capability::new(
+        principal_vid("operator"),
+        Profile::Human,
+        &[Op::Read, Op::Post, Op::Migrate],
+        issuer.holder(),
+    )
+    .unwrap()
+    .holder_bound(possession_digest(&secret))
+    .expiring_at(expires_at);
+    book.issue_capability(
+        issuer,
+        capability.clone(),
+        DateDay::parse("2026-01-01").unwrap(),
+        b"group-expiry-issuance",
+        "bounded grouped staging capability",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(book.head().unwrap(), CommitSeq(before_issue.0 + 1));
+    let token = CapabilityToken::new("operator", capability, secret).unwrap();
+    let authority =
+        LaunchAuthority::from_operator_token(fixture.book.clone(), None, &token).unwrap();
+    drop(book);
+
+    let args = [
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        package,
+        "--intent",
+        "-",
+        "--json",
+    ]
+    .map(str::to_owned);
+    let execute = |stdin| {
+        let (status, captured) = fa_with_authority(
+            &args,
+            Files {
+                cwd: Some(fixture.dir.clone()),
+                stdin,
+            },
+            &authority,
+            true,
+        );
+        let events = captured
+            .stdout
+            .lines()
+            .map(|line| {
+                fa_cli::verbs::registry()
+                    .unwrap()
+                    .check_line(line)
+                    .unwrap_or_else(|error| panic!("{error}: {captured:?}"));
+                json::parse(line).unwrap()
+            })
+            .collect::<Vec<_>>();
+        (status, events)
+    };
+    let (status, events) = execute(Stdin::Forwarded(body.as_bytes().to_vec()));
+    assert_eq!(status, 7, "{events:?}");
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(text(&events[0], "event"), "migration_import_progress");
+    let progress = data(&events[0]);
+    assert_eq!(progress.get("atomic"), Some(&Json::Bool(false)));
+    assert_eq!(integer(progress, "selected_count"), 2);
+    assert_eq!(integer(progress, "completed_count"), 1);
+    assert_eq!(integer(progress, "failed_chunk_index"), 1);
+    assert_eq!(text(progress, "phase"), "posting");
+    assert_eq!(text(data(&events[1]), "refusal_id"), "FA-REF-014");
+    let receipts = rows(progress, "chunks");
+    assert_eq!(receipts.len(), 1);
+    let receipt = &receipts[0];
+    assert_eq!(integer(receipt, "chunk_index"), 0);
+    assert_eq!(text(receipt, "entry_vid"), text(&expected[0], "entry_vid"));
+    assert_eq!(
+        text(receipt, "proposal_digest"),
+        text(&expected[0], "proposal_digest")
+    );
+    assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(integer(receipt, "recorded_at"), i128::from(expires_at.0));
+    assert_eq!(head(&fixture.book), i128::from(expires_at.0));
+    assert_eq!(integer(data(&fixture.show(package)), "recorded_count"), 1);
+    assert_eq!(fixture.cash(None), "0.00 USD");
+
+    // Expiry precedes input and retained-package observation, even when the
+    // selection begins with an idempotent retry of the committed first chunk.
+    for stdin in [Stdin::Forwarded(body.as_bytes().to_vec()), Stdin::Missing] {
+        let before = head(&fixture.book);
+        let (status, events) = execute(stdin);
+        assert_eq!(status, 7, "{events:?}");
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(text(data(&events[0]), "refusal_id"), "FA-REF-014");
+        assert_eq!(head(&fixture.book), before);
+    }
+
+    // Resuming under current owner authority preserves the first receipt and
+    // commits only the missing member. Visibility still requires finalization.
+    let path = fixture.file("group-expiry-resume.json", &body);
+    let resumed = stage(&fixture, package, &path);
+    let completed = rows(data(&resumed), "chunks");
+    assert_eq!(completed.len(), 2);
+    assert_eq!(
+        completed[0].get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(completed[0].get("recorded_at"), receipt.get("recorded_at"));
+    assert_eq!(
+        completed[1].get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(integer(data(&resumed), "recorded_count"), 2);
+    assert_eq!(
+        data(&resumed).get("ready_to_finalize"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(fixture.cash(None), "0.00 USD");
+    fixture.finalize("group-expiry-finalize.plan");
+    assert_eq!(fixture.cash(None), "125.50 USD");
+}
+
+#[test]
 fn grouped_staging_reports_partial_progress_and_resumes_after_native_refusal() {
     let fixture = Fixture::quickbooks();
     let prepared = fixture.prepare();

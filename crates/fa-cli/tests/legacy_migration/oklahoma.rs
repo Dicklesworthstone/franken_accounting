@@ -43,6 +43,56 @@ fn retained_dir() -> PathBuf {
     }
 }
 
+fn reviewed_document(fixture: &Fixture, name: &str, content: &str, kind: &str) -> String {
+    let path = fixture.file(name, content);
+    let mime = if name.ends_with(".json") {
+        "application/json"
+    } else {
+        "text/csv"
+    };
+    let added = ok(
+        &fixture.book,
+        &[
+            "document",
+            "add",
+            &path,
+            "--kind",
+            kind,
+            "--mime",
+            mime,
+            "--grade",
+            "AgentUpload",
+            "--as",
+            "oklahoma-source-uploader",
+        ],
+    );
+    assert_eq!(text(&added, "event"), "document");
+    let document = data(&added);
+    assert_eq!(text(document, "grade"), "AgentUpload");
+    assert_eq!(document.get("self_sourced"), Some(&Json::Bool(true)));
+    let oid = text(document, "oid").to_owned();
+    // The harness fetched or transformed these bytes. Its separate fixture
+    // reviewer exercises native custody law, not independent human review.
+    let reviewed = ok(
+        &fixture.book,
+        &[
+            "document",
+            "attest",
+            "review",
+            "--document",
+            &oid,
+            "--as",
+            "oklahoma-source-reviewer",
+            "--grant",
+            "approve",
+        ],
+    );
+    assert_eq!(text(&reviewed, "event"), "attestation_recorded");
+    assert_eq!(text(data(&reviewed), "claim"), "Reviewed");
+    assert_eq!(text(data(&reviewed), "subject"), oid);
+    oid
+}
+
 #[test]
 fn public_ledger_helper_offline_regressions() {
     let output = Command::new("python3")
@@ -155,11 +205,22 @@ fn public_oklahoma_activity_imports_all_source_legs_and_replays_certified_folds(
     // Keep the original source and exact row-index manifest in the same book.
     // These retained documents do not manufacture a third-party attestation.
     let raw = std::fs::read_to_string(prepared_dir.join("source.csv")).unwrap();
-    fixture.document("official-activity-source.csv", &raw, "Spreadsheet");
-    fixture.document("official-activity-manifest.json", &manifest_text, "Other");
+    reviewed_document(
+        &fixture,
+        "official-activity-source.csv",
+        &raw,
+        "Spreadsheet",
+    );
+    reviewed_document(
+        &fixture,
+        "official-activity-manifest.json",
+        &manifest_text,
+        "Other",
+    );
     let source = std::fs::read_to_string(prepared_dir.join("legacy.csv")).unwrap();
-    fixture.source = fixture.document("normalized-activity.csv", &source, "Spreadsheet");
-    fixture.trial_balance = fixture.document(
+    fixture.source = reviewed_document(&fixture, "normalized-activity.csv", &source, "Spreadsheet");
+    fixture.trial_balance = reviewed_document(
+        &fixture,
         "declared-zero-baseline.csv",
         &tb_document("analysis-only; no published opening balance", &[]),
         "Spreadsheet",
@@ -168,7 +229,8 @@ fn public_oklahoma_activity_imports_all_source_legs_and_replays_certified_folds(
     for (period, expected) in periods.iter().zip(CUMULATIVE_NETS) {
         let code = text(period, "period");
         let lines: Vec<_> = ACCOUNT_CODES.into_iter().zip(expected).collect();
-        let document = fixture.document(
+        let document = reviewed_document(
+            &fixture,
             &format!("independent-python-fold-{code}.csv"),
             &tb_document(code, &lines),
             "Spreadsheet",
@@ -217,7 +279,12 @@ fn public_oklahoma_activity_imports_all_source_legs_and_replays_certified_folds(
     // separately declared period controls without publishing an import.
     let header_end = source.find('\n').unwrap() + 1;
     let duplicated = format!("{source}{}", &source[header_end..]);
-    let bad_source = fixture.document("duplicated-activity.csv", &duplicated, "Spreadsheet");
+    let bad_source = reviewed_document(
+        &fixture,
+        "duplicated-activity.csv",
+        &duplicated,
+        "Spreadsheet",
+    );
     let bad_path = fixture.file("duplicated-import.json", &import_body(&bad_source).render());
     let before_bad = head(&fixture.book);
     let (status, refused) = run(
