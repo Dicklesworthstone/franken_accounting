@@ -2035,8 +2035,10 @@ test assertion are unchanged. No lint setting or gate changes.
 The original failed run is retained and cannot qualify as a passing full
 verdict. The earlier complete Genesis target passed 382 cases on e77291cb;
 that does not establish repaired-source Clippy or final full acceptance.
-The frozen 39f run continues as diagnostic evidence while this correction
-awaits its own exact-tree checks.
+The frozen 39f run was later stopped after its queued wrapper was cancelled
+and acknowledged. Its checksum-bound result is stable RED/partial, exit143;
+it cannot supply passing evidence or resume authority. The correction still
+requires its own exact-tree checks.
 
 ## 2026-11-03 — Historical symbol fixture retained later labels
 
@@ -2054,3 +2056,57 @@ gapped table is an additional negative. Production compatibility, durable
 formats, digests and gates are unchanged. The original 76-pass/one-failure
 run is retained; repaired-source native execution and final gates remain
 required. This is fixture maintenance, not a new compatibility profile.
+
+The fixture also freezes the actual historical digest
+f0701f31f43ebf825e62d202d1aabc9fd64c9987617763e294ce499c6d26c104.
+It was computed separately from Git revision 2c6225ced's registry: render
+the three namespaces in name order, prepend the existing fa:symbols:v1
+domain, then BLAKE3 the resulting bytes. This extra assertion prevents a
+future change to today's property or relation table from silently changing
+the purported historical fixture. It introduces no product dependency and
+does not replace any existing pin. The 77-pass result on b834a15c precedes
+this additional assertion; the strengthened fixture still needs execution.
+
+The next complete strict Clippy run reached a second inherited instance
+of the copied-slice pattern: the legacy migration approval-group fixture
+at approval_groups.rs:164, introduced in f543eae8b. The b834a15c run
+returned 101 after 1473290ms; this was its sole emitted error. The group
+builder accepts an immutable string slice, so it now borrows the existing
+digest with std::slice::from_ref. The encoded input, malformed-member and
+size-bound controls, zero-write checks and admitted approval stay unchanged.
+No lint setting changes. The workspace pattern search is retained as review
+evidence; unrelated custom-type clone sites are not mechanically rewritten.
+The actual b834 Tier0 passed and its model library passed 77 tests, but
+neither establishes strict-Clippy success for the repaired source.
+
+An unchanged-b834 strict run with --keep-going then completed with 101
+after 78308ms. It emitted the approval-group error and two additional
+chunks_exact_to_as_chunks errors in closing/functional.rs:326–327,
+introduced in e8a20dee1. The closing fixture now iterates typed two-leg
+arrays, retains both original dimension assertions, and additionally
+requires empty remainders and equal intent/preview pair counts. Thus an
+unpaired or unpreviewed leg cannot be silently skipped by the test. The
+closing amounts, basis version, replay, verifier and bundle assertions
+are unchanged. The diagnostic kept strict warnings and every target;
+the original full repository gate is unchanged and still required.
+
+## 2026-11-03 — Long PDF reports silently omitted their trailing rows
+
+The canonical renderer stopped when a table row crossed the first page's
+bottom margin. Later accounts and the TOTAL row were omitted even though
+the PDF carried the complete IR digest. Raw pipes and line breaks in account
+names could also split Markdown rows and shift the amount columns.
+
+The reviewed two-file fix from e533b273b now continues tables on later pages,
+repeating their unit line and headers. It retains the first page's object
+numbers and the existing one-page byte pins, and escapes Markdown cell data.
+New regressions draw all 120 accounts plus TOTAL across three PDF and PDF/A
+pages and preserve Markdown column delimiters. The in-tree PDF/A validator
+remains the validation boundary; no external PDF/A conformance claim is made.
+
+Both canonical preimages exactly matched that commit's parents before its
+patch was applied, and both resulting source blobs match the reviewed commit.
+The peer reported old-code failures and 62 repaired-source passes. Those are
+peer results; this combined source still requires its own native and full
+qualification. The original renderer bead fa-cet is reopened with its original
+acceptance and historical cross-machine evidence preserved.

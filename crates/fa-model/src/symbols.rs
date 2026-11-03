@@ -479,7 +479,16 @@ mod tests {
         // Later migration labels were never part of that pre-close release.
         previous.labels.retain(|_, id| *id <= 61);
         previous.relations.remove("DEPENDS_ON");
-        assert!(current.matches_label_prefix_digest(previous.digest()));
+        // Independently render 2c6225ced's registry and hash its canonical
+        // bytes under fa:symbols:v1. Freeze every namespace of that release,
+        // including against future changes to this fixture's current clone.
+        let pre_release_digest = Digest([
+            0xf0, 0x70, 0x1f, 0x31, 0xf4, 0x3e, 0xbf, 0x82, 0x5e, 0x62, 0xd2, 0x02, 0xd1, 0xaa,
+            0xbc, 0x9f, 0xd6, 0x4c, 0x99, 0x87, 0x61, 0x77, 0x63, 0xe2, 0x94, 0xce, 0x49, 0x9c,
+            0x6d, 0x26, 0xc1, 0x04,
+        ]);
+        assert_eq!(previous.digest(), pre_release_digest);
+        assert!(current.matches_label_prefix_digest(pre_release_digest));
         for ceiling in [43, 46, 60] {
             let mut earlier = previous.clone();
             earlier.labels.retain(|_, id| *id <= ceiling);

@@ -161,7 +161,7 @@ fn approval_groups_prevalidate_every_member_and_bound_forwarded_input() {
         assert_eq!(text(&output[0], "event"), "error");
         assert_eq!(head(&fixture.book), before);
     }
-    let input = group(&[digest.clone()]);
+    let input = group(std::slice::from_ref(&digest));
     for extra in [
         vec!["--proposal", &digest],
         vec!["--review", "-"],

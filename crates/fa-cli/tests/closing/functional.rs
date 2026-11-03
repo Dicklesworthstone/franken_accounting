@@ -320,12 +320,22 @@ fn fund_close_keeps_exact_carrying_values_across_reopen_export_and_reclose() {
         basis.version,
         fa_model::closing::YEAR_END_CLOSE_FUND_VERSION
     );
-    for (pair, preview) in intent
-        .proposal()
-        .legs
-        .chunks_exact(2)
-        .zip(get(&review, "legs").as_arr().unwrap().chunks_exact(2))
-    {
+    let (pairs, tail) = intent.proposal().legs.as_chunks::<2>();
+    let (previews, preview_tail) = get(&review, "legs").as_arr().unwrap().as_chunks::<2>();
+    assert!(
+        tail.is_empty(),
+        "every intent leg belongs to a closing pair"
+    );
+    assert!(
+        preview_tail.is_empty(),
+        "every preview leg belongs to a closing pair"
+    );
+    assert_eq!(
+        pairs.len(),
+        previews.len(),
+        "every closing pair is previewed"
+    );
+    for (pair, preview) in pairs.iter().zip(previews) {
         assert_eq!(pair[0].dimension_set, pair[1].dimension_set);
         assert_eq!(get(&preview[0], "fund"), get(&preview[1], "fund"));
     }
