@@ -94,6 +94,12 @@ document review. Development Finance Authority helper validation is recorded
 separately. These helper checks do not establish a native grouped-staging or
 department PASS.
 
+The Development Finance Authority helper's 18 offline tests include the native
+column-map contract: generated TOML contains only the declared columns, while
+the native intent supplies the account mapping once. The earlier native attempt
+exposed a duplicate `account_map`; the corrected workflow needs its own native
+rerun before it can be recorded as a PASS.
+
 The official 113,856,733-byte resource was downloaded through its actual HTTPS
 redirect and verified against the fixed SHA-256. The complete 373,357-row file
 and the committed museum, pension and university selections produce identical

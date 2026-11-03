@@ -10,6 +10,14 @@ Only standalone records can be comments. A UTF-8 byte-order mark is accepted at
 the start of input. Unterminated quotes, quotes inside unquoted fields and text
 following a closing quote are errors, with the starting physical line number.
 
+Strict reading is attempted first. Historical `csv_gl_v1` exports written before
+quote escaping have a narrow compatibility path: their physical-line,
+comma-separated interpretation is accepted only when both the retained content
+digest and coordinate certificate digest verify against the exactly
+reconstructed journal. The same metadata, row identity, count and balance checks
+still apply. Missing digests or changed reconstructed text are refused. New
+exports always use the quoted profile described above.
+
 Metadata comments use two additive, versioned extensions to retain text that the
 original delimiter-separated comments could not represent:
 
@@ -46,6 +54,13 @@ date cannot be silently repaired from the data rows and pass the certificate.
 `csv_gl_refuses_changed_row_identity_and_truncated_certificate_metadata` cover
 identity, deterministic re-export and malformed/tampered negatives.
 
+Dimensioned exports declare `dimension_encoding=fa-dimension-ids-v1` and add a
+fourteenth `dimension_set_v1` column. The declaration and header must agree, and
+both certificate digests are required to authenticate these native identities.
+Untagged exports retain their thirteen-column representation. Values are local
+to the source book; importing into another book requires an explicit mapping
+to destination dimension codes instead of transplanting native value IDs.
+
 The legacy CSV adapters share the logical-record parser and refuse duplicate or
 blank header names, incomplete declared amount columns and ragged records.
 They recognize comments only before the header, preserving an unquoted source
@@ -59,12 +74,28 @@ older maps retain their ignored-key behavior. When a source supplies more than
 one monetary representation (such as debit/credit and Xero's signed Gross),
 all supplied values must agree exactly.
 Source journal IDs and entered-by/approved-by identities retain their exact text,
-so IDs `A` and ` A` cannot merge. Narration and leg memos retain whitespace,
-Unicode, punctuation and embedded newlines. Typed account mappings, dates and
+so IDs `A` and ` A` cannot merge. Nonblank entry descriptions and nonempty leg
+memos retain their exact whitespace, Unicode, punctuation and embedded newlines.
+A whitespace-only description is absent when selecting the entry summary;
+a whitespace-only leg memo remains present and unchanged. Typed account mappings, dates and
 amounts continue to use their declared parsing rules; a whitespace-only journal
 ID is invalid. The original input bytes still determine the retained source
 digest. These rules do not invent missing debit/credit legs or establish that a
 public spending disclosure is a complete source general ledger.
+
+In generic CSV, when `description_column` and `memo_column` name different
+columns, populated descriptions are entry-level headers. Blank or whitespace-only
+header cells may precede or follow a populated header, including interleaved
+rows from different entries. Every populated header for the same exact source
+entry ID must agree byte-for-byte; conflicting text is refused with source
+context. If no populated description appears anywhere in an entry, its exact
+source ID becomes the summary after all rows have been read.
+
+When both mappings name the same column, or a built-in vendor profile supplies
+the description, the first nonblank description becomes the entry summary and
+later line descriptions may differ. Map that column as `memo_column` to retain
+each line's text. Empty memo cells represent absence; nonempty memo cells,
+including whitespace-only cells, remain exact.
 
 ## Declaring legacy effective-date order
 

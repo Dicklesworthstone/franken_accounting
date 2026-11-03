@@ -1102,6 +1102,49 @@ fn dimension_interop_round_trips_exact_native_ids_including_untagged_legs() {
 }
 
 #[test]
+fn dimension_csv_preserves_lossless_text_metadata_and_empty_optional_fields_together() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = dimensioned_journal();
+    let mut accounts = original.accounts.clone();
+    accounts[0].name = "Cost centre | A\r\n\"Finance\"".into();
+    let mut entries = original.entries.clone();
+    entries[0].description = "published, \"exact\"\r\n# continuation".into();
+    entries[0].migrated_from = Some(String::new());
+    entries[0].legs[0].memo = Some(String::new());
+    entries[0].legs[1].memo = Some("  source row, \"quoted\"\n# retained  ".into());
+    let coordinate = &original.coordinate;
+    let journal = FormatJournal::new(
+        "  Public | records\n2025  ",
+        &coordinate.base_unit_code,
+        coordinate.base_unit_scale,
+        coordinate.effective_through,
+        coordinate.known_at_seq,
+        accounts,
+        entries,
+        original.assertions,
+    )
+    .unwrap();
+    let csv = write_csv_gl(&journal);
+    assert!(csv.starts_with("# fa_csv_text_encoding_v1|percent-utf8\n"));
+    assert!(csv.contains("|dimension_encoding=fa-dimension-ids-v1\n"));
+    assert!(csv.contains("# fa_csv_empty_optional_v1|1|0|migrated_from\n"));
+    assert!(csv.contains("# fa_csv_empty_optional_v1|1|1|memo\n"));
+    let imported = read_csv_gl(&csv, &units).unwrap();
+    assert_eq!(imported, journal);
+    verify_round_trip_identity("csv_gl_v1", &journal, &imported).unwrap();
+    assert_eq!(write_csv_gl(&imported), csv);
+    let wire = format_dimension_set(&journal.entries[0].legs[0].dimensions);
+    for changed in [
+        csv.replacen(&wire, &wire.replace("000ab", "000ad"), 1),
+        csv.replace("# fa_csv_empty_optional_v1|1|1|memo\n", ""),
+        csv.replace("%7C", "%2F"),
+    ] {
+        assert_ne!(changed, csv);
+        assert!(read_csv_gl(&changed, &units).is_err());
+    }
+}
+
+#[test]
 fn dimension_csv_refuses_attribution_tampering_and_extension_downgrades() {
     let units = UnitCatalog::embedded().unwrap();
     let journal = dimensioned_journal();

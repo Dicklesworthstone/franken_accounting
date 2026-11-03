@@ -475,8 +475,9 @@ oracles. Constructed export fixtures do not establish native execution.
 
 A complementary [complete Development Finance Authority regression](docs/public_ledger_workload.md)
 retains all 312 source records with original byte-offset lineage and prepares
-306 exact legs in 104 balanced groups for one native migration run. Its 17
-Python checks and full-resource versus retained-slice byte parity passed. The
+306 exact legs in 104 balanced groups for one native migration run. Its 18
+Python checks pass, including the native column-map contract, and full-resource
+versus retained-slice byte parity was verified. The
 new Rust regression covers staging, independent approvals, activation,
 source-derived balances, known-at visibility and certified report replay;
 native execution remains pending the required build and test gates.

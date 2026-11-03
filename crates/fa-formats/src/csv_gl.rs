@@ -21,9 +21,9 @@ const CSV_HEADER: &str = "entry_id,line_no,effective_date,recorded_seq,entry_cla
 
 /// Write a [`FormatJournal`] as a canonical CSV General Ledger extract with
 /// embedded coordinate header comments, account metadata comments, and a
-/// declared 13-column GL row layout, with a 14th column when native dimensions
-/// are present. Text uses CSV quoting without sanitizing it. Metadata containing
-/// delimiters, controls or boundary whitespace opts
+/// declared 13-column GL row layout, with an authenticated fourteenth column
+/// when any leg has dimensions. Text uses CSV quoting without sanitizing
+/// it. Metadata containing delimiters, controls or boundary whitespace opts
 /// into the additive `fa_csv_text_encoding_v1|percent-utf8` comment extension;
 /// its textual metadata fields are then percent-encoded UTF-8. Ordinary v1
 /// metadata stays unchanged. Readers that do not support the extension fail
@@ -32,6 +32,12 @@ const CSV_HEADER: &str = "entry_id,line_no,effective_date,recorded_seq,entry_cla
 /// provenance and leg memos, distinct from absent optional text.
 pub fn write_csv_gl(journal: &FormatJournal) -> String {
     let mut out = String::new();
+    let dimensions = journal.has_dimensions();
+    let dimension_metadata = if dimensions {
+        format!("|dimension_encoding={DIMENSION_ENCODING}")
+    } else {
+        String::new()
+    };
     let escaped_metadata = metadata_needs_escape(&journal.coordinate.book_name)
         || metadata_needs_escape(&journal.coordinate.base_unit_code)
         || journal.accounts.iter().any(|account| {
@@ -47,12 +53,6 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
     if escaped_metadata {
         out.push_str("# fa_csv_text_encoding_v1|percent-utf8\n");
     }
-    let dimensions = journal.has_dimensions();
-    let dimension_metadata = if dimensions {
-        format!("|dimension_encoding={DIMENSION_ENCODING}")
-    } else {
-        String::new()
-    };
     out.push_str(&format!(
         "# fa_csv_gl_v1|book={}|base={}@{}|effective_through={}|known_at={}|entries={}|content_digest={}|certificate_digest={}{}\n",
         text(&journal.coordinate.book_name),
