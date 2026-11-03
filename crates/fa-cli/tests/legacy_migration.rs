@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "legacy_migration/limited_accounts.rs"]
+mod limited_accounts;
 #[path = "legacy_migration/oklahoma.rs"]
 mod oklahoma;
 

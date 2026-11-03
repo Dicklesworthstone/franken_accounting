@@ -872,15 +872,12 @@ fn parse_source(
                     "use the parser and registry matching the book; do not round or coerce amounts",
                 ));
             }
-            if accounts
-                .iter()
-                .any(|account| account.code == leg.account_code && account.limit.is_some())
-            {
-                return Err(usage(
-                    "native Migration does not support balance-limited target accounts",
-                    "use the native supported migration chart; do not remove account limits to force an import",
-                ));
-            }
+            // Balance-limited accounts are ordinary migration targets. A
+            // staged chunk is invisible and must not consume availability;
+            // native Finalize judges the entire counted run against the
+            // current limit cells and reservations in its one transaction.
+            // Checking a chunk or an import-time balance here would reject
+            // valid historical sequences and race intervening live postings.
         }
     }
     if run.body.mode == RunMode::OpeningOnly && batch.trial_balance != run.body.lines {
