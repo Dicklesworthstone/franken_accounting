@@ -278,3 +278,97 @@ do not stand in for an executed native journal, certificate or outsider bundle
 verification. The native workload needs its own transcript and evidence. This
 work advances case-plan §9 and bead `fa-yugf.72` without claiming completion of
 that bead's separate case-harness and expectation-loader requirements.
+
+## Execute the complete native workload
+
+[`scripts/blmis_magnify_replay.py`](../scripts/blmis_magnify_replay.py) drives
+the real `fa` and independent `fa-verify` executables. Build both binaries from
+the repository's pinned toolchain, or pass paths to verified matching builds:
+
+```bash
+python3 -B scripts/blmis_magnify_replay.py run \
+  --fa /absolute/path/to/fa \
+  --fa-verify /absolute/path/to/fa-verify \
+  --pdf /absolute/path/to/magnify_affidavit_opposingcounsel_10-05279_docket150.pdf \
+  --out artifacts/magnify-native
+```
+
+Omit `--pdf` to fetch the pinned complete original. The destination must not
+exist. The runner re-extracts the PDF, checks both immutable fixture pins and
+builds a new analysis book with all eight declared accounts. It registers one
+native party per source account, then opens every monetary source month from
+1983 through 2008. Each of the **1,586 entries** preserves its original source
+date, literal description and precise source-page/line memo. The principal leg
+also carries the native party dimension. No journal or source row is split to
+circumvent an engine limit.
+
+The complete original and six extraction/provenance documents enter custody as
+`AgentUpload`. A separate local reviewer supplies the explicit `Reviewed`
+attestation required for posting. That attestation describes this local source
+verification exercise; it does not claim that the trustee or court reviewed
+the constructed book. The runner retains the original custody receipts and
+checks that review and posting leave them unchanged.
+
+Immediately after the full original's intake, a separate CLI process reopens
+the book and executes `document read <oid> --out original-readback.pdf`. The
+readback helper verifies the same document identity and commitment, full
+unredacted view, all **28,947,445 bytes**, the recovered file's SHA-256 and the
+robot response's independently hashed hexadecimal payload. Both must match the
+pinned original. This exercises the owned blob store above the inline limit
+with the actual source, rather than inferring success from an intake receipt.
+The compact readback receipt is retained in `report.json`; the actual robot
+response remains in the native transcript.
+
+The independent comparison reads printed literals with `Decimal`, rather than
+using normalized journal totals as its source oracle. It checks all **2,364
+observations**, including all **778 zero-principal rows**, against six actual
+native running-balance reports. The tax stars require the exact account-scoped
+footnote premise. Every published gap remains a separately named field; a
+one-cent native error fails even when the source already has a larger printed
+discrepancy.
+
+The full run also requires these completed native checks before it emits
+`PASS`:
+
+- Six certified general ledgers, with byte-exact report replay and an unchanged
+  empty preimport history for every source account.
+- An exact retry of every entry, preserving its identity and commit sequence
+  without appending duplicate history.
+- All **91 source-account annual printed controls**, with their separate source
+  folds and discrepancies; **26 cumulative year-end trial balances** check the
+  complete book, including balances of accounts whose tables ended earlier.
+- Native principal analysis before and after declaring transfer semantics,
+  including replay of the earlier history after the role change. All credited
+  transfers retain their source-input status.
+- An explicit native comparison of the March 17, 1989 transfer: the source
+  credit is $2,816,661, the originating literal principal before the event is
+  $2,816,627, and the actual native remainder is −$34. The later −$42 closing
+  difference remains separate. The $682 external origin is explicitly absent.
+- Register advancement and verification for all **272 monetary source months**,
+  projection verification, a signed checkpoint and accumulator verification.
+- Full cold-process readback of the original PDF, with unchanged original
+  custody and exact file and robot-payload hashes.
+- Full CSV and ADS exports compared leg by leg against the source, including
+  original text and native party dimension identities, followed by independent
+  ADS proof verification with the caller-trusted local book key.
+- Independent refusal of an exported one-cent amount mutation and a party-only
+  dimension mutation. The original export stays intact in a separate directory.
+
+The output contains the complete source package, book, entry intents, native
+command transcript, certified report receipts, exports and proof artifacts.
+`report.json` records the source comparisons, document custody, all successful
+checks, binary hashes and driver hash. A fresh failed run preserves
+`failure.json` and its available evidence; existing output is never overwritten.
+Missing executables, acquisition or extraction report `UNRUN` with exit 4;
+successful execution returns 0, and a failed invariant returns 1.
+
+The focused runner tests exercise the six-account census, every discrepancy
+population, account-scoped footnotes, corrections, zero-row retention, exact
+ordering, the transfer limitation, cumulative controls and rejection of altered
+native-shaped reports. Those report fixtures have explicitly synthetic
+identities and are comparator tests, not native execution evidence:
+
+```bash
+python3 -B -m unittest discover -s scripts/tests \
+  -p 'test_blmis_magnify_replay.py' -v
+```
