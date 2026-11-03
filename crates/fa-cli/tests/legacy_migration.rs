@@ -8,6 +8,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "legacy_migration/oklahoma.rs"]
+mod oklahoma;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

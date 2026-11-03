@@ -426,13 +426,21 @@ agency fixtures for a pension system, a university, and a museum. It preserves
 the original source fields and exact amounts, refuses unbalanced or subcent
 selections, and provides a native migration-to-report-to-proof replay driver.
 
-The entire 373,357-row publication has been profiled; normalization and all 35
+The entire 373,357-row publication has been profiled; normalization and all 38
 Python checks pass. **Native replay remains unverified:** prerequisite Rust
 compilation exceeded the execution environment's memory limit. The documentation
 records the validation boundary and the commands needed to complete it. These
 published records are monthly activity aggregates, with their actual detail
 retained; they do not contain the agencies' original transaction-level journals
 or opening balances.
+
+A complementary [complete Development Finance Authority regression](docs/public_ledger_workload.md)
+retains all 312 source records with original byte-offset lineage and prepares
+306 exact legs in 104 balanced groups for one native migration run. Its 17
+Python checks and full-resource versus retained-slice byte parity passed. The
+new Rust regression covers staging, independent approvals, activation,
+source-derived balances, known-at visibility and certified report replay;
+native execution remains pending the required build and test gates.
 
 ### Bank CSV downloads
 

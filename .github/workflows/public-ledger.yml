@@ -78,6 +78,20 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --lib legacy::tests:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/legacy-tests.log
 
+      - name: Regress canonical CSV evidence and historical compatibility
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --test formats_conformance canonical_csv --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/canonical-csv-tests.log
+
+      - name: Replay the complete finance-authority selection through native migration
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test legacy_migration oklahoma:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/finance-authority-tests.log
+
       - name: Replay the complete firefighters pension selection
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash
