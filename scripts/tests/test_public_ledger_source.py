@@ -1,6 +1,7 @@
 """Negative controls for the real public-ledger source boundary (stdlib only)."""
 
 import csv
+from email.message import Message
 import hashlib
 import io
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from urllib.response import addinfourl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import public_ledger_source as source
@@ -169,7 +171,7 @@ class DownloadTests(unittest.TestCase):
         return stream
 
     def test_verified_download_and_cache_use_honest_user_agent(self):
-        with mock.patch.object(source.urllib.request, "urlopen", return_value=self.response(self.body)) as fetch:
+        with mock.patch.object(source.urllib.request.OpenerDirector, "open", return_value=self.response(self.body)) as fetch:
             self.assertEqual(source.fetch_source(self.path), self.path)
             request = fetch.call_args.args[0]
             self.assertEqual(request.get_header("User-agent"), source.USER_AGENT)
@@ -177,10 +179,81 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(fetch.call_count, 1)
         self.assertEqual(self.path.read_bytes(), self.body)
 
+    def transport_response(self, url, *, location=None):
+        headers = Message()
+        if location is not None:
+            headers["Location"] = location
+        response = addinfourl(
+            io.BytesIO(b"" if location is not None else self.body),
+            headers, url, code=302 if location is not None else 200,
+        )
+        response.msg = "Found" if location is not None else "OK"
+        return response
+
+    def test_official_https_redirects_download_exact_pinned_bytes(self):
+        targets = [
+            "https://data.ok.gov/retained-resource.csv",
+            "https://s3.amazonaws.com/oklahoma/ledger.csv?signature=example",
+            "https://s3.amazonaws.com:443/oklahoma/ledger.csv?signature=example",
+        ]
+        for index, target in enumerate(targets):
+            with self.subTest(target=target):
+                requests = []
+
+                def transport(request):
+                    requests.append(request)
+                    return self.transport_response(
+                        request.full_url,
+                        location=target if len(requests) == 1 else None,
+                    )
+
+                destination = self.path.with_name(f"allowed-{index}.csv")
+                with mock.patch.object(source.urllib.request.HTTPSHandler, "https_open", side_effect=transport):
+                    self.assertEqual(source.fetch_source(destination), destination)
+                self.assertEqual([r.full_url for r in requests], [source.SOURCE_URL, target])
+                self.assertTrue(all(r.get_header("User-agent") == source.USER_AGENT for r in requests))
+                self.assertEqual(destination.read_bytes(), self.body)
+
+    def test_unsafe_redirects_are_rejected_before_target_is_requested(self):
+        targets = [
+            "https://unreviewed.example/ledger.csv",
+            "http://data.ok.gov/ledger.csv",
+            "https://user@s3.amazonaws.com/ledger.csv",
+            "https://user:password@s3.amazonaws.com/ledger.csv",
+            "https://s3.amazonaws.com:444/ledger.csv",
+            "https://s3.amazonaws.com:invalid/ledger.csv",
+        ]
+        for target in targets:
+            with self.subTest(target=target):
+                with mock.patch.object(
+                    source.urllib.request.HTTPSHandler, "https_open",
+                    return_value=self.transport_response(source.SOURCE_URL, location=target),
+                ) as transport:
+                    with self.assertRaises(source.SourceError):
+                        source.fetch_source(self.path)
+                self.assertEqual(transport.call_count, 1)
+                self.assertEqual(transport.call_args.args[0].full_url, source.SOURCE_URL)
+                self.assertFalse(self.path.exists())
+                self.assertEqual(list(self.path.parent.iterdir()), [])
+
+    def test_final_response_origin_is_checked_even_if_handler_is_bypassed(self):
+        for target in [
+            "https://unreviewed.example/ledger.csv", "http://s3.amazonaws.com/ledger.csv",
+            "https://user@s3.amazonaws.com/ledger.csv", "https://s3.amazonaws.com:444/ledger.csv",
+        ]:
+            with self.subTest(target=target):
+                response = self.response(self.body)
+                response.geturl = lambda: target
+                with mock.patch.object(source.urllib.request.OpenerDirector, "open", return_value=response):
+                    with self.assertRaises(source.SourceError):
+                        source.fetch_source(self.path)
+                self.assertFalse(self.path.exists())
+                self.assertEqual(list(self.path.parent.iterdir()), [])
+
     def test_truncated_oversized_or_changed_downloads_never_publish(self):
         for body in [self.body[:-1], self.body + b"x", bytes([self.body[0] ^ 1]) + self.body[1:]]:
             with self.subTest(size=len(body)):
-                with mock.patch.object(source.urllib.request, "urlopen", return_value=self.response(body)):
+                with mock.patch.object(source.urllib.request.OpenerDirector, "open", return_value=self.response(body)):
                     with self.assertRaises(source.SourceError):
                         source.fetch_source(self.path)
                 self.assertFalse(self.path.exists())
@@ -188,7 +261,7 @@ class DownloadTests(unittest.TestCase):
 
     def test_existing_mismatched_file_is_preserved(self):
         self.path.write_bytes(b"unrelated existing data")
-        with mock.patch.object(source.urllib.request, "urlopen") as fetch:
+        with mock.patch.object(source.urllib.request.OpenerDirector, "open") as fetch:
             with self.assertRaisesRegex(source.SourceError, "pin mismatch"):
                 source.fetch_source(self.path)
             fetch.assert_not_called()
@@ -203,7 +276,7 @@ class DownloadTests(unittest.TestCase):
             return original_read(size)
 
         response.read = read_and_create_destination
-        with mock.patch.object(source.urllib.request, "urlopen", return_value=response):
+        with mock.patch.object(source.urllib.request.OpenerDirector, "open", return_value=response):
             with self.assertRaisesRegex(source.SourceError, "download failed"):
                 source.fetch_source(self.path)
         self.assertEqual(self.path.read_bytes(), b"another writer's data")

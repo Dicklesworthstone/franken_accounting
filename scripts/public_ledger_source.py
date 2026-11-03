@@ -20,6 +20,7 @@ import re
 import tempfile
 from typing import Iterator, Sequence
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -103,12 +104,40 @@ def verify_source(path: str | Path) -> dict:
     return result
 
 
+def _validate_source_url(url: str) -> None:
+    """Admit only the publisher and its observed HTTPS object-store redirect."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        permitted = (
+            parsed.scheme == "https"
+            and parsed.hostname in {"data.ok.gov", "s3.amazonaws.com"}
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in (None, 443)
+        )
+    except ValueError as error:
+        raise SourceError("source URL has an invalid HTTPS authority") from error
+    if not permitted:
+        raise SourceError(
+            "source URL must use HTTPS on data.ok.gov or s3.amazonaws.com "
+            "with port 443 and no user information"
+        )
+
+
+class _SourceRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        # Check before urllib opens a redirect target, not only after receipt.
+        _validate_source_url(new_url)
+        return super().redirect_request(request, fp, code, message, headers, new_url)
+
+
 def fetch_source(destination: str | Path, *, timeout: int = 30) -> Path:
     """Fetch the pinned original with a byte limit and atomic publication.
 
     A verified existing file is reused. A different existing file is refused,
     preserving it. A partial or changed server response never becomes the
-    destination. Network access is deliberately limited to this named source.
+    destination. Redirects are restricted to the publisher's HTTPS origin and
+    its observed S3 delivery host; every response still has to match the pin.
     """
     target = Path(destination)
     if target.is_symlink():
@@ -122,9 +151,10 @@ def fetch_source(destination: str | Path, *, timeout: int = 30) -> Path:
     request = urllib.request.Request(SOURCE_URL, headers={"User-Agent": USER_AGENT})
     temporary: Path | None = None
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if response.geturl() != SOURCE_URL:
-                raise SourceError("source download redirected; review the new source location before importing")
+        _validate_source_url(SOURCE_URL)
+        opener = urllib.request.build_opener(_SourceRedirectHandler())
+        with opener.open(request, timeout=timeout) as response:
+            _validate_source_url(response.geturl())
             length = response.headers.get("Content-Length")
             if length is not None and length != str(SOURCE_SIZE_BYTES):
                 raise SourceError(f"source Content-Length {length!r} does not match the pinned byte count")
