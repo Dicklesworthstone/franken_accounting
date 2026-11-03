@@ -434,7 +434,7 @@ def prepare(output: Path, directory: Path = FIXTURE_DIR) -> dict:
     chart = {"accounts": [
         {"code": PRINCIPAL_ACCOUNT, "name": "Published principal 1ZA192 - analysis account", "type": "Equity", "unit": "USD"},
         {"code": CASH_ACCOUNT, "name": "Published cash movements - analysis counterpart", "type": "Asset", "unit": "USD"},
-        {"code": TRANSFER_ACCOUNT, "name": "Trustee-credited transfers - analysis counterpart", "type": "Equity", "unit": "USD"},
+        {"code": TRANSFER_ACCOUNT, "name": "Trustee-credited transfers - analysis clearing", "type": "Liability", "unit": "USD"},
     ]}
     payloads = {"rows.csv": (directory / "rows.csv").read_bytes(), "source.json": (directory / "source.json").read_bytes(),
                 "legacy.csv": csv_bytes(LEGACY_COLUMNS, normalized), "chart.json": json_bytes(chart),

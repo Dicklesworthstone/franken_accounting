@@ -59,6 +59,7 @@ def comparator_inputs(raw_rows, *, empty=False):
         if not delta:
             continue
         receipt = {
+            "vid": f"{ordinal + 1000:032x}",
             "entry_digest": hashlib.sha256(("unit-input-only:" + row["row_id"]).encode()).hexdigest(),
             "recorded_at": 1000 + ordinal,
         }
@@ -87,6 +88,66 @@ def comparator_inputs(raw_rows, *, empty=False):
         "lines": lines,
     }
     return data, posted
+
+
+TEST_PARTY = {"code": "BLMIS-1ZA192", "vid": "b" * 32, "dimension": 12, "value": "a" * 32}
+
+
+def principal_analysis_input(raw_rows, *, include_transfers=True, known_at=2000):
+    """A comparator input built from raw source literals, never an executed run."""
+    cash_in = sum(cents(row["deposits_literal"]) for row in raw_rows)
+    cash_out = -sum(cents(row["withdrawals_literal"]) for row in raw_rows)
+    transfer_in = sum(cents(row["transfers_in_literal"]) for row in raw_rows) if include_transfers else 0
+    transfer_out = -sum(cents(row["transfers_out_literal"]) for row in raw_rows) if include_transfers else 0
+    winner = cash_out + transfer_out - cash_in - transfer_in
+    population = sum(bool(movement(row) if include_transfers else
+                          cents(row["deposits_literal"]) + cents(row["withdrawals_literal"])) for row in raw_rows)
+    return {"event": "procedure_run", "data": {
+        "procedure": "ponzi.net_investment", "version": 5, "claim": "statistical",
+        "known_at": known_at, "effective_through": source_date(raw_rows[-1]), "finding_count": 1,
+        "findings": [{"statistic": {"name": "fictitious_profit_clawback", "value": winner,
+                                    "scale": 2, "population": population},
+                      "narrative": (f"investor BLMIS-1ZA192 (cohort 1, status=net_winner): "
+                                    f"cash_in={cash_in}, cash_out={cash_out}, "
+                                    f"transfer_in={transfer_in}, transfer_out={transfer_out}, "
+                                    f"fictitious_profit_clawback={winner}, "
+                                    "principal_rule=posted_principal_transfer_v1, attribution=complete")}],
+    }}
+
+
+def export_test_input(raw_rows, path, format_name, mutate=None):
+    """Write an export-shaped unit input directly from original source literals."""
+    _, posted = comparator_inputs(raw_rows)
+    records = []
+    for row in raw_rows:
+        delta = movement(row)
+        if not delta:
+            continue
+        cash = cents(row["deposits_literal"]) + cents(row["withdrawals_literal"])
+        transfer = cents(row["transfers_in_literal"]) + cents(row["transfers_out_literal"])
+        contra = ("BLMIS-CASH", cash) if cash else ("BLMIS-TRANSFER", transfer)
+        for ordinal, (account, signed) in enumerate([("BLMIS-1ZA192", -delta), contra], 1):
+            receipt = posted[row["row_id"]]
+            records.append([receipt["vid"], str(ordinal), source_date(row), str(receipt["recorded_at"]),
+                            "1", account, "D" if signed > 0 else "C", amount(abs(signed)).split()[0],
+                            "USD", "2", row["description"], "", "source evidence retained",
+                            "12:" + "a" * 32 if ordinal == 1 else ""])
+    if mutate is not None:
+        mutate(records)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if format_name == "csv-gl":
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            stream.write("# fa_csv_gl_v1|book=source-comparator-only|dimension_encoding=fa-dimension-ids-v1\n")
+            writer = csv.writer(stream, lineterminator="\n")
+            writer.writerow(replay.ledger.CSV_GL_COLUMNS)
+            writer.writerows(records)
+    else:
+        (path.parent / "ADS_Coordinate_Certificate.toml").write_text(
+            'schema_version = 1\nformat = "aicpa_ads_gl_v3"\ndimension_encoding = "fa-dimension-ids-v1"\n',
+            encoding="utf-8")
+        path.write_text("|".join(replay.ledger.ADS_GL_COLUMNS) + "\n"
+                        + "".join("|".join(record) + "\n" for record in records), encoding="utf-8")
+    return posted
 
 
 class BlmisReplayTests(unittest.TestCase):
@@ -131,6 +192,10 @@ class BlmisReplayTests(unittest.TestCase):
                 self.assertEqual(leg["account"], account)
                 self.assertEqual(leg["side"], "debit" if value > 0 else "credit")
                 self.assertEqual(leg["amount"], amount(abs(value)))
+                if account == "BLMIS-1ZA192":
+                    self.assertEqual(leg["party"], "BLMIS-1ZA192")
+                else:
+                    self.assertNotIn("party", leg, "cash and transfer clearing remain untagged")
 
     def test_zero_principal_transfer_is_retained_without_an_invented_entry(self):
         zeros = [row for row in self.originals if not movement(row)]
@@ -146,6 +211,171 @@ class BlmisReplayTests(unittest.TestCase):
         self.assertNotIn(zero["row_id"], posted)
         position = self.originals.index(zero)
         self.assertEqual(zero["printed_balance_literal"], self.originals[position - 1]["printed_balance_literal"])
+
+    def test_native_principal_comparator_separates_cash_transfers_and_published_control(self):
+        complete = replay.check_principal_analysis(
+            principal_analysis_input(self.originals), self.rows, 2000, include_transfers=True)
+        missing = replay.check_principal_analysis(
+            principal_analysis_input(self.originals, include_transfers=False), self.rows, 2000,
+            include_transfers=False)
+        self.assertEqual(complete["printed_closing_principal_cents"], -994_703_100)
+        self.assertEqual(complete["native_principal_cents"], -994_703_100)
+        self.assertEqual(complete["net_winner_cents"], 994_703_100)
+        self.assertEqual(complete["cash_in_cents"], 1_043_998_300)
+        self.assertEqual(complete["cash_out_cents"], 1_692_438_000)
+        self.assertEqual(complete["transfer_in_cents"], 53_736_600)
+        self.assertEqual(complete["transfer_out_cents"], 400_000_000)
+        self.assertEqual(complete["gap_from_printed_principal_cents"], 0)
+        self.assertEqual(missing["net_winner_cents"], 648_439_700)
+        self.assertEqual(missing["gap_from_printed_principal_cents"], 346_263_400)
+        self.assertEqual(missing["cash_in_cents"], complete["cash_in_cents"])
+        self.assertEqual(missing["cash_out_cents"], complete["cash_out_cents"])
+        with self.assertRaises(replay.ledger.ReplayError):
+            replay.check_principal_analysis(principal_analysis_input(self.originals, include_transfers=False),
+                                            self.rows, 2000, include_transfers=True)
+        chart = json.loads((self.package / "chart.json").read_text())
+        clearing = next(account for account in chart["accounts"] if account["code"] == "BLMIS-TRANSFER")
+        self.assertEqual(clearing["type"], "Liability", "explicit transfer role admits an analysis clearing account")
+
+    def test_native_principal_comparator_refuses_wrong_scope_claim_and_attribution(self):
+        for field, value in (("procedure", "distribution.pro_rata"), ("version", 4), ("known_at", 1999),
+                             ("effective_through", "2008-10-29"), ("claim", "invariant"), ("finding_count", 2)):
+            report = principal_analysis_input(self.originals)
+            report["data"][field] = value
+            with self.subTest(field=field), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_principal_analysis(report, self.rows, 2000, include_transfers=True)
+        for field, value in (("name", "net_equity_claim"), ("value", 994_703_101), ("scale", 0), ("population", 75)):
+            report = principal_analysis_input(self.originals)
+            report["data"]["findings"][0]["statistic"][field] = value
+            with self.subTest(statistic=field), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_principal_analysis(report, self.rows, 2000, include_transfers=True)
+        for before, after in (("BLMIS-1ZA192", "BLMIS-OTHER"), ("attribution=complete", "attribution=incomplete"),
+                              ("posted_principal_transfer_v1", "inferred_transfer"),
+                              ("cash_in=1043998300", "cash_in=1097734900"),
+                              ("transfer_in=53736600", "transfer_in=127042200")):
+            report = principal_analysis_input(self.originals)
+            finding = report["data"]["findings"][0]
+            finding["narrative"] = finding["narrative"].replace(before, after)
+            with self.subTest(attribution=after), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_principal_analysis(report, self.rows, 2000, include_transfers=True)
+        for duplicate in (False, True):
+            report = principal_analysis_input(self.originals)
+            report["data"]["findings"] = report["data"]["findings"] * 2 if duplicate else []
+            report["data"]["finding_count"] = len(report["data"]["findings"])
+            with self.subTest(duplicate=duplicate), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_principal_analysis(report, self.rows, 2000, include_transfers=True)
+
+    def test_principal_role_control_checks_both_native_prefixes_and_later_history(self):
+        # These are call-contract inputs only. Real runner PASS still requires
+        # the actual executable responses recorded in commands.jsonl.
+        without = principal_analysis_input(self.originals, include_transfers=False, known_at=1500)
+        complete = principal_analysis_input(self.originals, known_at=2000)
+        for changed_history in (False, True):
+            with self.subTest(changed_history=changed_history):
+                native = mock.Mock(spec=replay.ledger.Native)
+                native.head.side_effect = [1500, 2000]
+                native.call.side_effect = [without, {}, complete, complete if changed_history else without]
+                if changed_history:
+                    with self.assertRaisesRegex(replay.ledger.ReplayError, "changed the earlier native analysis"):
+                        replay.verify_principal_analysis(native, self.rows)
+                else:
+                    result = replay.verify_principal_analysis(native, self.rows)
+                    self.assertEqual(result["transfer_gap_cents"], 346_263_400)
+                    self.assertTrue(result["historical_missing_role_result_unchanged"])
+                    self.assertEqual(native.call.call_args_list, [
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--as-known-at", 1500),
+                        mock.call("chart", "role", "BLMIS-TRANSFER", "investor_transfer"),
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--as-known-at", 2000),
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--as-known-at", 1500),
+                    ])
+
+    def test_native_party_registration_uses_actual_dimension_identity_not_party_vid(self):
+        registered = {"event": "rea_recorded", "data": {"object": "party", "code": "BLMIS-1ZA192",
+                      "target": "b" * 32, "already_recorded": False}}
+        listing = {"event": "parties", "data": {"parties": [{"code": "BLMIS-1ZA192", "kind": "Counterparty",
+                    "vid": "b" * 32, "dimension_id": 12, "dimension_value_vid": "a" * 32}]}}
+        for mutation in (None, "party_vid_as_value", "wrong_party", "wrong_kind", "other_dimension", "duplicate"):
+            with self.subTest(mutation=mutation):
+                changed = deepcopy(listing)
+                party = changed["data"]["parties"][0]
+                if mutation == "party_vid_as_value":
+                    party["dimension_value_vid"] = party["vid"]
+                elif mutation == "wrong_party":
+                    party["code"] = "BLMIS-OTHER"
+                elif mutation == "wrong_kind":
+                    party["kind"] = "Vendor"
+                elif mutation == "other_dimension":
+                    party["dimension_id"] = 3
+                elif mutation == "duplicate":
+                    changed["data"]["parties"].append(deepcopy(party))
+                native = mock.Mock(spec=replay.ledger.Native)
+                native.call.side_effect = [registered, changed]
+                out = Path(self.directory.name) / f"party-registration-{mutation}"
+                out.mkdir()
+                if mutation is None:
+                    self.assertEqual(replay.register_source_party(native, out), TEST_PARTY)
+                else:
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.register_source_party(native, out)
+
+    def test_export_comparator_matches_all_148_original_principal_and_counterpart_legs(self):
+        for format_name in ("csv-gl", "ads"):
+            with self.subTest(format=format_name):
+                path = Path(self.directory.name) / "all-source-exports" / format_name / "GL_Detail.txt"
+                posted = export_test_input(self.originals, path, format_name)
+                report = replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
+                self.assertEqual(report, {"format": format_name, "rows": 148, "tagged_rows": 74,
+                                          "untagged_rows": 74, "dimension_encoding": "fa-dimension-ids-v1",
+                                          "party": "BLMIS-1ZA192"})
+
+    def test_export_comparator_refuses_changed_party_tags_with_all_money_unchanged(self):
+        for format_name in ("csv-gl", "ads"):
+            for mutation in ("substitute", "drop", "invent_for_contra", "wrong_dimension"):
+                with self.subTest(format=format_name, mutation=mutation):
+                    def change(records):
+                        monetary = [row[:13] for row in records]
+                        if mutation == "substitute":
+                            records[0][13] = "12:" + "b" * 32
+                        elif mutation == "drop":
+                            records[0][13] = ""
+                        elif mutation == "invent_for_contra":
+                            records[1][13] = records[0][13]
+                        else:
+                            records[0][13] = "3:" + "a" * 32
+                        self.assertEqual([row[:13] for row in records], monetary)
+                    path = Path(self.directory.name) / "party-tampered-exports" / format_name / mutation / "GL_Detail.txt"
+                    posted = export_test_input(self.originals, path, format_name, change)
+                    with self.assertRaisesRegex(replay.ledger.ReplayError, "changed party attribution"):
+                        replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
+
+    def test_export_comparator_checks_counterpart_money_receipts_dates_and_row_coverage(self):
+        for format_name in ("csv-gl", "ads"):
+            for mutation in ("amount", "account", "date", "sequence", "class", "omit", "duplicate", "reorder"):
+                with self.subTest(format=format_name, mutation=mutation):
+                    def change(records):
+                        if mutation == "amount":
+                            records[1][7] = f"{Decimal(records[1][7]) + Decimal('0.01'):.2f}"
+                        elif mutation == "account":
+                            records[1][5] = "BLMIS-TRANSFER"
+                        elif mutation == "date":
+                            records[1][2] = "1992-12-08"
+                        elif mutation == "sequence":
+                            records[1][3] = str(int(records[1][3]) + 1)
+                        elif mutation == "class":
+                            records[1][4] = "12"
+                        elif mutation == "omit":
+                            records.pop()
+                        elif mutation == "duplicate":
+                            records.append(list(records[-1]))
+                        else:
+                            records[0], records[1] = records[1], records[0]
+                    path = Path(self.directory.name) / "source-tampered-exports" / format_name / mutation / "GL_Detail.txt"
+                    posted = export_test_input(self.originals, path, format_name, change)
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
 
     def test_normalized_missing_extra_duplicate_and_reordered_rows_are_refused(self):
         variants = {

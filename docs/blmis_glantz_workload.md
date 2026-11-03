@@ -106,7 +106,9 @@ The optional `prepare` command constructs a small double-entry **analysis book**
   principal balance.
 - `BLMIS-CASH`: the counterpart for the source's deposits and withdrawals.
 - `BLMIS-TRANSFER`: a separate counterpart for the trustee-credited transfer
-  principal. Transfers are not relabelled as cash.
+  principal, classified as a Liability clearing account in this analysis chart.
+  It holds the native `investor_transfer` role. Transfers are not relabelled as
+  cash, and the clearing classification is not a source-published BLMIS account.
 
 These are declared analysis accounts and counterparts, not a recovered original
 BLMIS chart of accounts. They represent this exhibit's selected account history
@@ -120,6 +122,49 @@ control records both its requested year-end date and the earlier source row's
 actual date. It does not invent a dated transaction or recompute the control
 from the normalized legs. Before the first row, selection fails instead of
 inventing an opening balance.
+
+## Native investor principal, including credited transfers
+
+The replay runs `ponzi.net_investment` version 5 under the named
+`posted_principal_transfer_v1` rule. It registers one role-labelled native
+counterparty for source account `1ZA192`, with code `BLMIS-1ZA192`, and tags only
+the principal leg of each entry with that party. Cash and transfer-clearing
+counterparts remain untagged. The three accounts receive explicit `cash`,
+`investor_capital` and `investor_transfer` roles; account names do not supply
+their classification.
+
+The procedure must preserve these distinct source amounts:
+
+| Component | Source input |
+|---|---:|
+| Cash received | $10,439,983 |
+| Cash withdrawn | $16,924,380 |
+| Trustee-credited principal transferred in | $537,366 |
+| Trustee-credited principal transferred out | $4,000,000 |
+| Resulting principal | −$9,947,031 |
+
+The result agrees with the exhibit's independently printed closing balance.
+The native finding uses its registered statistic name
+`fictitious_profit_clawback`, with value `994703100` at USD scale 2, and reports
+cash and transfer components separately. The driver checks the exact investor,
+procedure version, rule, effective cutoff, recorded prefix, attributed movement
+count and complete attribution in the returned finding.
+
+Transfer principal is still the trustee's supplied input. In particular,
+$1,270,422 of reported transfer activity contributes only the credited $537,366,
+and the reported $200,000 transfer contributes no principal or monetary entry.
+The procedure does not calculate those credits from the originating accounts,
+infer a principal cap, or determine a legally recoverable amount. This is an
+exact accounting calculation under the declared source inputs, not an
+independent net-equity or clawback determination.
+
+The runner also exercises the absence of a declared transfer role through the
+actual native procedure. Before assigning `investor_transfer`, version 5 sees
+the cash-attributed result of $6,484,397. After the role assignment, it must see
+$9,947,031: the $3,462,634 difference is exactly the credited net principal
+transferred out. It then reads the earlier recorded prefix again and requires
+the original result to remain unchanged. This compares two explicit native
+role states of version 5; it does not simulate or claim to replay version 4.
 
 ## Reproduce source acquisition, extraction and preparation
 
@@ -212,6 +257,12 @@ inventing a source time of day or BLMIS recording sequence. This path exercises
 native posting after source ingestion; the optional generic legacy-migration
 variant in the wider M-T-03 plan is not implemented here.
 
+Party registration and `party list` provide both the native Party VID and its
+distinct dimension-value VID. The latter is the exact identity carried by
+principal legs and checked in the exports. The driver binds these identities
+to the actual creation receipt and source account code; it does not derive
+the expected party identity from the export being tested.
+
 A successful run must complete all of these checks:
 
 - Match all 74 native principal-account lines to their actual posting receipts,
@@ -230,10 +281,22 @@ A successful run must complete all of these checks:
 - Reconcile all three accounts at each of 17 year ends. Principal controls come
   from the last printed source balance; cash and transfer controls use their
   distinct source columns. Inactive years retain the actual earlier source date.
+- Run the native investor-principal calculation with explicit party and account
+  roles, compare its components and final statistic with the source, and check
+  the missing-transfer-role discrepancy and immutable historical result.
 - Advance and independently verify registers for every active posting month
   (62 months), then verify projections and a signed accumulator checkpoint.
-- Export the whole analysis book to ADS with proofs, verify it with the real
-  standalone `fa-verify`, and require rejection of a separate one-cent mutation.
+- Export canonical CSV and ADS, re-read their native coordinate certificates,
+  and compare **all 148 exported legs** with the original source and actual
+  native posting receipts. This includes counterpart amounts and accounts,
+  effective dates, recorded sequences, entry classes, leg ordinals, 74 principal
+  party tags and 74 explicitly untagged counterparts.
+- Verify ADS with the real standalone `fa-verify`, requiring native dimension
+  coverage on all 148 rows. A legacy 13-column package with no authenticated
+  dimension coverage cannot satisfy this run. Independently mutate one cent
+  and one party value VID in two separate package copies; each must fail the
+  actual verifier with exit 8. The party mutation leaves every monetary and
+  text field unchanged.
 
 The verifier is given the signing key of the fresh local analysis book as an
 explicit caller-trusted input. This tests the book's internal commitments and
@@ -243,7 +306,10 @@ court-signed ledger.
 `report.json` is written with `status: PASS` only after all real native commands
 and comparisons succeed. It includes source pins, binary and driver SHA-256
 values, all posting receipts, certificate identity, annual controls, verified
-register periods and the actual verifier responses. `commands.jsonl` retains
+register periods, native party identity, principal findings at both role states,
+complete export comparisons and the actual verifier responses. The accepted
+`gl.csv` and `ads/` package remain available alongside separate `ads-tampered/`
+and `ads-dimension-tampered/` negative controls. `commands.jsonl` retains
 commands, stdout, stderr and exit codes. A failed run retains `failure.json`
 when an output directory has already been created. Keep the run directory to
 inspect the original evidence, prepared package, native book and exported proof.
@@ -271,12 +337,21 @@ a native FrankenAccounting posting, certificate replay or verifier run. Native
 execution must report its own observed result; an unavailable native run is
 `UNRUN`, never a pass.
 
-Observed in this implementation session: **14 source tests and 21 native-comparator
+Observed in this implementation session: **14 source tests and 28 native-comparator
 unit tests passed**. The comparator tests use explicitly test-only receipt
 identities and native-shaped payloads; they check refusal boundaries and do not
 simulate execution of the accounting engine. The restored comparator suite also
 passed after an execution-environment interruption. Both retained data files
 were recovered with their original SHA-256 pins unchanged.
+
+The new comparator coverage constructs expected cash and transfer amounts and
+all exported legs independently from the original source literals with
+`Decimal`. It rejects cash-only results presented as complete principal,
+reported transfer amounts substituted for credited principal, a wrong party or
+rule, incomplete attribution, changed source counterparts, missing or duplicate
+rows, and party-only changes that preserve all monetary fields. Its mocked
+native call contracts establish command and comparison behavior only; the
+runner still requires real executable responses before writing `PASS`.
 
 **Native execution remains UNRUN.** The pinned compiler was available, but the
 shared environment exhausted its filesystem and compiler processes were stopped

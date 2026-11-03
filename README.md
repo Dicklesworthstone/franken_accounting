@@ -474,6 +474,23 @@ new Rust regression covers staging, independent approvals, activation,
 source-derived balances, known-at visibility and certified report replay;
 native execution remains pending the required build and test gates.
 
+The [complete published BLMIS account workload](docs/blmis_glantz_workload.md)
+retains all 75 dated observations in Glantz Exhibit B-2, including the printed
+running principal balances and trustee-credited transfers. Its native driver
+posts the 74 monetary rows, reconciles every source observation, replays a
+retained ledger certificate, and verifies proof-bearing exports. The declared
+analysis accounts and the source's credited transfer amounts are explicit
+inputs; this is not an original BLMIS double-entry ledger or an independent
+net-equity determination.
+
+`ponzi.net_investment` version 5 adds the named `posted_principal_transfer_v1`
+rule. It keeps cash and transferred principal separate, recognizes explicitly
+marked clearing transfers and fully attributed investor-to-investor entries,
+and refuses ambiguous marked transfers. On this source account, omitting the
+credited transfers changes the closing result by $3,462,634. The workload
+documentation records the executable controls and current native validation
+status, including the version boundary for earlier procedure certificates.
+
 ### Bank CSV downloads
 
 Bank downloads can use an explicit column, date and amount declaration:

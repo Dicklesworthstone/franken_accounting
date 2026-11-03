@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,9 @@ import public_ledger as ledger
 
 ROOT = Path(__file__).resolve().parents[1]
 LABEL = "blmis-glantz-1za192-published-principal"
+PARTY_CODE = "BLMIS-1ZA192"
+PRINCIPAL_RULE = "posted_principal_transfer_v1"
+PONZI_PROCEDURE = "ponzi.net_investment"
 
 
 def usd(value: str) -> int:
@@ -66,14 +70,150 @@ def normalized_entries(path: Path, rows: list[dict]) -> list[dict]:
                            and ledger.source.amount_cents(actual["signed_amount"]) == amount
                            and actual["description"] == row["description"] and actual["memo"] == expected_memo,
                            f"normalized leg differs from source row {row['row_id']}")
-            legs.append({"account": account, "side": "debit" if amount > 0 else "credit",
-                         "amount": f"{source.money(abs(amount))} USD", "memo": actual["memo"]})
+            leg = {"account": account, "side": "debit" if amount > 0 else "credit",
+                   "amount": f"{source.money(abs(amount))} USD", "memo": actual["memo"]}
+            if account == source.PRINCIPAL_ACCOUNT:
+                leg["party"] = PARTY_CODE
+            legs.append(leg)
         entries.append({"idempotency_key": row["row_id"], "effective_date": row["date"],
                         "description": row["description"], "legs": legs})
     ledger.require(offset == len(normalized), "normalized CSV added or duplicated source legs")
     ledger.require(len({entry["idempotency_key"] for entry in entries}) == len(entries),
                    "source entries repeat an idempotency key")
     return entries
+
+
+def register_source_party(native: ledger.Native, output: Path) -> dict:
+    """Bind the source account label to actual native party and dimension IDs."""
+    path = output / "source-account-party.json"
+    ledger.write_json(path, {"code": PARTY_CODE, "kind": "Counterparty",
+                            "name": "Glantz Exhibit B-2 account 1ZA192 - analysis counterparty"})
+    recorded = native.call("party", "add", path)
+    data = recorded["data"]
+    ledger.require(recorded.get("event") == "rea_recorded" and data["object"] == "party"
+                   and data["code"] == PARTY_CODE and data["already_recorded"] is False,
+                   "native source party registration differs")
+    listed = native.call("party", "list")
+    parties = listed["data"]["parties"]
+    ledger.require(listed.get("event") == "parties" and len(parties) == 1,
+                   "native analysis book does not contain exactly its source account party")
+    party = parties[0]
+    ledger.require(party["code"] == PARTY_CODE and party["kind"] == "Counterparty"
+                   and party["vid"] == data["target"] and party["dimension_id"] == 12,
+                   "native listed party disagrees with its creation receipt")
+    for value in (party["vid"], party["dimension_value_vid"]):
+        ledger.require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None,
+                       "native party has an invalid identity")
+    ledger.require(party["vid"] != party["dimension_value_vid"],
+                   "native party VID was substituted for its dimension value VID")
+    return {"code": PARTY_CODE, "vid": party["vid"],
+            "dimension": party["dimension_id"], "value": party["dimension_value_vid"]}
+
+
+def check_principal_analysis(report: dict, rows: list[dict], known_at: int,
+                             *, include_transfers: bool) -> dict:
+    """Compare the actual v5 finding with source components and printed control.
+
+    Trustee-credited transfer principal remains an explicit input. This checks
+    the native calculation under that rule, not an independent legal claim.
+    """
+    data = report["data"]
+    ledger.require(report.get("event") == "procedure_run" and data["procedure"] == PONZI_PROCEDURE
+                   and data["version"] == 5 and data["claim"] == "statistical"
+                   and data["known_at"] == known_at and data["effective_through"] == rows[-1]["date"],
+                   "native principal analysis has another procedure, version or scope")
+    cash_in = sum(row["deposits_cents"] for row in rows)
+    cash_out = -sum(row["withdrawals_cents"] for row in rows)
+    transfer_in = sum(row["transfers_in_cents"] for row in rows) if include_transfers else 0
+    transfer_out = -sum(row["transfers_out_cents"] for row in rows) if include_transfers else 0
+    principal = cash_in + transfer_in - cash_out - transfer_out
+    published = rows[-1]["printed_balance_cents"]
+    if include_transfers:
+        ledger.require(principal == published, "source components disagree with printed closing principal")
+    else:
+        ledger.require(principal != published, "missing-transfer-role control lost its source discrepancy")
+    ledger.require(principal < 0, "this source account no longer has its published net-winner outcome")
+    population = sum(bool(row["cash_movement_cents"]
+                          or (include_transfers and row["transfer_movement_cents"])) for row in rows)
+    findings = data["findings"]
+    ledger.require(data["finding_count"] == len(findings) == 1,
+                   "native principal analysis omitted, duplicated or added an investor finding")
+    finding = findings[0]
+    ledger.require(finding["statistic"] == {
+        "name": "fictitious_profit_clawback", "value": -principal, "scale": 2, "population": population,
+    }, "native principal analysis differs from source cash and credited transfers")
+    expected_narrative = (
+        f"investor {PARTY_CODE} (cohort 1, status=net_winner): cash_in={cash_in}, cash_out={cash_out}, "
+        f"transfer_in={transfer_in}, transfer_out={transfer_out}, fictitious_profit_clawback={-principal}, "
+        f"principal_rule={PRINCIPAL_RULE}, attribution=complete"
+    )
+    ledger.require(finding["narrative"] == expected_narrative,
+                   "native principal analysis changed party attribution, components or principal rule")
+    return {"procedure": PONZI_PROCEDURE, "version": 5, "principal_rule": PRINCIPAL_RULE,
+            "party": PARTY_CODE, "known_at": known_at, "includes_declared_transfers": include_transfers,
+            "cash_in_cents": cash_in, "cash_out_cents": cash_out,
+            "transfer_in_cents": transfer_in, "transfer_out_cents": transfer_out,
+            "printed_closing_principal_cents": published, "native_principal_cents": principal,
+            "net_winner_cents": -principal, "gap_from_printed_principal_cents": principal - published,
+            "native_report": report}
+
+
+def verify_principal_analysis(native: ledger.Native, rows: list[dict]) -> dict:
+    """Run real missing-role and complete-role observations across native prefixes."""
+    command = ["procedure", "run", PONZI_PROCEDURE, "--effective-through", rows[-1]["date"]]
+    before_role = native.head()
+    without = native.call(*command, "--as-known-at", before_role)
+    missing = check_principal_analysis(without, rows, before_role, include_transfers=False)
+    native.call("chart", "role", source.TRANSFER_ACCOUNT, "investor_transfer")
+    after_role = native.head()
+    ledger.require(after_role > before_role, "declaring principal-transfer semantics did not publish native history")
+    complete = check_principal_analysis(native.call(*command, "--as-known-at", after_role),
+                                        rows, after_role, include_transfers=True)
+    historical = native.call(*command, "--as-known-at", before_role)
+    ledger.require(historical == without, "later transfer-role assignment changed the earlier native analysis")
+    return {"complete": complete, "without_transfer_role": missing,
+            "historical_missing_role_result_unchanged": True,
+            "transfer_gap_cents": complete["net_winner_cents"] - missing["net_winner_cents"]}
+
+
+def verify_source_export(path: Path, format_name: str, rows: list[dict],
+                         posted: dict[str, dict], party: dict) -> dict:
+    """Match every exported leg, including contra legs, to original source rows."""
+    monetary = [row for row in rows if row["principal_movement_cents"]]
+    ledger.require(set(posted) == {row["row_id"] for row in monetary}, "export/source receipt coverage differs")
+    identities = [posted[row["row_id"]]["vid"] for row in monetary]
+    ledger.require(len(set(identities)) == len(identities)
+                   and all(re.fullmatch(r"[0-9a-f]{32}", value) is not None for value in identities),
+                   "native export receipts have duplicate or invalid entry identities")
+    expected = {}
+    for row in monetary:
+        receipt = posted[row["row_id"]]
+        contra = ((source.CASH_ACCOUNT, row["cash_movement_cents"])
+                  if row["cash_movement_cents"] else (source.TRANSFER_ACCOUNT, row["transfer_movement_cents"]))
+        for ordinal, (account, signed) in enumerate([(source.PRINCIPAL_ACCOUNT, -row["principal_movement_cents"]), contra], 1):
+            dimensions = [{"dimension": party["dimension"], "value": party["value"]}] if ordinal == 1 else []
+            expected[(receipt["vid"], str(ordinal))] = (row, receipt, account, signed, dimensions)
+    seen = set()
+    last_ordinal = {}
+    for actual in ledger.exported_rows(path, format_name):
+        key = (actual["entry_id"], actual["line_no"])
+        ledger.require(key in expected and key not in seen, "export substituted, repeated or added a source leg")
+        row, receipt, account, signed, dimensions = expected[key]
+        last_ordinal[key[0]] = last_ordinal.get(key[0], 0) + 1
+        ledger.require(key[1] == str(last_ordinal[key[0]]), "export reordered the principal and counterpart legs")
+        ledger.require(ledger.parse_dimension_set(actual["dimension_set_v1"]) == dimensions,
+                       f"{format_name} changed party attribution of source row {row['row_id']}")
+        ledger.require(actual["effective_date"] == row["date"] and actual["entry_class"] == "1"
+                       and actual["recorded_seq"] == str(receipt["recorded_at"])
+                       and actual["account_code"] == account and actual["side"] == ("D" if signed > 0 else "C")
+                       and actual["amount"] == source.money(abs(signed))
+                       and actual["currency"] == "USD" and actual["unit_scale"] == "2",
+                       f"{format_name} changed source monetary fields for {row['row_id']}")
+        seen.add(key)
+    ledger.require(seen == set(expected), "export omitted source principal or counterpart legs")
+    return {"format": format_name, "rows": len(seen), "tagged_rows": len(monetary),
+            "untagged_rows": len(monetary), "dimension_encoding": ledger.DIMENSION_ENCODING,
+            "party": PARTY_CODE}
 
 
 def check_ledger(data: dict, rows: list[dict], posted: dict[str, dict], *, empty: bool = False) -> None:
@@ -172,6 +312,9 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
     native.call("book", "create", "--name", "Glantz 1ZA192 published principal ANALYSIS ONLY",
                 "--base-unit", "USD", "--calendar", "monthly")
     native.call("chart", "import", output / "chart.json")
+    party = register_source_party(native, output)
+    native.call("chart", "role", source.CASH_ACCOUNT, "cash")
+    native.call("chart", "role", source.PRINCIPAL_ACCOUNT, "investor_capital")
     years = range(int(rows[0]["date"][:4]), int(rows[-1]["date"][:4]) + 1)
     for year in years:
         native.call("period", "create", "--fiscal-year", year)
@@ -230,6 +373,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
                 source.CASH_ACCOUNT: sum(row["cash_movement_cents"] for row in rows),
                 source.TRANSFER_ACCOUNT: sum(row["transfer_movement_cents"] for row in rows)}
     ledger.same_cells(native.tb(final_period), expected, "native final three-account source reconciliation")
+    principal_analysis = verify_principal_analysis(native, rows)
     register_periods = sorted({f"FY{row['date'][:4]}-P{row['date'][5:7]}"
                                for row in rows if row["principal_movement_cents"]})
     for period in register_periods:
@@ -238,25 +382,41 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
     native.call("verify", "projections")
     native.call("checkpoint", "create", "--grant", "witness")
     native.call("verify", "accumulator")
+    csv_export = output / "gl.csv"
+    native.call("export", "csv-gl", "--as-of", rows[-1]["date"], "--out", csv_export)
+    native.call("verify", "export", "csv-gl", csv_export)
     exported = native.call("export", "ads", "--as-of", rows[-1]["date"], "--out", output / "ads", "--with-proofs")
+    native.call("verify", "export", "ads", output / "ads")
+    export_oracles = [verify_source_export(csv_export, "csv-gl", rows, posted, party),
+                      verify_source_export(output / "ads/GL_Detail.txt", "ads", rows, posted, party)]
     key = exported["data"]["proof"]["checkpoint_public_key"]
     verified = native.execute([str(native.verifier), "ads", str(output / "ads"), "--key", key, "--json"])
+    ledger.require_ads_dimension_proof(verified, manifest["normalized_legs"])
     tampered = output / "ads-tampered"
     shutil.copytree(output / "ads", tampered)
     mutation = ledger.tamper_ads_amount(tampered / "GL_Detail.txt")
     refused = native.execute([str(native.verifier), "ads", str(tampered), "--key", key, "--json"], expect=8)
+    dimension_tampered = output / "ads-dimension-tampered"
+    shutil.copytree(output / "ads", dimension_tampered)
+    dimension_mutation = ledger.tamper_ads_dimension(dimension_tampered / "GL_Detail.txt")
+    dimension_refused = native.execute([str(native.verifier), "ads", str(dimension_tampered),
+                                       "--key", key, "--json"], expect=8)
     return {"status": "PASS", "scope": source.SCOPE, "source_sha256": source.SOURCE_SHA256,
             "source_rows_sha256": source.ROWS_SHA256, "source_rows": len(rows), "native_entries": len(posted),
             "zero_principal_rows": manifest["zero_principal_rows"], "commands": native.commands,
             "source_diagnostics": source.verify_rows(rows, metadata), "ledger_certificate": certificate,
             "entry_receipts": posted, "native_trial_balance_cents": expected,
             "annual_controls": annual_controls,
+            "source_account_party": party, "principal_analysis": principal_analysis,
+            "export_source_oracles": export_oracles,
             "verified_register_periods": register_periods,
             "independent_verification": verified, "tamper_refusal": refused, "tamper_mutation": mutation,
+            "dimension_tamper_refusal": dimension_refused, "dimension_tamper_mutation": dimension_mutation,
             "binaries": {"fa_sha256": ledger.sha256(native.binary), "fa_verify_sha256": ledger.sha256(native.verifier)},
             "driver_sha256": ledger.sha256(Path(__file__)),
             "source_order_policy": "One native publication per monetary source row, preserving same-day exhibit order",
             "principal_sign": "Native debit-minus-credit is the negative of the trustee's printed principal",
+            "principal_analysis_scope": "Exact posted principal under posted_principal_transfer_v1; trustee-credited transfer amounts are explicit inputs, not an independent legal net-equity or clawback determination",
             "review_scope": "Distinct local test reviewer exercises AgentUpload evidence admission; no authenticated human review claim",
             "trust_scope": "Caller-trusted key of a fresh local analysis book; no external court or trustee signing-key claim",
             "checks": ["pinned_original_pdf", "complete_75_row_source", "every_printed_running_balance",
@@ -264,7 +424,12 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
                        "native_gross_principal_activity", "exact_certified_ledger_replay", "immutable_preimport_prefix",
                        "all_17_printed_year_end_controls", "zero_principal_observation_retained_and_compared",
                        "every_exact_retry_without_new_history", "native_registers_equal_fold", "native_projections",
-                       "signed_accumulator_checkpoint", "independent_ads_verification", "one_cent_tamper_rejected"]}
+                       "declared_source_account_party_and_roles", "native_principal_analysis_matches_printed_control",
+                       "missing_transfer_role_exposes_source_gap", "historical_missing_role_analysis_unchanged",
+                       "every_exported_principal_and_counterpart_leg_matches_source",
+                       "signed_accumulator_checkpoint", "independent_ads_verification",
+                       "independent_ads_dimension_coverage_on_all_148_legs",
+                       "one_cent_tamper_rejected", "party_only_tamper_rejected"]}
 
 
 def main(argv: list[str] | None = None) -> int:
