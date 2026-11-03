@@ -277,3 +277,37 @@ Those tests exercise independent source arithmetic, omitted and reordered
 observations, altered footnote premises, one-cent native errors, extra native
 postings, source citations, cancellation signs and annual controls. They are
 driver tests; a native `PASS` still requires the complete command above.
+
+## Executed native evidence: November 3, 2026
+
+The complete command above was executed successfully against the original PDF:
+**exit 0, 955 native commands, 227.45 seconds**. The retained
+[execution summary](../evidence/blmis/square-one-native-2026-11-03.json) binds the
+result to the original, extracted rows, helper files, native binaries, complete
+report, process transcript, CSV and ADS export hashes. It identifies the
+[successful native build](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231)
+and its independently checked artifact digest. The binaries were compiled from
+Rust source commit `88286f8c41f3943fde51e76334b33db758422c95`; the executed helpers
+are in commit `e0c2a5ed43b53799f633897686f84dac1d3ae16a`. The Rust sources and Cargo
+manifests are identical across those commits.
+
+| Executed obligation | Observed result |
+|---|---|
+| Source population | All 1,050 observations compared, including 709 starred exclusions and 710 nonposting rows |
+| Native journal and exact retries | 340 entries, 680 legs; all 340 retries retained their identities without new history |
+| Printed-source differences | All 1,010 discrepant observations retained; maximum $3; closing difference −$3 |
+| Native closing principal | $2,244,425, exactly equal to the independently folded source movements |
+| Certified reports | General-ledger certificate replayed identically; all ten annual controls matched |
+| Maintained registers | All 72 posting months advanced and verified |
+| Evidence custody | All seven original document-intake identities and grades retained after review and posting |
+| CSV and ADS exports | Every amount, description, citation and party dimension matched all 680 expected source legs |
+| Independent ADS verifier | Exit 0; all 3,239 checks passed, including complete native dimension coverage for 680 legs |
+| One-cent mutation | Actual standalone verification refused it with exit 8 |
+| Party-only mutation | Actual standalone verification refused it with exit 8 |
+
+The native procedure, historical preimport read, projection verification and
+signed checkpoint checks also completed. `PASS` applies to this stated
+principal-history workload. It does not certify the trustee's legal conclusion,
+erase the source arithmetic differences, or substitute for the unrun
+whole-workspace and release gates. No wider case-harness bead is closed by this
+execution record.

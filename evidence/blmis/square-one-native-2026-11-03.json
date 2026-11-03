@@ -1,0 +1,959 @@
+{
+  "annual_control_count": 10,
+  "annual_controls": [
+    {
+      "at_date": "1999-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -1130798800,
+        "BLMIS-CASH": 1130798800
+      },
+      "printed_balance_cents": 1130799000,
+      "source_date": "1999-12-31",
+      "source_fold_cents": 1130798800,
+      "source_fold_minus_printed_cents": -200,
+      "source_row_id": "SRC-BLM-005:1FR048:p61:l14"
+    },
+    {
+      "at_date": "2000-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -1695683500,
+        "BLMIS-CASH": 1695683500
+      },
+      "printed_balance_cents": 1695683500,
+      "source_date": "2000-12-18",
+      "source_fold_cents": 1695683500,
+      "source_fold_minus_printed_cents": 0,
+      "source_row_id": "SRC-BLM-005:1FR048:p62:l21"
+    },
+    {
+      "at_date": "2001-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -1678840200,
+        "BLMIS-CASH": 1678840200
+      },
+      "printed_balance_cents": 1678839900,
+      "source_date": "2001-12-31",
+      "source_fold_cents": 1678840200,
+      "source_fold_minus_printed_cents": 300,
+      "source_row_id": "SRC-BLM-005:1FR048:p63:l39"
+    },
+    {
+      "at_date": "2002-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -1729604600,
+        "BLMIS-CASH": 1729604600
+      },
+      "printed_balance_cents": 1729604800,
+      "source_date": "2002-11-27",
+      "source_fold_cents": 1729604600,
+      "source_fold_minus_printed_cents": -200,
+      "source_row_id": "SRC-BLM-005:1FR048:p64:l67"
+    },
+    {
+      "at_date": "2003-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -1131300000,
+        "BLMIS-CASH": 1131300000
+      },
+      "printed_balance_cents": 1131300300,
+      "source_date": "2003-12-31",
+      "source_fold_cents": 1131300000,
+      "source_fold_minus_printed_cents": -300,
+      "source_row_id": "SRC-BLM-005:1FR048:p67:l40"
+    },
+    {
+      "at_date": "2004-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -1169086500,
+        "BLMIS-CASH": 1169086500
+      },
+      "printed_balance_cents": 1169086800,
+      "source_date": "2004-12-31",
+      "source_fold_cents": 1169086500,
+      "source_fold_minus_printed_cents": -300,
+      "source_row_id": "SRC-BLM-005:1FR048:p68:l110"
+    },
+    {
+      "at_date": "2005-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -505442500,
+        "BLMIS-CASH": 505442500
+      },
+      "printed_balance_cents": 505442800,
+      "source_date": "2005-12-30",
+      "source_fold_cents": 505442500,
+      "source_fold_minus_printed_cents": -300,
+      "source_row_id": "SRC-BLM-005:1FR048:p70:l92"
+    },
+    {
+      "at_date": "2006-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -365442500,
+        "BLMIS-CASH": 365442500
+      },
+      "printed_balance_cents": 365442800,
+      "source_date": "2006-11-30",
+      "source_fold_cents": 365442500,
+      "source_fold_minus_printed_cents": -300,
+      "source_row_id": "SRC-BLM-005:1FR048:p73:l69"
+    },
+    {
+      "at_date": "2007-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -834442500,
+        "BLMIS-CASH": 834442500
+      },
+      "printed_balance_cents": 834442800,
+      "source_date": "2007-12-31",
+      "source_fold_cents": 834442500,
+      "source_fold_minus_printed_cents": -300,
+      "source_row_id": "SRC-BLM-005:1FR048:p76:l27"
+    },
+    {
+      "at_date": "2008-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FR048": -224442500,
+        "BLMIS-CASH": 224442500
+      },
+      "printed_balance_cents": 224442800,
+      "source_date": "2008-12-03",
+      "source_fold_cents": 224442500,
+      "source_fold_minus_printed_cents": -300,
+      "source_row_id": "SRC-BLM-005:1FR048:p78:l45"
+    }
+  ],
+  "binaries": {
+    "fa_sha256": "20200170403c9dd6a1d787796d1a63dc7578018598b23bdfc2f03c6fc50db788",
+    "fa_verify_sha256": "5f444d7a2fd39b970972487745cb3a95e79eb36f44d76119a2ad2c8cbe42d8ad"
+  },
+  "checks": [
+    "original_pdf_extracted_this_run",
+    "all_1050_source_observations",
+    "independent_decimal_raw_literal_fold",
+    "all_709_starred_exclusions_have_footnote_premises",
+    "all_710_zero_principal_observations_compared",
+    "all_340_entries_and_680_legs",
+    "every_source_discrepancy_reported_without_tolerance_or_plug",
+    "exact_certified_ledger_replay",
+    "immutable_preimport_prefix",
+    "every_exact_retry_without_new_history",
+    "all_annual_source_controls",
+    "native_principal_analysis",
+    "all_posting_month_registers",
+    "native_projections",
+    "unchanged_original_document_custody",
+    "signed_accumulator_checkpoint",
+    "all_exported_legs_text_and_party_dimensions_vs_source",
+    "independent_ads_proofs",
+    "one_cent_tamper_rejected",
+    "party_only_tamper_rejected"
+  ],
+  "commands": 955,
+  "completed_utc": "2026-11-03T07:41:06.156085+00:00",
+  "document_custody": [
+    {
+      "doc_commit": "e2f30700178930c655d57e0bb732b7df7beb9855a8355865d1c418588fa586a2",
+      "file": "source.pdf",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 87,
+      "oid": "6511adfc9d986ef6b338dd6a95f33507ae8101453352d2f19bfe5d78d13895f0",
+      "review_attestation_vid": "268244d6e8c3c3db7ba900799709b56c",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 88,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "d4fc8605bef37147ad1f6fb24cfa10d4ca7d0492ccad37e81f294f1dd8f6f95b",
+      "file": "rows.csv",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 89,
+      "oid": "255155f8ee843a4e04d62e0f3273157e9980e0271dba7a43ab46272e77c16da6",
+      "review_attestation_vid": "2b52c08baca7602da0a0b372bf41cc8f",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 90,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "822b8d52b4d3e27a049a15b9125a5f9f879dd073f9e607e87f60950212926ec7",
+      "file": "source.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 91,
+      "oid": "bb7fa0f89f87de3526bedebfbc996782fd1955e51e3a50e40282eabca884e780",
+      "review_attestation_vid": "52d88bfdc41cc9eb6ff6c3a1e7b0ee86",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 92,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "ad3e53f3db3f06254d8354a8b046a65a6d16980c613aeeb8e7fcedd0dbbfff2f",
+      "file": "manifest.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 93,
+      "oid": "4525731a3bef5c5e6ae869007ed6cac12fe9b0858def2a4ed927662d47e9b046",
+      "review_attestation_vid": "bb8da57f757e24c86ebd22f416dd05de",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 94,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "b8c695646c1e068c41b48cf77f147232ab38c78c153e39a8829ea19b5cfcfc5e",
+      "file": "observations.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 95,
+      "oid": "e70c9044296b159bdcf2920032c83d1af6e6f928985effe41d902656eac0b004",
+      "review_attestation_vid": "a45c0730d1e8cf4ed90b72aa6961121e",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 96,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "77d311d21b93242b8c76a90f87b8b02fa03b89e95787c02003cb34e380ad279b",
+      "file": "layout.txt",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 97,
+      "oid": "1589723e8df3dd1e7c8d9d67a6180bd2b7fc49d742dec754425e9f7f5ee7f351",
+      "review_attestation_vid": "0a4da74eace8e99182c44d2b44dd92ea",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 98,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "78b341291d483ec3551ed0ae76d14d2f6cd76c9be4c01653fb34570ad7ac1009",
+      "file": "extraction.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 99,
+      "oid": "8d045fd485e5be50efd2aaaf8d9650ae3cb2d57098496045708517d074e2350b",
+      "review_attestation_vid": "cc6c3343af53c8e1f8e6f3b750096e19",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 100,
+      "self_sourced": true
+    }
+  ],
+  "elapsed_seconds": 227.45,
+  "exact_entry_retries": 340,
+  "executed_helpers": {
+    "scripts/blmis_replay.py": {
+      "bytes": 60202,
+      "sha256": "31cf64d790b6c7ee592f1f9db8bc533f2b551d202862e592ea1d7ba6f50dbe6a"
+    },
+    "scripts/blmis_source.py": {
+      "bytes": 79226,
+      "sha256": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2"
+    },
+    "scripts/blmis_square_one.py": {
+      "bytes": 32888,
+      "sha256": "a3ded339f5c08c850058ec0f631250d203523b074767373a94bbf4248c9731f6"
+    },
+    "scripts/blmis_square_one_replay.py": {
+      "bytes": 21706,
+      "sha256": "880100c973ee076edd6cf3591fee7a7285696a905a4b784294eb6ae42bc3cccb"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 87487,
+      "sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 17814,
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80"
+    }
+  },
+  "export_source_oracles": [
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "csv-gl",
+      "party": "BLMIS-1FR048",
+      "rows": 680,
+      "tagged_rows": 340,
+      "untagged_rows": 340
+    },
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "ads",
+      "party": "BLMIS-1FR048",
+      "rows": 680,
+      "tagged_rows": 340,
+      "untagged_rows": 340
+    }
+  ],
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "ads/ADS_Coordinate_Certificate.toml": {
+      "bytes": 545,
+      "sha256": "9966b5622618f37e57843ff8d44687e16fb5b1253b79d92e3ef73a3553a3d51e"
+    },
+    "ads/ADS_Proof.fab": {
+      "bytes": 1729694,
+      "sha256": "c870dbee1a79b7e081fe889e378a47971e64dded68ea14473eef777f346d1506"
+    },
+    "ads/ADS_Proof.receipt": {
+      "bytes": 219,
+      "sha256": "aecddb3a2e3939e56b792023a911e663d1acfc9b445177f3f142e0453fa6ae01"
+    },
+    "ads/Chart_of_Accounts.txt": {
+      "bytes": 197,
+      "sha256": "e97608ab686fc56062655b5b02dc0d6024f70e8118991bde6ebcf5b07edce8e2"
+    },
+    "ads/GL_Detail.txt": {
+      "bytes": 122016,
+      "sha256": "4cdfcc1595ccbc67bee0cd00e1f87b135d513340a6ed8733fedaafe46f155e91"
+    },
+    "ads/Trial_Balance.txt": {
+      "bytes": 171,
+      "sha256": "cd7823464180ecade65498cc9f88ff3eef0e18f0ec9d231ed3152a73cdf0295a"
+    },
+    "commands.jsonl": {
+      "bytes": 3281433,
+      "sha256": "f3c5e0bb1104279503c17d008db8167953ea48f8a41acf9a2db5e2c467caa012"
+    },
+    "controls.json": {
+      "bytes": 2432,
+      "sha256": "969eb5b4af447c3875faa6bf7a357e76b8d0e194529b3f97dd8f536a8ea2f8b3"
+    },
+    "extracted-source/layout.txt": {
+      "bytes": 397489,
+      "sha256": "744be3807393eadd0742e4402f209d89909047e8e98c60db3f97c0cc5ebae03d"
+    },
+    "extraction.json": {
+      "bytes": 1487,
+      "sha256": "a13df72fed451721110cd510cefe30666a26bea3b0054422ac1e512cb86e4b03"
+    },
+    "gl.csv": {
+      "bytes": 122585,
+      "sha256": "dbb735732c2ffe5b350d0950e80c7b2c33023f6bbc696c54703e7a30ed9f78a3"
+    },
+    "legacy.csv": {
+      "bytes": 112357,
+      "sha256": "f74de57fdb2bef18c01b1690de0f17b82040209d888534452ddcb01543a943b4"
+    },
+    "manifest.json": {
+      "bytes": 245459,
+      "sha256": "ca88de7305ceae8f94b3692a34ef0990eb4bba00d08b68ef0eb24f6078394122"
+    },
+    "observations.json": {
+      "bytes": 314152,
+      "sha256": "c1d0ee24a1974868c805473def961526e78fd8674216f13cfeb9c0b1c9ee3daa"
+    },
+    "report.json": {
+      "bytes": 3740981,
+      "sha256": "6f37fa6786e046be1deef25873fda206bac01f18423a7b3eaa51b6532187a666"
+    },
+    "rows.csv": {
+      "bytes": 246442,
+      "sha256": "0b3d9666f7a55926333b53241d51e30a3ce4e3b417da7f072c4fcfc3d4a34afd"
+    },
+    "source.json": {
+      "bytes": 5648,
+      "sha256": "56b89c945d4b463c9929f8470a3625e58024adaeba67f656735399f892cf9284"
+    },
+    "source.pdf": {
+      "bytes": 1190822,
+      "sha256": "396af6d399fb75fc966254b29f9f6e2e1fb0df5bd4ce9d4a48134fe38d56897b"
+    }
+  },
+  "helper_commit": "e0c2a5ed43b53799f633897686f84dac1d3ae16a",
+  "independent_verification": {
+    "bundle": {
+      "check": "bundle",
+      "detail": {
+        "balances": 2,
+        "book_id": "6c00b4e6b7dc840011119a04861e38bd",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "f71e8bab3c7fb84486037b07fc511b8b1f30d7cbaa6e3a20e5a85e88b7ab661f",
+        "checkpoint_oid": "747ad8e3839808657f02ffcdd4dc63e5a856402ffbbfa39725b413936e4d5c0e",
+        "completeness": "seq_range_complete",
+        "documents": 2380,
+        "entries": 425,
+        "format": "1.0",
+        "inline": 0,
+        "leaf_count": 439,
+        "scope": "prefix",
+        "through_seq": 513
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "format"
+    },
+    "check_count": 3239,
+    "check_counts": [
+      {
+        "check": "ads_extract",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "closure",
+        "count": 425,
+        "result": "pass"
+      },
+      {
+        "check": "completeness",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "entries",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "manifest",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "public_commitment",
+        "count": 2380,
+        "result": "pass"
+      },
+      {
+        "check": "recomputation",
+        "count": 2,
+        "result": "pass"
+      },
+      {
+        "check": "record",
+        "count": 425,
+        "result": "pass"
+      }
+    ],
+    "command": "ads",
+    "error": null,
+    "exit_code": 0,
+    "extract": {
+      "check": "ads_extract",
+      "detail": {
+        "account_scope": null,
+        "chart_rows": 2,
+        "dimension_coverage": "complete_native_leg_identities",
+        "dimension_rows": 680,
+        "effective_through": "2008-12-03",
+        "entries": 340,
+        "known_at_seq": 513,
+        "rows": 680,
+        "tb_rows": 2,
+        "units": [
+          {
+            "code": "USD",
+            "unit_id": 0
+          }
+        ]
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "completeness"
+    },
+    "failed_checks": [],
+    "tool": "fa-verify",
+    "v": 1,
+    "verdict": "verified"
+  },
+  "ledger_certificate": {
+    "compared_native_lines": 340,
+    "known_at": 440,
+    "oid": "0858f2412e01c3175f72bb51201f5acb61e3001a6c0c4348b1536e6d9527ff33",
+    "output_digest": "ae56b0e6daadc89c3df273928d6f4585333ee786a68bf005da29b4ccad94d569"
+  },
+  "native_binary_provenance": {
+    "artifact_id": 13210366143,
+    "artifact_sha256": "a3946ad20f1a0891c025fb3e071e8a03dc390ed8b13da2c5a49b6fca069aa7f0",
+    "cargo_lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "repository": "Dicklesworthstone/franken_accounting",
+    "rust_sources_and_manifests_match_driver_base": true,
+    "scope": "Native binaries compiled at the identified Rust source commit; case helpers executed from helper_commit. No Rust source or Cargo manifest changed between these commits.",
+    "source_commit": "88286f8c41f3943fde51e76334b33db758422c95",
+    "workflow_run_id": 41588158231,
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231"
+  },
+  "native_entries": 340,
+  "native_legs": 680,
+  "observed_process_exit": 0,
+  "principal_scope": "Principal-history analysis using the trustee's withholding-refund exclusion as an explicit premise; no reconstruction of gross IRS payments or dated refunds, and no legal net-equity conclusion",
+  "reproduce": [
+    "python3",
+    "-B",
+    "scripts/blmis_square_one_replay.py",
+    "run",
+    "--out",
+    "artifacts/square-one-native",
+    "--fa",
+    "target/debug/fa",
+    "--fa-verify",
+    "target/debug/fa-verify"
+  ],
+  "result_scope": "PASS means exact agreement with the independently folded published movements, with every printed discrepancy retained; it does not assert that the printed source balances are exact",
+  "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+  "scope": "Every published transaction of Square One Exhibit B account 1FR048: 1,050 observations, 1999-02-01 through 2008-12-03. Trustee computations in a complaint, not a complete BLMIS general ledger or a court finding. All twelve printed columns, zero-dollar observations, 709 starred withholding cells and source arithmetic discrepancies are retained. Under the exhibit's footnote [1], starred reported withholding amounts do not reduce principal. The principal and cash-counterpart accounts are a constructed principal-history book; they do not purport to reconstruct gross tax payments or dated IRS refunds. No source difference is silently corrected, tolerated or posted as a balancing adjustment.",
+  "source_account_party": {
+    "code": "BLMIS-1FR048",
+    "dimension": 12,
+    "value": "5cd517400ecdaa03c47b2e5eebc2df43",
+    "vid": "c0fff4330618975ff493a14e3b94072c"
+  },
+  "source_comparison": {
+    "all_printed_balances_equal": false,
+    "closing_gap_cents": -300,
+    "maximum_printed_gap_cents": 300,
+    "native_closing_principal_cents": 224442500,
+    "native_lines": 340,
+    "native_matches_source_movements_exactly": true,
+    "printed_closing_principal_cents": 224442800,
+    "printed_rows_off": 1010,
+    "source_rows": 1050,
+    "starred_exclusions": 709,
+    "zero_principal_observations": 710
+  },
+  "source_extraction": {
+    "command": [
+      "pdftotext",
+      "-layout",
+      "-f",
+      "60",
+      "-l",
+      "78",
+      "-",
+      "-"
+    ],
+    "format": "fa-blmis-square-one-pdf-extraction-v1",
+    "mode": "original_pdf_extracted_this_run",
+    "pdf_pages": [
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78
+    ],
+    "retained": {
+      "extracted-source/layout.txt": {
+        "bytes": 397489,
+        "sha256": "744be3807393eadd0742e4402f209d89909047e8e98c60db3f97c0cc5ebae03d"
+      },
+      "extracted-source/rows.csv": {
+        "bytes": 246442,
+        "sha256": "0b3d9666f7a55926333b53241d51e30a3ce4e3b417da7f072c4fcfc3d4a34afd"
+      },
+      "extracted-source/source.json": {
+        "bytes": 5648,
+        "sha256": "56b89c945d4b463c9929f8470a3625e58024adaeba67f656735399f892cf9284"
+      },
+      "source.pdf": {
+        "bytes": 1190822,
+        "sha256": "396af6d399fb75fc966254b29f9f6e2e1fb0df5bd4ce9d4a48134fe38d56897b"
+      }
+    },
+    "reviewed_metadata_sha256": "56b89c945d4b463c9929f8470a3625e58024adaeba67f656735399f892cf9284",
+    "reviewed_rows_sha256": "0b3d9666f7a55926333b53241d51e30a3ce4e3b417da7f072c4fcfc3d4a34afd",
+    "source_rows": 1050,
+    "source_sha256": "396af6d399fb75fc966254b29f9f6e2e1fb0df5bd4ce9d4a48134fe38d56897b",
+    "source_url": "https://www.madofftrustee.com/document/dockets/009665-squareonecomplaint10-04330docket0167.pdf",
+    "stdin": "Verified source.pdf bytes; extraction cannot race a changed source path."
+  },
+  "source_rows": 1050,
+  "source_rows_sha256": "0b3d9666f7a55926333b53241d51e30a3ce4e3b417da7f072c4fcfc3d4a34afd",
+  "source_sha256": "396af6d399fb75fc966254b29f9f6e2e1fb0df5bd4ce9d4a48134fe38d56897b",
+  "status": "PASS",
+  "tamper_refusals": {
+    "amount": {
+      "mutation": {
+        "delta_cents": 1,
+        "line": 2,
+        "new_amount": "2000000.01",
+        "old_amount": "2000000.00"
+      },
+      "verification": {
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 2,
+            "book_id": "6c00b4e6b7dc840011119a04861e38bd",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "f71e8bab3c7fb84486037b07fc511b8b1f30d7cbaa6e3a20e5a85e88b7ab661f",
+            "checkpoint_oid": "747ad8e3839808657f02ffcdd4dc63e5a856402ffbbfa39725b413936e4d5c0e",
+            "completeness": "seq_range_complete",
+            "documents": 2380,
+            "entries": 425,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 439,
+            "scope": "prefix",
+            "through_seq": 513
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_count": 3239,
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 425,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 2380,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 2,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 425,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-12-03",
+            "entries": 339,
+            "known_at_seq": 513,
+            "rows": 678,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 0f60c473673ccb980e88d5d8716c8e35 (recorded at 101) is no proven entry selected through 2008-12-03; a proven entry recorded at 101 (effective 1999-02-01, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-12-03",
+              "entries": 339,
+              "known_at_seq": 513,
+              "rows": 678,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 0f60c473673ccb980e88d5d8716c8e35 (recorded at 101) is no proven entry selected through 2008-12-03; a proven entry recorded at 101 (effective 1999-02-01, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "failed"
+      }
+    },
+    "party": {
+      "mutation": {
+        "dimension": 12,
+        "entry_id": "0f60c473673ccb980e88d5d8716c8e35",
+        "leg": 1,
+        "line": 2,
+        "new_value": "5cd517400ecdaa03c47b2e5eebc2df42",
+        "old_value": "5cd517400ecdaa03c47b2e5eebc2df43"
+      },
+      "verification": {
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 2,
+            "book_id": "6c00b4e6b7dc840011119a04861e38bd",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "f71e8bab3c7fb84486037b07fc511b8b1f30d7cbaa6e3a20e5a85e88b7ab661f",
+            "checkpoint_oid": "747ad8e3839808657f02ffcdd4dc63e5a856402ffbbfa39725b413936e4d5c0e",
+            "completeness": "seq_range_complete",
+            "documents": 2380,
+            "entries": 425,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 439,
+            "scope": "prefix",
+            "through_seq": 513
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_count": 3239,
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 425,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 2380,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 2,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 425,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-12-03",
+            "entries": 339,
+            "known_at_seq": 513,
+            "rows": 678,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 0f60c473673ccb980e88d5d8716c8e35 (recorded at 101) is no proven entry selected through 2008-12-03; a proven entry recorded at 101 (effective 1999-02-01, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-12-03",
+              "entries": 339,
+              "known_at_seq": 513,
+              "rows": 678,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 0f60c473673ccb980e88d5d8716c8e35 (recorded at 101) is no proven entry selected through 2008-12-03; a proven entry recorded at 101 (effective 1999-02-01, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "failed"
+      }
+    }
+  },
+  "trust_scope": "Caller-trusted key of a fresh local analysis book; no court or trustee signing-key claim",
+  "verified_register_periods": [
+    "FY1999-P02",
+    "FY1999-P03",
+    "FY1999-P04",
+    "FY1999-P06",
+    "FY1999-P07",
+    "FY1999-P08",
+    "FY1999-P09",
+    "FY1999-P10",
+    "FY1999-P11",
+    "FY1999-P12",
+    "FY2000-P01",
+    "FY2000-P02",
+    "FY2000-P03",
+    "FY2000-P04",
+    "FY2000-P05",
+    "FY2000-P06",
+    "FY2000-P07",
+    "FY2000-P08",
+    "FY2000-P09",
+    "FY2000-P10",
+    "FY2000-P11",
+    "FY2000-P12",
+    "FY2001-P01",
+    "FY2001-P02",
+    "FY2001-P03",
+    "FY2001-P04",
+    "FY2001-P05",
+    "FY2001-P06",
+    "FY2001-P07",
+    "FY2001-P08",
+    "FY2001-P09",
+    "FY2001-P10",
+    "FY2001-P11",
+    "FY2001-P12",
+    "FY2002-P01",
+    "FY2002-P02",
+    "FY2002-P03",
+    "FY2002-P04",
+    "FY2002-P05",
+    "FY2002-P06",
+    "FY2002-P07",
+    "FY2002-P08",
+    "FY2002-P09",
+    "FY2002-P10",
+    "FY2002-P11",
+    "FY2003-P01",
+    "FY2003-P04",
+    "FY2003-P05",
+    "FY2003-P06",
+    "FY2003-P10",
+    "FY2003-P12",
+    "FY2004-P06",
+    "FY2004-P08",
+    "FY2004-P09",
+    "FY2004-P12",
+    "FY2005-P03",
+    "FY2005-P06",
+    "FY2005-P08",
+    "FY2005-P09",
+    "FY2005-P11",
+    "FY2005-P12",
+    "FY2006-P03",
+    "FY2006-P04",
+    "FY2006-P07",
+    "FY2006-P08",
+    "FY2007-P06",
+    "FY2007-P07",
+    "FY2007-P08",
+    "FY2007-P10",
+    "FY2008-P01",
+    "FY2008-P02",
+    "FY2008-P07"
+  ],
+  "whole_workspace_gates": {
+    "scope": "This record proves the executed case workload and its standalone verifier calls. It is not a new cargo-test, Tier-0, release, or bead-closure verdict.",
+    "status": "UNRUN"
+  }
+}

@@ -252,13 +252,15 @@ class MigrationComparators(unittest.TestCase):
                 with self.assertRaises(migration.live.CheckError):
                     migration.check_stage_group(changed, selected, package, "c" * 32, {})
 
-    def write_export(self, directory, rows):
+    def write_export(self, directory, rows, *, dimensions=False):
         path = Path(directory) / "native.csv"
+        columns = migration.ledger.CSV_GL_COLUMNS if dimensions else migration.ledger.CSV_GL_COLUMNS[:-1]
         with path.open("w", newline="", encoding="utf-8") as stream:
-            stream.write("# fa_csv_gl_v1|dimension_encoding=fa-dimension-ids-v1\n")
-            writer = csv.DictWriter(stream, fieldnames=migration.ledger.CSV_GL_COLUMNS)
+            stream.write("# fa_csv_gl_v1|book=unit-test-only" +
+                         ("|dimension_encoding=fa-dimension-ids-v1" if dimensions else "") + "\n")
+            writer = csv.DictWriter(stream, fieldnames=columns)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows({key: row[key] for key in columns} for row in rows)
         return path
 
     def test_export_retains_every_leg_and_exact_provenance(self):
@@ -267,6 +269,20 @@ class MigrationComparators(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = migration.check_export(self.write_export(directory, rows), self.rows, identities, receipts)
         self.assertEqual(result, {"entries": 74, "legs": 148, "text_and_provenance_exact": True})
+
+    def test_dimension_bearing_export_is_refused_for_the_untagged_model(self):
+        # Preserve the original 14-column comparator fixture as a negative:
+        # the real native writer correctly emitted 13 columns for this model.
+        _, identities = package_from_literals(self.raw_rows)
+        rows, receipts = export_from_literals(self.raw_rows, identities)
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_export(directory, rows, dimensions=True)
+            with self.assertRaisesRegex(migration.live.CheckError, "dimension attribution"):
+                migration.check_export(path, self.rows, identities, receipts)
+            rows[0]["dimension_set_v1"] = "12:" + "f" * 32
+            path = self.write_export(directory, rows, dimensions=True)
+            with self.assertRaisesRegex(migration.live.CheckError, "dimension attribution"):
+                migration.check_export(path, self.rows, identities, receipts)
 
     def test_export_refuses_missing_balanced_entry_or_text_and_lineage_loss(self):
         _, identities = package_from_literals(self.raw_rows)

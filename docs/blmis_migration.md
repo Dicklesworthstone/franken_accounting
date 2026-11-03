@@ -204,3 +204,56 @@ This driver is a standalone execution workload. It does not claim completion
 of the case framework's entire M-T-03 bead, its separate native-chunk tie-out
 twin, or migration of the other complaints' accounts. Native execution status
 is recorded by each actual run's `report.json` or `failure.json`.
+
+## Recorded native execution — 2026-11-03
+
+The complete four-account migration **passed with process exit 0** in
+**590.456 seconds**, making **1,268 actual native calls**. The committed
+[execution evidence](../evidence/blmis/glantz-migration-native-2026-11-03.json)
+records the executable and driver identities, full report and command-log
+hashes, source bindings, refusal results, and reproduction command.
+
+| Executed check | Observed result |
+| --- | --- |
+| Original source population | All 379 observations freshly extracted and retained; the declared 304-observation subset includes seven zero-principal rows |
+| Native migration and exact CSV export | 297 original monetary observations, 594 legs; every date, amount, description, citation and migration identity matched |
+| Source completeness negative | All 194 monetary controls still matched with 295 members; the native finalization planner refused the two missing original observations with exit 3 / `FA-REF-131` |
+| Repair and activation | The original pair was staged into the same Open run; all 297 members activated in one publication, advancing the frontier from 1232 to 1233 |
+| Historical visibility | The selected pre-finalization frontier 1230 still returned no migration rows after activation |
+| Monthly controls | All 194 trial balances, November 1992 through December 2008, were certified and replayed byte for byte; all 194 period registers were advanced and independently checked against the fold |
+| Standalone report verification | All 194 source-bound report bundles verified, covering 955 trial-balance rows; every bundle carried the expected source witness |
+| Other negative controls | The balanced $1 alteration refused before preparation published anything, exit 2; a changed report-bundle byte failed standalone verification, exit 8 |
+| Native gross turnover | Final debits and credits each equaled USD 111,193,678.00, checked against the published movement columns |
+
+Of the 1,268 calls, **1,265 exited 0**. The remaining three exits were the
+required negatives: one each at 2, 3 and 8. The run used the embedded CLI and
+standalone verifier; the optional daemon was not required. Group retries
+rechecked 64 retained members before activation and the same 64 after
+finalization, preserving their identities and publication sequences. Nine
+AgentUpload documents received native Reviewed attestations under the disclosed
+local fixture review model.
+
+The executables were retrieved from the repository's successful
+[native replay workflow run 41588158231](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231),
+artifact `13210366143`, built from source commit
+`88286f8c41f3943fde51e76334b33db758422c95` with the pinned
+`nightly-2026-08-31` toolchain. The downloaded archive, each executable, source
+manifest and Cargo.lock identity were checked. The Rust sources and manifests
+matched the execution checkout. The evidence records the archive SHA-256,
+both executable SHA-256 values and exact executed driver SHA-256; no local
+rebuild success is inferred from this provenance.
+
+The first native attempt exposed a helper mismatch after successful native
+finalization: the dimension-aware public-data CSV comparator expected an
+additional column, while this explicitly untagged migration correctly exported
+the native 13-column format. The migration comparator now validates that exact
+untagged contract. Dimensional 14-column input remains a rejecting negative
+control. The failed attempt and its hashes were retained; the complete fresh
+run above then passed all checks.
+
+These results establish the stated native workload and its source comparisons.
+Whole-workspace Tier 0, Tier 1, `cargo test --workspace` and workspace clippy
+were **UNRUN for the changed helper tree**. This evidence does not close a bead
+or claim the case plan's separate native-chunk monetary twin. The two excluded
+accounts, trustee-credit assumptions, source discrepancies and fixture-review
+scope remain as declared above.

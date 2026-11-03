@@ -242,6 +242,36 @@ def source_gross(rows: list[dict]) -> dict[str, int]:
     return dict(gross)
 
 
+def exported_rows(path: Path):
+    """Read the native 13-column contract for this explicitly untagged model.
+
+    csv_gl::write_csv_gl adds the authenticated dimension extension only when
+    at least one leg carries a dimension. This workload has no such legs; a
+    dimension-bearing schema therefore signals changed model attribution.
+    Native `verify export` separately authenticates all coordinate metadata.
+    """
+    columns = ledger.CSV_GL_COLUMNS[:-1]
+    with path.open(encoding="utf-8", newline="") as stream:
+        coordinate_seen, header = False, None
+        for line in stream:
+            if line.startswith("#"):
+                if line.startswith("# fa_csv_gl_v1|"):
+                    live.require(not coordinate_seen, "migration export repeats its coordinate header")
+                    fields = line.rstrip("\r\n").split("|")
+                    live.require(not any(field.startswith("dimension_encoding=") for field in fields),
+                                 "untagged migration export unexpectedly declares dimension attribution")
+                    coordinate_seen = True
+                continue
+            if line.strip():
+                header = next(csv.reader([line], strict=True))
+                break
+        live.require(coordinate_seen and header == list(columns),
+                     "migration export does not use the declared untagged 13-column schema")
+        for fields in csv.reader(stream, strict=True):
+            live.require(len(fields) == len(columns), "migration export contains a ragged source record")
+            yield dict(zip(columns, fields, strict=True))
+
+
 def check_export(path: Path, rows: list[dict], identities: dict[str, str], receipts: dict[str, dict]) -> dict:
     """Every dated leg, citation and native provenance is checked, including offsets."""
     monetary = [row for row in rows if row["principal_movement_cents"]]
@@ -255,7 +285,7 @@ def check_export(path: Path, rows: list[dict], identities: dict[str, str], recei
                                                     (OFFSET_ACCOUNT, row["principal_movement_cents"])), 1):
             expected[(vid, str(ordinal))] = (row, account, signed)
     seen = set()
-    for actual in ledger.exported_rows(path, "csv-gl"):
+    for actual in exported_rows(path):
         key = actual["entry_id"], actual["line_no"]
         live.require(key in expected and key not in seen, "native export added, repeated or substituted a source leg")
         row, account, signed = expected[key]
@@ -263,8 +293,8 @@ def check_export(path: Path, rows: list[dict], identities: dict[str, str], recei
                      and actual["recorded_seq"] == str(receipts[key[0]]["recorded_at"])
                      and actual["account_code"] == account and actual["side"] == ("D" if signed > 0 else "C")
                      and actual["amount"] == source.money(abs(signed))
-                     and actual["currency"] == "USD" and actual["unit_scale"] == "2"
-                     and actual["dimension_set_v1"] == "", f"native export changed source geometry {row['row_id']}")
+                     and actual["currency"] == "USD" and actual["unit_scale"] == "2",
+                     f"native export changed source geometry {row['row_id']}")
         live.require(actual["description"] == row["description"] and actual["memo"] == citation(row)
                      and actual["migrated_from"] == f"{SOURCE_SYSTEM}:{row['row_id']}",
                      f"native export lost source description, citation or migration provenance {row['row_id']}")
