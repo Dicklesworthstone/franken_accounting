@@ -21,7 +21,8 @@ use fa_formats::{
     tigerbeetle::TbCorpus,
     verify_round_trip_identity,
     xbrl::{
-        XbrlCalculationLinkbase, XbrlFact, XbrlInstance, validate_calculation_linkbase,
+        XbrlCalculationLinkbase, XbrlFact, XbrlInstance, read_xbrl_instance_xml,
+        validate_calculation_linkbase, validate_calculation_linkbase_detailed,
         verify_format_journal_xbrl_xml, write_format_journal_xbrl_xml, write_xbrl_instance_xml,
     },
 };
@@ -1775,6 +1776,7 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
         FormatError::XbrlCalculationInconsistency {
             parent_concept: "us-gaap:NetIncomeLoss".to_owned(),
             unit_code: "USD".to_owned(),
+            scale: 2,
             reported_mantissa: 42_251,
             computed_children_mantissa: 42_250,
         }
@@ -1792,6 +1794,152 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
         println!("{line}");
         assert!(line.contains("delta=0 status=PASS"));
     }
+}
+
+fn xbrl_calculation_instance(facts: &str) -> XbrlInstance {
+    read_xbrl_instance_xml(&format!(
+        r#"<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:us-gaap="http://fasb.org/us-gaap/2026" xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+<xbrli:context id="ctx_current">
+<xbrli:entity>
+<xbrli:identifier scheme="https://example.org/entity">SCALE-CONTROL</xbrli:identifier>
+</xbrli:entity>
+<xbrli:period>
+<xbrli:instant>2026-03-31</xbrli:instant>
+</xbrli:period>
+</xbrli:context>
+<xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+{facts}
+</xbrli:xbrl>"#
+    ))
+    .expect("read literal XBRL amount controls")
+}
+
+#[test]
+fn xbrl_summation_compares_scaled_values_and_refuses_duplicate_facts() {
+    let linkbase = XbrlCalculationLinkbase::standard_income_statement();
+    // Independent literal values: USD100.00 - USD25.0000 = USD75.
+    let instance = xbrl_calculation_instance(
+        r#"<us-gaap:Revenues contextRef="ctx_current" unitRef="USD" decimals="2">100.00</us-gaap:Revenues>
+<us-gaap:CostOfGoodsAndServicesSold contextRef="ctx_current" unitRef="USD" decimals="4">25.0000</us-gaap:CostOfGoodsAndServicesSold>
+<us-gaap:GrossProfit contextRef="ctx_current" unitRef="USD" decimals="0">75</us-gaap:GrossProfit>"#,
+    );
+    let report = validate_calculation_linkbase_detailed(&instance, &linkbase, None)
+        .expect("equal values must tie despite different scales");
+    assert_eq!(report.checks_passed, 1);
+    let row = &report.rows[0];
+    assert_eq!(row.scale, 4);
+    assert_eq!(row.reported_mantissa, 750_000);
+    assert_eq!(row.computed_mantissa, 750_000);
+    assert_eq!(row.delta_mantissa, 0);
+    assert!(row.to_log_line().contains("scale=4 computed=750000"));
+
+    // The old raw-mantissa sum accepted USD1.0000 = USD100.00.
+    let false_tie = xbrl_calculation_instance(
+        r#"<us-gaap:Revenues contextRef="ctx_current" unitRef="USD" decimals="4">1.0000</us-gaap:Revenues>
+<us-gaap:GrossProfit contextRef="ctx_current" unitRef="USD" decimals="2">100.00</us-gaap:GrossProfit>"#,
+    );
+    assert_eq!(
+        validate_calculation_linkbase(&false_tie, &linkbase),
+        Err(FormatError::XbrlCalculationInconsistency {
+            parent_concept: "us-gaap:GrossProfit".into(),
+            unit_code: "USD".into(),
+            scale: 4,
+            reported_mantissa: 1_000_000,
+            computed_children_mantissa: 10_000,
+        })
+    );
+
+    // A conflicting duplicate cannot disappear behind a later correct value.
+    // Check both orders, and also a fact absent from this linkbase entirely.
+    for concept in ["us-gaap:GrossProfit", "us-gaap:Assets"] {
+        let mut bad = instance.clone();
+        let mut first = instance.facts[2].clone();
+        first.concept = concept.into();
+        first.mantissa = 76;
+        let mut second = first.clone();
+        second.mantissa = 75;
+        bad.facts.extend([first, second]);
+        for _ in 0..2 {
+            let err = validate_calculation_linkbase(&bad, &linkbase).unwrap_err();
+            assert!(
+                matches!(&err, FormatError::Parse { detail, .. }
+                    if detail.contains("conflicting duplicate fact") && detail.contains(concept)),
+                "{err:?}"
+            );
+            bad.facts.reverse();
+        }
+    }
+}
+
+#[test]
+fn xbrl_exact_duplicates_preserve_scale_context_and_unit() {
+    let linkbase = XbrlCalculationLinkbase::standard_income_statement();
+    let mut instance = xbrl_calculation_instance(
+        r#"<us-gaap:Revenues contextRef="ctx_current" unitRef="USD" decimals="0">100</us-gaap:Revenues>
+<us-gaap:GrossProfit contextRef="ctx_current" unitRef="USD" decimals="2">100.00</us-gaap:GrossProfit>
+<us-gaap:GrossProfit contextRef="ctx_current" unitRef="USD" decimals="4">100.0000</us-gaap:GrossProfit>"#,
+    );
+    let original_facts = instance.facts.clone();
+    for (context, unit, multiplier) in [("ctx_previous", "USD", 2), ("ctx_current", "EUR", 3)] {
+        for original in &original_facts {
+            let mut fact = original.clone();
+            fact.context_ref = context.into();
+            fact.unit_code = unit.into();
+            fact.mantissa = fact.mantissa.checked_mul(multiplier).unwrap();
+            instance.facts.push(fact);
+        }
+    }
+    let report = validate_calculation_linkbase_detailed(&instance, &linkbase, None).unwrap();
+    assert_eq!(report.checks_passed, 3);
+    assert!(report.rows.iter().all(|row| row.scale == 4 && row.passed));
+    assert_eq!(
+        report
+            .rows
+            .iter()
+            .map(|row| row.reported_mantissa)
+            .collect::<Vec<_>>(),
+        [3_000_000, 1_000_000, 2_000_000]
+    );
+    instance.facts.reverse();
+    assert_eq!(
+        validate_calculation_linkbase_detailed(&instance, &linkbase, None).unwrap(),
+        report,
+        "duplicate ordering must not choose a different precision or value"
+    );
+}
+
+#[test]
+fn xbrl_calculation_rescaling_and_signed_arithmetic_fail_closed() {
+    let linkbase = XbrlCalculationLinkbase::standard_income_statement();
+    let base = xbrl_calculation_instance(
+        r#"<us-gaap:Revenues contextRef="ctx_current" unitRef="USD" decimals="2">0.00</us-gaap:Revenues>
+<us-gaap:CostOfGoodsAndServicesSold contextRef="ctx_current" unitRef="USD" decimals="4">25.0000</us-gaap:CostOfGoodsAndServicesSold>
+<us-gaap:GrossProfit contextRef="ctx_current" unitRef="USD" decimals="0">-25</us-gaap:GrossProfit>"#,
+    );
+    let report = validate_calculation_linkbase_detailed(&base, &linkbase, None).unwrap();
+    assert_eq!(report.rows[0].computed_mantissa, -250_000);
+
+    let mut overflow = base.clone();
+    overflow.facts[0].mantissa = i128::MAX;
+    assert!(matches!(
+        validate_calculation_linkbase(&overflow, &linkbase),
+        Err(FormatError::Overflow { .. })
+    ));
+
+    let mut negation = base.clone();
+    negation.facts[1].mantissa = i128::MIN;
+    assert!(matches!(
+        validate_calculation_linkbase(&negation, &linkbase),
+        Err(FormatError::Overflow { .. })
+    ));
+
+    let mut tiny = base;
+    tiny.facts[0].scale = u8::MAX;
+    tiny.facts[0].mantissa = 1;
+    assert!(matches!(
+        validate_calculation_linkbase(&tiny, &linkbase),
+        Err(FormatError::Overflow { .. })
+    ));
 }
 
 #[test]

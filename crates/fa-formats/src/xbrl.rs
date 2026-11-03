@@ -546,6 +546,8 @@ pub struct XbrlCalculationCheckRow {
     pub context_ref: String,
     pub unit_code: String,
     pub concept: String,
+    /// Common decimal scale of all three mantissas in this check.
+    pub scale: u8,
     pub computed_mantissa: i128,
     pub reported_mantissa: i128,
     pub delta_mantissa: i128,
@@ -556,11 +558,12 @@ impl XbrlCalculationCheckRow {
     /// Deterministic greppable log line (`concept=... computed=... reported=... delta=...`).
     pub fn to_log_line(&self) -> String {
         format!(
-            "xbrl_calc_check role={} context={} unit={} concept={} computed={} reported={} delta={} status={}",
+            "xbrl_calc_check role={} context={} unit={} concept={} scale={} computed={} reported={} delta={} status={}",
             self.role_uri,
             self.context_ref,
             self.unit_code,
             self.concept,
+            self.scale,
             self.computed_mantissa,
             self.reported_mantissa,
             self.delta_mantissa,
@@ -1124,15 +1127,44 @@ pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
     })
 }
 
+/// Express a fact at a finer common scale without rounding or changing its value.
+fn calculation_mantissa(fact: &XbrlFact, scale: u8) -> Result<i128, FormatError> {
+    let places = scale
+        .checked_sub(fact.scale)
+        .ok_or_else(|| FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "calculation cannot reduce a fact's decimal scale".into(),
+        })?;
+    if fact.mantissa == 0 {
+        return Ok(0);
+    }
+    10i128
+        .checked_pow(u32::from(places))
+        .and_then(|factor| fact.mantissa.checked_mul(factor))
+        .ok_or_else(|| FormatError::Overflow {
+            format: "xbrl_gl_instance_v1",
+            detail: format!(
+                "calculation fact {} in context {} ({}) cannot be represented exactly at scale {}",
+                fact.concept, fact.context_ref, fact.unit_code, scale
+            ),
+        })
+}
+
 /// Validate an [`XbrlInstance`] against an [`XbrlCalculationLinkbase`] and optional
 /// [`XbrlTaxonomySchema`], returning a structured [`XbrlValidationReport`] logging
-/// `concept`, `computed`, `reported`, and `delta` for every parent summation check.
+/// `concept`, `scale`, `computed`, `reported`, and `delta` for every parent check.
+///
+/// Values are compared at their finest common decimal scale. Numerically exact
+/// duplicate facts are counted once; conflicting duplicates are refused before
+/// any summation, independently of their order. This exact-value profile does
+/// not infer rounding intervals or choose between merely rounding-consistent
+/// duplicates in a general-purpose XBRL filing.
 pub fn validate_calculation_linkbase_detailed(
     instance: &XbrlInstance,
     linkbase: &XbrlCalculationLinkbase,
     schema: Option<&XbrlTaxonomySchema>,
 ) -> Result<XbrlValidationReport, FormatError> {
-    let mut fact_map: BTreeMap<(String, String, String), i128> = BTreeMap::new();
+    let mut fact_map: BTreeMap<(String, String, String), &XbrlFact> = BTreeMap::new();
     let mut contexts_and_units: BTreeSet<(String, String)> = BTreeSet::new();
     let has_explicit_duration_ctx = instance
         .facts
@@ -1180,14 +1212,30 @@ pub fn validate_calculation_linkbase_detailed(
                 });
             }
         }
-        fact_map.insert(
-            (
-                fact.concept.clone(),
-                fact.context_ref.clone(),
-                fact.unit_code.clone(),
-            ),
-            fact.mantissa,
+        let key = (
+            fact.concept.clone(),
+            fact.context_ref.clone(),
+            fact.unit_code.clone(),
         );
+        if let Some(previous) = fact_map.get(&key) {
+            let scale = fact.scale.max(previous.scale);
+            if calculation_mantissa(fact, scale)? != calculation_mantissa(previous, scale)? {
+                return Err(FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!(
+                        "conflicting duplicate fact {} in context {} ({})",
+                        fact.concept, fact.context_ref, fact.unit_code
+                    ),
+                });
+            }
+            // Keep a deterministic representation even when equal values use
+            // different scales. Never let a later fact silently replace a value.
+            if fact.scale > previous.scale {
+                fact_map.insert(key, fact);
+            }
+        } else {
+            fact_map.insert(key, fact);
+        }
         contexts_and_units.insert((fact.context_ref.clone(), fact.unit_code.clone()));
     }
 
@@ -1226,19 +1274,26 @@ pub fn validate_calculation_linkbase_detailed(
 
     for (ctx, unit) in &contexts_and_units {
         for (parent_concept, arcs) in &parents {
-            let Some(&reported_parent) =
+            let Some(&parent_fact) =
                 fact_map.get(&((*parent_concept).to_owned(), ctx.clone(), unit.clone()))
             else {
                 continue;
             };
+            let scale = arcs
+                .iter()
+                .filter_map(|arc| {
+                    fact_map.get(&(arc.child_concept.clone(), ctx.clone(), unit.clone()))
+                })
+                .fold(parent_fact.scale, |scale, child| scale.max(child.scale));
+            let reported_parent = calculation_mantissa(parent_fact, scale)?;
             let mut sum = 0i128;
             let mut any_child_present = false;
             for arc in arcs {
-                if let Some(&child_val) =
+                if let Some(&child_fact) =
                     fact_map.get(&(arc.child_concept.clone(), ctx.clone(), unit.clone()))
                 {
                     any_child_present = true;
-                    let term = child_val
+                    let term = calculation_mantissa(child_fact, scale)?
                         .checked_mul(i128::from(arc.weight))
                         .ok_or_else(|| FormatError::Overflow {
                             format: "xbrl_gl_instance_v1",
@@ -1264,6 +1319,7 @@ pub fn validate_calculation_linkbase_detailed(
                     context_ref: ctx.clone(),
                     unit_code: unit.clone(),
                     concept: (*parent_concept).to_owned(),
+                    scale,
                     computed_mantissa: sum,
                     reported_mantissa: reported_parent,
                     delta_mantissa: delta,
@@ -1273,6 +1329,7 @@ pub fn validate_calculation_linkbase_detailed(
                     first_failure = Some(FormatError::XbrlCalculationInconsistency {
                         parent_concept: (*parent_concept).to_owned(),
                         unit_code: unit.clone(),
+                        scale,
                         reported_mantissa: reported_parent,
                         computed_children_mantissa: sum,
                     });

@@ -236,6 +236,66 @@ subset, from the earlier single-account workload, and from whole-workspace
 gates. Current cargo workspace tests, clippy, tier0 and tier1 remain **UNRUN**
 in this execution summary; no bead closure is claimed.
 
+## Source-checked forensic observations on real records
+
+The Glantz, [Square One](blmis_square_one_workload.md) and
+[Magnify](blmis_magnify_workload.md) native replay commands now run the seven
+record-silent procedures described in case-plan section 9.4. The shared
+[`blmis_analytics.py`](../scripts/blmis_analytics.py) compares complete native
+finding sets against predicates computed from the original published amount
+and date literals. Posting receipts supply only the native identity and
+publication-order bindings needed to check citations and declared tie breaks.
+Native findings never supply their own expected values.
+
+| Procedure | Version and fixed parameters | Source predicate checked |
+|---|---|---|
+| `jet.round_amounts` | v1, `round_power=3` | Every entry with a leg divisible by USD 1,000, its exact two leg citations and population |
+| `jet.weekend` | v1 | Gregorian Saturday or Sunday on the published date, with the exact ISO weekday |
+| `duplicates.same_same_same` | v1 | Complete groups with the same signed account/amount legs and date; no description-based merging |
+| `duplicates.same_same_different` | v1, `window_days=30` | Each occurrence paired with the first recorded occurrence on its next distinct date within 30 days |
+| `numbers.relative_size_factor` | v1, `min_rsf_bps=50000`, `min_subset_size=3` | Largest/second-largest debit ratio in exact basis points, grouped by the declared party or untagged counterpart account |
+| `numbers.round_amount_density` | v1, `round_power=2`, `min_legs=20`, `z_squared=9` | Each account's excess USD 100-multiple share against the complete book's leg population, by exact integer inequality |
+| `benford.first_digit` | v2, registered USD/debit defaults and minimum 500 | Eligible first-digit counts, exact rational MAD/chi-square/KS calculations, and the unchanged native severity bands |
+
+Each comparison checks the procedure version, every parameter, claim class,
+source coordinate, number of monetary entries and legs examined, complete
+finding count, severity, statistic name/value/scale/population, narrative and
+every entry, leg and account citation. Unknown source identities, missing or
+duplicated findings, altered statistics and unrelated citation handles fail
+the run. All source observations remain in the package; zero-principal rows
+and footnote-governed withholding exclusions do not become artificial
+monetary observations.
+
+The procedures run at one fixed recorded prefix over the entire declared
+analysis book. They do not accept an effective-date cutoff. The helper records
+each native finding run, replays its retained certificate, and replays every
+certificate again after the other finding records have advanced the book.
+Both replays must return identical native bytes. The retained
+`record-silent-analytics.json` includes source-resolved findings, the actual
+native reports, certificates, account bindings, source population and the
+helper's SHA-256. The complete replay's `report.json` includes the same result.
+
+Benford's population is **one debit leg per monetary entry**, not both sides
+of a balanced entry. Thus the default Glantz account has 74 observations,
+the six-account Glantz book has 372, and Square One has 340 eligible debit
+legs. All three correctly report that the minimum of 500 was not reached;
+their thresholds are not lowered to manufacture a conformity score. Magnify's
+1,586 monetary entries exercise the scored branch. The old case-plan comment
+that Glantz alone exceeded the minimum counted both sides and does not describe
+the current v2 procedure.
+
+These are **record-silent observations**. The selected complaints do not label
+these round-number, duplicate, weekend or digit predicates as fraud, and the
+accounts are a litigation-selected population. Recurring withdrawals can
+satisfy duplicate rules; round customer payments can satisfy round-amount
+rules. The helper reports those observations and their exact source witnesses,
+without turning their counts into fraud conclusions or false-positive rates.
+The native analysis mapping, trustee transfer-credit inputs, explicit
+withholding exclusions and source discrepancies remain part of the scope.
+The independent source predicates and native certificate replays establish
+their stated checks; this feature does not claim that standalone `fa-verify`
+recomputes these analytics offline.
+
 ## Default single-account workload
 
 The following sections describe the unchanged 1ZA192 source scope and its
