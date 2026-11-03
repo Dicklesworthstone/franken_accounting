@@ -9,6 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 import csv
 from decimal import Decimal, localcontext
+from email.message import Message
 import hashlib
 import io
 import json
@@ -180,6 +181,44 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 self.assertEqual(case["manifest"]["original_selection_sha256"], PINNED[agency]["sha256"])
                 self.assertEqual(len(raw), case["provenance"]["subset_bytes"])
                 self.assertEqual(len(case["originals"]), PINNED[agency]["rows"])
+
+    def test_native_source_intake_preserves_windows1252_bytes_and_admitted_mime(self):
+        # Stop at the real driver's intake boundary. This checks its request,
+        # not a simulated migration result; the separate native workload must
+        # still prove that Docket accepts and retains the source.
+        class IntakeObserved(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.cases["31500"]["fixture"]
+            output = Path(directory) / "replay"
+            manifest = replay.normalize(fixture, "31500", output)
+            observed = {}
+
+            def capture(path, kind="Spreadsheet", mime="text/csv"):
+                observed.update(path=path, kind=kind, mime=mime, raw=path.read_bytes())
+                raise IntakeObserved
+
+            with mock.patch.object(replay.Native, "call", return_value={}), \
+                    mock.patch.object(replay.Native, "register_departments", return_value={}), \
+                    mock.patch.object(replay.Native, "document", side_effect=capture):
+                with self.assertRaises(IntakeObserved):
+                    replay.run_native(Path(sys.executable), Path(sys.executable), output, manifest)
+            self.assertEqual(observed["path"], output / "original-agency.csv")
+            self.assertEqual(observed["raw"], fixture.read_bytes())
+            self.assertEqual(hashlib.sha256(observed["raw"]).hexdigest(), PINNED["31500"]["sha256"])
+            # Independently check both the native printable-token restriction
+            # and MIME parameter semantics. Dropping the charset would also fail.
+            self.assertTrue(observed["mime"] and all(33 <= ord(c) <= 126 for c in observed["mime"]))
+            media = Message()
+            media["Content-Type"] = observed["mime"]
+            self.assertEqual(media.get_content_type(), "text/csv")
+            self.assertEqual(media.get_content_charset(), "windows-1252")
+            self.assertEqual(observed["raw"].decode(media.get_content_charset()),
+                             observed["raw"].decode(source.SOURCE_ENCODING))
+            self.assertEqual(manifest["source_encoding"], "cp1252")
+            self.assertEqual(manifest["normalized_encoding"], "utf-8")
+            self.assertEqual(manifest["original_selection_mime"], observed["mime"])
 
     def test_every_original_record_is_accounted_for_once_including_zeros(self):
         for agency, case in self.cases.items():
@@ -587,6 +626,62 @@ class ReplayRefusalTests(unittest.TestCase):
                     self.assertNotEqual(replay.main(argv), 0)
                     native.assert_not_called()
             self.assertEqual({p.name: p.read_bytes() for p in output.iterdir()}, before)
+
+    def test_native_documents_use_agent_provenance_and_distinct_local_review(self):
+        # These are boundary contract tests, not a claim that native admission
+        # ran. Both genuine bytes and driver-created workpapers use the honest
+        # upload grade; Generated requires a receipt the uploader cannot claim.
+        native = object.__new__(replay.Native)
+        oid = "a" * 64
+        added = {"event": "document", "data": {
+            "oid": oid, "grade": "AgentUpload", "self_sourced": True,
+        }}
+        reviewed = {"event": "attestation_recorded", "data": {
+            "claim": "Reviewed", "subject": oid, "attestation_vid": "b" * 32,
+        }}
+        for filename, kind, mime in (
+            ("original-agency.csv", "Spreadsheet", "text/csv;charset=windows-1252"),
+            ("manifest.json", "Workpaper", "application/json"),
+        ):
+            with self.subTest(filename=filename), mock.patch.object(
+                    native, "call", side_effect=[added, reviewed]) as call:
+                path = self.root / filename
+                self.assertEqual(native.document(path, kind, mime), oid)
+                self.assertEqual(call.call_args_list, [
+                    mock.call("document", "add", path, "--kind", kind, "--mime", mime,
+                              "--grade", "AgentUpload", "--as", "public-data-source-uploader"),
+                    mock.call("document", "attest", "review", "--document", oid,
+                              "--as", "public-data-source-reviewer", "--grant", "approve"),
+                ])
+
+    def test_native_documents_refuse_misgraded_receipts_before_review(self):
+        native = object.__new__(replay.Native)
+        for grade, self_sourced in (("HumanUpload", False), ("Generated", True),
+                                    ("AgentUpload", False), ("AgentUpload", None)):
+            added = {"event": "document", "data": {
+                "oid": "a" * 64, "grade": grade, "self_sourced": self_sourced,
+            }}
+            with self.subTest(grade=grade, self_sourced=self_sourced), mock.patch.object(
+                    native, "call", return_value=added) as call:
+                with self.assertRaisesRegex(replay.ReplayError, "self-sourced AgentUpload provenance"):
+                    native.document(self.root / "source.csv")
+                self.assertEqual(call.call_count, 1)
+
+    def test_native_documents_refuse_unbound_or_failed_reviews(self):
+        native = object.__new__(replay.Native)
+        oid = "a" * 64
+        added = {"event": "document", "data": {
+            "oid": oid, "grade": "AgentUpload", "self_sourced": True,
+        }}
+        for claim, subject in (("Reviewed", "b" * 64), ("RegisterEquals", oid)):
+            reviewed = {"event": "attestation_recorded", "data": {"claim": claim, "subject": subject}}
+            with self.subTest(claim=claim, subject=subject), mock.patch.object(
+                    native, "call", side_effect=[added, reviewed]):
+                with self.assertRaisesRegex(replay.ReplayError, "did not attest the retained document"):
+                    native.document(self.root / "source.csv")
+        with mock.patch.object(native, "call", side_effect=[added, replay.ReplayError("native review refused")]):
+            with self.assertRaisesRegex(replay.ReplayError, "native review refused"):
+                native.document(self.root / "source.csv")
 
     def test_amount_comparison_rejects_cent_change_missing_or_extraneous_nonzero_cell(self):
         expected = {"101000": 123456, "431000": -123456}

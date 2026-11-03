@@ -25,9 +25,9 @@ validation records; a successful source check does not establish a native pass.
 
 ## Validation status
 
-**All 55 public-ledger Python tests pass. Native end-to-end execution remains
+**All 59 public-ledger Python tests pass. Native end-to-end execution remains
 unverified.** The separate Development Finance Authority helper has 17 passing
-tests, for 72 passing helper tests across the two workloads.
+tests, for 76 passing helper tests across the two workloads.
 
 The official 113,856,733-byte resource was downloaded through its actual HTTPS
 redirect and verified against the fixed SHA-256. The complete 373,357-row file
@@ -48,11 +48,22 @@ dimension coverage, and exact report-replay comparisons. Constructed
 native-shaped payloads and exports in those tests are not evidence that the
 accounting engine or its real exporter ran.
 
-The pinned formatter accepted the Rust importer and persisted regressions.
-Native builds and the workspace metadata check have been killed while
-compiling the pinned asupersync dependency under shared resource pressure,
-before the importer tests executed. No native replay, proof-verifier result or
-repository-wide gate PASS is claimed for the current feature.
+The [first hosted replay](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41544280544)
+at commit `14dc993adc6f63d8a77c41080c186a39af62731d` built both native binaries
+and passed all 11 legacy-format Rust tests present at that commit. All three
+agency replays then failed during original-source intake: Docket refused a
+space in `text/csv; charset=windows-1252`. The driver now sends the admitted
+`text/csv;charset=windows-1252` token while retaining the exact original bytes
+and encoding. The regression checks both native token restrictions and MIME
+charset semantics. That earlier build does not validate subsequent Rust or
+runner changes, and it did not reach migration, reports, or proof verification.
+
+The upload path now also records its actual `AgentUpload` provenance and requires
+a native `Reviewed` attestation by a distinct local fixture principal before
+using each source or helper document. Misgraded receipts, reviews of a different
+document, and refused reviews fail the run. These boundary tests do not replace
+native execution. No current end-to-end replay or repository-wide gate PASS is
+claimed here.
 
 The [earlier validation record](../evidence/public_ledger/validation-2026-11-02.json)
 describes the original source-only implementation. Current native acceptance
@@ -224,8 +235,11 @@ transcript and writes `failure.json`; it never emits a partial success report.
    an assertion that the real agency had zero assets before April. Source-
    derived cumulative account controls are retained as documents and declared
    before import preparation. The native kernel computes its own tie-outs.
-6. **Retain approvals and evidence.** The native importer retains sealed
-   proposals. Two distinct local test principals approve each chunk and each
+6. **Retain approvals and evidence.** Original sources, normalized CSVs, manifests
+   and control documents are programmatic `AgentUpload` inputs. The driver checks
+   each native receipt's grade and obtains a `Reviewed` attestation from a distinct
+   local test principal. The native importer retains sealed proposals.
+   Two distinct local test principals approve each chunk and each
    finalization. Original selected bytes and the transformation manifest are
    attached as supplemental evidence to the staged entries. The harness checks
    staging before activation and exact retry identities after finalization.
@@ -253,6 +267,10 @@ Native source and control documents preserve provenance, but the controls are
 parser and ledger fold, not independent audited agency statements. Similarly,
 the two test principal labels exercise the native separation-of-duties rule;
 they do not prove that two independent humans authenticated an approval.
+The source-review principal has the same local-test scope. A helper-created
+workpaper does not claim the receipt-derived `Generated` grade: ordinary document
+upload cannot supply that grade's required generation receipt. Its actual upload
+and subsequent review remain explicit in the native evidence history.
 
 ## Query the original departments
 
