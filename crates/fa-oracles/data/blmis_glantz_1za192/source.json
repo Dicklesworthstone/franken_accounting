@@ -1,0 +1,84 @@
+{
+  "account": "1ZA192",
+  "assertion_status": "trustee_computation in a complaint; not a court finding",
+  "dash_interpretation": "A printed dash is no movement in that source column; blank cells are refused.",
+  "exhibit": "B-2",
+  "exhibit_pages": [
+    5,
+    6,
+    7
+  ],
+  "extraction": {
+    "authoring_version": "pdftotext version 24.02.0",
+    "command": "pdftotext -layout -f 31 -l 33 <pinned.pdf> -",
+    "line_hash_basis": "SHA-256 of the exact UTF-8 extracted line without its newline",
+    "page_utf8_sha256": [
+      "268c37aa4f50d5dd43030238942a02d36078aa9c6b42f73e774cd6dfb882cfd0",
+      "45b09fd14182763ae5a1ab16f0e53e3be199b0cc3e80236958fa59a3fd9c5ca3",
+      "bcb2ce88e6a345a6686fd3a3ef033892bebd31f220e4a38b87c1217d7acec184"
+    ],
+    "utf8_sha256": "4390c3f3da1ebab54bafc7a1147514a67aaf3d0af9d2df4d0fc354a99739657d"
+  },
+  "filed_on": "2018-01-22",
+  "footer": {
+    "cells": {
+      "deposits": "10,439,983",
+      "printed_balance": "(9,947,031)",
+      "transfers_in": "537,366",
+      "transfers_out": "(4,000,000)",
+      "two_year": "(7,700,000)",
+      "withdrawals": "(16,924,380)"
+    },
+    "pdf_page": 33,
+    "raw_line_sha256": "043956725877446d5b8c874e69e6b0f6607d183393684f0e8983a1efd3db4d64",
+    "source_line": 21
+  },
+  "footnote_meaning": {
+    "[1]": "The trustee credited only remaining principal from the originating account, excluding reported fictitious profits.",
+    "[2]": "The trustee credited no principal because the reported transfer consisted entirely of fictitious profits; principal stayed unchanged."
+  },
+  "footnotes": {
+    "[1]": {
+      "normalized_text_sha256": "65a22295479e5ca4bf6b5bde60608347c430b86d116fcaf946fe0bfad8f291f6",
+      "pdf_page": 33,
+      "source_line": 23
+    },
+    "[2]": {
+      "normalized_text_sha256": "8caf39e8bb0c34079e3c9fe1afabcd8672ac862289283a43edc65e5d53d7cf1c",
+      "pdf_page": 33,
+      "source_line": 27
+    }
+  },
+  "headers": [
+    "Date",
+    "Transaction Description",
+    "Transaction Amount as Reported in Customer Statement",
+    "Deposits",
+    "Withdrawals",
+    "Transfers of Principal In",
+    "Transfers of Principal Out",
+    "Balance of Principal",
+    "2-Year Fraudulent Transfers - Fictitious Profits"
+  ],
+  "pdf_pages": [
+    31,
+    32,
+    33
+  ],
+  "printed_amount_unit": "USD whole dollars",
+  "redistribution_basis": "Factual transaction cells from a publicly hosted court filing; no full complaint or account-holder header is redistributed.",
+  "row_count": 75,
+  "row_id_basis": "Derived citation identifier: source id, trustee account id, PDF page and pdftotext line; not an original transaction id.",
+  "rows_per_page": [
+    35,
+    35,
+    5
+  ],
+  "schema_version": 1,
+  "scope": "Every published transaction of Glantz Exhibit B-2 account 1ZA192, 1992-12-07 through 2008-10-30. Trustee computations in a complaint, not a complete BLMIS general ledger or independently established net equity. Transfer principal is copied from the trustee's columns 6 and 7 as named oracle inputs; the statement amount in column 3 is retained separately. Cash, transfer counterpart and investor-capital accounts are an explicit analysis-book construction, not source-published double-entry accounts.",
+  "source_bytes": 389586,
+  "source_id": "SRC-BLM-001",
+  "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+  "source_url": "https://www.madofftrustee.com/document/dockets/008796-glantzcomplaint10-05394docket93.pdf",
+  "transfer_principal_role": "oracle_output"
+}
