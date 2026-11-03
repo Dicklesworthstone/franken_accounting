@@ -735,10 +735,9 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     }
     // Restrict the actual launch authority: an unbound --grant adds operations
     // to the command's implied read/produce set and cannot remove produce.
-    let (code, refused) = closing_agent(
-        &f,
-        &["read"],
-        &[
+    // A request cannot elevate that fixed authority with --grant either.
+    for (extra, wanted) in [(&[][..], 7), (&["--grant", "produce"][..], 2)] {
+        let mut args = vec![
             "statement",
             "diff",
             "--before-certificate",
@@ -748,9 +747,18 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
             "--expect",
             &expected,
             "--certify",
-        ],
-    );
-    assert_eq!(code, 7, "{refused:?}");
+        ];
+        args.extend_from_slice(extra);
+        let (code, refused) = closing_agent(&f, &["read"], &args);
+        assert_eq!(code, wanted, "{refused:?}");
+        if !extra.is_empty() {
+            assert_eq!(
+                text(&refused, "message"),
+                "--grant cannot be supplied by a launch-bound request",
+                "{refused:?}"
+            );
+        }
+    }
     assert_eq!(
         head(&f.book),
         retained_at,
@@ -758,7 +766,7 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     );
     assert_eq!(std::fs::read(&request_path).unwrap(), request_bytes);
 
-    let (code, native) = many(&f.book, &["tb", "--certify"]);
+    let (code, native) = many(&f.book, &["tb", "--period", "FY2026-P12", "--certify"]);
     assert_eq!(code, 0, "{native:?}");
     let native_oid = format!("C:{}", text(native.last().unwrap(), "oid"));
     for (before, after, wanted) in [

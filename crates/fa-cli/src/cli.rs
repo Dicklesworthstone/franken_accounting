@@ -13785,6 +13785,7 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
         "--certificate-out",
         "--expect",
         "--request-out",
+        "--grant",
     ];
     for flag in &verb.flags {
         if args.flag(flag).is_some() && !SAVED_FLAGS.contains(&flag.as_str()) {

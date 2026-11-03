@@ -1,0 +1,211 @@
+{
+  "boundaries": {
+    "accounting": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+    "evidence": "Observed workload counts, checks, verifier outcomes and cryptographic identities are embedded here; external paths locate complete retained evidence and are not the sole proof of execution.",
+    "trust": "Independent verifier used the newly created test book public key recorded above. Fixture approvals do not assert independent human authentication."
+  },
+  "build": {
+    "cargo_lock_git_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "executables": {
+      "fa": {
+        "bytes": 239172424,
+        "sha256": "b8a0055b2ab294aa6903204a0893fe2626acbc4f025742b335adff0ad9d42498"
+      },
+      "fa-verify": {
+        "bytes": 20090376,
+        "sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8"
+      }
+    },
+    "harness_git_blobs": {
+      "tools/public-data/public_spend.py": "0080de3c3e4d1cbf75d48e4f486ca507acc245f1",
+      "tools/public-data/run_live.py": "a99f426a21e9fa4f8102eed05dc921306222df2f"
+    },
+    "profile": "dev with debug information disabled",
+    "source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "source_tree": "d10a9f8191c87250a65b35dc2255cc78c4b03910",
+    "source_url": "https://github.com/Dicklesworthstone/franken_accounting/commit/93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "toolchain": "nightly-2026-08-31"
+  },
+  "checks": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "executable_identity_guards"
+  ],
+  "executed_command": [
+    "python3",
+    "-B",
+    "tools/public-data/run_live.py",
+    "--prepared",
+    "/workspace/scratch/de9b3dc0a342/public-data-inputs/hmrc-2025-03",
+    "--dataset",
+    "hmrc-2025-03",
+    "--out",
+    "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-cli",
+    "--fa",
+    "/workspace/scratch/de9b3dc0a342/native-93714f77/fa",
+    "--fa-verify",
+    "/workspace/scratch/de9b3dc0a342/native-93714f77/fa-verify",
+    "--stage-group-size",
+    "64",
+    "--timeout",
+    "600"
+  ],
+  "independent_verifier": {
+    "bundle_summary": null,
+    "check_result_counts": {
+      "pass": 139
+    },
+    "command": "report",
+    "failed_checks": [],
+    "native_exit_code": 0,
+    "stdout_sha256": "7cc38fe5623b7a7be1f69d0a56f2b16e4159d39ab452f95e801a2528d26a849c",
+    "tool": "fa-verify",
+    "verdict": "verified",
+    "verified_extract": null
+  },
+  "native_command_exit_counts": {
+    "0": 462,
+    "8": 1
+  },
+  "native_daemon_execution": false,
+  "native_documents": {
+    "expected_tb.json": "cc2b2cd04e41ad89363561c2e6cdbaaeef06f2e520c32be227eaf3431742ab9e",
+    "legacy.csv": "9a53e85d4941f4602647b997254c89df00917f4ab871365c6fe950f044d271c0",
+    "provenance.jsonl": "8ddc297b749a717cc5f1c1280385ef94a647fd604024230463ae0c7f77bf380a",
+    "raw.csv": "3f353af382c250b9adaefc840f6f9b78cf50b0a4d1f162b6fef77bafdb0eff9d",
+    "receipt.json": "d3658b103532c29a395fc204bfa0fef6a4d85c015e729e9f8226b5788207b4f3",
+    "records.jsonl": "dbbe476616d7d2659ced3463ed7b5931eeb1b054bf833caeac88eb9351e1b3e4"
+  },
+  "native_proof": {
+    "bundle_sha256": "dc04d60646e23c3d3323d6ddb1ee7b8af26f27df9aa87cb8f60064793011792f",
+    "certificate_digest": "b2a606d03b0885d5990c121039242fcb3326d1030c3f9f170629fbcb83ef6f9e",
+    "checkpoint_public_key": "560c8182361eb340f3ef4e13aca1f3bc32ef1100c408e39bd044517bc9e4b7f4",
+    "migration_run": "eb03ffdcb61fa25bbe293b06facf79fc",
+    "output_digest": "324bd0524e3cc74241efdcab09df18cc7596ceee291348d60a60a04844dcb0ba",
+    "package_oid": "d1a725272c383955337c0c002fc816c1ad61612d3ace895e37d811bc05732a3c",
+    "period": "FY2025-P03"
+  },
+  "reproduction_command": "python3 -B tools/public-data/run_live.py --prepared PREPARED_HMRC --dataset hmrc-2025-03 --out NEW_OUTPUT --fa FA_FROM_SOURCE_COMMIT --fa-verify FA_VERIFY_FROM_SOURCE_COMMIT --stage-group-size 64 --timeout 600",
+  "retained_evidence": {
+    "full_result": {
+      "bytes": 3047,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-cli/result.json",
+      "sha256": "0e18128501646c3c67d56a0f69a1f5985becb412d961c80bc826c5f8d2075ba6"
+    },
+    "native_command_transcript": {
+      "bytes": 296570,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-cli/commands.jsonl",
+      "sha256": "b153c79c233c3630ac2a23c6751cdd85a012e40be4b64f2336ed629ba5204a8b"
+    },
+    "prepared_source_receipt": {
+      "bytes": 3262,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-inputs/hmrc-2025-03/receipt.json",
+      "sha256": "f6f336b6dc0c4b135938abec945e3f6c613241062e3f47fdd736f1d1f49d0937"
+    },
+    "runner_receipt": {
+      "bytes": 1042,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-cli.runner-result.json",
+      "sha256": "6f6c103006f1a033efded47010252dd38c114dba58a250261e46ed3fdab07a3e"
+    }
+  },
+  "schema_version": 1,
+  "separate_daemon_attempt": {
+    "boundary": "Failed before daemon readiness and grouped staging; no daemon PASS is claimed.",
+    "classification": "executor_unix_socket_restriction",
+    "elapsed_seconds": 6.164,
+    "error": "CheckError: native daemon exited before readiness: error (exit 5): bind /workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-fad/book/fad.sock: Operation not permitted (os error 1)\n",
+    "native_calls_completed": 52,
+    "result": {
+      "bytes": 884,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-fad/result.json",
+      "sha256": "a5adab71838479be50d6eb17a1e7b516754e18351ddfcbc743557871f66399b9"
+    },
+    "status": "FAIL",
+    "transcript": {
+      "bytes": 31088,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-grouped-fad/commands.jsonl",
+      "sha256": "aa9a995146834233ee140029a26c0588db94eca99f4b4bb340bef61a70f8e60b"
+    }
+  },
+  "source": {
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "source_bytes": 213348,
+    "source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+    "source_stats": {
+      "date_count": 21,
+      "duplicate_rows": 1,
+      "expense_area_count": 42,
+      "expense_type_count": 134,
+      "max_minor": "1507727368",
+      "max_transaction_rows": 12,
+      "min_minor": "-321224815",
+      "negative_minor": "-942246241",
+      "negative_rows": 125,
+      "net_minor": "28574458415",
+      "positive_minor": "29516704656",
+      "positive_rows": 1305,
+      "row_count": 1430,
+      "split_transaction_count": 71,
+      "supplier_count": 160,
+      "transaction_count": 1321,
+      "zero_rows": 0
+    },
+    "source_url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "status": "PASS",
+  "tamper_refusal": {
+    "bundle_summary": null,
+    "check_result_counts": {
+      "fail": 1,
+      "pass": 1
+    },
+    "command": "report",
+    "failed_checks": [
+      {
+        "check": "record_derivation",
+        "reason": "Digest { which: \"supplement.body_digest\" }",
+        "scope": "recomputation"
+      }
+    ],
+    "native_exit_code": 8,
+    "stdout_sha256": "920f3aad65ee52a8eab0e43d43f1b19bec95b4d4bf2cde8e271c02ef578c6338",
+    "tool": "fa-verify",
+    "verdict": "failed",
+    "verified_extract": null
+  },
+  "timing": {
+    "finished_at_utc": "2026-11-03T03:37:34.911950+00:00",
+    "harness_elapsed_seconds": 119.314,
+    "scope": "Single observed fresh local run including native commands; not a controlled benchmark or cross-revision speedup claim.",
+    "started_at_utc": "2026-11-03T03:35:34.874773+00:00"
+  },
+  "transport": "direct_cli",
+  "workload": "complete_hmrc_march_2025_published_spend",
+  "workload_counts": {
+    "exported_legs": 2860,
+    "migration_entries": 127,
+    "monetary_source_rows": 1430,
+    "native_calls": 463,
+    "primary_stage_requests": 2,
+    "source_rows": 1430,
+    "stage_group_size": 64,
+    "stage_requests_including_exact_retry": 3
+  }
+}

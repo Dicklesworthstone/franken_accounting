@@ -1,0 +1,322 @@
+{
+  "boundaries": {
+    "approval": "Distinct local test principals exercise native SoD; not independent human authentication",
+    "daemon": "No daemon was used.",
+    "dimensions": "Exact native kind IDs and value VIDs, including explicit empty sets; source codes are checked separately against retained source and native registration, not inferred from a VID",
+    "evidence": "Observed counts, checks, native verifier verdicts and cryptographic identities are embedded here; external paths locate complete retained evidence and are not the sole proof of execution.",
+    "native_execution": "Complete first-attempt workload plus native preparation/chunk/finalized retry controls. No process-interruption resume was exercised.",
+    "trust": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"
+  },
+  "build": {
+    "cargo_lock_git_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "executables": {
+      "fa": {
+        "bytes": 239172424,
+        "sha256": "b8a0055b2ab294aa6903204a0893fe2626acbc4f025742b335adff0ad9d42498"
+      },
+      "fa-verify": {
+        "bytes": 20090376,
+        "sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8"
+      }
+    },
+    "harness_git_blobs": {
+      "scripts/public_ledger.py": "4a83d37459edf7d57143666a084221419d89d52c",
+      "scripts/public_ledger_source.py": "996b2fc1f6c640aaf6151674a5c7e8cb82dc0e14"
+    },
+    "profile": "dev with debug information disabled",
+    "source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "source_tree": "d10a9f8191c87250a65b35dc2255cc78c4b03910",
+    "source_url": "https://github.com/Dicklesworthstone/franken_accounting/commit/93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "toolchain": "nightly-2026-08-31"
+  },
+  "checks": [
+    "pinned_source_bytes",
+    "complete_agency_row_coverage",
+    "all_source_groups_balance_exactly",
+    "no_subcent_rounding",
+    "all_original_chartfields_retained",
+    "source_and_helper_agent_uploads_have_native_local_reviews",
+    "preparation_retry_is_idempotent",
+    "all_staged_activity_is_invisible",
+    "native_approved_finalization",
+    "every_month_account_cell_matches_source",
+    "cumulative_balances_match_source",
+    "native_proposal_legs_preserve_every_source_row",
+    "gross_debit_credit_account_cells_match_source",
+    "historical_preactivation_prefix_stays_invisible",
+    "native_registers_equal_journal_fold",
+    "every_native_leg_preserves_source_department_or_absence",
+    "native_department_monthly_and_cumulative_net_and_gross_match_source",
+    "department_preactivation_history_stays_invisible",
+    "department_certificates_replay_exact_robot_reports",
+    "all_finalized_chunk_retries_are_idempotent",
+    "native_upload_custody_preserved_and_fixture_reviews_recorded",
+    "native_projections_match_payloads",
+    "signed_accumulator_checkpoint",
+    "native_csv_and_ads_reread_certificates",
+    "every_exported_leg_preserves_source_department_or_absence",
+    "independent_fa_verify_ads_proof",
+    "independent_fa_verify_authenticates_every_exported_dimension_set",
+    "independent_verifier_rejects_tampered_extract",
+    "independent_verifier_rejects_dimension_only_tampering",
+    "resume_inputs_and_native_book_identity_pinned",
+    "original_native_packages_and_publication_receipts_preserved",
+    "original_finalize_proposals_durable_before_approval"
+  ],
+  "department_certificates": [
+    {
+      "certificate_oid": "84490f26b03f6a9fb7e7c83da35b0b8cd1507785b51877a363dd88bc0c036faa",
+      "department": "1000001",
+      "period": "FY2024-P12"
+    },
+    {
+      "certificate_oid": "f5f890d1afdefc252604cfa27b2c25069b2710d4a4e5683da40e5085d73634cc",
+      "department": "7999999",
+      "period": "FY2024-P12"
+    },
+    {
+      "certificate_oid": "0ed8b937239178713b3b42087f1cf2658a0d7d1893232bffc3c3efb8e3f34f65",
+      "department": "8800010",
+      "period": "FY2024-P12"
+    }
+  ],
+  "document_custody": {
+    "all_self_sourced": true,
+    "canonical_encoding": "UTF-8 JSON with sorted keys and compact separators",
+    "canonical_json_sha256": "0915fde32f0e25bf56a7c44f5da13b1d0dc4153c641221002e821f9183332c3d",
+    "intake_grades": {
+      "AgentUpload": 23
+    },
+    "records": 23,
+    "review_attestations": 23,
+    "review_claims": [
+      "Reviewed"
+    ],
+    "review_principals": [
+      "public-data-source-reviewer"
+    ],
+    "scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor"
+  },
+  "executed_command": [
+    "python3",
+    "-B",
+    "scripts/public_ledger.py",
+    "run",
+    "--agency",
+    "20400",
+    "--source",
+    "/workspace/scratch/de9b3dc0a342/public-data-inputs/oklahoma-20400/original-agency.csv",
+    "--out",
+    "/workspace/scratch/de9b3dc0a342/public-data-runs/oklahoma-20400-grouped",
+    "--fa",
+    "/workspace/scratch/de9b3dc0a342/native-93714f77/fa",
+    "--fa-verify",
+    "/workspace/scratch/de9b3dc0a342/native-93714f77/fa-verify"
+  ],
+  "export_source_oracles": [
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "csv-gl",
+      "rows": 121,
+      "tagged_rows": 100,
+      "untagged_rows": 21
+    },
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "ads",
+      "rows": 121,
+      "tagged_rows": 100,
+      "untagged_rows": 21
+    }
+  ],
+  "grouped_stage_requests_including_finalized_retries": 10,
+  "native_command_exit_counts": {
+    "0": 220,
+    "8": 2
+  },
+  "native_daemon_execution": false,
+  "reproduction_command": "python3 -B scripts/public_ledger.py run --agency 20400 --out NEW_OUTPUT --fa FA_FROM_SOURCE_COMMIT --fa-verify FA_VERIFY_FROM_SOURCE_COMMIT",
+  "retained_evidence": {
+    "full_report": {
+      "bytes": 222222,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/oklahoma-20400-grouped/report.json",
+      "sha256": "f3d94083fbecacff81f35415980e9223da5b6eee08eef12b7f614a04339f9a19"
+    },
+    "native_command_transcript": {
+      "bytes": 619734,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/oklahoma-20400-grouped/attempts/000001/commands.jsonl",
+      "sha256": "95937ae368639e22d6c231352b8cb63bf9257c69785404b55d2ed62f680864d0"
+    },
+    "normalization_manifest": {
+      "bytes": 48864,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/oklahoma-20400-grouped/manifest.json",
+      "sha256": "e43491ad6ff8968578e9caaab494929f48f8413c5f398ead826d495d6f16550c"
+    },
+    "runner_receipt": {
+      "bytes": 928,
+      "retained_path": "/workspace/scratch/de9b3dc0a342/public-data-runs/oklahoma-20400-grouped.runner-result.json",
+      "sha256": "6a996bdd377460ba2cecd9bff7fc8aeb7cba0942424d41995659683427b62af8"
+    }
+  },
+  "schema_version": 1,
+  "source": {
+    "agency": "20400",
+    "agency_name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+    "encoding": "cp1252",
+    "input_kind": "complete_agency_selection",
+    "published_statewide_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "publisher_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+    "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+    "selected_source_bytes": 37254,
+    "selected_source_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+  },
+  "status": "PASS",
+  "tamper_mutations": {
+    "amount": {
+      "delta_cents": 1,
+      "line": 2,
+      "new_amount": "39583.01",
+      "old_amount": "39583.00"
+    },
+    "dimension_only": {
+      "dimension": 3,
+      "entry_id": "4ba99cd77420bdc5c2ebcafbee5aff7d",
+      "leg": 1,
+      "line": 8,
+      "new_value": "13f76ed58a0bbc1c042a2c4808914837",
+      "old_value": "13f76ed58a0bbc1c042a2c4808914836"
+    }
+  },
+  "timing": {
+    "finished_at_utc": "2026-11-03T03:33:42.467728+00:00",
+    "harness_elapsed_seconds": 18.255,
+    "scope": "Single observed fresh local run including native commands; not a controlled benchmark or cross-revision speedup claim.",
+    "started_at_utc": "2026-11-03T03:33:24.097244+00:00"
+  },
+  "transport": "direct_cli",
+  "verification": {
+    "amount_tamper_refusal": {
+      "bundle_summary": {
+        "balances": 43,
+        "book_id": "bb7097b0eab55e0b5c22e4cf2473819b",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "acac61793fe5a3eb898ef954411144ba3ac77f1eb015d705c926b422e7465e75",
+        "checkpoint_oid": "c9409bee608ae6212909a17a836f0ec44268987b6e871d0c58b7897196483b70",
+        "completeness": "seq_range_complete",
+        "documents": 95,
+        "entries": 31,
+        "format": "1.1",
+        "inline": 0,
+        "leaf_count": 97,
+        "scope": "prefix",
+        "through_seq": 144
+      },
+      "check_result_counts": {
+        "fail": 1,
+        "pass": 247
+      },
+      "command": "ads",
+      "failed_checks": [
+        {
+          "check": "ads_extract",
+          "reason": "GL_Detail entry daa3e03ea2ebd73a229eb0ab6323cdd9 (recorded at 70) is no proven entry selected through 2024-06-30; a proven entry recorded at 70 (effective 2024-04-30, 2 legs) is missing from GL_Detail",
+          "scope": "completeness"
+        }
+      ],
+      "native_exit_code": 8,
+      "stdout_sha256": "77691791df8605ac9d47d7fdf92fa47bda349b4314f55684c748a556005d8d00",
+      "tool": "fa-verify",
+      "verdict": "failed",
+      "verified_extract": null
+    },
+    "dimension_tamper_refusal": {
+      "bundle_summary": {
+        "balances": 43,
+        "book_id": "bb7097b0eab55e0b5c22e4cf2473819b",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "acac61793fe5a3eb898ef954411144ba3ac77f1eb015d705c926b422e7465e75",
+        "checkpoint_oid": "c9409bee608ae6212909a17a836f0ec44268987b6e871d0c58b7897196483b70",
+        "completeness": "seq_range_complete",
+        "documents": 95,
+        "entries": 31,
+        "format": "1.1",
+        "inline": 0,
+        "leaf_count": 97,
+        "scope": "prefix",
+        "through_seq": 144
+      },
+      "check_result_counts": {
+        "fail": 1,
+        "pass": 247
+      },
+      "command": "ads",
+      "failed_checks": [
+        {
+          "check": "ads_extract",
+          "reason": "GL_Detail entry 4ba99cd77420bdc5c2ebcafbee5aff7d (recorded at 82) is no proven entry selected through 2024-06-30; a proven entry recorded at 82 (effective 2024-04-30, 17 legs) is missing from GL_Detail",
+          "scope": "completeness"
+        }
+      ],
+      "native_exit_code": 8,
+      "stdout_sha256": "7963a2f353c9f0f0f98bbe27a1ab0800df8a1d40d19ba88f0d7a10b54f8d1313",
+      "tool": "fa-verify",
+      "verdict": "failed",
+      "verified_extract": null
+    },
+    "independent_verification": {
+      "bundle_summary": {
+        "balances": 43,
+        "book_id": "bb7097b0eab55e0b5c22e4cf2473819b",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "acac61793fe5a3eb898ef954411144ba3ac77f1eb015d705c926b422e7465e75",
+        "checkpoint_oid": "c9409bee608ae6212909a17a836f0ec44268987b6e871d0c58b7897196483b70",
+        "completeness": "seq_range_complete",
+        "documents": 95,
+        "entries": 31,
+        "format": "1.1",
+        "inline": 0,
+        "leaf_count": 97,
+        "scope": "prefix",
+        "through_seq": 144
+      },
+      "check_result_counts": {
+        "pass": 248
+      },
+      "command": "ads",
+      "failed_checks": [],
+      "native_exit_code": 0,
+      "stdout_sha256": "f7de1fb6d3092f4dc5b52fcfee91d1970e5a37d5671ef39c8180b26c8f83c47c",
+      "tool": "fa-verify",
+      "verdict": "verified",
+      "verified_extract": {
+        "account_scope": null,
+        "chart_rows": 43,
+        "dimension_coverage": "complete_native_leg_identities",
+        "dimension_rows": 121,
+        "effective_through": "2024-06-30",
+        "entries": 15,
+        "known_at_seq": 144,
+        "rows": 121,
+        "tb_rows": 43,
+        "units": [
+          {
+            "code": "USD",
+            "unit_id": 0
+          }
+        ]
+      }
+    }
+  },
+  "workload": "complete_oklahoma_agency_20400_fy2024_q4",
+  "workload_counts": {
+    "account_count": 43,
+    "commands": 222,
+    "department_value_count": 3,
+    "migration_entries": 15,
+    "migration_runs": 5,
+    "monetary_rows": 121,
+    "source_columns": 36,
+    "source_rows": 125
+  },
+  "zero_rows_retained_without_monetary_legs": 4
+}
