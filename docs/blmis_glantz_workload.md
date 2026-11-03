@@ -300,16 +300,18 @@ recomputes these analytics offline.
 
 The [compact execution record](../evidence/blmis/record_silent_validation_2026-11-03.json)
 binds these completed runs to their original PDF pins, source and helper hashes,
-native command transcripts, reports and source-resolved workpapers. All used
-the verified `fa` and `fa-verify` binaries from
+native command transcripts, reports and source-resolved workpapers. The local
+runs used the verified `fa` and `fa-verify` binaries from
 [`3f947acbe31d89e74feec05891aa49b7400e7260`](https://github.com/Dicklesworthstone/franken_accounting/commit/3f947acbe31d89e74feec05891aa49b7400e7260).
-They do not establish acceptance of the later `9700db7` Rust storage changes.
+The later hosted run used binaries and helpers built from `5a8f078`. These
+results do not establish acceptance of the subsequent `9700db7` Rust storage changes.
 
 | Execution | Source observations / monetary entries / retained nonposting observations | Native commands | Seconds | Observed result |
 |---|---|---:|---:|---|
 | Complete six-account Glantz pipeline | 379 / 372 / 7 | 1,305 | 548.713 | Exit 0; full accounting pipeline completed |
 | Glantz final-helper analytics recheck | The same completed book and source population | 37 | 43.562 | Exit 0; all seven strict comparisons and certificate replays passed |
 | Complete Square One pipeline | 1,050 / 340 / 710 | 986 | 396.186 | Exit 0; final helper unchanged throughout the run |
+| Hosted complete Glantz pipeline at `5a8f078` | 379 / 372 / 7 | 1,305 | 384.817 | Exit 0; final helper through fresh ingestion, posting and all proofs |
 
 The initial Glantz process imported the helper before its last strengthening.
 Its workpaper hashes the file on disk at serialization, which cannot establish
@@ -320,7 +322,25 @@ the initial run's, but it did not repeat PDF extraction, posting or ADS export.
 Square One ran the final helper throughout, with all six module hashes checked
 before and after execution; its analytics prefix was 441.
 
-| Procedure | Glantz final recheck | Square One |
+The separate [hosted execution](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41654052154)
+ran the entire six-account pipeline from exact commit
+`5a8f078f01d43d20dc1398a87c2c96d1e8735722`. Its downloaded replay ZIP matched
+GitHub's SHA-256; source/lock manifests and binary hashes bind the executed
+programs, and driver and analytics hashes match the committed helper bytes.
+All seven workpaper reports and finding records match the actual transcript,
+including two identical replays of each certificate at analytics prefix 560.
+The finding sets and every source discrepancy agree with the earlier results.
+The same hosted job completed the 75-observation single-account pipeline:
+74 entries, 441 commands and 52.052 seconds.
+
+The **overall hosted job failed**: three new XBRL fixtures stopped at entity
+parsing before their arithmetic checks. Both Glantz replay steps succeeded;
+this evidence does not turn that XBRL failure into a green workflow. The
+artifact retains the full analytics object inside `report.json`; its separate
+workpaper file was not uploaded. The execution record identifies this boundary
+and does not invent launch-time module snapshots.
+
+| Procedure | Glantz final recheck and hosted run | Square One |
 |---|---:|---:|
 | `jet.round_amounts` | 311 | 37 |
 | `jet.weekend` | 0 | 0 |
@@ -348,10 +368,15 @@ observations include all 709 starred withholding exclusions with their explicit
 footnote premises. The finding counts remain record-silent observations under
 the scope above; the Benford notices make no conformity claim.
 
-Magnify's separate complete native run is still pending; this record makes no
-measured Magnify completion claim. Reproduction commands and local artifact
-hashes are in the execution record. Generated private keys, whole PDFs and
-native books are excluded from the committed summary.
+Magnify's initial native attempt stopped on `ENOSPC` after 2,949 complete
+command records, including all 1,586 fresh postings and 1,018 exact retries.
+Its final transcript line is truncated, and no completed report or analytics
+workpaper exists. The preserved attempt is explicitly incomplete. A separately
+labelled continuation is **RUNNING** after a successful 17-command native
+recovery preflight, including all six original certificate replays and complete
+PDF readback; its final analytics and proofs are not yet established.
+Reproduction commands and artifact hashes are in the execution record. Generated private keys, whole PDFs and native
+books are excluded from the committed summary.
 
 ## Default single-account workload
 

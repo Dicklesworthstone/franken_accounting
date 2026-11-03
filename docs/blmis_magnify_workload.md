@@ -453,3 +453,97 @@ with no originating ledger, all 58 credited-transfer source inputs and the
 footnote-based withholding exclusions. It does not turn those premises or the
 printed balances into a legal net-equity determination, reconstruct dated IRS
 refunds, or claim a complete original BLMIS general ledger.
+
+## Continue the preserved exact-retry interruption
+
+The later seven-procedure execution encountered a real `ENOSPC` while appending
+its native command transcript. It retained **2,949 complete exit-zero records**:
+all 1,586 fresh postings, all six certified source comparisons and 1,018 exact
+retries. Its last line contains a 127-byte incomplete header, and the attempted
+failure record is empty. That initial run remains explicitly incomplete in the
+[execution record](../evidence/blmis/record_silent_validation_2026-11-03.json).
+
+[`blmis_magnify_continue.py`](../scripts/blmis_magnify_continue.py) supports this
+specific recovery boundary. Its profile pins the original `3f947ac` executables
+and eight source/helper modules. It requires an untouched interrupted output,
+a separate byte-identical working copy and caller-supplied inventory and
+transcript hashes. Changed source bytes, missing postings, gapped or altered
+retries, another book, another native head and interruptions in later phases
+are refused. It preserves the incomplete transcript and reconstructs expected
+commands itself; it never executes commands obtained from that transcript.
+
+Create the separate copy only after the interrupted process has exited. The
+following code preserves every original file, verifies both complete inventories
+and creates a new manifest outside the two run directories:
+
+```python
+import json
+from pathlib import Path
+import shutil
+import sys
+
+sys.path.insert(0, "scripts")
+import blmis_magnify_continue as recovery
+
+prior = Path("artifacts/magnify-interrupted").resolve(strict=True)
+copied = Path("artifacts/magnify-working-copy").resolve()
+inventory = Path("artifacts/magnify-copy-inventory.json").resolve()
+before = recovery.file_inventory(prior)
+shutil.copytree(prior, copied, symlinks=True)
+assert recovery.file_inventory(prior) == recovery.file_inventory(copied) == before
+record = {
+    "status": "BYTE_IDENTICAL_COPY",
+    "source": str(prior), "destination": str(copied),
+    "file_count": len(before),
+    "total_bytes": sum(item["bytes"] for item in before.values()),
+    "inventory": [{"path": name, **identity} for name, identity in before.items()],
+}
+recovery.write_json(inventory, record)
+print(json.dumps({
+    "inventory_sha256": recovery.fingerprint(inventory)["sha256"],
+    "transcript_sha256": before["commands.jsonl"]["sha256"],
+}))
+```
+
+Retain the printed hashes independently. Pass them, the pinned executables and
+a new output directory to the evidence-only preflight:
+
+```bash
+python3 -B scripts/blmis_magnify_continue.py check \
+  --prior artifacts/magnify-interrupted \
+  --copy artifacts/magnify-working-copy \
+  --inventory artifacts/magnify-copy-inventory.json \
+  --inventory-sha256 "$MAGNIFY_INVENTORY_SHA256" \
+  --transcript-sha256 "$MAGNIFY_TRANSCRIPT_SHA256" \
+  --out artifacts/magnify-continuation-check \
+  --fa /path/to/pinned/fa --fa-verify /path/to/pinned/fa-verify
+```
+
+`check` freshly extracts the full pinned PDF, compares every retained normalized
+input and all 1,586 intents, and reapplies the existing source/certificate
+assertions to the complete archived results. It executes no native command and
+reports `READY_FOR_NATIVE_PREFLIGHT`, which is an evidence-reconstruction result.
+
+Use `run` with the same arguments and another new output directory to perform
+the actual continuation. Before a retry, it verifies the copied native book's
+identity, exact head and census; replays all six retained certificates; checks
+all six empty preimport prefixes and the party population; and cold-reads the
+complete original PDF through a fresh native process. It then executes all
+remaining retries and all original annual, principal-analysis, seven-procedure,
+register, projection, custody, CSV/ADS, standalone-proof and tamper assertions.
+
+The observed native recovery preflight passed **17 actual commands** at unchanged
+head **1913**, including exact readback of all **28,947,445 original bytes**.
+The remaining continuation was still executing when this helper was introduced;
+the execution record distinguishes the original failure, preflight and final
+outcome. Its 20 focused guard tests passed, including a secondary disk-full error
+while recording failure and a directory-creation ownership race.
+
+A completed report explicitly records
+`execution_mode: continued_after_interruption`, with separate initial and
+continuation command counts, fresh source extraction, actual native preflight,
+before/after helper and executable hashes, and unchanged original evidence.
+The initial process had no retained launch-time module snapshot, so its loaded
+helper hashes remain unavailable. The new continuation pins and revalidates its
+own complete dependencies and source-to-native comparisons. Whole books and
+private keys remain local; they are not part of the committed execution summary.

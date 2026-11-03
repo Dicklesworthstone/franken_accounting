@@ -251,6 +251,34 @@ driver checks every approved identity and publication sequence, including a
 grouped retry after finalization. A later refusal does not undo earlier staged
 chunks, and no staged balance is activated before native finalization.
 
+### Exercise native source-population completeness
+
+The [source-bound replay helper](../scripts/public_ledger_source_bound_replay.py)
+runs the same complete-agency workflow with the existing native `--bind-source`
+switch added to every preparation command, including the exact preparation
+retry:
+
+```bash
+python3 -B scripts/public_ledger_source_bound_replay.py --repo . run \
+  --agency 66000 --out artifacts/omes-university-source-bound \
+  --fa target/debug/fa --fa-verify target/debug/fa-verify
+```
+
+The helper imports the stock driver and changes only that native command
+argument. Every source, balance, dimension, grouped-staging, export and tamper
+assertion still runs. The actual executed arguments are retained in the command
+transcript. This focused helper requires a new output directory and does not
+offer `--resume`; the ordinary driver's recovery workflow remains separately
+tested.
+
+Source binding gives the kernel an immutable population before staging. It
+prevents an omitted offsetting pair from disappearing behind a matching net
+balance. The independent source-row and gross-activity oracles still establish
+whether the prepared population preserves the original publication. A binding
+alone does not replay that transformation. See
+[source-bound migration completeness](migration_source_completeness.md) for the
+native admission rules and the manifest witnesses carried by portable proofs.
+
 To fetch and inspect the **entire** statewide distribution:
 
 ```bash
