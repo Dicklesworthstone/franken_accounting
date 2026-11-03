@@ -1339,6 +1339,7 @@ mod tests {
                 events: std::collections::BTreeMap::new(),
                 deposit_profiles: Vec::new(),
             },
+            declared_entities: std::collections::BTreeMap::new(),
             attestations: std::collections::BTreeMap::new(),
             documents: std::collections::BTreeMap::new(),
             supplements: std::collections::BTreeMap::new(),

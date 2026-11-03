@@ -343,7 +343,7 @@ evidence = "DOC-406"
 [[step]]
 seq = 21
 kind = "finding_record"
-ref = "recon.assertion_drift@1"
+ref = "recon.assertion_drift@2"
 known_at = "head"
 principal = "examiner-1"
 

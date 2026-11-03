@@ -46,7 +46,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("recon.intercompany", 2),
     ("recon.lapping", 2),
     ("recon.attested_register_compare", 1),
-    ("recon.assertion_drift", 1),
+    // Version 2 folds gross period activity, as RegisterEquals does.
+    ("recon.assertion_drift", 2),
     ("completeness.unrecorded_liabilities", 1),
     // H18 (fa-yugf.98): a closed boundary is a period whose latest transition closed it.
     ("events.subsequent", 2),
@@ -82,6 +83,15 @@ pub(super) const COUNT: usize = INPUTS.len();
 
 pub(super) fn supported(id: &str, version: u16) -> bool {
     EXTENDED_CERTIFIABLE_PROCEDURES.contains(&(id, version))
+}
+
+/// Older assertion-drift certificates retain exactly this native input
+/// closure. Keep their durable framing decodable without admitting their old
+/// computation as the current one: ProcedureCertificate::request requires the
+/// pinned registry and an exact algorithm version before catalog dispatch.
+/// Replaying v1 therefore requires the executable that produced it.
+pub(super) fn has_retained_closure(id: &str, version: u16) -> bool {
+    supported(id, version) || (id == "recon.assertion_drift" && version == 1)
 }
 
 pub(super) fn statements(at: CommitSeq) -> Vec<String> {
@@ -125,7 +135,7 @@ pub(super) fn capture<V: Vfs + Clone>(
 /// in merely by recomputing the public outer digest.
 pub(super) fn validate(certificate: &ProcedureCertificate) -> Result<(), Refusal> {
     let inputs = &certificate.extended_inputs;
-    if !supported(&certificate.report.procedure, certificate.report.version) {
+    if !has_retained_closure(&certificate.report.procedure, certificate.report.version) {
         if !inputs.is_empty() {
             return Err(invalid(
                 "unexpected extended native inputs for a v1 procedure",

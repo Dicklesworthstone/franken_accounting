@@ -259,6 +259,40 @@ including independent ADS accumulator proof verification with dimension coverage
 amount-only and dimension-only negative controls. Resuming a completed run
 refuses and points to that existing report.
 
+### Recoverable source-bound imports
+
+The canonical driver now accepts `run --bind-source`. It records that choice
+in the immutable recovery pins before native work, binds each complete
+normalized monetary-row population before staging, and checks the original
+source, package, manifest and publication identities on every retry.
+
+```bash
+python3 scripts/public_ledger.py run --agency 20400 --bind-source \
+  --out artifacts/museum-bound --fa target/debug/fa --fa-verify target/debug/fa-verify
+
+# After an interrupted attempt, inherit its source, executables and binding mode.
+python3 scripts/public_ledger.py run --resume --out artifacts/museum-bound
+```
+
+An explicit `--no-bind-source` cannot downgrade a bound recovery, and
+`--bind-source` cannot adopt an originally unbound book. The original source,
+normalizer, driver and executable pins still apply; this does not upgrade old
+fresh-only companion runs whose pins never declared their source-binding mode.
+
+Native preparation publishes its package and source binding in separate
+publications. Recovery admits the intervening state only for an originally
+bound, exact **Open package with zero staged chunks**. It completes that
+original binding and authenticates the complete population before staging.
+A missing binding on a staged or finalized package refuses. The controlled
+interruption helper's `after-package-before-bind`, `partial-stage` and
+`after-finalize` boundaries exercise these distinct durable states; they do
+not simulate a torn native transaction.
+
+The source-bound convenience entry point remains fresh-only and delegates to
+the canonical flag. Use the canonical `run --resume` command for recovery.
+Native acceptance of the new recovery path is separate from its unit checks
+and the earlier fresh source-bound runs recorded below.
+
 The resume tests cover source/model/binary mismatch, a directory-creation
 race, lost setup and approval acknowledgements, native package discovery,
 mixed old/new chunk receipts, immutable snapshot reuse, and checkpoint
@@ -500,6 +534,56 @@ hashes, actual commands, timing and trust limits. This is activity-only
 acceptance under a caller-trusted test-book key; it does not change the failed
 hosted job conclusion, authenticate human review, establish later FWC/CAMT
 runtime results or replace the earlier three-agency execution records.
+
+### What the complete source permits for project and fund coverage
+
+A further [source-admission census](../evidence/public_ledger/source-admission-census-2026-11-03.json)
+examined every one of the pinned distribution's 373,357 rows. Ten agencies
+have project codes and 22 have multiple funds, representing 28 distinct
+agencies. Every one of those 28 has an unbalanced complete agency-month. The
+34 agencies balanced in all three months each have one fund and no project
+codes. This is a limitation of the available source population for this
+activity-book interpretation, not permission to invent offsetting entries.
+
+Four complete candidates were also passed through the actual read-only
+preparation function under both `fund-class` and `agency-period`. All eight
+preparations refused before native execution:
+
+| Complete agency | Source rows | Projects | Funds | April net | May net | June net |
+|---|---:|---:|---:|---:|---:|---:|
+| 12500 Mines | 390 | 5 | 2 | −$4,614.55 | −$1,912.50 | $0.00 |
+| 38500 Insurance | 1,219 | 0 | 2 | $0.00 | $0.00 | −$613.05 |
+| 41600 Law Enforcement Retirement | 172 | 0 | 2 | −$2,835.50 | $2,835.50 | $0.00 |
+| 83500 Water Resources | 1,903 | 96 | 3 | $7,129.92 | $38,829,250.16 | −$39,018,706.68 |
+
+Nets are original debits less credits. The equal and opposite retirement
+amounts do not authorize cancellation across separate accounting periods.
+Mines' five exact project codes and 198 project-tagged rows have no conflicting
+dimension descriptions, unsupported accounts or fractional cents; its first
+two months still fail the whole-agency balance condition. A positive project
+or multiple-fund acceptance result therefore needs another complete balanced
+publication or independently sourced controls and an explicit accounting
+treatment. Selecting only balanced months would change the population.
+
+The existing acquisition and preparation helpers reproduce the underlying
+source and refusal without creating a native book:
+
+```bash
+python3 scripts/public_ledger.py fetch --out /tmp/ledger_fy24_qtr4.csv
+python3 scripts/public_ledger.py profile --source /tmp/ledger_fy24_qtr4.csv \
+  --out /tmp/omes-complete-profile.json
+python3 scripts/public_ledger.py prepare --source /tmp/ledger_fy24_qtr4.csv \
+  --agency 12500 --balance-boundary agency-period --out /tmp/mines-preparation
+```
+
+The final command is expected to refuse the original imbalance. The census
+is source arithmetic and admission evidence, not a native replay PASS.
+
+The [portable report helper](public_ledger_portable_proof.md) now accepts exact
+department, fund, product and project selectors, inherits the original binding
+mode, and compares the independently verified output's net and gross cells
+with the immutable original-source manifest. Missing source dimensions refuse;
+the interface does not imply that a project-bearing native dataset has passed.
 
 The [BLMIS Glantz transaction workload](blmis_glantz_workload.md) provides a
 complementary route to actual published bankruptcy-case transactions and

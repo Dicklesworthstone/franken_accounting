@@ -2360,6 +2360,7 @@ fn test_fixture(as_of: DateDay) -> (Snapshot, BookContext, VId, VId, Oid) {
             events: BTreeMap::new(),
             deposit_profiles: Vec::new(),
         },
+        declared_entities: BTreeMap::new(),
         attestations: BTreeMap::new(),
         documents,
         supplements: BTreeMap::new(),

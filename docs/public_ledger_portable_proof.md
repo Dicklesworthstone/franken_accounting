@@ -3,10 +3,11 @@
 The [public-ledger replay](public_ledger.md) imports each selected Oklahoma OMES
 agency's complete published monthly activity, compares the native journal and
 reports with an independent source fold, and checks exported CSV and ADS legs.
-The portable-proof companion additionally produces a retained departmental
+The portable-proof companion additionally produces a retained dimension
 report bundle and asks the separate `fa-verify` executable to authenticate it
 against its expected certificate, signed checkpoint, fixture public key and
-detached receipt.
+detached receipt. It then compares the verified output's exact net and gross
+account cells with the original source controls pinned when the import began.
 
 The university fixture is especially useful: its full dimension vectors
 produce a 157-leg accounting Entry larger than the substrate's 16 KiB row limit.
@@ -38,13 +39,13 @@ python3 -B scripts/public_ledger_portable_proof.py \
   --require-entry-fragments
 ```
 
-Then exercise the stronger native source-population binding in a separate fresh
-book. The companion adds `--bind-source` to native preparation and its exact
-retry while retaining all of the ordinary driver's source and accounting
+Then exercise native source-population binding in a separate fresh book. The
+canonical driver retains `--bind-source` in the recovery contract, applies it
+to native preparation and retries, and preserves all source and accounting
 assertions:
 
 ```bash
-python3 -B scripts/public_ledger_source_bound_replay.py --repo "$PWD" run \
+python3 -B scripts/public_ledger.py run --bind-source \
   --agency 66000 --out /tmp/fa-university-source-bound \
   --fa "$PWD/target/debug/fa" --fa-verify "$PWD/target/debug/fa-verify"
 
@@ -52,19 +53,66 @@ python3 -B scripts/public_ledger_portable_proof.py \
   --run /tmp/fa-university-source-bound \
   --out /tmp/fa-university-source-bound-proof \
   --fa target/debug/fa --fa-verify target/debug/fa-verify \
-  --source-bound --require-entry-fragments
+  --dimension department --value 1000001 --require-entry-fragments
 ```
 
 Choose new output paths for each attempt. Existing replay and proof directories
 are preserved; the proof output must be separate from the replay directory.
 The proof helper requires the completed replay's actual `PASS` report,
-checksummed recovery pins, matching original driver and normalizer bytes, and
-the exact same executable hashes. It checks these inputs again before declaring
-success.
+checksummed recovery pins and original book identity, the original pinned
+source manifest, matching driver and normalizer bytes, and the exact same
+executable hashes. It checks these inputs again before declaring success.
+
+For canonical replays, the helper inherits bound or unbound mode from the
+original recovery contract. An explicit `--source-bound` or `--unbound` must
+agree with that contract. Older fresh-companion runs that never recorded a
+binding-mode pin still require `--source-bound` when verifying their bound
+profile; the helper does not retrospectively add a recovery guarantee.
+
+An interrupted canonical import resumes with its original mode and source
+selection, without repeating or changing those options:
+
+```bash
+python3 -B scripts/public_ledger.py run --resume \
+  --out /tmp/fa-university-source-bound
+```
+
+### Select an exact source dimension
+
+`--dimension` supports `department`, `fund`, `product`, and `project`.
+`--value` names the exact original code: leading zeroes and case are significant.
+When omitted, the helper selects the first available code in lexical order.
+Every selection must identify a distinct retained certificate in the completed
+replay; a missing project population or unknown code refuses before native
+commands or proof-directory creation.
+
+For the complete Health Care Authority selection, first run the source-bound
+import with its documented `agency-period` accounting boundary:
+
+```bash
+python3 -B scripts/public_ledger.py run --bind-source --agency 80700 \
+  --balance-boundary agency-period --out /tmp/fa-health-bound \
+  --fa "$PWD/target/debug/fa" --fa-verify "$PWD/target/debug/fa-verify"
+
+python3 -B scripts/public_ledger_portable_proof.py \
+  --run /tmp/fa-health-bound --out /tmp/fa-health-fund-proof \
+  --fa target/debug/fa --fa-verify target/debug/fa-verify \
+  --dimension fund --value 1000 --require-entry-fragments
+
+python3 -B scripts/public_ledger_portable_proof.py \
+  --run /tmp/fa-health-bound --out /tmp/fa-health-product-proof \
+  --fa target/debug/fa --fa-verify target/debug/fa-verify \
+  --dimension product --value 00 --require-entry-fragments
+```
+
+These commands are reproducible selections, not a claim that every dimension
+has completed a measured native run. This agency has no published project
+values. The original source's fund/class balances remain separately visible;
+the monthly grouping does not invent balancing entries or discard rows.
 
 ## What the proof checks
 
-The helper selects the first retained departmental certificate from the
+The helper selects the requested retained dimension certificate from the
 completed report. It obtains a signed checkpoint for an explicitly returned
 state identity, then produces the bundle against that exact state. It calls
 the real verifier with all four external expectations:
@@ -78,9 +126,26 @@ fa-verify report report.fab \
 ```
 
 Successful process exit and an actual `verified` verdict are both required.
-The additional framing checks bind the observed book, selected department,
-retained certificate digest and every migration-run body to the completed
-replay. Source-bound mode also requires one source witness per migration run.
+The bundle, checkpoint and detached receipt are hashed before verification;
+their bytes must remain unchanged through inspection, optional public-example
+emission and the final acceptance record. A successful verifier invocation
+cannot authorize publication of subsequently replaced proof files.
+The additional checks bind the observed book to its original checksummed
+identity, and the selected dimension, retained certificate digest and every
+migration-run body to the completed replay. Source-bound mode also requires
+one source witness per migration run.
+
+After native verification, the helper decodes the actual canonical report
+output and compares its account nets **and** gross debit/credit amounts with
+the independently folded original-source controls. These controls come from
+the immutable `manifest.json` whose hash is in the original recovery pins;
+editing only a completion report cannot replace the source oracle. The helper
+accumulates the original monthly cells through the selected fiscal period and
+checks the exact dimension value, stock selection, fiscal period, snapshot,
+and inclusive period-end date. Increasing debit and credit by equal amounts
+therefore fails even though the net balance is unchanged. Unsupported units,
+pending amounts, duplicate account identities, truncated output and trailing
+bytes refuse rather than lose accounting meaning.
 
 With `--require-entry-fragments`, an ordinary university report must have the
 ten-input native closure, including `MigrationRunFragment` and `EntryFragment`.
@@ -103,12 +168,12 @@ Each proof directory contains:
 
 | File | Purpose |
 |---|---|
-| `report.fab` | The native portable departmental report bundle |
+| `report.fab` | The native portable dimension report bundle |
 | `checkpoint.bin` | The separately exported signed checkpoint |
 | `report.receipt` | The detached receipt from the native bundle producer |
 | `trusted-public-key.txt` | The fixture key passed to the verifier |
 | `commands.jsonl` | Exact actual native commands, output and exit status |
-| `validation.json` | Result, observed closure, hashes and before/after input pins |
+| `validation.json` | Result, verified output cells, original-source comparison, hashes and before/after input pins |
 
 The optional `--emit-public-example` flag emits deterministic gzip/base64 and
 hash metadata for exactly `report.fab`, `checkpoint.bin` and `report.receipt`.
@@ -182,9 +247,15 @@ refusal. That distinction is necessary because the report uses a declared
 monthly activity grouping while preserving the two offsetting source class
 balances.
 
-The source-bound companion rejects `--resume` and every abbreviation that the
-stock parser could treat as that option before resolving the repository or
-observing an existing output. Its six argument-admission tests and the expanded
-public-ledger/source suite passed together: 99 tests with exit 0. This preserves
-the companion's fresh-book contract; ordinary recovery remains a separate
-stock-driver operation with its original source and boundary pins.
+The historical source-bound companion test record above predates canonical
+source-bound recovery. The companion remains a fresh-book convenience entry
+point; use `public_ledger.py run --resume` for the new recoverable path.
+
+The current portable-helper regression suite uses the committed university
+bundle and original 66000 CSV, verifies their manifest hashes, and independently
+folds the original department `1000001` rows using `Decimal`. Its exact net and
+gross results must match the real decoded canonical output. Negative cases
+cover altered report controls, wrong scope or snapshot, missing fiscal periods,
+mode contradictions and malformed framing. These arithmetic and admission
+tests do not create a new native cryptographic acceptance claim for the newer
+helper or the Rust assertion-drift implementation.

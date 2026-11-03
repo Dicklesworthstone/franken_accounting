@@ -178,6 +178,346 @@ fn ponzi_v5_certificates_refuse_the_old_cash_only_version_instead_of_reinterpret
 }
 
 #[test]
+fn assertion_drift_v2_certifies_gross_periods_and_replays_before_later_changes() {
+    let mut f = Fixture::new(97);
+    let (source, _) = f.post(31, "3000", "1000", 5_000, false);
+    let cx = f.cx();
+    let january_key = fa_registers::EntityCellKey {
+        account: f.id("1000"),
+        unit_id: f.unit.0,
+        period: "FY2026-P01".into(),
+        entity: None,
+    };
+    let january = f
+        .book
+        .evaluate_register_equals(&cx, &january_key, None)
+        .unwrap();
+    assert_eq!(january.amount.mantissa, 5_000);
+    let january_attestation = f
+        .runtime
+        .block_on(f.book.record_register_equals(
+            &cx,
+            &cap(&["reconcile"]),
+            &january,
+            f.evidence.iter().map(|e| e.document_oid).collect(),
+        ))
+        .unwrap()
+        .unwrap();
+    let before_reversal = f.certify(&f.request("recon.assertion_drift", source));
+    assert_eq!(before_reversal.report.version, 2);
+    assert!(before_reversal.report.findings.is_empty());
+
+    f.runtime
+        .block_on(f.book.transition_period(
+            &cx,
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"open-assertion-february",
+            &cap(&["close"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let (original, _) = f.book.read_entry(&cx, source).unwrap().unwrap();
+    let target = fa_model::EntryRef {
+        vid: source,
+        entry_digest: original.entry_digest,
+    };
+    let mut reversal = original.proposal;
+    reversal.class = EntryClass::REVERSAL;
+    reversal.effective_date = DateDay::from_ymd(2026, 2, 1).unwrap();
+    reversal.idempotency_key = b"reverse-asserted-january-posting".to_vec();
+    reversal.description = f
+        .book
+        .seal_text(&cx, "reverse January in February")
+        .unwrap();
+    reversal.supersession = vec![fa_model::Supersession {
+        target,
+        kind: fa_model::SupersessionKind::Reverses,
+        reason_code: 1,
+    }];
+    for leg in &mut reversal.legs {
+        leg.side = match leg.side {
+            Side::Debit => Side::Credit,
+            Side::Credit => Side::Debit,
+        };
+    }
+    reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+    f.runtime
+        .block_on(f.book.post(
+            &cx,
+            PostRequest {
+                proposal: reversal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post", "reconcile"]),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    let february_key = fa_registers::EntityCellKey {
+        period: "FY2026-P02".into(),
+        ..january_key.clone()
+    };
+    let february = f
+        .book
+        .evaluate_register_equals(&cx, &february_key, None)
+        .unwrap();
+    assert_eq!(february.amount.mantissa, -5_000);
+    f.runtime
+        .block_on(f.book.record_register_equals(
+            &cx,
+            &cap(&["reconcile"]),
+            &february,
+            f.evidence.iter().map(|e| e.document_oid).collect(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.book
+            .evaluate_register_equals(&cx, &january_key, None)
+            .unwrap()
+            .amount
+            .mantissa,
+        5_000,
+        "the accounting register keeps the January posting"
+    );
+    let mut request = f.request("recon.assertion_drift", source);
+    request.effective_through = None;
+    let after_reversal = f.certify(&request);
+    assert!(
+        after_reversal.report.findings.is_empty(),
+        "both native attestations agree with their own period: {:?}",
+        after_reversal.report.findings
+    );
+
+    // A new backdated posting really changes January's attested activity.
+    // It must be reported even though that period also has a reversed entry.
+    let (backdated, _) = f.post(15, "3000", "1000", 700, false);
+    request.known_at = Some(f.head());
+    let drifted = f.certify(&request);
+    assert_eq!(drifted.report.findings.len(), 1);
+    let finding = &drifted.report.findings[0];
+    assert_eq!(finding.severity, Severity::Critical);
+    assert_eq!(finding.statistic.value, 700);
+    assert_eq!(
+        finding.cites,
+        vec![
+            Cite::Attestation(january_attestation.vid),
+            Cite::Account(f.id("1000")),
+            Cite::Period("FY2026-P01".into()),
+            Cite::Entry(backdated),
+        ]
+    );
+    let head = f.head();
+    for certified in [before_reversal, after_reversal, drifted] {
+        let bytes = certified.certificate.canonical_bytes().unwrap();
+        let decoded = ProcedureCertificate::decode(&bytes).unwrap();
+        assert_eq!(decoded.report.version, 2);
+        assert_eq!(decoded.supplemental_inputs().len(), 6);
+        let replayed = f
+            .book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed, certified.report);
+        assert_eq!(encode_run(&replayed).unwrap(), decoded.output);
+    }
+    assert_eq!(f.head(), head, "certification and replay do not publish");
+}
+
+#[test]
+fn assertion_drift_uses_declared_entity_cells_including_implicit_and_none() {
+    let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    let mut f = Fixture::with_entities(
+        99,
+        vec![fa_journal::genesis::LegalEntitySpec {
+            code: "ALPHA".into(),
+            name: "Declared balancing entity".into(),
+            functional_unit: usd,
+        }],
+    );
+    // Both legs are untagged, which the native register assigns to ALPHA.
+    let (source, _) = f.post(1, "3000", "1000", 1_000, false);
+    let cx = f.cx();
+    f.runtime
+        .block_on(f.book.create_legal_entity(
+            &cx,
+            &fa_model::LegalEntityFullSpec {
+                code: "INFORMATIONAL".into(),
+                name: "REA relationship endpoint, not a balancing entity".into(),
+                jurisdiction: "US".into(),
+                functional_unit: usd,
+                formed: None,
+                dissolved: None,
+                external_ids: Vec::new(),
+            },
+            PRINCIPAL,
+            day(1),
+            b"informational-entity",
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut alpha_attestation = None;
+    for (entity, expected) in [(Some("ALPHA".to_string()), 1_000), (None, 0)] {
+        let key = fa_registers::EntityCellKey {
+            account: f.id("1000"),
+            unit_id: usd.0,
+            period: "FY2026-P01".into(),
+            entity,
+        };
+        let claim = f.book.evaluate_register_equals(&cx, &key, None).unwrap();
+        assert_eq!(claim.amount.mantissa, expected);
+        let attested = f
+            .runtime
+            .block_on(f.book.record_register_equals(
+                &cx,
+                &cap(&["reconcile"]),
+                &claim,
+                f.evidence.iter().map(|e| e.document_oid).collect(),
+            ))
+            .unwrap()
+            .unwrap();
+        if key.entity.is_some() {
+            alpha_attestation = Some(attested.vid);
+        }
+    }
+    let snapshot = Snapshot::read(&f.book.db, &cx.query(), f.book.context(), None, None).unwrap();
+    assert_eq!(snapshot.declared_entities.len(), 1);
+    assert!(snapshot.declared_entities.contains_key("ALPHA"));
+    assert_eq!(snapshot.rea.legal_entities.len(), 2);
+    let certified = f.certify(&f.request("recon.assertion_drift", source));
+    assert!(
+        certified.report.findings.is_empty(),
+        "{:?}",
+        certified.report.findings
+    );
+
+    let (later, _) = f.post(2, "3000", "1000", 125, false);
+    let changed = f.certify(&f.request("recon.assertion_drift", source));
+    assert_eq!(changed.report.findings.len(), 1);
+    assert_eq!(changed.report.findings[0].statistic.value, 125);
+    assert_eq!(
+        changed.report.findings[0].cites,
+        vec![
+            Cite::Attestation(alpha_attestation.unwrap()),
+            Cite::Account(f.id("1000")),
+            Cite::Period("FY2026-P01".into()),
+            Cite::Entry(later),
+        ]
+    );
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report,
+        "later implicit activity cannot change the earlier certified result"
+    );
+}
+
+#[test]
+fn assertion_drift_v1_decodes_but_cannot_dispatch_the_v2_fold() {
+    let mut f = Fixture::new(98);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    let mut saved = f
+        .certify(&f.request("recon.assertion_drift", source))
+        .certificate;
+    assert!(saved.report.findings.is_empty());
+    assert!(!extended::supported("recon.assertion_drift", 1));
+    assert!(extended::has_retained_closure("recon.assertion_drift", 1));
+
+    // Build a version-1 computation over an empty attestation population,
+    // where both historical and current calculations produce no findings.
+    // This is a constructed decoder/dispatch fixture, not an old run receipt.
+    // Recompute every public digest so refusal cannot rely on a stale checksum.
+    saved.report.version = 1;
+    let report = &mut saved.report;
+    let mut parameters = Writer::new();
+    parameters.str(&report.procedure).u16(report.version);
+    parameters.list(&report.parameters, |w, (key, value)| {
+        w.str(key).i128(*value);
+    });
+    parameters.list(&report.inputs, |w, (key, value)| {
+        w.str(key).str(value);
+    });
+    report.parameters_digest = raw_digest(
+        fa_lantern::PARAMETERS_DIGEST_DOMAIN,
+        &parameters.finish().unwrap(),
+    );
+    let mut findings = Writer::new();
+    findings
+        .str(&report.procedure)
+        .u16(report.version)
+        .fixed(&report.parameters_digest)
+        .fixed(&report.inputs_digest);
+    report.coordinate.encode(&mut findings);
+    findings.list(&report.findings, |w, finding| finding.encode(w));
+    report.findings_digest = raw_digest(
+        fa_lantern::FINDINGS_DIGEST_DOMAIN,
+        &findings.finish().unwrap(),
+    );
+    let policy = fa_policy::Steward::embedded().unwrap().policy_oid;
+    report.decision_card = fa_policy::decide_lantern_threshold(
+        Some(policy),
+        policy,
+        &report.procedure,
+        report.version,
+        &report.parameters,
+        report.population,
+    );
+    report.decision_card_digest = report.decision_card.digest().unwrap();
+    saved.output = encode_run(report).unwrap();
+    saved.registry = [0; 32];
+    assert_ne!(saved.registry, registry_digest().unwrap());
+    saved.digest = domain_digest(CERTIFICATE_DOMAIN, &[&saved.body().unwrap()]);
+    let bytes = saved.canonical_bytes().unwrap();
+    let decoded = ProcedureCertificate::decode(&bytes).unwrap();
+    assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+    assert_eq!(
+        ReportArtifact::decode(&bytes).unwrap().family(),
+        ReportArtifactFamily::Procedure
+    );
+    let head = f.head();
+    let unavailable = f
+        .book
+        .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        unavailable.code,
+        crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE
+    );
+    assert_eq!(unavailable.exit, exit::ENVIRONMENT);
+
+    // Even deliberately rebinding the envelope to today's registry cannot
+    // cause the old version to run the corrected algorithm under a v1 label.
+    saved.registry = registry_digest().unwrap();
+    saved.digest = domain_digest(CERTIFICATE_DOMAIN, &[&saved.body().unwrap()]);
+    let rebound = ProcedureCertificate::decode(&saved.canonical_bytes().unwrap()).unwrap();
+    let mismatch = f
+        .book
+        .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &rebound)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(mismatch.exit, exit::VERIFICATION);
+    assert!(
+        mismatch
+            .message
+            .contains("procedure identity, claim, evidence or full parameter set has changed")
+    );
+    assert_eq!(f.head(), head);
+
+    saved.extended_inputs.pop();
+    assert!(
+        saved.body().is_err(),
+        "legacy decoding still requires every attestation/REA witness"
+    );
+}
+
+#[test]
 fn signed_solvency_certifies_its_method_and_refuses_the_old_version() {
     let mut f = Fixture::new(94);
     let (source, _) = f.post(1, "1010", "6000", 20, false);

@@ -257,7 +257,7 @@ principal = "case-poster-1"
 [[step]]
 seq = 19
 kind = "finding_record"
-ref = "recon.assertion_drift@1"
+ref = "recon.assertion_drift@2"
 known_at = "head"
 principal = "examiner-1"
 

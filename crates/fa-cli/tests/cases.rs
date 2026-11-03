@@ -3823,7 +3823,7 @@ fn assertion_drift_reports_the_magnitude_of_the_summed_deltas() {
     let drift = |o: &RunOutcome, statistic: &str| {
         let row = o.row("lifecycle-D-01").unwrap_or_default();
         !row.starts_with("FAIL ")
-            && row.contains(" procedure=recon.assertion_drift@1 ")
+            && row.contains(" procedure=recon.assertion_drift@2 ")
             && row.contains(" entry=delta-A-1 ")
             && row.contains(" cite=6100,attestation:lifecycle-R-01,period:2026Q1 ")
             && row.contains(" severity=Critical ")

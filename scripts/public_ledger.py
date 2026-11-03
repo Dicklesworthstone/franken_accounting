@@ -154,6 +154,7 @@ class ReplayRecovery:
     def __init__(self, output: Path, path: Path, agency: str,
                  binary: Path, verifier: Path, *, resume: bool,
                  balance_boundary: str = "fund-class",
+                 bind_source: bool = False,
                  on_created: Callable[[], None] | None = None):
         try:
             import fcntl
@@ -162,6 +163,8 @@ class ReplayRecovery:
         self.output = output
         self.directory = output / "recovery"
         self.resumed = resume
+        require(type(bind_source) is bool, "source-binding mode must be a boolean")
+        self.bind_source = bind_source
         self.attempt: Path | None = None
         self.lock = None
         self.manifest, self.artifacts = preparation_artifacts(path, agency, balance_boundary=balance_boundary)
@@ -179,9 +182,16 @@ class ReplayRecovery:
         }
         if balance_boundary != "fund-class":
             pins["balance_boundary"] = balance_boundary
+        # Absence retains the original unbound v1 profile. Never infer a bound
+        # intent from an existing book whose original pins did not declare it.
+        if bind_source:
+            pins["bind_source"] = True
         self.facts: dict[str, dict] = {}
         if resume:
             saved = read_fact(self.directory / "pins.json")
+            require(type(saved.get("bind_source", False)) is bool
+                    and saved.get("bind_source", False) is bind_source,
+                    "resume source-binding mode differs from its original pin")
             require({key: saved.get(key) for key in pins} == pins,
                     "resume source, agency, normalization, Python or executable pins differ")
             require(set(saved) == set(pins) | {"source_path", "fa_path", "fa_verify_path"},
@@ -1069,13 +1079,124 @@ def run_key(manifest: dict, run: dict) -> str:
     return f"omes-{manifest['agency']}-{run['name']}"
 
 
+SOURCE_BINDING_IDENTITY_FIELDS = (
+    "manifest_vid", "manifest_digest", "book_id", "run_vid", "run_body_digest",
+    "source_oid", "source_commit", "package_oid", "package_commit", "source_rows", "expected_chunks",
+)
+
+
+def verify_source_binding(recovery: ReplayRecovery, run: dict, package: dict,
+                          *, allow_pending: bool = False) -> None:
+    """Check native source closure, separately from source amount/dimension checks.
+
+    The native inspection authenticates the manifest against its complete
+    retained package. Here its identities and live coverage must also match
+    this workflow's originally pinned population and observed chunk receipts.
+    """
+    require("source_binding" in package, "native package omits its source-binding profile")
+    binding = package["source_binding"]
+    if not recovery.bind_source:
+        require(binding is None, "an unbound recovery pin cannot adopt a source-bound package")
+        return
+    if binding is None:
+        # Native prepare uploads the package before publishing the binding.
+        # A lost process between those commits leaves this exact recoverable
+        # state. No staged or activated population may acquire binding later.
+        require(allow_pending and package["run_state"] == "Open"
+                and type(package["recorded_count"]) is int and package["recorded_count"] == 0
+                and all(chunk["recorded_at"] is None for chunk in package["chunks"]),
+                "bound source manifest is missing outside the unstaged preparation boundary")
+        return
+    require(isinstance(binding, dict) and set(binding) == set(SOURCE_BINDING_IDENTITY_FIELDS) | {
+        "recorded_chunks", "missing_chunks", "unexpected_chunks", "complete",
+    }, "native source-binding fields differ")
+    for field in SOURCE_BINDING_IDENTITY_FIELDS:
+        if field in ("source_rows", "expected_chunks"):
+            require(type(binding[field]) is int and binding[field] > 0,
+                    f"native source-binding {field} is invalid")
+        else:
+            width = 32 if field in ("manifest_vid", "book_id", "run_vid") else 64
+            require(isinstance(binding[field], str)
+                    and re.fullmatch(rf"[0-9a-f]{{{width}}}", binding[field], re.ASCII) is not None,
+                    f"native source-binding {field} is invalid")
+    require(binding["book_id"] == recovery.facts["book"]["book_id"],
+            "native source binding belongs to another book")
+    for field in ("run_vid", "run_body_digest", "source_oid", "source_commit", "package_oid", "package_commit"):
+        require(binding[field] == package[field], f"native source-binding {field} differs from its package")
+    chunks = package["chunks"]
+    require(type(package["row_count"]) is int and type(package["chunk_count"]) is int
+            and binding["source_rows"] == package["row_count"] == run["rows"]
+            and binding["expected_chunks"] == package["chunk_count"] == len(chunks) == len(run["entry_ids"]),
+            "native source binding omits or adds normalized source rows or proposals")
+    identities = [chunk["entry_vid"] for chunk in chunks]
+    require(len(set(identities)) == len(identities)
+            and all(isinstance(vid, str) and re.fullmatch(r"[0-9a-f]{32}", vid, re.ASCII) is not None
+                    for vid in identities), "native source binding repeats or changes a chunk identity")
+    recorded = [chunk["recorded_at"] for chunk in chunks if chunk["recorded_at"] is not None]
+    missing = sorted(chunk["entry_vid"] for chunk in chunks if chunk["recorded_at"] is None)
+    require(all(type(seq) is int and seq > 0 for seq in recorded) and len(set(recorded)) == len(recorded)
+            and type(binding["recorded_chunks"]) is int and type(package["recorded_count"]) is int
+            and binding["recorded_chunks"] == package["recorded_count"] == len(recorded),
+            "native source-binding progress differs from original chunk receipts")
+    require(binding["missing_chunks"] == missing and binding["unexpected_chunks"] == []
+            and binding["complete"] is (not missing),
+            "native source-binding completeness differs from exact package membership")
+    require(package["run_state"] != "Finalized" or binding["complete"],
+            "finalized migration has an incomplete source binding")
+
+
 def package_identity(package: dict) -> dict:
-    return {
+    identity = {
         key: package[key] for key in
         ("package_oid", "run_vid", "run_body_digest", "source_oid")
     } | {"chunks": [{"entry_vid": chunk["entry_vid"],
                     "proposal_digest": chunk["proposal_digest"]}
                    for chunk in package["chunks"]]}
+    if package.get("source_binding") is not None:
+        identity["source_binding"] = {key: package["source_binding"][key]
+                                      for key in SOURCE_BINDING_IDENTITY_FIELDS}
+    return identity
+
+
+def prepare_import(native: Native, recovery: ReplayRecovery, run: dict, intent_path: Path,
+                   dimension_values: dict[str, dict[str, dict]], *, previous: dict | None = None) -> dict:
+    if previous is not None:
+        verify_source_binding(recovery, run, previous, allow_pending=True)
+    command = ["migrate", "import", "--action", "prepare", "--intent", intent_path]
+    if recovery.bind_source:
+        command.append("--bind-source")
+    package = native.call(*command)["data"]
+    verify_prepared_legs(recovery.manifest, run, package, dimension_values)
+    require(package["run_state"] in ("Open", "Finalized"), "native migration is not resumable")
+    verify_source_binding(recovery, run, package)
+    receipt = package.get("source_binding_receipt")
+    if recovery.bind_source:
+        require(isinstance(receipt, dict) and set(receipt) == {"control_entry", "recorded_at", "already_recorded"}
+                and isinstance(receipt["control_entry"], str)
+                and re.fullmatch(r"[0-9a-f]{32}", receipt["control_entry"], re.ASCII) is not None
+                and type(receipt["recorded_at"]) is int and receipt["recorded_at"] > 0
+                and type(receipt["already_recorded"]) is bool,
+                "native source binding has no valid original publication receipt")
+        require(all(chunk["recorded_at"] is None or chunk["recorded_at"] > receipt["recorded_at"]
+                    for chunk in package["chunks"]),
+                "source binding was not published before its staged chunks")
+    else:
+        require(receipt is None, "unbound preparation unexpectedly published a source binding")
+    if previous is not None:
+        current_identity = package_identity(package)
+        if recovery.bind_source and previous["source_binding"] is None:
+            # Preflight admitted only the exact Open/zero-chunk preparation
+            # boundary; completing its originally requested binding is allowed.
+            current_identity.pop("source_binding")
+        require(current_identity == package_identity(previous),
+                "preparation changed the original native package, source binding or proposal identities")
+        if previous.get("source_binding") is not None:
+            require(receipt["already_recorded"], "source-binding retry published another control")
+        if previous.get("source_binding_receipt") is not None:
+            require(all(receipt[key] == previous["source_binding_receipt"][key]
+                        for key in ("control_entry", "recorded_at")),
+                    "source-binding retry changed its original publication receipt")
+    return package
 
 
 def activation_membership(prepared: list[dict]) -> dict:
@@ -1206,6 +1327,7 @@ def preflight_recovery(native: Native, recovery: ReplayRecovery) -> dict[str, di
         require(package["package_oid"] == document["oid"] and package["run_vid"] == actual["run_vid"]
                 and package["run_state"] == actual["state"], "native package identity or state differs")
         verify_prepared_legs(manifest, run, package, dimension_values)
+        verify_source_binding(recovery, run, package, allow_pending=True)
         recorded = [{"vid": chunk["entry_vid"], "proposal_digest": chunk["proposal_digest"],
                      "recorded_at": chunk["recorded_at"]}
                     for chunk in package["chunks"] if chunk["recorded_at"] is not None]
@@ -1407,13 +1529,8 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
                                     for entry_id in run["entry_ids"]},
                   "account_map": {row["code"]: row["code"] for row in accounts}}
         intent_path = recovery.input_json(f"{name}-import.json", intent)
-        package = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
-        verify_prepared_legs(manifest, run, package, dimension_values)
-        require(package["run_state"] in ("Open", "Finalized"), "native migration is not resumable")
         previous = recovered.get(run_key(manifest, run))
-        if previous is not None:
-            require(package_identity(package) == package_identity(previous),
-                    "preparation changed the original native package or proposal identities")
+        package = prepare_import(native, recovery, run, intent_path, dimension_values, previous=previous)
         for source_id, chunk in zip(run["entry_ids"], package["chunks"], strict=True):
             require(source_id not in entry_ids, "source entry occurs in more than one native migration")
             require(re.fullmatch(r"[0-9a-f]{32}", chunk["entry_vid"], re.ASCII) is not None,
@@ -1421,12 +1538,15 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
             entry_ids[source_id] = chunk["entry_vid"]
         if not prepared:
             head = native.head()
-            again = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
+            again = prepare_import(native, recovery, run, intent_path, dimension_values, previous=package)
             require(again["package_oid"] == package["package_oid"] and again["already_recorded"], "preparation retry changed package")
             require(native.head() == head, "preparation retry published another entry")
             checks.append("preparation_retry_is_idempotent")
+            if recovery.bind_source:
+                checks.append("source_binding_retry_preserves_original_manifest_and_control")
         prepared.append({"name": name, "run_vid": run_vid,
-                         "package_oid": package["package_oid"], "package": package})
+                         "package_oid": package["package_oid"], "package": package,
+                         "source_binding_receipt": package.get("source_binding_receipt")})
 
     # All existing and newly prepared populations are checked before staging.
     # A lost grouped response is recovered by native membership, not a local
@@ -1443,8 +1563,14 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
         retries.append((command, receipts, package, run_vid))
         shown = native.call("migrate", "import", "--action", "show", "--package", package_oid)["data"]
         require(shown["ties_out"] and shown["recorded_count"] == package["chunk_count"], "staged source does not tie out")
+        source_run = next(value for value in manifest["runs"] if value["name"] == name)
+        verify_source_binding(recovery, source_run, shown)
         require(package_identity(shown) == package_identity(package), "staging changed native package membership")
         run["package"] = shown
+    checks.append("native_source_binding_mode_matches_recovery_pins")
+    if recovery.bind_source:
+        checks.extend(["native_source_binding_matches_complete_normalized_population",
+                       "all_bound_source_members_staged_exactly_once"])
 
     before_finalize = activation_prefix(native, recovery, prepared)
     checks.append("all_staged_activity_is_invisible")
@@ -1548,6 +1674,11 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
                    "original_native_packages_and_publication_receipts_preserved",
                    "original_finalize_proposals_durable_before_approval"])
     return {"status": "PASS", "scope": SCOPE, "agency": manifest["agency"],
+            "bind_source": recovery.bind_source,
+            "source_bindings": [{"name": run["name"], **run["package"]["source_binding"],
+                                 "receipt": run["source_binding_receipt"]}
+                                for run in prepared] if recovery.bind_source else [],
+            "source_binding_scope": "Native manifests bind each complete normalized monetary-row population to its original source document, package and ordered proposals; original zero-valued records remain in the retained CSV and row-coverage controls",
             "balance_boundary": manifest.get("balance_boundary", "fund-class"),
             "balance_boundary_policy": manifest.get("balance_boundary_policy",
                 "Each source fiscal-year/period/ledger/fund/class group balances exactly; runs follow fund/class partitions"),
@@ -1598,6 +1729,11 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--fa", type=Path, help="default target/debug/fa; resume defaults to the original executable")
             command.add_argument("--fa-verify", type=Path, help="default target/debug/fa-verify; resume defaults to the original executable")
             command.add_argument("--resume", action="store_true", help="continue the original pinned book and proposals; preserve prior attempts")
+            binding = command.add_mutually_exclusive_group()
+            binding.add_argument("--bind-source", dest="bind_source", action="store_true", default=None,
+                                 help="bind every complete normalized source population before staging; resume inherits its original mode")
+            binding.add_argument("--no-bind-source", dest="bind_source", action="store_false",
+                                 help="use the original unbound profile; cannot downgrade an interrupted bound run")
     args = parser.parse_args(argv)
     started = time.monotonic()
     output_created = False
@@ -1620,12 +1756,14 @@ def main(argv: list[str] | None = None) -> int:
             balance_boundary = args.balance_boundary or saved.get("balance_boundary", "fund-class")
             path = args.source or (Path(saved["source_path"]) if saved else FIXTURES / f"omes-fy2024-q4-{agency}.csv")
             if args.action == "run":
+                bind_source = saved.get("bind_source", False) if args.bind_source is None else args.bind_source
                 binary = args.fa or Path(saved.get("fa_path", ROOT / "target/debug/fa"))
                 verifier = args.fa_verify or Path(saved.get("fa_verify_path", ROOT / "target/debug/fa-verify"))
                 require(binary.is_file() and verifier.is_file(),
                         "build fa and fa-verify first: cargo build -p fa-cli --bin fa -p fa-verify --bin fa-verify")
                 recovery = ReplayRecovery(args.out, path, agency, binary, verifier,
                                           resume=args.resume, balance_boundary=balance_boundary,
+                                          bind_source=bind_source,
                                           on_created=own_output)
                 manifest = recovery.manifest
                 report = run_native(binary, verifier, args.out, manifest, recovery=recovery)

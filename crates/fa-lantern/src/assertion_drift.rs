@@ -1,6 +1,8 @@
 //! `recon.assertion_drift` (plan §9.4, bead fa-nwgf, `claim = "invariant"`):
 //! every `RegisterEquals` attestation re-evaluated against the posted journal
-//! fold at the snapshot coordinate.
+//! gross period fold at the snapshot coordinate. Version 1 instead netted
+//! supersession across periods, incorrectly erasing an attested accrual when
+//! its reversal posted in a later period.
 //!
 //! An attestation stays a historical fact: it held at the prefix it evaluated
 //! (`evaluated_known_at`). A finding says only that its cell no longer folds
@@ -11,7 +13,7 @@
 //! Entries in other cells (another account, unit, entity, period, or dated
 //! after the cell's as-of day) never contribute.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use fa_journal::attestation::AttestationClaim;
 use fa_journal::genesis::BookContext;
@@ -34,7 +36,7 @@ impl Procedure for AssertionDrift {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -45,14 +47,24 @@ impl Procedure for AssertionDrift {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let mut live = snapshot.live_postings()?;
-        live.sort_by_key(|e| e.vid);
-        let entity_value: BTreeMap<&str, VId> = snapshot
-            .rea
-            .legal_entities
-            .values()
-            .map(|le| (le.code.as_str(), le.dimension_value_vid))
-            .collect();
+        // RegisterEquals attests the period's posted activity, not the net
+        // effect of supersession across the book. A reversal contributes in
+        // its own period; it never removes the original from another period
+        // or from an earlier effective cutoff. Pending reservations do not
+        // post, while their posted resolutions do.
+        let mut posted: Vec<_> = snapshot.entries.iter().filter(|e| e.posts()).collect();
+        posted.sort_by_key(|e| e.vid);
+        // Match fa-registers::entity::entity_of: legal entities declared by
+        // BookSpec determine the cells, not every informational REA entity.
+        // An omitted dimension belongs to the sole declared entity; None is
+        // the unassigned cell, never an all-entities aggregate.
+        let entity_value = &snapshot.declared_entities;
+        let declared_values: BTreeSet<VId> = entity_value.values().copied().collect();
+        let implicit_entity = if entity_value.len() == 1 {
+            entity_value.values().next().copied()
+        } else {
+            None
+        };
         let claims: Vec<_> = snapshot
             .attestations
             .iter()
@@ -80,7 +92,7 @@ impl Procedure for AssertionDrift {
             };
             let mut fold = 0i128;
             let mut later = Vec::new();
-            for e in &live {
+            for e in &posted {
                 if e.period != claim.period
                     || e.entry.proposal.effective_date > claim.as_of_effective
                 {
@@ -89,10 +101,17 @@ impl Procedure for AssertionDrift {
                 let mut moved = false;
                 for leg in &e.entry.proposal.legs {
                     work.compare(1)?;
-                    if leg.account_ref != claim.account
-                        || leg.amount.unit.0 != claim.unit_id
-                        || entity.is_some_and(|d| !leg.dimension_set.iter().any(|(_, v)| *v == d))
-                    {
+                    if leg.account_ref != claim.account || leg.amount.unit.0 != claim.unit_id {
+                        continue;
+                    }
+                    let leg_entity = leg
+                        .dimension_set
+                        .iter()
+                        .find(|(dimension, _)| *dimension == fa_model::LEGAL_ENTITY_DIMENSION)
+                        .filter(|(_, value)| declared_values.contains(value))
+                        .map(|(_, value)| *value)
+                        .or(implicit_entity);
+                    if leg_entity != entity {
                         continue;
                     }
                     let magnitude = i128::try_from(leg.amount.mantissa.unsigned_abs())
@@ -138,7 +157,7 @@ impl Procedure for AssertionDrift {
                 });
             }
             let cause = if later.is_empty() {
-                "no entry recorded after the attestation moves the cell, so the attested amount never matched its own prefix".to_string()
+                "no entry recorded after the evaluated prefix moves this cell; this run compares the selected fold and does not re-evaluate the original prefix".to_string()
             } else {
                 format!(
                     "{} entr{} recorded after the attestation move{} the cell",
