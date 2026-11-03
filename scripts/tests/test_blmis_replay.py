@@ -623,6 +623,97 @@ class BlmisReplayTests(unittest.TestCase):
         self.assertFalse(output.exists())
         run.assert_not_called()
 
+    def test_native_run_consumes_current_pdf_extraction_before_constructing_native_client(self):
+        # Stop before any accounting execution. This verifies source flow and
+        # ordering only, not a successful native posting or proof-verifier run.
+        class ReachedNative(Exception):
+            pass
+
+        raw = (source.FIXTURE_DIR / "rows.csv").read_bytes()
+        metadata = (source.FIXTURE_DIR / "source.json").read_bytes()
+
+        def extraction(path, *, layout_out):
+            self.assertEqual(path.read_bytes(), b"%PDF-unit-only-input")
+            layout_out.write_bytes(b"unit-only extractor stream\n")
+            return raw, metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "pdf-first"
+
+            def stop_at_native(binary, verifier, directory):
+                self.assertEqual(directory, output)
+                for name in ("source.pdf", "extracted-source/layout.txt", "extracted-source/rows.csv",
+                             "extracted-source/source.json", "legacy.csv", "manifest.json", "extraction.json"):
+                    self.assertTrue((output / name).is_file(), name)
+                self.assertFalse((output / "book").exists())
+                raise ReachedNative()
+
+            with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                    mock.patch.object(source, "extract_pdf", side_effect=extraction) as extract, \
+                    mock.patch.object(source, "load_fixture", wraps=source.load_fixture) as load, \
+                    mock.patch.object(source, "prepare") as fallback, \
+                    mock.patch.object(replay.ledger, "Native", side_effect=stop_at_native) as native:
+                with self.assertRaises(ReachedNative):
+                    replay.run_native(Path(sys.executable), Path(sys.executable), output, Path(tmp) / "provided.pdf")
+            native.assert_called_once_with(Path(sys.executable), Path(sys.executable), output)
+            extract.assert_called_once_with(output / "source.pdf", layout_out=output / "extracted-source/layout.txt")
+            self.assertEqual(load.call_args_list, [mock.call(output / "extracted-source")] * 2)
+            fallback.assert_not_called()
+
+    def test_pdf_drift_and_unavailable_extraction_refuse_before_native_without_fixture_fallback(self):
+        outcomes = (
+            ("drift", mock.Mock(returncode=0, stdout=b"changed extraction layout\n"), None, 1, "FAIL"),
+            ("unavailable", None, FileNotFoundError("pdftotext"), 4, "UNRUN"),
+        )
+        for name, result, exception, expected_exit, expected_status in outcomes:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "refused"
+                with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                        mock.patch.object(source.subprocess, "run", return_value=result, side_effect=exception), \
+                        mock.patch.object(source, "prepare") as fallback, \
+                        mock.patch.object(replay.ledger, "Native") as native, \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+                    status = replay.main(["run", "--out", str(output), "--pdf", str(Path(tmp) / "provided.pdf"),
+                                          "--fa", sys.executable, "--fa-verify", sys.executable])
+                self.assertEqual(status, expected_exit)
+                self.assertEqual(json.loads(error.getvalue())["status"], expected_status)
+                self.assertEqual(json.loads((output / "failure.json").read_bytes())["status"], expected_status)
+                self.assertTrue((output / "source.pdf").is_file())
+                self.assertFalse((output / "book").exists())
+                self.assertFalse((output / "legacy.csv").exists())
+                self.assertFalse((output / "report.json").exists())
+                if name == "drift":
+                    self.assertEqual((output / "extracted-source/layout.txt").read_bytes(), result.stdout)
+                else:
+                    self.assertIn("install Poppler", error.getvalue())
+                fallback.assert_not_called()
+                native.assert_not_called()
+
+    def test_concurrent_output_creator_keeps_ownership_and_receives_no_failure_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "another-run"
+            existing = {"existing-evidence.txt": b"retained by another invocation\n"}
+
+            def verify_while_another_run_creates_output(_path):
+                # This happens after prepare_pdf's initial existence check,
+                # before its exclusive mkdir. Only the other run owns it.
+                output.mkdir()
+                for name, raw in existing.items():
+                    (output / name).write_bytes(raw)
+                return b"%PDF-unit-only-input"
+
+            with mock.patch.object(source, "verify_pdf", side_effect=verify_while_another_run_creates_output), \
+                    mock.patch.object(source, "extract_pdf") as extract, \
+                    mock.patch.object(replay.ledger, "Native") as native, \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+                status = replay.main(["run", "--out", str(output), "--pdf", str(Path(tmp) / "provided.pdf"),
+                                      "--fa", sys.executable, "--fa-verify", sys.executable])
+            self.assertEqual(status, 1)
+            self.assertEqual(json.loads(error.getvalue())["status"], "FAIL")
+            self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, existing)
+            extract.assert_not_called()
+            native.assert_not_called()
+
     def test_existing_output_is_preserved_even_on_an_execution_failure(self):
         original = {path.name: path.read_bytes() for path in self.package.iterdir()}
         with mock.patch.object(replay.ledger, "Native") as native, redirect_stderr(io.StringIO()) as error, \

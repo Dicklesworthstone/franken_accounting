@@ -9,6 +9,7 @@ Only the real fa and fa-verify executables can produce a successful run report.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import csv
 import json
 from pathlib import Path
@@ -296,18 +297,14 @@ def check_certified_ledger(native: ledger.Native, rows: list[dict], posted: dict
             "output_digest": certificate["output_digest"], "compared_native_lines": len(posted)}
 
 
-def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> dict:
-    rows, metadata = source.load_fixture()
-    manifest = source.prepare(output)
+def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
+               on_created: Callable[[], None] | None = None) -> dict:
+    # PDF acquisition, exact extraction, printed controls and normalization
+    # must succeed before the first native command can create a book.
+    manifest = source.prepare_pdf(output, pdf, on_created=on_created)
+    rows, metadata = source.load_fixture(output / "extracted-source")
     entries = normalized_entries(output / "legacy.csv", rows)
     original_pdf = output / "source.pdf"
-    if pdf is None:
-        source.fetch(original_pdf)
-    else:
-        original = source.verify_pdf(pdf)
-        with original_pdf.open("xb") as stream:
-            stream.write(original)
-    source.verify_pdf(original_pdf)
     native = ledger.Native(binary, verifier, output)
     native.call("book", "create", "--name", "Glantz 1ZA192 published principal ANALYSIS ONLY",
                 "--base-unit", "USD", "--calendar", "monthly")
@@ -322,6 +319,8 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
         native.call("period", "open", f"FY{year}-P{month}")
     evidence = []
     for path, kind, mime in ((original_pdf, "Other", "application/pdf"),
+                             (output / "extracted-source/layout.txt", "Other", "text/plain;charset=utf-8"),
+                             (output / "extraction.json", "Workpaper", "application/json"),
                              (output / "rows.csv", "Spreadsheet", "text/csv"),
                              (output / "source.json", "Workpaper", "application/json"),
                              (output / "manifest.json", "Workpaper", "application/json")):
@@ -402,6 +401,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
     dimension_refused = native.execute([str(native.verifier), "ads", str(dimension_tampered),
                                        "--key", key, "--json"], expect=8)
     return {"status": "PASS", "scope": source.SCOPE, "source_sha256": source.SOURCE_SHA256,
+            "source_extraction": manifest["source_extraction"],
             "source_rows_sha256": source.ROWS_SHA256, "source_rows": len(rows), "native_entries": len(posted),
             "zero_principal_rows": manifest["zero_principal_rows"], "commands": native.commands,
             "source_diagnostics": source.verify_rows(rows, metadata), "ledger_certificate": certificate,
@@ -419,7 +419,8 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None) -> 
             "principal_analysis_scope": "Exact posted principal under posted_principal_transfer_v1; trustee-credited transfer amounts are explicit inputs, not an independent legal net-equity or clawback determination",
             "review_scope": "Distinct local test reviewer exercises AgentUpload evidence admission; no authenticated human review claim",
             "trust_scope": "Caller-trusted key of a fresh local analysis book; no external court or trustee signing-key claim",
-            "checks": ["pinned_original_pdf", "complete_75_row_source", "every_printed_running_balance",
+            "checks": ["pinned_original_pdf", "original_pdf_extracted_in_this_run",
+                       "extracted_rows_match_reviewed_pins", "complete_75_row_source", "every_printed_running_balance",
                        "every_source_footer", "normalized_row_and_leg_coverage", "native_source_order_and_identity",
                        "native_gross_principal_activity", "exact_certified_ledger_replay", "immutable_preimport_prefix",
                        "all_17_printed_year_end_controls", "zero_principal_observation_retained_and_compared",
@@ -437,17 +438,22 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="post and verify the complete account using real native executables")
     run.add_argument("--out", type=Path, required=True, help="new directory; existing evidence is never overwritten")
-    run.add_argument("--pdf", type=Path, help="already downloaded pinned original; otherwise fetch it")
+    run.add_argument("--pdf", type=Path, help="already downloaded pinned original; otherwise fetch it; both paths require pdftotext extraction")
     run.add_argument("--fa", type=Path, default=ROOT / "target/debug/fa")
     run.add_argument("--fa-verify", type=Path, default=ROOT / "target/debug/fa-verify")
     args = parser.parse_args(argv)
     if not args.fa.is_file() or not args.fa_verify.is_file():
         print(json.dumps({"status": "UNRUN", "error": "Build fa and fa-verify first, or pass --fa and --fa-verify"}), file=sys.stderr)
         return 4
-    existed = args.out.exists()
+    owns_output = False
+
+    def output_created() -> None:
+        nonlocal owns_output
+        owns_output = True
+
     started = time.monotonic()
     try:
-        report = run_native(args.fa, args.fa_verify, args.out, args.pdf)
+        report = run_native(args.fa, args.fa_verify, args.out, args.pdf, on_created=output_created)
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
         ledger.write_json(args.out / "report.json", report)
         print(json.dumps({field: report[field] for field in ("status", "source_rows", "native_entries", "commands", "elapsed_seconds")}))
@@ -456,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
             csv.Error, subprocess.TimeoutExpired) as error:
         status = "UNRUN" if isinstance(error, source.EnvironmentError) else "FAIL"
         failure = {"status": status, "error": str(error)}
-        if not existed and args.out.is_dir() and not (args.out / "failure.json").exists():
+        if owns_output and args.out.is_dir() and not (args.out / "failure.json").exists():
             ledger.write_json(args.out / "failure.json", failure)
         print(json.dumps(failure), file=sys.stderr)
         return 4 if status == "UNRUN" else 1

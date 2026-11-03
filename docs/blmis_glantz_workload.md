@@ -168,9 +168,11 @@ role states of version 5; it does not simulate or claim to replay version 4.
 
 ## Reproduce source acquisition, extraction and preparation
 
-Python 3.11 or newer is sufficient for offline verification and preparation.
-Re-extraction also requires Poppler's `pdftotext`; the reviewed extraction used
-version 24.02.0. Run commands from the repository root:
+Python 3.11 or newer is sufficient for explicitly offline retained-row
+verification and preparation. PDF preparation and every native replay require
+Poppler's `pdftotext`; install `poppler-utils` on Linux or `poppler` on macOS
+and ensure `pdftotext` is on `PATH`. The reviewed extraction used version
+24.02.0. Run commands from the repository root:
 
 ```bash
 # Offline: verify the retained pins, all rows and the printed controls.
@@ -183,7 +185,14 @@ python3 -B scripts/blmis_source.py fetch --output /path/to/new-glantz.pdf
 python3 -B scripts/blmis_source.py extract \
   --pdf /path/to/new-glantz.pdf --output /path/to/new-extraction
 
-# Prepare the complete account's explicitly constructed analysis package.
+# Acquire, extract and prepare directly from the primary PDF in one command.
+python3 -B scripts/blmis_source.py prepare-pdf --output /path/to/new-pdf-package
+
+# The same path using an already downloaded original; extraction still runs.
+python3 -B scripts/blmis_source.py prepare-pdf \
+  --pdf /path/to/new-glantz.pdf --output /path/to/another-new-pdf-package
+
+# Explicitly offline: prepare from reviewed retained rows, without extraction.
 python3 -B scripts/blmis_source.py prepare --output /path/to/new-package
 
 # Offline positive, mutation and failure-boundary checks.
@@ -202,6 +211,17 @@ A prepared package contains `rows.csv`, `source.json`, `legacy.csv`,
 accounts for every source row, including the zero-principal observation, names
 the interpretation and baseline, records each transfer input's role, and hashes
 every generated payload. Same-day transactions remain in the exhibit's order.
+
+`prepare-pdf` additionally retains `source.pdf`, the exact extractor output in
+`extracted-source/layout.txt`, regenerated `extracted-source/rows.csv` and
+`extracted-source/source.json`, and an `extraction.json` receipt. The receipt
+records the actual extraction command, selected pages and all byte counts and
+hashes; the package manifest binds these materials. Normalization reads these
+newly extracted rows. The committed fixture hashes are acceptance controls,
+not replacement input when extraction fails. If the extractor produces a
+different layout, the original PDF and diagnostic text remain available, but
+no normalized accounting input is accepted. A missing extractor returns
+`UNRUN` with installation guidance.
 
 The amount parser accepts the source's explicit whole-dollar syntax and converts
 it to exact integer cents. Blank cells, malformed grouping, unexpected footnotes,
@@ -240,10 +260,15 @@ binary returns `UNRUN` with exit code 4 before an output directory is created.
 A source mismatch, accounting discrepancy or failed native command fails the
 run; it is never converted into a successful comparison.
 
-The driver prepares and checks the complete normalized package before creating
-a monthly native book. It creates the 17 fiscal years and opens the source
-months, registers the three declared analysis accounts, and attaches the
-original PDF, extracted rows, source metadata and package manifest as evidence.
+The driver acquires or copies the pinned original PDF, extracts all three pages
+in the current invocation, requires the reviewed rows and metadata byte for
+byte, and prepares and checks the complete normalized package before creating
+a monthly native book. Passing `--pdf` avoids downloading, but still performs
+extraction. There is no retained-fixture fallback in `run`.
+
+It creates the 17 fiscal years and opens the source months, registers the three
+declared analysis accounts, and attaches the original PDF, exact extraction text,
+extraction receipt, extracted rows, source metadata and package manifest as evidence.
 These documents are honestly labelled `AgentUpload`. A distinct local test
 principal records Reviewed attestations so the workload exercises the actual
 evidence-admission rule. This is an explicit local test of that rule, not a
@@ -337,7 +362,7 @@ a native FrankenAccounting posting, certificate replay or verifier run. Native
 execution must report its own observed result; an unavailable native run is
 `UNRUN`, never a pass.
 
-Observed in this implementation session: **14 source tests and 28 native-comparator
+Observed after integrating PDF ingestion: **20 source tests and 31 native-comparator
 unit tests passed**. The comparator tests use explicitly test-only receipt
 identities and native-shaped payloads; they check refusal boundaries and do not
 simulate execution of the accounting engine. The restored comparator suite also
@@ -353,8 +378,22 @@ rows, and party-only changes that preserve all monetary fields. Its mocked
 native call contracts establish command and comparison behavior only; the
 runner still requires real executable responses before writing `PASS`.
 
-**Native execution remains UNRUN.** The pinned compiler was available, but the
-shared environment exhausted its filesystem and compiler processes were stopped
-or killed under memory pressure. No complete `fa` binary, native BLMIS run, Rust
-workspace test gate or CI replay PASS was established in this session. The
-workflow and driver are the reproducible path to obtain that missing evidence.
+The PDF preparation path was also executed against a fresh download of the
+389,586-byte original using Poppler 24.02.0. Its 18,432-byte
+extracted layout had SHA-256
+`4390c3f3da1ebab54bafc7a1147514a67aaf3d0af9d2df4d0fc354a99739657d`.
+All 75 regenerated rows and the source metadata matched their existing pins;
+the 148-leg package and 17 annual controls were prepared from that extraction.
+The new offline tests additionally check download/extraction/normalization
+order, byte lineage, extraction drift, changed returned rows, missing Poppler,
+and refusal before any native client is constructed. A concurrent creator's
+output directory receives no diagnostic writes: failure logging requires an
+explicit successful directory-creation receipt. Their mocked extractor
+contracts remain distinct from this actual PDF execution.
+
+**A successful complete native BLMIS replay remains unverified.** Earlier
+implementation attempts exhausted the shared filesystem or lost compiler
+processes under memory pressure. PDF ingestion and comparator test passes do
+not establish native posting, report replay, proof verification, a Rust
+workspace gate or CI acceptance. The workflow and driver are the reproducible
+path to obtain that missing evidence.

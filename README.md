@@ -469,7 +469,7 @@ Automatic uploads retain native `AgentUpload` custody; explicit review and
 approval principals are same-harness fixture roles, not independent human audits.
 These executed results precede native department projection and dimension-aware
 export verification; the new checks require their own native rerun and are not
-covered by that evidence. The 55 public-ledger Python checks and 17 Development
+covered by that evidence. The 61 public-ledger Python checks and 17 Development
 Finance Authority helper checks passed for the dimension-preserving source
 oracles. Constructed export fixtures do not establish native execution.
 
@@ -484,7 +484,11 @@ native execution remains pending the required build and test gates.
 The [complete published BLMIS account workload](docs/blmis_glantz_workload.md)
 retains all 75 dated observations in Glantz Exhibit B-2, including the printed
 running principal balances and trustee-credited transfers. Its native driver
-posts the 74 monetary rows, reconciles every source observation, replays a
+first downloads or accepts the pinned original PDF, extracts all three account
+pages in the current invocation, and verifies every regenerated row and printed
+control before creating a book. It retains the PDF, extraction text and byte
+lineage; an extraction failure cannot fall back to checked-in rows. The native
+workflow then posts the 74 monetary rows, reconciles every source observation, replays a
 retained ledger certificate, and verifies proof-bearing exports. The declared
 analysis accounts and the source's credited transfer amounts are explicit
 inputs; this is not an original BLMIS double-entry ledger or an independent

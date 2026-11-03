@@ -4,7 +4,7 @@ The independent Decimal fold reads the source literals directly; it does not
 consume normalized legs or the production helper's integer amount parser.
 """
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 import csv
 from decimal import Decimal
@@ -274,6 +274,140 @@ class BlmisSourceTests(unittest.TestCase):
             with mock.patch.object(source, "extract_pdf", side_effect=source.EnvironmentError("missing pdftotext")), redirect_stderr(stderr):
                 self.assertEqual(source.main(["extract", "--pdf", str(path), "--output", str(Path(tmp) / "unused")]), 4)
             self.assertIn("UNRUN", stderr.getvalue())
+
+    def test_pdf_preparation_uses_this_extraction_and_preserves_its_entire_lineage(self):
+        # This is an orchestration contract with an explicitly mocked extractor,
+        # not proof of a live PDF extraction. Real acquisition is run separately.
+        original_pdf = b"%PDF-unit-only-input"
+        raw = (source.FIXTURE_DIR / "rows.csv").read_bytes()
+        metadata = (source.FIXTURE_DIR / "source.json").read_bytes()
+        layout = b"unit-only extractor output, not source evidence\n"
+
+        def extraction(path, *, layout_out):
+            self.assertEqual(path.read_bytes(), original_pdf)
+            layout_out.write_bytes(layout)
+            return raw, metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "from-pdf"
+            supplied = Path(tmp) / "input.pdf"
+            supplied.write_bytes(original_pdf)
+            with mock.patch.object(source, "verify_pdf", return_value=original_pdf), \
+                    mock.patch.object(source, "extract_pdf", side_effect=extraction) as extract, \
+                    mock.patch.object(source, "load_fixture", wraps=source.load_fixture) as load:
+                manifest = source.prepare_pdf(output, supplied)
+            extract.assert_called_once_with(output / "source.pdf", layout_out=output / "extracted-source/layout.txt")
+            load.assert_called_once_with(output / "extracted-source")
+            self.assertEqual((output / "source.pdf").read_bytes(), original_pdf)
+            self.assertEqual((output / "extracted-source/layout.txt").read_bytes(), layout)
+            self.assertEqual((output / "extracted-source/rows.csv").read_bytes(), raw)
+            self.assertEqual((output / "extracted-source/source.json").read_bytes(), metadata)
+            self.assertEqual((output / "rows.csv").read_bytes(), raw)
+            self.assertEqual((output / "source.json").read_bytes(), metadata)
+            self.assertEqual(manifest["normalized_legs"], 148)
+            receipt = json.loads((output / "extraction.json").read_bytes())
+            self.assertEqual(receipt, manifest["source_extraction"])
+            self.assertEqual(receipt["mode"], "original_pdf_extracted_this_run")
+            self.assertEqual(receipt["command"], ["pdftotext", "-layout", "-f", "31", "-l", "33",
+                                                   str(output / "source.pdf"), "-"])
+            self.assertEqual(json.loads((output / "manifest.json").read_bytes()), manifest)
+            for name, pin in manifest["outputs"].items():
+                content = (output / name).read_bytes()
+                self.assertEqual(len(content), pin["bytes"], name)
+                self.assertEqual(hashlib.sha256(content).hexdigest(), pin["sha256"], name)
+
+    def test_pdf_preparation_downloads_then_extracts_before_any_normalization(self):
+        observed = []
+        raw = (source.FIXTURE_DIR / "rows.csv").read_bytes()
+        metadata = (source.FIXTURE_DIR / "source.json").read_bytes()
+        normalize = source.package_payloads
+
+        def download(path):
+            observed.append("download")
+            path.write_bytes(b"%PDF-unit-only-downloaded-input")
+
+        def extraction(path, *, layout_out):
+            observed.append("extract")
+            self.assertEqual(path.read_bytes(), b"%PDF-unit-only-downloaded-input")
+            layout_out.write_bytes(b"unit-only extraction\n")
+            return raw, metadata
+
+        def normalized(directory):
+            observed.append("normalize")
+            return normalize(directory)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(source, "fetch", side_effect=download), \
+                mock.patch.object(source, "extract_pdf", side_effect=extraction), \
+                mock.patch.object(source, "package_payloads", side_effect=normalized):
+            manifest = source.prepare_pdf(Path(tmp) / "downloaded")
+            self.assertEqual(manifest["source_rows"], 75)
+        self.assertEqual(observed, ["download", "extract", "normalize"])
+
+    def test_pdf_extraction_drift_preserves_diagnostic_text_but_creates_no_accounting_inputs(self):
+        layout = test_layout().encode()
+        result = mock.Mock(returncode=0, stdout=layout)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "drift"
+            with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                    mock.patch.object(source.subprocess, "run", return_value=result), \
+                    mock.patch.object(source, "package_payloads") as normalize:
+                with self.assertRaisesRegex(source.SourceError, "extraction differs"):
+                    source.prepare_pdf(output, Path(tmp) / "provided.pdf")
+            normalize.assert_not_called()
+            self.assertEqual((output / "extracted-source/layout.txt").read_bytes(), layout)
+            self.assertTrue((output / "source.pdf").is_file())
+            for name in ("legacy.csv", "chart.json", "manifest.json", "extraction.json", "book",
+                         "extracted-source/rows.csv", "extracted-source/source.json"):
+                self.assertFalse((output / name).exists(), name)
+
+    def test_returned_extraction_rows_are_reauthenticated_before_normalization(self):
+        raw = (source.FIXTURE_DIR / "rows.csv").read_bytes() + b"\n"
+        metadata = (source.FIXTURE_DIR / "source.json").read_bytes()
+
+        def extraction(path, *, layout_out):
+            layout_out.write_bytes(b"unit-only extraction\n")
+            return raw, metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "changed-returned-rows"
+            with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                    mock.patch.object(source, "extract_pdf", side_effect=extraction):
+                with self.assertRaisesRegex(source.SourceError, "source rows SHA-256"):
+                    source.prepare_pdf(output, Path(tmp) / "provided.pdf")
+            self.assertEqual((output / "extracted-source/rows.csv").read_bytes(), raw)
+            self.assertFalse((output / "legacy.csv").exists())
+            self.assertFalse((output / "manifest.json").exists())
+
+    def test_pdf_preparation_refuses_missing_extractor_with_actionable_unrun(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "no-extractor"
+            error = io.StringIO()
+            with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                    mock.patch.object(source.subprocess, "run", side_effect=FileNotFoundError("pdftotext")), \
+                    mock.patch.object(source, "package_payloads") as normalize, \
+                    redirect_stdout(io.StringIO()), redirect_stderr(error):
+                status = source.main(["prepare-pdf", "--pdf", str(Path(tmp) / "provided.pdf"),
+                                      "--output", str(output)])
+            self.assertEqual(status, 4)
+            self.assertIn("UNRUN", error.getvalue())
+            self.assertIn("install Poppler", error.getvalue())
+            self.assertIn("cannot substitute retained rows", error.getvalue())
+            normalize.assert_not_called()
+            self.assertTrue((output / "source.pdf").is_file())
+            self.assertFalse((output / "legacy.csv").exists())
+
+    def test_offline_preparation_is_explicit_and_never_claims_pdf_extraction(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(source, "fetch") as fetch, \
+                mock.patch.object(source, "extract_pdf") as extract:
+            output = Path(tmp) / "offline"
+            manifest = source.prepare(output)
+            self.assertNotIn("source_extraction", manifest)
+            self.assertFalse((output / "source.pdf").exists())
+            self.assertFalse((output / "extraction.json").exists())
+            fetch.assert_not_called()
+            extract.assert_not_called()
 
     def test_download_redirect_refuses_nonpublisher_and_plain_http(self):
         handler = source.PinnedRedirect()

@@ -2,14 +2,15 @@
 """Reproduce the complete published Glantz Exhibit B-2 account 1ZA192.
 
 This stdlib-only helper binds factual rows to a pinned court-filing PDF. The
-optional authoring extraction calls Poppler's pdftotext; offline verification
-and preparation need no network, PDF library, or accounting-engine substitute.
+PDF ingestion calls Poppler's pdftotext; explicit offline retained-row
+verification and preparation need no network or PDF library.
 The trustee's printed principal balances remain controls, never posting input.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import csv
 from datetime import date
 import hashlib
@@ -348,14 +349,24 @@ def verify_pdf(path: Path) -> bytes:
     return raw
 
 
-def extract_pdf(path: Path) -> tuple[bytes, bytes]:
+def extract_pdf(path: Path, *, layout_out: Path | None = None) -> tuple[bytes, bytes]:
     verify_pdf(path)
     try:
         result = subprocess.run(["pdftotext", "-layout", "-f", "31", "-l", "33", str(path), "-"],
                                 capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise EnvironmentError(f"pdftotext extraction unavailable: {exc}") from exc
+        raise EnvironmentError(
+            f"pdftotext extraction unavailable: {exc}; install Poppler's pdftotext "
+            "(poppler-utils on Linux or poppler on macOS), put it on PATH and rerun. "
+            "The native replay cannot substitute retained rows for PDF extraction."
+        ) from exc
     require(result.returncode == 0, "pdftotext could not extract the pinned document")
+    if layout_out is not None:
+        # Keep the actual extractor output even when a later layout or pin
+        # comparison refuses it. It is evidence for diagnosing the refusal,
+        # never permission to accept changed rows or regenerate source pins.
+        with layout_out.open("xb") as stream:
+            stream.write(result.stdout)
     rows, metadata = parse_layout(result.stdout.decode("utf-8", errors="strict"))
     raw, meta = csv_bytes(ROW_COLUMNS, rows), json_bytes(metadata)
     require(digest(raw) == ROWS_SHA256 and digest(meta) == METADATA_SHA256,
@@ -404,9 +415,9 @@ def last_printed_balance(rows: list[dict], at_date: str) -> dict:
             "printed_balance_cents": row["printed_balance_cents"]}
 
 
-def prepare(output: Path, directory: Path = FIXTURE_DIR) -> dict:
+def package_payloads(directory: Path) -> tuple[dict, dict[str, bytes]]:
+    """Normalize only the explicitly supplied, authenticated source rows."""
     rows, metadata = load_fixture(directory)
-    require(not output.exists(), "package destination already exists")
     normalized, zero_rows, mapping = [], [], []
     for row in rows:
         movement = row["principal_movement_cents"]
@@ -450,10 +461,77 @@ def prepare(output: Path, directory: Path = FIXTURE_DIR) -> dict:
                 "source_diagnostics": verify_rows(rows, metadata),
                 "outputs": {name: {"bytes": len(raw), "sha256": digest(raw)} for name, raw in payloads.items()}}
     payloads["manifest.json"] = json_bytes(manifest)
+    return manifest, payloads
+
+
+def prepare(output: Path, directory: Path = FIXTURE_DIR) -> dict:
+    """Prepare retained factual rows offline; this does not extract a PDF."""
+    require(not output.exists(), "package destination already exists")
+    manifest, payloads = package_payloads(directory)
     output.mkdir(parents=True, exist_ok=False)
     for name, raw in payloads.items():
         with (output / name).open("xb") as stream:
             stream.write(raw)
+    return manifest
+
+
+def prepare_pdf(output: Path, pdf: Path | None = None, *,
+                on_created: Callable[[], None] | None = None) -> dict:
+    """Acquire, extract and normalize the original PDF in this invocation.
+
+    The reviewed fixture pins are acceptance controls only. The bytes fed to
+    normalization come from this PDF extraction, with no retained-row fallback.
+    No accounting book is opened here, including on an extraction refusal.
+    """
+    require(not output.exists(), "package destination already exists")
+    supplied = verify_pdf(pdf) if pdf is not None else None
+    output.mkdir(parents=True, exist_ok=False)
+    # Notify only after this invocation has exclusively created the directory.
+    # A caller may retain failure diagnostics there, but must not infer that
+    # ownership from an earlier existence check when another run can race it.
+    if on_created is not None:
+        on_created()
+    original = output / "source.pdf"
+    if supplied is None:
+        fetch(original)
+    else:
+        with original.open("xb") as stream:
+            stream.write(supplied)
+    extracted = output / "extracted-source"
+    extracted.mkdir()
+    layout = extracted / "layout.txt"
+    raw, metadata = extract_pdf(original, layout_out=layout)
+    for name, content in (("rows.csv", raw), ("source.json", metadata)):
+        with (extracted / name).open("xb") as stream:
+            stream.write(content)
+    # Loading this directory rechecks the reviewed source pins and every
+    # printed balance before creating any normalized accounting input.
+    manifest, payloads = package_payloads(extracted)
+    retained = {}
+    for path in (original, layout, extracted / "rows.csv", extracted / "source.json"):
+        content = path.read_bytes()
+        retained[path.relative_to(output).as_posix()] = {
+            "bytes": len(content), "sha256": digest(content),
+        }
+    extraction = {
+        "format": "fa-blmis-pdf-extraction-v1",
+        "mode": "original_pdf_extracted_this_run",
+        "source_url": SOURCE_URL, "source_sha256": SOURCE_SHA256,
+        "command": ["pdftotext", "-layout", "-f", "31", "-l", "33", str(original), "-"],
+        "pdf_pages": list(PDF_PAGES), "source_rows": manifest["source_rows"],
+        "reviewed_rows_sha256": ROWS_SHA256, "reviewed_metadata_sha256": METADATA_SHA256,
+        "retained": retained,
+    }
+    manifest["source_extraction"] = extraction
+    payloads["extraction.json"] = json_bytes(extraction)
+    manifest["outputs"].update(retained)
+    manifest["outputs"]["extraction.json"] = {
+        "bytes": len(payloads["extraction.json"]), "sha256": digest(payloads["extraction.json"]),
+    }
+    payloads["manifest.json"] = json_bytes(manifest)
+    for name, content in payloads.items():
+        with (output / name).open("xb") as stream:
+            stream.write(content)
     return manifest
 
 
@@ -467,9 +545,12 @@ def main(argv: list[str] | None = None) -> int:
     extract.add_argument("--output", type=Path, required=True)
     verify = commands.add_parser("verify", help="verify pinned retained rows and every printed balance offline")
     verify.add_argument("--source-dir", type=Path, default=FIXTURE_DIR)
-    normalize = commands.add_parser("prepare", help="prepare an explicitly constructed double-entry analysis package")
+    normalize = commands.add_parser("prepare", help="prepare pinned retained rows offline, without PDF extraction")
     normalize.add_argument("--source-dir", type=Path, default=FIXTURE_DIR)
     normalize.add_argument("--output", type=Path, required=True)
+    from_pdf = commands.add_parser("prepare-pdf", help="acquire the original PDF, extract and prepare the full account")
+    from_pdf.add_argument("--pdf", type=Path, help="pinned original PDF; otherwise download from the publisher")
+    from_pdf.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "fetch":
@@ -486,6 +567,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify":
             rows, metadata = load_fixture(args.source_dir)
             print(json.dumps(verify_rows(rows, metadata), sort_keys=True))
+        elif args.command == "prepare-pdf":
+            manifest = prepare_pdf(args.output, args.pdf)
+            print(json.dumps({"status": "PREPARED", "source_rows": manifest["source_rows"],
+                              "source_sha256": SOURCE_SHA256, "extraction": manifest["source_extraction"],
+                              "output": str(args.output)}, sort_keys=True))
         else:
             print(json.dumps(prepare(args.output, args.source_dir), sort_keys=True))
         return 0

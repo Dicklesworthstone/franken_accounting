@@ -8,6 +8,7 @@ on:
       - 'scripts/tests/test_public_ledger*.py'
       - 'scripts/blmis*.py'
       - 'scripts/tests/test_blmis*.py'
+      - 'tools/public-data/**'
       - 'crates/**'
       - 'registries/**'
       - 'Cargo.toml'
@@ -60,6 +61,14 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s scripts/tests -p 'test_public_ledger*.py' -v 2>&1 | tee artifacts/public-ledger/python-tests.log
 
+      - name: Install the real bankruptcy PDF extractor
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends poppler-utils
+          pdftotext -v 2>&1 | tee artifacts/public-ledger/pdf-extractor.log
+
       - name: Verify published bankruptcy transactions and comparison controls
         shell: bash
         run: |
@@ -78,6 +87,29 @@ jobs:
         run: |
           set -euo pipefail
           cargo +nightly-2026-08-31 build --locked -Z bindeps -Z git=shallow-deps -p fa-cli --bin fa -p fa-verify --bin fa-verify --jobs 1 2>&1 | tee artifacts/public-ledger/native-build.log
+
+      - name: Bind reusable native binaries to their exact source
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > artifacts/public-ledger/native-source.txt
+          git rev-parse HEAD:Cargo.lock > artifacts/public-ledger/native-lock.txt
+          sha256sum target/debug/fa target/debug/fa-verify > artifacts/public-ledger/native-binaries.sha256
+
+      - name: Retain native executables for source-bound replay diagnosis
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-ledger-native-${{ github.sha }}
+          path: |
+            target/debug/fa
+            target/debug/fa-verify
+            artifacts/public-ledger/native-source.txt
+            artifacts/public-ledger/native-lock.txt
+            artifacts/public-ledger/native-binaries.sha256
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Regress CSV preservation and ambiguous-input refusal
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
