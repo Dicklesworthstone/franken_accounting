@@ -1723,7 +1723,7 @@ helper instead put another identical map in `column_map.toml`.
 The helper now emits column declarations only, keeping the existing native
 intent mapping and importer refusal intact. The existing complete-package
 test decodes the actual prepared TOML with the standard-library parser and
-requires exactly its nine declared columns. Before changing the producer
+requires exactly its nine declaration fields. Before changing the producer
 (blob `90d4cd80b2cf7f0ab1c644618550a82228637682`), the whole 17-test helper
 suite exited 1: 16 passed and only that strengthened test failed on the
 extra `account_map` table. After the two-line producer correction, all 17
@@ -1737,3 +1737,52 @@ corrected output and the required full gate are still pending. The frozen
 `0ee1cb11` compile/MCP runs started before this change and cannot qualify it.
 The original `fa-yugf` epic remains open with its dependencies intact; this
 integration contribution does not complete or bypass its case-study scope.
+
+## 2026-11-03 — composed equity controls and the migration schema pin
+
+On exact `0ee1cb11e5034e4dea524b5feec6f7899ff9ce47`, the whole MCP package
+passed: 113 tests, zero failed/ignored/filtered, remote exit 0 at 03:24:08 UTC.
+Its custom-statement trace case exercised the corrected canonical argument
+contract. Tier 0's first cold check reached the original limit (remote 137
+at 03:31:20); one identical source/worker/profile/all-target retry reused
+completed dependencies and passed, fmt 7 seconds/check 16 seconds, exact
+tree `4ac5a5149cae59ceb855aa65b96de40193a437fe`, note 03:36:06 UTC.
+The first failure remains recorded; neither budget nor gate changed.
+
+The six complete CLI targets on that same source exited 101 at 04:13:54 UTC:
+253 executed, 251 passed and two failed, none ignored/filtered. The main CLI
+target now passed all 157 cases, including actual equity-comparison event
+emission. Closing was 26/1; GL certificates 5/0, proofs 51/0 and read-scope
+11/0 passed. Robot schema was 1/1. These are different failures from the
+earlier e9dc run, not a reclassification of its failures.
+
+- The equity comparison passed its new token/output/AccessEvent/refusal
+  checks and then reached a later invalid control call, `tb --certify`.
+  It received usage 2, `no periods selected`. That control needs a valid
+  native trial-balance certificate to test rejection of the wrong report
+  family. It now explicitly selects the fixture's FY2026-P03; all original
+  wrong-family expectations remain. The shared runner also forwards every
+  nonempty child stderr, which it previously captured without forwarding;
+  successful JSON responses are not dumped. No accounting amount, authority
+  rule or expected success/failure code was relaxed.
+- The actual byte-pinned schema test failed at byte 220848. The registry
+  and native migration producer already include
+  `dimensions:[batch_plan_dimension]`, but the saved `legacy_migration_leg`
+  shape still had four fields and its old description. The replacement is
+  one explicitly authored JSON data record: that description and appended
+  dimension field only. A unique literal replacement preserves every other
+  byte, event, envelope value and shape. It is not output regeneration or a
+  broad source transform. The old fixture remains in reachable 0ee and in
+  the actual failing run. Its SHA-256 is
+  `68d1240e29a2851ba9329930ee35f1a6e2aaf52c17040ac9aad2c82e60bb27a8`;
+  the new value is
+  `c66f0c8c97d72728c3572589da26b956fb9afed5c31e1fc306589ba8309f77ee`.
+  After authoring, comparison against the retained actual binary output
+  confirmed exact byte equality and only that named shape's semantic delta.
+  The byte-equality and one-envelope test functions remain unchanged; a
+  different field, value, event or envelope still fails them.
+
+Native execution of the explicit trial-balance control and the new saved
+pin remains pending on the final source containing the Oklahoma correction.
+The earlier component and compile passes do not qualify that later tree,
+the full repository or the original broader Beads acceptance.

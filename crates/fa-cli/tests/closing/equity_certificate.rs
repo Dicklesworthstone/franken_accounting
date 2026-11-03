@@ -13,12 +13,12 @@ fn many(book: &Path, args: &[&str]) -> (i32, Vec<Json>) {
         .output()
         .expect("run fa");
     let stdout = String::from_utf8(result.stdout).expect("UTF-8 stdout");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    if !stderr.is_empty() {
+        eprintln!("closing argv={args:?}\nstderr={stderr}");
+    }
     let registry = fa_cli::verbs::registry().unwrap();
-    assert!(
-        !stdout.is_empty(),
-        "args={args:?}: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    assert!(!stdout.is_empty(), "args={args:?}: {}", stderr);
     let events = stdout
         .lines()
         .map(|line| {
@@ -816,7 +816,7 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     );
     assert_eq!(std::fs::read(&request_path).unwrap(), request_bytes);
 
-    let (code, native) = many(&f.book, &["tb", "--certify"]);
+    let (code, native) = many(&f.book, &["tb", "--period", "FY2026-P03", "--certify"]);
     assert_eq!(code, 0, "{native:?}");
     let native_oid = format!("C:{}", text(native.last().unwrap(), "oid"));
     for (before, after, wanted) in [
