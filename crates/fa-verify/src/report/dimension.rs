@@ -287,6 +287,18 @@ impl<'a> LegFilter<'a> {
             declared: &history.identities,
         })
     }
+
+    /// Bind a projected functional fold to the independently reconstructed
+    /// dimension kind and complete descendant identity set. Code order and
+    /// identity order are distinct; this commitment uses sorted identities.
+    pub(super) fn functional_digest(&self, inner: &[u8; 32]) -> [u8; 32] {
+        let mut w = Writer::default();
+        w.fixed(inner).u32(self.dimension).count(self.values.len());
+        for value in &self.values {
+            w.u128(*value);
+        }
+        hash_parts(b"fa:register-functional-dimension:v1", &[&w.buf])
+    }
 }
 
 /// A mask in canonical payload leg order. The caller has authenticated the

@@ -722,7 +722,7 @@ fn functional_selected(
     Ok(())
 }
 
-struct FunctionalPresentation {
+pub(crate) struct FunctionalPresentation {
     event: &'static str,
     effective: String,
     fields: Vec<(&'static str, Json)>,
@@ -848,7 +848,7 @@ fn functional_presentation(
     })
 }
 
-fn emit_functional_trial_balance(
+pub(crate) fn emit_functional_trial_balance(
     out: &Out,
     report: &fa::FunctionalTrialBalance,
     presentation: FunctionalPresentation,
@@ -872,5 +872,50 @@ pub(crate) fn render_functional_trial_balance(
 ) -> Result<(), Fail> {
     let presentation = functional_presentation(report, &book.context().units)?;
     emit_functional_trial_balance(out, report, presentation, certificate);
+    Ok(())
+}
+
+pub(crate) fn functional_dimension_presentation(
+    report: &fa::FunctionalDimensionTrialBalance,
+    units: &UnitRegistry,
+) -> Result<FunctionalPresentation, Fail> {
+    let mut presentation = functional_presentation(&report.trial_balance, units)?;
+    presentation.event = "functional_dimension_trial_balance";
+    match &report.trial_balance.selection {
+        fa::TrialBalanceSelection::Activity(_) => {
+            presentation.fields.push(("effective_through", Json::Null));
+        }
+        fa::TrialBalanceSelection::Periods(periods) => {
+            presentation.fields.push(("period", s(&periods[0])));
+        }
+        fa::TrialBalanceSelection::AsOf(_) => {
+            presentation.fields.push(("period", Json::Null));
+        }
+    }
+    presentation.fields.push((
+        "dimension",
+        obj(vec![
+            ("dimension", s(&report.dimension)),
+            ("value", s(&report.value)),
+            ("values", Json::Arr(report.values.iter().map(s).collect())),
+        ]),
+    ));
+    presentation.human.push_str(&format!(
+        "\ndimension {}={} (values: {}); only tagged legs are included",
+        report.dimension,
+        report.value,
+        report.values.join(", "),
+    ));
+    Ok(presentation)
+}
+
+pub(crate) fn render_functional_dimension_trial_balance(
+    out: &Out,
+    book: &Book,
+    report: &fa::FunctionalDimensionTrialBalance,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let presentation = functional_dimension_presentation(report, &book.context().units)?;
+    emit_functional_trial_balance(out, &report.trial_balance, presentation, certificate);
     Ok(())
 }

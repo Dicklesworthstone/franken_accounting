@@ -15,8 +15,8 @@ use fgdb_types::VId;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, TbDimension, known_at_read_flag, render_tagged_trial_balance, selected_periods,
-    usage,
+    Ctx, Fail, Files, Out, TbDimension, known_at_read_flag, render_tagged_trial_balance,
+    selected_periods, usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -379,10 +379,16 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// `fa tb … --dimension <dimension>=<value>`: the trial balance over only
 /// the legs tagged with that value or a value under it, folded literally
 /// under whole-book read, and with `--certify` a retained report
-/// certificate (`fa:report-certificate:v8`) that `fa replay` re-executes.
+/// certificate (native v8 or functional v13) that `fa replay` re-executes.
 /// Only the plain stock, activity and as-of selections.
 pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const TB: &str = "fa tb --period <code> --dimension <dimension>=<value> [--activity] [--certify [--certificate-out <new-file>]] | fa tb --as-of YYYY-MM-DD --dimension <dimension>=<value>";
+    const TB: &str = "fa tb --period <code> --dimension <dimension>=<value> [--functional] [--activity] [--certify [--certificate-out <new-file>]] | fa tb --as-of YYYY-MM-DD --dimension <dimension>=<value> [--functional]";
+    if args.switch("--functional") && args.flag("--fiscal-year").is_some() {
+        return Err(usage(
+            "--functional selects one period or one --as-of date",
+            TB,
+        ));
+    }
     for flag in [
         "--root",
         "--branch",
@@ -403,7 +409,6 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     for switch in [
         "--summary",
-        "--functional",
         "--as-originally-reported",
         "--as-currently-stated",
     ] {
@@ -467,6 +472,20 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
+    if args.switch("--functional") {
+        return functional_tb(
+            &ctx.out,
+            &ctx.files,
+            args,
+            &mut book,
+            &cap,
+            selection,
+            known_at,
+            requested_utc_ns,
+            dimension,
+            value,
+        );
+    }
     if certify {
         // As `fa tb --certify`: current authority and whole-book reach are
         // admitted, and the certified history prepared, before the fold.
@@ -532,6 +551,68 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         },
         None,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn functional_tb(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    book: &mut fa::Book,
+    capability: &fa_policy::Capability,
+    selection: TrialBalanceSelection,
+    known_at: Option<fgdb_types::CommitSeq>,
+    requested_utc_ns: Option<u64>,
+    dimension: &str,
+    value: &str,
+) -> Result<(), Fail> {
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let (report, certificate) = if certify {
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_functional_dimension_trial_balance_at_instant(
+                capability, selection, instant, dimension, value,
+            )??,
+            None => book.certify_functional_dimension_trial_balance(
+                capability, selection, known_at, dimension, value,
+            )??,
+        };
+        out.time_selection(certified.certificate.time_selection.as_ref());
+        let fa::ReportOutput::FunctionalDimensionTrialBalance(report) = certified.report else {
+            return Err(Fail::Internal(
+                "functional dimension certification returned another report kind".into(),
+            ));
+        };
+        (*report, Some(certified.certificate))
+    } else {
+        (
+            book.functional_dimension_trial_balance(
+                capability, selection, known_at, dimension, value,
+            )??,
+            None,
+        )
+    };
+    let presentation =
+        crate::fx::functional_dimension_presentation(&report, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            crate::notary::retain_report_certificate(book, files, args, certificate, capability)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| crate::cli::hex(&certificate.digest));
+    out.at_book(book)?;
+    crate::fx::emit_functional_trial_balance(
+        out,
+        &report.trial_balance,
+        presentation,
+        digest.as_deref(),
+    );
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        crate::notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
 }
 
 /// A leg's `"dimensions": {"cost_center": "CC10", …}` as `dimension_set`
