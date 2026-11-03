@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Import published Glantz principal rows through native source-bound FullDetail.
+"""Import published principal rows through native source-bound FullDetail.
 
 This is the migration counterpart to blmis_replay.py. The original PDF is
 re-extracted in every invocation. Declared monthly balances come from printed
 principal cells; the CSV independently uses published movement columns. Native
 preparation, approvals, staging, finalization, certificates and fa-verify supply
-the accounting results. The four exact-footing Glantz accounts are a declared
-subset; the two accounts with printed discrepancies remain retained as evidence.
+the accounting results. The default selects the four exact-footing Glantz
+accounts. --include-magnify selects all seven exact-footing accounts across both
+filings; every excluded account remains in the retained original source tables.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import sys
 import time
 
 import blmis_source as source
+import blmis_magnify as magnify
 import public_ledger as ledger
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,8 +34,11 @@ import run_live as live
 
 ACCOUNTS = ("1T0026", "1ZA192", "1ZB010", "1ZB143")
 EXCLUDED_ACCOUNTS = ("1ZR010", "1ZR176")
+MAGNIFY_ACCOUNTS = ("1FN025", "1FN097", "1FR051")
+MAGNIFY_EXCLUDED_ACCOUNTS = ("1FN024", "1FN037", "1FN073")
 OFFSET_ACCOUNT = "BLMIS-MIGRATION-OFFSET"
 SOURCE_SYSTEM = "blmis-glantz-printed-principal-migration-v1"
+SEVEN_SOURCE_SYSTEM = "blmis-seven-printed-principal-migration-v1"
 SCOPE = (
     "All 304 published observations of Glantz Exhibits B-1 through B-4, including "
     "seven zero-principal observations; 297 monetary observations enter the native "
@@ -42,6 +47,18 @@ SCOPE = (
     "oracle input, not an independently established legal net-equity result. "
     "The five-account double-entry model and counterpart are explicit analysis "
     "constructions, not a recovered BLMIS general ledger."
+)
+SEVEN_SCOPE = (
+    "All 393 published observations of the seven exact-footing accounts: Glantz "
+    "1T0026, 1ZA192, 1ZB010 and 1ZB143, plus Magnify 1FN025, 1FN097 and 1FR051. "
+    "The 22 zero-principal observations remain evidence; all 371 monetary "
+    "observations enter one native migration with 217 monthly printed controls. "
+    "Both complete original filings and all 2,743 extracted observations are "
+    "retained, including the five accounts with printed discrepancies that cannot "
+    "support this exact-control migration. Trustee-credited transfers remain "
+    "source inputs. The eight-account double-entry model and counterpart are "
+    "explicit analysis constructions, not a recovered BLMIS general ledger or "
+    "an independent legal net-equity determination."
 )
 REVIEW_SCOPE = (
     "AgentUpload source documents receive Reviewed attestations from a distinct "
@@ -52,7 +69,12 @@ REVIEW_SCOPE = (
 
 
 def citation(row: dict) -> str:
-    return (f"constructed principal counterpart; {source.SOURCE_ID} Exhibit "
+    source_id = row["row_id"].split(":", 1)[0]
+    live.require(source_id in (source.SOURCE_ID, magnify.SOURCE_ID),
+                 "migration row has an unsupported original source identity")
+    live.require(row["row_id"].startswith(f"{source_id}:{row['account']}:"),
+                 "migration row citation names another source account")
+    return (f"constructed principal counterpart; {source_id} Exhibit "
             f"{row.get('exhibit', 'B-2')} PDF p{row['pdf_page']} line {row['source_line']}")
 
 
@@ -109,10 +131,15 @@ def printed_controls(rows: list[dict]) -> list[dict]:
     return controls
 
 
-def prepare(output: Path, pdf: Path | None, *, on_created=None) -> tuple[list[dict], dict]:
+def prepare(output: Path, pdf: Path | None, *, on_created=None,
+            include_magnify: bool = False, magnify_pdf: Path | None = None) -> tuple[list[dict], dict]:
     """Retain complete acquisition and the narrower, explicit migration transform."""
+    live.require(include_magnify or magnify_pdf is None,
+                 "a Magnify original requires the explicit seven-account scope")
     if pdf is not None:
         source.verify_pdf(pdf)
+    if magnify_pdf is not None:
+        magnify.verify_pdf(magnify_pdf)
     output.mkdir(parents=True, exist_ok=False)
     if on_created is not None:
         on_created()
@@ -130,35 +157,93 @@ def prepare(output: Path, pdf: Path | None, *, on_created=None) -> tuple[list[di
                      for account in EXCLUDED_ACCOUNTS), "declared discrepancy population changed")
     ordered = source.glantz_computation_order(rows)
     selected = [row for row in ordered if row["account"] in ACCOUNTS]
+    included_accounts = list(ACCOUNTS)
+    excluded = {account: diagnostics["accounts"][account] for account in EXCLUDED_ACCOUNTS}
+    excluded_rows = [row["row_id"] for row in rows if row["account"] in EXCLUDED_ACCOUNTS]
+    complete_source_rows = len(rows)
+    source_inputs = [{"source_id": source.SOURCE_ID, "source_url": source.SOURCE_URL,
+                      "source_sha256": source.SOURCE_SHA256,
+                      "source_rows_sha256": source_manifest["source_rows_sha256"],
+                      "source_rows": len(rows), "directory": "source",
+                      "included_accounts": list(ACCOUNTS), "excluded_accounts": list(EXCLUDED_ACCOUNTS)}]
+    document_specs = [
+        {"path": name, "kind": kind, "mime": mime} for name, kind, mime in (
+            ("source/source.pdf", "Other", "application/pdf"),
+            ("source/extracted-source/layout.txt", "Workpaper", "text/plain"),
+            ("source/rows.csv", "Spreadsheet", "text/csv"),
+            ("source/source.json", "Workpaper", "application/json"),
+            ("migration-manifest.json", "Workpaper", "application/json"),
+            ("legacy.csv", "Spreadsheet", "text/csv"),
+            ("printed-controls.json", "Spreadsheet", "application/json"),
+            ("no-opening-stock.json", "Spreadsheet", "application/json"))]
+    if include_magnify:
+        magnify_manifest = magnify.prepare_pdf(output / "magnify-source", magnify_pdf)
+        magnify_rows, magnify_metadata = magnify.load_fixture(output / "magnify-source/extracted-source")
+        magnify_diagnostics = magnify.diagnostics(magnify_rows, magnify_metadata)["accounts"]
+        live.require(set(magnify_diagnostics) == set(MAGNIFY_ACCOUNTS) | set(MAGNIFY_EXCLUDED_ACCOUNTS),
+                     "complete Magnify account census differs")
+        for account in MAGNIFY_ACCOUNTS:
+            live.require(magnify_diagnostics[account]["rows_off"] == 0
+                         and not magnify_diagnostics[account]["footer_gaps_cents"],
+                         f"{account} does not support an exact printed-control migration")
+        live.require(all(magnify_diagnostics[account]["rows_off"] > 0 for account in MAGNIFY_EXCLUDED_ACCOUNTS),
+                     "declared Magnify discrepancy population changed")
+        selected.extend(row for row in magnify.computation_order(magnify_rows)
+                        if row["account"] in MAGNIFY_ACCOUNTS)
+        # Stable ordering preserves the declared within-account same-day order,
+        # including Glantz's named check/stop-payment exception. Cross-source
+        # same-day order is a deterministic analysis choice, not an invented time.
+        selected.sort(key=lambda row: (row["date"], row["row_id"].split(":", 1)[0]))
+        included_accounts.extend(MAGNIFY_ACCOUNTS)
+        excluded.update({account: magnify_diagnostics[account] for account in MAGNIFY_EXCLUDED_ACCOUNTS})
+        excluded_rows.extend(row["row_id"] for row in magnify_rows if row["account"] in MAGNIFY_EXCLUDED_ACCOUNTS)
+        complete_source_rows += len(magnify_rows)
+        source_inputs.append({"source_id": magnify.SOURCE_ID, "source_url": magnify.SOURCE_URL,
+                              "source_sha256": magnify.SOURCE_SHA256,
+                              "source_rows_sha256": magnify_manifest["source_rows_sha256"],
+                              "source_rows": len(magnify_rows), "directory": "magnify-source",
+                              "included_accounts": list(MAGNIFY_ACCOUNTS),
+                              "excluded_accounts": list(MAGNIFY_EXCLUDED_ACCOUNTS)})
+        document_specs.extend({"path": name, "kind": kind, "mime": mime} for name, kind, mime in (
+            ("magnify-source/source.pdf", "Other", "application/pdf"),
+            ("magnify-source/extracted-source/layout.txt", "Workpaper", "text/plain"),
+            ("magnify-source/rows.csv", "Spreadsheet", "text/csv"),
+            ("magnify-source/source.json", "Workpaper", "application/json"),
+            ("magnify-source/extraction.json", "Workpaper", "application/json"),
+            ("magnify-source/observations.json", "Workpaper", "application/json")))
+    scope = SEVEN_SCOPE if include_magnify else SCOPE
+    source_system = SEVEN_SOURCE_SYSTEM if include_magnify else SOURCE_SYSTEM
     normalized = normalized_rows(selected)
     controls = printed_controls(selected)
-    live.require(len(selected) == 304 and len(normalized) == 594 and len(controls) == 194,
+    expected = (393, 742, 217) if include_magnify else (304, 594, 194)
+    live.require((len(selected), len(normalized), len(controls)) == expected,
                  "complete published migration population or period span changed")
     chart = {"accounts": [
         {"code": f"BLMIS-{account}", "name": f"Published principal {account} - analysis", "type": "Equity", "unit": "USD"}
-        for account in ACCOUNTS
+        for account in included_accounts
     ] + [{"code": OFFSET_ACCOUNT, "name": "Constructed counterpart of published principal",
           "type": "Asset", "unit": "USD"}]}
     payloads = {
         "legacy.csv": source.csv_bytes(source.LEGACY_COLUMNS, normalized),
-        "column_map.toml": source.COLUMN_MAP.replace(source.SOURCE_SYSTEM, SOURCE_SYSTEM).encode(),
+        "column_map.toml": source.COLUMN_MAP.replace(source.SOURCE_SYSTEM, source_system).encode(),
         "chart.json": source.json_bytes(chart),
         "printed-controls.json": source.json_bytes({
-            "scope": SCOPE, "source_sha256": source.SOURCE_SHA256,
+            "scope": scope, "source_sha256": source.SOURCE_SHA256, "source_inputs": source_inputs,
             "basis": "last_balance_on_or_before per account; counterpart is the negated sum of printed cells",
             "same_day_rule": source.GLANTZ_REORDER, "controls": controls}),
         "no-opening-stock.json": source.json_bytes({"scope": "Historical detail is the sole opening source", "lines": []}),
     }
     manifest = {
-        "format": "fa-blmis-glantz-migration-v1", "scope": SCOPE,
-        "source_system": SOURCE_SYSTEM, "source_sha256": source.SOURCE_SHA256,
+        "format": "fa-blmis-seven-migration-v1" if include_magnify else "fa-blmis-glantz-migration-v1",
+        "scope": scope, "source_inputs": source_inputs, "document_specs": document_specs,
+        "run_key": "blmis-seven-printed-principal-v1" if include_magnify else "glantz-four-printed-principal-v1",
+        "source_system": source_system, "source_sha256": source.SOURCE_SHA256,
         "source_rows_sha256": source_manifest["source_rows_sha256"],
-        "complete_source_rows": len(rows), "included_accounts": list(ACCOUNTS),
+        "complete_source_rows": complete_source_rows, "included_accounts": included_accounts,
         "included_observations": len(selected), "monetary_observations": len(normalized) // 2,
         "normalized_source_rows": len(normalized),
         "zero_principal_rows": [row["row_id"] for row in selected if not row["principal_movement_cents"]],
-        "excluded_accounts": {account: diagnostics["accounts"][account] for account in EXCLUDED_ACCOUNTS},
-        "excluded_rows": [row["row_id"] for row in rows if row["account"] in EXCLUDED_ACCOUNTS],
+        "excluded_accounts": excluded, "excluded_rows": excluded_rows,
         "entry_order": [row["row_id"] for row in selected if row["principal_movement_cents"]],
         "controls": controls, "opening_date": f"{int(controls[-1]['at_date'][:4]) + 1}-01-01",
         "same_day_rule": source.GLANTZ_REORDER,
@@ -272,7 +357,8 @@ def exported_rows(path: Path):
             yield dict(zip(columns, fields, strict=True))
 
 
-def check_export(path: Path, rows: list[dict], identities: dict[str, str], receipts: dict[str, dict]) -> dict:
+def check_export(path: Path, rows: list[dict], identities: dict[str, str], receipts: dict[str, dict], *,
+                 source_system: str = SOURCE_SYSTEM) -> dict:
     """Every dated leg, citation and native provenance is checked, including offsets."""
     monetary = [row for row in rows if row["principal_movement_cents"]]
     live.require(set(identities) == {row["row_id"] for row in monetary}
@@ -296,7 +382,7 @@ def check_export(path: Path, rows: list[dict], identities: dict[str, str], recei
                      and actual["currency"] == "USD" and actual["unit_scale"] == "2",
                      f"native export changed source geometry {row['row_id']}")
         live.require(actual["description"] == row["description"] and actual["memo"] == citation(row)
-                     and actual["migrated_from"] == f"{SOURCE_SYSTEM}:{row['row_id']}",
+                     and actual["migrated_from"] == f"{source_system}:{row['row_id']}",
                      f"native export lost source description, citation or migration provenance {row['row_id']}")
         seen.add(key)
     live.require(seen == set(expected), "native export omitted source observations or counterpart legs")
@@ -361,8 +447,14 @@ def stage_selection(native: live.Native, selected: list[dict], package: dict, ru
                        request_bytes=request)
     staged = check_stage_group(event, selected, package, run_vid, receipts)
     receipts.update({receipt["entry_vid"]: receipt for receipt in staged})
+    evidence_paths = ["source/source.pdf", "source/rows.csv", "source/source.json", "migration-manifest.json"]
+    magnify_paths = ["magnify-source/source.pdf", "magnify-source/rows.csv", "magnify-source/source.json"]
+    if any(name in documents for name in magnify_paths):
+        live.require(all(name in documents for name in magnify_paths),
+                     "Magnify migration evidence is incomplete")
+        evidence_paths.extend(magnify_paths)
     native.attach_sources([item["entry_vid"] for item in staged],
-                          [documents[name] for name in ("source/source.pdf", "source/rows.csv", "source/source.json", "migration-manifest.json")],
+                          [documents[name] for name in evidence_paths],
                           staged_at={item["entry_vid"]: item["recorded_at"] for item in staged})
     return request, staged
 
@@ -423,7 +515,8 @@ def verify_report(native: live.Native, certificate: dict, state: dict, signed: d
 
 def run_native(native: live.Native, rows: list[dict], manifest: dict) -> dict:
     output, controls = native.out, manifest["controls"]
-    created = native.one(["book", "create", "--name", "Glantz published principal MIGRATION ANALYSIS ONLY",
+    name = "Seven-account BLMIS" if manifest["source_system"] == SEVEN_SOURCE_SYSTEM else "Glantz"
+    created = native.one(["book", "create", "--name", f"{name} published principal MIGRATION ANALYSIS ONLY",
                           "--base-unit", "USD", "--calendar", "monthly", "--opening-date", manifest["opening_date"]])
     native.book_id = created["book"]
     native.owner_principal = created["authority"]["principal"]
@@ -431,18 +524,9 @@ def run_native(native: live.Native, rows: list[dict], manifest: dict) -> dict:
     for year in range(int(controls[0]["at_date"][:4]), int(controls[-1]["at_date"][:4]) + 1):
         native.one(["period", "create", "--fiscal-year", str(year)])
     custody, documents = [], {}
-    for name, kind, mime in (
-        ("source/source.pdf", "Other", "application/pdf"),
-        ("source/extracted-source/layout.txt", "Workpaper", "text/plain"),
-        ("source/rows.csv", "Spreadsheet", "text/csv"),
-        ("source/source.json", "Workpaper", "application/json"),
-        ("migration-manifest.json", "Workpaper", "application/json"),
-        ("legacy.csv", "Spreadsheet", "text/csv"),
-        ("printed-controls.json", "Spreadsheet", "application/json"),
-        ("no-opening-stock.json", "Spreadsheet", "application/json"),
-    ):
-        documents[name] = add_document(native, output / name, kind, mime, custody)
-    run = {"run_key": "glantz-four-printed-principal-v1", "source_system": SOURCE_SYSTEM,
+    for spec in manifest["document_specs"]:
+        documents[spec["path"]] = add_document(native, output / spec["path"], spec["kind"], spec["mime"], custody)
+    run = {"run_key": manifest["run_key"], "source_system": manifest["source_system"],
            "mode": "FullDetail", "trial_balance": documents["no-opening-stock.json"],
            "opening_date": manifest["opening_date"], "lines": [], "detail_base": [], "sole_opening_source": True,
            "periods": [{"period": control["period"], "trial_balance": documents["printed-controls.json"],
@@ -562,7 +646,7 @@ def run_native(native: live.Native, rows: list[dict], manifest: dict) -> dict:
     exported = output / "native.csv"
     native.one(["export", "csv-gl", "--as-of", controls[-1]["at_date"], "--out", str(exported)])
     native.one(["verify", "export", "csv-gl", str(exported)])
-    export_census = check_export(exported, rows, identities, receipts)
+    export_census = check_export(exported, rows, identities, receipts, source_system=manifest["source_system"])
     certificates = []
     for index, control in enumerate(controls, 1):
         certificates.append(certify(native, control))
@@ -588,10 +672,11 @@ def run_native(native: live.Native, rows: list[dict], manifest: dict) -> dict:
     arguments[1] = str(bad_path)
     rejected = native.execute(arguments, verifier=True, expected_exit=8)
     live.require(not any(event.get("verdict") == "verified" for event in rejected), "tampered proof was accepted")
-    return {"status": "PASS", "scope": SCOPE, "review_scope": REVIEW_SCOPE,
+    return {"status": "PASS", "scope": manifest["scope"], "review_scope": REVIEW_SCOPE,
             "source_sha256": source.SOURCE_SHA256, "source_rows_sha256": manifest["source_rows_sha256"],
+            "source_inputs": manifest["source_inputs"], "source_system": manifest["source_system"],
             "source_observations": manifest["complete_source_rows"], "included_observations": len(rows),
-            "included_accounts": list(ACCOUNTS), "excluded_accounts": manifest["excluded_accounts"],
+            "included_accounts": manifest["included_accounts"], "excluded_accounts": manifest["excluded_accounts"],
             "zero_principal_rows": manifest["zero_principal_rows"], "native_entries": len(receipts),
             "normalized_source_rows": manifest["normalized_source_rows"], "monthly_controls": len(controls),
             "migration_run": run_vid, "source_binding": binding, "source_binding_receipt": binding_receipt,
@@ -620,6 +705,10 @@ def main(argv: list[str] | None = None) -> int:
         command = commands.add_parser(action)
         command.add_argument("--out", type=Path, required=True, help="new output directory; existing paths are refused")
         command.add_argument("--pdf", type=Path, help="already downloaded pinned Glantz original; still re-extracted")
+        command.add_argument("--include-magnify", action="store_true",
+                             help="migrate all seven exact-footing accounts from both complete original filings")
+        command.add_argument("--magnify-pdf", type=Path,
+                             help="pinned complete Magnify original; requires --include-magnify, still re-extracted")
         if action == "run":
             command.add_argument("--fa", type=Path, default=ROOT / "target/debug/fa")
             command.add_argument("--fa-verify", type=Path, default=ROOT / "target/debug/fa-verify")
@@ -627,6 +716,8 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--timeout", type=int, default=600)
             command.add_argument("--stage-group-size", type=int, default=64)
     args = parser.parse_args(argv)
+    if args.magnify_pdf is not None and not args.include_magnify:
+        parser.error("--magnify-pdf requires --include-magnify to select the seven-account scope")
     if args.command == "run":
         if args.timeout < 1 or not 1 <= args.stage_group_size <= 4096:
             parser.error("positive timeout and a stage group size of 1..4096 are required")
@@ -641,7 +732,8 @@ def main(argv: list[str] | None = None) -> int:
         owned = True
 
     try:
-        rows, manifest = prepare(output, args.pdf, on_created=created)
+        rows, manifest = prepare(output, args.pdf, on_created=created,
+                                 include_magnify=args.include_magnify, magnify_pdf=args.magnify_pdf)
         if args.command == "prepare":
             print(json.dumps({"status": "PREPARED", "included_observations": len(rows),
                               "monetary_observations": manifest["monetary_observations"],

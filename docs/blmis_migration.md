@@ -202,7 +202,8 @@ The real PDF test covers the full 304-observation selection and 194 controls.
 
 This driver is a standalone execution workload. It does not claim completion
 of the case framework's entire M-T-03 bead, its separate native-chunk tie-out
-twin, or migration of the other complaints' accounts. Native execution status
+twin. The default four-account mode does not establish the seven-account mode
+described below. Native execution status
 is recorded by each actual run's `report.json` or `failure.json`.
 
 ## Recorded native execution — 2026-11-03
@@ -257,3 +258,72 @@ were **UNRUN for the changed helper tree**. This evidence does not close a bead
 or claim the case plan's separate native-chunk monetary twin. The two excluded
 accounts, trustee-credit assumptions, source discrepancies and fixture-review
 scope remain as declared above.
+
+## Seven exact-footing accounts across both complete filings
+
+`--include-magnify` extends the same native import path to every exact-footing
+account in the two complete sources. It retains both original PDFs and freshly
+extracts **all 2,743 observations across twelve source accounts**, then selects
+the seven accounts that support exact monthly printed controls. The five other
+accounts remain in the evidence and discrepancy census. Their published gaps
+are never repaired by adding a plug or changing a source amount.
+
+| Published source | Included accounts | Observations | Monetary entries | Balanced legs |
+|---|---|---:|---:|---:|
+| Glantz | `1T0026`, `1ZA192`, `1ZB010`, `1ZB143` | 304 | 297 | 594 |
+| Magnify | `1FN025`, `1FN097`, `1FR051` | 89 | 74 | 148 |
+| **Combined migration** | **Seven principal accounts plus one declared counterpart** | **393** | **371** | **742** |
+
+The 22 zero-principal observations remain source evidence without becoming
+zero-dollar postings. The combined history requires **217 contiguous monthly
+controls, December 1990 through December 2008**, including months without a new
+transaction. As in the four-account mode, every control selects the last
+published balance on or before month end. A separate declared counterpart
+negates their sum. Control construction never reads the normalized movements.
+
+```sh
+python3 -B scripts/blmis_migrate.py run --include-magnify \
+  --pdf /absolute/path/to/008796-glantzcomplaint10-05394docket93.pdf \
+  --magnify-pdf /absolute/path/to/magnify_affidavit_opposingcounsel_10-05279_docket150.pdf \
+  --out artifacts/blmis-seven-migration \
+  --fa target/debug/fa \
+  --fa-verify target/debug/fa-verify
+```
+
+Omit either PDF argument to acquire its pinned complete original. `prepare`
+accepts the same source arguments and produces the complete package without
+requiring native binaries. Supplying `--magnify-pdf` without the explicit
+`--include-magnify` scope is refused. Neither acquisition failure falls back to
+retained fixture rows.
+
+The manifest names both original hashes, both extracted-row hashes, all
+included and excluded accounts, every source location and the complete
+document-intake set. Every staged entry receives evidence references to both
+filings and their source tables. Its citation retains the correct source
+namespace (`SRC-BLM-001` or `SRC-BLM-006`), physical PDF page and extracted line;
+the native export must retain the distinct combined migration-system identity.
+Preparation uses a stable global order by date and source namespace while
+preserving each source's within-account ordering, including Glantz's named
+check/stop-payment exception. That order supplies no missing original
+transaction timestamps.
+
+All checks run over the combined population: complete native proposal geometry,
+two approvals per staged entry, invisible staging, one-publication activation,
+historical invisibility, exact retries, every exported amount and source text,
+all 217 certified/replayed monthly reports, all maintained registers, and all
+217 independent source-bound report proofs. The original real $25,000 cancelling
+pair is again withheld deliberately. Its omission must leave every monetary
+control matching while native source completeness refuses finalization; the
+same run is then repaired with the two original observations. The separate
+balanced-dollar preparation refusal and corrupted-bundle refusal remain active.
+
+The three Magnify accounts are exact against their own displayed principal
+movements. That property does not independently establish the trustee's
+credited-transfer method. The distinct [full Magnify replay](blmis_magnify_workload.md)
+includes all six accounts and explicitly preserves its three discrepant
+histories. Square One's discrepant principal table is exercised by its
+[separate complete replay](blmis_square_one_workload.md), rather than admitted
+to an exact-printed-control migration it cannot satisfy.
+
+The seven-account native execution has its own result and provenance. The
+four-account execution record above does not count as its verification.
