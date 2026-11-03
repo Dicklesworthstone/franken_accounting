@@ -988,15 +988,23 @@ mod tests {
             self.db.frontier().unwrap()
         }
 
+        // An Entry root names its book: the storage reader authenticates the
+        // payload against it before decoding (fa-fdt).
         fn add(&mut self, vid: VId, entry: &Entry) -> CommitSeq {
             let mut batch = WriteBatch::new(relation::IN_BOOK);
             batch.create_vertex(
                 vid,
                 vec![label::ENTRY],
-                vec![(
-                    property::FA_PAYLOAD,
-                    scalar_bytes("entry.payload", entry.encode().unwrap()).unwrap(),
-                )],
+                vec![
+                    (
+                        property::BOOK_ID,
+                        scalar_bytes("entry.book", self.book.book_id.0.to_vec()).unwrap(),
+                    ),
+                    (
+                        property::FA_PAYLOAD,
+                        scalar_bytes("entry.payload", entry.encode().unwrap()).unwrap(),
+                    ),
+                ],
             );
             self.write(batch)
         }
@@ -1141,10 +1149,16 @@ mod tests {
         batch.create_vertex(
             VId(2),
             vec![label::ENTRY],
-            vec![(
-                property::FA_PAYLOAD,
-                scalar_bytes("entry.payload", vec![0xff]).unwrap(),
-            )],
+            vec![
+                (
+                    property::BOOK_ID,
+                    scalar_bytes("entry.book", f.book.book_id.0.to_vec()).unwrap(),
+                ),
+                (
+                    property::FA_PAYLOAD,
+                    scalar_bytes("entry.payload", vec![0xff]).unwrap(),
+                ),
+            ],
         );
         let invalid = f.write(batch);
         let mut selection = EntrySelection::default();

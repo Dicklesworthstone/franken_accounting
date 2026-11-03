@@ -81,6 +81,14 @@ fn large_entry_keeps_one_publication_exact_bytes_and_original_retry() {
     assert_eq!(retry.entry_ref(), posted.entry_ref());
     assert_eq!(retry.recorded_at(), at);
     assert_eq!(h.db.frontier().unwrap(), at);
+
+    // A smaller payload cannot rebind a key whose recorded Entry now lives
+    // in fragments. Its refusal must preserve the original publication.
+    let changed = h.proposal(h.rent_legs(256), b"large-fragmented", EntryClass::ORIGINAL);
+    let refusal = h.post(h.request(changed, &["post"])).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), at);
+    assert_eq!(read_entry(&h.db, root.vid).unwrap().unwrap().0, canonical);
 }
 
 #[test]

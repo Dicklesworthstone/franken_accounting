@@ -110,6 +110,31 @@ impl Deadline {
             handle: None,
         })
     }
+
+    fn poll_operation<T>(
+        &mut self,
+        phase: &Cell<Phase>,
+        timeout_ms: u64,
+        operation: Pin<&mut impl Future<Output = Result<T, ClientError>>>,
+        task: &mut Context<'_>,
+    ) -> Poll<Result<T, ClientError>> {
+        let timeout = || {
+            Poll::Ready(Err(ClientError::Timeout {
+                timeout_ms,
+                phase: phase.get(),
+            }))
+        };
+        if Pin::new(&mut *self).poll(task).is_ready() {
+            return timeout();
+        }
+        let result = operation.poll(task);
+        // Rendering and immediately ready I/O can finish within one long poll.
+        // A result obtained after the same deadline cannot hide its expiry.
+        if result.is_ready() && self.driver.now() >= self.at {
+            return timeout();
+        }
+        result
+    }
 }
 
 impl Future for Deadline {
@@ -162,13 +187,7 @@ pub fn call(socket: &Path, request: &Request, daemon: &Daemon) -> Result<Respons
         Ok(Response::from_json(&canonical(&reply)?, daemon.protocol)?)
     });
     runtime.block_on(poll_fn(|task| {
-        if Pin::new(&mut deadline).poll(task).is_ready() {
-            return Poll::Ready(Err(ClientError::Timeout {
-                timeout_ms: daemon.request_timeout_ms,
-                phase: phase.get(),
-            }));
-        }
-        operation.as_mut().poll(task)
+        deadline.poll_operation(&phase, daemon.request_timeout_ms, operation.as_mut(), task)
     }))
 }
 

@@ -2255,3 +2255,25 @@ the next honest tick. The kernel test retains the original uncorroborated
 record byte-for-byte. No kernel admission, hold-anchor policy, registered
 skew limit, original test or gate is weakened. Native execution and the
 old-predicate negative control are pending; source agreement is not a pass.
+
+## 2026-11-03 — A late-ready transport result could hide the request deadline
+
+The client checked its absolute deadline before polling the socket operation,
+then returned that poll's result directly. Rendering a large request can
+consume the remaining budget inside one poll. A subsequent immediately ready
+I/O error could therefore win after expiry; the recorded loaded-worker case
+returned BrokenPipe instead of SendingRequest timeout. A late success had
+the same result-ordering gap.
+
+The same Deadline now checks its existing clock before accepting a Ready
+outcome. Newly classified as timeout: completion observed at or after the
+unchanged absolute deadline. Within-budget successes and failures retain
+their original results. This does not preempt synchronous work within a
+poll. The original 3-second peer watchdog, 300-ms backpressure deadline,
+32-MiB frame and every existing socket assertion are unchanged.
+
+Deterministic TimerDriver/VirtualClock controls cover both outcome classes,
+all three transport phases and observations before, at and after expiry;
+an already expired deadline must not poll the operation, and registrations
+are released. Native execution and a restored pre-poll-only fault control
+remain pending. No gate or timeout limit has been increased.

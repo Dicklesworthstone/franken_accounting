@@ -1403,14 +1403,22 @@ fn account_scope_precedes_capacity_across_legal_entities_and_keeps_refused_keys_
 #[test]
 fn rejected_account_scope_never_decodes_a_planted_capacity_prefix_canary() {
     let mut h = harness();
+    // An Entry root that names this book but whose payload is not an Entry:
+    // the storage reader authenticates the book before it decodes (fa-fdt).
     let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
     damage.create_vertex(
         VId(0xcafa),
         vec![fa_model::symbols::label::ENTRY],
-        vec![(
-            property::FA_PAYLOAD,
-            CanonicalScalar::bytes(vec![0xff; 8]).unwrap(),
-        )],
+        vec![
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
+            ),
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(vec![0xff; 8]).unwrap(),
+            ),
+        ],
     );
     h.write_raw(damage);
     let head = h.db.frontier().unwrap();

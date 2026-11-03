@@ -268,3 +268,100 @@ fn request_deadlines_reject_invalid_durations_and_release_timer_registrations() 
     drop(deadline);
     assert_eq!(driver.pending_count(), before);
 }
+
+#[test]
+fn a_ready_result_cannot_hide_a_deadline_reached_during_its_poll() {
+    use asupersync::time::{TimerDriver, VirtualClock};
+    use std::sync::Arc;
+
+    for nanos in [0, 999_999, 1_000_000, 1_000_001] {
+        for success in [false, true] {
+            for completed_phase in [
+                Phase::Connecting,
+                Phase::SendingRequest,
+                Phase::ReceivingResponse,
+            ] {
+                let clock = Arc::new(VirtualClock::new());
+                let driver =
+                    TimerDriverHandle::new(Arc::new(TimerDriver::with_clock(clock.clone())));
+                let mut deadline = Deadline {
+                    driver: driver.clone(),
+                    at: Time::from_nanos(1_000_000),
+                    handle: None,
+                };
+                let phase = Cell::new(Phase::Connecting);
+                let mut operation = pin!(poll_fn(|_| {
+                    phase.set(completed_phase);
+                    clock.advance(nanos);
+                    Poll::Ready(if success {
+                        Ok(())
+                    } else {
+                        Err(ClientError::Frame(FrameError::Truncated {
+                            got: 0,
+                            expected: PREFIX_BYTES,
+                        }))
+                    })
+                }));
+                let mut task = Context::from_waker(std::task::Waker::noop());
+                let result = deadline.poll_operation(&phase, 1, operation.as_mut(), &mut task);
+                if nanos >= 1_000_000 {
+                    assert!(
+                        matches!(result, Poll::Ready(Err(ClientError::Timeout { timeout_ms: 1, phase })) if phase == completed_phase),
+                        "{result:?}"
+                    );
+                } else if success {
+                    assert!(matches!(result, Poll::Ready(Ok(()))), "{result:?}");
+                } else {
+                    assert!(
+                        matches!(
+                            result,
+                            Poll::Ready(Err(ClientError::Frame(FrameError::Truncated {
+                                got: 0,
+                                expected: PREFIX_BYTES
+                            })))
+                        ),
+                        "{result:?}"
+                    );
+                }
+                drop(deadline);
+                assert_eq!(driver.pending_count(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn an_expired_deadline_does_not_poll_the_operation() {
+    use asupersync::time::{TimerDriver, VirtualClock};
+    use std::sync::Arc;
+
+    let clock = Arc::new(VirtualClock::new());
+    let driver = TimerDriverHandle::new(Arc::new(TimerDriver::with_clock(clock.clone())));
+    let mut deadline = Deadline {
+        driver: driver.clone(),
+        at: Time::from_nanos(1_000_000),
+        handle: None,
+    };
+    clock.advance(1_000_000);
+    let phase = Cell::new(Phase::Connecting);
+    let polled = Cell::new(false);
+    let mut operation = pin!(poll_fn(|_| {
+        polled.set(true);
+        Poll::Ready(Ok(()))
+    }));
+    let mut task = Context::from_waker(std::task::Waker::noop());
+    let result = deadline.poll_operation(&phase, 1, operation.as_mut(), &mut task);
+    assert!(
+        matches!(
+            result,
+            Poll::Ready(Err(ClientError::Timeout {
+                timeout_ms: 1,
+                phase: Phase::Connecting
+            }))
+        ),
+        "{result:?}"
+    );
+    assert!(!polled.get());
+    drop(deadline);
+    assert_eq!(driver.pending_count(), 0);
+}
