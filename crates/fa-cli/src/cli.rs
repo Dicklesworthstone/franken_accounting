@@ -1018,6 +1018,26 @@ impl BookSource<'_> {
         Ok(())
     }
 
+    /// Admit a complete-prefix read before even checking a host input's
+    /// existence. Keep the pending AccessEvent for the admitted handler open.
+    fn admit_prefix_before_input(
+        &mut self,
+        args: &Args,
+        capability: &Capability,
+        out: &Out,
+    ) -> Result<(), Fail> {
+        let book = self.books.open(args, self.cwd.as_deref())?;
+        book.read_scope(capability.holder(), capability)??;
+        let (known_at, _) = known_at_read_flag(args, &book, out, capability)?;
+        let mut reach = fa_policy::Reach::whole_book(true);
+        if let Some(at) = known_at {
+            reach.observes = fa_policy::Observes::At(at);
+        }
+        fa_policy::reach(capability, &reach, None)
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        Ok(())
+    }
+
     /// Open for native admission without first disclosing the book or its
     /// frontier in an error envelope. Only admitted reads receive a coordinate.
     pub(crate) fn open_admitted(
@@ -2308,8 +2328,13 @@ fn dispatch_with(
         // An already-held book still checks revocation before this refusal.
         && (authority.files().is_some() || ctx.books.is_held())
     {
-        ctx.books
-            .admit_current_before_input(args, authority.capability())?;
+        if verb.name == "gl" && plain_gl_prefix_read(args) {
+            ctx.books
+                .admit_prefix_before_input(args, authority.capability(), out)?;
+        } else {
+            ctx.books
+                .admit_current_before_input(args, authority.capability())?;
+        }
     }
     admit_bound_files(ctx, verb, args)?;
     admit_daemon_files(ctx, verb, args)?;
@@ -18927,6 +18952,16 @@ fn gl_split_cash_flow(
     Ok(())
 }
 
+/// These plain reports fold a complete prefix before projecting accounts or
+/// dates. Keep dispatch's pre-input scope check and the handler in agreement.
+fn plain_gl_prefix_read(args: &Args) -> bool {
+    let sub = args.positional.get(1).map(String::as_str);
+    !args.switch("--certify")
+        && args.flag("--certificate-out").is_none()
+        && (matches!(sub, Some("detail" | "roll-forward" | "cash-flow"))
+            || sub == Some("aging") && !args.switch("--reconcile"))
+}
+
 fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.flag_all("--certificate-out").len() > 1 {
         return Err(usage(
@@ -18982,9 +19017,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let admit_report = |book: &mut Book| -> Result<(), Fail> {
         if certify {
             gl_certificate_preflight(book, &ctx.files, args, &capability)?;
-        } else if matches!(sub, Some("detail" | "roll-forward" | "cash-flow"))
-            || sub == Some("aging") && !args.switch("--reconcile")
-        {
+        } else if plain_gl_prefix_read(args) {
             // These plain reports read one complete recorded prefix before
             // projecting their account/date selection. Admit that prefix,
             // never the selected output rows, and keep all non-temporal

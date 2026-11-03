@@ -1989,3 +1989,21 @@ its original success, exact amount, temporal and non-temporal refusal,
 AccessEvent and current revocation assertions. Neither failed execution
 is reported as a repaired-source pass; native re-execution and full
 repository qualification remain required.
+
+The registry completion in d9bcce3b admitted the first historical explicit
+report with its exact 5.00 USD result. The full target still ran eleven
+passes and one failure: the next out-of-scope request named a missing
+policy, and launch-file containment checked its existence before the
+handler could refuse the token's implicit HEAD read. It returned usage 2
+instead of FA-REF-011/7. The earlier claim that handler admission preceded
+host input therefore did not cover this dispatch-stage filesystem check.
+
+Plain complete-prefix GL reads now admit current authority and their
+requested reach before launch-file containment. They use the existing
+known-at parser and pure scope checker; the scope check itself does not
+resolve an implicit HEAD. A shared predicate keeps that preflight and report
+handler aligned. The pending AccessEvent remains for the admitted handler
+open, so a refusal records no read and a successful logical read records
+once. All original assertions stay, and missing-policy refusals now cover
+account, period and effective scopes too. Certification retains its prior
+whole-head rule. This further repair still requires native re-execution.

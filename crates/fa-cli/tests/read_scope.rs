@@ -1725,6 +1725,9 @@ fn pinned_auditors_read_plain_cash_flow_at_their_prefix() {
             let mut denied = vec!["--token", token.as_str()];
             denied.extend(question.iter().map(String::as_str));
             f.out_of_scope(&denied, caveat);
+            let policy_index = denied.iter().position(|word| *word == "--policy").unwrap() + 1;
+            denied[policy_index] = "missing-cash-policy.json";
+            f.out_of_scope(&denied, caveat);
         }
         assert_eq!(head(&f), settled);
     }
