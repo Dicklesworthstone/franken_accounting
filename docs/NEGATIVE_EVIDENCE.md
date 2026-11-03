@@ -1627,3 +1627,49 @@ These review corrections and added controls are authored, not yet executed
 native evidence. Existing 19e passes do not qualify them. The source review
 also confirms that output comparison cannot detect the `accounts_at` swaps
 by itself; there is still no substrate read-counter claim.
+
+The corrected source `e9dc06b7750c818bcacd2094d2ee2630af09ab86`, tree
+`ac3c0fdbc6620118029d523766b0b7a10f32e878`, subsequently passed original
+Tier 0: formatting and remote all-target check on hz3, recorded
+2026-11-02 22:10:22 UTC (check 1533 seconds). The original scanner also
+passed all 33 roots with zero critical findings. Neither result executes
+the aging regression. Fresh native CLI/MCP and full-repository runs started
+on that frozen source on November 3; they remain separate from the pending
+test repairs below.
+
+## 2026-11-03 — equity and custom-trace test integration
+
+StormyLion reported three executed failures on origin `919ecf9b9` plus its
+separate changes (Agent Mail 6285). Its changes did not touch the statement
+or MCP paths in question. That is peer evidence on its stated source;
+the local executions against unmodified `e9dc06b77` are still pending.
+Source inspection confirms these test defects:
+
+- The binary event-coverage test never invoked the newly declared
+  `equity_roll_forward_diff` event. It now runs the real comparison against
+  an independently specified question and the identical retained source at
+  equal frontiers, checking identical source IDs, movements and zero deltas.
+  The declared-event set and its equality assertion remain unchanged;
+  nonzero comparisons remain covered by the closing test.
+- The closing comparison test used `statement --grant read`, although the
+  verb does not register `--grant`. Moreover, unbound grants extend implied
+  operations; that argument would not prove read-only authority. The test
+  now issues an actual Human token holding only `read`, preserves its exact
+  original output comparisons, requires precisely one admitted AccessEvent,
+  and refuses certification with exit 7 and no further publication. The
+  later replay/status/refusal head checks retain that post-read frontier.
+  The supported read is exercised; the unregistered flag is not newly
+  accepted, and no product authority or selector rule changes.
+- The custom-trace MCP test compared its scalar `definition` input directly
+  with translated JSON. The registry explicitly makes `--definition`
+  repeatable, its schema accepts strings and arrays, and command translation
+  deliberately canonicalizes repeatable flags to arrays. The test now
+  requires that exact schema and canonical JSON and requires both forms to
+  produce identical CLI arguments. Exact definition values, saved/direct
+  frontiers, operation sets and host-path refusals remain checked. This
+  admits only the already registered representational equivalence; it does
+  not accept a different question or silently discard an argument.
+
+These are authored test corrections, not additional product capability or
+executed repair evidence. No registry, robot pin, gate, tolerance, test
+selection or production implementation was changed to obtain a pass.
