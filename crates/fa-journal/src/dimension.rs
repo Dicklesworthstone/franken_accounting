@@ -1145,8 +1145,8 @@ pub async fn close_dimension_value<V: Vfs + Clone>(
 /// Whether dimension `id` is analytic and closes with its account: a
 /// registered kind other than the fund. A year-end close or an FX
 /// revaluation transfers an account's net per unit and entity and carries no
-/// analytic value; fund balance per fund (plan §7.5) has no closing
-/// treatment yet, so a fund-tagged nominal leg is still refused.
+/// analytic value. YearEndClose v3 instead preserves fund balance per fund
+/// (plan §7.5); that treatment is not an analytic collapse or an FX revaluation.
 #[must_use]
 pub fn closes_with_account(id: u32) -> bool {
     dimension_kind_of(id).is_some_and(|kind| kind.code != "fund")

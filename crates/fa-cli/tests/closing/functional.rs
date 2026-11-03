@@ -62,6 +62,18 @@ fn post_foreign(
     amount: &str,
     rate: Option<(u32, u32)>,
 ) -> Json {
+    post_foreign_in_fund(f, key, debit, credit, amount, rate, None)
+}
+
+fn post_foreign_in_fund(
+    f: &Fixture,
+    key: &str,
+    debit: &str,
+    credit: &str,
+    amount: &str,
+    rate: Option<(u32, u32)>,
+    fund: Option<&str>,
+) -> Json {
     let valuation = rate.map_or_else(String::new, |(numerator, denominator)| {
         let path = write(
             &f.dir,
@@ -71,11 +83,14 @@ fn post_foreign(
         let retained = ok(&f.book, &["fx", "rate", "add", "--from-json", &path]);
         format!(r#", "fx":{{"law":"SpotClose","rates":["D:{}"]}}"#, text(&retained, "oid"))
     });
+    let dimensions = fund.map_or_else(String::new, |fund| {
+        format!(r#", "dimensions":{{"fund":"{fund}"}}"#)
+    });
     let path = write(
         &f.dir,
         &format!("{key}.json"),
         &format!(
-            r#"{{"effective_date":"2026-12-30","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} EUR"}},{{"side":"credit","account":"{credit}","amount":"{amount} EUR"}}]{valuation}}}"#
+            r#"{{"effective_date":"2026-12-30","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} EUR"{dimensions}}},{{"side":"credit","account":"{credit}","amount":"{amount} EUR"{dimensions}}}]{valuation}}}"#
         ),
     );
     ok(
@@ -143,6 +158,176 @@ fn restored_plan(
     }
     let plan = ok(&f.book, &args);
     (plan_path, plan)
+}
+
+#[test]
+fn fund_close_keeps_exact_carrying_values_across_reopen_export_and_reclose() {
+    use super::equity_certificate::{many, unhex};
+
+    let f = fixture("any-currency");
+    for code in ["F1", "F2"] {
+        ok(&f.book, &["dimension", "add", "fund", code, "--name", code]);
+    }
+    post_foreign_in_fund(
+        &f,
+        "fund-sale",
+        "1000",
+        "4000",
+        "100.00",
+        Some((11, 10)),
+        Some("F1"),
+    );
+    post_foreign_in_fund(
+        &f,
+        "fund-return",
+        "4000",
+        "1000",
+        "100.00",
+        Some((6, 5)),
+        Some("F2"),
+    );
+    f.post("fund-untagged-expense", "6000", "1000", "10.00");
+    ok(
+        &f.book,
+        &["dimension", "close", "fund", "F1", "--on", "2026-12-31"],
+    );
+    let (review_path, review) = f.review("fund-first-close");
+    assert_eq!(get(&review, "legs").as_arr().unwrap().len(), 6);
+    let first =
+        fa_model::dimension_value_vid(fa_model::Id128([DEVELOPMENT_SEED; 16]), "fund", "F1");
+    let second =
+        fa_model::dimension_value_vid(fa_model::Id128([DEVELOPMENT_SEED; 16]), "fund", "F2");
+    let first_hex = format!("{:032x}", first.0);
+    let second_hex = format!("{:032x}", second.0);
+    assert_eq!(
+        text(residual(&review, "4000", "-100.00 EUR"), "fund"),
+        first_hex
+    );
+    assert_eq!(
+        text(residual(&review, "4000", "100.00 EUR"), "fund"),
+        second_hex
+    );
+    assert_eq!(
+        text(residual(&review, "4000", "-100.00 EUR"), "base_net"),
+        "-110.00 USD"
+    );
+    assert_eq!(
+        text(residual(&review, "4000", "100.00 EUR"), "base_net"),
+        "120.00 USD"
+    );
+    assert_eq!(
+        get(residual(&review, "6000", "10.00 USD"), "fund"),
+        &Json::Null
+    );
+    let intent = fa::PostIntent::decode(&std::fs::read(&review_path).unwrap()).unwrap();
+    let basis = fa_model::YearEndCloseBasis::decode(&intent.proposal().extensions[0].1).unwrap();
+    assert_eq!(
+        basis.version,
+        fa_model::closing::YEAR_END_CLOSE_FUND_VERSION
+    );
+    for (pair, preview) in intent
+        .proposal()
+        .legs
+        .chunks_exact(2)
+        .zip(get(&review, "legs").as_arr().unwrap().chunks_exact(2))
+    {
+        assert_eq!(pair[0].dimension_set, pair[1].dimension_set);
+        assert_eq!(get(&preview[0], "fund"), get(&preview[1], "fund"));
+    }
+    compact(&f);
+    let (plan, _) = restored_plan(&f, &review_path, &review, None, "fund-first.plan");
+    f.commit(&plan);
+    compact(&f);
+    ok(&f.book, &["verify", "fx-conversion"]);
+    ok(&f.book, &["verify", "close", "FY2026"]);
+    assert_eq!(
+        line(&statement(&f, "income-statement"), "net_income"),
+        "-20.00 USD"
+    );
+    assert_eq!(
+        line(&statement(&f, "balance-sheet"), "unclosed_earnings"),
+        "0.00 USD"
+    );
+
+    // Export an actual native v3 close and recompute it in the independent,
+    // dependency-free verifier, including both original Rate documents.
+    let certificate_file = f.dir.join("fund-functional.cert");
+    let (code, certified) = many(
+        &f.book,
+        &[
+            "tb",
+            "--functional",
+            "--as-of",
+            "2026-12-31",
+            "--certificate-out",
+            certificate_file.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0, "{certified:?}");
+    let certificate =
+        fa::ReportArtifact::decode(&std::fs::read(&certificate_file).unwrap()).unwrap();
+    let locator = format!("C:{}", text(&certified[1], "oid"));
+    let checkpoint = ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let signed = ok(
+        &f.book,
+        &[
+            "proof",
+            "signed-checkpoint",
+            "--state",
+            text(&checkpoint, "oid"),
+        ],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let exported = ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&checkpoint, "oid"),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &unhex(text(&exported, "bytes")),
+        &[key],
+        None,
+        Some(&unhex(text(&exported, "receipt"))),
+        Some(certificate.digest()),
+    )
+    .expect("native fund close independently replays from its complete signed history");
+    assert_eq!(verified.output, certificate.output());
+    assert!(verified.functional_trial_balance.is_some());
+
+    post_foreign_in_fund(
+        &f,
+        "fund-late-sale",
+        "1000",
+        "4000",
+        "10.00",
+        Some((13, 10)),
+        Some("F1"),
+    );
+    let (_, delta) = f.review("fund-delta-review");
+    assert_eq!(get(&delta, "legs").as_arr().unwrap().len(), 2);
+    assert_eq!(
+        text(residual(&delta, "4000", "-10.00 EUR"), "fund"),
+        first_hex
+    );
+    assert_eq!(
+        text(residual(&delta, "4000", "-10.00 EUR"), "base_net"),
+        "-13.00 USD"
+    );
+    f.close_now("fund-delta-close");
+    ok(&f.book, &["verify", "close", "FY2026"]);
+    assert_eq!(
+        text(&f.close_now("fund-closed-noop"), "event"),
+        "closing_noop"
+    );
+    assert_eq!(many(&f.book, &["replay", &locator]).0, 0);
 }
 
 #[test]

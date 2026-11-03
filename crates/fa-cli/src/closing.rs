@@ -336,6 +336,11 @@ fn residuals(rows: &[ClosingResidual], base_unit: UnitId, book: &Book) -> Result
                         row.entity
                             .map_or(Json::Null, |entity| s(format!("{:032x}", entity.0))),
                     ),
+                    (
+                        "fund",
+                        row.fund
+                            .map_or(Json::Null, |fund| s(format!("{:032x}", fund.0))),
+                    ),
                     ("unit_id", Json::Int(i128::from(row.unit.0))),
                     (
                         "net",
@@ -372,10 +377,18 @@ fn leg_preview(proposal: &EntryPayload, book: &Book) -> Result<Json, Fail> {
                 let code = accounts.get(&leg.account_ref).ok_or_else(|| {
                     Fail::Internal("prepared closing leg names a missing account".into())
                 })?;
+                let dimension = |id| {
+                    leg.dimension_set
+                        .iter()
+                        .find(|(dimension, _)| *dimension == id)
+                        .map_or(Json::Null, |(_, value)| s(format!("{:032x}", value.0)))
+                };
                 Ok(obj(vec![
                     ("ordinal", Json::Int(ordinal as i128)),
                     ("account", s(code)),
                     ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
+                    ("entity", dimension(1)),
+                    ("fund", dimension(7)),
                     (
                         "side",
                         s(match leg.side {

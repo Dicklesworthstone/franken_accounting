@@ -11152,6 +11152,181 @@ fn year_end_close_net(h: &Harness, account: VId, at: fgdb_types::CommitSeq) -> i
     net
 }
 
+fn year_end_close_add_fund(h: &mut Harness, code: &str) -> VId {
+    let ctx = h.ctx();
+    let description = h.statement("Reviewed fund declaration", 91);
+    let spec = fa_journal::dimension::DimensionValueSpec {
+        dimension: "fund".into(),
+        code: code.into(),
+        name: format!("Fund {code}"),
+        parent: None,
+        valid_from: None,
+        valid_to: None,
+    };
+    h.runtime
+        .block_on(fa_journal::dimension::create_dimension_value(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec,
+            PRINCIPAL,
+            format!("closing-fund-{code}").as_bytes(),
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap()
+        .value
+        .vid
+}
+
+fn year_end_close_fund_activity(
+    h: &mut Harness,
+    fund: Option<VId>,
+    side: Side,
+    amount: i128,
+    key: &[u8],
+) {
+    let mut legs = h.rent_legs(amount);
+    for leg in &mut legs {
+        if side == Side::Credit {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+        }
+        if let Some(fund) = fund {
+            leg.dimension_set.push((7, fund));
+        }
+    }
+    h.post(h.request(h.proposal(legs, key, EntryClass::ORIGINAL), &["post"]))
+        .unwrap();
+}
+
+fn year_end_close_close_fund(h: &mut Harness, code: &str) {
+    let ctx = h.ctx();
+    let description = h.statement("Close fund after its source activity", 92);
+    let spec = fa_journal::dimension::DimensionCloseSpec {
+        dimension: "fund".into(),
+        code: code.into(),
+        closed_on: DateDay::from_ymd(2026, 4, 1).unwrap(),
+    };
+    h.runtime
+        .block_on(fa_journal::dimension::close_dimension_value(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec,
+            PRINCIPAL,
+            format!("closing-fund-close-{code}").as_bytes(),
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn year_end_close_preserves_offsetting_funds_untagged_balances_and_incremental_delta() {
+    let (mut h, equity) = year_end_close_fixture();
+    let first = year_end_close_add_fund(&mut h, "F1");
+    let second = year_end_close_add_fund(&mut h, "F2");
+    year_end_close_fund_activity(&mut h, Some(first), Side::Debit, 500, b"fund-one");
+    year_end_close_fund_activity(&mut h, Some(second), Side::Credit, 500, b"fund-two");
+    year_end_close_fund_activity(&mut h, None, Side::Debit, 100, b"fund-untagged");
+    year_end_close_close_fund(&mut h, "F1");
+    let prepared = year_end_close_prepare(&h);
+    assert_eq!(prepared.legs().len(), 6, "opposing funds cannot cancel");
+    let balances: std::collections::BTreeMap<_, _> = prepared
+        .residuals()
+        .iter()
+        .map(|row| (row.fund, (row.net, row.base_net)))
+        .collect();
+    assert_eq!(balances.get(&Some(first)), Some(&(500, 500)));
+    assert_eq!(balances.get(&Some(second)), Some(&(-500, -500)));
+    assert_eq!(balances.get(&None), Some(&(100, 100)));
+    let proposal = year_end_close_proposal(&h, &prepared, b"fund-first-close");
+    let basis = fa_model::YearEndCloseBasis::decode(&proposal.extensions[0].1).unwrap();
+    assert_eq!(
+        basis.version,
+        fa_model::closing::YEAR_END_CLOSE_FUND_VERSION
+    );
+    assert!(
+        proposal
+            .base_totals
+            .as_ref()
+            .unwrap()
+            .rate_doc_oids
+            .is_empty()
+    );
+    for pair in proposal.legs.chunks_exact(2) {
+        assert_eq!(pair[0].dimension_set, pair[1].dimension_set);
+        assert_eq!(pair[0].account_ref, h.rent);
+        assert_eq!(pair[1].account_ref, equity);
+        assert_eq!(pair[0].base_amount, Some(pair[0].amount));
+    }
+    let closed = h
+        .post(h.request(proposal, &["read", "post", "close"]))
+        .unwrap();
+    assert!(year_end_close_verify(&h, None).is_green());
+    assert!(!year_end_close_verify(&h, None).needs_reclose);
+    assert!(year_end_close_prepare(&h).is_noop());
+
+    // The original effective-date window remains usable for a backdated
+    // source; the law-generated close preserves the now-closed fund value.
+    year_end_close_fund_activity(&mut h, Some(first), Side::Debit, 250, b"fund-late");
+    assert!(!year_end_close_verify(&h, Some(closed.recorded_at())).needs_reclose);
+    let delta = year_end_close_prepare(&h);
+    assert_eq!(delta.legs().len(), 2);
+    assert_eq!(delta.legs()[0].amount.mantissa, 250);
+    assert_eq!(delta.legs()[0].dimension_set, vec![(7, first)]);
+    h.post(h.request(
+        year_end_close_proposal(&h, &delta, b"fund-reclose"),
+        &["read", "post", "close"],
+    ))
+    .unwrap();
+    assert!(year_end_close_prepare(&h).is_noop());
+    assert!(year_end_close_verify(&h, None).is_green());
+}
+
+#[test]
+fn year_end_close_fund_identity_and_control_history_are_revalidated_before_posting() {
+    let (mut h, _) = year_end_close_fixture();
+    let first = year_end_close_add_fund(&mut h, "F1");
+    let second = year_end_close_add_fund(&mut h, "F2");
+    year_end_close_fund_activity(&mut h, Some(first), Side::Debit, 500, b"fund-forgery");
+    let prepared = year_end_close_prepare(&h);
+    let original = year_end_close_proposal(&h, &prepared, b"fund-reviewed");
+    let before = h.db.frontier().unwrap();
+    for replacement in [None, Some(second)] {
+        let mut forged = original.clone();
+        for leg in &mut forged.legs {
+            leg.dimension_set = replacement.into_iter().map(|fund| (7, fund)).collect();
+        }
+        forged.validate().unwrap();
+        let refusal = h
+            .post(h.request(forged, &["read", "post", "close"]))
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+    year_end_close_close_fund(&mut h, "F1");
+    let refreshed = year_end_close_prepare(&h);
+    assert_eq!(refreshed.legs(), prepared.legs());
+    assert_ne!(refreshed.source_digest(), prepared.source_digest());
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .post(h.request(original, &["read", "post", "close"]))
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    h.post(h.request(
+        year_end_close_proposal(&h, &refreshed, b"fund-refreshed"),
+        &["read", "post", "close"],
+    ))
+    .unwrap();
+}
+
 #[test]
 fn year_end_close_first_delta_zero_and_historical_verification() {
     let (mut h, equity) = year_end_close_fixture();
