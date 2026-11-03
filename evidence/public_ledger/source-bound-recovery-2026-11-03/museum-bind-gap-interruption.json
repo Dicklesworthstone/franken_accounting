@@ -1,0 +1,183 @@
+{
+  "boundary": "after-package-before-bind",
+  "driver_sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+  "executed_arguments": [
+    "migrate",
+    "import",
+    "--action",
+    "prepare",
+    "--intent",
+    "/dev/shm/fa-bound-recovery-69d8c2fe02b1-20261103/museum-bind-gap/run-000-import.json"
+  ],
+  "interruption_helper_sha256": "05ca803edfc990dd39f5af3a179bcb2e2c6ca934a0e434c53141b7b93a9ad3e4",
+  "native_receipt": {
+    "authority": {
+      "ops": null,
+      "posture": "embedded-owner",
+      "principal": "operator",
+      "profile": "Human"
+    },
+    "book": "51dbcd4ca627a6f6d81065b96af53252",
+    "certificate": null,
+    "coordinate": {
+      "branch": "trunk",
+      "effective": "all",
+      "known_at": 24,
+      "time_evidence": null
+    },
+    "data": {
+      "already_recorded": false,
+      "chunk_count": 3,
+      "chunks": [
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-04-30",
+          "effective_date": "2024-04-30",
+          "effective_period": "FY2024-P10",
+          "entry_vid": "6fe6da7114475ba50be20e9843799a90",
+          "index": 0,
+          "leg_count": 2,
+          "legs": [
+            {
+              "account": "101000",
+              "amount": "39583.00 USD",
+              "dimensions": [
+                {
+                  "dimension": 7,
+                  "value": "158aaa394ff6581719a90655a788ef23"
+                }
+              ],
+              "index": 0,
+              "side": "debit"
+            },
+            {
+              "account": "631100",
+              "amount": "39583.00 USD",
+              "dimensions": [
+                {
+                  "dimension": 7,
+                  "value": "158aaa394ff6581719a90655a788ef23"
+                }
+              ],
+              "index": 1,
+              "side": "credit"
+            }
+          ],
+          "proposal_digest": "f8fb6c15dd12a4a57f2ce770241e8c5bf3b248439259a7b4e21712718844a101",
+          "recorded_at": null
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-05-31",
+          "effective_date": "2024-05-31",
+          "effective_period": "FY2024-P11",
+          "entry_vid": "bbcb80aa88cdbfab89d4537327099d33",
+          "index": 1,
+          "leg_count": 2,
+          "legs": [
+            {
+              "account": "631100",
+              "amount": "39583.00 USD",
+              "dimensions": [
+                {
+                  "dimension": 7,
+                  "value": "158aaa394ff6581719a90655a788ef23"
+                }
+              ],
+              "index": 0,
+              "side": "credit"
+            },
+            {
+              "account": "101000",
+              "amount": "39583.00 USD",
+              "dimensions": [
+                {
+                  "dimension": 7,
+                  "value": "158aaa394ff6581719a90655a788ef23"
+                }
+              ],
+              "index": 1,
+              "side": "debit"
+            }
+          ],
+          "proposal_digest": "f4e75cbd1b0d342f67c77183527333a2d2ba3f20ad6536ad557278512c064bbd",
+          "recorded_at": null
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-06-30",
+          "effective_date": "2024-06-30",
+          "effective_period": "FY2024-P12",
+          "entry_vid": "1a5bead064f31104ea4cb2e3a50107a3",
+          "index": 2,
+          "leg_count": 2,
+          "legs": [
+            {
+              "account": "631100",
+              "amount": "39587.00 USD",
+              "dimensions": [
+                {
+                  "dimension": 7,
+                  "value": "158aaa394ff6581719a90655a788ef23"
+                }
+              ],
+              "index": 0,
+              "side": "credit"
+            },
+            {
+              "account": "101000",
+              "amount": "39587.00 USD",
+              "dimensions": [
+                {
+                  "dimension": 7,
+                  "value": "158aaa394ff6581719a90655a788ef23"
+                }
+              ],
+              "index": 1,
+              "side": "debit"
+            }
+          ],
+          "proposal_digest": "5968a93472bde94961d1cfd985c9713f611c1de3871a997df7fc92ace4cd24ea",
+          "recorded_at": null
+        }
+      ],
+      "format": "csv",
+      "mode": "FullDetail",
+      "opening_date": "2024-07-01",
+      "opening_period": "FY2025-OPEN",
+      "package_commit": "dbafe3ea2fc407f8edf9e520894cefab81732c8479ccd27b82921992846078b8",
+      "package_oid": "b1cd612614d46bfa0e963b9e925554bb8216d642aaa484e8b74d140b7e0502ff",
+      "plan": null,
+      "recorded_at": 24,
+      "recorded_count": 0,
+      "row_count": 6,
+      "run_body_digest": "f41f2b32a39c4dd1cc63d2929c4101398c1a1d6cabdb109c382662225392ae43",
+      "run_key": "omes-20400-run-000",
+      "run_state": "Open",
+      "run_vid": "d7a396aba5b927326d97ca39b2774648",
+      "sole_opening_source": true,
+      "source_binding": null,
+      "source_binding_receipt": null,
+      "source_commit": "36df216b724912a5471b29189ef1acced2045e8b7541fb943c92f50d11229e19",
+      "source_oid": "4d089947fd4810f5a2c81aa217752343d17a58012ae2286b5a9109e5f64e1266",
+      "ties_out": false
+    },
+    "event": "migration_import_prepared",
+    "next_actions": [],
+    "v": 1,
+    "warnings": []
+  },
+  "pins_sha256": "f2e260d86dc1d02921234d03a7497b05156aeb294d7773b68bf98175eb76a993",
+  "requested_arguments": [
+    "migrate",
+    "import",
+    "--action",
+    "prepare",
+    "--intent",
+    "/dev/shm/fa-bound-recovery-69d8c2fe02b1-20261103/museum-bind-gap/run-000-import.json",
+    "--bind-source"
+  ],
+  "schema": "fa-public-ledger-controlled-interruption-v1",
+  "scope": "Controlled orchestration stop after a real unbound preparation published its package; represents the CLI package/source-binding publication gap, not a native internal crash.",
+  "source_binding_expected_on_resume": true
+}

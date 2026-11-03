@@ -1,0 +1,245 @@
+{
+  "build": {
+    "binary_sha256": {
+      "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+      "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+    },
+    "cargo_lock_git_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "driver_sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+    "driver_source_commit": "afe795be1903672e9e82bd89d2d7a3e9f76b6b3f",
+    "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "native_artifact_bytes": 43626792,
+    "native_artifact_id": 13251708810,
+    "native_artifact_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+    "normalizer_sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+    "portable_helper_path": "scripts/public_ledger_portable_proof.py",
+    "portable_helper_sha256": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89",
+    "portable_helper_source_commit": "46e952fd6e938fa5dbe05a7b365fcb3cfce9e187",
+    "repository": "https://github.com/Dicklesworthstone/franken_accounting",
+    "scope": "The actual producer and independent verifier are the pinned f3f1 binaries. Later canonical recovery and portable-proof Python helpers drove them. This example makes no runtime claim for later Rust changes or a whole-tree acceptance gate.",
+    "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+    "workflow_job": 126017782741,
+    "workflow_run": 41664093934
+  },
+  "checkpoint_state": "49dea54e2e8c917a41cffd7cc81fa0b18ec63d82cde49023b562e7875fff0ae6",
+  "compressed_bytes": 29470,
+  "compressed_limit_bytes": 2097152,
+  "expected_certificate": "5a87b96013a6766ea92709bfeff1efa985cd12e5a43e96820ab7fc6484820b06",
+  "files": [
+    {
+      "bytes": 82158,
+      "gzip_bytes": 28931,
+      "gzip_name": "report.fab.gz",
+      "gzip_sha256": "3d92c4b6901472acec011f648cc85e4678328ea58b4b119ac0048a3c1d1577b3",
+      "name": "report.fab",
+      "sha256": "22c38b8d1141d2b75b126be670559bc0e42af51564599c781df44ff24dca4480"
+    },
+    {
+      "bytes": 288,
+      "gzip_bytes": 297,
+      "gzip_name": "checkpoint.bin.gz",
+      "gzip_sha256": "249c623e355ac22968b5573b905c0dded7d76bb2cc9b8373d7f4ca6e09ac8180",
+      "name": "checkpoint.bin",
+      "sha256": "1fb05087ff9bad96d6e1c0b9efe6a625f4780d5f48bfa3b256832db59ccc6298"
+    },
+    {
+      "bytes": 219,
+      "gzip_bytes": 242,
+      "gzip_name": "report.receipt.gz",
+      "gzip_sha256": "c077565e36341bfe6483aaeb6917405b615da9c0a2232f13837b69aaa30cf682",
+      "name": "report.receipt",
+      "sha256": "a2e6ad6338e0bec6a4dc41b3d902437525e7f251b327415fd96e78c57baf4b51"
+    }
+  ],
+  "format": "fa-public-ledger-recovered-museum-proof-example-v1",
+  "gzip": {
+    "compression_level": 9,
+    "implementation": "Python gzip.compress",
+    "mtime": 0,
+    "source": "Exact three public files from the completed recovered-museum proof, checked against both native-verification snapshots and final artifact identities before compression."
+  },
+  "original_book_identity": {
+    "base_unit": "USD",
+    "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+    "calendar": "fiscal",
+    "entities": []
+  },
+  "recovery_history": {
+    "completed_native_resume": {
+      "all_five_bindings_complete": true,
+      "attempt": "attempts/000003",
+      "bound_entries": 15,
+      "bound_normalized_rows": 121,
+      "checks_passed": 42,
+      "command_count_scope": "The driver counts read-only preflight calls while logging is disabled. Seventeen calls are derived from the frozen driver and the counter difference; there are no invented per-command receipts for them.",
+      "complete_attempt_transcript_records": 204,
+      "driver_counted_commands": 221,
+      "driver_elapsed_seconds": 34.403,
+      "exit_code": 0,
+      "finished_utc": "2026-11-03T20:29:52.421985+00:00",
+      "native_packages_recovered": 5,
+      "original_package_and_proposal_identities_preserved": true,
+      "original_preactivation_seq": 129,
+      "report_sha256": "45eca3c92a081c49b977a69c88024054bbe0e588ef406072bdfb55267d41a28a",
+      "started_utc": "2026-11-03T20:29:17.271679+00:00",
+      "status": "PASS",
+      "subprocess_elapsed_seconds": 35.15,
+      "untranscribed_preflight_calls": 17
+    },
+    "continuation_wrapper": {
+      "error": "JSONDecodeError('Unterminated string starting at: line 1 column 265 (char 264)')",
+      "execution_record_sha256": "3b5211a67cf952db56d5070bf2636287285d74cae2b5519e0e69991ccc59a3e3",
+      "scope": "After the successful native subprocess, this wrapper failed while parsing the retained prior 312-byte incomplete transcript tail. It did not invalidate or replace the completed native report.",
+      "status": "FAIL"
+    },
+    "initial_attempt": {
+      "exit_code": 1,
+      "scope": "Stopped after a real Open package upload with zero staged chunks and no source binding; original pins had already requested binding.",
+      "status": "EXPECTED_INTERRUPT"
+    },
+    "initial_resume": {
+      "complete_transcript_records": 125,
+      "error": "FileNotFoundError(2, 'No such file or directory')",
+      "exit_code": 120,
+      "incomplete_trailing_bytes": 312,
+      "scope": "This incomplete attempt and its malformed trailing record were retained; they were not reclassified as a passing run.",
+      "status": "FAIL"
+    },
+    "original_boundary": "after-package-before-bind",
+    "portable_followup": {
+      "exit_code": 0,
+      "native_process_elapsed_seconds": 2.007,
+      "original_archive_unchanged": true,
+      "original_binding_identities_and_receipts_preserved": true,
+      "original_entries_preserved": 15,
+      "pins_unchanged": true,
+      "status": "PASS",
+      "wrapper_elapsed_seconds": 3.316
+    }
+  },
+  "report": {
+    "additive_input_labels": [
+      "MigrationSource",
+      "MigrationSourceFragment"
+    ],
+    "book": "51dbcd4ca627a6f6d81065b96af53252",
+    "branch": "00000000000000000000000000000000",
+    "bundle_major": 1,
+    "bundle_minor": 1,
+    "canonical_records": 103,
+    "certificate_format": "fa:report-certificate:v8",
+    "dimension": "department",
+    "dimension_value": "1000001",
+    "journal_leaves": 37,
+    "known_at": 147,
+    "migration_run_bodies": 5,
+    "migration_source_witnesses": 5,
+    "native_input_count": 10,
+    "selected": [
+      "FY2024-P12"
+    ]
+  },
+  "source": {
+    "account_count": 43,
+    "activity_scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+    "agency": "20400",
+    "attribution": "State of Oklahoma, Office of Management and Enterprise Services",
+    "binding_scope": "Five native witnesses bind complete admitted normalized monetary-row packages. Four original zero-valued CSV observations remain in the source fixture and row-coverage controls; source binding is not an OMES signature.",
+    "catalog_url": "https://catalog.data.gov/dataset/general-ledger",
+    "dimension_value_counts": {
+      "department": 3,
+      "fund": 1,
+      "product": 0,
+      "project": 0
+    },
+    "download_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+    "encoding": "windows-1252",
+    "fiscal_year": 2024,
+    "fixture_bytes": 37254,
+    "fixture_manifest_sha256": "bc3d1ac2668728c90a4a999758dcd53e94d999152a95486a80680e2b4e8f81e9",
+    "fixture_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+    "fixture_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+    "license_url": "http://www.opendefinition.org/licenses/cc-by",
+    "migration_runs": 5,
+    "monetary_legs": 121,
+    "name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+    "native_entries": 15,
+    "published_rows": 125,
+    "quarter": 4,
+    "statewide_csv_bytes": 113856733,
+    "statewide_csv_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe"
+  },
+  "source_bound": true,
+  "status": "PASS",
+  "trust_scope": {
+    "accounting": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+    "approvals": "Distinct local test principals exercise native SoD; not independent human authentication",
+    "contents": "Exactly three public proof files, manifest and README; no native book or private signing key.",
+    "document_review": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+    "key": "Caller-trusted public key of the original recovered test book; no external identity authentication."
+  },
+  "trusted_fixture_public_key": "004225a884f0386b7b9b65ac897417a924d5be5dceaa97530612e5aa1c9a2a30",
+  "verification": {
+    "checks_passed": 37,
+    "execution_record_sha256": "943348f30de88d57dee99d1758ae1f6f29fe67311597aaf15e25fb91b4391a3d",
+    "finished_utc": "2026-11-03T20:38:02.121688+00:00",
+    "helper_elapsed_seconds": 0.932,
+    "input_and_binary_hashes_unchanged": true,
+    "native_command_exit_codes": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "native_commands": 4,
+    "original_book_fact_sha256": "ab82540ddcd2e70b30c0061833cb43e92e49aa171b2238119f42c3bb4eac520c",
+    "original_source_control_comparison": {
+      "dimension": "department",
+      "effective_through": "2024-06-30",
+      "nonzero_cells_compared": {
+        "account_nets": 32,
+        "gross_cents": 32
+      },
+      "period": "FY2024-P12",
+      "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+      "status": "PASS",
+      "value": "1000001"
+    },
+    "proof_files_after_verification": {
+      "checkpoint.bin": {
+        "bytes": 288,
+        "sha256": "1fb05087ff9bad96d6e1c0b9efe6a625f4780d5f48bfa3b256832db59ccc6298"
+      },
+      "report.fab": {
+        "bytes": 82158,
+        "sha256": "22c38b8d1141d2b75b126be670559bc0e42af51564599c781df44ff24dca4480"
+      },
+      "report.receipt": {
+        "bytes": 219,
+        "sha256": "a2e6ad6338e0bec6a4dc41b3d902437525e7f251b327415fd96e78c57baf4b51"
+      }
+    },
+    "proof_files_before_verification": {
+      "checkpoint.bin": {
+        "bytes": 288,
+        "sha256": "1fb05087ff9bad96d6e1c0b9efe6a625f4780d5f48bfa3b256832db59ccc6298"
+      },
+      "report.fab": {
+        "bytes": 82158,
+        "sha256": "22c38b8d1141d2b75b126be670559bc0e42af51564599c781df44ff24dca4480"
+      },
+      "report.receipt": {
+        "bytes": 219,
+        "sha256": "a2e6ad6338e0bec6a4dc41b3d902437525e7f251b327415fd96e78c57baf4b51"
+      }
+    },
+    "public_file_preparation": "Each emitted gzip was decompressed and compared byte-for-byte with the already independently accepted file; this preparation did not rerun the verifier.",
+    "recovery_pins_sha256": "f2e260d86dc1d02921234d03a7497b05156aeb294d7773b68bf98175eb76a993",
+    "source_manifest_sha256": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+    "started_utc": "2026-11-03T20:38:01.189577+00:00",
+    "transcript_sha256": "0f71ec90b0d8c169cb10f24b6f83b96c886fc9140afd4d9212436e9e633dc9e4",
+    "validation_sha256": "33031a5cc9230dbafc240d822992745a0cbae835ced8182698afc8d45d84ecea",
+    "verdict": "verified",
+    "verified_proof_files_unchanged": true
+  }
+}

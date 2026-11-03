@@ -293,6 +293,112 @@ the canonical flag. Use the canonical `run --resume` command for recovery.
 Native acceptance of the new recovery path is separate from its unit checks
 and the earlier fresh source-bound runs recorded below.
 
+#### Measured canonical recovery (2026-11-03)
+
+The complete 20400 museum selection now has an actual native PASS after the
+package-before-binding interruption. The final canonical continuation used
+only `run --resume --out`, inheriting its originally pinned source-binding
+mode and source selection. It executed **221 native commands and 42 checks**,
+preserved **125 original rows, 121 monetary legs and 15 Entries**, and completed
+all five source-bound migration runs. The original book ID, first package
+publication and source-binding control were retained. This successful attempt
+recorded the preactivation prefix at sequence 129 before finalization; the
+earlier failed attempt had not yet published that recovery fact.
+
+The [measured recovery record](../evidence/public_ledger/source-bound-recovery-validation-2026-11-03.json)
+preserves all attempts. The controlled first attempt exited 1 after publishing
+the real Open package without its binding. The next attempt bound and staged
+all five packages but exited 120 while shared temporary storage was full,
+before finalization. Its transcript has 125 complete records and a retained
+312-byte incomplete final record; no missing diagnostic traceback is invented.
+A byte-verified copy of that exact book then completed the ordinary resume
+with exit 0. The validation wrapper subsequently failed while parsing the
+older incomplete transcript, after the native PASS; that wrapper failure is
+retained separately and does not relabel the driver result or the earlier
+failed attempt. The complete resulting book and records were archived and
+verified before its temporary execution directory disappeared.
+
+The separate portable step then passed with the frozen helper introduced in
+`46e952f`: four actual commands and 37 independent `fa-verify` checks in
+2.007 seconds. It inherited the bound mode without an override and verified
+department `1000001`, `FY2024-P12`, at sequence 147 against the original source
+net and gross cells and exact June 30 cutoff, comparing 32 nonzero net cells
+and 32 nonzero gross cells. The v8 certificate contains
+ten native inputs and all five genuine migration-source witnesses; this
+museum selection does not require the university's larger Entry-fragment
+profile. Original book, source, executable and helper identities and the
+three proof-file hashes remained unchanged. The complete final archive was
+checked against all 1,592 members before its temporary directory disappeared.
+
+A second fresh museum run stopped after staging the first approved chunk.
+Its ordinary continuation also passed: 245 counted native calls, 42 checks,
+the same complete 125-row population, and an independently verified portable
+department report. The original staged Entry and source-binding receipts
+were returned on retries, with no duplicate publication. The resumed attempt
+retains 228 complete command records; its counter also includes 17 read-only
+admission calls made before the attempt transcript opens. The package-gap
+continuation similarly retains 204 execution records plus 17 admission calls.
+Both portable steps retain all four actual commands and accepted verifier
+receipts. These counts distinguish observed execution from transcript coverage.
+
+The [recovered museum public example](../examples/public_ledger/museum_recovered_source_bound/README.md)
+contains only the actual portable bundle, signed checkpoint and detached
+receipt, compressed with their exact hashes and caller-trusted fixture key.
+It can be independently verified without the native book or its private key.
+
+This executes the published recovery driver against the native binaries built
+from `f3f1d66`, with both executable hashes checked. It does not establish
+runtime acceptance of the later Rust assertion-drift change or every possible
+interruption boundary. The evidence distinguishes the actual native resume
+and portable PASS results from the earlier failures and unrun cases.
+
+The third targeted boundary also passed on the complete **80700 Health Care
+Authority** selection, read from the pinned 113,856,733-byte statewide CSV.
+The controlled stop followed an actual native finalization and returned exit
+1. Ordinary `run --resume --out` then inherited both source binding and the
+explicit `agency-period` boundary. It preserved all **1,440 source rows,
+1,405 monetary legs and three monthly Entries in one run**, including 35
+zero-valued source rows in the retained original population. All 118 accounts,
+44 departments, four products and the fund remained covered by source controls.
+
+The health continuation passed **43 checks over 669 counted native calls** in
+357.226 seconds, with 656 retained execution records and 13 read-only admission
+calls before logging. Its four deliberately altered ADS extracts returned
+the expected independent refusal. The original finalization control at
+CommitSeq **87**, its tie-out digest and publication identity were returned
+unchanged with `already_recorded=true`; recovery did not finalize a second
+copy of the ledger.
+
+Both additional portable reports passed with inherited source binding:
+
+| Actual verified health report | Native commands | Independent checks | Nonzero net cells | Nonzero gross cells |
+|---|---:|---:|---:|---:|
+| Fund `1000` | 4 | 123 | 118 | 129 |
+| Product `00` | 4 | 6 | 1 | 1 |
+
+Each report has the genuine twelve-input closure, including migration-run,
+source and Entry fragments, and one complete source witness. Product `00` is
+a small original slice within the complete imported population; its leading
+zeroes and exact source attribution remain significant. These are separately
+executed native proof results, not values inferred from the earlier department
+proof. The complete health book, logs and proofs were preserved in a verified
+5,543-member archive, with every file hash and the gzip CRC checked.
+
+To reproduce the controlled publication gap with the committed helper, choose
+fresh paths. The first command deliberately returns exit 1 after retaining
+the actual native receipt and interruption marker:
+
+```bash
+python3 -B scripts/public_ledger_interrupt.py \
+  --driver scripts/public_ledger.py --boundary after-package-before-bind \
+  --marker /tmp/museum-bound-interruption.json -- \
+  run --agency 20400 --bind-source --out /tmp/museum-bound-recovery \
+  --fa "$PWD/target/debug/fa" --fa-verify "$PWD/target/debug/fa-verify"
+
+python3 -B scripts/public_ledger.py run --resume \
+  --out /tmp/museum-bound-recovery
+```
+
 The resume tests cover source/model/binary mismatch, a directory-creation
 race, lost setup and approval acknowledgements, native package discovery,
 mixed old/new chunk receipts, immutable snapshot reuse, and checkpoint

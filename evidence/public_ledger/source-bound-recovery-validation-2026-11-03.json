@@ -1,0 +1,1831 @@
+{
+  "cases": [
+    {
+      "attempt_history": [
+        {
+          "driver_exit": 1,
+          "execution": {
+            "argv": [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger_interrupt.py",
+              "--driver",
+              "scripts/public_ledger.py",
+              "--boundary",
+              "after-package-before-bind",
+              "--marker",
+              "/dev/shm/fa-bound-recovery-69d8c2fe02b1-20261103/museum-bind-gap.interruption.json",
+              "--",
+              "run",
+              "--agency",
+              "20400",
+              "--source",
+              "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+              "--balance-boundary",
+              "fund-class",
+              "--bind-source",
+              "--out",
+              "/dev/shm/fa-bound-recovery-69d8c2fe02b1-20261103/museum-bind-gap",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ],
+            "boundary": "after-package-before-bind",
+            "case": "museum-bind-gap",
+            "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+            "elapsed_seconds": 57.196,
+            "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+            "exit_code": 1,
+            "finished_utc": "2026-11-03T20:09:21.421703+00:00",
+            "format": "fa-source-bound-recovery-execution-v1",
+            "helper_commit": "afe795be1903672e9e82bd89d2d7a3e9f76b6b3f",
+            "marker_sha256": "065c1f6e23ce417f04b96cf2c8767e14955de5397dcda8effc8b15649429dabb",
+            "monetary_rows": 121,
+            "phase": "interrupt",
+            "pins_unchanged": true,
+            "repository_head_at_launch": "afe795be1903672e9e82bd89d2d7a3e9f76b6b3f",
+            "scope": "Actual native subprocesses; controlled orchestration fault, not a native internal crash. Resume deliberately omits source-binding and balance-boundary flags to test inheritance of original pins.",
+            "source_rows": 125,
+            "started_utc": "2026-11-03T20:08:24.222604+00:00",
+            "status": "EXPECTED_INTERRUPT",
+            "stderr_sha256": "6eb8ebe26ba4db83c5771f0a1895d41f5d7ed6f81699c91ea291761e74093e45",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "sequence": 1,
+          "status": "EXPECTED_CONTROLLED_INTERRUPT"
+        },
+        {
+          "diagnostic_scope": "Shared tmpfs was observed full. Capacity is the inferred cause from that observation and exit120; stdout/stderr are empty and no ENOSPC traceback was retained. All five packages and fifteen chunks were staged; all five packages remained Open. No finalize command completed.",
+          "driver_exit": 120,
+          "execution": {
+            "argv": [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger.py",
+              "run",
+              "--resume",
+              "--out",
+              "/dev/shm/fa-bound-recovery-69d8c2fe02b1-20261103/museum-bind-gap"
+            ],
+            "boundary": "after-package-before-bind",
+            "case": "museum-bind-gap",
+            "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+            "elapsed_seconds": 61.858,
+            "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+            "error": "FileNotFoundError(2, 'No such file or directory')",
+            "exit_code": 120,
+            "finished_utc": "2026-11-03T20:10:46.784899+00:00",
+            "format": "fa-source-bound-recovery-execution-v1",
+            "helper_commit": "afe795be1903672e9e82bd89d2d7a3e9f76b6b3f",
+            "monetary_rows": 121,
+            "phase": "resume",
+            "pins_unchanged": true,
+            "repository_head_at_launch": "afe795be1903672e9e82bd89d2d7a3e9f76b6b3f",
+            "scope": "Actual native subprocesses; controlled orchestration fault, not a native internal crash. Resume deliberately omits source-binding and balance-boundary flags to test inheritance of original pins.",
+            "source_rows": 125,
+            "started_utc": "2026-11-03T20:09:44.926165+00:00",
+            "status": "FAIL",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "last_complete_native_action": "FY2024-P11 trial balance at known_at129 during the pre-finalization activation-prefix capture",
+          "sequence": 2,
+          "status": "INCOMPLETE"
+        },
+        {
+          "driver_exit": 0,
+          "execution": {
+            "argv": [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger.py",
+              "run",
+              "--resume",
+              "--out",
+              "/dev/fa-source-bound-69d8c2fe02b1-20261103/museum-bind-gap"
+            ],
+            "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+            "elapsed_seconds": 35.15,
+            "exit_code": 0,
+            "finished_utc": "2026-11-03T20:29:52.421985+00:00",
+            "name": "canonical-resume",
+            "started_utc": "2026-11-03T20:29:17.271679+00:00",
+            "stderr_bytes": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_bytes": 170,
+            "stdout_sha256": "c3d37f96659692079a75f1ec9d94e738bf8d0955a6e19f5dee79dfd671b7459d"
+          },
+          "outer_analysis_wrapper_error": "JSONDecodeError('Unterminated string starting at: line 1 column 265 (char 264)')",
+          "outer_analysis_wrapper_status": "FAIL after native completion while parsing the original unterminated transcript tail",
+          "portable_proof_ran_in_this_attempt": false,
+          "sequence": 3,
+          "status": "NATIVE_DRIVER_PASS"
+        },
+        {
+          "execution": {
+            "argv": [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger_portable_proof.py",
+              "--run",
+              "/dev/fa-museum-portable-69d8c2fe02b1-20261103/museum-bind-gap",
+              "--out",
+              "/dev/fa-museum-portable-69d8c2fe02b1-20261103/museum-portable",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ],
+            "capacity_at_admission": {
+              "destination_free_bytes": 5225709568,
+              "estimated_headroom_bytes": 3940793696,
+              "shared_free_bytes": 2961240064
+            },
+            "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+            "elapsed_seconds": 3.316,
+            "exact_retry_receipts_checked": 30,
+            "exit_code": 0,
+            "finished_utc": "2026-11-03T20:38:03.442357+00:00",
+            "format": "fa-recovered-museum-portable-execution-v1",
+            "native_report_sha256": "45eca3c92a081c49b977a69c88024054bbe0e588ef406072bdfb55267d41a28a",
+            "original_archive_unchanged": true,
+            "original_binding_identities_and_receipts_preserved": true,
+            "original_complete_transcript_records": 125,
+            "original_entries_preserved": 15,
+            "original_incomplete_tail": {
+              "bytes": 312,
+              "complete": false,
+              "sha256": "b765bc084c05a9c821ab41e20ea7aa63e16d72bd364306d014d9c2303a94f66e"
+            },
+            "pins_unchanged": true,
+            "private_path": "/dev/fa-museum-portable-69d8c2fe02b1-20261103",
+            "process_elapsed_seconds": 2.007,
+            "repository_head_at_launch": "46e952fd6e938fa5dbe05a7b365fcb3cfce9e187",
+            "scope": "Native canonical resume already passed. Original controlled and capacity-correlated failures and analysis-wrapper failure remain preserved; this execution verifies the portable report.",
+            "source_archive": "/dev/shm/fa-bound-recovery-archive-69d8c2fe02b1-20261103/museum-continuation.tar.gz",
+            "source_archive_payload_sha256": "86e7db954b0bc82bb906c5e7ea9156de491addc85dd7416e6d08ac09e424a819",
+            "started_utc": "2026-11-03T20:38:00.126496+00:00",
+            "status": "PASS",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "b0a76235d1b046be142026a4f9657879b108cfa45b9f51f947cedda49cdb7b3d",
+            "validation_sha256": "33031a5cc9230dbafc240d822992745a0cbae835ced8182698afc8d45d84ecea"
+          },
+          "helper_exit": 0,
+          "sequence": 4,
+          "status": "INDEPENDENT_PORTABLE_PROOF_PASS"
+        }
+      ],
+      "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+      "case": "museum-after-package-before-bind",
+      "command_accounting": {
+        "canonical_driver_count": 221,
+        "complete_retained_attempt000003_records": 204,
+        "explanation": "The frozen canonical driver increments its counter while log_path is None during verify_recovered_before_mutation, then enables the attempt transcript. The 17-call split is derived from that code and the counter/transcript difference; no per-read receipt is invented.",
+        "portable_retained_commands": 4,
+        "read_only_recovery_admission_calls_without_attempt_transcript": 17
+      },
+      "identity_crosschecks": {
+        "all_source_bindings": [
+          {
+            "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "49ef3cec07d55355ef7ea00a7c2786cc56bb89ce7f893a015291afe7e7671a17",
+            "manifest_vid": "0aef95add2afd249fad42afddcead11d",
+            "missing_chunks": [],
+            "name": "run-000",
+            "package_commit": "dbafe3ea2fc407f8edf9e520894cefab81732c8479ccd27b82921992846078b8",
+            "package_oid": "b1cd612614d46bfa0e963b9e925554bb8216d642aaa484e8b74d140b7e0502ff",
+            "receipt": {
+              "already_recorded": true,
+              "control_entry": "aa87a0f56f8e62c6abbad60164d2be12",
+              "recorded_at": 25
+            },
+            "recorded_chunks": 3,
+            "run_body_digest": "f41f2b32a39c4dd1cc63d2929c4101398c1a1d6cabdb109c382662225392ae43",
+            "run_vid": "d7a396aba5b927326d97ca39b2774648",
+            "source_commit": "36df216b724912a5471b29189ef1acced2045e8b7541fb943c92f50d11229e19",
+            "source_oid": "4d089947fd4810f5a2c81aa217752343d17a58012ae2286b5a9109e5f64e1266",
+            "source_rows": 6,
+            "unexpected_chunks": []
+          },
+          {
+            "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "347927156fa611a30b6693b73b7296c0472dcbd95975bca9c8f8c39ecfb6deb5",
+            "manifest_vid": "54902eb02533be256abe43f423c43a19",
+            "missing_chunks": [],
+            "name": "run-001",
+            "package_commit": "caf755d501fdce908918e12873535802d60ab71d191084490a838fb28228eb7f",
+            "package_oid": "30678009f9343a6df232fae7a9042558c516f0ca2dc8f924d0eef0a9eeeec204",
+            "receipt": {
+              "already_recorded": true,
+              "control_entry": "867a78e449d9f84db384e4103386a876",
+              "recorded_at": 36
+            },
+            "recorded_chunks": 3,
+            "run_body_digest": "970f821dd92f3999d198d7bff161338ff4268decaf9fc2c02e28f9476afcfef7",
+            "run_vid": "b6c76d54e9998ef1a243285dc1449f0c",
+            "source_commit": "5055c3bba60f1b64a8426df2a6676a10538391a8d8b1850fb81191a6b5096aa5",
+            "source_oid": "783f83aaa20a7959ba69af4408ae2da750641a82f927d4e494e3411248ac33b9",
+            "source_rows": 50,
+            "unexpected_chunks": []
+          },
+          {
+            "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "bca055cde8ea85217629b3f4df23be2e7e6c4b3e5b7a3da7567ef8db3f984820",
+            "manifest_vid": "b4c49ecdfa80a102f31728da87db84ad",
+            "missing_chunks": [],
+            "name": "run-002",
+            "package_commit": "d8bf5764819742f4ba44e3d0e5b59625074a9ed9d9b916994b8f083492c1a92b",
+            "package_oid": "f741dcb4501f9ec29537f27ced0eb7d26d7e722b74c543e78b60ad6a831b6bfc",
+            "receipt": {
+              "already_recorded": true,
+              "control_entry": "3c99417ae634e3fdda487cc4ea599f53",
+              "recorded_at": 47
+            },
+            "recorded_chunks": 3,
+            "run_body_digest": "1c9ad1cc232a227354b3cb66fbf21588991f75b5122a5199786a75dd8e197840",
+            "run_vid": "92ed877cd66819990da7bf7e1afbaffa",
+            "source_commit": "8bd72c48de36cfcc426192c7841c9592a926e229115595cae4cef3cd35d187fa",
+            "source_oid": "a608eb5d31bc7bda4e7a157d719c9658b830335f8e6b4f34a6cbd81a267d833f",
+            "source_rows": 39,
+            "unexpected_chunks": []
+          },
+          {
+            "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "b0d943711de577090e28ba28e0e710e095e506cd0d561427e15dadaca063046a",
+            "manifest_vid": "d6b114da3e811351a8fb398d63058a88",
+            "missing_chunks": [],
+            "name": "run-003",
+            "package_commit": "bf77a50e8209e991e0241cab03efdfa643e052cf9849d520b9db4bf38df011fe",
+            "package_oid": "8796f51b67568b2393658f4042115861931460e03f8188d2c2cce7975da533e5",
+            "receipt": {
+              "already_recorded": true,
+              "control_entry": "882e48c41c2ccdec6591c74219b6b4c6",
+              "recorded_at": 58
+            },
+            "recorded_chunks": 3,
+            "run_body_digest": "2e5f8e96b1755e42f557a9901483f03dfe876180a494c36a856e44e1e8092d8c",
+            "run_vid": "bca0816b1a45fefcfa4111689620b72d",
+            "source_commit": "9a0ed83186daec3ffe7c351e81c02c428aa0a6f7eae4dd8b67d108f4e9d1d384",
+            "source_oid": "b9eaf275878658589f2df36d0cb7e23cbb5a1644309fb9909eec53155c426ec9",
+            "source_rows": 6,
+            "unexpected_chunks": []
+          },
+          {
+            "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+            "complete": true,
+            "expected_chunks": 3,
+            "manifest_digest": "765f538b7f145cab217e9da1d9848082c072755069fc57c63c25b33732378508",
+            "manifest_vid": "2c8ba91a3e8c63013545d8a72da1ae12",
+            "missing_chunks": [],
+            "name": "run-004",
+            "package_commit": "21ca210fd9499d8a183f9cfe1e785204685c9b5e96d45472ac9ab03014679ac1",
+            "package_oid": "fb6f1f3f5d0d7e32d3fb2983d4ec678a9d461d70414b6627896cc5ffeaa57e81",
+            "receipt": {
+              "already_recorded": true,
+              "control_entry": "1b62e1537a66ed65741bb7d2b125a436",
+              "recorded_at": 69
+            },
+            "recorded_chunks": 3,
+            "run_body_digest": "ab126dad8177b30cc4e920aa5cef6125e0fb97857c18ad5ce3f029822fa40723",
+            "run_vid": "5c447783e7ca6c301e400af3a924463a",
+            "source_commit": "42cd0616f8c9fadfb8a7486a9d936ceafd2c1fa221caeee45d31bbc27d9330b2",
+            "source_oid": "a3c380f79a4e1dbc34d8a1f284d3790df80842e5bfe85d52cece47c61be251a7",
+            "source_rows": 20,
+            "unexpected_chunks": []
+          }
+        ],
+        "exact_original_entry_retry_receipts_checked": 30,
+        "finalization_control_receipts": 5,
+        "original_book_preserved": true,
+        "original_entry_identities_proposal_digests_and_commit_sequences_preserved": 15,
+        "original_preactivation_seq": 129,
+        "original_source_binding_identity_and_control_receipts_preserved": true,
+        "preactivation_fact_timing": "The retained preactivation fact was first written during successful continuation attempt000003 at20:29:34Z. It records prefix129 before finalization; it did not survive from the earlier incomplete attempt. Original book, package and source-binding publication receipts did survive.",
+        "source_binding_count": 5
+      },
+      "native_report": {
+        "bind_source": true,
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "source_binding_retry_preserves_original_manifest_and_control",
+          "native_source_binding_mode_matches_recovery_pins",
+          "native_source_binding_matches_complete_normalized_population",
+          "all_bound_source_members_staged_exactly_once",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "dimension_value_counts": {
+          "department": 3,
+          "fund": 1,
+          "product": 0,
+          "project": 0
+        },
+        "elapsed_seconds": 34.403,
+        "migration_entries": 15,
+        "migration_runs": 5,
+        "monetary_rows": 121,
+        "recovery": {
+          "attempt": "attempts/000003",
+          "book_id": "51dbcd4ca627a6f6d81065b96af53252",
+          "native_packages_recovered": 5,
+          "original_preactivation_seq": 129,
+          "resumed": true
+        },
+        "sha256": "45eca3c92a081c49b977a69c88024054bbe0e588ef406072bdfb55267d41a28a",
+        "source_rows": 125,
+        "status": "PASS"
+      },
+      "negative_controls": {
+        "actual_native_exit_codes": [
+          8,
+          8,
+          8
+        ],
+        "receipt_file": {
+          "bytes": 162673,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-negative-controls.json",
+          "sha256": "46b6c7c4b0e4c6aba1e7e200cd3559c3379ffce38b6c65377988bbe4ccb38f5a"
+        }
+      },
+      "portable": {
+        "actual_process_elapsed_seconds": 2.007,
+        "artifact_files": {
+          "checkpoint.bin": {
+            "bytes": 288,
+            "sha256": "1fb05087ff9bad96d6e1c0b9efe6a625f4780d5f48bfa3b256832db59ccc6298"
+          },
+          "report.fab": {
+            "bytes": 82158,
+            "sha256": "22c38b8d1141d2b75b126be670559bc0e42af51564599c781df44ff24dca4480"
+          },
+          "report.receipt": {
+            "bytes": 219,
+            "sha256": "a2e6ad6338e0bec6a4dc41b3d902437525e7f251b327415fd96e78c57baf4b51"
+          },
+          "trusted-public-key.txt": {
+            "bytes": 65,
+            "sha256": "247ffead5b1eb6af432a899cd2f5b701848ecc3fb53ddbe42cc490d2dee5315a"
+          }
+        },
+        "closure": {
+          "additive_input_labels": [
+            "MigrationSource",
+            "MigrationSourceFragment"
+          ],
+          "book": "51dbcd4ca627a6f6d81065b96af53252",
+          "branch": "00000000000000000000000000000000",
+          "bundle_major": 1,
+          "bundle_minor": 1,
+          "canonical_records": 103,
+          "certificate_digest": "5a87b96013a6766ea92709bfeff1efa985cd12e5a43e96820ab7fc6484820b06",
+          "certificate_format": "fa:report-certificate:v8",
+          "dimension": "department",
+          "dimension_value": "1000001",
+          "journal_leaves": 37,
+          "known_at": 147,
+          "migration_run_bodies": 5,
+          "migration_source_witnesses": 5,
+          "native_input_count": 10,
+          "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+          "selected": [
+            "FY2024-P12"
+          ]
+        },
+        "expected_certificate": "5a87b96013a6766ea92709bfeff1efa985cd12e5a43e96820ab7fc6484820b06",
+        "helper_elapsed_seconds": 0.932,
+        "input_hashes_unchanged": true,
+        "original_source_control_comparison": {
+          "dimension": "department",
+          "effective_through": "2024-06-30",
+          "nonzero_cells_compared": {
+            "account_nets": 32,
+            "gross_cents": 32
+          },
+          "period": "FY2024-P12",
+          "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+          "status": "PASS",
+          "value": "1000001"
+        },
+        "output_account_rows": 32,
+        "source_binding_selection": "canonical_recovery_pins",
+        "source_bound": true,
+        "source_bound_requested": null,
+        "status": "PASS",
+        "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+        "trusted_public_key": "004225a884f0386b7b9b65ac897417a924d5be5dceaa97530612e5aa1c9a2a30",
+        "validation_sha256": "33031a5cc9230dbafc240d822992745a0cbae835ced8182698afc8d45d84ecea",
+        "verified_proof_files_unchanged": true
+      },
+      "preservation": {
+        "completed_native_continuation": {
+          "archive": "/dev/shm/fa-bound-recovery-archive-69d8c2fe02b1-20261103/museum-continuation.tar.gz",
+          "archive_inventory_sha256": "105aa0f002b5babaf734ae8019a50c1ed8920ff62e03ea891402f498ed01c147",
+          "complete_reserved_file_sha256": "dc23a76f3272dc452c7558aaf7c9c1690fd1be9bd4986fceeee8681d43e49527",
+          "error": "JSONDecodeError('Unterminated string starting at: line 1 column 265 (char 264)')",
+          "execution_record_sha256": "3b5211a67cf952db56d5070bf2636287285d74cae2b5519e0e69991ccc59a3e3",
+          "file_count": 1581,
+          "finished_utc": "2026-11-03T20:30:05.687498+00:00",
+          "format": "fa-source-bound-continuation-preservation-v1",
+          "gzip_crc_verified_to_eof": true,
+          "logical_file_bytes": 19910983,
+          "native_resume": null,
+          "original_copy_unchanged": null,
+          "payload_bytes": 6561615,
+          "payload_sha256": "86e7db954b0bc82bb906c5e7ea9156de491addc85dd7416e6d08ac09e424a819",
+          "phases": [
+            {
+              "argv": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+                "-B",
+                "scripts/public_ledger.py",
+                "run",
+                "--resume",
+                "--out",
+                "/dev/fa-source-bound-69d8c2fe02b1-20261103/museum-bind-gap"
+              ],
+              "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+              "elapsed_seconds": 35.15,
+              "exit_code": 0,
+              "finished_utc": "2026-11-03T20:29:52.421985+00:00",
+              "name": "canonical-resume",
+              "started_utc": "2026-11-03T20:29:17.271679+00:00",
+              "stderr_bytes": 0,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_bytes": 170,
+              "stdout_sha256": "c3d37f96659692079a75f1ec9d94e738bf8d0955a6e19f5dee79dfd671b7459d"
+            }
+          ],
+          "pins_unchanged": null,
+          "portable_proof": null,
+          "reserved_bytes": 67108864,
+          "scope": "Actual relocated canonical museum resume/proof. Initial exit1 controlled stop and exit120 incomplete attempt remain preserved; only this later attempt may be PASS. Private book archive stays local and must not be published.",
+          "status": "FAIL",
+          "tar_file_inventory_verified": true
+        },
+        "portable_continuation": {
+          "archive": "/dev/shm/fa-bound-recovery-proof-archive-69d8c2fe02b1-20261103/museum-proof-complete.tar.gz",
+          "archive_inventory_sha256": "0328e5550e139360dd36a798c9157f03a5adb1a301b34f93494405e1f12a79b7",
+          "complete_reserved_file_sha256": "748b32fe9c8c36a71d8e198a7361ed4a1445791fe8f746e2d1dfd0ef9dbdcdd7",
+          "error": null,
+          "execution_record_sha256": "943348f30de88d57dee99d1758ae1f6f29fe67311597aaf15e25fb91b4391a3d",
+          "file_count": 1592,
+          "format": "fa-museum-recovery-proof-preservation-v1",
+          "gzip_crc_verified_to_eof": true,
+          "logical_file_bytes": 20455341,
+          "original_archive_unchanged": true,
+          "payload_bytes": 6717716,
+          "payload_sha256": "64b749aff3a337aa310b69130ba3f42f0d85d0ee9d88872006c633a003ee4690",
+          "pins_unchanged": true,
+          "proof_elapsed_seconds": 2.007,
+          "proof_exit_code": 0,
+          "scope": "Complete private book archive remains local; publish only public reports/proof data. Earlier failed attempts retain their original outcomes.",
+          "status": "PASS",
+          "tar_file_inventory_verified": true,
+          "validation_sha256": "33031a5cc9230dbafc240d822992745a0cbae835ced8182698afc8d45d84ecea"
+        },
+        "public_only_policy": "Complete archives are local and contain native books. Their exact compressed payloads, reserved-file hashes, gzip CRC and every file inventory were verified before private per-exec storage disappeared. Publish only the explicit public attachments; never these archives or book/private-key files."
+      },
+      "public_attachments": {
+        "museum-bind-gap-interruption.json": {
+          "bytes": 5914,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-interruption.json",
+          "sha256": "065c1f6e23ce417f04b96cf2c8767e14955de5397dcda8effc8b15649429dabb"
+        },
+        "museum-bind-gap-negative-controls.json": {
+          "bytes": 162673,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-negative-controls.json",
+          "sha256": "46b6c7c4b0e4c6aba1e7e200cd3559c3379ffce38b6c65377988bbe4ccb38f5a"
+        },
+        "museum-bind-gap-portable-commands.jsonl": {
+          "bytes": 15769,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-portable-commands.jsonl",
+          "sha256": "0f71ec90b0d8c169cb10f24b6f83b96c886fc9140afd4d9212436e9e633dc9e4"
+        },
+        "museum-bind-gap-portable-validation.json": {
+          "bytes": 46247,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-portable-validation.json",
+          "sha256": "33031a5cc9230dbafc240d822992745a0cbae835ced8182698afc8d45d84ecea"
+        },
+        "museum-bind-gap-public-receipts.json": {
+          "bytes": 247984,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-public-receipts.json",
+          "sha256": "eba1b0f1b7a000faeb64da15964ba6a77e9f3d66ab43e46ccc91021448f227b8"
+        },
+        "museum-bind-gap-report.json": {
+          "bytes": 414796,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-bind-gap-report.json",
+          "sha256": "45eca3c92a081c49b977a69c88024054bbe0e588ef406072bdfb55267d41a28a"
+        }
+      },
+      "source_profile": "museum-fixture",
+      "status": "PASS_AFTER_PRESERVED_INTERRUPTED_ATTEMPTS",
+      "transcript_inventory": [
+        {
+          "attempt": "000001",
+          "complete_retained_command_records": 25,
+          "exit_histogram": {
+            "0": 25
+          },
+          "incomplete_final_record": null,
+          "transcript_bytes": 31302,
+          "transcript_sha256": "2ff8ed0bcceddb7e520c04a3d58a7cd4c9ab2e66c0cba437d74b636ab5717242"
+        },
+        {
+          "attempt": "000002",
+          "complete_retained_command_records": 125,
+          "exit_histogram": {
+            "0": 125
+          },
+          "incomplete_final_record": {
+            "bytes": 312,
+            "native_result": "UNKNOWN; incomplete record is not reconstructed",
+            "physical_line": 126,
+            "raw_base64": "eyJjb21tYW5kIjogWyIvd29ya3NwYWNlL3NjcmF0Y2gvNjlkOGMyZmUwMmIxL25hdGl2ZS1hcnRpZmFjdHMtZjNmMS9uYXRpdmUvdGFyZ2V0L2RlYnVnL2ZhIiwgIi0tYm9vayIsICIvZGV2L3NobS9mYS1ib3VuZC1yZWNvdmVyeS02OWQ4YzJmZTAyYjEtMjAyNjExMDMvbXVzZXVtLWJpbmQtZ2FwL2Jvb2siLCAidGIiLCAiLS1wZXJpb2QiLCAiRlkyMDI0LVAxMiIsICItLWFzLWtub3duLWF0IiwgIjEyOSIsICItLWpzb24iXSwgImV4aXQiOiAwLCAic3Rkb3V0IjogIntcImF1dGhvcml0eVwiOntcIm9wc1wiOm51bGwsXCJwb3N0dXJlXCI6XCJlbWJl",
+            "sha256": "b765bc084c05a9c821ab41e20ea7aa63e16d72bd364306d014d9c2303a94f66e"
+          },
+          "transcript_bytes": 229376,
+          "transcript_sha256": "85a126b41bebd7d7f288458c7e4f7617cb0bd8ca28165aefd6318dd034eba3d6"
+        },
+        {
+          "attempt": "000003",
+          "complete_retained_command_records": 204,
+          "exit_histogram": {
+            "0": 201,
+            "8": 3
+          },
+          "incomplete_final_record": null,
+          "transcript_bytes": 786399,
+          "transcript_sha256": "2c0a9de56f3cead1ef12ecc34639e2a3017cbe1648a878a9f01ec99025a62444"
+        }
+      ]
+    },
+    {
+      "balance_boundary": "fund-class",
+      "bind_source": true,
+      "book_id": "b8d496454bb5dd951759558583ee5298",
+      "case": "museum-partial-stage",
+      "command_accounting": {
+        "canonical_driver_count": 245,
+        "complete_retained_resume_records": 228,
+        "explanation": "Recovery admission calls are counted by the driver before its attempt log is enabled; no per-call transcript is claimed for those reads.",
+        "interrupted_complete_records": 75,
+        "portable_retained_commands": 4,
+        "read_only_recovery_admission_calls_without_attempt_transcript": 17
+      },
+      "execution_phases": [
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger_interrupt.py",
+            "--driver",
+            "scripts/public_ledger.py",
+            "--boundary",
+            "partial-stage",
+            "--marker",
+            "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/interruption.json",
+            "--",
+            "run",
+            "--agency",
+            "20400",
+            "--source",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+            "--balance-boundary",
+            "fund-class",
+            "--bind-source",
+            "--out",
+            "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/run",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 11.025,
+          "exit_code": 1,
+          "finished_utc": "2026-11-03T20:43:06.756664+00:00",
+          "name": "interrupt",
+          "started_utc": "2026-11-03T20:42:55.731559+00:00",
+          "stderr_bytes": 168,
+          "stderr_sha256": "c7e68bf66959a1b1179b6026feda0a1080a661e9c4b77f3441d397bc05762ae5",
+          "stdout_bytes": 0,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger.py",
+            "run",
+            "--resume",
+            "--out",
+            "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/run"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 44.382,
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T20:43:51.330221+00:00",
+          "name": "resume",
+          "started_utc": "2026-11-03T20:43:06.948325+00:00",
+          "stderr_bytes": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 170,
+          "stdout_sha256": "0a9366ec930f8b6c115d0878b0aa59b88e334fd98bd7fea6b65158ea9689c3f5"
+        },
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger_portable_proof.py",
+            "--run",
+            "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/run",
+            "--out",
+            "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/portable-department",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+            "--dimension",
+            "department"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 4.009,
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T20:43:55.414446+00:00",
+          "name": "portable-department",
+          "started_utc": "2026-11-03T20:43:51.405265+00:00",
+          "stderr_bytes": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 1261,
+          "stdout_sha256": "eb063d2e3f0bcdcbf5a3d1d91d0bf86772ac302ff59cb224250967ca3ac353b7"
+        }
+      ],
+      "frozen_runtime_pins": {
+        "driver": {
+          "bytes": 106775,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py",
+          "sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c"
+        },
+        "fa": {
+          "bytes": 235320912,
+          "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+          "sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45"
+        },
+        "fa_verify": {
+          "bytes": 20226944,
+          "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+        },
+        "interruption_helper": {
+          "bytes": 8636,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py",
+          "sha256": "05ca803edfc990dd39f5af3a179bcb2e2c6ca934a0e434c53141b7b93a9ad3e4"
+        },
+        "normalizer": {
+          "bytes": 19743,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py",
+          "sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8"
+        },
+        "portable_helper": {
+          "bytes": 35445,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_portable_proof.py",
+          "sha256": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89"
+        },
+        "source": {
+          "bytes": 37254,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+          "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+        }
+      },
+      "migration_entries": 15,
+      "migration_runs": 5,
+      "monetary_rows": 121,
+      "native_report": {
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "source_binding_retry_preserves_original_manifest_and_control",
+          "native_source_binding_mode_matches_recovery_pins",
+          "native_source_binding_matches_complete_normalized_population",
+          "all_bound_source_members_staged_exactly_once",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "dimension_value_counts": {
+          "department": 3,
+          "fund": 1,
+          "product": 0,
+          "project": 0
+        },
+        "elapsed_seconds": 43.899,
+        "recovery": {
+          "attempt": "attempts/000002",
+          "book_id": "b8d496454bb5dd951759558583ee5298",
+          "native_packages_recovered": 5,
+          "original_preactivation_seq": 129,
+          "resumed": true
+        },
+        "sha256": "b519a59ab2bfe2c2922e91f79fa7cf3eccb5a45adefe01c19a77ea112f76264e",
+        "status": "PASS"
+      },
+      "negative_controls": {
+        "actual_native_exit_codes": [
+          8,
+          8,
+          8
+        ],
+        "receipts_in": "museum-partial-stage-execution.json"
+      },
+      "original_chunk_retry_receipts": [
+        {
+          "already_recorded": true,
+          "chunk_index": 0,
+          "entry_vid": "3c08e428497939edc92f361a385608a7",
+          "proposal_digest": "7c7fabf96b5294492ccc082f36248f0ccd5c8ac42bbb91b5940e8f300884ccf6",
+          "recorded_at": 76
+        },
+        {
+          "already_recorded": true,
+          "chunk_index": 0,
+          "entry_vid": "3c08e428497939edc92f361a385608a7",
+          "proposal_digest": "7c7fabf96b5294492ccc082f36248f0ccd5c8ac42bbb91b5940e8f300884ccf6",
+          "recorded_at": 76
+        }
+      ],
+      "original_pins_sha256": "f2e260d86dc1d02921234d03a7497b05156aeb294d7773b68bf98175eb76a993",
+      "original_staged_chunk_receipt": {
+        "authority": {
+          "ops": null,
+          "posture": "embedded-owner",
+          "principal": "operator",
+          "profile": "Human"
+        },
+        "book": "b8d496454bb5dd951759558583ee5298",
+        "certificate": null,
+        "coordinate": {
+          "branch": "trunk",
+          "effective": "all",
+          "known_at": 76,
+          "time_evidence": null
+        },
+        "data": {
+          "already_recorded": false,
+          "chunk_count": 3,
+          "chunk_index": 0,
+          "entry_vid": "3c08e428497939edc92f361a385608a7",
+          "package_oid": "a2d2078c3c40357a0598712c32cc68f7605ff2f919d6e84754f7a01d9a319967",
+          "proposal_digest": "7c7fabf96b5294492ccc082f36248f0ccd5c8ac42bbb91b5940e8f300884ccf6",
+          "ready_to_finalize": false,
+          "recorded_at": 76,
+          "recorded_count": 1,
+          "run_state": "Open",
+          "run_vid": "5b9ab78671a356999e0a79389703ee57"
+        },
+        "event": "migration_import_staged",
+        "next_actions": [],
+        "v": 1,
+        "warnings": []
+      },
+      "pins_unchanged": true,
+      "portable": {
+        "artifact_files": {
+          "checkpoint.bin": {
+            "bytes": 288,
+            "sha256": "099eebd35e175618cb6fe72405f6ff649e463b7680184c3d5322b4d0bbba12f6"
+          },
+          "report.fab": {
+            "bytes": 82158,
+            "sha256": "fcb2b31c07d64b45265e2a0893d08a41792a5ec386e72687d4f6d2d879257853"
+          },
+          "report.receipt": {
+            "bytes": 219,
+            "sha256": "1796fe01c64818a72fbb7353b3af6534eed1a36522fa7c70778d91b0a5e1280c"
+          },
+          "trusted-public-key.txt": {
+            "bytes": 65,
+            "sha256": "f5e65f9662a60668aa685bb1eb2ad6c78b44fd964572c7d0f04a9f80e972aaa0"
+          }
+        },
+        "closure": {
+          "additive_input_labels": [
+            "MigrationSource",
+            "MigrationSourceFragment"
+          ],
+          "book": "b8d496454bb5dd951759558583ee5298",
+          "branch": "00000000000000000000000000000000",
+          "bundle_major": 1,
+          "bundle_minor": 1,
+          "canonical_records": 103,
+          "certificate_digest": "a263a61f4f684e59530a1a1eb8cee86e1a83a9a87fcca87a119966584f10364f",
+          "certificate_format": "fa:report-certificate:v8",
+          "dimension": "department",
+          "dimension_value": "1000001",
+          "journal_leaves": 37,
+          "known_at": 147,
+          "migration_run_bodies": 5,
+          "migration_source_witnesses": 5,
+          "native_input_count": 10,
+          "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+          "selected": [
+            "FY2024-P12"
+          ]
+        },
+        "expected_certificate": "a263a61f4f684e59530a1a1eb8cee86e1a83a9a87fcca87a119966584f10364f",
+        "input_hashes_unchanged": true,
+        "original_source_control_comparison": {
+          "dimension": "department",
+          "effective_through": "2024-06-30",
+          "nonzero_cells_compared": {
+            "account_nets": 32,
+            "gross_cents": 32
+          },
+          "period": "FY2024-P12",
+          "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+          "status": "PASS",
+          "value": "1000001"
+        },
+        "output_account_rows": 32,
+        "source_binding_selection": "canonical_recovery_pins",
+        "source_bound": true,
+        "source_bound_requested": null,
+        "status": "PASS",
+        "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+        "trusted_public_key": "903bacc9fe10ed27d2f26146ccc2ecff275b192a2f6c6d34dd1a6c6df21dbe99",
+        "verified_proof_files_unchanged": true
+      },
+      "preservation": {
+        "archive": "/dev/shm/fa-museum-partial-stage-archive-69d8c2fe02b1-20261103/complete.tar.gz",
+        "case": "museum-partial-stage",
+        "complete_reserved_file_sha256": "7f8a760a84688b9d78a35c24dc433b4bb3d3f319987f2c0442557bd2cb334220",
+        "error": null,
+        "execution_sha256": "df0d34f46777de49441cfb338c74a5b0eda65ac7eb3d3c7c662c0ce71f24d108",
+        "file_count": 1584,
+        "format": "fa-source-bound-campaign-preservation-v1",
+        "gzip_crc_verified_to_eof": true,
+        "inventory_sha256": "5135e467aa23e427226fd7522c1a506ee2fbed6dcd81d18d022799d0a9899d0e",
+        "logical_file_bytes": 20063898,
+        "native_report_sha256": "b519a59ab2bfe2c2922e91f79fa7cf3eccb5a45adefe01c19a77ea112f76264e",
+        "payload_bytes": 6674675,
+        "payload_sha256": "b34a6911bb289eefc6e5f5e0da939dc4fae1856c369accb5bf5e329efb96de8f",
+        "pins_unchanged": true,
+        "reserved_bytes": 67108864,
+        "scope": "Private complete book archive is local only. Public evidence excludes all book and private-key files.",
+        "status": "PASS",
+        "tar_file_inventory_verified": true
+      },
+      "public_attachments": {
+        "museum-partial-stage-execution.json": {
+          "bytes": 182057,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-partial-stage-execution.json",
+          "sha256": "df0d34f46777de49441cfb338c74a5b0eda65ac7eb3d3c7c662c0ce71f24d108"
+        },
+        "museum-partial-stage-interruption.json": {
+          "bytes": 2259,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-partial-stage-interruption.json",
+          "sha256": "85670c48b21aed55ae17bbb7c9db86d77fa9310c43adadd6acc1602b833caa17"
+        },
+        "museum-partial-stage-portable-commands.jsonl": {
+          "bytes": 15829,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-partial-stage-portable-commands.jsonl",
+          "sha256": "34be46eeb93603995dcf8fa863a1bdfd421788549e681819d0b7849e610ea8f8"
+        },
+        "museum-partial-stage-portable-validation.json": {
+          "bytes": 46339,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-partial-stage-portable-validation.json",
+          "sha256": "aff1ed970e3d43f3ee70e7daec221691394f33d69e19491a7bd0b459dd7588e5"
+        },
+        "museum-partial-stage-report.json": {
+          "bytes": 414796,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/museum-partial-stage-report.json",
+          "sha256": "b519a59ab2bfe2c2922e91f79fa7cf3eccb5a45adefe01c19a77ea112f76264e"
+        }
+      },
+      "source_binding_and_balance_boundary_inherited_without_resume_overrides": true,
+      "source_binding_identities_and_original_control_receipts_preserved": true,
+      "source_bindings": [
+        {
+          "book_id": "b8d496454bb5dd951759558583ee5298",
+          "complete": true,
+          "expected_chunks": 3,
+          "manifest_digest": "2d6e2237699528515ac40be104908777cefbde4002ca3aefc0bf6036c35daeef",
+          "manifest_vid": "d570101cc0555c8912d11b4612fedd21",
+          "missing_chunks": [],
+          "name": "run-000",
+          "package_commit": "bf4f7a2470ff581729cc7902ac2c12ecc70395ff794dd87f08c1d6224ec933d5",
+          "package_oid": "a2d2078c3c40357a0598712c32cc68f7605ff2f919d6e84754f7a01d9a319967",
+          "receipt": {
+            "already_recorded": true,
+            "control_entry": "12f34b1adac52c8ccad9db527f69ab22",
+            "recorded_at": 25
+          },
+          "recorded_chunks": 3,
+          "run_body_digest": "42ff83ce2164de31ec66648f1568a7eadde21cbeedba04e6af8b589eb709695e",
+          "run_vid": "5b9ab78671a356999e0a79389703ee57",
+          "source_commit": "36df216b724912a5471b29189ef1acced2045e8b7541fb943c92f50d11229e19",
+          "source_oid": "16ff8cfa9914788dc85c3b89b8c7c910bf5d61e619c3f0eb61dd66a56b3eae9e",
+          "source_rows": 6,
+          "unexpected_chunks": []
+        },
+        {
+          "book_id": "b8d496454bb5dd951759558583ee5298",
+          "complete": true,
+          "expected_chunks": 3,
+          "manifest_digest": "97a7472e5000943bbff1869d2a92b1a90807376d90a336d2e909a4d2c6a0cd60",
+          "manifest_vid": "ae5a4c08e69b9d7e21fa041db675b826",
+          "missing_chunks": [],
+          "name": "run-001",
+          "package_commit": "b01f4d88e885d5731bf2ebf7ff28b576d463398f16ecf516dc192f879b803163",
+          "package_oid": "61dc9fe8c4c444fdf4b5e16fa7e54c1bad580bd010bb562909362bceaccd2edd",
+          "receipt": {
+            "already_recorded": true,
+            "control_entry": "92153baed0279db2407e8e183a39fc81",
+            "recorded_at": 36
+          },
+          "recorded_chunks": 3,
+          "run_body_digest": "14e20a08b4afb511cd2f870c3fc2ed77f58074b35974e81bd0349e42abc19dda",
+          "run_vid": "59cc229592242c5a54b3e1ad7cb7e929",
+          "source_commit": "5055c3bba60f1b64a8426df2a6676a10538391a8d8b1850fb81191a6b5096aa5",
+          "source_oid": "d0c9e3e7bbd0d7afb380d1f96363def4e157566f746f4d5ffc4ea3886dba74e2",
+          "source_rows": 50,
+          "unexpected_chunks": []
+        },
+        {
+          "book_id": "b8d496454bb5dd951759558583ee5298",
+          "complete": true,
+          "expected_chunks": 3,
+          "manifest_digest": "a3b96253ad392655a6796f0092c15c426c5a7f18ff44b64fdfdeca1024c2c9d5",
+          "manifest_vid": "7e26a9e288e5470039a3d5a38035d560",
+          "missing_chunks": [],
+          "name": "run-002",
+          "package_commit": "2fee53dbd2a244fc6c36fa015a710aa28cfcd445032cc5c37e1f4ca3e1943919",
+          "package_oid": "10be51230ee77e4acdf52f707efe143061fc0317752c757ed0e9183eb983635f",
+          "receipt": {
+            "already_recorded": true,
+            "control_entry": "72d5a6d7d2b44388b81af5770b67e208",
+            "recorded_at": 47
+          },
+          "recorded_chunks": 3,
+          "run_body_digest": "a2ac9f9fa64c4e86f8cabbea799579088d7b58067fafd7dee7bbf3731b200ec9",
+          "run_vid": "a06cc6f3bd578b0b2d48f3864677206a",
+          "source_commit": "8bd72c48de36cfcc426192c7841c9592a926e229115595cae4cef3cd35d187fa",
+          "source_oid": "7f79f6ea30797b17a80c90eb74d51d6ef5d24e256dc6164132ca543ec25170dc",
+          "source_rows": 39,
+          "unexpected_chunks": []
+        },
+        {
+          "book_id": "b8d496454bb5dd951759558583ee5298",
+          "complete": true,
+          "expected_chunks": 3,
+          "manifest_digest": "7dd6cecfabce04b4a5d53752fde6c2ca33f5aa152c2364bf2e437012a19e5803",
+          "manifest_vid": "2d6a98fad3dc16614ebb81474c7856de",
+          "missing_chunks": [],
+          "name": "run-003",
+          "package_commit": "84a1d9e78a79e40b73976e8a3f20670347f0a67d65a1107f0fe5ed920d1847d3",
+          "package_oid": "b3e4b6fe0e51ee6772b21dc28ce1479e9dfa26fbc1758a236f92b0198422c0e7",
+          "receipt": {
+            "already_recorded": true,
+            "control_entry": "1b1fe7aa330fbc942456a66360bc04ab",
+            "recorded_at": 58
+          },
+          "recorded_chunks": 3,
+          "run_body_digest": "0e1ef1cca180c247f74c1cc53d80373fea5105cee6fab3af3220813a40477a04",
+          "run_vid": "a351d04959f310e606186c2ae1a8f8e6",
+          "source_commit": "9a0ed83186daec3ffe7c351e81c02c428aa0a6f7eae4dd8b67d108f4e9d1d384",
+          "source_oid": "feff4e4f5f6bd70e23e66c18ef1db431a582ecf102044314b48d4a6e0f73f42c",
+          "source_rows": 6,
+          "unexpected_chunks": []
+        },
+        {
+          "book_id": "b8d496454bb5dd951759558583ee5298",
+          "complete": true,
+          "expected_chunks": 3,
+          "manifest_digest": "4586d8a94d1386b12257250c5bfe65bf78217462468d620cc390f6cdd74f8d9a",
+          "manifest_vid": "94a4932d9a9cc772c4e17e05c22ff3df",
+          "missing_chunks": [],
+          "name": "run-004",
+          "package_commit": "29d1efd1953d50b65e74de12bfd528781cbcf7196aad3af9dd59f5ebe4ca865c",
+          "package_oid": "14e7efa67c2ec813692ec8055f666fa6e9aa6fbd5ad4e4d68a8df39ff7f2d660",
+          "receipt": {
+            "already_recorded": true,
+            "control_entry": "1c95d188a504d31560e8709eb4dc2985",
+            "recorded_at": 69
+          },
+          "recorded_chunks": 3,
+          "run_body_digest": "ae55640e7321eb711be066c8596698e3ddeaf1dbe80506597f9efd2d17e541d7",
+          "run_vid": "5d9d311ed4c8296e46d9430dd429d043",
+          "source_commit": "42cd0616f8c9fadfb8a7486a9d936ceafd2c1fa221caeee45d31bbc27d9330b2",
+          "source_oid": "2c4d1538e0851815067c477d6e71c8f7944ea20770d5ea1910fb8e8c19407346",
+          "source_rows": 20,
+          "unexpected_chunks": []
+        }
+      ],
+      "source_profile": "museum-fixture",
+      "source_rows": 125,
+      "status": "PASS",
+      "transcript_inventory": [
+        {
+          "attempt": "000001",
+          "complete_retained_command_records": 75,
+          "exit_histogram": {
+            "0": 75
+          },
+          "transcript_bytes": 129437,
+          "transcript_sha256": "b8ca6a2bb15a17b93b94dcb99a51bec06eed4cb630a1d9933bab1145ac8d6180"
+        },
+        {
+          "attempt": "000002",
+          "complete_retained_command_records": 228,
+          "exit_histogram": {
+            "0": 225,
+            "8": 3
+          },
+          "transcript_bytes": 808556,
+          "transcript_sha256": "30a6fa3baa815d8cae81f0f989cfd2b593e62b2ac1b92fdf8d715c3ac6b0b39e"
+        }
+      ]
+    },
+    {
+      "account_count": 118,
+      "activation_retry_scope": "Original control_entry, run identity, recorded_at and tie_out_digest are preserved. The returned already_recorded flag changes to true and chunk_count is zero on retry because no new chunk is published.",
+      "actual_original_activation_retry_receipts": [
+        {
+          "action": "finalize",
+          "already_recorded": true,
+          "chunk_count": 0,
+          "control_entry": "983bb0d801987863d22872dddf1e17e7",
+          "from": "Open",
+          "recorded_at": 87,
+          "run_key": "omes-80700-run-000",
+          "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+          "tie_out_digest": "8a15c5b2f08eb12cfa9aa4861c7ef244258c8b88705e432ac37602d772d90803",
+          "to": "Finalized"
+        }
+      ],
+      "balance_boundary": "agency-period",
+      "bind_source": true,
+      "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+      "case": "health-after-finalize",
+      "command_accounting": {
+        "canonical_driver_count": 669,
+        "complete_retained_resume_records": 656,
+        "explanation": "The 13-call difference is the driver counter minus retained records; recovery admission is deliberately performed before enabling the attempt log. No per-read receipt is invented.",
+        "interrupted_complete_records": 96,
+        "portable_retained_commands": 8,
+        "read_only_recovery_admission_calls_without_attempt_transcript": 13
+      },
+      "execution_phases": [
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger_interrupt.py",
+            "--driver",
+            "scripts/public_ledger.py",
+            "--boundary",
+            "after-finalize",
+            "--marker",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/interruption.json",
+            "--",
+            "run",
+            "--agency",
+            "80700",
+            "--source",
+            "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+            "--balance-boundary",
+            "agency-period",
+            "--bind-source",
+            "--out",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 19.044,
+          "exit_code": 1,
+          "finished_utc": "2026-11-03T20:45:47.112222+00:00",
+          "name": "interrupt",
+          "started_utc": "2026-11-03T20:45:28.067869+00:00",
+          "stderr_bytes": 170,
+          "stderr_sha256": "4f289a1b6e5ba19a3637be97821755e80a53ddc4f3c6218693792f4f523b7cfa",
+          "stdout_bytes": 0,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger.py",
+            "run",
+            "--resume",
+            "--out",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 357.226,
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T20:51:44.438935+00:00",
+          "name": "resume",
+          "started_utc": "2026-11-03T20:45:47.213054+00:00",
+          "stderr_bytes": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 173,
+          "stdout_sha256": "8d1563287cfd778cb4daedf9eae6cf05cacf5c916b8e55211564719ceb6fc952"
+        },
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger_portable_proof.py",
+            "--run",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+            "--out",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+            "--dimension",
+            "fund",
+            "--value",
+            "1000"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 3.005,
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T20:51:47.566347+00:00",
+          "name": "portable-fund",
+          "started_utc": "2026-11-03T20:51:44.561212+00:00",
+          "stderr_bytes": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 1241,
+          "stdout_sha256": "5a04925d11fe0dd25dbd021521430f4d763ae8f884942999a0a136ef58e68cac"
+        },
+        {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger_portable_proof.py",
+            "--run",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+            "--out",
+            "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+            "--dimension",
+            "product",
+            "--value",
+            "00"
+          ],
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 4.28,
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T20:51:51.848429+00:00",
+          "name": "portable-product",
+          "started_utc": "2026-11-03T20:51:47.568343+00:00",
+          "stderr_bytes": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_bytes": 1242,
+          "stdout_sha256": "767f1542ebc2daec9d55e27dc48f75abcaf12069c7da0be74a18a4e4b91048c6"
+        }
+      ],
+      "frozen_runtime_pins": {
+        "driver": {
+          "bytes": 106775,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py",
+          "sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c"
+        },
+        "fa": {
+          "bytes": 235320912,
+          "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+          "sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45"
+        },
+        "fa_verify": {
+          "bytes": 20226944,
+          "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+        },
+        "interruption_helper": {
+          "bytes": 8636,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py",
+          "sha256": "05ca803edfc990dd39f5af3a179bcb2e2c6ca934a0e434c53141b7b93a9ad3e4"
+        },
+        "normalizer": {
+          "bytes": 19743,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py",
+          "sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8"
+        },
+        "portable_helper": {
+          "bytes": 35445,
+          "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_portable_proof.py",
+          "sha256": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89"
+        },
+        "source": {
+          "bytes": 113856733,
+          "path": "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+          "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe"
+        }
+      },
+      "migration_entries": 3,
+      "migration_runs": 1,
+      "monetary_rows": 1405,
+      "native_report": {
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_declared_agency_period_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "nonzero_fund_class_controls_preserved_without_balancing_legs",
+          "preparation_retry_is_idempotent",
+          "source_binding_retry_preserves_original_manifest_and_control",
+          "native_source_binding_mode_matches_recovery_pins",
+          "native_source_binding_matches_complete_normalized_population",
+          "all_bound_source_members_staged_exactly_once",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "dimension_value_counts": {
+          "department": 44,
+          "fund": 1,
+          "product": 4,
+          "project": 0
+        },
+        "elapsed_seconds": 356.163,
+        "recovery": {
+          "attempt": "attempts/000002",
+          "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+          "native_packages_recovered": 1,
+          "original_preactivation_seq": 84,
+          "resumed": true
+        },
+        "sha256": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36",
+        "status": "PASS"
+      },
+      "negative_controls": {
+        "actual_native_exit_codes": [
+          8,
+          8,
+          8,
+          8
+        ],
+        "receipts_in": "health-after-finalize-execution.json"
+      },
+      "original_finalization_receipt": {
+        "authority": {
+          "ops": null,
+          "posture": "embedded-owner",
+          "principal": "operator",
+          "profile": "Human"
+        },
+        "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+        "certificate": null,
+        "coordinate": {
+          "branch": "trunk",
+          "effective": "all",
+          "known_at": 87,
+          "time_evidence": null
+        },
+        "data": {
+          "action": "finalize",
+          "already_recorded": false,
+          "chunk_count": 3,
+          "control_entry": "983bb0d801987863d22872dddf1e17e7",
+          "from": "Open",
+          "recorded_at": 87,
+          "run_key": "omes-80700-run-000",
+          "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+          "tie_out_digest": "8a15c5b2f08eb12cfa9aa4861c7ef244258c8b88705e432ac37602d772d90803",
+          "to": "Finalized"
+        },
+        "event": "migration_controlled",
+        "next_actions": [],
+        "v": 1,
+        "warnings": []
+      },
+      "original_pins_sha256": "83bace5fe570032a2da80f16e89ebf2c020c290560468963d2e09acb2ac533d5",
+      "pins_unchanged": true,
+      "portable_proofs": {
+        "fund": {
+          "artifact_files": {
+            "checkpoint.bin": {
+              "bytes": 288,
+              "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+            },
+            "report.fab": {
+              "bytes": 202941,
+              "sha256": "c74a17145f0268e9848fd05dd33aba515703f00c6fb9e3b70e577eed55fd6953"
+            },
+            "report.receipt": {
+              "bytes": 219,
+              "sha256": "91f8f848af2fa9ec69fa4a7333b57133016257cbb748a906b0968dfe4c2dded9"
+            },
+            "trusted-public-key.txt": {
+              "bytes": 65,
+              "sha256": "9a734122a70f8600ff7b40587bfa131e57173dc0be6afca68f369a81051d1961"
+            }
+          },
+          "closure": {
+            "additive_input_labels": [
+              "MigrationRunFragment",
+              "MigrationSource",
+              "MigrationSourceFragment",
+              "EntryFragment"
+            ],
+            "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+            "branch": "00000000000000000000000000000000",
+            "bundle_major": 1,
+            "bundle_minor": 1,
+            "canonical_records": 78,
+            "certificate_digest": "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+            "certificate_format": "fa:report-certificate:v8",
+            "dimension": "fund",
+            "dimension_value": "1000",
+            "journal_leaves": 60,
+            "known_at": 138,
+            "migration_run_bodies": 1,
+            "migration_source_witnesses": 1,
+            "native_input_count": 12,
+            "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+            "selected": [
+              "FY2024-P12"
+            ]
+          },
+          "expected_certificate": "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+          "independent_verifier_passing_checks": 123,
+          "input_hashes_unchanged": true,
+          "original_source_control_comparison": {
+            "dimension": "fund",
+            "effective_through": "2024-06-30",
+            "nonzero_cells_compared": {
+              "account_nets": 118,
+              "gross_cents": 129
+            },
+            "period": "FY2024-P12",
+            "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+            "status": "PASS",
+            "value": "1000"
+          },
+          "output_account_rows": 118,
+          "retained_commands": 4,
+          "source_binding_selection": "canonical_recovery_pins",
+          "source_bound": true,
+          "source_bound_requested": null,
+          "status": "PASS",
+          "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+          "trusted_public_key": "ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363",
+          "value": "1000",
+          "verified_proof_files_unchanged": true
+        },
+        "product": {
+          "artifact_files": {
+            "checkpoint.bin": {
+              "bytes": 288,
+              "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+            },
+            "report.fab": {
+              "bytes": 188415,
+              "sha256": "4c5f04a96e0ac142b84b54bba3f800feed6b516847d476feb951706f3673d657"
+            },
+            "report.receipt": {
+              "bytes": 219,
+              "sha256": "6a9ab6fb8438d367b7521c0b38e09d3827c8706d64af121c6d5e4ca2f507e629"
+            },
+            "trusted-public-key.txt": {
+              "bytes": 65,
+              "sha256": "9a734122a70f8600ff7b40587bfa131e57173dc0be6afca68f369a81051d1961"
+            }
+          },
+          "closure": {
+            "additive_input_labels": [
+              "MigrationRunFragment",
+              "MigrationSource",
+              "MigrationSourceFragment",
+              "EntryFragment"
+            ],
+            "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+            "branch": "00000000000000000000000000000000",
+            "bundle_major": 1,
+            "bundle_minor": 1,
+            "canonical_records": 78,
+            "certificate_digest": "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+            "certificate_format": "fa:report-certificate:v8",
+            "dimension": "product",
+            "dimension_value": "00",
+            "journal_leaves": 60,
+            "known_at": 134,
+            "migration_run_bodies": 1,
+            "migration_source_witnesses": 1,
+            "native_input_count": 12,
+            "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+            "selected": [
+              "FY2024-P12"
+            ]
+          },
+          "expected_certificate": "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+          "independent_verifier_passing_checks": 6,
+          "input_hashes_unchanged": true,
+          "original_source_control_comparison": {
+            "dimension": "product",
+            "effective_through": "2024-06-30",
+            "nonzero_cells_compared": {
+              "account_nets": 1,
+              "gross_cents": 1
+            },
+            "period": "FY2024-P12",
+            "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+            "status": "PASS",
+            "value": "00"
+          },
+          "output_account_rows": 1,
+          "retained_commands": 4,
+          "source_binding_selection": "canonical_recovery_pins",
+          "source_bound": true,
+          "source_bound_requested": null,
+          "status": "PASS",
+          "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+          "trusted_public_key": "ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363",
+          "value": "00",
+          "verified_proof_files_unchanged": true
+        }
+      },
+      "preservation": {
+        "archive": "/dev/shm/fa-health-after-finalize-archive-69d8c2fe02b1-20261103/complete.tar.gz",
+        "case": "health-after-finalize",
+        "complete_reserved_file_sha256": "b96781641deb83a5f9453d9baafcb5c43a179a8ae82de63ef38ae6ab65386e43",
+        "error": null,
+        "execution_sha256": "acf771cd02a036d7c1ed4c298afd7c83bf09f611c8e770e0b857cc09bee4887c",
+        "file_count": 5543,
+        "format": "fa-source-bound-campaign-preservation-v1",
+        "gzip_crc_verified_to_eof": true,
+        "inventory_sha256": "3458963155e0273290bda93a9fe26caa4d3e4bc8b6077ec20368e337a9074d7f",
+        "logical_file_bytes": 134678437,
+        "native_report_sha256": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36",
+        "payload_bytes": 32835548,
+        "payload_sha256": "04148f82861f9344ab7a5ff64516ecd6e853de75f80052e4c60456be925bd1d7",
+        "pins_unchanged": true,
+        "reserved_bytes": 134217728,
+        "scope": "Private complete book archive is local only. Public evidence excludes all book and private-key files.",
+        "status": "PASS",
+        "tar_file_inventory_verified": true
+      },
+      "public_attachments": {
+        "health-after-finalize-execution.json": {
+          "bytes": 226483,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-execution.json",
+          "sha256": "acf771cd02a036d7c1ed4c298afd7c83bf09f611c8e770e0b857cc09bee4887c"
+        },
+        "health-after-finalize-fund-commands.jsonl": {
+          "bytes": 40246,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-fund-commands.jsonl",
+          "sha256": "f39c9ae759220238e522c170e8b6000672cb8b504d12607b70c54a2429c46f0d"
+        },
+        "health-after-finalize-fund-validation.json": {
+          "bytes": 121407,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-fund-validation.json",
+          "sha256": "54a4b53a99fe3245eb5ae15e88d416914ce01021d9d3a89156482555d52f583e"
+        },
+        "health-after-finalize-interruption.json": {
+          "bytes": 1929,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-interruption.json",
+          "sha256": "95ea12f16010e9e583bcc7bb5ec30b217ad070c133def7a9f8716cb8bdf33a09"
+        },
+        "health-after-finalize-product-commands.jsonl": {
+          "bytes": 7077,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-product-commands.jsonl",
+          "sha256": "b95c4601f59189840da6388bcaaef720570d22f8ea240426d989f0878029f042"
+        },
+        "health-after-finalize-product-validation.json": {
+          "bytes": 20581,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-product-validation.json",
+          "sha256": "36b0057acf7a810d790515111c6658688a01a9d50f5a88dd96002ff6b4a7c6c0"
+        },
+        "health-after-finalize-public-receipts.json": {
+          "bytes": 28329,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-public-receipts.json",
+          "sha256": "79b48fd4b91d2a048381ec959362e002459948c023e868f9b7c9d430c5ce1c2a"
+        },
+        "health-after-finalize-report.json": {
+          "bytes": 565387,
+          "path": "evidence/public_ledger/source-bound-recovery-2026-11-03/health-after-finalize-report.json",
+          "sha256": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36"
+        }
+      },
+      "source_binding_and_balance_boundary_inherited_without_resume_overrides": true,
+      "source_binding_identities_and_original_control_receipts_preserved": true,
+      "source_bindings": [
+        {
+          "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+          "complete": true,
+          "expected_chunks": 3,
+          "manifest_digest": "e7900c23d939975f4fcbafe109eb74a118eb600b122b439cc84855ee73058828",
+          "manifest_vid": "5f05e6e345e96f9832ccc76acf570abc",
+          "missing_chunks": [],
+          "name": "run-000",
+          "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+          "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+          "receipt": {
+            "already_recorded": true,
+            "control_entry": "4850b6e05a9b3f3ca8cabd7b31d8e7d8",
+            "recorded_at": 72
+          },
+          "recorded_chunks": 3,
+          "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+          "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+          "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+          "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+          "source_rows": 1405,
+          "unexpected_chunks": []
+        }
+      ],
+      "source_profile": "health-full-statewide-source",
+      "source_rows": 1440,
+      "status": "PASS",
+      "transcript_inventory": [
+        {
+          "attempt": "000001",
+          "complete_retained_command_records": 96,
+          "exit_histogram": {
+            "0": 96
+          },
+          "transcript_bytes": 1077067,
+          "transcript_sha256": "9c33a467c56235ccd62eab488bc5595a4752010c0ab6bf6bba6cbbb9b9948e5f"
+        },
+        {
+          "attempt": "000002",
+          "complete_retained_command_records": 656,
+          "exit_histogram": {
+            "0": 652,
+            "8": 4
+          },
+          "transcript_bytes": 3709531,
+          "transcript_sha256": "81d856549bc6bfc511d470b070f221cb93466118c38a88b23e35ab2b0c66f99a"
+        }
+      ],
+      "zero_rows": 35
+    }
+  ],
+  "format": "fa-source-bound-recovery-validation-v1",
+  "frozen_runtime_pins": {
+    "artifact_provenance": {
+      "bytes": 1467,
+      "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/verified-provenance.json",
+      "sha256": "58b57a9f5b2403772b087c7e0594e1df90f1fa03c4ac1efac84bb5570ff3d1d7"
+    },
+    "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": {
+      "bytes": 37254,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+      "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+    },
+    "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.json": {
+      "bytes": 29763,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.json",
+      "sha256": "bc3d1ac2668728c90a4a999758dcd53e94d999152a95486a80680e2b4e8f81e9"
+    },
+    "fa": {
+      "bytes": 235320912,
+      "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+      "sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45"
+    },
+    "fa_verify": {
+      "bytes": 20226944,
+      "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+      "sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+    },
+    "portable_helper": {
+      "bytes": 35445,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_portable_proof.py",
+      "sha256": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89"
+    },
+    "registries/limits.toml": {
+      "bytes": 5112,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/registries/limits.toml",
+      "sha256": "7a87c721d4fcd1f7ae1e027d8984c6c1cd9c1e899d93cce9f1872fcea4cd9eae"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 106775,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py",
+      "sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c"
+    },
+    "scripts/public_ledger_interrupt.py": {
+      "bytes": 8636,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py",
+      "sha256": "05ca803edfc990dd39f5af3a179bcb2e2c6ca934a0e434c53141b7b93a9ad3e4"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 19743,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py",
+      "sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8"
+    },
+    "scripts/public_ledger_source_bound_replay.py": {
+      "bytes": 1740,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source_bound_replay.py",
+      "sha256": "3c5d80ac5743722d2a53fc0af3209f025a2e7b7c4ad23d2fc9d356f40439db5c"
+    },
+    "source": {
+      "bytes": 37254,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+      "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+    }
+  },
+  "frozen_runtime_pins_unchanged": true,
+  "implementation_commits": {
+    "canonical_recovery": "https://github.com/Dicklesworthstone/franken_accounting/commit/afe795be1903672e9e82bd89d2d7a3e9f76b6b3f",
+    "native_engine": "https://github.com/Dicklesworthstone/franken_accounting/commit/f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "portable_helper": "https://github.com/Dicklesworthstone/franken_accounting/commit/46e952fd6e938fa5dbe05a7b365fcb3cfce9e187"
+  },
+  "native_artifact_provenance": {
+    "archive_bytes": 43626792,
+    "archive_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/public-ledger-native-f3f1d66.zip",
+    "archive_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+    "artifact_id": 13251708810,
+    "binary_bytes": {
+      "fa": 235320912,
+      "fa-verify": 20226944
+    },
+    "binary_sha256": {
+      "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+      "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+    },
+    "cargo_lock_blob_sha1": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "executable_checks": [
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+          "--help"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "--help"
+        ],
+        "exit_code": 0
+      }
+    ],
+    "executable_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug",
+    "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+    "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "status": "VERIFIED",
+    "verified_utc": "2026-11-03T17:19:11.350058+00:00",
+    "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+    "workflow_job": 126017782741,
+    "workflow_run": 41664093934
+  },
+  "native_scope_limit": "The verified f3f1 native artifact predates later assertion-drift, FWC and CAMT Rust changes. This campaign exercises new Python recovery and proof orchestration with existing native source binding/import/proof functionality; it is not a runtime test of those later Rust changes.",
+  "recorded_utc": "2026-11-03T20:56:56.391219+00:00",
+  "scope": "All three planned controlled publication boundaries completed actual canonical recovery and independent portable verification. The earlier museum exit120 incomplete run and its later analysis-wrapper failure remain separately recorded. These are controlled orchestration interruptions after completed native publications, not internal engine crashes or a test of later unbuilt Rust changes.",
+  "source_profiles": {
+    "health-full-statewide-source": {
+      "account_count": 118,
+      "agency": "80700",
+      "agency_name": "HEALTH CARE AUTHORITY",
+      "balance_boundary": "agency-period",
+      "balance_boundary_policy": "Each entire agency/fiscal-year/period/ACTUALS population is one reconstructed activity Entry. Fund/class partitions may have nonzero net; their source fields and exact controls are retained. No amount is split, netted, rounded or added, and neither periods nor agencies offset each other. This explicitly selected boundary is not an original journal identity or a fund-balancing assertion.",
+      "classification_scope": "Declared monthly activity book; exact account621000 classification and all strict fund/class controls remain in the source manifest. No GAAP/audit statement, synthetic balancing row, cross-period cancellation, rounding or split source Entry is claimed.",
+      "monetary_rows": 1405,
+      "original_columns": 36,
+      "original_distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "runtime_input_bytes": 113856733,
+      "runtime_input_path": "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+      "runtime_input_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "source_manifest_sha256": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0",
+      "source_rows": 1440,
+      "source_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+      "zero_rows": 35
+    },
+    "museum-fixture": {
+      "account_count": 43,
+      "agency": "20400",
+      "balance_boundary": "fund-class",
+      "classification_scope": "Declared monthly activity book, not a complete government GAAP financial statement or independent audit.",
+      "fixture_bytes": 37254,
+      "fixture_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+      "input": "complete repository museum fixture selected from the pinned full OMES FY2024 Q4 distribution",
+      "monetary_rows": 121,
+      "original_columns": 36,
+      "original_distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "periods": [
+        "FY2024-P10",
+        "FY2024-P11",
+        "FY2024-P12"
+      ],
+      "runtime_input_path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+      "source_rows": 125,
+      "zero_rows": 4
+    }
+  },
+  "status": "PASS_COMPLETED_RECOVERY_CAMPAIGN_WITH_PRESERVED_PRIOR_FAILURES"
+}

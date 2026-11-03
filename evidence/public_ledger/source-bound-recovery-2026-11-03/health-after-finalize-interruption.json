@@ -1,0 +1,64 @@
+{
+  "boundary": "after-finalize",
+  "driver_sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+  "executed_arguments": [
+    "migrate",
+    "finalize",
+    "fcda7b90a2d11ca7f354e678611af2c2",
+    "--plan",
+    "-",
+    "--approval",
+    "36e6ba333e84508a5739e35bae30a236",
+    "--approval",
+    "dec70d64ead642836381631fc1011f51"
+  ],
+  "interruption_helper_sha256": "05ca803edfc990dd39f5af3a179bcb2e2c6ca934a0e434c53141b7b93a9ad3e4",
+  "native_receipt": {
+    "authority": {
+      "ops": null,
+      "posture": "embedded-owner",
+      "principal": "operator",
+      "profile": "Human"
+    },
+    "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+    "certificate": null,
+    "coordinate": {
+      "branch": "trunk",
+      "effective": "all",
+      "known_at": 87,
+      "time_evidence": null
+    },
+    "data": {
+      "action": "finalize",
+      "already_recorded": false,
+      "chunk_count": 3,
+      "control_entry": "983bb0d801987863d22872dddf1e17e7",
+      "from": "Open",
+      "recorded_at": 87,
+      "run_key": "omes-80700-run-000",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "tie_out_digest": "8a15c5b2f08eb12cfa9aa4861c7ef244258c8b88705e432ac37602d772d90803",
+      "to": "Finalized"
+    },
+    "event": "migration_controlled",
+    "next_actions": [],
+    "v": 1,
+    "warnings": []
+  },
+  "pins_sha256": "83bace5fe570032a2da80f16e89ebf2c020c290560468963d2e09acb2ac533d5",
+  "requested_arguments": [
+    "migrate",
+    "finalize",
+    "fcda7b90a2d11ca7f354e678611af2c2",
+    "--plan",
+    "-",
+    "--approval",
+    "36e6ba333e84508a5739e35bae30a236",
+    "--approval",
+    "dec70d64ead642836381631fc1011f51"
+  ],
+  "schema": "fa-public-ledger-controlled-interruption-v1",
+  "scope": "Controlled stop after a completed real native command; not a mid-transaction crash.",
+  "stdin_bytes": 903,
+  "stdin_sha256": "47f53016a3b50dae80bcf24b8a59f2895d354baefdad7d6bb51c604bc24d55d0"
+}

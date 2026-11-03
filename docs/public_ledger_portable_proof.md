@@ -259,3 +259,39 @@ cover altered report controls, wrong scope or snapshot, missing fiscal periods,
 mode contradictions and malformed framing. These arithmetic and admission
 tests do not create a new native cryptographic acceptance claim for the newer
 helper or the Rust assertion-drift implementation.
+
+## Measured canonical recovery and exact dimension proofs
+
+The subsequent [source-bound recovery campaign](../evidence/public_ledger/source-bound-recovery-validation-2026-11-03.json)
+executed the canonical recovery driver from `afe795b` and this helper from
+`46e952f` against the verified `f3f1d66` native executables. All three targeted
+durable boundaries completed: an Open package before source binding, a
+partially staged package, and an already finalized health-care import.
+Every ordinary resume inherited the original source, binding and grouping
+settings, preserved publication identities and completed the original-source
+reconciliations before a separate portable step ran.
+
+| Actual portable result after recovery | Native inputs | Source witnesses | Independent checks | Exact source comparison |
+|---|---:|---:|---:|---|
+| Museum, package/binding gap, department `1000001` | 10 | 5 | 37 | 32 net and 32 gross cells |
+| Museum, partial stage, department `1000001` | 10 | 5 | 37 | 32 net and 32 gross cells |
+| Health Care Authority, after finalization, fund `1000` | 12 | 1 | 123 | 118 net and 129 gross cells |
+| Health Care Authority, after finalization, product `00` | 12 | 1 | 6 | 1 net and 1 gross cell |
+
+Each row represents four actual commands, an independent `verified` verdict,
+the original pinned book identity, an exact June 30 stock cutoff, and stable
+input and proof-file hashes. The two health reports include the complete
+migration-run, migration-source and Entry-fragment closure from all 1,405
+original monetary legs. Product `00` is a small source slice, while the fund
+report exercises the entire 118-account population. The public record keeps
+each proof's actual command transcript and validation result separate.
+
+The [recovered museum offline example](../examples/public_ledger/museum_recovered_source_bound/README.md)
+contains the actual package-gap recovery's public proof in 29,470 compressed
+bytes, with no native book or private key. Its manifest provides the original
+and compressed hashes, certificate, fixture trust anchor and measured recovery
+history. The earlier capacity interruption and later transcript-analysis
+failure remain recorded; neither is silently turned into a successful run.
+These native results validate the new Python recovery and proof paths. The
+later Rust assertion-drift implementation still requires its own compiled
+regression results.
