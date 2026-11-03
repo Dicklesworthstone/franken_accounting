@@ -1533,6 +1533,213 @@ fn pinned_auditors_read_plain_aging_at_their_prefix() {
     assert_eq!(head(&f), revoked_head);
 }
 
+#[test]
+fn pinned_auditors_read_plain_cash_flow_at_their_prefix() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at");
+    let pin_text = pin.to_string();
+    let (pinned, commitment) = f.issue("cash-flow-pinned", &["--known-at-most", &pin_text]);
+    let (producer, _) = f.issue_ops(
+        "cash-flow-pinned-producer",
+        &["read", "produce"],
+        &["--known-at-most", &pin_text],
+    );
+    let head = |f: &Fixture| {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    let source = f.ok(&[
+        "gl",
+        "detail",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-04-30",
+        "--as-known-at",
+        &pin_text,
+    ]);
+    let lines = data(&source).get("lines").and_then(Json::as_arr).unwrap();
+    assert_eq!(lines.len(), 1);
+    let line = &lines[0];
+    let assignment = json::obj(vec![
+        ("entry_digest", line.get("entry_digest").unwrap().clone()),
+        ("leg_index", line.get("leg_index").unwrap().clone()),
+        ("activity", json::s("operating")),
+    ]);
+    let direct = json::obj(vec![
+        ("name", json::s("cash-pinned")),
+        ("assignments", Json::Arr(vec![assignment])),
+    ]);
+    let rules = json::obj(vec![
+        ("name", json::s("cash-pinned")),
+        (
+            "account_rules",
+            Json::Arr(vec![json::obj(vec![
+                ("account", json::s("4000")),
+                ("activity", json::s("operating")),
+            ])]),
+        ),
+    ]);
+    let split = json::obj(vec![
+        ("name", json::s("cash-pinned")),
+        (
+            "splits",
+            Json::Arr(vec![json::obj(vec![
+                ("entry_digest", line.get("entry_digest").unwrap().clone()),
+                ("leg_index", line.get("leg_index").unwrap().clone()),
+                ("reason", json::s("The original operating receipt")),
+                (
+                    "portions",
+                    Json::Arr(vec![json::obj(vec![
+                        ("activity", json::s("operating")),
+                        ("amount", json::s("5.00 USD")),
+                    ])]),
+                ),
+            ])]),
+        ),
+    ]);
+    let mut indirect = rules.clone();
+    let Json::Obj(fields) = &mut indirect else {
+        unreachable!()
+    };
+    fields.push(("adjustments".into(), Json::Arr(Vec::new())));
+    let before = head(&f);
+    let mut questions = Vec::new();
+    for (kind, event, policy, indirect) in [
+        ("explicit", "cash_flow", direct, false),
+        ("rules", "policy_cash_flow", rules, false),
+        ("split", "split_cash_flow", split, false),
+        ("indirect", "indirect_cash_flow", indirect, true),
+    ] {
+        let policy_path = format!("{kind}-cash-policy.json");
+        std::fs::write(f.dir.join(&policy_path), policy.render()).unwrap();
+        let mut selected = vec![
+            "gl",
+            "cash-flow",
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-04-30",
+            "--policy",
+            policy_path.as_str(),
+        ];
+        if indirect {
+            selected.extend([
+                "--indirect",
+                "--income-period",
+                "FY2026-P03",
+                "--income-period",
+                "FY2026-P04",
+            ]);
+        }
+        let mut historical = selected.clone();
+        historical.extend(["--as-known-at", pin_text.as_str()]);
+        let expected = f.ok(&historical);
+        let mut scoped = vec!["--token", pinned.as_str()];
+        scoped.extend_from_slice(&historical);
+        let read = f.ok(&scoped);
+        assert_eq!(text(&read, "event"), event);
+        assert_eq!(data(&read), data(&expected));
+        assert_eq!(number(read.get("coordinate").unwrap(), "known_at"), pin);
+        let units = data(&read).get("units").and_then(Json::as_arr).unwrap();
+        assert_eq!(units.len(), 1);
+        assert_eq!(text(&units[0], "opening"), "0.00 USD");
+        for field in ["operating", "net_change", "closing"] {
+            assert_eq!(text(&units[0], field), "5.00 USD", "{kind}/{field}");
+        }
+        // Account rules classify both real receipts at HEAD, while the pin
+        // includes only March's receipt, even across the same effective window.
+        if kind == "rules" || indirect {
+            let current = f.ok(&selected);
+            let units = data(&current).get("units").and_then(Json::as_arr).unwrap();
+            assert_eq!(text(&units[0], "closing"), "12.00 USD");
+        }
+        let settled = head(&f);
+        let later = (pin + 1).to_string();
+        for suffix in [
+            vec![],
+            vec!["--as-known-at", "HEAD"],
+            vec!["--as-known-at", later.as_str()],
+            vec!["--as-known-at", "2026-03-31T00:00:00Z"],
+        ] {
+            let mut outside = vec!["--token", pinned.as_str()];
+            outside.extend_from_slice(&selected);
+            outside.extend(suffix);
+            let policy_index = outside.iter().position(|word| *word == "--policy").unwrap() + 1;
+            outside[policy_index] = "missing-cash-policy.json";
+            f.out_of_scope(&outside, "known_at");
+        }
+        let output = format!("{kind}-cash-certificate.bin");
+        let mut certified = vec!["--token", producer.as_str()];
+        certified.extend_from_slice(&historical);
+        certified.extend(["--certify", "--certificate-out", output.as_str()]);
+        f.out_of_scope(&certified, "known_at");
+        assert!(!f.dir.join(output).exists());
+        assert_eq!(head(&f), settled, "refusals publish no AccessEvent");
+        questions.push(
+            historical
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+    }
+    let recorded = number(
+        data(&f.ok(&["access", "log", "--since", &before.to_string()])),
+        "count",
+    );
+    assert_eq!(
+        recorded, 4,
+        "one AccessEvent per admitted logical token read"
+    );
+    assert_eq!(head(&f), before + recorded);
+    for (holder, scope, caveat) in [
+        (
+            "cash-flow-period",
+            vec!["--period", "FY2026-P03"],
+            "periods",
+        ),
+        (
+            "cash-flow-effective",
+            vec!["--effective-through", "2026-04-30"],
+            "effective",
+        ),
+        ("cash-flow-account", vec!["--account", "1000"], "accounts"),
+    ] {
+        let (token, _) = f.issue(holder, &scope);
+        let settled = head(&f);
+        for question in &questions {
+            let mut denied = vec!["--token", token.as_str()];
+            denied.extend(question.iter().map(String::as_str));
+            f.out_of_scope(&denied, caveat);
+        }
+        assert_eq!(head(&f), settled);
+    }
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let settled = head(&f);
+    for question in &questions {
+        let mut denied = vec!["--token", pinned.as_str()];
+        denied.extend(question.iter().map(String::as_str));
+        let (exit, refusal) = f.run(&denied);
+        assert_eq!(exit, 7, "{refusal:?}");
+        assert!(text(data(&refusal), "message").contains("revoked"));
+    }
+    assert_eq!(head(&f), settled);
+}
+
 /// A statement's columns are judged by what their basis folds (fa-0x0): an
 /// activity statement reaches exactly its periods, a stock statement every
 /// period through its latest one, both at the selected frontier. Inside the

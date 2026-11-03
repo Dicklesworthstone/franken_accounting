@@ -18982,7 +18982,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let admit_report = |book: &mut Book| -> Result<(), Fail> {
         if certify {
             gl_certificate_preflight(book, &ctx.files, args, &capability)?;
-        } else if matches!(sub, Some("detail" | "roll-forward"))
+        } else if matches!(sub, Some("detail" | "roll-forward" | "cash-flow"))
             || sub == Some("aging") && !args.switch("--reconcile")
         {
             // These plain reports read one complete recorded prefix before
