@@ -44,6 +44,23 @@ rows, 127 entries and 2,860 legs. The comparison with 463 calls and 113.172
 seconds is diagnostic evidence from separate shared-host executions; both
 earlier records remain unchanged.
 
+A fresh complete HMRC run enabled
+`--batch-approvals --batch-evidence --bind-source`: **100 native calls,
+38.402 seconds and all 29 checks passed**, with process exit zero on frozen
+`d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6` binaries. All 1,430 raw source
+observations still produce 127 entries and 2,860 legs. The native source
+manifest binds all 2,860 normalized CSV rows and every original package member;
+source coverage is complete before independently approved finalization, and
+preparation retries preserve the original package and BindSource receipt even
+after finalization. The actual report includes the exact minor-1 source witness
+and passes the standalone verifier; the damaged bundle is refused. The
+[execution evidence](../../evidence/public_spend/hmrc-2025-03-source-bound-native-2026-11-03.json)
+records source, helper and native hashes, verified individual approval/evidence
+receipt counts and transcript hashes, exact retries and the separate
+upload/binding coordinates. The earlier 463-call/113.172-second confirmation
+and 219-call/65.599-second approval-only records remain unchanged; these are
+separate shared-host observations, not a controlled performance comparison.
+
 The native report covers the explicitly modeled GBP expenditure and offset
 accounts. Supplier, area, reference and other original fields remain in retained
 source/provenance evidence and source-side controls; this runner does not claim

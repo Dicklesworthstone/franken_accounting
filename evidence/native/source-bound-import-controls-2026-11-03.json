@@ -323,6 +323,97 @@
   },
   "format": "fa_native_source_binding_execution_evidence_v1",
   "integration_boundary": "These executions preceded incoming9022 functional dimension reporting and613b grouped-approval admission ordering. Both incoming changes are preserved in the publication parent. Fresh merged native checks and corpus runs require their own actual evidence.",
+  "merged_d8a00109_native_execution": {
+    "binaries": {
+      "fa": {
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fa",
+        "sha256": "fcc24183a50b9363e83acb721f95a9761f5f3d49542e647347e0ade5c2c372b3",
+        "size_bytes": 240867184
+      },
+      "fa-verify": {
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fa-verify",
+        "sha256": "3261595874b1129d67f8e09e475195aeb29ff34ac20ffaf1bbe7819acee3112c",
+        "size_bytes": 20210968
+      },
+      "fad": {
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fad",
+        "sha256": "34da1117829c59bfb92a91afde535ff81f28fb0a7a7ed334ca2a16216a62ee7c",
+        "size_bytes": 242594648
+      }
+    },
+    "builds": [
+      {
+        "command": "cargo -Zprofile-rustflags build --locked -j 1 -p fa-cli --bin fa -p fa-verify --bin fa-verify -p fad --bin fad",
+        "exec_session_id": 99647,
+        "exit_code": 0,
+        "log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/native-build-d8a00109.log",
+        "log_sha256": "e9a8fb871ba688856bfc80eca495d1cda6dc860579caba69a915550020a3fbaa",
+        "targets": [
+          "fa",
+          "fa-verify",
+          "fad"
+        ]
+      }
+    ],
+    "cargo": "cargo 1.100.0-nightly (e8cb624d5 2026-08-22)",
+    "created_utc": "2026-11-03T05:23:33.454998+00:00",
+    "dev_debug": "0",
+    "diagnostic_note": "The approval-group warm Cargo transcript replayed an earlier cached E0464 diagnostic, then exited0 and executed all7 tests successfully. The independent native build exited0 with no such diagnostic.",
+    "manifest_sha256": "996163b464ac17b50b3f0d5f0790f5e037802746e7a20ac5206c38782e4b56c2",
+    "merged_tree_checks": [
+      {
+        "actual_process_exit": 0,
+        "exec_session_id": 53067,
+        "log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/source-binding-cli-merged-d8a00109.log",
+        "log_sha256": "82c646cc12f3ca36c830ef7ec94aa4590aa3fbb2f9a6f69c8db090b739023b34",
+        "passed_test_names": [
+          "source_binding::an_existing_binding_does_not_lend_its_original_principal_to_a_prepare_retry",
+          "source_binding::binding_is_opt_in_and_never_retrofits_staged_or_terminal_legacy_runs",
+          "source_binding::bound_cli_refuses_offsetting_omission_and_preserves_terminal_retry_and_v4_proof",
+          "source_binding::bound_import_rejects_resealed_package_substitution_and_native_foreign_members",
+          "source_binding::upload_then_binding_expiry_preserves_package_and_recovers_under_current_authority"
+        ],
+        "scope": "source-binding"
+      },
+      {
+        "actual_process_exit": 0,
+        "exec_session_id": 95763,
+        "log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/approval-groups-merged-d8a00109.log",
+        "log_sha256": "55d956a8f2f1d4029f4072cd015e4b355bfc648d6cfd8bd8db40b9af1b0391ad",
+        "passed_test_names": [
+          "approval_groups::approval_groups_bind_each_signed_proposal_and_check_current_keys_on_retry",
+          "approval_groups::approval_groups_preserve_legacy_last_value_and_native_signing_requirements",
+          "approval_groups::approval_groups_preserve_order_retry_identity_and_independent_reviewers",
+          "approval_groups::approval_groups_prevalidate_every_member_and_bound_forwarded_input",
+          "approval_groups::approval_groups_read_real_process_stdin_at_the_exact_byte_limit",
+          "approval_groups::approval_groups_recheck_current_authority_between_members_and_before_retry",
+          "approval_groups::approval_groups_record_and_retry_more_than_a_thousand_native_members"
+        ],
+        "scope": "approval-groups"
+      },
+      {
+        "actual_process_exit": 0,
+        "exec_session_id": 53430,
+        "log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/robot-schema-merged-d8a00109.log",
+        "log_sha256": "7648611d38f3a0543b3d1f16e956b70d8bcca791e7d298f6fc8501976a066c8b",
+        "passed_test_names": [
+          "the_fixture_is_one_appendix_d_robot_line",
+          "the_robot_schema_is_pinned_byte_for_byte"
+        ],
+        "scope": "robot-schema"
+      }
+    ],
+    "older_snapshots_verified_unchanged": [
+      "93714f77",
+      "f543eae8"
+    ],
+    "profile_config": "[unstable]\ngit = \"shallow-deps\"\nprofile-hint-mostly-unused = true\nprofile-rustflags = true\n\n# Preserve source, assertions and overflow checks on this 8 GiB execution host.\n# Deferred code generation avoids optimizing the entire monolithic runtime.\n[profile.dev.package.asupersync]\nopt-level = 0\nhint-mostly-unused = true\nrustflags = [\"-Zhint-mostly-unused\", \"-Zthreads=1\", \"-Zmir-opt-level=0\"]\n\n[profile.test.package.asupersync]\nopt-level = 0\nhint-mostly-unused = true\nrustflags = [\"-Zhint-mostly-unused\", \"-Zthreads=1\", \"-Zmir-opt-level=0\"]\n",
+    "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "scope": "Exact clean committed-tree native build and14 targeted integration tests; not a whole-workspace/Tier0 verdict.",
+    "source_commit": "d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6",
+    "source_tree": "69a1c4b1f7bbf029ad5fca1582e29fbe081c26ff",
+    "tracked_worktree_clean": true
+  },
   "public_data_python": {
     "actual_process_exit": 0,
     "log_path": "/workspace/scratch/e7855ec4cca9/fa-public-source-binding-proposal/integrated-python-tests.log",

@@ -1,0 +1,382 @@
+{
+  "approval_group_requests": 6,
+  "batch_approvals": true,
+  "batch_evidence": true,
+  "bind_source": true,
+  "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+  "build_scope": {
+    "debug_info": "0",
+    "measurement": "One complete execution on a shared development host; not a release throughput benchmark or controlled comparison",
+    "profile": "dev",
+    "runtime_override": "asupersync opt-level=0; hint-mostly-unused; -Zthreads=1; -Zmir-opt-level=0",
+    "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)"
+  },
+  "bulk_transport": "direct_cli",
+  "bundle_sha256": "d3c88994146d6ed696211481168e3e37ef5487c26389e69b74f504718eea0de5",
+  "certificate_digest": "0c547846a3247ffc892686f764aa99c534f47521d2cef3eec858bcbc2e7d2d49",
+  "checkpoint_public_key": "7c5d83427a0ea36d110bc9e3aca66b8a456f7e9af702b1181d9c9c0559c3aca4",
+  "checks": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "approval_groups_bound_to_each_digest_and_reviewer",
+    "approval_group_retry_without_publication",
+    "group_evidence_binds_every_entry_and_source_commitment",
+    "evidence_group_retry_without_publication",
+    "native_source_binding_matches_complete_prepared_population",
+    "bound_prepare_retry_without_publication",
+    "source_population_complete_before_activation",
+    "terminal_binding_retry_retains_original_identity",
+    "portable_source_manifest_matches_every_prepared_proposal",
+    "executable_identity_guards"
+  ],
+  "dataset": "hmrc-2025-03",
+  "diagnostic_comparison": {
+    "earlier_executions": [
+      {
+        "checks_retained": 20,
+        "commands_sha256": "e31b2781544f6ecc174abd983e00baa0bd425817c9df4032648559390b9da476",
+        "elapsed_seconds": 113.172,
+        "evidence": "hmrc-2025-03-grouped-confirmation-2026-11-03.json",
+        "native_calls": 463,
+        "result_sha256": "3fcf0a73a2d9e219fd490925cda82e59b1c242cafcbc34f64c756f7acc0ee1fb",
+        "source_bound": false
+      },
+      {
+        "checks_retained": 22,
+        "commands_sha256": "356df374d0e9cb7975bb65d406411dae37752a85b88deec68674e56c927e5d90",
+        "elapsed_seconds": 65.599,
+        "evidence": "hmrc-2025-03-batch-approvals-native-2026-11-03.json",
+        "native_calls": 219,
+        "result_sha256": "f940c8e254bece080c90cad355baeb231665d8ab098205f62969535803942019",
+        "source_bound": false
+      }
+    ],
+    "identity_scope": "Every fresh book has its own native identities and certificate; earlier unbound runs are not reclassified as source-bound.",
+    "measurement_scope": "Separate complete executions on a shared development host; no controlled throughput or causal speedup claim.",
+    "same_pinned_source_and_full_leg_census": true
+  },
+  "document_custody": {
+    "byte_identical_source_readbacks": 6,
+    "grade": "AgentUpload",
+    "review_principal": "public-data-fixture-reviewer-a",
+    "review_scope": "Distinct same-harness fixture principal; not independent human review",
+    "reviewed_attestations": 17,
+    "self_sourced": true,
+    "uploaded_documents": 17
+  },
+  "documents": {
+    "expected_tb.json": "21bc7e366137d17ab6700630c69b6a07222e984184e5ed2fc811d51f841b59ed",
+    "legacy.csv": "b0b58133af77ec5ee5d64d7bba29944d4d9fadfddc4756d84d55f57a2ad576ce",
+    "provenance.jsonl": "a60eaeea6154f2fe5c4f5f534e9c65a07a0cc640fb692f42fa4396ce816d0746",
+    "raw.csv": "a2ca183887795418314af94311f839365b96143a4d37e0f19b6f769cd57d122d",
+    "receipt.json": "57d621e1a1a264f80ada5d4414ce4ee011fa37be960f7552fcae9447235cb8c8",
+    "records.jsonl": "63d611b574b8b1591956c76ebddd9562f3f35dfb8074dbf87b11b3403327d99f"
+  },
+  "elapsed_seconds": 38.402,
+  "evidence_builder": {
+    "bound_rechecks_sha256": "1211f3bda6b5840eabdf8cd5fe50135c03d99a6a85e5b5a4a9c97743c6c6fb4b",
+    "general_assembler_sha256": "b4b16b9b9c8abbd2523a9db1b15e04852f1932f40c4557d933fdcf7d007fec03",
+    "scope": "Read-only reconstruction after the actual native execution; no native commands were rerun to produce this compact evidence."
+  },
+  "evidence_group_requests": 3,
+  "executed_helpers": {
+    "tools/public-data/public_spend.py": {
+      "bytes": 23968,
+      "sha256": "ed376231ce90bb14bc33f1a4eae9d3d84e4b1fc3e3c58768c467fb4624bc03f3"
+    },
+    "tools/public-data/run_live.py": {
+      "bytes": 66444,
+      "sha256": "8531eab05c19d5f1020b45a604cce11a79a969d3a9fc428c8d7904607333e8f0"
+    },
+    "tools/public-data/sources.toml": {
+      "bytes": 4124,
+      "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7"
+    }
+  },
+  "fa_sha256": "fcc24183a50b9363e83acb721f95a9761f5f3d49542e647347e0ade5c2c372b3",
+  "fa_verify_sha256": "3261595874b1129d67f8e09e475195aeb29ff34ac20ffaf1bbe7819acee3112c",
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "commands.jsonl": {
+      "bytes": 60608,
+      "sha256": "8a7e7de61ac0f0771be388c1bfc1b0ff346e535e35f2ef9dee12ab1b1a375069"
+    },
+    "finalize.plan": {
+      "bytes": 451,
+      "sha256": "bbdd37ee0f6851f816bb7e7dfb74e8dab1cc9305bd8d80c58298f176e30c6a45"
+    },
+    "native.csv": {
+      "bytes": 931898,
+      "sha256": "b16fe9598ad7ef2b78f5f24f1ffd9d673a40d545ddff37d971c95bb621c05cfd"
+    },
+    "replayed.report": {
+      "bytes": 21588,
+      "sha256": "a2763e187d4459d32a3b3ab9176391f5000a81e74248c62b4c11b2e8d70ba7d6"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "sha256": "225a3128e05123789073a0fa4cfce541e28da5d93fef3f581a71114f65557d74"
+    },
+    "result.json": {
+      "bytes": 4846,
+      "sha256": "c9760eca4a08f19564f8e4c4fe59ff9b197a8983c20661e66c6130a861f41ab8"
+    },
+    "tampered-trial-balance.fab": {
+      "bytes": 1089482,
+      "sha256": "ae1e267a5de0cb3437f1fc21fef1671dcae643f97187dd89818d51f3017a434f"
+    },
+    "trial-balance.fab": {
+      "bytes": 1089482,
+      "sha256": "d3c88994146d6ed696211481168e3e37ef5487c26389e69b74f504718eea0de5"
+    },
+    "trial-balance.receipt": {
+      "bytes": 219,
+      "sha256": "183dcf2bf563c29b621fcc4dd7b2202b4f0fcb39763869e3ca49119b43568d59"
+    }
+  },
+  "independent_verification": {
+    "check_counts": [
+      {
+        "check": "canonical_report",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "report_bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "trial_balance_row",
+        "count": 135,
+        "result": "pass"
+      }
+    ],
+    "exit_code": 0,
+    "report_bundle": {
+      "bundle_digest": "9de2b87cb1dade1ef27d22b6ee9154c11ee32272fc2e151f93eba8186366e0ce",
+      "certificate_digest": "0c547846a3247ffc892686f764aa99c534f47521d2cef3eec858bcbc2e7d2d49",
+      "effective_through": 20178,
+      "known_at": 554,
+      "native_read_attestations": "retained; not used as outsider proofs",
+      "output_digest": "c376adad92ebb1dbe2ca270de2177d7fc6eea557d24bee6e7f90891111d3d84a",
+      "records": 296,
+      "report_mode": "stock",
+      "rows": 135,
+      "unit_universe_source": "not-applicable"
+    },
+    "verdict": "verified"
+  },
+  "migration_run": "372eb2c899250058c4be4383364a0da6",
+  "model_scope": {
+    "historical_span": "March 2025 source activity is carried through empty scoped months to January 1, 2026 go-live; no claim is made about later actual HMRC activity or closing balances.",
+    "native_account_categories": 134,
+    "native_offset_account": {
+      "code": "published-payment-offset",
+      "meaning": "Explicit modeled counterpart; no bank-cash balance is inferred",
+      "type": "Equity"
+    },
+    "source_fields": "Every source field, duplicate row and row identity remains in retained raw/normalized/provenance evidence. Source area, supplier, reference and other dimensions are not asserted to be native queryable dimension tags by this runner.",
+    "verification_trust": "The independently verified report is from this locally created analysis book and caller-trusted checkpoint key; it is not a HMRC-signed or audited ledger."
+  },
+  "native_calls": 100,
+  "native_exit_counts": {
+    "0": 99,
+    "8": 1
+  },
+  "native_export": {
+    "entries": 127,
+    "legs": 2860
+  },
+  "native_source_commit": "d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6",
+  "native_source_tree": "69a1c4b1f7bbf029ad5fca1582e29fbe081c26ff",
+  "observed_execution": {
+    "argv": [
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "-B",
+      "/workspace/scratch/e7855ec4cca9/fa-live-d8a00109-source-bound-helper-snapshot/tools/public-data/run_live.py",
+      "--prepared",
+      "/workspace/scratch/e7855ec4cca9/public-data-prepared-recovered/hmrc-2025-03",
+      "--dataset",
+      "hmrc-2025-03",
+      "--out",
+      "/workspace/scratch/e7855ec4cca9/fa-live-hmrc-source-bound-groups-01",
+      "--fa",
+      "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fa",
+      "--fa-verify",
+      "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fa-verify",
+      "--stage-group-size",
+      "64",
+      "--timeout",
+      "300",
+      "--batch-approvals",
+      "--batch-evidence",
+      "--bind-source"
+    ],
+    "completed_utc": "2026-11-03T05:24:28.965009+00:00",
+    "helper_manifest": "/workspace/scratch/e7855ec4cca9/fa-live-d8a00109-source-bound-helper-snapshot/manifest.json",
+    "helper_manifest_sha256": "90cbc9d2236d0420302e257ea5bf21fd5ee5aef95a27ec6af71d76f6015c6d7b",
+    "launcher_elapsed_seconds": 38.589,
+    "log": "/workspace/scratch/e7855ec4cca9/fa-live-hmrc-source-bound-groups-01.log",
+    "log_sha256": "9e9c58339431cafe050ab1c72b69ae8ef03c816cf527b4695615914b916069f4",
+    "native_manifest": "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/manifest.json",
+    "native_manifest_sha256": "996163b464ac17b50b3f0d5f0790f5e037802746e7a20ac5206c38782e4b56c2",
+    "observed_process_exit": 0,
+    "observer_artifact": {
+      "bytes": 1613,
+      "sha256": "b0d0e326da93d77384a859f1629f55064d28e8b0fa2c1f2cb4e09ea9993260e7"
+    },
+    "raw_source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+    "started_utc": "2026-11-03T05:23:50.375828+00:00"
+  },
+  "observed_process_exit": 0,
+  "output_digest": "c376adad92ebb1dbe2ca270de2177d7fc6eea557d24bee6e7f90891111d3d84a",
+  "package_oid": "0cc0649681165ac5cebd2b443fc615e78d436cba31ff6b59518e95513a586276",
+  "period": "FY2025-P03",
+  "recorded_utc": "2026-11-03T05:24:43.061629+00:00",
+  "report_coordinates": {
+    "book_id": "3eb0da0a0b7408369864243a18c625ac",
+    "certified_report_known_at": 554,
+    "finalization_control_entry": "6bc309f88529e205c9976e9d8dc1b39a",
+    "finalization_recorded_at": 553,
+    "head_after_finalization_approvals": 552,
+    "historical_empty_tb_known_at": 550,
+    "pre_finalization_known_at": 550
+  },
+  "reproduce": "python3 -B tools/public-data/run_live.py --prepared /path/to/complete-hmrc-2025-03 --dataset hmrc-2025-03 --out /path/to/new-native-execution --fa /path/to/frozen/fa --fa-verify /path/to/frozen/fa-verify --stage-group-size 64 --timeout 300 --batch-approvals --batch-evidence --bind-source",
+  "source": {
+    "byte_length": 213348,
+    "encoding": "cp1252",
+    "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "limits": "Paid invoice lines over the publication threshold, including split lines and credit notes. Values are gross including VAT; dates are payment dates. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied.",
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "publisher": "HM Revenue & Customs",
+    "title": "HMRC spending over \u00a325,000, March 2025",
+    "url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "source_acceptance_rechecks": {
+    "bind_control_entry": "1b159f3e6bd969c892ecbe8835a7f8ec",
+    "bind_recorded_at": 40,
+    "issued_reviewer_tokens": 2,
+    "native_group_receipts": {
+      "approval_fresh": 254,
+      "approval_retry": 128,
+      "evidence_fresh": 127,
+      "evidence_retry": 64,
+      "stage_fresh": 127,
+      "stage_retry": 64
+    },
+    "native_group_requests": {
+      "approval_groups": 6,
+      "evidence_groups": 3,
+      "stage_groups": 3,
+      "terminal_single_retry": 1
+    },
+    "native_prepare_calls": 3,
+    "normalized_source_rows": 2860,
+    "package_upload_recorded_at": 39,
+    "portable_witness_scope": "Exact canonical native manifest bytes observed inside a minor-1 report container; authenticated acceptance comes from the separate real fa-verify execution against its retained checkpoint and receipt.",
+    "raw_source_observations": 1430,
+    "required_checks": 29,
+    "reviewer_principals": [
+      "public-data-fixture-reviewer-a",
+      "public-data-fixture-reviewer-b"
+    ],
+    "source_scope": "The manifest binds the normalized import CSV and exact retained package; original raw acquisition and complete transformation/export are separately replayed.",
+    "terminal_single_chunk_retry": 1
+  },
+  "source_binding": {
+    "book_id": "3eb0da0a0b7408369864243a18c625ac",
+    "complete": true,
+    "expected_chunks": 127,
+    "manifest_digest": "a7248d53c9f10d693d48016456adce11d0377cae47323a578b507b3077fcd0f4",
+    "manifest_vid": "4b4286bcfc2643c8d14a3d3f1a4a9d62",
+    "missing_chunks": [],
+    "package_commit": "69a9d7040b0913d8d2fdbf5f36813a5fed8b87e697cc55a19c56e66f78bbb57a",
+    "package_oid": "0cc0649681165ac5cebd2b443fc615e78d436cba31ff6b59518e95513a586276",
+    "recorded_chunks": 127,
+    "run_body_digest": "85cc517a74fb554bd0cabda35211b38773b47093b5bf37ec4f478ffb8208d1a2",
+    "run_vid": "372eb2c899250058c4be4383364a0da6",
+    "source_commit": "bf64e4efaaf56381baa9c81c278cb1f2ef748b35e28b0c7d98c1e8c53494b322",
+    "source_oid": "b0b58133af77ec5ee5d64d7bba29944d4d9fadfddc4756d84d55f57a2ad576ce",
+    "source_rows": 2860,
+    "unexpected_chunks": []
+  },
+  "source_binding_receipt": {
+    "already_recorded": false,
+    "control_entry": "1b159f3e6bd969c892ecbe8835a7f8ec",
+    "recorded_at": 40
+  },
+  "source_report": {
+    "bind_leaf_index": 38,
+    "major": 1,
+    "manifest_bytes": 6322,
+    "minor": 1,
+    "source_witnesses": 1
+  },
+  "source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+  "source_stats": {
+    "date_count": 21,
+    "duplicate_rows": 1,
+    "expense_area_count": 42,
+    "expense_type_count": 134,
+    "max_minor": "1507727368",
+    "max_transaction_rows": 12,
+    "min_minor": "-321224815",
+    "negative_minor": "-942246241",
+    "negative_rows": 125,
+    "net_minor": "28574458415",
+    "positive_minor": "29516704656",
+    "positive_rows": 1305,
+    "row_count": 1430,
+    "split_transaction_count": 71,
+    "supplier_count": 160,
+    "transaction_count": 1321,
+    "zero_rows": 0
+  },
+  "stage_group_size": 64,
+  "stage_requests": 2,
+  "status": "PASS",
+  "tamper_refusal": {
+    "exit_code": 8,
+    "failed_checks": [
+      {
+        "check": "record_derivation",
+        "detail": {},
+        "reason": "Digest { which: \"supplement.body_digest\" }",
+        "result": "fail",
+        "scope": "recomputation"
+      }
+    ],
+    "mutation": "Flip one bit at the midpoint of the authentic report-bundle bytes; retain the original trusted key, checkpoint, receipt and expected certificate digest",
+    "verdict": "failed"
+  },
+  "transcript_scope": "commands.jsonl binds all 100 started/completed commands, their stdout/stderr SHA-256 values and each exact forwarded stdin request. All referenced transcript file hashes and stdin lengths were independently rechecked when preparing this summary."
+}
