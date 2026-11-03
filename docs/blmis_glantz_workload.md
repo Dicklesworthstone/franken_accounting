@@ -118,8 +118,8 @@ difference is exposed in the account comparison, not silently rounded away.
 
 Finally the driver checks native registers against folds, projections, source
 document custody, a signed accumulator checkpoint, all **744 CSV/ADS legs**,
-all six actual native party-value identities, and independent ADS proof
-verification. The standalone verifier must reject both a one-cent mutation
+all six actual native party-value identities, and independent ADS
+accumulator proof verification. The standalone verifier must reject both a one-cent mutation
 and a party-only mutation. The PDF, raw extraction layout, source records,
 normalization manifest and extraction receipt are retained as native evidence
 with explicit self-sourced AgentUpload custody and distinct local fixture
@@ -173,7 +173,7 @@ in the [compact execution evidence](../evidence/blmis/glantz-six-native-2026-11-
 | Investor principal | All six version-5 outcomes matched cash and credited transfers; the earlier cash-only result remained unchanged after the transfer role was recorded |
 | Native materializations | All 143 active monthly registers and the projections verified |
 | Portable exports | CSV-GL and ADS round trips passed; both source comparisons covered every monetary field, description, citation memo, provenance value and party tag on all 744 legs |
-| Independent proof | `fa-verify` accepted the original ADS package with `complete_native_leg_identities` on 744 rows, then exited 8 for both the one-cent amount mutation and the party-only mutation |
+| Independent accumulator proof verification | `fa-verify` accepted the original ADS package with `complete_native_leg_identities` on 744 rows, then exited 8 for both the one-cent amount mutation and the party-only mutation |
 
 The actual runs exposed three helper contract errors: assigning the
 Liability-only `investor_capital` role to declared Equity accounts, expecting
@@ -184,7 +184,7 @@ successful report and command transcript remain available outside Git; the
 compact evidence records their hashes and the exact reproduction command.
 
 All **79 Python helper tests passed with the original PDF supplied**, with no
-skips. Those tests, this measured native execution, and any Rust workspace or
+skips. Those tests, this native execution, and any Rust workspace or
 CI gate are separate results. The evidence keeps the $9 and intermediate $1
 source discrepancies, the named same-day display rule, and the scope of the
 trustee's credited transfers. Source custody remains `AgentUpload` with a
@@ -528,7 +528,7 @@ complete export comparisons and the actual verifier responses. The accepted
 and `ads-dimension-tampered/` negative controls. `commands.jsonl` retains
 commands, stdout, stderr and exit codes. A failed run retains `failure.json`
 when an output directory has already been created. Keep the run directory to
-inspect the original evidence, prepared package, native book and exported proof.
+inspect the original evidence, prepared package, native book and proof export.
 
 The [public-ledger workflow](../.github/workflows/public-ledger.yml) runs the
 offline BLMIS checks and schedules this native workload after its pinned native

@@ -26,7 +26,7 @@ validation records; a successful source check does not establish a native pass.
 ## Native replay validation (2026-11-03)
 
 **Earlier account-level native replays passed for all three complete agency
-fixtures, including independent proof verification and rejection of a one-cent
+fixtures, including independent accumulator proof verification and rejection of a one-cent
 corrupted extract.** The current grouped-staging and department/export extensions
 require their own native replay; the measurements below do not validate them.
 The actual `fa` and `fa-verify` binaries executed 608 commands against fresh
@@ -127,7 +127,8 @@ space in `text/csv; charset=windows-1252`. The driver now sends the admitted
 `text/csv;charset=windows-1252` token while retaining the exact original bytes
 and encoding. The regression checks both native token restrictions and MIME
 charset semantics. That earlier build does not validate subsequent Rust or
-runner changes, and it did not reach migration, reports, or proof verification.
+runner changes, and it did not reach migration, reports, or accumulator proof
+verification.
 
 The upload path now also records its actual `AgentUpload` provenance and requires
 a native `Reviewed` attestation by a distinct local fixture principal before
@@ -475,7 +476,7 @@ balanced entry that violates per-entity balance. Those new Rust tests are
 **UNRUN** in this authoring session: the prerequisite native build was
 unavailable and the executor subsequently disconnected.
 
-## Preserve attribution through CSV, ADS and offline proof verification
+## Preserve attribution through CSV, ADS and offline accumulator proof verification
 
 The native format journal carries every leg's complete dimension set, including
 an empty set for an untagged leg. Canonical CSV adds `dimension_set_v1` and ADS
@@ -517,8 +518,8 @@ negative controls. `ads-tampered/` changes one cent.
 all 13 monetary and text fields, every other dimension, and the original line
 ending. The actual `fa-verify ads` process must reject each with exit 8.
 `report.json` records the source comparisons, explicit dimension coverage,
-exact tamper mutations and verifier responses. The dimension proof establishes
-agreement with native journal history; the separate source oracle establishes
+exact tamper mutations and verifier responses. The accumulator proof's dimension
+check establishes agreement with native journal history; the separate source oracle establishes
 agreement with this published source's attribution.
 
 ## What the complete statewide profile reveals
@@ -570,8 +571,8 @@ The profile reports the affected groups and source ordinals for investigation.
   independently replay the CSV transformation or establish the source's
   economic truth or completeness outside that package. The replay drivers
   still check every source chunk and gross activity against the original
-  source. Portable proof coverage states whether the manifest was supplied
-  and verified; an arbitrary Workpaper or a CLI count cannot establish it.
+  source. Portable balance proof and report bundle coverage states whether the
+  manifest was supplied and verified; an arbitrary Workpaper or a CLI count cannot establish it.
 - The larger selection still has bounded group sizes. It does not settle
   `fa-fdt`/`fa-zddh` large-entry and million-line bulk-migration acceptance.
   Unsupported native sizes must be reported, never addressed by inventing
@@ -580,10 +581,11 @@ The profile reports the affected groups and source ordinals for investigation.
   local test book from the caller. It does not learn its trust anchor from an
   untrusted incoming bundle, and this exercise does not authenticate an external
   agency's signing key.
-- Proof verification checks the export's agreement with native journal history.
-  Source-row preservation and the accounting crosswalk are separately checked
-  by the pinned-source manifest and the original-source oracle. A native proof
-  alone cannot establish that an upstream publication was complete or correct.
+- Accumulator proof verification checks the export's agreement with native
+  journal history. Source-row preservation and the accounting crosswalk are
+  separately checked by the pinned-source manifest and the original-source
+  oracle. A native accumulator proof alone cannot establish that an upstream
+  publication was complete or correct.
 
 For a run's actual execution evidence, inspect its `report.json` and
 `commands.jsonl`. The source/profile tests, targeted Rust tests and repository

@@ -255,7 +255,7 @@ Each `attempts/000001/`, `attempts/000002/`, and subsequent directory holds
 its own command transcript, exports, tamper controls and failure or success
 report. Existing partial exports are not overwritten. The top-level
 `report.json` is published only after a complete successful native run,
-including independent ADS proof verification with dimension coverage and
+including independent ADS accumulator proof verification with dimension coverage and
 amount-only and dimension-only negative controls. Resuming a completed run
 refuses and points to that existing report.
 
@@ -291,8 +291,8 @@ to exactly zero.
 
 These are independent implementation comparisons and exact read-backs from
 a documented construction. They are not independently published closing
-trial balances, an audit opinion, proof that the public export contains every
-transaction in the state's system, or evidence that an anomaly is fraud.
+trial balances, an audit opinion, a demonstration that the public export contains
+every transaction in the state's system, or evidence that an anomaly is fraud.
 
 ## Validation status
 
@@ -393,7 +393,8 @@ historical evidence above is unchanged. The driver still checks every source
 chunk and gross activity against the original source: package membership does
 not independently establish the CSV transformation or the source's economic
 truth. See [source-bound migration completeness](migration_source_completeness.md)
-for the native and independent proof boundaries.
+for what native admission and the independent balance proof and report bundle
+checks each establish.
 
 Broader source coverage also needs a declared treatment of fractional cents
 and separately sourced opening/closing controls. Other agencies' funding
