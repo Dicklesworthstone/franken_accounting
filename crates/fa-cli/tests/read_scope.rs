@@ -1650,7 +1650,15 @@ fn pinned_auditors_read_plain_cash_flow_at_their_prefix() {
         let units = data(&read).get("units").and_then(Json::as_arr).unwrap();
         assert_eq!(units.len(), 1);
         assert_eq!(text(&units[0], "opening"), "0.00 USD");
-        for field in ["operating", "net_change", "closing"] {
+        if indirect {
+            assert_eq!(text(&units[0], "operating"), "5.00 USD");
+        } else {
+            let operating = units[0].get("operating").unwrap();
+            assert_eq!(text(operating, "inflows"), "5.00 USD");
+            assert_eq!(text(operating, "outflows"), "0.00 USD");
+            assert_eq!(text(operating, "net"), "5.00 USD");
+        }
+        for field in ["net_change", "closing"] {
             assert_eq!(text(&units[0], field), "5.00 USD", "{kind}/{field}");
         }
         // Account rules classify both real receipts at HEAD, while the pin
