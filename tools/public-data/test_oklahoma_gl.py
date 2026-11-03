@@ -10,6 +10,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 
 HERE = Path(__file__).resolve().parent
@@ -223,6 +224,21 @@ class OklahomaPublicDataTests(unittest.TestCase):
         self.assertEqual(manifest["normalized_legs"], 306)
         self.assertEqual({p.name for p in folder.iterdir()},
                          {"source.csv", "legacy.csv", "chart.json", "column_map.toml", "manifest.json"})
+        # Native migrate import receives account_map separately in its intent;
+        # a second mapping in column_map is refused even when it is identical.
+        columns = tomllib.loads((folder / "column_map.toml").read_text(encoding="utf-8"))
+        self.assertEqual(set(columns), {"columns"})
+        self.assertEqual(columns["columns"], {
+            "source_system": "oklahoma-omes-period-activity-v1",
+            "default_unit": "USD",
+            "entry_id_column": "entry_id",
+            "effective_date_column": "effective_date",
+            "account_column": "account",
+            "signed_amount_column": "amount",
+            "unit_column": "currency",
+            "description_column": "description",
+            "memo_column": "memo",
+        })
 
     def test_network_redirect_policy_stays_on_public_https_source_hosts(self):
         redirect = gl.PublicRedirect()

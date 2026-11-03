@@ -1709,3 +1709,31 @@ bundle with check exit 143 and note
 does not qualify a full pass or permit resume. No old-source MCP retry,
 cap increase, cache manipulation or skipped assertion substitutes for
 native execution of the corrected source.
+
+## 2026-11-03 — Oklahoma prepared columns duplicate the intent account map
+
+StormyLion's native probe147 on `dd0f177e5` plus its unrelated changes ran
+the complete `legacy_migration` target: 28 passed, one failed (Agent Mail
+6302). `oklahoma::public_oklahoma_activity_imports_all_source_legs_and_replays_certified_folds`
+failed at actual `migrate import --action prepare`: usage exit 2,
+`column_map must not contain a second account_map`. The importer explicitly
+requires the intent's account map to be the only mapping. The authoring
+helper instead put another identical map in `column_map.toml`.
+
+The helper now emits column declarations only, keeping the existing native
+intent mapping and importer refusal intact. The existing complete-package
+test decodes the actual prepared TOML with the standard-library parser and
+requires exactly its nine declared columns. Before changing the producer
+(blob `90d4cd80b2cf7f0ab1c644618550a82228637682`), the whole 17-test helper
+suite exited 1: 16 passed and only that strengthened test failed on the
+extra `account_map` table. After the two-line producer correction, all 17
+passed with exit 0. No original assertion or test was removed; source bytes,
+row-index checks, exact monetary controls, no-overwrite behavior and the
+five output artifact names remain unchanged.
+
+The peer result is native evidence on its stated source, and the local
+before/after results are helper-unit evidence. Native migration of this
+corrected output and the required full gate are still pending. The frozen
+`0ee1cb11` compile/MCP runs started before this change and cannot qualify it.
+The original `fa-yugf` epic remains open with its dependencies intact; this
+integration contribution does not complete or bypass its case-study scope.
