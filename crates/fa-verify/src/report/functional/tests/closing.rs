@@ -160,6 +160,17 @@ fn source_digest_in_state(
     spec: &[u8],
     state: u8,
 ) -> [u8; 32] {
+    source_digest_with_funds(version, route, sources, spec, state, &[])
+}
+
+fn source_digest_with_funds(
+    version: u16,
+    route: &Record,
+    sources: &[(&Record, &[u64])],
+    spec: &[u8],
+    state: u8,
+    funds: &[&Record],
+) -> [u8; 32] {
     let mut w = Writer::default();
     w.fixed(&BOOK)
         .i32(1970)
@@ -171,10 +182,19 @@ fn source_digest_in_state(
             b"fa:closing-routes:v1",
             &[&BOOK, &route_body()],
         ));
-    if version == 2 {
+    if matches!(version, 2 | 3) {
         w.fixed(spec)
             .fixed(&unit_table_digest())
             .fixed(&valuation::law_oid(8));
+    }
+    if version == 3 {
+        w.fixed(b"fa:year-end-close-fund-controls:v1")
+            .u64(funds.len() as u64);
+        for fund in funds {
+            w.u128(handle(fund).0)
+                .u64(fund.envelope.commit_seq)
+                .fixed(&fund.envelope.record_digest);
+        }
     }
     let mut codes = ["4000", "5000"];
     codes.sort_by_key(|code| id(code));
@@ -203,7 +223,9 @@ fn source_digest_in_state(
         }
     }
     hash_parts(
-        if version == 2 {
+        if version == 3 {
+            b"fa:year-end-close-source:v3"
+        } else if version == 2 {
             b"fa:year-end-close-source:v2"
         } else {
             b"fa:year-end-close-source:v1"
@@ -461,8 +483,8 @@ fn close(
         .bytes(b"cy")
         .bytes(b"FY1970-CLOSE")
         .fixed(&proposal[header_len..base_offset]);
-    header.u8(u8::from(version == 2));
-    if version == 2 {
+    header.u8(u8::from(matches!(version, 2 | 3)));
+    if matches!(version, 2 | 3) {
         let gross = |debit| {
             legs.iter()
                 .filter(|leg| leg.debit == debit)
@@ -586,6 +608,146 @@ fn mutate_basis(record: &Record, mutate: impl FnOnce(&mut [u8])) -> Record {
     let mut w = Writer::default();
     w.fixed(&raw);
     finish(w, record.envelope.commit_seq)
+}
+
+fn fund_id(code: &str) -> u128 {
+    let digest = framed_hash(b"fa:vid:dimension-value:v1", &[&BOOK, b"fund", code.as_bytes()]);
+    u128::from_le_bytes(digest[..16].try_into().unwrap())
+}
+
+fn fund_declaration(seq: u64, code: &str, name: &str) -> Record {
+    let mut declaration = Writer::default();
+    declaration
+        .fixed(b"fa:dimension-value:v1")
+        .bytes(b"fund")
+        .bytes(code.as_bytes())
+        .bytes(name.as_bytes())
+        .u8(0)
+        .u8(0)
+        .u8(0);
+    let mut body = Writer::default();
+    body.u8(1).u16(17).bytes(&declaration.buf);
+    control(seq, 17, 0, &body.buf, format!("fund-{code}").as_bytes())
+}
+
+fn fund_close(seq: u64, code: &str) -> Record {
+    let mut declaration = Writer::default();
+    declaration
+        .fixed(b"fa:dimension-close:v1")
+        .bytes(b"fund")
+        .bytes(code.as_bytes())
+        .i32(30);
+    let mut body = Writer::default();
+    body.u8(1).u16(19).bytes(&declaration.buf);
+    control(seq, 17, 0, &body.buf, format!("fund-close-{code}").as_bytes())
+}
+
+/// Hand-reencode only the dimensions, leaving monetary amounts and every
+/// retained valuation claim unchanged; finish recomputes all outer hashes.
+fn with_funds(record: &Record, funds: &[Option<u128>]) -> Record {
+    let proposal = &record.bytes[..record.len];
+    let mut r = Reader::new(proposal);
+    r.fixed::<42>("header").unwrap();
+    if r.present("document_date").unwrap() {
+        r.i32("document_date").unwrap();
+    }
+    crate::envelope::skip_erasable(&mut r, "description").unwrap();
+    if r.present("period").unwrap() {
+        r.bytes(128, "calendar").unwrap();
+        r.bytes(128, "period").unwrap();
+    }
+    assert_eq!(r.count(4096, 1, "legs").unwrap(), funds.len());
+    let mut w = Writer::default();
+    w.fixed(&proposal[..proposal.len() - r.remaining()]);
+    for fund in funds {
+        let start = proposal.len() - r.remaining();
+        r.fixed::<37>("leg").unwrap();
+        if r.present("base").unwrap() {
+            r.fixed::<20>("base").unwrap();
+        }
+        w.fixed(&proposal[start..proposal.len() - r.remaining()]);
+        let count = r.count(64, 20, "dimensions").unwrap();
+        for _ in 0..count {
+            r.fixed::<20>("dimension").unwrap();
+        }
+        w.count(usize::from(fund.is_some()));
+        if let Some(fund) = fund {
+            w.u32(7).u128(*fund);
+        }
+        let start = proposal.len() - r.remaining();
+        assert!(!r.present("memo").unwrap());
+        assert_eq!(r.count(0, 1, "applications").unwrap(), 0);
+        w.fixed(&proposal[start..proposal.len() - r.remaining()]);
+    }
+    w.fixed(&proposal[proposal.len() - r.remaining()..]);
+    finish(w, record.envelope.commit_seq)
+}
+
+fn fund_history() -> (Vec<Record>, Vec<RateFixture>) {
+    let spec = book(&[]);
+    let rates = vec![rate_fixture(11, 10, 1, 10), rate_fixture(6, 5, 1, 20)];
+    let mut records = declarations();
+    records.push(intake(&rates[0], 5));
+    records.push(intake(&rates[1], 6));
+    records.push(fund_declaration(7, "F1", "Restricted fund"));
+    records.push(fund_declaration(8, "F2", "General fund"));
+    records.push(with_funds(
+        &entry(
+            9, 1, 10, b"fund-sale", &pair_to("1000", "4000", 100, 110),
+            Some((1, &rates[0], None)), None, None,
+        ),
+        &[Some(fund_id("F1")); 2],
+    ));
+    records.push(with_funds(
+        &entry(
+            10, 1, 20, b"fund-return", &pair_to("4000", "1000", 100, 120),
+            Some((1, &rates[1], None)), None, None,
+        ),
+        &[Some(fund_id("F2")); 2],
+    ));
+    records.push(fund_close(11, "F1"));
+    let sources = [(&records[8], &[1_u64][..]), (&records[9], &[0_u64][..])];
+    let mut returned = pair_to("3000", "4000", 100, 120);
+    returned.swap(0, 1);
+    let mut by_fund = [
+        (fund_id("F1"), pair_to("4000", "3000", 100, 110)),
+        (fund_id("F2"), returned),
+    ];
+    by_fund.sort_by_key(|(fund, _)| *fund);
+    let legs: Vec<_> = by_fund.iter().flat_map(|(_, legs)| legs.clone()).collect();
+    let funds: Vec<_> = by_fund.iter().flat_map(|(fund, _)| [Some(*fund); 2]).collect();
+    let closing = close(12, 11, 3, b"fund-close", &legs, &records[3], &sources, &spec);
+    let digest = source_digest_with_funds(
+        3, &records[3], &sources, &spec, 1, &[&records[6], &records[7], &records[10]],
+    );
+    let closing = mutate_basis(&closing, |basis| {
+        let end = basis.len();
+        basis[end - 32..].copy_from_slice(&digest);
+    });
+    records.push(with_funds(&closing, &funds));
+    (records, rates)
+}
+
+#[test]
+fn fund_close_preserves_offsetting_values_and_closed_fund_in_complete_bundle() {
+    let (records, rates) = fund_history();
+    let (report, output) = replay(&records, &rates).unwrap();
+    assert_eq!((net(&report, "1000"), net(&report, "3000"), net(&report, "4000")), (-10, 10, 0));
+    assert_eq!(verify_packed(&records, 12, &rates, &output).unwrap().output, output);
+
+    // Equal monetary totals do not excuse losing, swapping or inventing a
+    // fund identity. Every mutant has freshly encoded entry and bundle hashes.
+    for replacement in [None, Some(fund_id("F1")), Some(fund_id("UNDECLARED"))] {
+        let mut bad = records.clone();
+        bad[11] = with_funds(&bad[11], &[replacement; 4]);
+        assert_eq!(verify_packed(&bad, 12, &rates, &output).unwrap_err().predicate, "functional_closing");
+    }
+    let mut altered = records.clone();
+    altered[6] = fund_declaration(7, "F1", "Changed fund declaration");
+    assert_eq!(verify_packed(&altered, 12, &rates, &output).unwrap_err().predicate, "functional_closing");
+    let mut old_version = records.clone();
+    old_version[11] = mutate_basis(&old_version[11], |basis| basis[14..16].copy_from_slice(&2_u16.to_le_bytes()));
+    assert!(verify_packed(&old_version, 12, &rates, &output).is_err(), "v2 must retain its refusal of funds");
 }
 
 #[test]

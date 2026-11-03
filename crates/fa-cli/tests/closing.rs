@@ -1104,15 +1104,20 @@ fn equity_roll_forward_ties_issuances_distributions_and_net_income_through_a_yea
 
 /// fa-ficc: an analytic value (a cost center) closes with its account, so a
 /// book whose expense account requires a cost center still closes its year;
-/// a fund has no closing treatment yet and is refused, writing nothing.
+/// Party still has no closing treatment and is refused, writing nothing.
 #[test]
 fn closing_binary_closes_cost_center_tagged_nominal_legs_with_their_account() {
     let tagged = |f: &Fixture, key: &str, dimension: &str, value: &str| {
+        let tag = if dimension == "party" {
+            format!(r#""party":"{value}""#)
+        } else {
+            format!(r#""dimensions":{{"{dimension}":"{value}"}}"#)
+        };
         let intent = write(
             &f.dir,
             &format!("{key}.json"),
             &format!(
-                r#"{{"effective_date":"2026-12-30","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"20.00 USD","dimensions":{{"{dimension}":"{value}"}}}},{{"side":"credit","account":"1000","amount":"20.00 USD"}}]}}"#
+                r#"{{"effective_date":"2026-12-30","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"20.00 USD",{tag}}},{{"side":"credit","account":"1000","amount":"20.00 USD"}}]}}"#
             ),
         );
         ok(
@@ -1134,11 +1139,13 @@ fn closing_binary_closes_cost_center_tagged_nominal_legs_with_their_account() {
     assert_eq!(get(&verified, "nominal_zero_at_close"), &Json::Bool(true));
 
     let g = Fixture::new(true);
-    ok(
-        &g.book,
-        &["dimension", "add", "fund", "F1", "--name", "General"],
+    let vendor = write(
+        &g.dir,
+        "vendor.json",
+        r#"{"code":"V1","kind":"Vendor","name":"Vendor"}"#,
     );
-    tagged(&g, "fund-expense", "fund", "F1");
+    ok(&g.book, &["party", "add", &vendor]);
+    tagged(&g, "party-expense", "party", "V1");
     let before = head(&g.book);
     let (code, refused) = run(
         &g.book,
@@ -1150,7 +1157,7 @@ fn closing_binary_closes_cost_center_tagged_nominal_legs_with_their_account() {
             "--period",
             "FY2026-CLOSE",
             "--key",
-            "fund-close",
+            "party-close",
             "--evidence",
             &g.evidence,
             "--yes",

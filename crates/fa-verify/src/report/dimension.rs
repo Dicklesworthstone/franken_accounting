@@ -246,7 +246,7 @@ impl History {
     }
 }
 
-fn value_vid(book: &[u8; 16], dimension: &str, value: &str) -> u128 {
+pub(super) fn value_vid(book: &[u8; 16], dimension: &str, value: &str) -> u128 {
     let mut framed = Writer::default();
     framed
         .bytes(book)

@@ -14,6 +14,10 @@ pub const YEAR_END_CLOSE_VERSION: u16 = 1;
 /// Retained native and functional carrying amounts, grouped by their exact
 /// source valuation. Version 1 remains the native base-currency computation.
 pub const YEAR_END_CLOSE_CARRYING_VERSION: u16 = 2;
+/// Retained carrying amounts partitioned by the original Fund value as well
+/// as legal entity. Fund declarations and their closing history are part of
+/// the source commitment; versions 1 and 2 keep their original computation.
+pub const YEAR_END_CLOSE_FUND_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YearEndCloseBasis {
@@ -52,7 +56,7 @@ impl YearEndCloseBasis {
         let version = r.u16("year_end_close.version")?;
         if !matches!(
             version,
-            YEAR_END_CLOSE_VERSION | YEAR_END_CLOSE_CARRYING_VERSION
+            YEAR_END_CLOSE_VERSION | YEAR_END_CLOSE_CARRYING_VERSION | YEAR_END_CLOSE_FUND_VERSION
         ) {
             return Err(r.invalid("year_end_close.version"));
         }
@@ -106,8 +110,13 @@ mod tests {
             carrying
         );
         assert_eq!(&bytes[16..], &carrying_bytes[16..]);
+        let mut fund = basis;
+        fund.version = YEAR_END_CLOSE_FUND_VERSION;
+        let fund_bytes = fund.canonical_bytes().unwrap();
+        assert_eq!(YearEndCloseBasis::decode(&fund_bytes).unwrap(), fund);
+        assert_eq!(&bytes[16..], &fund_bytes[16..]);
         let mut future = bytes;
-        future[14] = 3;
+        future[14] = 4;
         assert!(YearEndCloseBasis::decode(&future).is_err());
     }
 }

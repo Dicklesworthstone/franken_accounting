@@ -3,9 +3,10 @@
 //! The intrinsic YearEndClose computation closes Revenue/Expense leaves
 //! to their journaled Equity destinations. Version 1 retains its native
 //! base-currency format; version 2 transfers the exact native and functional
-//! carrying amounts of committed source valuations. Only the existing
-//! legal-entity balancing dimension is supported. This is not the larger
-//! CloseRun task DAG and does not execute generic Canon rules.
+//! carrying amounts of committed source valuations. Version 3 additionally
+//! preserves each source Fund value, including offsetting fund balances.
+//! This is not the larger CloseRun task DAG and does not execute generic
+//! Canon rules.
 //!
 //! Every public Closing path must reproduce extension 12 from both its
 //! saved observation and the current preparation snapshot. The original
@@ -18,12 +19,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
-use fa_model::closing::{YEAR_END_CLOSE_CARRYING_VERSION, YEAR_END_CLOSE_VERSION};
+use fa_model::closing::{
+    YEAR_END_CLOSE_CARRYING_VERSION, YEAR_END_CLOSE_FUND_VERSION, YEAR_END_CLOSE_VERSION,
+};
 use fa_model::entry::{EXTENSIONS_MINOR, YEAR_END_CLOSE_EXTENSION};
 use fa_model::symbols::{label, property};
 use fa_model::{
-    AccountType, BaseTotals, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Id128,
-    LEGAL_ENTITY_DIMENSION, LegPayload, Writer, YearEndCloseBasis, entity_value_vid, period_vid,
+    AccountType, BaseTotals, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef,
+    Id128, LEGAL_ENTITY_DIMENSION, LegPayload, Writer, YearEndCloseBasis, dimension_value_vid,
+    entity_value_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_policy::{Capability, Op, Reach};
@@ -36,6 +40,8 @@ use crate::chart::{ChartSnapshot, closing_routes_at};
 use crate::genesis::{BookContext, BookSpec, UnitPolicy};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, PeriodRow, bytes};
+
+const FUND_DIMENSION: u32 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YearEndCloseRequest {
@@ -52,6 +58,8 @@ pub struct ClosingResidual {
     pub closes_to: VId,
     pub unit: UnitId,
     pub entity: Option<VId>,
+    /// The exact original fund, never inferred from a route or another leg.
+    pub fund: Option<VId>,
     pub net: i128,
     /// Retained functional debit-minus-credit amount, in the book's base unit.
     pub base_net: i128,
@@ -194,7 +202,7 @@ fn unsupported(message: impl core::fmt::Display) -> Refusal {
         exit::REFUSAL,
         format!("year-end close: {message}"),
         "plan §5.2 / §7.5; FA-INV-03.nominal-zero; intrinsic YearEndClose",
-        "use reviewed Revenue/Expense-to-Equity routes accepting the source currencies, retained functional valuations and supported legal-entity dimensions; prepare and review fa close year-end --fiscal-year <year> --period FY<year>-CLOSE --key <new-key> --review-only (plan §7.5 / fa-4o0)",
+        "use reviewed Revenue/Expense-to-Equity routes accepting the source currencies, retained functional valuations and supported legal-entity and fund dimensions; prepare and review fa close year-end --fiscal-year <year> --period FY<year>-CLOSE --key <new-key> --review-only (plan §7.5 / fa-4o0)",
     )
 }
 
@@ -422,13 +430,19 @@ fn selected_period<V: Vfs + Clone>(
     Ok(Ok(period))
 }
 
-fn closing_entity(spec: &BookSpec, leg: &LegPayload) -> Result<Option<VId>, Refusal> {
+fn closing_entity(
+    spec: &BookSpec,
+    leg: &LegPayload,
+    preserves_fund: bool,
+) -> Result<Option<VId>, Refusal> {
     // An analytic value (a cost center, department, project, product,
     // region, grant or segment) closes with its account: the close moves the
-    // account's net per unit and entity and carries none (fa-ficc). A fund
-    // or a party has no closing treatment yet.
+    // account's net per unit and entity and carries none (fa-ficc). Version
+    // 3 separately preserves funds. Party still has no closing treatment.
     if leg.dimension_set.iter().any(|(dimension, _)| {
-        *dimension != LEGAL_ENTITY_DIMENSION && !crate::dimension::closes_with_account(*dimension)
+        *dimension != LEGAL_ENTITY_DIMENSION
+            && !(preserves_fund && *dimension == FUND_DIMENSION)
+            && !crate::dimension::closes_with_account(*dimension)
     }) {
         return Err(unsupported(
             "a nominal contribution uses a dimension without an implemented closing treatment",
@@ -661,6 +675,7 @@ fn append_pair(
     unit: UnitId,
     base_unit: UnitId,
     entity: Option<VId>,
+    fund: Option<VId>,
     balance: CarryingBalance,
     valued: bool,
 ) -> Result<(), Refusal> {
@@ -698,6 +713,9 @@ fn append_pair(
         }
         if let Some(entity) = entity {
             leg.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, entity)];
+        }
+        if let Some(fund) = fund {
+            leg.dimension_set.push((FUND_DIMENSION, fund));
         }
         legs.push(leg);
     }
@@ -741,6 +759,123 @@ fn carrying_totals(legs: &[LegPayload], base_unit: UnitId) -> Result<BaseTotals,
     })
 }
 
+enum FundControlBody {
+    Declare(crate::dimension::DimensionValueSpec),
+    Close(crate::dimension::DimensionCloseSpec),
+}
+
+struct FundControl {
+    vid: VId,
+    recorded_at: CommitSeq,
+    digest: [u8; 32],
+    body: FundControlBody,
+}
+
+fn fund_control(
+    vid: VId,
+    recorded_at: CommitSeq,
+    entry: &Entry,
+) -> Result<Option<FundControl>, KernelError> {
+    let Some(ControlPayload::SchemaChange {
+        kind,
+        canonical_bytes,
+    }) = &entry.proposal.control
+    else {
+        return Ok(None);
+    };
+    let body = match *kind {
+        crate::dimension::SCHEMA_CHANGE_DIMENSION_VALUE => {
+            let spec = crate::dimension::DimensionValueSpec::decode(canonical_bytes)?;
+            if spec.dimension != "fund" {
+                return Ok(None);
+            }
+            FundControlBody::Declare(spec)
+        }
+        crate::dimension::SCHEMA_CHANGE_DIMENSION_CLOSE => {
+            let spec = crate::dimension::DimensionCloseSpec::decode(canonical_bytes)?;
+            if spec.dimension != "fund" {
+                return Ok(None);
+            }
+            FundControlBody::Close(spec)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(FundControl {
+        vid,
+        recorded_at,
+        digest: entry.entry_digest,
+        body,
+    }))
+}
+
+/// Reconstruct fund identity and valid-time history from immutable controls.
+/// A later close of a fund does not erase its prior nominal balance: Closing
+/// carries the original value under the existing law-dictated dimension rule.
+/// The complete fund-control prefix is bound, so a new declaration or close
+/// requires fresh review even if its net amount is unchanged.
+fn bind_funds<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+    controls: &[FundControl],
+    source: &mut fgdb_crypto::Hasher,
+) -> Result<BTreeMap<VId, CommitSeq>, KernelError> {
+    let corrupt = |message: &str| KernelError::Corrupt(format!("closing funds: {message}"));
+    let mut funds: BTreeMap<VId, (crate::dimension::DimensionValueSpec, CommitSeq)> =
+        BTreeMap::new();
+    source.update(b"fa:year-end-close-fund-controls:v1");
+    source.update(&(controls.len() as u64).to_le_bytes());
+    for control in controls {
+        source.update(&control.vid.0.to_le_bytes());
+        source.update(&control.recorded_at.0.to_le_bytes());
+        source.update(&control.digest);
+        match &control.body {
+            FundControlBody::Declare(spec) => {
+                if spec.parent.as_ref().is_some_and(|parent| {
+                    !funds.contains_key(&dimension_value_vid(book.book_id, "fund", parent))
+                }) {
+                    return Err(corrupt("a parent fund was not previously declared"));
+                }
+                let vid = dimension_value_vid(book.book_id, "fund", &spec.code);
+                if funds
+                    .insert(vid, (spec.clone(), control.recorded_at))
+                    .is_some()
+                {
+                    return Err(corrupt("a fund was declared more than once"));
+                }
+            }
+            FundControlBody::Close(close) => {
+                let vid = dimension_value_vid(book.book_id, "fund", &close.code);
+                let Some((spec, _)) = funds.get_mut(&vid) else {
+                    return Err(corrupt("a fund close precedes its declaration"));
+                };
+                if spec.valid_from.is_some_and(|from| close.closed_on <= from)
+                    || spec.valid_to.is_some_and(|to| close.closed_on > to)
+                {
+                    return Err(corrupt("a fund close empties or extends its validity window"));
+                }
+                spec.valid_to = Some(close.closed_on);
+            }
+        }
+    }
+    let mut declared = BTreeMap::new();
+    for (vid, (spec, recorded_at)) in funds {
+        let row = db
+            .vertex_at(vid, at)?
+            .ok_or_else(|| corrupt("a declared fund projection is missing"))?;
+        let value = crate::dimension::DimensionValueRow::decode(&row)?
+            .ok_or_else(|| corrupt("a declared fund projection is relabeled"))?;
+        if value.dimension_id != FUND_DIMENSION
+            || value.spec != spec
+            || bytes(&row, property::BOOK_ID, "fund.book_id")? != book.book_id.0
+        {
+            return Err(corrupt("a fund projection differs from its immutable controls"));
+        }
+        declared.insert(vid, recorded_at);
+    }
+    Ok(declared)
+}
+
 fn observe<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -777,6 +912,7 @@ fn observe<V: Vfs + Clone>(
         )));
     };
     let mut entries = Vec::new();
+    let mut dimension_controls = Vec::new();
     let mut runs = BTreeMap::new();
     for row in db.vertices_at(at)? {
         cx.query()
@@ -791,6 +927,17 @@ fn observe<V: Vfs + Clone>(
                 "closing source belongs to another book or branch".into(),
             ));
         }
+        if matches!(
+            &entry.proposal.control,
+            Some(ControlPayload::SchemaChange {
+                kind: crate::dimension::SCHEMA_CHANGE_DIMENSION_VALUE
+                    | crate::dimension::SCHEMA_CHANGE_DIMENSION_CLOSE,
+                ..
+            })
+        ) {
+            dimension_controls.push((row.vid, entry, row.created_at));
+            continue;
+        }
         if entry.proposal.class == EntryClass::PENDING
             || entry.proposal.class.is_control()
             || entry.proposal.effective_date < start
@@ -803,6 +950,17 @@ fn observe<V: Vfs + Clone>(
     }
     entries.sort_by_key(|(vid, _, recorded_at)| (*recorded_at, *vid));
     let version = version.unwrap_or_else(|| {
+        if entries.iter().any(|(_, entry, _)| {
+            entry.proposal.legs.iter().any(|leg| {
+                chart
+                    .accounts()
+                    .get(&leg.account_ref)
+                    .is_some_and(|row| AccountType(row.account_type).is_flow())
+                    && leg.dimension_set.iter().any(|(id, _)| *id == FUND_DIMENSION)
+            })
+        }) {
+            return YEAR_END_CLOSE_FUND_VERSION;
+        }
         let foreign_route = routes.routes.iter().any(|(account, destination)| {
             [account, destination].into_iter().any(|vid| {
                 chart.accounts().get(vid).is_some_and(|row| {
@@ -828,15 +986,18 @@ fn observe<V: Vfs + Clone>(
     });
     let valued = match version {
         YEAR_END_CLOSE_VERSION => false,
-        YEAR_END_CLOSE_CARRYING_VERSION => true,
+        YEAR_END_CLOSE_CARRYING_VERSION | YEAR_END_CLOSE_FUND_VERSION => true,
         _ => {
             return Ok(Err(unsupported(
                 "unknown year-end closing computation version",
             )));
         }
     };
+    let preserves_fund = version == YEAR_END_CLOSE_FUND_VERSION;
     let mut source = fgdb_crypto::Hasher::new();
-    source.update(if valued {
+    source.update(if preserves_fund {
+        b"fa:year-end-close-source:v3"
+    } else if valued {
         b"fa:year-end-close-source:v2"
     } else {
         b"fa:year-end-close-source:v1"
@@ -863,7 +1024,19 @@ fn observe<V: Vfs + Clone>(
         source.update(&units);
         source.update(&crate::fx::FxLawId::YearEndCloseCarrying.oid().0);
     }
-    // Dormant routes remain bound. Version 2 checks currency acceptance for
+    let funds = if preserves_fund {
+        let mut fund_controls = Vec::new();
+        for (vid, entry, recorded_at) in dimension_controls {
+            if let Some(control) = fund_control(vid, recorded_at, &entry)? {
+                fund_controls.push(control);
+            }
+        }
+        fund_controls.sort_by_key(|control| (control.recorded_at, control.vid));
+        bind_funds(db, book, at, &fund_controls, &mut source)?
+    } else {
+        BTreeMap::new()
+    };
+    // Dormant routes remain bound. Carrying versions check currency acceptance for
     // each actual source unit instead of requiring every route to accept base.
     for (account, destination) in &routes.routes {
         for (vid, nominal) in [(*account, true), (*destination, false)] {
@@ -881,7 +1054,8 @@ fn observe<V: Vfs + Clone>(
             bind_account(&mut source, &chart, row)?;
         }
     }
-    let mut balances: BTreeMap<(VId, UnitId, Option<VId>), CarryingCell> = BTreeMap::new();
+    let mut balances: BTreeMap<(VId, UnitId, Option<VId>, Option<VId>), CarryingCell> =
+        BTreeMap::new();
     let mut latest_close = None;
     for (vid, entry, recorded_at) in entries {
         if entry.proposal.class == EntryClass::CLOSING {
@@ -933,10 +1107,22 @@ fn observe<V: Vfs + Clone>(
                     )));
                 }
             };
-            let entity = match closing_entity(&spec, leg) {
+            let entity = match closing_entity(&spec, leg, preserves_fund) {
                 Ok(entity) => entity,
                 Err(refusal) => return Ok(Err(refusal)),
             };
+            let fund = leg
+                .dimension_set
+                .iter()
+                .find(|(dimension, _)| *dimension == FUND_DIMENSION)
+                .map(|(_, value)| *value);
+            if let Some(fund) = fund
+                && funds.get(&fund).is_none_or(|declared| *declared > recorded_at)
+            {
+                return Ok(Err(unsupported(
+                    "a nominal source fund has no preceding authenticated declaration",
+                )));
+            }
             source.update(&vid.0.to_le_bytes());
             source.update(&recorded_at.0.to_le_bytes());
             source.update(&entry.entry_digest);
@@ -946,7 +1132,7 @@ fn observe<V: Vfs + Clone>(
                 Err(refusal) => return Ok(Err(refusal)),
             };
             let cell = balances
-                .entry((leg.account_ref, leg.amount.unit, entity))
+                .entry((leg.account_ref, leg.amount.unit, entity, fund))
                 .or_default();
             if let Err(refusal) = cell
                 .total
@@ -966,7 +1152,7 @@ fn observe<V: Vfs + Clone>(
     let mut residuals = Vec::new();
     let mut legs = Vec::new();
     let mut bound_unrouted = BTreeSet::new();
-    for ((account, unit, entity), cell) in balances {
+    for ((account, unit, entity, fund), cell) in balances {
         let row = &chart.accounts()[&account];
         let inactive = !row.is_leaf
             || !chart
@@ -1005,6 +1191,7 @@ fn observe<V: Vfs + Clone>(
             closes_to,
             unit,
             entity,
+            fund,
             net: cell.total.native,
             base_net: cell.total.base,
         });
@@ -1024,6 +1211,7 @@ fn observe<V: Vfs + Clone>(
                     unit,
                     spec.base_unit,
                     entity,
+                    fund,
                     balance,
                     true,
                 ) {
@@ -1039,6 +1227,7 @@ fn observe<V: Vfs + Clone>(
             unit,
             spec.base_unit,
             entity,
+            fund,
             cell.total,
             false,
         ) {
@@ -1122,15 +1311,19 @@ pub(crate) fn admit(proposal: &EntryPayload) -> Result<Option<YearEndCloseBasis>
                 ));
             }
         }
-        YEAR_END_CLOSE_CARRYING_VERSION => {
+        YEAR_END_CLOSE_CARRYING_VERSION | YEAR_END_CLOSE_FUND_VERSION => {
             let totals = proposal.base_totals.as_ref().ok_or_else(|| {
-                unsupported("version 2 requires its source-bound retained carrying law")
+                unsupported(format!(
+                    "version {} requires its source-bound retained carrying law",
+                    basis.version,
+                ))
             })?;
             let expected = carrying_totals(&proposal.legs, UnitId(totals.unit_id))?;
             if *totals != expected {
-                return Err(unsupported(
-                    "version 2 preserves exact carrying totals without new Rate documents or a residual plug",
-                ));
+                return Err(unsupported(format!(
+                    "version {} preserves exact carrying totals without new Rate documents or a residual plug",
+                    basis.version,
+                )));
             }
         }
         _ => return Err(unsupported("unknown year-end closing computation version")),
@@ -1378,7 +1571,10 @@ pub(crate) fn verify_recorded_carrying<V: Vfs + Clone>(
     let Ok(Some(basis)) = admit(&entry.proposal) else {
         return Ok(false);
     };
-    if basis.version != YEAR_END_CLOSE_CARRYING_VERSION {
+    if !matches!(
+        basis.version,
+        YEAR_END_CLOSE_CARRYING_VERSION | YEAR_END_CLOSE_FUND_VERSION
+    ) {
         return Ok(false);
     }
     verify_record(

@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn many(book: &Path, args: &[&str]) -> (i32, Vec<Json>) {
+pub(super) fn many(book: &Path, args: &[&str]) -> (i32, Vec<Json>) {
     let result = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(book)
@@ -31,7 +31,7 @@ fn many(book: &Path, args: &[&str]) -> (i32, Vec<Json>) {
     (result.status.code().unwrap_or(-1), events)
 }
 
-fn unhex(value: &str) -> Vec<u8> {
+pub(super) fn unhex(value: &str) -> Vec<u8> {
     assert_eq!(value.len() % 2, 0);
     value
         .as_bytes()
