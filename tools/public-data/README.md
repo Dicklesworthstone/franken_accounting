@@ -61,6 +61,17 @@ upload/binding coordinates. The earlier 463-call/113.172-second confirmation
 and 219-call/65.599-second approval-only records remain unchanged; these are
 separate shared-host observations, not a controlled performance comparison.
 
+An [additional complete HMRC confirmation](../../evidence/public_spend/hmrc-2025-03-source-bound-confirmation-2026-11-03.json)
+ran on frozen `33237a2d` binaries with `--bind-source --batch-approvals
+--batch-evidence`: **1,430 original rows, 127 entries, 2,860 legs, 100 native
+calls and all 29 checks passed** in **31.865 seconds**. A separate read-only
+acceptance exported a version-4 balance proof from the same authenticated
+checkpoint. All eight standalone checks passed against gross amounts
+predeclared from the pinned original CSV; changing the expected debit by one
+penny was refused with exit eight. The book head remained 556 throughout the
+extra checks, and the original runner result remained unchanged. The evidence
+retains both verifier transcripts and their exact command/output digests. This
+timing is one shared-host observation, not a benchmark or controlled comparison.
 The native report covers the explicitly modeled GBP expenditure and offset
 accounts. Supplier, area, reference and other original fields remain in retained
 source/provenance evidence and source-side controls; this runner does not claim

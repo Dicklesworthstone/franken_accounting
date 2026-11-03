@@ -1,0 +1,575 @@
+{
+  "boundaries": [
+    "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+    "The offset account is the explicitly declared expenditure-model counterpart: positive source expenditure credits it, negative source expenditure debits it. This is not a publisher bank account or original general-ledger balance.",
+    "Native binding commits the complete normalized CSV/package population; original-source transformation, original dated-leg comparison, and independent Decimal source arithmetic remain separate checked evidence.",
+    "Distinct local fixture principals exercise review and approval law without representing independent human review; native upload provenance is not upgraded.",
+    "This is a direct-CLI execution. No daemon result or interrupted-process resume is asserted. Earlier source-bound and baseline runs remain unchanged.",
+    "Retained paths document local provenance; exact source/implementation identities, outcomes, expectations and artifact hashes are embedded here."
+  ],
+  "checks_passed": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "approval_groups_bound_to_each_digest_and_reviewer",
+    "approval_group_retry_without_publication",
+    "group_evidence_binds_every_entry_and_source_commitment",
+    "evidence_group_retry_without_publication",
+    "native_source_binding_matches_complete_prepared_population",
+    "bound_prepare_retry_without_publication",
+    "source_population_complete_before_activation",
+    "terminal_binding_retry_retains_original_identity",
+    "portable_source_manifest_matches_every_prepared_proposal",
+    "executable_identity_guards"
+  ],
+  "dataset": "hmrc-2025-03",
+  "execution": {
+    "approval_group_requests_including_retries": 6,
+    "batch_approvals": true,
+    "batch_evidence": true,
+    "bind_source": true,
+    "command": [
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "-B",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.harness-source-33237a2d/tools/public-data/run_live.py",
+      "--prepared",
+      "/workspace/scratch/de9b3dc0a342/public-data-inputs/hmrc-2025-03",
+      "--dataset",
+      "hmrc-2025-03",
+      "--out",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli",
+      "--fa",
+      "/workspace/scratch/de9b3dc0a342/native-33237a2d/fa",
+      "--fa-verify",
+      "/workspace/scratch/de9b3dc0a342/native-33237a2d/fa-verify",
+      "--stage-group-size",
+      "64",
+      "--batch-approvals",
+      "--batch-evidence",
+      "--bind-source",
+      "--timeout",
+      "600"
+    ],
+    "elapsed_seconds": 31.865,
+    "evidence_group_requests_including_retry": 3,
+    "finished_at_utc": "2026-11-03T05:54:25.701926+00:00",
+    "native_calls": 100,
+    "native_exit_counts": {
+      "0": 99,
+      "8_expected_tampered_report_refusal": 1
+    },
+    "primary_stage_requests": 2,
+    "stage_group_size": 64,
+    "started_at_utc": "2026-11-03T05:53:53.647755+00:00",
+    "timing_scope": "One complete observed execution on a shared development host; not a controlled performance comparison or throughput benchmark.",
+    "transport": "direct_cli"
+  },
+  "format": "fa-public-data-native-execution-confirmation-v1",
+  "implementation": {
+    "cargo_lock_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "executables": {
+      "fa": {
+        "bytes": 240887136,
+        "sha256": "2ed833904dc70771f93cf756739bb51f59e8f305a54e48bc0fd09f62ff250b23"
+      },
+      "fa-verify": {
+        "bytes": 20213496,
+        "sha256": "55811ccd57957ca63bf6e0ffc5714cb245d6197821905a0aec252b91f38ffda8"
+      }
+    },
+    "executed_helpers": [
+      {
+        "bytes": 66444,
+        "git_blob": "4c10b3f6a532f249bb6b75d85757f1060bdf87a6",
+        "path": "tools/public-data/run_live.py",
+        "sha256": "8531eab05c19d5f1020b45a604cce11a79a969d3a9fc428c8d7904607333e8f0"
+      },
+      {
+        "bytes": 23968,
+        "git_blob": "0080de3c3e4d1cbf75d48e4f486ca507acc245f1",
+        "path": "tools/public-data/public_spend.py",
+        "sha256": "ed376231ce90bb14bc33f1a4eae9d3d84e4b1fc3e3c58768c467fb4624bc03f3"
+      },
+      {
+        "bytes": 4124,
+        "git_blob": "f44b473c310048f97f83f7ba3db852e0af7a6846",
+        "path": "tools/public-data/sources.toml",
+        "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7"
+      }
+    ],
+    "harness_boundary": "All harness files were frozen from this Git commit before native execution.",
+    "harness_captured_at_utc": "2026-11-03T05:53:53.647440+00:00",
+    "source_commit": "33237a2d2ff7275d02077816b9d24c8b22892439",
+    "source_tree": "008d9f1f08c3bef7cfde3d44c84a6750ab8c2dea"
+  },
+  "independent_report_verification": {
+    "check_counts": [
+      {
+        "check": "canonical_report",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "report_bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "trial_balance_row",
+        "count": 135,
+        "result": "pass"
+      }
+    ],
+    "exit": 0,
+    "tampered_bundle": {
+      "exit": 8,
+      "failed_checks": [
+        {
+          "check": "record_derivation",
+          "detail": {},
+          "reason": "Digest { which: \"supplement.body_digest\" }",
+          "result": "fail",
+          "scope": "recomputation"
+        }
+      ],
+      "verdict": "failed"
+    },
+    "total_checks": 139,
+    "verdict": "verified"
+  },
+  "native_commitments": {
+    "bundle_sha256": "3ca04fcc95a92f914488626c6991717ea47cb6d5af76360d1dad260de4ccc64a",
+    "certificate_digest": "fe9e86b2ab6a7d525f813451425d78c449a5b42cfb6247b294814f879cfa68ac",
+    "checkpoint_public_key": "cc1ed5d9d3aab8f864901c266b43d2f0bc70977646246b4e33b1f14334d7e073",
+    "migration_run": "a32c5399e71b7af7ad1bff09f98827c4",
+    "output_digest": "f15cba02aa3fd9670e7cc6f71edb954ed0c99569bb7e7bb4743d2e21daeba1f1",
+    "package_oid": "c1d640b724206b2dda464ce057f0cc1267407e6ac081df6aac263e69f6c69e2f",
+    "period": "FY2025-P03"
+  },
+  "retained_artifacts": {
+    "build_identity": {
+      "bytes": 3110,
+      "path": "/workspace/scratch/de9b3dc0a342/native-33237a2d/build-identity.json",
+      "sha256": "c31171e8897eb76d9eed8f49d77235b9eac96adc0ac142b05e013aed2454b2ac"
+    },
+    "harness_snapshot": {
+      "bytes": 1074,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.harness-source-33237a2d/snapshot.json",
+      "sha256": "018428be73b51329b64b563256ff07aadcd8de900329517cd8a86170f590b74c"
+    },
+    "native_export": {
+      "bytes": 931898,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/native.csv",
+      "sha256": "566406fa806a3ef37c9e7564fede5da8a766ca5bcf3e79a8a8fa3d8f089d070d"
+    },
+    "original_commands": {
+      "bytes": 61864,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/commands.jsonl",
+      "sha256": "8012d52d113ee64a56f06cb13f1a4305b764509f7b8d87771870c5bbfb4bf167"
+    },
+    "original_runner_result": {
+      "bytes": 4846,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/result.json",
+      "sha256": "3a347c051e1f375f266dcfb54cb23936df85cd48080ea8c97d2639866314e14c"
+    },
+    "predeclared_expectation": {
+      "bytes": 1714,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-source-bound-balance-expectation.json",
+      "sha256": "2ca973f0d614c777e2f84ded623eee05aa3bf83e1ea466d94ed99a9f48c0a8b1"
+    },
+    "report_bundle": {
+      "bytes": 1089482,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/trial-balance.fab",
+      "sha256": "3ca04fcc95a92f914488626c6991717ea47cb6d5af76360d1dad260de4ccc64a"
+    },
+    "report_positive_stdout": {
+      "bytes": 36889,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/transcript/00099.stdout.jsonl",
+      "sha256": "94b451a752d54f21af63460a8c1aa9eb024bb965a5d12b2ad2eed63e36527584"
+    },
+    "report_receipt": {
+      "bytes": 219,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/trial-balance.receipt",
+      "sha256": "d97c5a19cb87366ac123dd1030ffe74c245db6b97fd02eb86aa2f0d27567aeb1"
+    },
+    "report_tampered_stdout": {
+      "bytes": 943,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/transcript/00100.stdout.jsonl",
+      "sha256": "f3e1519b5d8c89de684c046035f47265220f2d1964d5153ed3917cac88b243b7"
+    },
+    "runner_finish": {
+      "bytes": 1830,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.runner-result.json",
+      "sha256": "b09efb738678a4a107dfb0a91146e55a96938187a8eaaa2280f2fff3eb93c6e0"
+    },
+    "runner_start": {
+      "bytes": 1735,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.runner-start.json",
+      "sha256": "8e65d6c46bb8f54de80e29adb4eb40f1f7c8fc21db930f63c1994b09e11836b3"
+    },
+    "signed_checkpoint": {
+      "bytes": 288,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli/report.checkpoint",
+      "sha256": "45263f0c82336e9c283fc09ef5e6895b54cd607978ece168d599b904c6bda5bd"
+    },
+    "supplemental_commands": {
+      "bytes": 13326,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/commands.jsonl",
+      "sha256": "57cf4a8cb3e4e6524947bddbe2012f1a388d6d90c635c70fe98947c3ade620f9"
+    },
+    "supplemental_result": {
+      "bytes": 17791,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/result.json",
+      "sha256": "12d716a36bf72b084b034ec31194312ed94fb216e99da3bb69948759f5d95d9e"
+    },
+    "supplemental_script": {
+      "bytes": 17453,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/verify_hmrc_source_bound_extra.py",
+      "sha256": "d6d2549950e556008ad703d22b1e82c179dce2514973b71dba231cf36030b06b"
+    },
+    "trusted_raw_checkpoint": {
+      "bytes": 80,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/trusted-checkpoint.bin",
+      "sha256": "3e542578828801abf0e391683bc0711fb3a0ad4f7468168005ce79b494983927"
+    },
+    "v4_proof": {
+      "bytes": 1066281,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/offset-balance-v4.proof",
+      "sha256": "778e01c823dd9b6ab80143c6b7bf0a6fe545cfed856731da0da9dea32ecb9416"
+    }
+  },
+  "source": {
+    "bytes": 213348,
+    "controls": {
+      "date_count": 21,
+      "duplicate_rows": 1,
+      "expense_area_count": 42,
+      "expense_type_count": 134,
+      "max_minor": "1507727368",
+      "max_transaction_rows": 12,
+      "min_minor": "-321224815",
+      "negative_minor": "-942246241",
+      "negative_rows": 125,
+      "net_minor": "28574458415",
+      "positive_minor": "29516704656",
+      "positive_rows": 1305,
+      "row_count": 1430,
+      "split_transaction_count": 71,
+      "supplier_count": 160,
+      "transaction_count": 1321,
+      "zero_rows": 0
+    },
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "publisher": "HM Revenue & Customs",
+    "sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+    "url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "source_binding": {
+    "book_id": "0cbceaf088d892a180a119403c285f78",
+    "complete": true,
+    "expected_chunks": 127,
+    "manifest_digest": "a520747dcabcf47cab2c90f44fe4fd95431396d0654b26c146f055ef06417e6d",
+    "manifest_vid": "b9dcc446057ae64a8962464ca5688db8",
+    "missing_chunks": [],
+    "package_commit": "176fe5a4abf17139743bbfb8dd2bc10a18d77efbccef680b13f5fd08dff847fa",
+    "package_oid": "c1d640b724206b2dda464ce057f0cc1267407e6ac081df6aac263e69f6c69e2f",
+    "recorded_chunks": 127,
+    "run_body_digest": "13ceaf689bb40c32cecb187a042a9b2189404170387b0e889af2cadd508c743b",
+    "run_vid": "a32c5399e71b7af7ad1bff09f98827c4",
+    "source_commit": "bf64e4efaaf56381baa9c81c278cb1f2ef748b35e28b0c7d98c1e8c53494b322",
+    "source_oid": "81132137a28710b4be275e51690495752add5c77767545d7382db858ff20ac28",
+    "source_rows": 2860,
+    "unexpected_chunks": []
+  },
+  "source_binding_receipt": {
+    "already_recorded": false,
+    "control_entry": "081f167c55cce9e2215ffbc80cd96178",
+    "recorded_at": 40
+  },
+  "source_report": {
+    "bind_leaf_index": 38,
+    "major": 1,
+    "manifest_bytes": 6322,
+    "minor": 1,
+    "source_witnesses": 1
+  },
+  "status": "PASS",
+  "supplemental_v4_balance": {
+    "account_vid": "fbedd5d569ca344925b3444b03cd8964",
+    "additional_checks_passed": [
+      "exact_native_and_runner_identity",
+      "retained_source_binding_and_retry_identity",
+      "report_major1_minor1",
+      "predeclared_original_source_amounts",
+      "account_identity_matches_authenticated_report",
+      "raw_anchor_equals_previously_key_verified_checkpoint",
+      "standalone_balance_v4_complete_recomputation",
+      "altered_recipient_debit_refused",
+      "book_head_unchanged",
+      "original_runner_result_unchanged"
+    ],
+    "anchor_link": "The raw balance verifier consumes an unsigned80-byte checkpoint. Its complete canonical bytes were matched to the signed checkpoint already independently verified in the original report with the trusted key above.",
+    "argv_digest_encoding": "UTF-8 JSON array, ensure_ascii=false, separators comma/colon with no spaces",
+    "authenticated_checkpoint": {
+      "book_id": "0cbceaf088d892a180a119403c285f78",
+      "branch_id": "00000000000000000000000000000000",
+      "leaf_count": 296,
+      "root": "ce3b39a638210b12b73af90683a68f10d96509744206087834b12140561531dc",
+      "state_oid": "a556417de53590195f9d7493f713064aca6449ad9239c1dfc62b6c077714a2b7",
+      "through_seq": 555
+    },
+    "changed_debit_by_one_minor_unit": {
+      "exit": 8,
+      "expected_debits_minor": "942246242",
+      "response": {
+        "class": "verification",
+        "event": "error",
+        "exit": 8,
+        "message": "balance amounts mismatch: expected debits 942246242, credits 29516704656; got debits 942246241, credits 29516704656",
+        "refusal_id": null,
+        "v": 1,
+        "verified": false
+      }
+    },
+    "command_and_output_digests": [
+      {
+        "argv_sha256": "d4401e97571e7d39c2b5eed5092c72dbbc26a34b1b2e85ed03c37315116ca5b9",
+        "call": 1,
+        "exit": 0,
+        "label": "head-initial",
+        "seconds": 0.437,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "b57316c24b934f7b5ee82fdcb75ffe01f1e0d6ba2a8718c4edb95650b28979f6"
+      },
+      {
+        "argv_sha256": "9f366ff7d4d29d6c9f5ceeebeda9b26a0f0b0325b8bae0e597b319a1a6dfedba",
+        "call": 2,
+        "exit": 0,
+        "label": "resolve-account",
+        "seconds": 0.599,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "d9f50828b9791f8e45196c5ff0deeff67286254602590187ebe8835e3981dd36"
+      },
+      {
+        "argv_sha256": "d4401e97571e7d39c2b5eed5092c72dbbc26a34b1b2e85ed03c37315116ca5b9",
+        "call": 3,
+        "exit": 0,
+        "label": "head-after-explain",
+        "seconds": 0.361,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "b57316c24b934f7b5ee82fdcb75ffe01f1e0d6ba2a8718c4edb95650b28979f6"
+      },
+      {
+        "argv_sha256": "ac45e85efc8ca2cc62f80ca65200c62624f05225b1999035dc547e7efacdec37",
+        "call": 4,
+        "exit": 0,
+        "label": "export-checkpoint",
+        "seconds": 0.375,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "503d74ce40540d2fd967e7bb009ada7eb0830df0f9c9f9792e140f578cb47cad"
+      },
+      {
+        "argv_sha256": "d4401e97571e7d39c2b5eed5092c72dbbc26a34b1b2e85ed03c37315116ca5b9",
+        "call": 5,
+        "exit": 0,
+        "label": "head-after-checkpoint",
+        "seconds": 0.38,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "b57316c24b934f7b5ee82fdcb75ffe01f1e0d6ba2a8718c4edb95650b28979f6"
+      },
+      {
+        "argv_sha256": "da4140fdaaef7bd68f9fd357cb672f2df1a603492c49b3d3448c10869103c876",
+        "call": 6,
+        "exit": 0,
+        "label": "export-balance",
+        "seconds": 0.461,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "df587813b34690b6ea418439e6d1f113b9b95222d29217004a96256fd7cd7f76"
+      },
+      {
+        "argv_sha256": "d4401e97571e7d39c2b5eed5092c72dbbc26a34b1b2e85ed03c37315116ca5b9",
+        "call": 7,
+        "exit": 0,
+        "label": "head-after-balance",
+        "seconds": 0.385,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "b57316c24b934f7b5ee82fdcb75ffe01f1e0d6ba2a8718c4edb95650b28979f6"
+      },
+      {
+        "argv_sha256": "ce535aa4af75173b325aff5811842b540f174c7ae6f80b42422531a7fc19a4f2",
+        "call": 8,
+        "exit": 0,
+        "label": "verify-source-amounts",
+        "seconds": 0.172,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "d68f2ecc85ece7df379368edd248b3926bd9966a3a1a09b2fcd3fff6761b751a"
+      },
+      {
+        "argv_sha256": "aa1f34034ca9b63bcaf284066f11529db87016c617242e58f60ef88503d9b7e2",
+        "call": 9,
+        "exit": 8,
+        "label": "reject-debit-plus-one",
+        "seconds": 0.201,
+        "stderr_sha256": "316884c55cee2ff0a0a29ffdc1e0135480f64444322fdb471be3aee827e451e2",
+        "stdout_sha256": "3c345a80c9d9ca61177655dc8d9b1e746a212af8e67183942cd752a0a669bc8f"
+      },
+      {
+        "argv_sha256": "d4401e97571e7d39c2b5eed5092c72dbbc26a34b1b2e85ed03c37315116ca5b9",
+        "call": 10,
+        "exit": 0,
+        "label": "head-final",
+        "seconds": 0.322,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "b57316c24b934f7b5ee82fdcb75ffe01f1e0d6ba2a8718c4edb95650b28979f6"
+      }
+    ],
+    "expectation_file_sha256": "2ca973f0d614c777e2f84ded623eee05aa3bf83e1ea466d94ed99a9f48c0a8b1",
+    "expectation_method": "Independent Python csv.DictReader and Decimal over every pinned original Amount; exact pence required, no floating point, rounding, deduplication, or copied report/proof values. Dates use explicit DMY and must remain in March2025.",
+    "expectation_source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+    "extra_command_count": 10,
+    "finished_at_utc": "2026-11-03T05:58:24.684966+00:00",
+    "head_observations": {
+      "after_balance_export": 556,
+      "after_checkpoint_export": 556,
+      "after_explain": 556,
+      "final": 556,
+      "initial": 556
+    },
+    "kept_separate_from_original_runner": true,
+    "negative_command": [
+      "/workspace/scratch/de9b3dc0a342/native-33237a2d/fa-verify",
+      "balance",
+      "--proof",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/offset-balance-v4.proof",
+      "--checkpoint",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/trusted-checkpoint.bin",
+      "--expect-account",
+      "fbedd5d569ca344925b3444b03cd8964",
+      "--expect-unit",
+      "2",
+      "--expect-through",
+      "20178",
+      "--expect-debits",
+      "942246242",
+      "--expect-credits",
+      "29516704656",
+      "--json"
+    ],
+    "original_runner_result_sha256_unchanged": "3a347c051e1f375f266dcfb54cb23936df85cd48080ea8c97d2639866314e14c",
+    "positive": {
+      "checks": [
+        {
+          "name": "trusted_checkpoint_matches",
+          "status": "pass"
+        },
+        {
+          "name": "requested_balance_scope",
+          "status": "pass"
+        },
+        {
+          "name": "requested_balance_amounts",
+          "status": "pass"
+        },
+        {
+          "name": "complete_prefix",
+          "status": "pass"
+        },
+        {
+          "name": "exact_contributing_record_set",
+          "status": "pass"
+        },
+        {
+          "name": "record_recomputation",
+          "status": "pass"
+        },
+        {
+          "name": "scope_derivation",
+          "status": "pass"
+        },
+        {
+          "name": "posted_balance_recomputation",
+          "status": "pass"
+        }
+      ],
+      "data": {
+        "account": "fbedd5d569ca344925b3444b03cd8964",
+        "balance_complete": true,
+        "contributing_leaves": 127,
+        "credits_mantissa": "29516704656",
+        "debits_mantissa": "942246241",
+        "effective_through_day": 20178,
+        "scope_derivation": "all_prefix_payloads_checked",
+        "unit": 2
+      },
+      "exit": 0,
+      "scope": "recomputation",
+      "verified": true
+    },
+    "positive_command": [
+      "/workspace/scratch/de9b3dc0a342/native-33237a2d/fa-verify",
+      "balance",
+      "--proof",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/offset-balance-v4.proof",
+      "--checkpoint",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/hmrc-2025-03-source-bound-33237a2d-cli.v4-proof/trusted-checkpoint.bin",
+      "--expect-account",
+      "fbedd5d569ca344925b3444b03cd8964",
+      "--expect-unit",
+      "2",
+      "--expect-through",
+      "20178",
+      "--expect-debits",
+      "942246241",
+      "--expect-credits",
+      "29516704656",
+      "--json"
+    ],
+    "predeclared_at_utc": "2026-11-03T05:52:23.185371+00:00",
+    "predeclared_source_request": {
+      "account_code": "published-payment-offset",
+      "credits_minor": "29516704656",
+      "debits_minor": "942246241",
+      "effective_through_date": "2025-03-31",
+      "effective_through_day": 20178,
+      "unit_code": "GBP",
+      "unit_id": 2
+    },
+    "proof_format": "fa:acc-balance-proof:v4",
+    "started_at_utc": "2026-11-03T05:58:20.963908+00:00",
+    "status": "PASS",
+    "trusted_public_key": "cc1ed5d9d3aab8f864901c266b43d2f0bc70977646246b4e33b1f14334d7e073"
+  },
+  "workload": {
+    "accounts": 135,
+    "bound_normalized_csv_rows": 2860,
+    "entries": 127,
+    "legs": 2860,
+    "publisher_rows": 1430
+  }
+}
