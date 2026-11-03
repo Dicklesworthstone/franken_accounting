@@ -14,8 +14,10 @@
 //! A rounded division names the form it divides by its id in [`Forms`],
 //! where every distinct form is stored once. Structurally equal forms get
 //! the same id, so equality stays exact, and a `let` used twice shares one
-//! entry instead of being copied: proof work stays proportional to the
-//! rule's size, however its lets nest.
+//! entry instead of being copied: nesting lets no longer multiplies the
+//! work. What remains grows with the distinct forms and terms a rule builds
+//! (combining forms still clones and compares them), not with how often a
+//! form is used.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

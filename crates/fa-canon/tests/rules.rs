@@ -591,9 +591,9 @@ fn every_compiled_ir_decodes_so_overlong_text_is_refused_at_compile() {
 }
 
 /// The balance proof shares a `let` instead of copying it, so a chain of
-/// lets that each use the previous one twice is proven in time linear in
-/// the rule. Copying doubled the proof at every link: 40 links were about
-/// 2^40 terms, and every decode of a stored IR paid that again.
+/// lets that each use the previous one twice no longer doubles the proof at
+/// every link. Copying did: 40 links were about 2^40 terms, and every decode
+/// of a stored IR paid that again.
 #[test]
 fn nested_lets_are_proven_without_copying_each_use() {
     let units = units();
