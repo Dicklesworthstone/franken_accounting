@@ -327,3 +327,78 @@ to an exact-printed-control migration it cannot satisfy.
 
 The seven-account native execution has its own result and provenance. The
 four-account execution record above does not count as its verification.
+
+## Recorded seven-account execution — 2026-11-03
+
+The complete seven-account migration **passed with observed process exit 0**
+in **858.486 seconds**, using **1,424 actual native calls**. The separate
+[seven-account execution evidence](../evidence/blmis/seven-account-migration-native-2026-11-03.json)
+records both source identities, the executed helper and binary hashes, every
+command's verified transcript hashes, the source binding, negative controls,
+export audit and proof-verification counts. The earlier four-account result
+above remains a distinct execution record.
+
+| Executed check | Observed result |
+| --- | --- |
+| Both complete sources | All 379 Glantz and 2,364 Magnify observations were freshly extracted and retained; the two original PDFs match their pinned hashes |
+| Exact selected population | 393 observations across seven source accounts, including 22 zero-principal observations; all 371 monetary entries and 742 legs migrated |
+| Evidence attached to every entry | Both complete original PDFs, both extracted tables, both metadata documents and the migration manifest: seven source references on each of 371 native entries |
+| Source-completeness negative | With 369 of 371 original members staged, all 217 monetary controls still matched; finalization refused with exit 3 / `FA-REF-131` because the genuine Glantz check/stop-payment pair was missing |
+| Repair and activation | The two original members were staged into the same Open run; all 371 entries activated in one publication, advancing the frontier from 1542 to 1543 |
+| Historical visibility | The pre-finalization frontier 1540 still returned no migration rows after activation |
+| Monthly controls and registers | All 217 monthly trial balances, December 1990 through December 2008, were certified and replayed byte for byte; all 217 register verifications were green, without drift or lag |
+| Standalone report proofs | All 217 source-bound report bundles verified with the real `fa-verify report`, including 1,441 trial-balance row checks |
+| Other negative controls | A balanced $1 alteration refused before preparation published anything, exit 2; a changed report-bundle byte failed standalone verification, exit 8 |
+| Native gross turnover | Final debits and credits each equaled USD 128,974,531.00, checked against the published movement columns |
+
+The transcript contains **1,421 successful exits** and the three required
+negative exits, one each at 2, 3 and 8. Of the 1,424 calls, 1,206 invoked `fa`
+and 218 invoked `fa-verify`. Every retained stdout, stderr and request hash was
+checked against the command log. The 217 proof-bundle hashes were also checked
+against the actual files and their verifier responses. The duration above is
+the driver's monotonic measurement; peak memory was not measured.
+
+Register verification includes months without new activity. Of the 217
+periods, 144 had materialized register cells whose stored digests matched their
+independent folds. The other 73 were verified empty periods, with no stored-cell
+digest. Their cumulative monthly trial balances were still certified and
+checked against the last independently printed source balances.
+
+A separate export audit interpreted the raw printed movement literals with
+`Decimal`, without using the migration normalizer or its export comparator.
+It matched **every one of the 742 actual native legs** to the real prepared
+identity and staging receipt, including amounts, dates, recorded sequences,
+entry classes, descriptions, citation memos and `migrated_from` provenance.
+All 297 Glantz and 74 Magnify monetary entries retained their original
+`SRC-BLM-001` or `SRC-BLM-006` namespace. The repaired pair was present, and all
+128 inspected retry receipts preserved their original publication identities.
+The audited export is 182,190 bytes with SHA-256
+`7df95d0a70a9a398de88ebebcd716822b9d61d8b74ff86b7a020a7a7482ddf33`.
+
+The source witness in each report authenticates complete membership of the
+normalized migration CSV. The mapping from both PDFs to that CSV is checked
+separately against the retained factual cells and source identities. The
+28,947,445-byte Magnify original was also present in the native book's owned
+blob store with its original SHA-256. Fifteen AgentUpload documents, including
+the deliberately altered CSV negative, received Reviewed attestations under
+the disclosed local fixture-review model.
+
+This execution used helper commit
+`7c293181f21880359d5ba820fdd09a6261e70417` and driver SHA-256
+`3d1e222f4722eac59157743778256447f5374bcfecccb2722fa454f75ab1d748`.
+It used the same verified CI executable artifact described in the four-account
+record: artifact `13210366143` from
+[workflow run 41588158231](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231),
+built from native source commit `88286f8c41f3943fde51e76334b33db758422c95`
+with `nightly-2026-08-31`. Actual executable hashes and the source/lock manifests
+matched that provenance; the current Rust sources, registries and manifests
+also matched the native build's source commit.
+
+The five discrepant accounts remain retained and explicitly excluded from this
+exact-control migration. Their differences were not rounded away or corrected
+with balancing entries. This result establishes the seven-account execution
+slice and its source comparisons. It does not close the full case-framework
+bead, establish the separate native-chunk monetary twin, supply original BLMIS
+double-entry books, or independently decide legal net equity. Whole-workspace
+Tier 0, Tier 1, `cargo test --workspace` and workspace clippy remain **UNRUN for
+the changed helper tree**.
