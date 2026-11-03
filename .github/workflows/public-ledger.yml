@@ -6,6 +6,8 @@ on:
     paths:
       - 'scripts/public_ledger*.py'
       - 'scripts/tests/test_public_ledger*.py'
+      - 'scripts/blmis*.py'
+      - 'scripts/tests/test_blmis*.py'
       - 'crates/**'
       - 'registries/**'
       - 'Cargo.toml'
@@ -57,6 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s scripts/tests -p 'test_public_ledger*.py' -v 2>&1 | tee artifacts/public-ledger/python-tests.log
+
+      - name: Verify published bankruptcy transactions and comparison controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s scripts/tests -p 'test_blmis*.py' -v 2>&1 | tee artifacts/public-ledger/blmis-python-tests.log
 
       - name: Install the pinned compiler
         shell: bash
@@ -119,6 +127,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/public_ledger.py run --agency 20400 --out artifacts/public-ledger/museum 2>&1 | tee artifacts/public-ledger/museum.log
+
+      - name: Replay every published Glantz account transaction and printed balance
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/blmis_replay.py run --out artifacts/public-ledger/blmis-1za192 2>&1 | tee artifacts/public-ledger/blmis-native.log
 
       - name: Retain replay reports and command transcripts
         if: ${{ !cancelled() }}

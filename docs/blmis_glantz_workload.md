@@ -171,6 +171,89 @@ and preparation refuse a mismatch against its printed controls. That distinction
 preserves the broader plan's ability to describe other accounts with rounded
 published amounts without falsely calling them exact.
 
+## Native persistent-book replay
+
+Build the repository-pinned `fa` and standalone `fa-verify` binaries, then run:
+
+```bash
+cargo +nightly-2026-08-31 build --locked -Z bindeps -Z git=shallow-deps \
+  -p fa-cli --bin fa -p fa-verify --bin fa-verify --jobs 1
+
+python3 -B scripts/blmis_replay.py run --out /path/to/new-native-run
+
+# Reuse a previously acquired, hash-verified original PDF when desired.
+python3 -B scripts/blmis_replay.py run \
+  --pdf /path/to/new-glantz.pdf --out /path/to/another-new-native-run
+
+# All source and native-comparator unit tests; no native executable required.
+python3 -B -m unittest discover -s scripts/tests -p 'test_blmis*.py' -v
+```
+
+Use `--fa /absolute/path/to/fa --fa-verify /absolute/path/to/fa-verify` when
+binaries are outside `target/debug`. Output directories must be new. A missing
+binary returns `UNRUN` with exit code 4 before an output directory is created.
+A source mismatch, accounting discrepancy or failed native command fails the
+run; it is never converted into a successful comparison.
+
+The driver prepares and checks the complete normalized package before creating
+a monthly native book. It creates the 17 fiscal years and opens the source
+months, registers the three declared analysis accounts, and attaches the
+original PDF, extracted rows, source metadata and package manifest as evidence.
+These documents are honestly labelled `AgentUpload`. A distinct local test
+principal records Reviewed attestations so the workload exercises the actual
+evidence-admission rule. This is an explicit local test of that rule, not a
+claim of authenticated human review or court approval.
+
+The driver reads the prepared CSV, verifies every source row, amount, account,
+description and memo, and submits each of the 74 monetary observations through
+the native `post` command. Each command opens the persistent book anew. Separate
+publications preserve the exhibit's order for same-day transactions without
+inventing a source time of day or BLMIS recording sequence. This path exercises
+native posting after source ingestion; the optional generic legacy-migration
+variant in the wider M-T-03 plan is not implemented here.
+
+A successful run must complete all of these checks:
+
+- Match all 74 native principal-account lines to their actual posting receipts,
+  including entry identity, leg index, effective date, recorded sequence,
+  original-entry class, currency, and gross debit and credit amounts.
+- Compare the native running balance against every one of the 75 independently
+  printed observations. The zero-principal transfer stays in this comparison
+  with an unchanged balance and no artificial zero-amount entry.
+- Certify the detailed general ledger and replay the certificate with its exact
+  account, unit, date, label and known-at scope, requiring byte-identical robot
+  output.
+- Query the pre-import recorded prefix after all entries have been posted and
+  require it still to contain no monetary history.
+- Retry every original intent across process reopenings and require the original
+  receipt identities and an unchanged journal head.
+- Reconcile all three accounts at each of 17 year ends. Principal controls come
+  from the last printed source balance; cash and transfer controls use their
+  distinct source columns. Inactive years retain the actual earlier source date.
+- Advance and independently verify registers for every active posting month
+  (62 months), then verify projections and a signed accumulator checkpoint.
+- Export the whole analysis book to ADS with proofs, verify it with the real
+  standalone `fa-verify`, and require rejection of a separate one-cent mutation.
+
+The verifier is given the signing key of the fresh local analysis book as an
+explicit caller-trusted input. This tests the book's internal commitments and
+the standalone verifier; it does not authenticate the source as a trustee- or
+court-signed ledger.
+
+`report.json` is written with `status: PASS` only after all real native commands
+and comparisons succeed. It includes source pins, binary and driver SHA-256
+values, all posting receipts, certificate identity, annual controls, verified
+register periods and the actual verifier responses. `commands.jsonl` retains
+commands, stdout, stderr and exit codes. A failed run retains `failure.json`
+when an output directory has already been created. Keep the run directory to
+inspect the original evidence, prepared package, native book and exported proof.
+
+The [public-ledger workflow](../.github/workflows/public-ledger.yml) runs the
+offline BLMIS checks and schedules this native workload after its pinned native
+build succeeds. It retains reports, failure records and command transcripts.
+A scheduled workflow or a passing comparator unit test is not evidence of a
+successful native run.
+
 ## Verification status
 
 The pinned original was downloaded and its hash matched the existing case-plan
@@ -187,3 +270,16 @@ output preservation and unavailable extraction tools. They do not substitute for
 a native FrankenAccounting posting, certificate replay or verifier run. Native
 execution must report its own observed result; an unavailable native run is
 `UNRUN`, never a pass.
+
+Observed in this implementation session: **14 source tests and 21 native-comparator
+unit tests passed**. The comparator tests use explicitly test-only receipt
+identities and native-shaped payloads; they check refusal boundaries and do not
+simulate execution of the accounting engine. The restored comparator suite also
+passed after an execution-environment interruption. Both retained data files
+were recovered with their original SHA-256 pins unchanged.
+
+**Native execution remains UNRUN.** The pinned compiler was available, but the
+shared environment exhausted its filesystem and compiler processes were stopped
+or killed under memory pressure. No complete `fa` binary, native BLMIS run, Rust
+workspace test gate or CI replay PASS was established in this session. The
+workflow and driver are the reproducible path to obtain that missing evidence.

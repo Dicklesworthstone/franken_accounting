@@ -16,6 +16,13 @@ reconstructions. This dataset adds actual published ledger activity, with an
 automated download, preserved original records and a repeatable source-to-report
 workflow.
 
+The [BLMIS Glantz transaction workload](blmis_glantz_workload.md) complements
+these monthly public-sector aggregates with every dated transaction and printed
+running principal balance of one published bankruptcy-case account. It preserves
+the distinction between statement transfer amounts and trustee-credited principal.
+Its acquisition, extraction, source controls and native replay have separate
+validation records; a successful source check does not establish a native pass.
+
 ## Validation status
 
 **All 55 public-ledger Python tests pass. Native end-to-end execution remains
