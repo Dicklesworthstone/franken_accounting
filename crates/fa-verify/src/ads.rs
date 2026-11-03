@@ -21,19 +21,27 @@
 //! entries declare at the sequence (code, name, type, normal balance); one
 //! account's scope-index run carries no chart declaration, so its chart is
 //! not judged and the report says so (`chart_rows: None`).
+//! The optional dimension extension compares every leg's complete ordered
+//! kind/value identities to its authenticated proposal. Historical extracts
+//! without that extension retain monetary verification but explicitly report
+//! `dimension_rows: None`; they cannot establish dimensional attribution.
 
 use std::collections::BTreeMap;
 
 use crate::balance::CLASS_MIGRATION;
 use crate::blake3::hash_parts;
 use crate::bundle::{BundleError, BundleReport, BundleScope, civil, verify_bundle_observing};
-use crate::envelope::{KIND_ENTRY, LeafEnvelope, Leg};
+use crate::envelope::{KIND_ENTRY, LeafEnvelope, Leg, proposal_leg_details};
 
 /// `EntryClass::PENDING`: a hold, never exported.
 pub const CLASS_PENDING: u16 = 2;
 /// The GL_Detail header `fa export ads` writes.
 pub const GL_HEADER: &str = "Journal_ID|Journal_Entry_Line_Number|Effective_Date|Recorded_Seq|Entry_Class|GL_Account_Number|Debit_Credit_Indicator|Amount|Transaction_Currency|Unit_Scale|JE_Header_Description|Migrated_From|Line_Description";
 const GL_FIELDS: usize = 13;
+/// Optional, versioned native dimension identities on every exported leg.
+pub const DIMENSION_HEADER: &str = "FA_Dimension_Set_V1";
+pub(crate) const DIMENSION_ENCODING: &str = "fa-dimension-ids-v1";
+const MAX_DIMENSIONS: usize = 64;
 /// The Trial_Balance header `fa export ads` writes.
 pub const TB_HEADER: &str =
     "GL_Account_Number|As_Of_Date|Debit_Credit_Indicator|Ending_Balance|Currency|Unit_Scale";
@@ -57,6 +65,11 @@ pub struct AdsReport {
     /// code, name, type and normal balance. `None` when the bundle proves
     /// one account's run, which carries no chart declaration.
     pub chart_rows: Option<u64>,
+    /// Rows whose complete dimension sets match their authenticated native
+    /// proposals, including explicit empty sets. Historical extracts without
+    /// the versioned extension leave this `None`; monetary equality does not
+    /// authenticate omitted dimensions.
+    pub dimension_rows: Option<u64>,
     /// Unit code to the unit id its rows matched, one to one.
     pub units: Vec<(String, u32)>,
     /// Every way the extract differs from the proven selection.
@@ -64,7 +77,8 @@ pub struct AdsReport {
 }
 
 impl AdsReport {
-    /// The bundle verified and the extract is exactly its selection.
+    /// The bundle verified and the extract's stated fields match its selection.
+    /// Dimension coverage is separately reported by `dimension_rows`.
     #[must_use]
     pub fn verified(&self) -> bool {
         self.bundle.verified() && self.failures.is_empty()
@@ -99,6 +113,7 @@ pub(crate) struct Row {
     pub(crate) mantissa: i128,
     pub(crate) unit: String,
     pub(crate) scale: u32,
+    pub(crate) dimensions: Option<Vec<(u32, u128)>>,
 }
 
 /// One extract entry: its rows in line order.
@@ -144,6 +159,7 @@ pub(crate) struct Stated {
     pub(crate) known_at_seq: Option<u64>,
     pub(crate) entry_count: Option<u64>,
     pub(crate) account_scope: Option<String>,
+    pub(crate) dimension_encoding: bool,
     pub(crate) entries: Result<Vec<Extracted>, String>,
     pub(crate) balances: Result<Vec<StatedBalance>, String>,
     pub(crate) chart: Result<Vec<StatedAccount>, String>,
@@ -174,6 +190,53 @@ struct Proven {
     class: u16,
     date: String,
     legs: Vec<Leg>,
+    dimensions: Vec<Vec<(u32, u128)>>,
+}
+
+/// Independently decode the bounded dimension extension. The native proposal
+/// authenticates identities, not display names: kind IDs are canonical u32
+/// decimals, value IDs exactly 32 lowercase hexadecimal digits, and kind IDs
+/// strictly increase. Empty text explicitly represents an untagged leg.
+pub(crate) fn dimension_set(text: &str) -> Result<Vec<(u32, u128)>, String> {
+    let bad = || {
+        "a dimension set requires at most 64 increasing canonical u32 kind IDs and 32 lowercase hexadecimal value IDs".to_string()
+    };
+    if text.len() > MAX_DIMENSIONS * 44 {
+        return Err(bad());
+    }
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut parsed: Vec<(u32, u128)> = Vec::new();
+    for item in text.split(';') {
+        if parsed.len() == MAX_DIMENSIONS {
+            return Err(bad());
+        }
+        let (kind, value) = item.split_once(':').ok_or_else(bad)?;
+        if kind.is_empty()
+            || (kind.len() > 1 && kind.starts_with('0'))
+            || !kind.bytes().all(|byte| byte.is_ascii_digit())
+            || value.len() != 32
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(bad());
+        }
+        let mut id = 0u32;
+        for digit in kind.bytes() {
+            id = id
+                .checked_mul(10)
+                .and_then(|n| n.checked_add(u32::from(digit - b'0')))
+                .ok_or_else(bad)?;
+        }
+        if parsed.last().is_some_and(|previous| previous.0 >= id) {
+            return Err(bad());
+        }
+        let value = u128::from_str_radix(value, 16).map_err(|_| bad())?;
+        parsed.push((id, value));
+    }
+    Ok(parsed)
 }
 
 /// `value` at `scale` decimal places as an exact mantissa: digits, then a
@@ -256,12 +319,13 @@ fn fields(line: &str, escaped: bool, gl: bool) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn parse_row(line: &str, number: usize, escaped: bool) -> Result<Row, String> {
+fn parse_row(line: &str, number: usize, escaped: bool, dimensions: bool) -> Result<Row, String> {
     let decoded = fields(line, escaped, true)?;
     let fields: Vec<&str> = decoded.iter().map(String::as_str).collect();
-    if fields.len() != GL_FIELDS {
+    let expected = GL_FIELDS + usize::from(dimensions);
+    if fields.len() != expected {
         return Err(format!(
-            "GL_Detail line {number} has {} fields, not {GL_FIELDS} (a description holding a line break makes a row unreadable)",
+            "GL_Detail line {number} has {} fields, not {expected} (a description holding a line break makes a row unreadable)",
             fields.len()
         ));
     }
@@ -284,14 +348,22 @@ fn parse_row(line: &str, number: usize, escaped: bool) -> Result<Row, String> {
         mantissa: exact(fields[7], scale).ok_or_else(|| bad("Amount at its Unit_Scale"))?,
         unit: fields[8].to_string(),
         scale,
+        dimensions: dimensions
+            .then(|| dimension_set(fields[GL_FIELDS]))
+            .transpose()?,
     })
 }
 
 /// GL_Detail as entries, rows grouped by `Journal_ID` in first-seen order,
 /// each numbered 1.. in order and agreeing on sequence, date and class.
-fn extracted(gl_detail: &str, escaped: bool) -> Result<Vec<Extracted>, String> {
+fn extracted(gl_detail: &str, escaped: bool, dimensions: bool) -> Result<Vec<Extracted>, String> {
     let mut lines = gl_detail.split('\n');
-    if lines.next() != Some(GL_HEADER) {
+    let expected = if dimensions {
+        format!("{GL_HEADER}|{DIMENSION_HEADER}")
+    } else {
+        GL_HEADER.to_string()
+    };
+    if lines.next() != Some(expected.as_str()) {
         return Err("GL_Detail does not start with the ADS GL header".to_string());
     }
     let mut order: Vec<String> = Vec::new();
@@ -300,7 +372,7 @@ fn extracted(gl_detail: &str, escaped: bool) -> Result<Vec<Extracted>, String> {
         if line.is_empty() {
             continue;
         }
-        let row = parse_row(line, i.saturating_add(2), escaped)?;
+        let row = parse_row(line, i.saturating_add(2), escaped, dimensions)?;
         let entry = by_id.entry(row.journal_id.clone()).or_insert_with(|| {
             order.push(row.journal_id.clone());
             Extracted {
@@ -359,6 +431,25 @@ fn field<'a>(certificate: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
+/// The optional extension marker must be unique and exact. In particular,
+/// removing it cannot leave a 14-column export silently treated as legacy.
+fn dimension_encoding(certificate: &str) -> Result<bool, String> {
+    let mut found = false;
+    for line in certificate.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "dimension_encoding" {
+            continue;
+        }
+        if found || value.trim() != format!("\"{DIMENSION_ENCODING}\"") {
+            return Err("the certificate's dimension_encoding is duplicated or unsupported".into());
+        }
+        found = true;
+    }
+    Ok(found)
+}
+
 /// Units consistent so far: code to id and back, one to one.
 #[derive(Default)]
 struct Units {
@@ -379,12 +470,21 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
     extract.class == proven.class
         && extract.date == proven.date
         && extract.rows.len() == proven.legs.len()
-        && extract.rows.iter().zip(&proven.legs).all(|(row, leg)| {
-            account_vid(book, &row.account) == leg.account
-                && row.debit == leg.debit
-                && row.mantissa == leg.mantissa
-                && units.admits(&row.unit, leg.unit)
-        })
+        && extract
+            .rows
+            .iter()
+            .zip(&proven.legs)
+            .enumerate()
+            .all(|(i, (row, leg))| {
+                account_vid(book, &row.account) == leg.account
+                    && row.debit == leg.debit
+                    && row.mantissa == leg.mantissa
+                    && units.admits(&row.unit, leg.unit)
+                    && row
+                        .dimensions
+                        .as_ref()
+                        .is_none_or(|dimensions| proven.dimensions.get(i) == Some(dimensions))
+            })
 }
 
 /// The records a verified bundle authenticates: each record's leaf index,
@@ -436,6 +536,7 @@ impl AdsReport {
             rows: 0,
             tb_rows: 0,
             chart_rows: None,
+            dimension_rows: None,
             units: Vec::new(),
             failures: Vec::new(),
         }
@@ -491,12 +592,20 @@ pub fn verify_ads(
             return Ok(out);
         }
     };
+    let dimensions = match dimension_encoding(certificate) {
+        Ok(dimensions) => dimensions,
+        Err(why) => {
+            out.failures.push(why);
+            return Ok(out);
+        }
+    };
     let stated = Stated {
         effective_through: out.effective_through.clone(),
         known_at_seq: out.known_at_seq,
         entry_count: field(certificate, "entry_count").and_then(|v| v.parse().ok()),
         account_scope: scoped,
-        entries: extracted(gl_detail, escaped),
+        dimension_encoding: dimensions,
+        entries: extracted(gl_detail, escaped, dimensions),
         balances: ads_balances(trial_balance, escaped),
         chart: ads_chart(chart_of_accounts, escaped),
     };
@@ -585,7 +694,7 @@ pub(crate) fn judge(
     };
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
-    for (leaf, envelope, legs, _) in records {
+    for (leaf, envelope, legs, proposal) in records {
         let Some(day) = envelope.effective_day else {
             continue;
         };
@@ -626,10 +735,29 @@ pub(crate) fn judge(
                 }
             }
         }
+        let details = match proposal_leg_details(&proposal) {
+            Ok(details) if details.len() == legs.len() => details,
+            Ok(_) => {
+                out.failures.push(
+                    "the authenticated proposal's dimension and monetary leg counts differ".into(),
+                );
+                return out;
+            }
+            Err(why) => {
+                out.failures.push(format!(
+                    "the authenticated proposal's leg details do not decode: {why}"
+                ));
+                return out;
+            }
+        };
         proven.entry(envelope.commit_seq).or_default().push(Proven {
             class: envelope.class,
             date,
             legs,
+            dimensions: details
+                .into_iter()
+                .map(|detail| detail.dimensions)
+                .collect(),
         });
     }
     let extract = match stated.entries {
@@ -705,6 +833,9 @@ pub(crate) fn judge(
         }
     }
     out.units = units.by_code.into_iter().collect();
+    if out.failures.is_empty() && stated.dimension_encoding {
+        out.dimension_rows = Some(out.rows);
+    }
     out
 }
 
@@ -979,6 +1110,177 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dimension_wire_is_canonical_bounded_and_independent_of_the_exporter() {
+        let first = "3:00000000000000000000000000000011";
+        let second = "7:00000000000000000000000000000022";
+        assert_eq!(dimension_set(""), Ok(vec![]));
+        assert_eq!(
+            dimension_set(&format!("{first};{second}")),
+            Ok(vec![(3, 17), (7, 34)])
+        );
+        for bad in [
+            format!("{first};{first}"),
+            format!("{second};{first}"),
+            format!("{first};"),
+            format!(";{first}"),
+            first.replacen("3:", "03:", 1),
+            first.replacen("3:", "+3:", 1),
+            first.replacen("3:", "4294967296:", 1),
+            first.replacen("3:", "-1:", 1),
+            first.replace("11", "AA"),
+            format!(" {first}"),
+            format!("{first} "),
+            first[..first.len() - 1].to_string(),
+            format!("{first}0"),
+        ] {
+            assert!(dimension_set(&bad).is_err(), "{bad:?}");
+        }
+        let full = (0..64)
+            .map(|kind| format!("{kind}:{kind:032x}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        assert_eq!(dimension_set(&full).unwrap().len(), 64);
+        assert!(dimension_set(&format!("{full};64:{:032x}", 64)).is_err());
+    }
+
+    #[test]
+    fn dimension_extension_requires_its_marker_header_and_every_row() {
+        let marker = "dimension_encoding = \"fa-dimension-ids-v1\"\n";
+        assert_eq!(dimension_encoding(""), Ok(false));
+        assert_eq!(dimension_encoding(marker), Ok(true));
+        assert!(dimension_encoding(&format!("{marker}{marker}")).is_err());
+        assert!(dimension_encoding(&marker.replace("v1", "v2")).is_err());
+        assert!(dimension_encoding(&marker.replace('"', "")).is_err());
+        let gl = format!(
+            "{GL_HEADER}|{DIMENSION_HEADER}\nentry|1|1970-01-01|7|1|1000|D|12.34|USD|2|tagged|||3:00000000000000000000000000000011\nentry|2|1970-01-01|7|1|3000|C|12.34|USD|2|tagged|||\n"
+        );
+        let rows = &extracted(&gl, false, true).unwrap()[0].rows;
+        assert_eq!(rows[0].dimensions, Some(vec![(3, 17)]));
+        assert_eq!(rows[1].dimensions, Some(vec![]));
+        assert!(extracted(&gl, false, false).is_err());
+        assert!(
+            extracted(
+                &gl.replace(&format!("|{DIMENSION_HEADER}"), ""),
+                false,
+                true
+            )
+            .is_err()
+        );
+        assert!(extracted(&gl.replace("|tagged|||\n", "|tagged||\n"), false, true).is_err());
+    }
+
+    #[test]
+    fn dimension_only_changes_refuse_against_native_proposal_leg_details() {
+        use crate::codec::Writer;
+        use crate::envelope::{
+            ENTRY_DIGEST_DOMAIN, PROPOSAL_DIGEST_DOMAIN, check_record, envelope_of_entry,
+        };
+
+        // Independent native bytes, not a fa-formats export. The entry's
+        // authenticated digest binds both tagged and untagged legs.
+        let book = [0x51; 16];
+        let mut wire = Writer::default();
+        wire.u16(1)
+            .u16(1)
+            .fixed(&book)
+            .fixed(&[0; 16])
+            .u16(1)
+            .i32(0)
+            .u8(0)
+            .fixed(&[0; 32])
+            .u8(0)
+            .fixed(&[0; 24])
+            .bytes(b"tagged")
+            .u8(0)
+            .count(2);
+        let mut first_value_offset = 0;
+        for (code, side, tags) in [
+            ("1000", 0, vec![(3u32, 17u128), (7, 34)]),
+            ("3000", 1, vec![]),
+        ] {
+            wire.u8(side)
+                .u128(account_vid(&book, code))
+                .u32(1)
+                .i128(1234)
+                .u8(0)
+                .count(tags.len());
+            for (kind, value) in tags {
+                wire.u32(kind);
+                if first_value_offset == 0 {
+                    first_value_offset = wire.buf.len();
+                }
+                wire.u128(value);
+            }
+            wire.u8(0).count(0);
+        }
+        wire.u8(0)
+            .count(1)
+            .u32(1)
+            .i128(1234)
+            .i128(1234)
+            .u8(0)
+            .bytes(b"dim-export")
+            .u8(0)
+            .fixed(&[9; 32])
+            .u16(1)
+            .u128(7)
+            .u8(0)
+            .count(0)
+            .count(0)
+            .u8(0)
+            .count(0)
+            .count(0)
+            .count(0);
+        let split = wire.buf.len();
+        let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&wire.buf]);
+        let entry_digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal_digest, &[0; 5]]);
+        wire.fixed(&[0; 5])
+            .fixed(&proposal_digest)
+            .fixed(&entry_digest);
+        let envelope = envelope_of_entry(&wire.buf, split, 7, 0).unwrap();
+        let legs = check_record(&envelope, &wire.buf, split).unwrap();
+        let dimensions = proposal_leg_details(&wire.buf[..split])
+            .unwrap()
+            .into_iter()
+            .map(|detail| detail.dimensions)
+            .collect();
+        let proven = Proven {
+            class: 1,
+            date: "1970-01-01".into(),
+            legs,
+            dimensions,
+        };
+        let gl = format!(
+            "{GL_HEADER}|{DIMENSION_HEADER}\nentry|1|1970-01-01|7|1|1000|D|12.34|USD|2|tagged|||3:00000000000000000000000000000011;7:00000000000000000000000000000022\nentry|2|1970-01-01|7|1|3000|C|12.34|USD|2|tagged|||\n"
+        );
+        let extract = extracted(&gl, false, true).unwrap();
+        assert!(same(&extract[0], &proven, &book, &Units::default()));
+        for changed in [
+            gl.replace(
+                "00000000000000000000000000000011",
+                "00000000000000000000000000000012",
+            ),
+            gl.replace("3:00000000000000000000000000000011;", ""),
+            gl.replace(
+                "|tagged|||\n",
+                "|tagged|||3:00000000000000000000000000000011\n",
+            ),
+        ] {
+            let changed = extracted(&changed, false, true).unwrap();
+            assert!(!same(&changed[0], &proven, &book, &Units::default()));
+        }
+        let mut altered_payload = wire.buf.clone();
+        altered_payload[first_value_offset] ^= 1;
+        assert!(check_record(&envelope, &altered_payload, split).is_err());
+        let legacy = format!(
+            "{GL_HEADER}\nentry|1|1970-01-01|7|1|1000|D|12.34|USD|2|tagged||\nentry|2|1970-01-01|7|1|3000|C|12.34|USD|2|tagged||\n"
+        );
+        let legacy = extracted(&legacy, false, false).unwrap();
+        assert!(legacy[0].rows.iter().all(|row| row.dimensions.is_none()));
+        assert!(same(&legacy[0], &proven, &book, &Units::default()));
+    }
+
+    #[test]
     fn v3_text_decodes_without_the_writer_and_rejects_noncanonical_escapes() {
         assert_eq!(
             decode_field(r"one\nline\rreturn\ppipe\\literal\u0009\u0000\u0085 café").unwrap(),
@@ -990,7 +1292,7 @@ mod tests {
         let gl = format!(
             "{GL_HEADER}\nentry\\pid|1|2026-03-10|7|1|60\\p00|D|15.00|USD|2|one\\nline|\\N|\n"
         );
-        let entries = extracted(&gl, true).unwrap();
+        let entries = extracted(&gl, true, false).unwrap();
         assert_eq!(entries[0].journal_id, "entry|id");
         assert_eq!(entries[0].rows[0].account, "60|00");
         let tb = format!("{TB_HEADER}\n60\\p00|2026-03-31|D|15.00|USD|2\n");
@@ -1009,7 +1311,7 @@ mod tests {
             .is_err()
         );
         // A literal backslash in the existing v2 profile keeps its meaning.
-        let legacy = extracted(&gl, false).unwrap();
+        let legacy = extracted(&gl, false, false).unwrap();
         assert_eq!(legacy[0].journal_id, r"entry\pid");
     }
 
@@ -1037,18 +1339,24 @@ mod tests {
              aa|2|2026-03-10|7|1|1000|C|15.00|USD|2|Rent||\n\
              bb|1|2026-03-11|8|1|1000|D|1.00|USD|2|x||\n"
         );
-        let entries = extracted(&gl, false).unwrap();
+        let entries = extracted(&gl, false, false).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].rows.len(), 2);
         assert!(!entries[0].rows[1].debit);
         assert_eq!(entries[1].rows[0].mantissa, 100);
 
         let skipped = gl.replace("aa|2|", "aa|3|");
-        assert!(extracted(&skipped, false).is_err(), "line 2 is missing");
-        let torn = gl.replace("|Rent||\n", "|Ren\nt||\n");
-        assert!(extracted(&torn, false).is_err(), "a broken row is refused");
         assert!(
-            extracted("Journal_ID|x\n", false).is_err(),
+            extracted(&skipped, false, false).is_err(),
+            "line 2 is missing"
+        );
+        let torn = gl.replace("|Rent||\n", "|Ren\nt||\n");
+        assert!(
+            extracted(&torn, false, false).is_err(),
+            "a broken row is refused"
+        );
+        assert!(
+            extracted("Journal_ID|x\n", false, false).is_err(),
             "not the ADS header"
         );
     }
@@ -1062,7 +1370,7 @@ mod tests {
              bb|1|2026-03-11|8|1|1000|D|1.00|USD|2|x||\n\
              bb|2|2026-03-11|8|1|4000|C|1.00|USD|2|x||\n"
         );
-        let extract = extracted(&gl, false).unwrap();
+        let extract = extracted(&gl, false, false).unwrap();
         let tb = format!(
             "{TB_HEADER}\n\
              1000|2026-03-31|C|14.00|USD|2\n\
@@ -1214,7 +1522,7 @@ mod tests {
              aa|1|2026-03-10|7|1|1000|D|1.00|USD|2|x||\n\
              aa|2|2026-03-10|7|1|4000|C|1.00|USD|2|x||\n"
         );
-        let extract = extracted(&gl, false).unwrap();
+        let extract = extracted(&gl, false, false).unwrap();
         let cash = format!("{CHART_HEADER}\n1000|Cash|Asset|D\n4000|Revenue|Revenue|C\n");
         assert_eq!(
             chart_rows(&cash, &declared, &extract, Some("1000"), false),

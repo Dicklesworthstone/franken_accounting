@@ -45,6 +45,7 @@ fn fixture(
         unit_code: "USD".into(),
         unit_scale: 2,
         memo: None,
+        dimensions: Vec::new(),
     };
     let entry = |id: u64, class, legs| FormatEntry {
         entry_id: id.to_string(),

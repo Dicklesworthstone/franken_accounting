@@ -2313,6 +2313,7 @@ mod tests {
                 unit_code: "USD".into(),
                 unit_scale: scale,
                 memo: None,
+                dimensions: Vec::new(),
             };
             let mut entries = vec![FormatEntry {
                 entry_id: "opening".into(),
@@ -2512,6 +2513,7 @@ mod tests {
                                 unit_code: "USD".into(),
                                 unit_scale: scale,
                                 memo: None,
+                                dimensions: Vec::new(),
                             })
                             .collect(),
                     })
@@ -2593,6 +2595,7 @@ mod tests {
             unit_code: "USD".into(),
             unit_scale: scale,
             memo: None,
+            dimensions: Vec::new(),
         };
         let mut entries = vec![FormatEntry {
             entry_id: "capital".into(),

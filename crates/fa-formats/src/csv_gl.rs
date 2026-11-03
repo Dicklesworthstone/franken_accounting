@@ -9,9 +9,10 @@ use fa_model::EntryClass;
 use fa_money::{Amount, Side};
 
 use crate::{
-    ExportCoordinate, FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal,
-    FormatLeg, UnitCatalog, format_account_type, format_date_iso, format_exact_decimal, hex_decode,
-    hex_encode, parse_account_type, parse_date_iso, parse_exact_decimal,
+    DIMENSION_ENCODING, ExportCoordinate, FormatAccount, FormatAssertion, FormatEntry, FormatError,
+    FormatJournal, FormatLeg, UnitCatalog, format_account_type, format_date_iso,
+    format_dimension_set, format_exact_decimal, hex_decode, hex_encode, parse_account_type,
+    parse_date_iso, parse_dimension_set, parse_exact_decimal,
 };
 
 const FMT_CSV: &str = "csv_gl_v1";
@@ -25,8 +26,14 @@ const CSV_HEADER: &str = "entry_id,line_no,effective_date,recorded_seq,entry_cla
 /// book/account/unit header values without pipes or line breaks.
 pub fn write_csv_gl(journal: &FormatJournal) -> String {
     let mut out = String::new();
+    let dimensions = journal.has_dimensions();
+    let dimension_metadata = if dimensions {
+        format!("|dimension_encoding={DIMENSION_ENCODING}")
+    } else {
+        String::new()
+    };
     out.push_str(&format!(
-        "# fa_csv_gl_v1|book={}|base={}@{}|effective_through={}|known_at={}|entries={}|content_digest={}|certificate_digest={}\n",
+        "# fa_csv_gl_v1|book={}|base={}@{}|effective_through={}|known_at={}|entries={}|content_digest={}|certificate_digest={}{}\n",
         journal.coordinate.book_name,
         journal.coordinate.base_unit_code,
         journal.coordinate.base_unit_scale,
@@ -35,6 +42,7 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
         journal.coordinate.entry_count,
         hex_encode(&journal.coordinate.content_digest),
         hex_encode(&journal.coordinate.certificate_digest),
+        dimension_metadata,
     ));
     for acct in &journal.accounts {
         let side_s = match acct.normal_side {
@@ -72,6 +80,9 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
         ));
     }
     out.push_str(CSV_HEADER);
+    if dimensions {
+        out.push_str(",dimension_set_v1");
+    }
     out.push('\n');
     for entry in &journal.entries {
         let date_str = format_date_iso(entry.effective_date);
@@ -84,7 +95,7 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
             let amt = format_exact_decimal(leg.amount.mantissa, leg.unit_scale);
             let memo = leg.memo.as_deref().unwrap_or("");
             out.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 csv_field(&entry.entry_id),
                 idx + 1,
                 date_str,
@@ -99,6 +110,11 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
                 csv_field(mig),
                 csv_field(memo),
             ));
+            if dimensions {
+                out.push(',');
+                out.push_str(&format_dimension_set(&leg.dimensions));
+            }
+            out.push('\n');
         }
     }
     out
@@ -170,6 +186,8 @@ fn read_csv_gl_records(
     let mut known_at_seq = 0u64;
     let mut expected_content: Option<[u8; 32]> = None;
     let mut expected_cert: Option<[u8; 32]> = None;
+    let mut dimension_encoding = false;
+    let mut declared_columns: Option<usize> = None;
     let mut accounts = Vec::new();
     let mut assertions = Vec::new();
     let mut entries: Vec<FormatEntry> = Vec::new();
@@ -203,6 +221,19 @@ fn read_csv_gl_records(
                     expected_content = Some(hex_decode(FMT_CSV, v)?);
                 } else if let Some(v) = kv.strip_prefix("certificate_digest=") {
                     expected_cert = Some(hex_decode(FMT_CSV, v)?);
+                } else if let Some(v) = kv.strip_prefix("dimension_encoding=") {
+                    if v != DIMENSION_ENCODING
+                        || dimension_encoding
+                        || declared_columns.is_some()
+                        || !entries.is_empty()
+                    {
+                        return Err(FormatError::Parse {
+                            format: FMT_CSV,
+                            detail: "unknown, repeated, or late dimension_encoding declaration"
+                                .into(),
+                        });
+                    }
+                    dimension_encoding = true;
                 }
             }
             continue;
@@ -292,14 +323,34 @@ fn read_csv_gl_records(
         let Some(cols) = fields else {
             continue;
         };
-        if cols.iter().map(String::as_str).eq(CSV_HEADER.split(',')) {
+        let header = cols.iter().map(String::as_str).eq(CSV_HEADER.split(','));
+        let dimension_header = cols.len() == 14
+            && cols[..13]
+                .iter()
+                .map(String::as_str)
+                .eq(CSV_HEADER.split(','))
+            && cols[13] == "dimension_set_v1";
+        if header || dimension_header {
+            if declared_columns.is_some()
+                || !entries.is_empty()
+                || dimension_header != dimension_encoding
+            {
+                return Err(FormatError::Parse {
+                    format: FMT_CSV,
+                    detail:
+                        "CSV dimension column and encoding must agree in one header before data"
+                            .into(),
+                });
+            }
+            declared_columns = Some(cols.len());
             continue;
         }
-        if cols.len() != 13 {
+        let expected_columns = if dimension_encoding { 14 } else { 13 };
+        if cols.len() != expected_columns || (dimension_encoding && declared_columns != Some(14)) {
             return Err(FormatError::Parse {
                 format: FMT_CSV,
                 detail: format!(
-                    "line {}: expected 13 CSV columns, got {}",
+                    "line {}: expected {expected_columns} declared CSV columns, got {}",
                     line_idx,
                     cols.len()
                 ),
@@ -414,6 +465,11 @@ fn read_csv_gl_records(
             unit_code,
             unit_scale,
             memo,
+            dimensions: if dimension_encoding {
+                parse_dimension_set(&cols[13])?
+            } else {
+                Vec::new()
+            },
         });
     }
 
@@ -428,10 +484,12 @@ fn read_csv_gl_records(
         assertions,
     )?;
 
-    if require_certificate && (expected_content.is_none() || expected_cert.is_none()) {
+    if (require_certificate || dimension_encoding)
+        && (expected_content.is_none() || expected_cert.is_none())
+    {
         return Err(FormatError::Parse {
             format: FMT_CSV,
-            detail: "historical literal-quote CSV requires both original certificate digests"
+            detail: "historical literal-quote or dimension-bearing CSV requires both original certificate digests"
                 .into(),
         });
     }
@@ -463,8 +521,14 @@ fn read_csv_gl_records(
 pub fn write_ndjson_gl_stream(journal: &FormatJournal) -> Result<String, FormatError> {
     let refold = journal.refold_digest()?;
     let mut out = String::new();
+    let dimensions = journal.has_dimensions();
+    let dimension_metadata = if dimensions {
+        format!(",\"dimension_encoding\":\"{DIMENSION_ENCODING}\"")
+    } else {
+        String::new()
+    };
     out.push_str(&format!(
-        "{{\"event\":\"gl_stream_header\",\"book_name\":\"{}\",\"base_unit\":\"{}\",\"base_unit_scale\":{},\"effective_through\":\"{}\",\"known_at_seq\":{},\"entry_count\":{},\"content_digest\":\"{}\",\"certificate_digest\":\"{}\"}}\n",
+        "{{\"event\":\"gl_stream_header\",\"book_name\":\"{}\",\"base_unit\":\"{}\",\"base_unit_scale\":{},\"effective_through\":\"{}\",\"known_at_seq\":{},\"entry_count\":{},\"content_digest\":\"{}\",\"certificate_digest\":\"{}\"{}}}\n",
         json_escape(&journal.coordinate.book_name),
         json_escape(&journal.coordinate.base_unit_code),
         journal.coordinate.base_unit_scale,
@@ -473,6 +537,7 @@ pub fn write_ndjson_gl_stream(journal: &FormatJournal) -> Result<String, FormatE
         journal.coordinate.entry_count,
         hex_encode(&journal.coordinate.content_digest),
         hex_encode(&journal.coordinate.certificate_digest),
+        dimension_metadata,
     ));
 
     let mut row_count = 0usize;
@@ -485,8 +550,21 @@ pub fn write_ndjson_gl_stream(journal: &FormatJournal) -> Result<String, FormatE
                 Side::Credit => "credit",
             };
             let amt = format_exact_decimal(leg.amount.mantissa, leg.unit_scale);
+            let dimension_field = if dimensions {
+                let values = leg
+                    .dimensions
+                    .iter()
+                    .map(|(kind, value)| {
+                        format!("{{\"dimension\":{kind},\"value\":\"{value:032x}\"}}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(",\"dimensions\":[{values}]")
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "{{\"event\":\"gl_detail_row\",\"ordinal\":{},\"entry_id\":\"{}\",\"line_no\":{},\"effective_date\":\"{}\",\"recorded_seq\":{},\"entry_class\":{},\"account_code\":\"{}\",\"side\":\"{}\",\"amount\":\"{}\",\"mantissa\":\"{}\",\"unit\":\"{}\"}}\n",
+                "{{\"event\":\"gl_detail_row\",\"ordinal\":{},\"entry_id\":\"{}\",\"line_no\":{},\"effective_date\":\"{}\",\"recorded_seq\":{},\"entry_class\":{},\"account_code\":\"{}\",\"side\":\"{}\",\"amount\":\"{}\",\"mantissa\":\"{}\",\"unit\":\"{}\"{}}}\n",
                 row_count,
                 json_escape(&entry.entry_id),
                 idx + 1,
@@ -498,6 +576,7 @@ pub fn write_ndjson_gl_stream(journal: &FormatJournal) -> Result<String, FormatE
                 amt,
                 leg.amount.mantissa,
                 json_escape(&leg.unit_code),
+                dimension_field,
             ));
         }
     }

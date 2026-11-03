@@ -8,13 +8,15 @@ use fa_model::EntryClass;
 use fa_money::{Amount, Side};
 
 use crate::{
-    ExportCoordinate, FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal,
-    FormatLeg, UnitCatalog, format_account_type, format_date_iso, format_exact_decimal, hex_decode,
-    hex_encode, parse_account_type, parse_date_iso, parse_exact_decimal,
+    DIMENSION_ENCODING, ExportCoordinate, FormatAccount, FormatAssertion, FormatEntry, FormatError,
+    FormatJournal, FormatLeg, UnitCatalog, format_account_type, format_date_iso,
+    format_dimension_set, format_exact_decimal, hex_decode, hex_encode, parse_account_type,
+    parse_date_iso, parse_dimension_set, parse_exact_decimal,
 };
 
 const FMT: &str = "aicpa_ads_gl_v2";
 const ESCAPED_FMT: &str = "aicpa_ads_gl_v3";
+const GL_HEADER: &str = "Journal_ID|Journal_Entry_Line_Number|Effective_Date|Recorded_Seq|Entry_Class|GL_Account_Number|Debit_Credit_Indicator|Amount|Transaction_Currency|Unit_Scale|JE_Header_Description|Migrated_From|Line_Description";
 
 /// An AICPA Audit Data Standards General Ledger export package.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub struct AdsPackage {
 
 /// Write a [`FormatJournal`] as an AICPA Audit Data Standards [`AdsPackage`].
 pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatError> {
+    let dimensions = journal.has_dimensions();
     // v2 has literal fields. Keep its existing bytes only when every field
     // is representable; lossless escaped text is a distinct durable version.
     let unsafe_text = |s: &str| {
@@ -77,9 +80,11 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
         ));
     }
 
-    let mut gl = String::from(
-        "Journal_ID|Journal_Entry_Line_Number|Effective_Date|Recorded_Seq|Entry_Class|GL_Account_Number|Debit_Credit_Indicator|Amount|Transaction_Currency|Unit_Scale|JE_Header_Description|Migrated_From|Line_Description\n",
-    );
+    let mut gl = String::from(GL_HEADER);
+    if dimensions {
+        gl.push_str("|FA_Dimension_Set_V1");
+    }
+    gl.push('\n');
     for entry in &journal.entries {
         let date_str = format_date_iso(entry.effective_date);
         let mig = optional_text(entry.migrated_from.as_deref(), escaped);
@@ -92,7 +97,7 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
             let amt_str = format_exact_decimal(leg.amount.mantissa, leg.unit_scale);
             let memo = optional_text(leg.memo.as_deref(), escaped);
             gl.push_str(&format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 text(&entry.entry_id),
                 line_no,
                 date_str,
@@ -107,6 +112,11 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
                 mig,
                 memo,
             ));
+            if dimensions {
+                gl.push('|');
+                gl.push_str(&format_dimension_set(&leg.dimensions));
+            }
+            gl.push('\n');
         }
     }
 
@@ -199,6 +209,9 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
         hex_encode(&journal.coordinate.content_digest),
         hex_encode(&journal.coordinate.certificate_digest),
     );
+    if dimensions {
+        cert.push_str(&format!("dimension_encoding = \"{DIMENSION_ENCODING}\"\n"));
+    }
     // A whole-chart package's certificate bytes are unchanged; a scoped one
     // names its account (plan §13.1).
     if let Some(code) = &journal.coordinate.account_scope {
@@ -255,6 +268,21 @@ pub fn read_ads_package(
     };
     if cert_doc.root.get("schema_version").and_then(|v| v.as_int()) != Some(1) {
         return Err(text_error("unsupported ADS coordinate schema version"));
+    }
+    let dimensions = match cert_doc.root.get("dimension_encoding") {
+        None => false,
+        Some(value) if value.as_str() == Some(DIMENSION_ENCODING) => true,
+        Some(_) => return Err(text_error("unsupported ADS dimension_encoding")),
+    };
+    let gl_header = if dimensions {
+        format!("{GL_HEADER}|FA_Dimension_Set_V1")
+    } else {
+        GL_HEADER.to_owned()
+    };
+    if pkg.gl_detail.lines().next() != Some(gl_header.as_str()) {
+        return Err(text_error(
+            "ADS GL_Detail header differs from its declared dimension encoding",
+        ));
     }
     let book_name = cert_doc
         .root
@@ -435,10 +463,13 @@ pub fn read_ads_package(
         let raw: Vec<&str> = line.split('|').collect();
         let decoded = decode_row(line, escaped, true)?;
         let cols: Vec<&str> = decoded.iter().map(String::as_str).collect();
-        if cols.len() != 13 {
+        let expected_columns = if dimensions { 14 } else { 13 };
+        if cols.len() != expected_columns {
             return Err(FormatError::Parse {
                 format: FMT,
-                detail: format!("invalid GL_Detail row (expected 13 columns): {line:?}"),
+                detail: format!(
+                    "invalid GL_Detail row (expected {expected_columns} columns): {line:?}"
+                ),
             });
         }
         let entry_id = cols[0].to_owned();
@@ -540,6 +571,11 @@ pub fn read_ads_package(
             unit_code,
             unit_scale,
             memo,
+            dimensions: if dimensions {
+                parse_dimension_set(cols[13])?
+            } else {
+                Vec::new()
+            },
         });
     }
 

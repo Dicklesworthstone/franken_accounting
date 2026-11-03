@@ -1547,6 +1547,103 @@ fn format_export_roles_follow_the_selected_known_at_prefix() {
     }
 }
 
+#[test]
+fn format_export_preserves_native_dimension_identities_and_untagged_legs() {
+    let mut fixture = setup_book(0xd100_0000_0000_0001, 0xd1);
+    let schema = Capability::embedded(fixture.principal, &["schema_change"]).unwrap();
+    let mut expected = Vec::new();
+    for (kind, code) in [("department", "0100001"), ("fund", "6000")] {
+        fixture
+            .book
+            .create_dimension_value(
+                &fa::dimension::DimensionValueSpec {
+                    dimension: kind.into(),
+                    code: code.into(),
+                    name: format!("Source {kind} {code}"),
+                    parent: None,
+                    valid_from: None,
+                    valid_to: None,
+                },
+                fixture.principal,
+                format!("export-dimension-{kind}-{code}").as_bytes(),
+                &schema,
+            )
+            .unwrap()
+            .unwrap();
+        expected.push((
+            fa_model::dimension_kind(kind).unwrap().id,
+            fa_model::dimension_value_vid(fixture.book_id, kind, code).0,
+        ));
+    }
+    let capability = Capability::embedded(fixture.principal, &["post"]).unwrap();
+    let mut before_tagged = None;
+    for tagged in [false, true] {
+        let mut proposal = build_proposal(
+            &fixture,
+            &SpecEntry {
+                key: format!("dimension-export-{tagged}").into_bytes(),
+                debit_code: "6000",
+                credit_code: "1000",
+                unit: fixture.usd,
+                amount: 12_550,
+                day_offset: 0,
+                intent_byte: if tagged { 2 } else { 1 },
+            },
+        );
+        if tagged {
+            proposal.legs[0].dimension_set = expected
+                .iter()
+                .map(|(kind, value)| (*kind, VId(*value)))
+                .collect();
+        }
+        fixture
+            .book
+            .post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: capability.clone(),
+            })
+            .unwrap()
+            .unwrap();
+        if !tagged {
+            before_tagged = Some(fixture.book.head().unwrap());
+        }
+    }
+    let through = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let historical = fixture.book.format_journal(through, before_tagged).unwrap();
+    assert_eq!(historical.entries.len(), 1);
+    assert!(
+        historical
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.legs)
+            .all(|leg| leg.dimensions.is_empty())
+    );
+    assert!(!fa_formats::csv_gl::write_csv_gl(&historical).contains("dimension_set_v1"));
+
+    let journal = fixture.book.format_journal(through, None).unwrap();
+    assert_eq!(journal.entries.len(), 2);
+    let tagged: Vec<_> = journal
+        .entries
+        .iter()
+        .flat_map(|entry| &entry.legs)
+        .filter(|leg| !leg.dimensions.is_empty())
+        .collect();
+    assert_eq!(tagged.len(), 1, "the untagged counterpart remains untagged");
+    assert_eq!(tagged[0].dimensions, expected);
+    let units = fa_formats::UnitCatalog::embedded().unwrap();
+    let csv = fa_formats::csv_gl::write_csv_gl(&journal);
+    let ads = fa_formats::ads::write_ads_package(&journal).unwrap();
+    for reread in [
+        fa_formats::csv_gl::read_csv_gl(&csv, &units).unwrap(),
+        fa_formats::ads::read_ads_package(&ads, &units).unwrap(),
+    ] {
+        assert_eq!(reread.entries, journal.entries);
+        assert_eq!(reread.coordinate, journal.coordinate);
+    }
+}
+
 /// fa-eid6 (plan §16.6: export then import is the identity on folds): a
 /// 500-entry, two-currency book's interop journal survives every format's
 /// writer and reader, and refolds to the book's trial balance, over 30

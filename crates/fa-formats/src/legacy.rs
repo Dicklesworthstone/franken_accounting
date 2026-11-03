@@ -587,6 +587,15 @@ fn dimension_value_problem(kind: &str, code: &str) -> Option<String> {
 
 impl LegacyChunkEntry {
     fn validate_dimensions(&self, format: &'static str) -> Result<(), FormatError> {
+        if self.legs.iter().any(|leg| !leg.dimensions.is_empty()) {
+            return Err(FormatError::Parse {
+                format,
+                detail: format!(
+                    "entry {:?}: legacy migration requires explicit named dimension code mappings; native dimension value IDs belong to their source book and must not be silently copied or discarded",
+                    self.provenance.source_id
+                ),
+            });
+        }
         for (ordinal, values) in &self.leg_dimensions {
             if *ordinal >= self.legs.len() || values.is_empty() {
                 return Err(FormatError::Parse {
@@ -1160,6 +1169,7 @@ pub fn parse_quickbooks_iif(
                         memo.to_owned()
                     },
                     legs: vec![FormatLeg {
+                        dimensions: Vec::new(),
                         account_code: acct,
                         side,
                         amount: Amount::new(uid, mantissa),
@@ -1236,6 +1246,7 @@ pub fn parse_quickbooks_iif(
                 };
                 let memo = get("MEMO");
                 entry.legs.push(FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: acct,
                     side,
                     amount: Amount::new(uid, mantissa),
@@ -1827,6 +1838,7 @@ fn parse_tabular_csv_with_format(
             chunk.leg_dimensions.insert(chunk.legs.len(), dimensions);
         }
         chunk.legs.push(FormatLeg {
+            dimensions: Vec::new(),
             account_code,
             side,
             amount: Amount::new(uid, mantissa),
@@ -2143,6 +2155,7 @@ fn beancount_posting(
                 ),
             };
             txn.legs.push(FormatLeg {
+                dimensions: Vec::new(),
                 account_code,
                 side,
                 amount: Amount::new(uid, mantissa),
@@ -2188,6 +2201,7 @@ fn finish_ledger_txn(
                 std::cmp::Ordering::Less => (Side::Debit, net.checked_neg().ok_or_else(overflow)?),
             };
             legs.push(FormatLeg {
+                dimensions: Vec::new(),
                 account_code: account_code.clone(),
                 side,
                 amount: Amount::new(unit, mantissa),
@@ -2554,6 +2568,7 @@ fn hledger_posting(
         return Ok(());
     }
     txn.legs.push(FormatLeg {
+        dimensions: Vec::new(),
         account_code,
         side: if negative { Side::Credit } else { Side::Debit },
         amount: Amount::new(uid, magnitude),
@@ -2679,6 +2694,40 @@ mod tests {
             ]
         );
         assert!(proposals[0].legs[1].dimension_set.is_empty());
+
+        // Interop's raw native IDs are book-local. A programmatic caller
+        // cannot hide them inside a legacy leg and have import discard them
+        // or mistake them for codes in the destination book.
+        let mut foreign_ids = batch.clone();
+        foreign_ids.chunks[0].legs[0].dimensions = vec![(3, 0xab)];
+        let mut sealed = 0;
+        let error = foreign_ids
+            .to_chunk_proposals_with_sealer(
+                &book,
+                VId(1),
+                DateDay::parse("2026-01-01").unwrap(),
+                Some("FY2026-OPEN"),
+                PRINCIPAL,
+                Oid([0x82; 32]),
+                Vec::new(),
+                |_| {
+                    sealed += 1;
+                    Err::<Erasable<String>, _>(FormatError::Parse {
+                        format: "test",
+                        detail: "sealer must not be reached".into(),
+                    })
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("explicit named dimension code mappings")
+        );
+        assert_eq!(
+            sealed, 0,
+            "no approval proposal or private commitment was generated"
+        );
 
         let mut no_projection = columns.clone();
         no_projection.dimension_columns.clear();
