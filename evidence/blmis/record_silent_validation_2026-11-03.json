@@ -15,7 +15,8 @@
       "bytes": 41,
       "sha256": "434e12f0ae8fb68f38ec561b70aaff5b00d3e484c16f7a841fcc04c5bba7677a"
     },
-    "binding": "Verified hosted native artifact copied byte-for-byte to /tmp/franken-native-3f947ac/fa and fa-verify. These executions use source 3f947ac, not the subsequent 9700db7 large-Entry storage repair. They do not validate that newer Rust implementation."
+    "binding": "Verified hosted native artifact copied byte-for-byte to /tmp/franken-native-3f947ac/fa and fa-verify. These executions use source 3f947ac, not the subsequent 9700db7 large-Entry storage repair. They do not validate that newer Rust implementation.",
+    "applies_to": "Earlier local Glantz, final-helper recheck and Square One executions. The later hosted execution carries its own exact 5a8f078 native binary provenance."
   },
   "final_analytics_helper": {
     "commit": "5a8f078f01d43d20dc1398a87c2c96d1e8735722",
@@ -77,7 +78,7 @@
     "standalone_ads": "The actual fa-verify process independently validates exported accounting proof and complete native leg dimensions. Amount-only and party-only mutations must fail with exit 8. This is separate from the source predicate oracle and native analytics replay; no offline fa-verify analytic recomputation is claimed.",
     "source_scope": "Analysis accounts reconstruct the published principal/cash/credited-transfer movements. Original BLMIS general ledgers, trial balances and complete firm-wide records are not available in these exhibits. Trustee transfer credits, named same-day ordering and withholding footnotes remain explicit premises.",
     "inference_limits": "The litigation-selected records do not label these technical predicates as fraud. Counts are record-silent observations, not fraud findings, false-positive rates, audit assurance or a legal determination. Source discrepancies are retained without tolerance, plug or invented precision.",
-    "workspace_gates": "No Rust workspace test, Tier 0/Tier 1 gate or newer-engine acceptance is inferred from these executions."
+    "workspace_gates": "No Rust workspace test, Tier 0/Tier 1 gate, whole-workflow PASS or acceptance of source revisions beyond each execution's exact binary commit is inferred from these replay results."
   },
   "runs": {
     "glantz_complete_pipeline": {
@@ -834,11 +835,541 @@
       ],
       "reproduce": "python3 -B scripts/blmis_square_one_replay.py run --pdf /path/to/pinned-square-one.pdf --out /path/to/new-square-one --fa /path/to/fa --fa-verify /path/to/fa-verify"
     },
+    "glantz_hosted_final_helper_complete_pipeline": {
+      "status": "PASS",
+      "observed_replay_process_exit": 0,
+      "commands": 1305,
+      "native_exit_counts": {
+        "0": 1303,
+        "8": 2
+      },
+      "elapsed_seconds": 384.817,
+      "execution_scope": "Fresh original-PDF preparation, all six accounts, all monetary postings and exact retries, controls, all seven final-helper analytics, exports and independent ADS verification in one hosted execution at the fixed source commit. This is separate from the earlier local run and its helper-only recheck.",
+      "workflow": {
+        "run_id": 41654052154,
+        "job_id": 125989757959,
+        "url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41654052154",
+        "source_commit": "5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+        "job_conclusion": "failure",
+        "replay_step": {
+          "name": "Replay all six complete Glantz accounts and preserve source discrepancies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21
+        },
+        "failed_steps": [
+          {
+            "name": "Regress exact XBRL scales and duplicate facts",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 13
+          }
+        ],
+        "failure_scope": "The only failed job step ran the XBRL conformance selection: one existing test passed and three new fixtures failed parsing with missing entity identifier or period instant/endDate before their arithmetic assertions. Both Glantz replay steps succeeded. This is not a green workflow or evidence that the later fixture repair has passed.",
+        "command_group_logged_utc": "2026-11-03T15:26:15.1289153Z",
+        "success_stdout_logged_utc": "2026-11-03T15:32:40.1726495Z",
+        "timestamp_scope": "Timestamps come from the decoded GitHub job log, not separate process-wrapper measurements.",
+        "decoded_job_log": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/tooling/hosted-m7-5a8f078-job125989757959.log",
+          "bytes": 135268,
+          "sha256": "057a34b307b369bdf042b74b3d0876e3ffc3386541a380570b387fd12b0be54b"
+        },
+        "api_evidence": {
+          "bytes": 6177,
+          "sha256": "af4f045d92a9eb399244650bc376c87484ae750e3b50270f2ac31e0b835c0e61"
+        },
+        "xbrl_failure_log": {
+          "bytes": 3254,
+          "sha256": "721ea3961a794c0b7eacf3e4126a6a03d75059bd75e1898a55437ad0b1a7ca63"
+        }
+      },
+      "native_binary_provenance": {
+        "source_commit": "5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+        "cargo_lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+        "binary_sha256": {
+          "fa_sha256": "cf8e5a4c9b3bd46eb1d127ed9b0e5af09c68084430ff72838d4e6b0ea8558e9f",
+          "fa_verify_sha256": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05"
+        },
+        "manifests": {
+          "native-source.txt": {
+            "bytes": 41,
+            "sha256": "4afae77d65d74420b4565b4b4e08ba09401ea2a1066e3e0445bbbbc9cb5b23d5"
+          },
+          "native-lock.txt": {
+            "bytes": 41,
+            "sha256": "7a2b745cd7da4313e68dde2e65a3acf91e0fbe39a3e42138c8e8df9b3f72c119"
+          },
+          "native-binaries.sha256": {
+            "bytes": 171,
+            "sha256": "84d87d7e5f95ff9b6aaeddd8abe995e0687aeb5bbd605bc25b0692e117b89750"
+          }
+        },
+        "source_and_lock_manifests_match_committed_contents": true,
+        "binary_manifest_hashes_match_executed_report": true,
+        "native_artifact": {
+          "id": 13242148130,
+          "name": "public-ledger-native-5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+          "size_in_bytes": 43680949,
+          "archive_digest_from_github": "sha256:62df193a821bc9388fabad98b6da17aa3b6a83452da1a746dad4efb7d647dcae",
+          "url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41654052154/artifacts/13242148130",
+          "local_read_scope": "Only ZIP directory and three small provenance members were range-read. No native executable bytes were downloaded locally; no whole native ZIP digest was independently recomputed.",
+          "local_bytes_read": 853
+        }
+      },
+      "helper_provenance": {
+        "commit": "5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+        "module_sha256_from_committed_contents": {
+          "scripts/blmis_analytics.py": "77a742fda836a6f6211b062bba03b31122f640bf59efbecbc5e97a65c6c1dc5e",
+          "scripts/blmis_replay.py": "c3f61901ec54a76fd9a969f54384d0ec792bf5b0bfc0264817444c16c060758a",
+          "scripts/blmis_source.py": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2",
+          "scripts/public_ledger.py": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+        },
+        "report_driver_hash_matches_commit": true,
+        "embedded_workpaper_helper_hash_matches_commit": true,
+        "launch_time_module_snapshots_retained": false,
+        "binding": "The job fetched the exact commit and executed its checked-in driver and helper. Native source/lock manifests identify that commit; report driver and embedded-workpaper helper hashes match the committed bytes. No separate launch hash snapshot is claimed."
+      },
+      "source_reference": "glantz_complete_pipeline.source",
+      "source_pdf_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+      "source_rows_sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf",
+      "retained_extracted_source_files_match_report_hashes": true,
+      "population": {
+        "source_rows": 379,
+        "native_entries": 372,
+        "native_legs": 744
+      },
+      "zero_principal_observations": 7,
+      "source_account_comparisons_reference": "glantz_complete_pipeline.source_account_comparisons",
+      "all_source_comparisons_equal_earlier_complete_run": true,
+      "source_discrepancy_rows": {
+        "1T0026": 0,
+        "1ZA192": 0,
+        "1ZB010": 0,
+        "1ZB143": 0,
+        "1ZR010": 50,
+        "1ZR176": 12
+      },
+      "accounting_checks": {
+        "exact_entry_retries": 372,
+        "annual_controls": 17,
+        "verified_monthly_registers": 143,
+        "certified_account_ledgers": 6,
+        "completed_checks": [
+          "pinned_original_pdf",
+          "native_source_intake_and_custody_receipts",
+          "complete_six_account_379_row_population",
+          "all_372_monetary_entries_and_744_legs",
+          "all_seven_zero_principal_observations_retained",
+          "every_native_running_balance_vs_source_and_explicit_gap",
+          "named_same_day_display_reorder",
+          "both_transfer_credits_from_certified_originating_principal",
+          "exact_certified_ledger_replay",
+          "immutable_preimport_prefix",
+          "every_annual_all_account_control",
+          "every_exact_retry_without_new_history",
+          "native_registers_equal_fold",
+          "native_projections",
+          "all_six_native_party_bindings",
+          "all_six_native_principal_outcomes",
+          "missing_transfer_role_control_for_all_accounts",
+          "historical_missing_role_result_unchanged",
+          "seven_record_silent_source_predicates_and_certified_replays",
+          "all_exported_money_and_party_dimensions_vs_original_source",
+          "signed_accumulator_checkpoint",
+          "independent_ads_verification_and_dimension_coverage",
+          "one_cent_tamper_rejected",
+          "party_only_tamper_rejected"
+        ]
+      },
+      "analytics": {
+        "status": "PASS",
+        "source_known_at": 560,
+        "source_observations": 379,
+        "monetary_entries": 372,
+        "native_legs": 744,
+        "zero_principal_observations": 7,
+        "source_accounts": [
+          "1T0026",
+          "1ZA192",
+          "1ZB010",
+          "1ZB143",
+          "1ZR010",
+          "1ZR176"
+        ],
+        "procedures": {
+          "benford.first_digit": {
+            "finding_count": 1,
+            "severity_counts": {
+              "Info": 1
+            },
+            "certificate": "3c3160c14c8283b100912e406cb281a869cb3d2b23dc2c4dc3c1f85c3182d2c0",
+            "findings_digest": "2ef2f8f2cca8970a2a100d5583b8f25055a56ac0a9e66c2e65d4cf005f87b53c",
+            "recorded_at": 574,
+            "historical_replay_byte_identical": true
+          },
+          "duplicates.same_same_different": {
+            "finding_count": 14,
+            "severity_counts": {
+              "Low": 14
+            },
+            "certificate": "bf9634ac3904391b099433b5208c93ea36115e3a2f45a214ff28baf06b4c15c3",
+            "findings_digest": "8822b683a91fb980fb0b8d112950caacb179762e4a56b88e657fa33479064694",
+            "recorded_at": 568,
+            "historical_replay_byte_identical": true
+          },
+          "duplicates.same_same_same": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "6acecb7677199ca92fdbf663e8e47e76ba684ceb595cade21e0b38075ac0a767",
+            "findings_digest": "750ac5d0c814390d448a567df0615c68217a5b2639f3c615d610482fb7815d8c",
+            "recorded_at": 566,
+            "historical_replay_byte_identical": true
+          },
+          "jet.round_amounts": {
+            "finding_count": 311,
+            "severity_counts": {
+              "Medium": 311
+            },
+            "certificate": "8a5b0638f018a07c6c6146c44258d426280da18aed70b45aaef36c46371a8e05",
+            "findings_digest": "ede783db93da99e5b2271f4d942e4b64264aed07da4242e7d17dfe19638f667d",
+            "recorded_at": 562,
+            "historical_replay_byte_identical": true
+          },
+          "jet.weekend": {
+            "finding_count": 0,
+            "severity_counts": {},
+            "certificate": "4966932c5791630a9f24deb5ac1076ed12d5e583505d144bef544c8a7b9b3aa4",
+            "findings_digest": "776f13294d9f5a6da8d9285d8f820b5e470a8bb888f20b0dd49e36e168d3eb2b",
+            "recorded_at": 564,
+            "historical_replay_byte_identical": true
+          },
+          "numbers.relative_size_factor": {
+            "finding_count": 1,
+            "severity_counts": {
+              "Medium": 1
+            },
+            "certificate": "7acecb5fa37fe5f5e30bf61ac441509a5d6aad5838e284b81f525b4002a53cdb",
+            "findings_digest": "00eba7d2acb440944641795dda17f3f76e0478b0bf4be4faec3da5b34b57b45a",
+            "recorded_at": 570,
+            "historical_replay_byte_identical": true
+          },
+          "numbers.round_amount_density": {
+            "finding_count": 2,
+            "severity_counts": {
+              "Medium": 2
+            },
+            "certificate": "5d1dca2f4821c068c79ee748a1a76797984546ce449380065e4fd5e8ac444c8a",
+            "findings_digest": "f390620e81f317d8d9dc3da54257133a8d4397664e3cd1b58d342504d4195559",
+            "recorded_at": 572,
+            "historical_replay_byte_identical": true
+          }
+        },
+        "benford_result": {
+          "cites": [],
+          "narrative": "population 372 is below the registered minimum 500; no conformity is claimed",
+          "severity": "Info",
+          "statistic": {
+            "name": "population",
+            "population": 372,
+            "scale": 0,
+            "value": 372
+          }
+        }
+      },
+      "seven_procedure_transcript_bindings": {
+        "benford.first_digit": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        },
+        "duplicates.same_same_different": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        },
+        "duplicates.same_same_same": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        },
+        "jet.round_amounts": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        },
+        "jet.weekend": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        },
+        "numbers.relative_size_factor": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        },
+        "numbers.round_amount_density": {
+          "run_commands": 1,
+          "record_commands": 1,
+          "replay_commands": 2,
+          "workpaper_matches_complete_transcript": true,
+          "later_replay_byte_identical": true
+        }
+      },
+      "complete_source_finding_multisets_equal_local_final_recheck": true,
+      "standalone_ads_verification": {
+        "ads": {
+          "process_exit": 0,
+          "verdict": "verified",
+          "extract_result": "pass",
+          "dimension_coverage": "complete_native_leg_identities",
+          "entries": 372,
+          "rows": 744,
+          "dimension_rows": 744,
+          "known_at_seq": 717,
+          "effective_through": "2008-10-30"
+        },
+        "ads-amount-tampered": {
+          "process_exit": 8,
+          "verdict": "failed",
+          "extract_result": "fail",
+          "dimension_coverage": "not_authenticated"
+        },
+        "ads-party-tampered": {
+          "process_exit": 8,
+          "verdict": "failed",
+          "extract_result": "fail",
+          "dimension_coverage": "not_authenticated"
+        }
+      },
+      "artifacts": {
+        "local_extracted_directory": "/workspace/scratch/69d8c2fe02b1/hosted-m7-5a8f078-evidence",
+        "replay_artifact_id": 13244052611,
+        "replay_artifact_name": "public-ledger-replay-5a8f078f01d43d20dc1398a87c2c96d1e8735722",
+        "replay_artifact_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41654052154/artifacts/13244052611",
+        "replay_artifact_expires_at": "2026-11-17T15:32:40Z",
+        "downloaded_zip": {
+          "bytes": 1680901,
+          "sha256": "4da69b58f5a1415daeeff512d5e3e6e193874be51eb0a646c95c9f3fcf0b0182"
+        },
+        "downloaded_zip_matches_github_digest": true,
+        "files": {
+          "blmis-six/report.json": {
+            "bytes": 4377492,
+            "sha256": "2be0d833b6908b18698d301dd9376b910fa718926ad15679dcc605cbfa036c2c"
+          },
+          "blmis-six/commands.jsonl": {
+            "bytes": 4741355,
+            "sha256": "3968769b3e1a96b743b1aeaf5fc7164f6c562f22bc446d6061f8e61fd0ed3c27"
+          },
+          "blmis-six/manifest.json": {
+            "bytes": 174351,
+            "sha256": "0b658ec84d993fd3eb4b1dd5202829a14e6a9e2a7d765567750d46bda0246439"
+          },
+          "blmis-six/extraction.json": {
+            "bytes": 1457,
+            "sha256": "cabe8e4732f33a1748ce2ce570be067e28f10a6e5b1e6ce36065a7da6f522a51"
+          },
+          "blmis-six-native.log": {
+            "bytes": 108,
+            "sha256": "4a2cea4337c8db3dfdcdb8f32924eba75eefbd362228af44d0c2614a63a9337b"
+          },
+          "environment.log": {
+            "bytes": 351,
+            "sha256": "7fc9a25ac82ee806488049aef04948d753d41d695bb38a7b65d7008dda1f573d"
+          }
+        },
+        "analytics_workpaper": {
+          "location": "report.json#/record_silent_analytics",
+          "standalone_file_in_uploaded_artifact": false,
+          "hash_convention": "SHA-256 of embedded object encoded as UTF-8 JSON with sort_keys=True, indent=2, ensure_ascii=False and a final LF. This is a content hash; the standalone workpaper was not uploaded.",
+          "bytes": 841354,
+          "sha256": "2697de0c50c94eee17f143c61205c19952357ed354bdf74201df4816c69e9fe1"
+        }
+      },
+      "executed_driver_command": "python3 -B scripts/blmis_replay.py run --account all --pdf artifacts/public-ledger/glantz-source.pdf --out artifacts/public-ledger/blmis-six",
+      "reproduce": "At commit 5a8f078f01d43d20dc1398a87c2c96d1e8735722, run python3 -B scripts/blmis_replay.py run --account all --pdf /path/to/pinned-glantz.pdf --out /path/to/new-hosted-scope-replay --fa /path/to/5a8f078/fa --fa-verify /path/to/5a8f078/fa-verify. Verify the binary manifest hashes above first.",
+      "additional_single_account_execution": {
+        "status": "PASS",
+        "observed_replay_process_exit": 0,
+        "commands": 441,
+        "elapsed_seconds": 52.052,
+        "source_observations": 75,
+        "monetary_entries": 74,
+        "native_legs": 148,
+        "zero_principal_observations": 1,
+        "source_known_at": 171,
+        "native_exit_counts": {
+          "0": 439,
+          "8": 2
+        },
+        "finding_counts": {
+          "benford.first_digit": 1,
+          "duplicates.same_same_different": 0,
+          "duplicates.same_same_same": 0,
+          "jet.round_amounts": 71,
+          "jet.weekend": 0,
+          "numbers.relative_size_factor": 0,
+          "numbers.round_amount_density": 0
+        },
+        "artifacts": {
+          "blmis-1za192/report.json": {
+            "bytes": 862550,
+            "sha256": "5a196a69e4bb25f49995373bfdfc4f97d4ecabde0ff0428645cda4a0d873e408"
+          },
+          "blmis-1za192/commands.jsonl": {
+            "bytes": 1182589,
+            "sha256": "7978fde6c3b233f6e1b8dcf9de70e590be5e33b4d1284cdab26efadd3cad5105"
+          },
+          "blmis-native.log": {
+            "bytes": 104,
+            "sha256": "3a1227a9ead15f56dc0b95638d25a3f271fb07cc6ad4e4f4d6a5fed28c3d3321"
+          }
+        },
+        "analytics_workpaper": {
+          "location": "report.json#/record_silent_analytics",
+          "standalone_file_in_uploaded_artifact": false,
+          "hash_convention": "SHA-256 of embedded object encoded as UTF-8 JSON with sort_keys=True, indent=2, ensure_ascii=False and a final LF. This is a content hash; the standalone workpaper was not uploaded.",
+          "bytes": 180838,
+          "sha256": "5f38c7d49e44fde29d6a19243a0c3cc199c1ad3f3f347ffd5da302fa0cd468c2"
+        },
+        "executed_driver_command": "python3 -B scripts/blmis_replay.py run --out artifacts/public-ledger/blmis-1za192"
+      }
+    },
     "magnify_complete_pipeline": {
-      "status": "PENDING",
-      "scope": "A separate fresh original-PDF native run with the final helper is still in progress. No measured result, finding count or completion claim is recorded until its execution finishes."
+      "status": "INCOMPLETE",
+      "observed_driver_process_exit": 1,
+      "failure_kind": "environment_ENOSPC",
+      "failure_scope": "The shared overlay filled while the driver appended the native command transcript. The complete pipeline did not finish; no successful M7, export or independent-proof result is claimed. The original interrupted attempt and truncated transcript remain immutable.",
+      "complete_native_commands_logged": 2949,
+      "complete_native_command_exit_counts": {
+        "0": 2949
+      },
+      "fresh_post_commands": 1586,
+      "fully_logged_exact_retries": 1018,
+      "fully_logged_retry_identity_digest_sequence_equal": true,
+      "truncated_jsonl_tail": [
+        {
+          "line": 2950,
+          "bytes": 127
+        }
+      ],
+      "report_json_present": false,
+      "analytics_workpaper_present": false,
+      "failure_json_bytes": 0,
+      "artifacts": {
+        "local_run_directory": "/workspace/scratch/69d8c2fe02b1/native-validation-local-magnify-analytics",
+        "commands.jsonl": {
+          "bytes": 62291968,
+          "sha256": "24afbc6c975b16403201827634e6581e57c399015b1af83a2ff41e96db154a8b"
+        }
+      },
+      "continuation": "See separately labelled magnify_continuation. This interrupted initial attempt remains INCOMPLETE."
+    },
+    "magnify_continuation": {
+      "status": "RUNNING",
+      "execution_mode": "continuation_of_preserved_interrupted_run",
+      "initial_attempt_reference": "magnify_complete_pipeline",
+      "scope": "Separately pinned continuation on a byte-identical copy of the interrupted book. The original attempt remains INCOMPLETE; a passing recovery preflight does not establish a completed continuation, analytics sweep, export or independent proof.",
+      "started_utc": "2026-11-03T16:00:31.187932+00:00",
+      "binary_source_commit": "3f947acbe31d89e74feec05891aa49b7400e7260",
+      "continuation_helper": {
+        "path": "scripts/blmis_magnify_continue.py",
+        "sha256": "1d1ad0a566d66f4308dd4fd17896d10e7c2a9a93e5d3469f693d02ee5a909049"
+      },
+      "native_preflight": {
+        "status": "PASS",
+        "scope": "native_recovery_preflight_only",
+        "commands": 17,
+        "book_id": "0153d3051c716eda8356e88c66b88cef",
+        "unchanged_head": 1913,
+        "checks": [
+          "exact_book_identity_head_and_census",
+          "six_retained_certificate_replays",
+          "every_source_movement_and_printed_discrepancy",
+          "six_empty_preimport_prefixes",
+          "source_party_identity_census",
+          "complete_original_pdf_cold_readback",
+          "no_publication_during_native_preflight"
+        ],
+        "original_document_readback": {
+          "bytes": 28947445,
+          "doc_commit": "bb4fe2409a3483f6e47517b63107990631cf5295879c9229d5b57deca6c118e2",
+          "oid": "230ae25a10ccb364a7b4d16d67acde7095ad270cbb3e7299fbca979280b6fa80",
+          "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+          "recovered_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+          "robot_bytes_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+          "source_unchanged": true,
+          "read_protocol": "document read --out in a separate fa CLI process; exact file and robot bytes"
+        }
+      },
+      "launch": {
+        "cwd": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo",
+        "command": [
+          "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+          "-B",
+          "scripts/blmis_magnify_continue.py",
+          "run",
+          "--prior",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-local-magnify-analytics",
+          "--copy",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/magnify-interrupted-copy-3f947ac",
+          "--inventory",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/magnify-interrupted-copy-3f947ac.inventory.json",
+          "--inventory-sha256",
+          "cb3dd112ab5b29e061b9bc179f731c37c7360796ee8e2685f7a727c0d98b5144",
+          "--transcript-sha256",
+          "24afbc6c975b16403201827634e6581e57c399015b1af83a2ff41e96db154a8b",
+          "--out",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-magnify-continuation-3f947ac",
+          "--fa",
+          "/tmp/franken-native-3f947ac/fa",
+          "--fa-verify",
+          "/tmp/franken-native-3f947ac/fa-verify"
+        ],
+        "sha256_before": {
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/blmis_analytics.py": "77a742fda836a6f6211b062bba03b31122f640bf59efbecbc5e97a65c6c1dc5e",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/blmis_magnify.py": "876362a7872e5f447c5eef10d3310fb6ec3004f8ce8a78053dcd3064ac2382d5",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/blmis_magnify_continue.py": "1d1ad0a566d66f4308dd4fd17896d10e7c2a9a93e5d3469f693d02ee5a909049",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/blmis_magnify_replay.py": "0262cd453149a84abe256f50135a697185f03b4f537a5706573336bbb4147585",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/blmis_replay.py": "c3f61901ec54a76fd9a969f54384d0ec792bf5b0bfc0264817444c16c060758a",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/blmis_source.py": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/native_document_readback.py": "22157b96fc3713c62b3b5bee544207892036c4273d405e3bd66ea9678b78c1d6",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "/tmp/franken-native-3f947ac/fa": "8a4e8ccaabd72a3a4644c73459e7fc98ece73c3fb419c4a7a51ce4317e72be2f",
+          "/tmp/franken-native-3f947ac/fa-verify": "b1f3b63ffb92058075ef158ff9c14f05454e018c6914fb8d51ee5cd3e16c6f05"
+        }
+      },
+      "artifacts": {
+        "local_run_directory": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-magnify-continuation-3f947ac",
+        "native_preflight": {
+          "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-magnify-continuation-3f947ac/native-preflight.json",
+          "bytes": 1720,
+          "sha256": "a4e5a00d3ded48b140e6ea9da8bf307487a5b70d18a3a7a61fef2bd6a1cd7961"
+        },
+        "running_launch_snapshot": {
+          "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-magnify-continuation-3f947ac.running-execution-snapshot.json",
+          "copied_from": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/native-validation-magnify-continuation-3f947ac.execution.json",
+          "bytes": 3286,
+          "sha256": "dc0d21389161c7cff76cdde30b5ec13d80571ab8f522ec78d9ee908d7d7136cf",
+          "scope": "Immutable copy of the RUNNING execution wrapper metadata, captured before its final outcome."
+        }
+      },
+      "completion_claimed": false
     }
   },
-  "artifact_retention": "Only this compact execution summary is committed. Complete native command stdout/stderr, source-resolved workpapers and reports remain in the named local run directories, identified by hashes. Whole PDFs, generated private keys and bulky native books are excluded. Paths identify this execution environment, not a public artifact download.",
+  "artifact_retention": "Only this compact summary is committed. Complete native transcripts, workpapers and reports are retained in named local directories; the hosted result also identifies its downloaded GitHub replay artifact and expiry. Hosted analytics are embedded in report.json with an explicitly defined content hash because the standalone workpaper was not uploaded. Whole PDFs, generated private keys and bulky books are excluded. Local paths are not public download links.",
   "reproduction_notes": "Use the exact binary hashes and final helper commit above, verify the original PDF pins, and provide new output directories. Commands reproduce the scope and checks; random book/signing identities and later native prefixes can change certificate and output-file hashes. Missing local execution artifacts cannot be reconstructed from their hashes alone."
 }

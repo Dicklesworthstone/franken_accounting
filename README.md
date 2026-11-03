@@ -487,6 +487,14 @@ original bytes. The [storage and validation section](docs/public_ledger.md#prese
 explains compatibility, corruption controls and the real source that exposed
 the defect; earlier account-only execution records do not validate this repair.
 
+The [source-bound replay helper](scripts/public_ledger_source_bound_replay.py)
+adds the native `--bind-source` preparation switch to the same complete-agency
+workflow. It preserves every source and accounting assertion while requiring
+the kernel's immutable prepared population, so an omitted offsetting pair
+cannot pass merely because account totals still match. Its
+[reproduction command](docs/public_ledger.md#exercise-native-source-population-completeness)
+uses a fresh book and retains the actual native command arguments.
+
 The entire 373,357-row publication has been profiled. **All three complete agency
 fixtures passed the native account-level workflow:** 1,317 original rows
 produce 1,303 exact monetary legs across 48
@@ -564,6 +572,21 @@ independent source-movement fold; a published discrepancy never becomes a
 tolerance or balancing entry. Magnify additionally reads back its complete
 28.9 MB original through a fresh native process and checks both recovered-file
 and robot-response bytes.
+
+All three drivers also run seven source-checked forensic procedures: round
+amounts, weekends, same-day duplicates, nearby-date duplicates, relative-size
+factors, round-amount density and Benford first digits. A separate integer
+oracle derives each complete expected finding set from the original amount
+literals and dates. The runner checks the exact native findings, statistics,
+parameters and source citations, retains their certificates, and replays the
+same historical results after later history. Benford keeps its registered
+500-observation minimum; smaller populations receive an explicit information
+notice. These are statistical observations under declared source assumptions,
+not labelled fraud outcomes or independent audit assurance. The
+[procedure documentation](docs/blmis_glantz_workload.md#source-checked-forensic-observations-on-real-records)
+and [measured execution record](evidence/blmis/record_silent_validation_2026-11-03.json)
+state the actual run coverage and distinguish native analytics replay from
+standalone accounting-proof verification.
 
 The [source-bound migration workload](docs/blmis_migration.md) exercises a second
 native admission path. `--include-magnify` combines all **seven exact-footing
