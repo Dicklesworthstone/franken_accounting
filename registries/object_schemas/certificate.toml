@@ -13,6 +13,20 @@ externally_verifiable = true
 
 fields = ["format_domain:bytes", "book_id:bytes16", "branch_id:bytes16", "known_at:system_selector", "resolved_sequence:u64", "effective_selection:tagged_selection", "native_inputs:list<native_result_certificate>", "journal_prefix:list<entry_digest_pair>", "registry_digests:registry_closure", "output_digest:bytes32", "output_bytes:bytes"]
 
+# Canonical MigrationRun bodies above 4096 bytes use authenticated storage
+# fragments (object_storage kind 9; symbol MigrationRunFragment=63). A native
+# report whose selected prefix contains those records appends exactly one
+# input after its existing ordered family closure:
+# MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ <known_at>
+# RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n
+# Existing report format domains and original input positions are unchanged.
+# Decoders admit only the original exact closure or that closure plus this
+# exact final query at the report's known-at. Native replay refuses an original
+# closure if fragments existed at its prefix; later fragments never reinterpret
+# an earlier certificate. Offline report bundles continue to carry the complete
+# canonical v1 RunBody, authenticated against its immutable Open control, with
+# the existing 8 MiB body bound. Storage manifests are not outsider evidence.
+
 # Due-date aging is an additive family, leaving effective-date aging v1 intact.
 # Outer wire: bytes(format), producer:u128, capability:bytes32,
 # bytes(native OpenItems certificate), cutoff:i32, list(bucket_bound:u32),

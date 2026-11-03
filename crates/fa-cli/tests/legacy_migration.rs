@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "legacy_migration/grouped.rs"]
+mod grouped;
 #[path = "legacy_migration/limited_accounts.rs"]
 mod limited_accounts;
 #[path = "legacy_migration/oklahoma.rs"]
@@ -107,6 +109,12 @@ fn rows<'a>(value: &'a Json, key: &str) -> &'a [Json] {
 }
 
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
+    let (status, mut events) = run_events(book, args);
+    assert_eq!(events.len(), 1, "{args:?}: {events:?}");
+    (status, events.pop().unwrap())
+}
+
+fn run_events(book: &Path, args: &[&str]) -> (i32, Vec<Json>) {
     let output = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(book)
@@ -119,14 +127,19 @@ fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lines: Vec<_> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "{args:?}: {stdout}\n{stderr}");
-    fa_cli::verbs::registry()
-        .unwrap()
-        .check_line(lines[0])
-        .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}\n{stderr}"));
+    assert!(!lines.is_empty(), "{args:?}: {stdout}\n{stderr}");
+    for line in &lines {
+        fa_cli::verbs::registry()
+            .unwrap()
+            .check_line(line)
+            .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}\n{stderr}"));
+    }
     (
         output.status.code().unwrap(),
-        json::parse(lines[0]).unwrap(),
+        lines
+            .iter()
+            .map(|line| json::parse(line).unwrap())
+            .collect(),
     )
 }
 

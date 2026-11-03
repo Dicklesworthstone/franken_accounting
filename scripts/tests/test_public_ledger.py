@@ -547,6 +547,39 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
 
 
 class ReplayRefusalTests(unittest.TestCase):
+    def test_grouped_staging_checks_all_receipts_and_finalized_retry_identity(self):
+        package = {"package_oid": "package", "chunks": [
+            {"entry_vid": "first", "proposal_digest": "reviewed-first"},
+            {"entry_vid": "second", "proposal_digest": "reviewed-second"},
+        ]}
+        good = {"event": "migration_import_group_staged", "data": {
+            "package_oid": "package", "run_vid": "run", "atomic": False,
+            "selected_count": 2, "completed_count": 2, "recorded_count": 2, "chunk_count": 2,
+            "run_state": "Open", "ready_to_finalize": True,
+            "chunks": [{"chunk_index": index, **chunk, "recorded_at": 30 + index,
+                        "already_recorded": False} for index, chunk in enumerate(package["chunks"])],
+        }}
+        self.assertEqual(len(replay.verify_staged_group(good, package, "run")), 2)
+        for mutate in [
+            lambda data: data.update(atomic=True),
+            lambda data: data.update(run_vid="different-run"),
+            lambda data: data.update(recorded_count=1),
+            lambda data: data["chunks"].reverse(),
+            lambda data: data["chunks"][1].update(proposal_digest="not-approved"),
+            lambda data: data["chunks"][1].update(recorded_at=30),
+            lambda data: data["chunks"][1].update(already_recorded=True),
+        ]:
+            wrong = deepcopy(good)
+            mutate(wrong["data"])
+            with self.assertRaises(replay.ReplayError):
+                replay.verify_staged_group(wrong, package, "run")
+        retried = deepcopy(good)
+        retried["data"].update(run_state="Finalized", ready_to_finalize=False)
+        for receipt in retried["data"]["chunks"]:
+            receipt["already_recorded"] = True
+        result = replay.verify_staged_group(retried, package, "run", retry=True)
+        self.assertEqual([row["recorded_at"] for row in result], [30, 31])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -614,6 +647,35 @@ class ReplayRefusalTests(unittest.TestCase):
             self.assertEqual(native.tb("FY2024-P10"), {"101000": 0})
             with self.assertRaisesRegex(replay.ReplayError, "gross debit/credit activity"):
                 native.tb("FY2024-P10", expected_gross=expected_gross)
+
+    def test_native_document_preserves_automated_custody_and_binds_its_fixture_review(self):
+        native = replay.Native(Path(sys.executable), Path(sys.executable), self.root)
+        oid = "ab" * 32
+        added = {"oid": oid, "grade": "AgentUpload", "self_sourced": True,
+                 "doc_commit": "cd" * 32, "recorded_at": 1}
+        reviewed = {"claim": "Reviewed", "subject": oid,
+                    "attestation_vid": "ef" * 16, "recorded_at": 2}
+        with mock.patch.object(native, "call", side_effect=[{"data": added}, {"data": reviewed}]) as call:
+            self.assertEqual(native.document(self.root / "source.csv"), oid)
+            self.assertNotIn("--grade", call.call_args_list[0].args)
+            self.assertEqual(call.call_args_list[1].args, (
+                "document", "attest", "review", "--document", oid,
+                "--as", "public-data-fixture-document-reviewer", "--grant", "approve",
+            ))
+        self.assertEqual(native.document_custody[0]["intake_grade"], "AgentUpload")
+        self.assertEqual(native.document_custody[0]["review_attestation_vid"], reviewed["attestation_vid"])
+        for grade, self_sourced in [("HumanUpload", False), ("AgentUpload", False)]:
+            with self.subTest(grade=grade, self_sourced=self_sourced):
+                wrong = dict(added, grade=grade, self_sourced=self_sourced)
+                with mock.patch.object(native, "call", return_value={"data": wrong}) as call:
+                    with self.assertRaisesRegex(replay.ReplayError, "self-sourced AgentUpload"):
+                        native.document(self.root / "source.csv")
+                    self.assertEqual(call.call_count, 1)
+        for wrong in [dict(reviewed, subject="00" * 32), dict(reviewed, claim="Confirmed")]:
+            with mock.patch.object(native, "call", side_effect=[{"data": added}, {"data": wrong}]):
+                with self.assertRaisesRegex(replay.ReplayError, "does not bind"):
+                    native.document(self.root / "source.csv")
+        self.assertEqual(len(native.document_custody), 1)
 
     def test_department_missing_values_leading_zeros_and_ambiguous_metadata(self):
         for value in ("", " ", "\t \r\n"):
