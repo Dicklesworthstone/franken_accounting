@@ -4,6 +4,11 @@
 - **Proof Class:** `metamorphic (self round-trip); external tools not run`
 - **No-Claim Boundary:** Shows that FrankenAccounting's fold survives its own Beancount v3 and hledger export read back by its own reader. bean-check and hledger did not evaluate these journals, so no agreement with either tool is claimed; that differential is fa-sa4w.
 
+The separately executed [external public-data oracle](plaintext-external-oracle.md)
+now covers the complete HMRC March 2025 expenditure model with real Beancount
+and hledger tools. It does not change the proof class of this historical matrix
+or claim that every fixture below has been externally evaluated.
+
 | Fixture | Expected | Observed | Divergence | Reason |
 |---|---|---|---|---|
 | `acme_multi_unit_fy2026_p03 via Beancount v3` | `1000:USD=+2500.00, 1010:EUR=+1000.00, 1200:USD=+755.00, 2000:USD=-182.50, 3000:EUR=-1000.00, 3000:USD=-2500.00, 4000:USD=-755.00, 5000:USD=+182.50` | `1000:USD=+2500.00, 1010:EUR=+1000.00, 1200:USD=+755.00, 2000:USD=-182.50, 3000:EUR=-1000.00, 3000:USD=-2500.00, 4000:USD=-755.00, 5000:USD=+182.50` | `none` | Written by fa-formats and read back by fa-formats; computed in this test. |

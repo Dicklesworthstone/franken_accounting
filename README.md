@@ -2471,6 +2471,15 @@ otherwise unchanged export was refused. The
 includes the original source comparison and the real identity-key integration
 failure that this workload exposed and repaired.
 
+The [external plaintext oracle](docs/conformance/plaintext-external-oracle.md)
+also runs the actual Beancount and hledger tools on untouched, same-coordinate
+native exports. A fresh complete HMRC run agreed on all **2,860 postings and
+135 account/currency cells**, including separate gross debits, gross credits,
+net balances and posting counts. Balanced corruption and cancellation that
+preserves net balances are explicit negative controls. The helper retains
+tool versions, input hashes and every external command; missing tools are
+`UNRUN`, never substituted with FrankenAccounting's own reader.
+
 These are whole published monthly expenditure extracts, **not original complete
 double-entry ledgers**. The fixture uses declared modeled Expense accounts and
 an explicitly labeled Equity offset, preserves all source dimensions as
