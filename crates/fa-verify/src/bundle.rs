@@ -1011,6 +1011,7 @@ pub(crate) fn verify_bundle_observing(
     // the entry set and every one of its records are.
     let mut citations_authenticated = matches!(&entry_set, Grade::Pass);
     let mut citing: Vec<approvals::Citing> = Vec::new();
+    let mut citing_entries = 0usize;
     checks.push(check(
         "entries",
         scope_label,
@@ -1039,18 +1040,23 @@ pub(crate) fn verify_bundle_observing(
             },
         };
         full_prefix_payloads &= matches!(&record, Grade::Pass);
-        if p.format.1 == FORMAT_MINOR_APPROVALS {
-            let cited = matches!(record, Grade::Pass)
-                .then(|| crate::envelope::entry_approvals(item.record, item.proposal_len).ok())
-                .flatten();
-            match cited {
-                Some((proposal_digest, cited)) => citing.push(approvals::Citing {
-                    leaf_index: item.leaf_index,
-                    proposal_digest,
-                    approvals: cited,
-                }),
-                None => citations_authenticated = false,
+        // Every entry's citations are read, whatever the bundle's minor: the
+        // minor is itself judged against them below.
+        let cited = matches!(record, Grade::Pass)
+            .then(|| crate::envelope::entry_approvals(item.record, item.proposal_len).ok())
+            .flatten();
+        match cited {
+            Some((proposal_digest, cited)) => {
+                citing_entries += usize::from(!cited.is_empty());
+                if p.format.1 == FORMAT_MINOR_APPROVALS {
+                    citing.push(approvals::Citing {
+                        leaf_index: item.leaf_index,
+                        proposal_digest,
+                        approvals: cited,
+                    });
+                }
             }
+            None => citations_authenticated = false,
         }
         let closure = if matches!(record, Grade::Pass) {
             closure_grade(item)
@@ -1118,6 +1124,38 @@ pub(crate) fn verify_bundle_observing(
             subject
         };
         checks.push(check("recomputation", "recomputation", subject, grade));
+    }
+
+    // A producer writes 1.1 exactly when an in-scope entry cites an approval
+    // (bundle/approvals.rs), so the minor is fixed by the authenticated
+    // entries. A citing bundle re-encoded as 1.0 would carry none of the
+    // approval records its entries cite and still verify, and a 1.1 bundle
+    // that cites nothing is not the canonical bytes. The check is reported
+    // only when the minor contradicts the citations.
+    if citations_authenticated {
+        let why = if citing_entries > 0 && p.format.1 != FORMAT_MINOR_APPROVALS {
+            Some(format!(
+                "{citing_entries} in-scope entries cite an approval, so the canonical bundle is \
+                 format {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS} and carries their records; this \
+                 {FORMAT_MAJOR}.{} bundle omits them",
+                p.format.1
+            ))
+        } else if citing_entries == 0 && p.format.1 == FORMAT_MINOR_APPROVALS {
+            Some(format!(
+                "no in-scope entry cites an approval, so the canonical bundle is format \
+                 {FORMAT_MAJOR}.{FORMAT_MINOR}, not {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS}"
+            ))
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            checks.push(check(
+                "format",
+                "format",
+                format!("format {}.{}", p.format.0, p.format.1),
+                Grade::Fail(why),
+            ));
+        }
     }
 
     if p.format.1 == FORMAT_MINOR_APPROVALS {
