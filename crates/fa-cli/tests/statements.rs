@@ -1434,7 +1434,7 @@ fn retained_statement_certificates_bridge_and_trace_without_reselecting_head() {
                 &a,
             ],
             8,
-            "--before-certificate",
+            "cannot combine statement-diff and native certificates",
         ),
         (
             vec!["trace", "--from-diff", &a, "--certify"],
