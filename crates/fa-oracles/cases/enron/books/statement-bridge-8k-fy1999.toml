@@ -76,7 +76,7 @@ role_map_rule = "role_map"
 
 [[account]]
 code = "2000"
-name_fact = "ENR-BRIDGE-FY1999"
+name_fact = "ENR-BRIDGE-8K"
 type = "Liability"
 role = ""
 opened = "1998-12-31"
@@ -92,7 +92,7 @@ role_map_rule = "role_map"
 
 [[account]]
 code = "3900"
-name_fact = "ENR-BRIDGE-FY1999"
+name_fact = "ENR-BRIDGE-8K"
 type = "Equity"
 role = ""
 opened = "1998-12-31"
