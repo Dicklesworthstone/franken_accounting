@@ -570,7 +570,7 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     let oid = format!("C:{}", text(&events[1], "oid"));
     assert!(text(&events[1], "replay_command").contains("equity-roll-forward-diff"));
     let reader_token = f.dir.join("equity-comparison-reader.token");
-    ok(
+    let issued = ok(
         &f.book,
         &[
             "capability",
@@ -601,7 +601,7 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
             "statement",
             "diff",
             "--before-certificate",
-            before_path.to_str().unwrap(),
+            &before_oid,
             "--after-certificate",
             &after_oid,
             "--expect",
@@ -618,13 +618,23 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
         before_read + 1,
         "the admitted token read journals exactly its AccessEvent"
     );
+    let access = ok(
+        &f.book,
+        &["access", "log", "--since", &before_read.to_string()],
+    );
+    assert_eq!(integer(&access, "count"), 1);
+    let access = &get(&access, "events").as_arr().unwrap()[0];
+    assert_eq!(text(access, "command"), "statement diff");
+    assert_eq!(text(access, "capability"), text(&issued, "commitment"));
+    assert_eq!(integer(access, "observed_at"), before_read);
+    assert_eq!(integer(access, "recorded_at"), retained_at);
     let (code, refused) = many(
         &f.book,
         &[
             "statement",
             "diff",
             "--before-certificate",
-            before_path.to_str().unwrap(),
+            &before_oid,
             "--after-certificate",
             &after_oid,
             "--expect",
@@ -637,6 +647,8 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     assert_eq!(code, 7, "{refused:?}");
     assert_eq!(refused.len(), 1);
     assert_eq!(text(&refused[0], "event"), "error");
+    assert_eq!(text(&refused[0], "refusal_id"), "FA-REF-011");
+    assert!(text(&refused[0], "message").contains("produce"));
     assert_eq!(head(&f.book), retained_at);
     let output = f.dir.join("equity-diff.replayed");
     let (code, replayed) = many(
