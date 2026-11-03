@@ -472,9 +472,20 @@ selections, and provides a native migration-to-report-to-proof replay driver.
 
 Generic CSV mappings can project registered native dimensions through an
 optional `[dimension_columns]` section. The public replay driver preserves
-original department codes, checks every native leg's attribution, and compares
-monthly and cumulative departmental net and gross balances to the source.
-Blank department values remain untagged; leading zeros remain significant.
+original department, fund, product and project codes, checks every native leg's
+complete dimension set, and compares monthly and cumulative net and gross
+balances for every populated dimension. Blank values remain untagged; leading
+zeros remain significant. Product `01` stays distinct from `1`, and the selected
+university's nine published product codes are retained.
+
+The full university dimension vector exposed a 157-leg Entry larger than the
+substrate's 16 KiB row limit. Large monetary Entries now use authenticated 4 KiB fragments
+in the same posting transaction while retaining one accounting identity and
+unchanged canonical digests. Historical reads, same-batch resolution, register
+maintenance, native certificates and portable proofs resolve the complete
+original bytes. The [storage and validation section](docs/public_ledger.md#preserve-large-entries-without-losing-source-detail)
+explains compatibility, corruption controls and the real source that exposed
+the defect; earlier account-only execution records do not validate this repair.
 
 The entire 373,357-row publication has been profiled. **All three complete agency
 fixtures passed the native account-level workflow:** 1,317 original rows

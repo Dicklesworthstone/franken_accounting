@@ -6,7 +6,7 @@
 //! physical commit happened at a particular UTC instant.
 
 use fa_model::symbols::{label, property};
-use fa_model::{ControlPayload, Entry, EntryClass, Id128};
+use fa_model::{ControlPayload, EntryClass, Id128};
 use fa_time::{InstantResolution, InstantResolutionError, TimeObservation};
 use fgdb::Database;
 use fgdb_types::{CommitSeq, QueryCx, VId};
@@ -125,8 +125,7 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let payload = bytes(&row, property::FA_PAYLOAD, "TimeEvidence entry payload")?;
-        let entry = Entry::decode(&payload)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.class == EntryClass::MIGRATION
             || entry.proposal.class == EntryClass::MIGRATION_CONTROL
         {
@@ -168,11 +167,8 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         })?;
         if !current.labels.contains(&label::ENTRY)
             || current.created_at != row.created_at
-            || bytes(
-                &current,
-                property::FA_PAYLOAD,
-                "current TimeEvidence payload",
-            )? != payload
+            || crate::entry_storage::payload_at(db, &current, head)?
+                != crate::entry_storage::payload_at(db, &row, at)?
             || bytes(&current, property::FA_DIGEST, "current TimeEvidence digest")?
                 != entry.entry_digest
         {

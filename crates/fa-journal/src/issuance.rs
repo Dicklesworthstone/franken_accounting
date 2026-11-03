@@ -765,20 +765,26 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<IssuanceRecord> {
-    let (stored, _) = crate::post::entry_of(row)?;
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "this issuance's identity holds different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "commit the identical plan to get its recorded outcome, or plan the issuance under a new --key",
+        )
+    };
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::ISSUANCE_CONTROL) {
+        return Ok(Err(conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     let recorded = match issuance_of(&stored)? {
         Some(recorded) if stored.proposal_digest == proposal.proposal_digest()? => recorded,
         _ => {
-            return Ok(Err(Refusal::new(
-                code::IDEMPOTENCY_CONFLICT,
-                exit::CONFLICT,
-                format!(
-                    "this issuance's identity holds different content; the recorded entry is {:032x}",
-                    row.vid.0
-                ),
-                "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
-                "commit the identical plan to get its recorded outcome, or plan the issuance under a new --key",
-            )));
+            return Ok(Err(conflict()));
         }
     };
     Ok(Ok(record_of(db, book, recorded.vid())?.ok_or_else(
@@ -814,7 +820,8 @@ fn record_of<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     vid: VId,
 ) -> Result<Option<IssuanceRecord>, KernelError> {
-    let Some(row) = db.vertex(vid)? else {
+    let seq = db.frontier()?;
+    let Some(row) = db.vertex_at(vid, seq)? else {
         return Ok(None);
     };
     if row.labels.as_slice() != [label::STATEMENT_ISSUANCE] {
@@ -832,14 +839,15 @@ fn record_of<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let mut records = Vec::new();
-    for evid in db.in_neighbours(vid, relation::IN_CASE)? {
-        let Some(src) = db.vertex(evid)? else {
+    for evid in db.in_neighbours_at(vid, relation::IN_CASE, seq)? {
+        let Some(src) = db.vertex_at(evid, seq)? else {
             continue;
         };
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&src)?;
+        let entry = crate::entry_storage::decode_at(db, &src, seq)?;
+        let recorded_at = src.created_at;
         if issuance_of(&entry)?.as_ref() == Some(&issuance) {
             records.push((evid, entry, recorded_at));
         }

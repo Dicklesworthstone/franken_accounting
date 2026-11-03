@@ -289,7 +289,7 @@ pub fn native_subledgers_at<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, row, at)?;
         if !matches!(
             &entry.proposal.control,
             Some(ControlPayload::SchemaChange {
@@ -550,7 +550,10 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if row.labels.as_slice() != [label::ENTRY]
             || row.props != entry_mirrors(&stored)?
             || !stored.approvals.is_empty()
@@ -650,7 +653,7 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let historical = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        let historical = crate::entry_storage::decode_at(db, &row, txn.basis())?;
         for (ordinal, leg) in historical.proposal.legs.iter().enumerate() {
             if leg.account_ref != spec.control_account {
                 continue;

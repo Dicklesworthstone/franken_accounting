@@ -153,7 +153,7 @@ pub(super) fn source_entry<V: Vfs + Clone>(
     if let Err(refusal) = native_birth(db, cx, &row, label::ENTRY)? {
         return Ok(Err(refusal));
     }
-    let entry = match Entry::decode(payload(&row)?) {
+    let entry = match crate::entry_storage::decode_at(db, &row, at) {
         Ok(entry) => entry,
         Err(error) => return Ok(Err(drift(format!("cash Entry no longer decodes: {error}")))),
     };
@@ -161,8 +161,10 @@ pub(super) fn source_entry<V: Vfs + Clone>(
         || entry.proposal.branch_id != Id128::TRUNK
         || entry.entry_ref(row.vid) != reference
         || entry.proposal.class == EntryClass::PENDING
+        || !crate::entry_storage::payload_mirror_matches(&row, &entry)?
         || entry_mirrors(&entry)?
             .iter()
+            .filter(|(key, _)| *key != property::FA_PAYLOAD)
             .any(|(key, value)| prop(&row, *key) != Some(value))
     {
         return Ok(Err(invalid(
@@ -391,7 +393,7 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
     let mut migrations = BTreeMap::new();
     for row in entries {
         checkpoint(cx)?;
-        let entry = Entry::decode(payload(&row)?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, request.source_known_at)?;
         let day = entry.proposal.effective_date;
         if entry.proposal.class == EntryClass::PENDING
             || day < from
@@ -601,7 +603,7 @@ pub(super) fn import_birth<V: Vfs + Clone>(
     if let Err(refusal) = native_birth(db, cx, &row, label::ENTRY)? {
         return Ok(Err(refusal));
     }
-    let entry = Entry::decode(payload(&row)?)?;
+    let entry = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
     if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
         return Ok(Err(drift(
             "the bank ImportRun belongs to another book or branch",
@@ -718,7 +720,7 @@ fn sources<V: Vfs + Clone>(
     if let Err(refusal) = native_birth(db, cx, &row, label::ENTRY)? {
         return Ok(Err(refusal));
     }
-    let entry = Entry::decode(payload(&row)?)?;
+    let entry = crate::entry_storage::decode_at(db, &row, at)?;
     let Some(ControlPayload::ImportRun {
         source,
         document_count,

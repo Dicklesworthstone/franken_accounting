@@ -678,14 +678,6 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     proposal_digest: &[u8; 32],
     approvals: &[ApprovalRef],
 ) -> Outcome<PolicyActivated> {
-    let stored = match prop(row, property::FA_PAYLOAD) {
-        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-        other => {
-            return Err(KernelError::Corrupt(format!(
-                "entry _fa_payload: {other:?}"
-            )));
-        }
-    };
     let conflict = || {
         Refusal::new(
             code::IDEMPOTENCY_CONFLICT,
@@ -698,6 +690,10 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
             "resubmit the identical activation to get the recorded outcome, or use a new idempotency key",
         )
     };
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::POLICY_CONTROL) {
+        return Ok(Err(conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     if stored.proposal.class != EntryClass::POLICY_CONTROL || stored.approvals != approvals {
         return Ok(Err(conflict()));
     }
@@ -2397,11 +2393,12 @@ pub fn list_issued<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<Vec<IssuedCapability>, KernelError> {
     let mut out = Vec::new();
-    for row in db.vertices()? {
+    let seq = db.frontier()?;
+    for row in db.vertices_at(seq)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let Ok((entry, _)) = crate::post::entry_of(&row) else {
+        let Ok(entry) = crate::entry_storage::decode_at(db, &row, seq) else {
             continue;
         };
         if let Some(ControlPayload::CapabilityEvent {

@@ -474,6 +474,7 @@ pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<(Vec<DueReversal>, crate::sweep::SweepReadWitness), KernelError> {
     let mut witness = crate::sweep::SweepReadWitness::default();
+    let known_at = db.frontier()?;
     witness.substrate_rows_read += 2;
     let (Some(policy), Some(tick)) = (book_policy(db)?, latest_tick(db)?) else {
         return Ok((Vec::new(), witness));
@@ -539,7 +540,7 @@ pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
                         let row = db.vertex(schedule.target.vid)?.ok_or_else(|| {
                             KernelError::Corrupt("a scheduled target is missing".into())
                         })?;
-                        let target = decode_entry(&row)?;
+                        let target = crate::entry_storage::decode_at(db, &row, known_at)?;
                         match crate::post::admit_accounts(
                             db,
                             book,
@@ -626,10 +627,11 @@ fn live_applications<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     schedule: &Schedule,
 ) -> Result<bool, KernelError> {
-    let Some(row) = db.vertex(schedule.target.vid)? else {
+    let known_at = db.frontier()?;
+    let Some(row) = db.vertex_at(schedule.target.vid, known_at)? else {
         return Err(KernelError::Corrupt("a scheduled target is missing".into()));
     };
-    let target = decode_entry(&row)?;
+    let target = crate::entry_storage::decode_at(db, &row, known_at)?;
     for i in 0..target.proposal.legs.len() {
         let ordinal =
             u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
@@ -966,7 +968,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     let target_row = txn
         .vertex(db, schedule.target.vid)?
         .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
-    let target = decode_entry(&target_row)?;
+    let target = crate::entry_storage::decode_staged(txn, db, &target_row)?;
     if target.entry_digest != schedule.target.entry_digest
         || schedule.effects_digest
             != effects_digest(schedule.target, schedule.reverse_on, RULE_EXACT_NEGATION)
@@ -1174,9 +1176,10 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     )? {
         return execution_refusal(mints, schedule, trigger, refusal);
     }
-    let mirrors = entry_mirrors(&entry)?;
+    let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
     let mut next_tracker = mints.tracker.clone();
     next_tracker.create_vertex(relation::HAS_LEG, rvid, 1, &mirrors);
+    next_tracker.record_object_stage(relation::HAS_LEG, &entry.encode()?);
     next_tracker.record_entry_outcome_claim(relation::HAS_LEG, &entry.proposal);
     next_tracker.record_legs(rvid, &entry, book)?;
     next_tracker.add_edge(relation::IN_PERIOD, &[]);
@@ -1214,6 +1217,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     let pvid = period_vid(&book.calendar.id, &schedule.period);
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     has_leg.create_vertex(rvid, vec![label::ENTRY], mirrors);
+    crate::entry_storage::stage(&ctx.query(), &mut has_leg, &entry, rvid)?;
     crate::outcome::stage_entry(&mut has_leg, &entry, rvid)?;
     let leg_edges = crate::projections::stage_legs(&mut has_leg, rvid, &entry, book)?;
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
@@ -1395,11 +1399,11 @@ pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
         let target_row = db
             .vertex_at(s.target.vid, before)?
             .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
-        let target = decode_entry(&target_row)?;
+        let target = crate::entry_storage::decode_at(db, &target_row, before)?;
         let legs = swapped(&target.proposal.legs);
         let rvid = reversal_vid(s.target.vid);
         if let Some(rev_row) = db.vertex_at(rvid, recorded_at)? {
-            let rev_entry = decode_entry(&rev_row)?;
+            let rev_entry = crate::entry_storage::decode_at(db, &rev_row, recorded_at)?;
             if rev_row.created_at == recorded_at
                 && matches!(
                     rev_entry.proposal.origin,
@@ -1811,7 +1815,8 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
     let mut expected: BTreeMap<VId, (EntryRef, DateDay, String)> = BTreeMap::new();
     let mut stored: BTreeMap<VId, Schedule> = BTreeMap::new();
     let mut cancels: BTreeMap<VId, (VId, VId)> = BTreeMap::new();
-    for row in db.vertices()? {
+    let known_at = db.frontier()?;
+    for row in db.vertices_at(known_at)? {
         if row.labels.contains(&label::REVERSAL_SCHEDULE) {
             match decode_schedule(&row) {
                 Ok(s) => {
@@ -1824,7 +1829,7 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = decode_entry(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, known_at)?;
         if let Some(ControlPayload::ScheduleCancelled {
             schedule_ref,
             cause_ref,
@@ -1882,7 +1887,7 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
             ));
         }
         let cancel = cancels.get(&schedule_cancel_vid(*svid));
-        let Some(rrow) = db.vertex(reversal_vid(target.vid))? else {
+        let Some(rrow) = db.vertex_at(reversal_vid(target.vid), known_at)? else {
             if cancel.is_some() {
                 v.drift.push(format!(
                     "schedule {:032x} is cancelled but its target is unreversed",
@@ -1891,7 +1896,7 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
             }
             continue;
         };
-        let reversal = decode_entry(&rrow)?;
+        let reversal = crate::entry_storage::decode_at(db, &rrow, known_at)?;
         let scheduled = matches!(
             reversal.proposal.origin,
             EntryOrigin::Schedule { schedule_ref, .. } if schedule_ref == *svid
@@ -1899,9 +1904,9 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
         if scheduled {
             v.executed += 1;
             let target_row = db
-                .vertex(target.vid)?
+                .vertex_at(target.vid, known_at)?
                 .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
-            let original = decode_entry(&target_row)?;
+            let original = crate::entry_storage::decode_at(db, &target_row, known_at)?;
             let exact = crate::post::exact_side_swap(&original.proposal, &reversal.proposal)
                 && reversal.proposal.legs == swapped(&original.proposal.legs)
                 && reversal.proposal.effective_date == *reverse_on

@@ -45,6 +45,15 @@ REVIEW_SCOPE = (
 )
 PERIODS = ["FY2024-P10", "FY2024-P11", "FY2024-P12"]
 DIMENSION_ENCODING = "fa-dimension-ids-v1"
+# These are source-to-native semantic matches, in native dimension-id order.
+# CLASS_FLD/PROGRAM_CODE are retained source fields; neither has a registered
+# native kind, so they must not be relabelled as a segment or grant.
+DIMENSION_COLUMNS = {
+    "department": ("DEPTID", "DEPTDESCR", 3),
+    "project": ("PROJECT_ID", "PROJDESCR", 4),
+    "product": ("PRODUCT", "PRODUCTDESCR", 5),
+    "fund": ("FUND_CODE", "FUNDDESCR", 7),
+}
 CSV_GL_COLUMNS = (
     "entry_id", "line_no", "effective_date", "recorded_seq", "entry_class",
     "account_code", "side", "amount", "currency", "unit_scale", "description",
@@ -65,6 +74,9 @@ description_column = "description"
 
 [dimension_columns]
 department = "original_DEPTID"
+project = "original_PROJECT_ID"
+product = "original_PRODUCT"
+fund = "original_FUND_CODE"
 '''
 SCOPE = (
     "Complete published FY2024 Q4 activity for one agency, all chartfields. "
@@ -381,44 +393,55 @@ def gross_oracle(rows: list[dict]) -> dict[str, dict[str, int]]:
     return {period: dict(cells) for period, cells in result.items()}
 
 
-def department_code(value: str) -> str | None:
+def dimension_code(value: str, kind: str) -> str | None:
     """Preserve an identifier exactly; a whitespace-only source field is absent."""
-    require(isinstance(value, str), "source department must be a string")
+    require(kind in DIMENSION_COLUMNS, f"source dimension {kind} has no declared native mapping")
+    require(isinstance(value, str), f"source {kind} must be a string")
     if not value.strip():
         return None
-    require(value == value.strip(), f"nonblank department code has surrounding whitespace: {value!r}")
+    require(value == value.strip(), f"nonblank {kind} code has surrounding whitespace: {value!r}")
     require(1 <= len(value) <= 64 and all("!" <= character <= "~" for character in value),
-            "department code must be 1..64 printable ASCII characters without spaces")
+            f"{kind} code must be 1..64 printable ASCII characters without spaces")
     return value
 
 
-def department_specs(rows: list[dict]) -> list[dict[str, str]]:
+def department_code(value: str) -> str | None:
+    return dimension_code(value, "department")
+
+
+def dimension_specs(rows: list[dict], kind: str) -> list[dict[str, str]]:
+    code_column, name_column, _ = DIMENSION_COLUMNS[kind]
     names: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         fields = row["fields"]
-        code = department_code(fields["DEPTID"])
+        code = dimension_code(fields[code_column], kind)
         if code is None:
             continue
         descriptions = names[code]
-        if fields["DEPTDESCR"].strip():
-            descriptions.add(fields["DEPTDESCR"])
-        require(len(descriptions) <= 1, f"department {code} has conflicting source descriptions")
-    return [{"code": code, "name": next(iter(labels)) if labels else f"OMES department {code}"}
+        if fields[name_column].strip():
+            descriptions.add(fields[name_column])
+        require(len(descriptions) <= 1, f"{kind} {code} has conflicting source descriptions")
+    return [{"code": code, "name": next(iter(labels)) if labels else f"OMES {kind} {code}"}
             for code, labels in sorted(names.items())]
 
 
-def department_oracle(rows: list[dict]) -> dict[str, dict[str, dict]]:
-    """Fold raw DEPTID/account/month cells; the empty key denotes untagged rows.
+def department_specs(rows: list[dict]) -> list[dict[str, str]]:
+    return dimension_specs(rows, "department")
 
-    Departments need not balance individually. No missing value is assigned to
-    an invented department to make a departmental trial balance balance.
+
+def dimension_oracle(rows: list[dict], kind: str) -> dict[str, dict[str, dict]]:
+    """Fold raw source code/account/month cells; empty denotes untagged rows.
+
+    Dimension slices need not balance individually. No missing value is
+    assigned an invented dimension to make a trial balance balance.
     """
+    code_column = DIMENSION_COLUMNS[kind][0]
     result: dict[str, dict[str, dict]] = {period: {} for period in PERIODS}
     for row in rows:
         fields = row["fields"]
         period = f"FY{fields['FISCAL_YEAR']}-P{int(fields['ACCOUNTING_PERIOD']):02}"
         require(period in result, f"unexpected source period {period}")
-        code = department_code(fields["DEPTID"]) or ""
+        code = dimension_code(fields[code_column], kind) or ""
         bucket = result[period].setdefault(code, {
             "rows": 0, "monetary_rows": 0, "account_nets": {}, "gross_cents": {},
         })
@@ -433,6 +456,10 @@ def department_oracle(rows: list[dict]) -> dict[str, dict[str, dict]]:
     return result
 
 
+def department_oracle(rows: list[dict]) -> dict[str, dict[str, dict]]:
+    return dimension_oracle(rows, "department")
+
+
 def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, bytes]]:
     """Recompute every source-derived input without touching an existing run."""
     provenance, record_map = input_provenance(path, agency)
@@ -441,8 +468,8 @@ def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, byte
     require(bool(rows), f"no published rows for agency {agency}")
     require({r["fields"]["FISCAL_YEAR"] for r in rows} == {"2024"}, "unexpected fiscal year")
     require({r["fields"]["ACCOUNTING_PERIOD"] for r in rows} == {"10", "11", "12"}, "agency must cover all three quarter periods")
-    departments = department_specs(rows)
-    department_activity = department_oracle(rows)
+    dimensions = {kind: dimension_specs(rows, kind) for kind in DIMENSION_COLUMNS}
+    dimension_activity = {kind: dimension_oracle(rows, kind) for kind in DIMENSION_COLUMNS}
     original = original_bytes(path, agency)
     artifacts = {"original-agency.csv": original}
     activity = oracle(rows)
@@ -500,7 +527,9 @@ def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, byte
                     run_rows.append(row)
                     mapping.append({"source_record": record, "run": name, "entry_id": entry_id,
                                     "leg": leg_index, "account": original_fields["ACCOUNT"], "cents": cents,
-                                    "department": department_code(original_fields["DEPTID"])})
+                                    "department": department_code(original_fields["DEPTID"]),
+                                    "dimensions": {kind: code for kind, (column, _, _) in DIMENSION_COLUMNS.items()
+                                                   if (code := dimension_code(original_fields[column], kind)) is not None}})
             artifacts[normalized] = stream.getvalue().encode("utf-8")
         runs.append({"name": name, "key": list(key), "source": normalized,
                      "sha256": hashlib.sha256(artifacts[normalized]).hexdigest(), "entry_ids": group_ids,
@@ -520,10 +549,11 @@ def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, byte
         "monetary_rows": len(used), "zero_rows": sorted(omitted_zero),
         "row_mapping": mapping, "runs": runs, "activity_cents": activity,
         "activity_gross_cents": gross_oracle(rows),
-        "departments": departments, "department_activity": department_activity,
+        "departments": dimensions["department"], "department_activity": dimension_activity["department"],
+        "dimensions": dimensions, "dimension_activity": dimension_activity,
         "date_policy": "FY2024 periods 10/11/12 map to 2024-04-30/05-31/06-30; source has no transaction dates",
         "chart_policy": "OMES prefixes 1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense; explicit 631100 Other Financing Sources/Uses -> Equity in the activity-only test book",
-        "dimension_policy": "original_DEPTID maps to native department; nonblank codes stay exact strings, whitespace-only is absent, and surrounding whitespace on a nonblank code is refused. Every other chartfield remains in retained evidence, without native projection. An empty department oracle key denotes untagged source rows; it is never a native value.",
+        "dimension_policy": "DEPTID, PROJECT_ID, PRODUCT and FUND_CODE map to native department, project, product and fund. Nonblank codes stay exact strings, whitespace-only is absent, and surrounding whitespace on a nonblank code is refused. Other chartfields, including CLASS_FLD and PROGRAM_CODE, remain in retained evidence without an invented native kind. An empty oracle key denotes source rows untagged for that dimension; it is never a native value. These annotations do not assert a balancing-dimension policy.",
         "oracle_policy": "Integer-cent fold of original source fields; not an audited agency opening/closing trial balance",
     }
     artifacts["manifest.json"] = json_bytes(manifest)
@@ -633,56 +663,73 @@ class Native:
                 ["data"]["approval_vid"] for reviewer in ("a", "b")]
 
     def register_departments(self, specifications: list[dict]) -> dict[str, dict]:
+        return self.register_dimension("department", specifications)
+
+    def register_dimension(self, kind: str, specifications: list[dict]) -> dict[str, dict]:
         values = {}
         for spec in specifications:
             code = spec["code"]
-            require(department_code(code) == code and code not in values,
-                    "department registry contains a blank or repeated source code")
-            value = self.call("dimension", "add", "department", code, "--name", spec["name"])["data"]["value"]
-            require(value["dimension"] == "department" and value["code"] == code,
-                    f"native department registration changed source code {code}")
+            require(dimension_code(code, kind) == code and code not in values,
+                    f"{kind} registry contains a blank or repeated source code")
+            value = self.call("dimension", "add", kind, code, "--name", spec["name"])["data"]["value"]
+            require(value["dimension"] == kind and value["code"] == code
+                    and value["dimension_id"] == DIMENSION_COLUMNS[kind][2]
+                    and re.fullmatch(r"[0-9a-f]{32}", value["vid"], re.ASCII) is not None,
+                    f"native {kind} registration changed source code or dimension identity {code}")
             values[code] = {"dimension": value["dimension_id"], "value": value["vid"]}
         require(len({value["value"] for value in values.values()}) == len(values),
-                "distinct source departments share a native value identity")
+                f"distinct source {kind} codes share a native value identity")
         return values
 
     def tb(self, period: str, *, activity: bool = False, known_at: int | None = None,
            expected_gross: dict[str, int] | None = None,
-           department: str | None = None) -> dict[str, int]:
+           department: str | None = None, dimension: tuple[str, str] | None = None) -> dict[str, int]:
         args: list[object] = ["tb", "--period", period]
         if activity:
             args.append("--activity")
         if known_at is not None:
             args.extend(["--as-known-at", known_at])
         if department is not None:
-            args.extend(["--dimension", f"department={department}"])
-        cells, _ = trial_balance_cells(self.call(*args)["data"], period, expected_gross, department)
+            require(dimension is None, "trial balance cannot select two dimension scopes")
+            dimension = ("department", department)
+        if dimension is not None:
+            args.extend(["--dimension", "=".join(dimension)])
+        cells, _ = trial_balance_cells(self.call(*args)["data"], period, expected_gross, dimension=dimension)
         return cells
 
     def certified_department_tb(self, period: str, department: str,
                                 expected_gross: dict[str, int]) -> tuple[dict[str, int], str]:
-        command = self.command("tb", "--period", period, "--dimension", f"department={department}", "--certify")
+        return self.certified_dimension_tb(period, "department", department, expected_gross)
+
+    def certified_dimension_tb(self, period: str, kind: str, code: str,
+                               expected_gross: dict[str, int]) -> tuple[dict[str, int], str]:
+        command = self.command("tb", "--period", period, "--dimension", f"{kind}={code}", "--certify")
         events, original = self.execute_events(command)
         require(len(events) == 2 and events[0].get("event") == "trial_balance"
                 and events[1].get("event") == "report_certificate",
-                "certified department TB must return its report and retained certificate")
-        cells, _ = trial_balance_cells(events[0]["data"], period, expected_gross, department)
+                "certified dimension TB must return its report and retained certificate")
+        cells, _ = trial_balance_cells(events[0]["data"], period, expected_gross, dimension=(kind, code))
         certificate = events[1]["data"]
         require(certificate["output_format"] == "fa:dimension-trial-balance:v1",
-                "department certificate has another report format")
+                "dimension certificate has another report format")
         oid = certificate["oid"]
-        require(events[0].get("certificate") == oid, "department report does not bind its retained certificate")
+        require(events[0].get("certificate") == oid, "dimension report does not bind its retained certificate")
         replayed, replay_bytes = self.execute_events(self.command("replay", f"C:{oid}"))
         require(len(replayed) == 1 and replay_bytes == original.splitlines(keepends=True)[0],
-                f"department {department} certificate did not replay the exact robot report")
+                f"{kind} {code} certificate did not replay the exact robot report")
         return cells, oid
 
 
 def trial_balance_cells(data: dict, period: str, expected_gross: dict[str, int] | None,
-                        department: str | None = None) -> tuple[dict[str, int], dict[str, int]]:
+                        department: str | None = None, *,
+                        dimension: tuple[str, str] | None = None) -> tuple[dict[str, int], dict[str, int]]:
     if department is not None:
-        require(data.get("dimension") == {"dimension": "department", "value": department, "values": [department]},
-                f"native TB returned a different department scope than {department}")
+        require(dimension is None, "trial balance cannot select two dimension scopes")
+        dimension = ("department", department)
+    if dimension is not None:
+        kind, code = dimension
+        require(data.get("dimension") == {"dimension": kind, "value": code, "values": [code]},
+                f"native TB returned a different {kind} scope than {code}")
     cells = {}
     gross = {}
     for row in data["rows"]:
@@ -697,7 +744,7 @@ def trial_balance_cells(data: dict, period: str, expected_gross: dict[str, int] 
         require(cells[row["code"]] == gross[f"{row['code']}:debit"] - gross[f"{row['code']}:credit"],
                 f"native TB net disagrees with debit/credit amounts for {row['code']}")
     if expected_gross is not None:
-        same_cells(gross, expected_gross, f"{period} department {department} gross debit/credit activity")
+        same_cells(gross, expected_gross, f"{period} dimension {dimension} gross debit/credit activity")
     return cells, gross
 
 
@@ -768,12 +815,33 @@ def exported_rows(path: Path, format_name: str):
             yield dict(zip(CSV_GL_COLUMNS, fields, strict=True))
 
 
-def verify_exported_legs(manifest: dict, entry_ids: dict[str, str], department_values: dict[str, dict],
+def source_leg_dimensions(row: dict, dimension_values: dict[str, dict[str, dict]]) -> list[dict]:
+    """Resolve every declared source annotation without inferring a missing code."""
+    require(set(row["dimensions"]) <= DIMENSION_COLUMNS.keys(), "source row has an unmapped dimension")
+    require(row["dimensions"].get("department") == row["department"],
+            "source row department differs from its complete dimension projection")
+    values = []
+    for kind in DIMENSION_COLUMNS:
+        code = row["dimensions"].get(kind)
+        if code is None:
+            continue
+        require(kind in dimension_values and code in dimension_values[kind],
+                f"source {kind} {code} has no registered native value")
+        value = dimension_values[kind][code]
+        require(value["dimension"] == DIMENSION_COLUMNS[kind][2],
+                f"native value for source {kind} has a different dimension kind")
+        values.append(value)
+    require(len({value["value"] for value in values}) == len(values),
+            "distinct source dimensions share a native value identity")
+    return values
+
+
+def verify_exported_legs(manifest: dict, entry_ids: dict[str, str], dimension_values: dict[str, dict[str, dict]],
                          path: Path, format_name: str) -> dict:
     """Check every export leg against its original record and native registration.
 
     The source-to-entry identity map comes from the actual prepared proposals.
-    Amounts and departments come from the independently checked source manifest,
+    Amounts and dimension codes come from the independently checked source manifest,
     rather than another export or an account-level net balance.
     """
     source_entries = {row["entry_id"] for row in manifest["row_mapping"]}
@@ -794,9 +862,7 @@ def verify_exported_legs(manifest: dict, entry_ids: dict[str, str], department_v
         original = expected[key]
         ordinals[key[0]] += 1
         require(row["line_no"] == str(ordinals[key[0]]), "export reordered a source entry's legs")
-        code = original["department"]
-        require(code is None or code in department_values, "export source department is not registered")
-        dimensions = [] if code is None else [department_values[code]]
+        dimensions = source_leg_dimensions(original, dimension_values)
         actual_dimensions = parse_dimension_set(row["dimension_set_v1"])
         require(actual_dimensions == dimensions,
                 f"{format_name} changed dimension attribution of source record {original['source_record']}")
@@ -843,7 +909,7 @@ def tamper_ads_amount(path: Path) -> dict:
     raise ReplayError("ADS export has no USD-cent monetary row for the tamper control")
 
 
-def tamper_ads_dimension(path: Path) -> dict:
+def tamper_ads_dimension(path: Path, *, dimension_id: int | None = None) -> dict:
     """Change one native value identity, preserving every monetary and text field."""
     lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
     require(bool(lines) and lines[0].rstrip("\r\n").split("|") == list(ADS_GL_COLUMNS),
@@ -852,12 +918,14 @@ def tamper_ads_dimension(path: Path) -> dict:
         fields = line.rstrip("\r\n").split("|")
         require(len(fields) == len(ADS_GL_COLUMNS), "ADS dimension tamper control found a ragged row")
         dimensions = parse_dimension_set(fields[-1])
-        if not dimensions:
+        selected = next((ordinal for ordinal, value in enumerate(dimensions)
+                         if dimension_id is None or value["dimension"] == dimension_id), None)
+        if selected is None:
             continue
-        first = dimensions[0]
+        first = dimensions[selected]
         old = first["value"]
         new = f"{int(old, 16) ^ 1:032x}"
-        fields[-1] = ";".join(f"{value['dimension']}:{new if ordinal == 0 else value['value']}"
+        fields[-1] = ";".join(f"{value['dimension']}:{new if ordinal == selected else value['value']}"
                               for ordinal, value in enumerate(dimensions))
         newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
         lines[index] = "|".join(fields) + newline
@@ -867,7 +935,8 @@ def tamper_ads_dimension(path: Path) -> dict:
     raise ReplayError("ADS export has no tagged row for the dimension tamper control")
 
 
-def verify_prepared_legs(manifest: dict, run: dict, package: dict, department_values: dict[str, dict]) -> None:
+def verify_prepared_legs(manifest: dict, run: dict, package: dict,
+                         dimension_values: dict[str, dict[str, dict]]) -> None:
     """Check native proposals row-for-row; a matching net alone is insufficient."""
     require(package["row_count"] == run["rows"], "native parser omitted or added source rows")
     require(package["chunk_count"] == len(run["entry_ids"]), "native parser changed source group count")
@@ -884,10 +953,7 @@ def verify_prepared_legs(manifest: dict, run: dict, package: dict, department_va
         require(chunk["leg_count"] == len(expected) == len(chunk["legs"]), "native leg count differs")
         for ordinal, (actual, row) in enumerate(zip(chunk["legs"], expected, strict=True)):
             side = "debit" if row["cents"] > 0 else "credit"
-            code = row["department"]
-            require(code is None or code in department_values,
-                    f"source department {code} has no registered native value")
-            dimensions = [] if code is None else [department_values[code]]
+            dimensions = source_leg_dimensions(row, dimension_values)
             require(actual == {"index": ordinal, "account": row["account"], "side": side,
                                "amount": f"{money(abs(row['cents']))} USD", "dimensions": dimensions},
                     f"native proposal differs from original source record {row['source_record']}")
@@ -928,28 +994,33 @@ def verify_staged_group(event: dict, package: dict, run_vid: str, *,
 
 
 def verify_department_balances(native: Native, manifest: dict, before_finalize: int) -> list[dict]:
-    cumulative = {row["code"]: defaultdict(int) for row in manifest["departments"]}
+    return verify_dimension_balances(native, manifest, before_finalize, "department")
+
+
+def verify_dimension_balances(native: Native, manifest: dict, before_finalize: int,
+                              kind: str) -> list[dict]:
+    cumulative = {row["code"]: defaultdict(int) for row in manifest["dimensions"][kind]}
     cumulative_gross = {code: defaultdict(int) for code in cumulative}
     for period in PERIODS:
         for code in cumulative:
-            expected = manifest["department_activity"][period].get(code, {})
+            expected = manifest["dimension_activity"][kind][period].get(code, {})
             net = expected.get("account_nets", {})
             gross = expected.get("gross_cents", {})
-            same_cells(native.tb(period, activity=True, department=code, expected_gross=gross),
-                       net, f"{period} department {code} activity")
+            same_cells(native.tb(period, activity=True, dimension=(kind, code), expected_gross=gross),
+                       net, f"{period} {kind} {code} activity")
             for account, cents in net.items():
                 cumulative[code][account] += cents
             for cell, cents in gross.items():
                 cumulative_gross[code][cell] += cents
-            same_cells(native.tb(period, department=code, expected_gross=dict(cumulative_gross[code])),
-                       dict(cumulative[code]), f"{period} department {code} cumulative")
-            same_cells(native.tb(period, department=code, known_at=before_finalize), {},
-                       f"{period} department {code} immutable preactivation history")
+            same_cells(native.tb(period, dimension=(kind, code), expected_gross=dict(cumulative_gross[code])),
+                       dict(cumulative[code]), f"{period} {kind} {code} cumulative")
+            same_cells(native.tb(period, dimension=(kind, code), known_at=before_finalize), {},
+                       f"{period} {kind} {code} immutable preactivation history")
     certificates = []
     for code in cumulative:
-        net, oid = native.certified_department_tb(PERIODS[-1], code, dict(cumulative_gross[code]))
-        same_cells(net, dict(cumulative[code]), f"certified quarter activity for department {code}")
-        certificates.append({"department": code, "period": PERIODS[-1], "certificate_oid": oid,
+        net, oid = native.certified_dimension_tb(PERIODS[-1], kind, code, dict(cumulative_gross[code]))
+        same_cells(net, dict(cumulative[code]), f"certified quarter activity for {kind} {code}")
+        certificates.append({kind: code, "period": PERIODS[-1], "certificate_oid": oid,
                              "account_nets": dict(cumulative[code]),
                              "gross_cents": dict(cumulative_gross[code])})
     return certificates
@@ -1028,14 +1099,21 @@ def preflight_recovery(native: Native, recovery: ReplayRecovery) -> dict[str, di
                 f"native chart differs from source crosswalk: {account['code']}")
     require(len({row["code"] for row in observed_accounts}) == len(observed_accounts),
             "native chart repeats an account")
-    expected_departments = {spec["code"]: spec["name"] for spec in manifest["departments"]}
-    departments = {}
-    for value in native.call("dimension", "list", "department")["data"]["values"]:
-        require(value["dimension"] == "department" and value["code"] in expected_departments
-                and value["code"] not in departments and value["name"] == expected_departments[value["code"]]
-                and all(value[field] is None for field in ("parent", "valid_from", "valid_to")),
-                "native department definition differs from the retained source")
-        departments[value["code"]] = {"dimension": value["dimension_id"], "value": value["vid"]}
+    dimension_values = {}
+    seen_values = set()
+    for kind in DIMENSION_COLUMNS:
+        expected_values = {spec["code"]: spec["name"] for spec in manifest["dimensions"][kind]}
+        values = dimension_values[kind] = {}
+        for value in native.call("dimension", "list", kind)["data"]["values"]:
+            require(value["dimension"] == kind and value["code"] in expected_values
+                    and value["code"] not in values and value["name"] == expected_values[value["code"]]
+                    and value["dimension_id"] == DIMENSION_COLUMNS[kind][2]
+                    and re.fullmatch(r"[0-9a-f]{32}", value["vid"], re.ASCII) is not None
+                    and value["vid"] not in seen_values
+                    and all(value[field] is None for field in ("parent", "valid_from", "valid_to")),
+                    f"native {kind} definition differs from the retained source")
+            values[value["code"]] = {"dimension": value["dimension_id"], "value": value["vid"]}
+            seen_values.add(value["vid"])
 
     expected_runs = {run_key(manifest, run): run for run in manifest["runs"]}
     current = {}
@@ -1089,7 +1167,7 @@ def preflight_recovery(native: Native, recovery: ReplayRecovery) -> dict[str, di
         require(original == expected_intent, "retained import configuration differs from its native package")
         require(package["package_oid"] == document["oid"] and package["run_vid"] == actual["run_vid"]
                 and package["run_state"] == actual["state"], "native package identity or state differs")
-        verify_prepared_legs(manifest, run, package, departments)
+        verify_prepared_legs(manifest, run, package, dimension_values)
         recorded = [{"vid": chunk["entry_vid"], "proposal_digest": chunk["proposal_digest"],
                      "recorded_at": chunk["recorded_at"]}
                     for chunk in package["chunks"] if chunk["recorded_at"] is not None]
@@ -1245,7 +1323,9 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
     for index in range(0, len(accounts), 32):
         chart_file = recovery.input_json(f"chart-{index:03}.json", {"accounts": accounts[index:index + 32]})
         native.call("chart", "import", chart_file)
-    department_values = native.register_departments(manifest["departments"])
+    dimension_values = {kind: native.register_dimension(kind, manifest["dimensions"][kind])
+                        for kind in DIMENSION_COLUMNS}
+    department_values = dimension_values["department"]
     native.call("period", "create", "--fiscal-year", "2024")
     raw_oid = native.document(output / "original-agency.csv", mime=ORIGINAL_CSV_MIME)
     manifest_oid = native.document(output / "manifest.json", "Workpaper", "application/json")
@@ -1287,7 +1367,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
                   "account_map": {row["code"]: row["code"] for row in accounts}}
         intent_path = recovery.input_json(f"{name}-import.json", intent)
         package = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
-        verify_prepared_legs(manifest, run, package, department_values)
+        verify_prepared_legs(manifest, run, package, dimension_values)
         require(package["run_state"] in ("Open", "Finalized"), "native migration is not resumable")
         previous = recovered.get(run_key(manifest, run))
         if previous is not None:
@@ -1347,12 +1427,18 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
     checks.extend(["every_month_account_cell_matches_source", "cumulative_balances_match_source",
                    "native_proposal_legs_preserve_every_source_row", "gross_debit_credit_account_cells_match_source",
                    "historical_preactivation_prefix_stays_invisible", "native_registers_equal_journal_fold"])
-    department_certificates = verify_department_balances(native, manifest, before_finalize)
+    dimension_certificates = {kind: verify_dimension_balances(native, manifest, before_finalize, kind)
+                              for kind in DIMENSION_COLUMNS}
+    department_certificates = dimension_certificates["department"]
     checks.append("every_native_leg_preserves_source_department_or_absence")
     if department_values:
         checks.extend(["native_department_monthly_and_cumulative_net_and_gross_match_source",
                        "department_preactivation_history_stays_invisible",
                        "department_certificates_replay_exact_robot_reports"])
+    checks.extend(["every_native_leg_preserves_complete_declared_source_dimensions",
+                   "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+                   "every_dimension_preactivation_history_stays_invisible",
+                   "every_dimension_certificate_replays_exact_robot_report"])
     # Retry every saved chunk after finalization, across separate process opens.
     head = native.head()
     for command, receipts, package, run_vid in retries:
@@ -1379,10 +1465,11 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
     exported = native.call("export", "ads", "--as-of", "2024-06-30", "--out", attempt / "ads", "--with-proofs")
     native.call("verify", "export", "ads", attempt / "ads")
     export_oracles = [
-        verify_exported_legs(manifest, entry_ids, department_values, csv_export, "csv-gl"),
-        verify_exported_legs(manifest, entry_ids, department_values, attempt / "ads/GL_Detail.txt", "ads"),
+        verify_exported_legs(manifest, entry_ids, dimension_values, csv_export, "csv-gl"),
+        verify_exported_legs(manifest, entry_ids, dimension_values, attempt / "ads/GL_Detail.txt", "ads"),
     ]
     checks.extend(["native_csv_and_ads_reread_certificates", "every_exported_leg_preserves_source_department_or_absence"])
+    checks.append("every_exported_leg_preserves_complete_declared_source_dimensions")
     trusted_key = exported["data"]["proof"]["checkpoint_public_key"]
     # This is the caller's just-created test book's trusted key, not a key read
     # from an untrusted incoming bundle. Production recipients need their own
@@ -1402,6 +1489,20 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
     dimension_rejected = native.execute([str(native.verifier), "ads", str(dimension_tampered),
                                          "--key", trusted_key, "--json"], expect=8)
     checks.append("independent_verifier_rejects_dimension_only_tampering")
+    dimension_tamper_controls = {}
+    for kind, (_, _, dimension_id) in DIMENSION_COLUMNS.items():
+        if not any(kind in row["dimensions"] for row in manifest["row_mapping"]):
+            continue
+        if dimension_mutation["dimension"] == dimension_id:
+            changed, refusal = dimension_mutation, dimension_rejected
+        else:
+            target = attempt / f"ads-{kind}-tampered"
+            shutil.copytree(attempt / "ads", target)
+            changed = tamper_ads_dimension(target / "GL_Detail.txt", dimension_id=dimension_id)
+            refusal = native.execute([str(native.verifier), "ads", str(target),
+                                      "--key", trusted_key, "--json"], expect=8)
+        dimension_tamper_controls[kind] = {"mutation": changed, "refusal": refusal}
+    checks.append("independent_verifier_rejects_each_source_dimension_kind_tamper")
     checks.extend(["resume_inputs_and_native_book_identity_pinned",
                    "original_native_packages_and_publication_receipts_preserved",
                    "original_finalize_proposals_durable_before_approval"])
@@ -1418,10 +1519,14 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
              "department_value_count": len(department_values),
              "department_certificates": department_certificates,
              "department_scope": "Exact nonblank DEPTID values; source blanks stay untagged, and departmental slices need not balance",
+            "dimension_value_counts": {kind: len(values) for kind, values in dimension_values.items()},
+            "dimension_certificates": dimension_certificates,
+            "dimension_scope": manifest["dimension_policy"],
             "independent_verification": verification, "tamper_refusal": rejected,
             "tamper_mutation": mutation,
             "export_source_oracles": export_oracles,
             "dimension_tamper_refusal": dimension_rejected, "dimension_tamper_mutation": dimension_mutation,
+            "dimension_tamper_controls": dimension_tamper_controls,
             "dimension_export_scope": "Exact native kind IDs and value VIDs, including explicit empty sets; source codes are checked separately against retained source and native registration, not inferred from a VID",
             "document_custody": native.document_custody,
             "document_review_scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",

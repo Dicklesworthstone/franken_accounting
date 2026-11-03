@@ -2307,7 +2307,7 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     }
 
     let mut drift: Vec<String> = Vec::new();
-    let births = match crate::period_creation::births_from_rows(&rows, book) {
+    let births = match crate::period_creation::births_from_rows(db, &rows, book, known_at) {
         Ok(births) => births,
         Err(error) => {
             drift.push(error.to_string());
@@ -2332,14 +2332,7 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let payload = match crate::rows::bytes(row, property::FA_PAYLOAD, "entry._fa_payload") {
-            Ok(b) => b,
-            Err(e) => {
-                drift.push(format!("entry {:032x}: {e}", row.vid.0));
-                continue;
-            }
-        };
-        let entry = match fa_model::Entry::decode(&payload) {
+        let entry = match crate::entry_storage::decode_at(db, row, known_at) {
             Ok(e) => e,
             Err(e) => {
                 drift.push(format!("entry {:032x} payload: {e}", row.vid.0));

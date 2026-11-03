@@ -728,6 +728,11 @@ fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<CommitSeq> {
+    // This pure helper decodes only the inline controls this writer emits.
+    // A shared-key monetary entry, including a fragmented one, is a conflict.
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::DRAFT_CONTROL) {
+        return Ok(Err(conflict_with(row)));
+    }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
@@ -1854,7 +1859,8 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&src)?;
+        let entry = crate::entry_storage::decode_at(db, &src, seq)?;
+        let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::DRAFT_CONTROL {
             // A promoted entry: listed by its promotion's outcome.
             continue;

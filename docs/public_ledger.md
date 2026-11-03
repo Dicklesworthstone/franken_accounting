@@ -3,12 +3,13 @@
 The public-ledger driver provides a native replay workflow for complete agency
 selections from Oklahoma's published general-ledger data. It is designed to check
 every monthly account balance against an independent integer fold of the source,
-including department account balances and their gross debit/credit activity.
+including department, fund, product and project account balances and their
+gross debit/credit activity.
 It exercises migration staging and retries, checks every exported CSV and ADS
 leg against its original source row, and asks the standalone `fa-verify` binary
-to authenticate the ADS monetary fields and native dimension identities. Two
-separate copies change one cent and one department identity respectively; both
-must be rejected, including the case where every monetary amount is unchanged.
+to authenticate the ADS monetary fields and native dimension identities.
+Separate copies change one cent and one identity for each populated dimension
+kind; each must be rejected, including when every monetary amount is unchanged.
 
 This work extends plan §§5.8, 8.6, 9 and 16 and the `fa-yugf` public-record case
 workstream. Existing WorldCom, Enron and Lehman cases remain useful bounded
@@ -353,13 +354,25 @@ workpaper does not claim the receipt-derived `Generated` grade: ordinary documen
 upload cannot supply that grade's required generation receipt. Its actual upload
 and subsequent review remain explicit in the native evidence history.
 
-## Query the original departments
+## Query the original departments, funds, products and projects
 
-The import projects the source `DEPTID` into the native `department` dimension.
-It registers the source code and description before preparing migration
-proposals, then checks every prepared leg's native dimension identity against
-its original record. The pension's `0100001` remains the string `0100001`;
-it is never converted to the distinct identifier `100001`.
+The import projects four source ChartFields into their matching registered
+native dimensions. It registers each nonblank source code and description
+before preparing migration proposals, then checks every prepared leg's complete
+dimension set against its original record.
+
+| Published code | Published description | Native dimension | Present in the committed selections |
+|---|---|---|---|
+| `DEPTID` | `DEPTDESCR` | `department` | 3 museum, 3 pension and 8 university values |
+| `FUND_CODE` | `FUNDDESCR` | `fund` | Museum `1000`, pension `6000`, university `9000` |
+| `PRODUCT` | `PRODUCTDESCR` | `product` | University `01` through `09`, plus untagged source rows |
+| `PROJECT_ID` | `PROJDESCR` | `project` | All blank in these three selections; no values are invented |
+
+The pension's department `0100001` remains the string `0100001`; it is never
+converted to the distinct identifier `100001`. Likewise the university's
+product `01` remains distinct from `1`. Its published product descriptions are
+blank, so the native display label is explicitly `OMES product 01`, and so on.
+The code itself always comes from the published record.
 
 For the pension book produced by the commands above:
 
@@ -369,29 +382,101 @@ fa --book artifacts/omes-pension/book tb --period FY2024-P10 \
 
 fa --book artifacts/omes-pension/book tb --period FY2024-P12 \
   --dimension department=0100001 --certify --json
+
+fa --book artifacts/omes-pension/book tb --period FY2024-P12 \
+  --dimension fund=6000 --certify --json
+
+fa --book artifacts/omes-university/book tb --period FY2024-P10 \
+  --dimension product=01 --activity --json
 ```
 
-The second command returns the cumulative department trial balance followed by
-its retained report certificate. `fa replay C:<certificate-oid>` reproduces
+Each certified command returns the cumulative dimension trial balance followed
+by its retained report certificate. `fa replay C:<certificate-oid>` reproduces
 that report at its original recorded prefix. The driver checks this replay for
-every registered department, as well as the empty preactivation views and all
-three months of departmental net and gross activity. A wrong department tag
-must fail even when every whole-agency account balance remains unchanged.
+every registered value of all four dimensions, as well as the empty
+preactivation views and all three months of net and gross activity. A wrong
+fund, product or department tag must fail even when every whole-agency account
+balance remains unchanged.
 
 Department slices may be unbalanced: a cash or fund leg can have a blank
 department while its counterpart names a department. Blank and whitespace-only
 source values remain **untagged**. They are retained under the empty key in the
-manifest's `department_activity` oracle, not assigned to an invented native
-value. No department is forced to balance. Nonblank codes with surrounding
+manifest's `dimension_activity` oracle, not assigned to an invented native
+value. The `department_activity` field retains the departmental view of the
+same source fold. No dimension slice is forced to balance. Nonblank codes with surrounding
 whitespace, invalid native code characters, or conflicting source descriptions
 are refused explicitly. All original fields remain available in retained
-evidence; a missing description uses the explicit label `OMES department <code>`.
+evidence; a missing description uses the explicit label `OMES <dimension> <code>`.
 
-This import checks registered department identities and agreement with the
+This import checks registered dimension identities and agreement with the
 published historical attribution. Native migration retains that attribution
 without applying today's required-dimension or value-effectivity policy to old
-records. Fund, class funding, project and other chartfields remain in evidence;
-this adapter does not yet project them into native dimensions.
+records. It does not activate a balancing-dimension policy or claim fund closing
+was performed. `CLASS_FLD` and `PROGRAM_CODE` have no matching native kinds;
+they remain verbatim in source evidence and, for class funding, migration run
+identities. Relabelling them as segment or grant would assert semantics the
+adapter has not established.
+
+The `row_mapping.dimensions` field records every nonblank projected source code.
+Resume preflight inspects each native definition before any continuation write,
+then checks prepared proposals against that full mapping. CSV and ADS export
+checks require the complete ordered native kind/value vector on every monetary
+leg. The independent ADS verifier must reject a separate corrupted copy for
+each populated dimension kind, with every monetary field unchanged. The
+report retains these controls in `dimension_tamper_controls` and the certified
+per-value results in `dimension_certificates`.
+
+Recovery pins include the driver and every source-derived artifact. A run
+created by an earlier department-only driver cannot silently resume under this
+broader source contract; it requires the original pinned driver or a fresh output
+directory. Existing books and evidence remain untouched on that refusal.
+
+## Preserve large entries without losing source detail
+
+The university selection exposed a native storage limit once all its original
+fund and product codes were projected. The source group
+`OK:66000:2024:10:ACTUALS:9000:70000` has **157 monetary legs**. With its complete
+dimension sets, the original Entry row encoded to **18,470 bytes**, exceeding
+the substrate's 16,384-byte row ceiling. The source is valid at the accounting
+codec's declared bounds; neither dropping dimension tags nor splitting one
+accounting entry is an appropriate repair.
+
+Monetary Entries larger than 4,096 bytes published by the posting kernel or
+automatic reversal path now use the existing transaction-local object storage
+format. The Entry root keeps its identity, digest and selection
+mirrors and stores a compact manifest. Ordered `EntryFragment` vertices retain
+the exact canonical bytes in 4,096-byte chunks. Root, fragments, leg projections,
+evidence links and posting outcome publish in the same native transaction.
+This changes neither the proposal/entry digest nor the accounting leaf in the
+journal accumulator. The logical Entry bound remains 8 MiB and 4,096 legs;
+the separate transaction byte budget still applies. Control-specific writers
+retain their existing inline codecs and declared bounds.
+
+Readers authenticate the complete body at their selected historical sequence.
+They check object kind, total length, content digest, Merkle root, fragment
+identity, book, order and original publication. Missing, modified, retired or
+later-restored fragments cause refusal. A same-batch resolution or reversal can
+read a large earlier member through the transaction's staged witnesses. The
+register, automatic expiry/reversal, migration, report, export and notary paths
+use these readers. Fragments never become additional accounting Entries.
+
+Native report certificates include the exact historical `EntryFragment` query
+when their prefix contains fragments; replay requires that complete closure.
+Portable report and ADS proofs still carry canonical Entry bytes, and the
+independent verifier checks those bytes against the signed journal prefix.
+Its native-input profile distinguishes an Entry fragment query from migration
+source evidence. Previous inline Entries, including those above 4 KiB, remain
+readable; previous inline-only prefixes keep their original certificate closure.
+
+The focused regression uses a 512-leg Entry exceeding the original row limit
+and checks exact retry, atomic pending resolution, register maintenance and
+rebuild, historical reports, portable verification and reopening. Additional
+controls cover missing and restored fragments and automatic expiry/reversal.
+The public-ledger workflow runs these regressions and the complete university
+selection with the new dimensions. Source and binary hashes bind each run;
+an older failed run is preserved instead of being resumed under another binary.
+Results from an older executable do not establish execution of this storage
+extension.
 
 ## Import existing parties and legal entities from generic CSV
 
@@ -551,8 +636,10 @@ The profile reports the affected groups and source ordinals for investigation.
   establish completeness of the publisher's internal system or original
   transaction history.
 - All chartfields remain available in retained evidence. Original account codes
-  and nonblank departments are projected into the native chart and dimension
-  values. Other chartfields are not yet native queryable dimensions.
+  and nonblank departments, funds, products and projects are projected into the
+  native chart and dimension values. Other chartfields are not yet native
+  queryable dimensions; class-funding and program codes keep their original
+  meaning without being relabelled as an unrelated registered kind.
 - Run boundaries follow real fund/class boundaries to keep native control
   payloads bounded. Each migration activates atomically; finalizing the entire
   agency across several runs is not one atomic publication. The preactivation

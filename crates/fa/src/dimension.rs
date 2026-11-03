@@ -9,7 +9,7 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::rows::{book_root, bytes, prop, text};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{ControlPayload, Entry, EntryClass, Id128, Writer};
+use fa_model::{ControlPayload, EntryClass, Id128, Writer};
 use fa_policy::Capability;
 use fa_registers::{DimensionFilter, TrialBalance};
 use fgdb::Database;
@@ -167,8 +167,7 @@ pub(crate) fn verify_functional_hierarchy<V: Vfs + Clone>(
     controls.sort_by_key(|row| (row.created_at, row.birth_ordinal));
     let mut declared: BTreeMap<VId, (DimensionValueSpec, CommitSeq)> = BTreeMap::new();
     for row in controls {
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "dimension control")?)
-            .map_err(fa_journal::KernelError::from)?;
+        let entry = fa_journal::entry_storage::decode_at(db, row, at)?;
         let Some(ControlPayload::SchemaChange {
             kind: change,
             canonical_bytes,

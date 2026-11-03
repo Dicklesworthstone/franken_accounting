@@ -9,6 +9,8 @@ mod aging_reconciliation_bundle;
 mod cash_flow_bundle;
 #[path = "statements/custom_statement_bundle.rs"]
 mod custom_statement_bundle;
+#[path = "statements/entry_storage.rs"]
+mod entry_storage;
 #[path = "statements/equity_bundle.rs"]
 mod equity_bundle;
 #[path = "statements/explanation_bundle.rs"]

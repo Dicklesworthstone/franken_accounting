@@ -371,6 +371,62 @@ fn strings(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<String>, Repor
     }
     Ok(out)
 }
+
+/// Identify the additive native EntryFragment selector without treating a
+/// native attestation as an outsider proof. The independent journal proof
+/// still authenticates complete canonical Entry bytes. Recognizing this exact
+/// envelope only keeps an Entry fragment input from being mistaken for one of
+/// the older migration storage inputs when checking the source-bound profile.
+fn entry_fragment_input(bytes: &[u8], known_at: u64) -> Result<bool, ReportError> {
+    const MAGIC: &[u8] = b"fgdb:native-result-certificate:v1";
+    if !bytes.starts_with(MAGIC) {
+        return Ok(false);
+    }
+    let mut r = Reader::new(&bytes[MAGIC.len()..]);
+    let version = r.u8("native_input.version")?;
+    let _plan = r.fixed::<32>("native_input.plan")?;
+    let snapshot = u64::from_be_bytes(r.fixed("native_input.snapshot")?);
+    let _digests = r.fixed::<128>("native_input.digests")?;
+    let facade = r.u8("native_input.facade")?;
+    let length = usize::try_from(u64::from_be_bytes(
+        r.fixed("native_input.statement_length")?,
+    ))
+    .map_err(|_| {
+        failed(
+            "certificate_closure",
+            "native statement length exceeds this target",
+        )
+    })?;
+    if length > r.remaining() {
+        return Err(failed(
+            "certificate_closure",
+            "native statement is truncated",
+        ));
+    }
+    let start = bytes.len() - r.remaining();
+    let statement = &bytes[start..start + length];
+    if !statement.starts_with(b"MATCH (n:EntryFragment)") {
+        return Ok(false);
+    }
+    let expected = format!(
+        "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ {known_at} RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n"
+    );
+    // Native v1, TemporalPattern, and no procedure section or trailing bytes:
+    // the producer's fixed selector has exactly this envelope profile.
+    if version != 1
+        || facade != 4
+        || snapshot != known_at
+        || statement != expected.as_bytes()
+        || length != r.remaining()
+    {
+        return Err(failed(
+            "certificate_closure",
+            "EntryFragment input differs from its fixed historical selector",
+        ));
+    }
+    Ok(true)
+}
+
 fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
     let functional_dimension = bytes.starts_with(FUNCTIONAL_DIMENSION_CERTIFICATE_FORMAT);
@@ -558,19 +614,38 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         7
     };
     // Native certificates preserve their original ordered family closure and
-    // may append MigrationRunFragment and source root/fragment attestations.
-    // The source root and fragment queries are an ordered pair. This reader
+    // may append MigrationRunFragment, source root/fragment attestations, and
+    // one exact trailing EntryFragment input. The source queries are a pair.
+    // Recognize the Entry input before applying the original migration count
+    // profile: RunFragment + EntryFragment must not imply BindSource. This reader
     // authenticates the complete canonical run body against its Open control
     // independently below; native query attestations are not outsider proofs.
-    let inputs = r.count(expected_inputs + 3, 4, "certificate.native_inputs")?;
+    let inputs = r.count(expected_inputs + 4, 4, "certificate.native_inputs")?;
     if inputs < expected_inputs {
         return Err(failed(
             "certificate_closure",
             "certificate must retain every native input attestation for its report family",
         ));
     }
-    for _ in 0..inputs {
-        r.bytes(1024 * 1024, "certificate.native_input")?;
+    let mut entry_storage = false;
+    for index in 0..inputs {
+        let input = r.bytes(1024 * 1024, "certificate.native_input")?;
+        if entry_fragment_input(input, known_at)? {
+            if index < expected_inputs || index + 1 != inputs || entry_storage {
+                return Err(failed(
+                    "certificate_closure",
+                    "EntryFragment input must be the final additive storage selector",
+                ));
+            }
+            entry_storage = true;
+        }
+    }
+    let migration_inputs = inputs - usize::from(entry_storage);
+    if migration_inputs > expected_inputs + 3 {
+        return Err(failed(
+            "certificate_closure",
+            "unexpected native storage input count",
+        ));
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
@@ -604,7 +679,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         selection,
         dimension: dimension_selection,
         functional,
-        source_storage: inputs >= expected_inputs + 2,
+        source_storage: migration_inputs >= expected_inputs + 2,
         registry_digest,
         journal_root,
         leaves,

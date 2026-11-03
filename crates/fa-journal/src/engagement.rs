@@ -1178,6 +1178,10 @@ fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<CommitSeq> {
+    // Reject shared-key monetary roots before this control-only decoder.
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::ENGAGEMENT_CONTROL) {
+        return Ok(Err(conflict_with(row)));
+    }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
@@ -1705,7 +1709,10 @@ fn recorded_proposal<V: asupersync::fs::Vfs + Clone>(
     legs: &[ProposalLeg],
     req: &EngagementRequest,
 ) -> Outcome<AdjustmentProposed> {
-    let (entry, _) = crate::post::entry_of(stored)?;
+    if !crate::entry_storage::has_class_mirror(stored, EntryClass::ENGAGEMENT_CONTROL) {
+        return Ok(Err(conflict_with(stored)));
+    }
+    let entry = crate::entry_storage::decode_at(db, stored, db.frontier()?)?;
     let Some(recorded) = proposal_record(&entry)? else {
         return Ok(Err(conflict_with(stored)));
     };
@@ -1946,7 +1953,8 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
                 "names a vertex that is not an entry",
             )));
         }
-        let (booked, booked_at) = crate::post::entry_of(&row)?;
+        let booked = crate::entry_storage::decode_staged(&txn, db, &row)?;
+        let booked_at = row.created_at;
         if booked.proposal.book_id != book.book_id
             || booked.proposal.branch_id != Id128::TRUNK
             || booked.proposal.class.is_control()
@@ -2213,7 +2221,10 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(stored) = txn.vertex(db, evid)? {
         txn.abort();
-        let (entry, _) = crate::post::entry_of(&stored)?;
+        if !crate::entry_storage::has_class_mirror(&stored, EntryClass::ENGAGEMENT_CONTROL) {
+            return Ok(Err(conflict_with(&stored)));
+        }
+        let entry = crate::entry_storage::decode_at(db, &stored, db.frontier()?)?;
         let stored_state = match &entry.proposal.control {
             Some(ControlPayload::LifecycleTransition { from, .. }) => {
                 EngagementState::from_tag(*from)
@@ -2409,7 +2420,10 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(stored) = txn.vertex(db, evid)? {
         txn.abort();
-        let (entry, _) = crate::post::entry_of(&stored)?;
+        if !crate::entry_storage::has_class_mirror(&stored, EntryClass::ENGAGEMENT_CONTROL) {
+            return Ok(Err(conflict_with(&stored)));
+        }
+        let entry = crate::entry_storage::decode_at(db, &stored, db.frontier()?)?;
         let stored_state = match &entry.proposal.control {
             Some(ControlPayload::LifecycleTransition { from, .. }) => {
                 EngagementState::from_tag(*from)
@@ -2789,7 +2803,10 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(stored) = txn.vertex(db, evid)? {
         txn.abort();
-        let (entry, _) = crate::post::entry_of(&stored)?;
+        if !crate::entry_storage::has_class_mirror(&stored, EntryClass::ENGAGEMENT_CONTROL) {
+            return Ok(Err(conflict_with(&stored)));
+        }
+        let entry = crate::entry_storage::decode_at(db, &stored, db.frontier()?)?;
         let stored_state = match &entry.proposal.control {
             Some(ControlPayload::LifecycleTransition { from, .. }) => {
                 EngagementState::from_tag(*from)
@@ -2997,7 +3014,8 @@ fn records_into<V: asupersync::fs::Vfs + Clone>(
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&src)?;
+        let entry = crate::entry_storage::decode_at(db, &src, seq)?;
+        let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::ENGAGEMENT_CONTROL {
             continue;
         }

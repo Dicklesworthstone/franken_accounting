@@ -626,7 +626,7 @@ pub fn run_entries<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry._fa_payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, seq)?;
         let belongs = matches!(
             (&entry.proposal.origin, &entry.proposal.control),
             (EntryOrigin::Migration { run_ref, .. }, _)
@@ -847,7 +847,7 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry.payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
             continue;
         };
@@ -1420,7 +1420,7 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     let evid = control_vid(book, proposal);
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(book, &row, proposal, &proposal_digest, run_vid);
+        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest, run_vid);
     }
     if let Some(existing) = txn.vertex(db, run_vid)? {
         txn.abort();
@@ -1579,7 +1579,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     let evid = control_vid(book, proposal);
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(book, &row, proposal, &proposal_digest, run_vid);
+        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest, run_vid);
     }
     let run = match witness_open(&txn, db, run_vid)? {
         Ok(run) => run,
@@ -1648,7 +1648,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
             let row = txn.vertex(db, chunk.vid)?.ok_or_else(|| {
                 KernelError::Corrupt("a migration activation lost a counted chunk".into())
             })?;
-            let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "activation chunk")?)?;
+            let entry = crate::entry_storage::decode_staged(&txn, db, &row)?;
             if entry.proposal_digest != chunk.proposal_digest
                 || !matches!(entry.proposal.origin, EntryOrigin::Migration { run_ref, .. } if run_ref == run_vid)
             {
@@ -2100,7 +2100,7 @@ async fn finish<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(done.control_entry)? {
-            Some(row) => recorded_or_conflict(book, &row, proposal, proposal_digest, done.run),
+            Some(row) => recorded_or_conflict(db, book, &row, proposal, proposal_digest, done.run),
             None => Err(KernelError::Corrupt(
                 "identity spent but no live row".into(),
             )),
@@ -2112,14 +2112,18 @@ async fn finish<V: asupersync::fs::Vfs + Clone>(
 /// An existing record at the control's identity: the recorded outcome when
 /// the proposal is the same (byte for byte, or semantically under the book
 /// key), a conflict otherwise.
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
     run: VId,
 ) -> Outcome<RunControlled> {
-    let stored = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry._fa_payload")?)?;
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     let conflict = Refusal::new(
         code::IDEMPOTENCY_CONFLICT,
         exit::CONFLICT,

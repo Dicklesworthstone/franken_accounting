@@ -16,9 +16,11 @@ pub use certificate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
-use fa_journal::rows::{AccountRow, bytes};
+use fa_journal::rows::AccountRow;
 use fa_journal::{KernelError, Refusal, exit};
-use fa_model::symbols::{label, property};
+use fa_model::symbols::label;
+#[cfg(test)]
+use fa_model::symbols::property;
 use fa_model::{AccountType, Entry, EntryClass, EntryOrigin, Id128};
 use fa_money::{Side, UnitId};
 use fa_policy::Capability;
@@ -272,12 +274,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 if !row.labels.contains(&label::ENTRY) {
                     continue;
                 }
-                let entry = Entry::decode(&bytes(
-                    &row,
-                    property::FA_PAYLOAD,
-                    "roll-forward entry payload",
-                )?)
-                .map_err(KernelError::from)?;
+                let entry = fa_journal::entry_storage::decode_at(&self.db, &row, at)?;
                 let p = &entry.proposal;
                 if p.book_id != self.context().book_id
                     || p.branch_id != Id128::TRUNK
@@ -422,12 +419,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 if !row.labels.contains(&label::ENTRY) {
                     continue;
                 }
-                let entry = Entry::decode(&bytes(
+                let entry = fa_journal::entry_storage::decode_at(
+                    &self.db,
                     &row,
-                    property::FA_PAYLOAD,
-                    "equity adjustment entry payload",
-                )?)
-                .map_err(KernelError::from)?;
+                    CommitSeq(source.known_at),
+                )?;
                 if entry.proposal.book_id != source.book_id
                     || entry.proposal.branch_id != source.branch_id
                     || row.created_at.0 == 0

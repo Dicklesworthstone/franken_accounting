@@ -16,8 +16,8 @@ use fa_model::entry::EXTERNAL_SUBLEDGER_EXTENSION;
 use fa_model::limits::MAX_DIMENSIONS_PER_LEG;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, Id128, LegPayload, Reader,
-    Writer, domain_digest, entry_mirrors,
+    EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, Id128, LegPayload, Reader,
+    Writer, domain_digest,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -520,7 +520,7 @@ pub fn reconcile_at<V: Vfs + Clone>(
     if entry.entry_ref(target.vid) != target
         || entry.proposal.book_id != book.book_id
         || entry.proposal.branch_id != Id128::TRUNK
-        || entry_mirrors(&entry)? != row.props
+        || !crate::entry_storage::mirrors_match(&row, &entry)?
     {
         return Ok(Err(invalid(
             "summary reference, coordinate or mirrors differ",
@@ -680,9 +680,7 @@ pub fn verify_all_at<V: Vfs + Clone>(
     let mut expected = BTreeSet::new();
     let mut drift = Vec::new();
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
-        let entry = match crate::rows::bytes(row, property::FA_PAYLOAD, "entry")
-            .and_then(|bytes| Entry::decode(&bytes).map_err(KernelError::from))
-        {
+        let entry = match crate::entry_storage::decode_at(db, row, at) {
             Ok(entry) => entry,
             Err(error) => {
                 drift.push(format!(

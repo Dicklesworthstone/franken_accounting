@@ -318,8 +318,7 @@ pub fn read_source_manifest_at<V: asupersync::fs::Vfs + Clone>(
     // A deleted manifest must never silently turn a bound run into legacy mode.
     for row in db.vertices_at(at)? {
         if row.labels.contains(&label::ENTRY) {
-            let entry =
-                Entry::decode(&bytes(&row, property::FA_PAYLOAD, "source control search")?)?;
+            let entry = crate::entry_storage::decode_at(db, &row, at)?;
             if matches!(entry.proposal.control, Some(ControlPayload::MigrationControl {
                 run_ref, kind: kind::BIND_SOURCE, ..
             }) if run_ref == run_vid)
@@ -452,7 +451,7 @@ pub async fn bind_source<V: asupersync::fs::Vfs + Clone>(
             .vertex(db, VId(u128::from_le_bytes(pointer)))?
             .ok_or_else(|| KernelError::Corrupt("source binding control is missing".into()))?;
         txn.abort();
-        return recorded_or_conflict(book, &row, proposal, &digest, manifest.run_ref);
+        return recorded_or_conflict(db, book, &row, proposal, &digest, manifest.run_ref);
     }
     let run = match witness_open(&txn, db, manifest.run_ref)? {
         Ok(run) => run,

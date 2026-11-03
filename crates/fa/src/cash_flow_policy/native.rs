@@ -1,11 +1,8 @@
 //! Native classification reads: cash amounts still come from the existing fold.
 
 use asupersync::fs::Vfs;
-use fa_journal::{KernelError, rows::bytes};
-use fa_model::{
-    Entry, EntryClass, Id128,
-    symbols::{label, property},
-};
+use fa_journal::KernelError;
+use fa_model::{EntryClass, Id128, symbols::label};
 use fa_money::Side;
 use fa_policy::Capability;
 use fgdb_types::{VId, context::PurposeContexts};
@@ -83,8 +80,8 @@ pub(super) fn resolve<V: Vfs + Clone, B: Vfs + Clone>(
                 .into_iter().enumerate() {
                 if i % 256 == 0 { query.checkpoint().map_err(BookError::Context)?; }
                 if !row.labels.contains(&label::ENTRY) { continue; }
-                let payload = bytes(&row, property::FA_PAYLOAD, "cash policy entry").map_err(BookError::from)?;
-                let entry = Entry::decode(&payload).map_err(KernelError::from).map_err(BookError::from)?;
+                let entry = fa_journal::entry_storage::decode_at(&book.db, &row, ledger.known_at())
+                    .map_err(BookError::from)?;
                 if !wanted.contains(&entry.entry_digest) { continue; }
                 let p = &entry.proposal;
                 if !seen.insert(entry.entry_digest) || p.book_id != ledger.book_id()

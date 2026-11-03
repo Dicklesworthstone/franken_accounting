@@ -401,7 +401,8 @@ pub(super) fn capture<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, request.known_at)?;
+        let recorded_at = row.created_at;
         if matches!(&entry.proposal.control,
             Some(ControlPayload::LifecycleTransition { object_ref, .. }) if *object_ref == draft)
         {

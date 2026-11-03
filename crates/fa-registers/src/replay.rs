@@ -66,8 +66,8 @@ pub struct ReplayVerification {
 
 /// Actual work performed by one side's entry selector, including failed
 /// carry attempts before a literal fallback. These are not total verifier
-/// work counts: source-map validation, migration run lookups, marker reads,
-/// and folding are outside their scope.
+/// work counts: source-map validation, migration run lookups, storage-fragment
+/// authentication reads, marker reads, and folding are outside their scope.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReplayReadWork {
     /// Complete `vertices_at` selections.
@@ -237,6 +237,7 @@ impl EntrySelection {
                             ..
                         } => {
                             if *changed == label::ENTRY
+                                || *changed == label::ENTRY_FRAGMENT
                                 || *changed == label::MIGRATION_RUN
                                 || *changed == label::MIGRATION_RUN_FRAGMENT
                                 || *changed == label::MIGRATION_SOURCE
@@ -290,13 +291,14 @@ impl EntrySelection {
                 || row.labels.contains(&label::MIGRATION_RUN_FRAGMENT)
                 || row.labels.contains(&label::MIGRATION_SOURCE)
                 || row.labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
+                || row.labels.contains(&label::ENTRY_FRAGMENT)
             {
                 return false;
             }
             if row.labels.contains(&label::ENTRY) {
                 work.entries_decoded = work.entries_decoded.saturating_add(1);
             }
-            match entry_from_row(&row, book) {
+            match entry_from_row(db, &row, book, at) {
                 Ok(Some(entry)) => {
                     if matches!(entry.proposal.origin, EntryOrigin::Migration { .. }) {
                         return false;

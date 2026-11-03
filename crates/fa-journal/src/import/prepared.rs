@@ -320,7 +320,7 @@ impl PreparedImport {
                 fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
             )) => match db.vertex(run)? {
                 Some(row) => {
-                    recorded_or_conflict(&book, &row, &entry.proposal, &entry.proposal_digest)
+                    recorded_or_conflict(db, &book, &row, &entry.proposal, &entry.proposal_digest)
                 }
                 None => Ok(Err(conflict(
                     "a document in this import was recorded concurrently",
@@ -501,9 +501,8 @@ pub(super) fn admit<V: Vfs + Clone>(
     );
     if let Some(row) = txn.vertex(db, run)? {
         txn.abort();
-        return Ok(
-            recorded_or_conflict(book, &row, &proposal, &digest)?.map(Admission::AlreadyRecorded)
-        );
+        return Ok(recorded_or_conflict(db, book, &row, &proposal, &digest)?
+            .map(Admission::AlreadyRecorded));
     }
     let preparer = Party::for_capability(proposal.principal_ref, capability);
     if let Err(refused) =

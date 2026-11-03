@@ -156,8 +156,32 @@ fn pack(
     inputs: usize,
     include_source: bool,
 ) -> (Vec<u8>, SignedCheckpoint) {
+    pack_with_entry_storage(
+        records,
+        body,
+        manifest,
+        minor,
+        inputs,
+        include_source,
+        false,
+    )
+}
+
+fn pack_with_entry_storage(
+    records: &[Record],
+    body: &[u8],
+    manifest: &[u8],
+    minor: u16,
+    inputs: usize,
+    include_source: bool,
+    entry_storage: bool,
+) -> (Vec<u8>, SignedCheckpoint) {
+    let mut inputs = vec![b"native read attestations are not outsider proofs".to_vec(); inputs];
+    if entry_storage {
+        inputs.push(entry_fragment_attestation(6));
+    }
     let (mut bytes, anchor) =
-        bundle_with_native_inputs(records, 6, Selection::AsOf(20), &rows(125, 0), inputs);
+        bundle_with_input_values(records, 6, Selection::AsOf(20), &rows(125, 0), &inputs);
     // The old bundle ends with its empty Open-body list. Retain all signed
     // prefix/certificate fields and replace only the transport witness lists.
     bytes.truncate(bytes.len() - 4);
@@ -196,6 +220,30 @@ fn minor_one_source_report_requires_manifest_and_exact_native_storage_profile() 
             verify_fixture(&bytes, anchor).is_err(),
             "minor={minor}, inputs={inputs}, source={include_source}"
         );
+    }
+}
+
+#[test]
+fn source_bound_reports_allow_exact_entry_fragment_tail_without_weakening_source_witnesses() {
+    let (records, body, manifest) = fixture();
+    for inputs in [9, 10] {
+        let (bytes, anchor) =
+            pack_with_entry_storage(&records, &body, &manifest, 1, inputs, true, true);
+        assert_eq!(verify_fixture(&bytes, anchor).unwrap().rows, rows(125, 0));
+    }
+    for (minor, inputs, include_source) in
+        [(0, 9, false), (1, 9, false), (1, 8, true), (1, 11, true)]
+    {
+        let (bytes, anchor) = pack_with_entry_storage(
+            &records,
+            &body,
+            &manifest,
+            minor,
+            inputs,
+            include_source,
+            true,
+        );
+        assert!(verify_fixture(&bytes, anchor).is_err());
     }
 }
 

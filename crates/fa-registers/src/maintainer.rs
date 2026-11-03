@@ -480,20 +480,17 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
                     DeltaRow::CreateVertex {
                         vid, labels, props, ..
                     } if labels.contains(&label::ENTRY) => {
-                        let payload = props
-                            .iter()
-                            .find_map(|(key, value)| {
-                                if *key == property::FA_PAYLOAD
-                                    && let CanonicalScalar::Bytes(b) = value
-                                {
-                                    return Some(b.as_slice());
-                                }
-                                None
-                            })
-                            .ok_or_else(|| {
-                                KernelError::Corrupt("delta Entry lacks canonical payload".into())
-                            })?;
-                        let entry = Entry::decode(payload).map_err(KernelError::from)?;
+                        let root = db.vertex_at(*vid, seq)?.ok_or_else(|| {
+                            KernelError::Corrupt("delta Entry lacks its creating row".into())
+                        })?;
+                        if root.created_at != seq || root.labels != *labels || root.props != *props
+                        {
+                            return Err(KernelError::Corrupt(
+                                "delta Entry differs from its immutable creating row".into(),
+                            )
+                            .into());
+                        }
+                        let entry = fa_journal::entry_storage::decode_at(db, &root, basis)?;
                         if entry.proposal.book_id != book.book_id
                             || entry.proposal.branch_id != Id128::TRUNK
                         {
@@ -509,11 +506,12 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
                     }
                     DeltaRow::Property {
                         elem: ElementId::Vertex(vid),
-                        property: key,
                         ..
-                    } if *key == property::FA_PAYLOAD => reject_entry_mutation(db, *vid, seq)?,
+                    } => reject_entry_mutation(db, *vid, seq)?,
                     DeltaRow::DeleteVertex { vid, .. } => reject_entry_mutation(db, *vid, seq)?,
-                    DeltaRow::LabelMembership { label: l, .. } if *l == label::ENTRY => {
+                    DeltaRow::LabelMembership { label: l, .. }
+                        if *l == label::ENTRY || *l == label::ENTRY_FRAGMENT =>
+                    {
                         return Err(KernelError::Corrupt(
                             "delta changed immutable Entry membership".into(),
                         )
@@ -715,9 +713,9 @@ fn reject_entry_mutation<V: asupersync::fs::Vfs + Clone>(
     seq: CommitSeq,
 ) -> Result<(), RegisterError> {
     if let Some(before) = seq.0.checked_sub(1)
-        && db
-            .vertex_at(vid, CommitSeq(before))?
-            .is_some_and(|r| r.labels.contains(&label::ENTRY))
+        && db.vertex_at(vid, CommitSeq(before))?.is_some_and(|r| {
+            r.labels.contains(&label::ENTRY) || r.labels.contains(&label::ENTRY_FRAGMENT)
+        })
     {
         return Err(KernelError::Corrupt("delta changed an immutable Entry".into()).into());
     }

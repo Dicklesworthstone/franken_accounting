@@ -261,7 +261,7 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "chart entry payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, row, known_at)?;
         if entry.proposal.class != EntryClass::SCHEMA_CONTROL {
             continue;
         }
@@ -1079,14 +1079,10 @@ fn check_lifecycle_idempotency<V: asupersync::fs::Vfs + Clone>(
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
 ) -> Outcome<AccountLifecycleRecorded> {
-    let stored = match prop(row, property::FA_PAYLOAD) {
-        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-        other => {
-            return Err(KernelError::Corrupt(format!(
-                "entry _fa_payload: {other:?}"
-            )));
-        }
-    };
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     // These direct schema controls have no approval or plan transcript. A retry
     // cannot silently accept an altered envelope or a missing modern claim.
     if !stored.approvals.is_empty()
@@ -1694,7 +1690,7 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
         if !vrow.labels.contains(&label::ENTRY) {
             continue;
         }
-        let e = Entry::decode(&bytes(vrow, property::FA_PAYLOAD, "entry.payload")?)?;
+        let e = crate::entry_storage::decode_at(db, vrow, basis)?;
         if e.proposal.class == EntryClass::RESOLUTION
             && let Some(target) = e.proposal.pending.as_ref().and_then(|p| p.resolution_of)
         {
@@ -2029,7 +2025,7 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
         if !vrow.labels.contains(&label::ENTRY) {
             continue;
         }
-        let e = Entry::decode(&bytes(vrow, property::FA_PAYLOAD, "entry.payload")?)?;
+        let e = crate::entry_storage::decode_at(db, vrow, basis)?;
         if e.proposal.effective_date > promotion_date
             && e.proposal.legs.iter().any(|l| l.account_ref == avid)
         {

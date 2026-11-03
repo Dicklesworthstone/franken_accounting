@@ -446,8 +446,9 @@ pub fn entries_at<V: asupersync::fs::Vfs + Clone>(
     entries_at_counted(db, book, seq, &mut EntryReadCount::default())
 }
 
-/// Work performed by the entry selector itself. Migration run lookups and
-/// any subsequent folding are separate work, not hidden in these counts.
+/// Work performed by the entry selector itself. Migration run lookups,
+/// storage-fragment authentication reads and subsequent folding are separate
+/// work, not hidden in these counts.
 #[derive(Default)]
 pub(crate) struct EntryReadCount {
     pub vertices_read: usize,
@@ -456,15 +457,16 @@ pub(crate) struct EntryReadCount {
 
 /// The label, payload and coordinate checks shared by a literal selection
 /// and the replay verifier's changed-vertex selection (fa-vr7q).
-pub(crate) fn entry_from_row(
+pub(crate) fn entry_from_row<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     row: &VertexRow,
     book: &BookContext,
+    seq: CommitSeq,
 ) -> Result<Option<Entry>, RegisterError> {
     if !row.labels.contains(&label::ENTRY) {
         return Ok(None);
     }
-    let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry.payload")?)
-        .map_err(KernelError::from)?;
+    let entry = fa_journal::entry_storage::decode_at(db, row, seq)?;
     if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
         return Err(KernelError::Corrupt(
             "entry coordinate does not belong to this trunk book".into(),
@@ -487,7 +489,7 @@ pub(crate) fn entries_at_counted<V: asupersync::fs::Vfs + Clone>(
         if row.labels.contains(&label::ENTRY) {
             work.entries_decoded = work.entries_decoded.saturating_add(1);
         }
-        let Some(entry) = entry_from_row(&row, book)? else {
+        let Some(entry) = entry_from_row(db, &row, book, seq)? else {
             continue;
         };
         if !fa_journal::migration::visible_at(db, &entry, seq, &mut runs)? {
@@ -2169,8 +2171,7 @@ fn period_has_postings_at<V: asupersync::fs::Vfs + Clone>(
             return Ok(true);
         }
         if row.labels.contains(&label::ENTRY) {
-            let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry.payload")?)
-                .map_err(KernelError::from)?;
+            let entry = fa_journal::entry_storage::decode_at(db, &row, seq)?;
             if !entry.proposal.legs.is_empty() {
                 return Ok(true);
             }

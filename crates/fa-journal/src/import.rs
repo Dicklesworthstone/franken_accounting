@@ -358,7 +358,7 @@ pub fn read_run<V: asupersync::fs::Vfs + Clone>(
     let Some(row) = db.vertex(run)? else {
         return Ok(None);
     };
-    let entry = stored_entry(&row)?;
+    let entry = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
     Ok(receipt_of(&entry, run, row.created_at))
 }
 
@@ -454,13 +454,17 @@ pub fn verify_receipt_in<V: asupersync::fs::Vfs + Clone>(
     Ok(verify_receipt(receipt, book, oids))
 }
 
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
     digest: &[u8; 32],
 ) -> Outcome<ImportRecorded> {
-    let stored = stored_entry(row)?;
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     let same = &stored.proposal_digest == digest
         || matches!(
             (

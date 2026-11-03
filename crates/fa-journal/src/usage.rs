@@ -264,7 +264,8 @@ pub(crate) fn judge<V: Vfs + Clone>(
                     "the last usage receipt's source entry is missing",
                 )));
             };
-            let (source_entry, source_at) = crate::post::entry_of(&source)?;
+            let source_entry = crate::entry_storage::decode_staged(txn, db, &source)?;
+            let source_at = source.created_at;
             if source_entry.entry_ref(source.vid) != last.entry
                 || source_at != last_row.created_at
                 || gross_debits(&source_entry.proposal)?.get(&unit) != Some(&last.gross_debits)

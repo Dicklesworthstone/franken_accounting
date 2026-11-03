@@ -1645,14 +1645,7 @@ pub async fn attach_evidence<V: asupersync::fs::Vfs + Clone>(
             target.vid.0
         ))));
     }
-    let Some(CanonicalScalar::Bytes(entry_bytes)) = prop(&row, property::FA_PAYLOAD) else {
-        txn.abort();
-        return Err(KernelError::Corrupt(format!(
-            "entry {:032x} carries no payload",
-            target.vid.0
-        )));
-    };
-    let entry = fa_model::Entry::decode(entry_bytes.as_slice())?;
+    let entry = crate::entry_storage::decode_staged(&txn, db, &row)?;
     if entry.entry_digest != target.entry_digest || entry.proposal.book_id != book.book_id {
         txn.abort();
         return Ok(Err(supplement_target(format!(

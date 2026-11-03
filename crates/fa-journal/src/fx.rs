@@ -1487,7 +1487,7 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = crate::sweep::decode_entry(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         let proposal = &entry.proposal;
         if proposal.base_totals.is_none() && proposal.legs.iter().all(|l| l.base_amount.is_none()) {
             continue;
@@ -1640,7 +1640,7 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
                 target.vid.0
             )));
         };
-        let original = crate::sweep::decode_entry(&row)?;
+        let original = crate::entry_storage::decode_at(db, &row, at)?;
         if original.entry_ref(row.vid) != target
             || original.proposal.book_id != proposal.book_id
             || original.proposal.branch_id != proposal.branch_id

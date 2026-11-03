@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, DecodeError, EncodeError, Entry, Erasable, Id128, Reader, Writer, domain_digest,
+    AccountType, DecodeError, EncodeError, Erasable, Id128, Reader, Writer, domain_digest,
     entry_mirrors, entry_vid,
 };
 use fa_policy::Capability;
@@ -215,19 +215,23 @@ fn conflict(detail: impl Into<String>) -> Refusal {
     )
 }
 
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &fa_model::EntryPayload,
     proposal_digest: &[u8; 32],
     digest: [u8; 32],
 ) -> Outcome<ClosingRoutesRecorded> {
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     if !row.labels.contains(&label::ENTRY) {
         return Err(KernelError::Corrupt(
             "closing-map identity is not an Entry".into(),
         ));
     }
-    let stored = Entry::decode(&bytes(row, property::FA_PAYLOAD, "closing map entry")?)?;
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     let same = stored.proposal_digest == *proposal_digest
         || match (
             stored.proposal.semantic_digest(&book.seal_key),
@@ -337,7 +341,7 @@ fn prepare<V: Vfs + Clone>(
     if let Some(row) = txn.vertex(db, control_entry)? {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal, &proposal_digest, digest)?
+            recorded_or_conflict(db, book, &row, &proposal, &proposal_digest, digest)?
                 .map(Preparation::Recorded),
         );
     }
@@ -375,7 +379,7 @@ fn prepare<V: Vfs + Clone>(
     // to serialize chart changes through a mutable global schema counter.
     for row in db.vertices_at(txn.basis())? {
         if row.labels.contains(&label::ENTRY) {
-            let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "schema witness")?)?;
+            let entry = crate::entry_storage::decode_at(db, &row, txn.basis())?;
             if entry.proposal.class == fa_model::EntryClass::SCHEMA_CONTROL {
                 let _declaration = txn.vertex(db, row.vid)?;
             }

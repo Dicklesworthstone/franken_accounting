@@ -17,6 +17,7 @@ statement_definition_kind = 7
 period_plan_kind = 8
 migration_run_kind = 9
 migration_source_kind = 10
+entry_kind = 11
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -68,3 +69,13 @@ migration_source_kind = 10
 # Its immutable MigrationSource root and MigrationSourceFragment children
 # publish with BindSource in one transaction; the root names that control.
 # Scratch replay preserves both labels. Unlike a run, this root never changes.
+# Entry kind 11 stores unchanged fa:entry:v1 bytes above the inline threshold.
+# The root retains Entry and every original non-payload mirror; fragments use
+# EntryFragment=66, never Entry, in the same posting transaction. Canonical
+# proposal/entry/semantic digests and notary leaf bytes remain unchanged.
+# The complete object is bounded by max_entry_bytes before allocation; the
+# posting template separately enforces its complete transaction byte ceiling.
+# Snapshot, transaction-overlay, history, export and proof readers reassemble
+# only exact original fragment births matching the root's publication.
+# Historical inline Entries remain valid even above the new 4096-byte threshold.
+# Scratch replay preserves root and fragments together as accounting objects.

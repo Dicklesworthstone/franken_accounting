@@ -1146,7 +1146,10 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "chart entry.payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, entry.proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         let same = stored.proposal_digest == proposal_digest
             || matches!(
                 (

@@ -1314,6 +1314,13 @@ fn migration_source_statements(at: CommitSeq) -> [String; 2] {
     ))
 }
 
+fn entry_fragment_statement(at: CommitSeq) -> String {
+    format!(
+        "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ {} RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        at.0
+    )
+}
+
 fn migration_storage_statements_at<V: Vfs + Clone>(
     db: &Database<V>,
     at: CommitSeq,
@@ -1331,6 +1338,12 @@ fn migration_storage_statements_at<V: Vfs + Clone>(
             || row.labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
     }) {
         statements.extend(migration_source_statements(at));
+    }
+    if rows
+        .iter()
+        .any(|row| row.labels.contains(&label::ENTRY_FRAGMENT))
+    {
+        statements.push(entry_fragment_statement(at));
     }
     Ok(statements)
 }
@@ -1561,7 +1574,7 @@ impl ReportCertificate {
                 + usize::from(selection.bound_dimension().is_some())
                 + CUSTOM_STATEMENT_INPUTS
                     * usize::from(matches!(selection, ReportSelection::CustomStatement(_)));
-            let count = r.count(required_inputs + 3, "native inputs")?;
+            let count = r.count(required_inputs + 4, "native inputs")?;
             if count < required_inputs {
                 return Err(r.invalid("complete native input closure"));
             }
@@ -1624,12 +1637,32 @@ impl ReportCertificate {
             ));
         }
         let mut expected = statements(self.known_at, &self.selection);
-        let storage_count = self.inputs.len().saturating_sub(expected.len());
-        if matches!(storage_count, 1 | 3) {
-            expected.push(migration_fragment_statement(self.known_at));
+        // Each optional storage family has a fixed position and complete
+        // selector. A count alone cannot distinguish an Entry fragment input
+        // from a migration fragment input. Old inline-only bytes are unchanged.
+        let migration_fragment = migration_fragment_statement(self.known_at);
+        if self
+            .inputs
+            .get(expected.len())
+            .is_some_and(|input| input.statement == migration_fragment)
+        {
+            expected.push(migration_fragment);
         }
-        if matches!(storage_count, 2 | 3) {
-            expected.extend(migration_source_statements(self.known_at));
+        let migration_source = migration_source_statements(self.known_at);
+        if self
+            .inputs
+            .get(expected.len())
+            .is_some_and(|input| input.statement == migration_source[0])
+        {
+            expected.extend(migration_source);
+        }
+        let entry_fragment = entry_fragment_statement(self.known_at);
+        if self
+            .inputs
+            .get(expected.len())
+            .is_some_and(|input| input.statement == entry_fragment)
+        {
+            expected.push(entry_fragment);
         }
         if self.inputs.len() != expected.len()
             || self
@@ -2019,6 +2052,7 @@ fn unchanged_entries<V: Vfs + Clone>(
     cx: &QueryCx,
     journal: &Journal,
 ) -> Outcome<()> {
+    let observed_at = db.frontier().map_err(fa_journal::KernelError::from)?;
     for leaf in &journal.leaves {
         cx.checkpoint().map_err(BookError::Context)?;
         let Some(row) = db.vertex(leaf.vid).map_err(fa_journal::KernelError::from)? else {
@@ -2029,7 +2063,7 @@ fn unchanged_entries<V: Vfs + Clone>(
         };
         if !row.labels.contains(&label::ENTRY)
             || row.created_at != leaf.envelope.commit_seq
-            || bytes(&row, property::FA_PAYLOAD, "certified entry payload")
+            || fa_journal::entry_storage::payload_at(db, &row, observed_at)
                 .ok()
                 .as_deref()
                 != Some(leaf.payload.as_slice())
@@ -2092,7 +2126,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         .ne(required.iter())
     {
         return Ok(Err(invalid(
-            "native input closure omits migration body or source storage at the certified prefix",
+            "native input closure omits canonical entry or migration storage at the certified prefix",
         )));
     }
     let current = match registry_digest(&certificate.selection) {

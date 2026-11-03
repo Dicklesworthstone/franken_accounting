@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
-use fa_journal::rows::{bytes, edge_id, leg_vid, mantissa_scalar, prop};
+use fa_journal::rows::{edge_id, leg_vid, mantissa_scalar, prop};
 use fa_journal::{BookContext, KernelError};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{Entry, Id128, leg_mirrors, unit_vid};
@@ -283,7 +283,8 @@ fn prepare<V: Vfs + Clone>(
     // another typed object's bytes (for example a certificate chunk) as Entry.
     for row in rows.iter().filter(|row| row.labels.is_empty()) {
         if let Some(CanonicalScalar::Bytes(payload)) = prop(row, property::FA_PAYLOAD)
-            && Entry::decode(payload.as_slice()).is_ok()
+            && (Entry::decode(payload.as_slice()).is_ok()
+                || fa_journal::entry_storage::is_stored_entry_payload(payload.as_slice()))
         {
             return Err(corrupt(
                 "an entry payload has lost its Entry label; restore journal integrity before projection recovery",
@@ -308,8 +309,7 @@ fn prepare<V: Vfs + Clone>(
     }
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
         cx.query().checkpoint().map_err(BookError::Context)?;
-        let payload = bytes(row, property::FA_PAYLOAD, "entry._fa_payload")?;
-        let entry = Entry::decode(&payload).map_err(KernelError::from)?;
+        let entry = fa_journal::entry_storage::decode_at(db, row, basis)?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
             return Err(corrupt(
                 "cannot rebuild projections of a foreign journal entry",

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, DecodeError, EncodeError, Entry, Erasable, Id128, Reader, Writer, domain_digest,
+    AccountType, DecodeError, EncodeError, Erasable, Id128, Reader, Writer, domain_digest,
     entry_mirrors, entry_vid,
 };
 use fa_money::{UnitId, UnitKind, UnitRegistry};
@@ -390,12 +390,15 @@ fn prepare<V: Vfs + Clone>(
     );
     if let Some(row) = txn.vertex(db, control_entry)? {
         txn.abort();
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         if !row.labels.contains(&label::ENTRY) {
             return Err(KernelError::Corrupt(
                 "FX route identity is not an Entry".into(),
             ));
         }
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "FX route retry")?)?;
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         let same = stored.proposal_digest == proposal_digest
             || match (
                 stored.proposal.semantic_digest(&book.seal_key),
@@ -446,11 +449,7 @@ fn prepare<V: Vfs + Clone>(
         .collect();
     for row in db.vertices_at(txn.basis())? {
         if row.labels.contains(&label::ENTRY) {
-            let entry = Entry::decode(&bytes(
-                &row,
-                property::FA_PAYLOAD,
-                "FX route account population",
-            )?)?;
+            let entry = crate::entry_storage::decode_at(db, &row, txn.basis())?;
             if entry
                 .proposal
                 .legs

@@ -406,11 +406,15 @@ fn hold_event(entry: &Entry) -> Result<Option<(Scope, Oid)>, KernelError> {
 }
 
 /// The Place stored at `row`, if `row` is one.
-fn placed_of(row: &VertexRow) -> Result<Option<LegalHold>, KernelError> {
-    if !row.labels.contains(&label::ENTRY) {
+fn placed_of<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    at: CommitSeq,
+) -> Result<Option<LegalHold>, KernelError> {
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::HOLD_CONTROL) {
         return Ok(None);
     }
-    let entry = decode_entry(row)?;
+    let entry = crate::entry_storage::decode_at(db, row, at)?;
     let (subjects, through, authority) = match hold_event(&entry)? {
         Some((Scope::Place(subjects), authority)) => (subjects, None, authority),
         Some((Scope::Book(through), authority)) => (Vec::new(), Some(through), authority),
@@ -434,10 +438,11 @@ pub fn read_legal_hold<V: asupersync::fs::Vfs + Clone>(
     book: Id128,
     hold: VId,
 ) -> Result<Option<LegalHold>, KernelError> {
-    let Some(row) = db.vertex(hold)? else {
+    let known_at = db.frontier()?;
+    let Some(row) = db.vertex_at(hold, known_at)? else {
         return Ok(None);
     };
-    let Some(mut placed) = placed_of(&row)? else {
+    let Some(mut placed) = placed_of(db, &row, known_at)? else {
         return Ok(None);
     };
     let release = release_vid(book, hold);
@@ -484,8 +489,14 @@ fn book_holds_covering<V: asupersync::fs::Vfs + Clone>(
         return Ok(Vec::new());
     }
     let mut covering = Vec::new();
+    let known_at = db.frontier()?;
     for hold in active {
-        let through = match db.vertex(hold)?.as_ref().map(placed_of).transpose()? {
+        let through = match db
+            .vertex_at(hold, known_at)?
+            .as_ref()
+            .map(|row| placed_of(db, row, known_at))
+            .transpose()?
+        {
             Some(Some(LegalHold {
                 through: Some(through),
                 ..
@@ -618,6 +629,21 @@ fn placed_or_conflict(
     proposal: &EntryPayload,
     digest: &[u8; 32],
 ) -> Outcome<LegalHoldPlaced> {
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with a different entry; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical hold to get its recorded outcome, or use a new idempotency key",
+        )
+    };
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::HOLD_CONTROL) {
+        return Ok(Err(conflict()));
+    }
     let stored = decode_entry(row)?;
     let same = &stored.proposal_digest == digest
         || matches!(
@@ -642,16 +668,7 @@ fn placed_or_conflict(
             recorded_at: row.created_at,
             already_recorded: true,
         })),
-        _ => Ok(Err(Refusal::new(
-            code::IDEMPOTENCY_CONFLICT,
-            exit::CONFLICT,
-            format!(
-                "idempotency key reused with a different entry; the recorded entry is {:032x}",
-                row.vid.0
-            ),
-            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
-            "resubmit the identical hold to get its recorded outcome, or use a new idempotency key",
-        ))),
+        _ => Ok(Err(conflict())),
     }
 }
 
@@ -717,7 +734,7 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
         None => match db
             .vertex(hold)?
             .as_ref()
-            .map(placed_of)
+            .map(|row| placed_of(db, row, row.created_at))
             .transpose()?
             .flatten()
         {
@@ -994,7 +1011,7 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(unknown_hold(plan.hold, "is not in this book")));
     };
-    let Some(placed) = placed_of(&hold_row)? else {
+    let Some(placed) = placed_of(db, &hold_row, txn.basis())? else {
         txn.abort();
         return Ok(Err(unknown_hold(
             plan.hold,

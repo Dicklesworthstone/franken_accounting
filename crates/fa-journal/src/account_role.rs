@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
-use fa_model::symbols::{label, property};
+use fa_model::symbols::label;
 use fa_model::{
     AccountType, ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload,
     EntryRef, Erasable, Id128, Reader, Writer, entry_mirrors, entry_vid,
@@ -26,7 +26,7 @@ use fgdb_types::{CommitSeq, VId};
 use crate::chart::{admit_schema_change, schema_control_proposal};
 use crate::genesis::BookContext;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{AccountRow, bytes};
+use crate::rows::AccountRow;
 
 pub const SCHEMA_CHANGE_ACCOUNT_ROLE: u16 = 16;
 const FORMAT: &[u8] = b"fa:account-role:v1";
@@ -216,7 +216,7 @@ pub fn account_roles_at<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, row, at)?;
         if !matches!(
             &entry.proposal.control,
             Some(ControlPayload::SchemaChange {
@@ -309,7 +309,10 @@ pub async fn record_account_role<V: Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {

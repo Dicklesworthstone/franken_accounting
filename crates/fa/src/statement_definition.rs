@@ -271,8 +271,7 @@ fn accounts_and_basis<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "chart-basis entry")?)
-            .map_err(KernelError::from)?;
+        let entry = fa_journal::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.class != EntryClass::SCHEMA_CONTROL {
             continue;
         }
@@ -501,12 +500,7 @@ fn history<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(
-            &row,
-            property::FA_PAYLOAD,
-            "statement activation entry",
-        )?)
-        .map_err(KernelError::from)?;
+        let entry = fa_journal::entry_storage::decode_at(db, &row, at)?;
         if !matches!(
             &entry.proposal.control,
             Some(ControlPayload::LifecycleTransition {
@@ -621,8 +615,7 @@ pub fn validate_active_at<V: Vfs + Clone>(
             "the cited statement activation does not exist at this known-at",
         )));
     };
-    let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "statement activation")?)
-        .map_err(KernelError::from)?;
+    let entry = fa_journal::entry_storage::decode_at(db, &row, at)?;
     let activated = activation_of(db, cx, book, &row, &entry, at)?;
     if &activated.definition != definition || activated.effective_from > day {
         return Ok(Err(invalid(
@@ -926,8 +919,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let Some(row) = txn.vertex(&self.db, evid).map_err(KernelError::from)? {
             txn.abort();
-            let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "activation retry")?)
-                .map_err(KernelError::from)?;
+            let stored = fa_journal::entry_storage::decode_at(
+                &self.db,
+                &row,
+                self.db.frontier().map_err(KernelError::from)?,
+            )?;
             if stored.proposal_digest != proposal_digest
                 || stored.approvals != approvals
                 || !outcome::verify_control_recorded(&self.db, &row, &stored)?

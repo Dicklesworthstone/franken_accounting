@@ -43,6 +43,24 @@ PINNED = {
     },
 }
 DATES = {"10": "2024-04-30", "11": "2024-05-31", "12": "2024-06-30"}
+SOURCE_DIMENSIONS = {
+    "department": ("DEPTID", "DEPTDESCR", 3),
+    "project": ("PROJECT_ID", "PROJDESCR", 4),
+    "product": ("PRODUCT", "PRODUCTDESCR", 5),
+    "fund": ("FUND_CODE", "FUNDDESCR", 7),
+}
+
+
+def fixture_dimension_values(originals):
+    return {kind: {
+        code: {"dimension": dimension, "value": f"{dimension * 10000 + index + 1:032x}"}
+        for index, code in enumerate(sorted({row[column] for row in originals if row[column].strip()}))
+    } for kind, (column, _, dimension) in SOURCE_DIMENSIONS.items()}
+
+
+def original_dimensions(case, row):
+    return [dict(case["dimension_values"][kind][row[column]])
+            for kind, (column, _, _) in SOURCE_DIMENSIONS.items() if row[column].strip()]
 
 
 def cents(text):
@@ -79,7 +97,7 @@ def native_package(case, run):
             legs.append({"index": ordinal, "account": row["ACCOUNT"],
                          "side": "credit" if amount.is_signed() else "debit",
                          "amount": f"{abs(amount):.2f} USD",
-                         "dimensions": [case["department_values"][row["DEPTID"]]] if row["DEPTID"].strip() else []})
+                         "dimensions": original_dimensions(case, row)})
         chunks.append({"index": index, "effective_date": DATES[period],
                        "document_date": DATES[period],
                        "effective_period": f"FY{year}-P{int(period):02}",
@@ -108,11 +126,8 @@ def write_export_fixture(case, path, format_name, transform=None):
     for index, (key, originals) in enumerate(sorted(grouped.items())):
         for ordinal, row in enumerate(originals, 1):
             amount = Decimal(row[source.AMOUNT_COLUMN])
-            if row["DEPTID"].strip():
-                value = case["department_values"][row["DEPTID"]]
-                dimensions = f"{value['dimension']}:{value['value']}"
-            else:
-                dimensions = ""
+            dimensions = ";".join(f"{value['dimension']}:{value['value']}"
+                                  for value in original_dimensions(case, row))
             rows.append([
                 entry_ids[key], str(ordinal), DATES[row["ACCOUNTING_PERIOD"]],
                 str(index + 100), "12", row["ACCOUNT"], "C" if amount < 0 else "D",
@@ -150,10 +165,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
             out = Path(cls.directory.name) / agency
             manifest = replay.normalize(fixture, agency, out)
             originals = read_csv(fixture, "cp1252")
-            department_values = {
-                code: {"dimension": 17, "value": f"{index + 1:032x}"}
-                for index, code in enumerate(sorted({row["DEPTID"] for row in originals if row["DEPTID"].strip()}))
-            }
+            dimension_values = fixture_dimension_values(originals)
             source_rows = {
                 position["record_index"]: row
                 for position, row in zip(provenance["source_records"], originals, strict=True)
@@ -167,7 +179,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 "fixture": fixture, "provenance": provenance, "out": out,
                 "manifest": manifest, "originals": originals,
                 "source_rows": source_rows, "normalized": normalized,
-                "department_values": department_values,
+                "dimension_values": dimension_values,
             }
 
     def test_original_byte_extracts_match_independently_pinned_distribution_slices(self):
@@ -204,7 +216,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
 
             info = {"book_id": "a" * 32, "base_unit": "USD", "calendar": "monthly", "entities": []}
             with mock.patch.object(replay.Native, "call", return_value={"data": info}), \
-                    mock.patch.object(replay.Native, "register_departments", return_value={}), \
+                    mock.patch.object(replay.Native, "register_dimension", return_value={}), \
                     mock.patch.object(replay.Native, "document", side_effect=capture):
                 with self.assertRaises(IntakeObserved):
                     replay.run_native(Path(sys.executable), Path(sys.executable), output, manifest, recovery=recovery)
@@ -336,7 +348,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
         for agency, case in self.cases.items():
             for run in case["manifest"]["runs"]:
                 with self.subTest(agency=agency, run=run["name"]):
-                    replay.verify_prepared_legs(case["manifest"], run, native_package(case, run), case["department_values"])
+                    replay.verify_prepared_legs(case["manifest"], run, native_package(case, run), case["dimension_values"])
 
     def test_native_leg_assertion_rejects_same_account_opposing_mutations_that_preserve_net(self):
         case = self.cases["31500"]
@@ -361,7 +373,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
         self.assertEqual(net_by_account(package), net_by_account(before))
         self.assertEqual(package["row_count"], before["row_count"])
         with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
-            replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
+            replay.verify_prepared_legs(case["manifest"], run, package, case["dimension_values"])
 
     def test_native_leg_assertion_rejects_substitution_drop_duplicate_and_reorder(self):
         case = self.cases["31500"]
@@ -389,7 +401,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                     # original row order rather than an invalid index alone.
                     legs[0]["index"], legs[1]["index"] = 0, 1
                 with self.assertRaises(replay.ReplayError):
-                    replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
+                    replay.verify_prepared_legs(case["manifest"], run, package, case["dimension_values"])
 
     def test_native_leg_assertion_rejects_wrong_scope_dates_and_counts(self):
         case = self.cases["31500"]
@@ -408,17 +420,17 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 package = deepcopy(original)
                 package["chunks"][0][field] = changed
                 with self.assertRaises(replay.ReplayError):
-                    replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
+                    replay.verify_prepared_legs(case["manifest"], run, package, case["dimension_values"])
         for field in ("row_count", "chunk_count"):
             with self.subTest(field=field):
                 package = deepcopy(original)
                 package[field] += 1
                 with self.assertRaises(replay.ReplayError):
-                    replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
+                    replay.verify_prepared_legs(case["manifest"], run, package, case["dimension_values"])
         package = deepcopy(original)
         package["chunks"].pop()
         with self.assertRaisesRegex(replay.ReplayError, "omitted a chunk"):
-            replay.verify_prepared_legs(case["manifest"], run, package, case["department_values"])
+            replay.verify_prepared_legs(case["manifest"], run, package, case["dimension_values"])
 
     def test_every_department_account_month_matches_independent_decimal_source_fold(self):
         for agency, case in self.cases.items():
@@ -457,7 +469,10 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                     self.assertEqual(dict(net), manifest["activity_cents"][period])
                     self.assertEqual(dict(gross), manifest["activity_gross_cents"][period])
                 mapping = tomllib.loads((case["out"] / "column_map.toml").read_text())
-                self.assertEqual(mapping["dimension_columns"], {"department": "original_DEPTID"})
+                self.assertEqual(mapping["dimension_columns"], {
+                    "department": "original_DEPTID", "project": "original_PROJECT_ID",
+                    "product": "original_PRODUCT", "fund": "original_FUND_CODE",
+                })
         pension = self.cases["31500"]["manifest"]
         self.assertIn("0100001", {row["code"] for row in pension["departments"]})
         self.assertNotIn("100001", {row["code"] for row in pension["departments"]})
@@ -472,8 +487,8 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
         run = next(run for run in case["manifest"]["runs"] if run["key"][2] == "8315A")
         original = native_package(case, run)
         source_legs = original["chunks"][0]["legs"]
-        tagged = next(i for i, leg in enumerate(source_legs) if leg["dimensions"])
-        untagged = next(i for i, leg in enumerate(source_legs) if not leg["dimensions"])
+        tagged = next(i for i, leg in enumerate(source_legs) if any(v["dimension"] == 3 for v in leg["dimensions"]))
+        untagged = next(i for i, leg in enumerate(source_legs) if not any(v["dimension"] == 3 for v in leg["dimensions"]))
         for mutation in ("substitute", "drop", "invent_for_blank", "wrong_kind"):
             with self.subTest(mutation=mutation):
                 changed = deepcopy(original)
@@ -481,7 +496,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 if mutation == "substitute":
                     legs[tagged]["dimensions"][0]["value"] = "f" * 32
                 elif mutation == "drop":
-                    legs[tagged]["dimensions"] = []
+                    legs[tagged]["dimensions"] = [v for v in legs[tagged]["dimensions"] if v["dimension"] != 3]
                 elif mutation == "invent_for_blank":
                     legs[untagged]["dimensions"] = deepcopy(legs[tagged]["dimensions"])
                 else:
@@ -489,7 +504,115 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 self.assertEqual([(r["account"], r["side"], r["amount"]) for r in source_legs],
                                  [(r["account"], r["side"], r["amount"]) for r in legs])
                 with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
-                    replay.verify_prepared_legs(case["manifest"], run, changed, case["department_values"])
+                    replay.verify_prepared_legs(case["manifest"], run, changed, case["dimension_values"])
+
+    def test_every_fund_product_project_cell_matches_the_original_decimal_fold(self):
+        for agency, case in self.cases.items():
+            for kind, (column, label, _) in SOURCE_DIMENSIONS.items():
+                with self.subTest(agency=agency, kind=kind):
+                    expected = {period: {} for period in replay.PERIODS}
+                    names = {}
+                    for row in case["originals"]:
+                        code = row[column] if row[column].strip() else ""
+                        if code:
+                            names[code] = row[label] if row[label].strip() else f"OMES {kind} {code}"
+                        period = f"FY2024-P{row['ACCOUNTING_PERIOD']}"
+                        bucket = expected[period].setdefault(code, {
+                            "rows": 0, "monetary_rows": 0, "account_nets": {}, "gross_cents": {},
+                        })
+                        amount = cents(row[source.AMOUNT_COLUMN])
+                        account = row["ACCOUNT"]
+                        side = "credit" if amount < 0 else "debit"
+                        bucket["rows"] += 1
+                        bucket["monetary_rows"] += int(amount != 0)
+                        bucket["account_nets"][account] = bucket["account_nets"].get(account, 0) + amount
+                        key = f"{account}:{side}"
+                        bucket["gross_cents"][key] = bucket["gross_cents"].get(key, 0) + abs(amount)
+                    manifest = case["manifest"]
+                    self.assertEqual(manifest["dimension_activity"][kind], expected)
+                    self.assertEqual(manifest["dimensions"][kind], [
+                        {"code": code, "name": name} for code, name in sorted(names.items())])
+                    for mapped in manifest["row_mapping"]:
+                        raw = case["source_rows"][mapped["source_record"]][column]
+                        self.assertEqual(mapped["dimensions"].get(kind), raw if raw.strip() else None)
+                    for period, groups in expected.items():
+                        net, gross = defaultdict(int), defaultdict(int)
+                        for bucket in groups.values():
+                            for account, amount in bucket["account_nets"].items():
+                                net[account] += amount
+                            for account_side, amount in bucket["gross_cents"].items():
+                                gross[account_side] += amount
+                        self.assertEqual(dict(net), manifest["activity_cents"][period])
+                        self.assertEqual(dict(gross), manifest["activity_gross_cents"][period])
+        university = self.cases["66000"]["manifest"]
+        self.assertEqual([v["code"] for v in university["dimensions"]["product"]],
+                         [f"{n:02}" for n in range(1, 10)])
+        self.assertEqual(university["dimensions"]["project"], [])
+        self.assertEqual(university["dimensions"]["fund"][0]["code"], "9000")
+        self.assertNotIn("class_funding", university["dimensions"])
+        self.assertNotIn("segment", university["dimensions"])
+
+    def test_fund_and_product_changes_fail_with_department_money_and_row_order_unchanged(self):
+        case = self.cases["66000"]
+        for kind, dimension_id in (("fund", 7), ("product", 5)):
+            run = next(run for run in case["manifest"]["runs"]
+                       if any(kind in row["dimensions"] for row in case["manifest"]["row_mapping"]
+                              if row["run"] == run["name"]))
+            for mutation in ("substitute", "drop", "wrong_kind"):
+                with self.subTest(kind=kind, mutation=mutation):
+                    original = native_package(case, run)
+                    changed = deepcopy(original)
+                    leg = next(leg for chunk in changed["chunks"] for leg in chunk["legs"]
+                               if any(value["dimension"] == dimension_id for value in leg["dimensions"]))
+                    value = next(value for value in leg["dimensions"] if value["dimension"] == dimension_id)
+                    if mutation == "drop":
+                        leg["dimensions"].remove(value)
+                    elif mutation == "substitute":
+                        value["value"] = "f" * 32
+                    else:
+                        value["dimension"] += 1
+                    self.assertEqual([[{k: v for k, v in leg.items() if k != "dimensions"}
+                                       for leg in chunk["legs"]] for chunk in original["chunks"]],
+                                     [[{k: v for k, v in leg.items() if k != "dimensions"}
+                                       for leg in chunk["legs"]] for chunk in changed["chunks"]])
+                    with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
+                        replay.verify_prepared_legs(case["manifest"], run, changed, case["dimension_values"])
+                    for format_name in ("csv-gl", "ads"):
+                        def change(rows):
+                            target = next(row for row in rows if any(
+                                tag.startswith(f"{dimension_id}:") for tag in row[13].split(";")))
+                            tags = target[13].split(";")
+                            tag = next(tag for tag in tags if tag.startswith(f"{dimension_id}:"))
+                            if mutation == "drop":
+                                tags.remove(tag)
+                            else:
+                                replacement = (f"{dimension_id}:" + "f" * 32 if mutation == "substitute"
+                                               else f"{dimension_id + 1}:{tag.split(':')[1]}")
+                                tags[tags.index(tag)] = replacement
+                            target[13] = ";".join(tags)
+                        path = Path(self.directory.name) / "kind-tampered" / kind / mutation / format_name / "GL_Detail.txt"
+                        identities = write_export_fixture(case, path, format_name, change)
+                        with self.assertRaisesRegex(replay.ReplayError, "changed dimension attribution"):
+                            replay.verify_exported_legs(case["manifest"], identities,
+                                                       case["dimension_values"], path, format_name)
+
+    def test_project_mapping_retains_declared_codes_and_refuses_conflicting_source_names(self):
+        # The pinned agencies have no projects. These are explicit boundary
+        # probes on source-shaped records, not claims about the real corpus.
+        rows = [{"fields": {**self.cases["66000"]["originals"][0],
+                            "PROJECT_ID": "0001-A", "PROJDESCR": "Published project label"}}]
+        self.assertEqual(replay.dimension_specs(rows, "project"), [
+            {"code": "0001-A", "name": "Published project label"}])
+        changed = deepcopy(rows[0])
+        changed["fields"]["PROJDESCR"] = "Conflicting label"
+        with self.assertRaisesRegex(replay.ReplayError, "conflicting source descriptions"):
+            replay.dimension_specs([*rows, changed], "project")
+        for value in (" 0001-A", "0001-A ", "0001 A"):
+            with self.subTest(value=value), self.assertRaises(replay.ReplayError):
+                replay.dimension_code(value, "project")
+        self.assertIsNone(replay.dimension_code("   ", "project"))
+        with self.assertRaisesRegex(replay.ReplayError, "no declared native mapping"):
+            replay.dimension_code("8315A", "class_funding")
 
     def test_export_oracles_match_every_original_agency_row_in_csv_and_ads(self):
         for agency, case in self.cases.items():
@@ -498,9 +621,10 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                     path = Path(self.directory.name) / "exports" / agency / format_name / "GL_Detail.txt"
                     identities = write_export_fixture(case, path, format_name)
                     checked = replay.verify_exported_legs(
-                        case["manifest"], identities, case["department_values"], path, format_name)
+                        case["manifest"], identities, case["dimension_values"], path, format_name)
                     source_rows = [r for r in case["originals"] if cents(r[source.AMOUNT_COLUMN])]
-                    tagged = sum(bool(r["DEPTID"].strip()) for r in source_rows)
+                    tagged = sum(any(r[column].strip() for column, _, _ in SOURCE_DIMENSIONS.values())
+                                 for r in source_rows)
                     self.assertEqual(checked, {
                         "format": format_name, "rows": len(source_rows), "tagged_rows": tagged,
                         "untagged_rows": len(source_rows) - tagged,
@@ -514,23 +638,24 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                 with self.subTest(format=format_name, mutation=mutation):
                     def change(rows):
                         original_money = [row[:13] for row in rows]
-                        tagged = next(row for row in rows if row[13])
-                        untagged = next(row for row in rows if not row[13])
-                        kind, value = tagged[13].split(":")
+                        tagged = next(row for row in rows if row[13].startswith("3:"))
+                        untagged = next(row for row in rows if not row[13].startswith("3:"))
+                        first, *other = tagged[13].split(";")
+                        kind, value = first.split(":")
                         if mutation == "substitute":
-                            tagged[13] = f"{kind}:{int(value, 16) ^ 1:032x}"
+                            tagged[13] = ";".join([f"{kind}:{int(value, 16) ^ 1:032x}", *other])
                         elif mutation == "drop":
-                            tagged[13] = ""
+                            tagged[13] = ";".join(other)
                         elif mutation == "invent_for_blank":
                             untagged[13] = tagged[13]
                         else:
-                            tagged[13] = f"{int(kind) + 1}:{value}"
+                            tagged[13] = ";".join([f"{int(kind) + 1}:{value}", *other])
                         self.assertEqual([row[:13] for row in rows], original_money)
                     path = Path(self.directory.name) / "mutated-exports" / format_name / mutation / "GL_Detail.txt"
                     identities = write_export_fixture(case, path, format_name, change)
                     with self.assertRaisesRegex(replay.ReplayError, "changed dimension attribution"):
                         replay.verify_exported_legs(
-                            case["manifest"], identities, case["department_values"], path, format_name)
+                            case["manifest"], identities, case["dimension_values"], path, format_name)
 
     def test_export_oracles_refuse_lost_duplicate_reordered_and_monetarily_changed_legs(self):
         case = self.cases["31500"]
@@ -551,7 +676,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                     identities = write_export_fixture(case, path, format_name, change)
                     with self.assertRaises(replay.ReplayError):
                         replay.verify_exported_legs(
-                            case["manifest"], identities, case["department_values"], path, format_name)
+                            case["manifest"], identities, case["dimension_values"], path, format_name)
 
     def test_export_oracles_require_explicit_dimension_metadata_and_complete_schema(self):
         case = self.cases["31500"]
@@ -571,7 +696,7 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
                         path.write_text(path.read_text(encoding="utf-8").replace(column, "\n", 1), encoding="utf-8")
                     with self.assertRaises(replay.ReplayError):
                         replay.verify_exported_legs(
-                            case["manifest"], identities, case["department_values"], path, format_name)
+                            case["manifest"], identities, case["dimension_values"], path, format_name)
 
     def test_chartfields_remain_distinct_and_codes_are_not_numeric_coercions(self):
         case = self.cases["66000"]
@@ -824,7 +949,7 @@ class ReplayRefusalTests(unittest.TestCase):
         native = object.__new__(replay.Native)
         specs = [{"code": "0100001", "name": "General Administration"}, {"code": "100001", "name": "Distinct code"}]
         responses = [{"data": {"value": {"dimension": "department", "code": spec["code"],
-                       "dimension_id": 17, "vid": f"{index + 1:032x}"}}} for index, spec in enumerate(specs)]
+                       "dimension_id": 3, "vid": f"{index + 1:032x}"}}} for index, spec in enumerate(specs)]
         with mock.patch.object(native, "call", side_effect=responses) as call:
             values = native.register_departments(specs)
         self.assertEqual(set(values), {"0100001", "100001"})
@@ -1011,6 +1136,30 @@ class ReplayRefusalTests(unittest.TestCase):
                     replay.tamper_ads_dimension(path)
                 self.assertEqual(path.read_bytes(), raw)
 
+    def test_targeted_dimension_tamper_changes_only_the_requested_fund_or_product(self):
+        path = self.root / "targeted-GL_Detail.txt"
+        fields = ["a" * 32, "1", "2024-04-30", "43", "12", "101000", "D",
+                  "100.00", "USD", "2", "Source", "source-entry", "",
+                  "3:" + "a" * 32 + ";5:" + "b" * 32 + ";7:" + "c" * 32]
+        raw = ("|".join(replay.ADS_GL_COLUMNS) + "\r\n" + "|".join(fields) + "\r\n").encode()
+        original = replay.parse_dimension_set(fields[-1])
+        for dimension in (5, 7):
+            with self.subTest(dimension=dimension):
+                path.write_bytes(raw)
+                result = replay.tamper_ads_dimension(path, dimension_id=dimension)
+                changed = path.read_bytes().decode().splitlines()[1].split("|")
+                self.assertEqual(changed[:13], fields[:13])
+                tags = replay.parse_dimension_set(changed[-1])
+                self.assertEqual([value for value in tags if value["dimension"] != dimension],
+                                 [value for value in original if value["dimension"] != dimension])
+                self.assertEqual(result["dimension"], dimension)
+                self.assertEqual(int(result["old_value"], 16) ^ int(result["new_value"], 16), 1)
+                self.assertTrue(path.read_bytes().endswith(b"\r\n"))
+        path.write_bytes(raw)
+        with self.assertRaisesRegex(replay.ReplayError, "no tagged row"):
+            replay.tamper_ads_dimension(path, dimension_id=4)
+        self.assertEqual(path.read_bytes(), raw)
+
     def test_ads_amount_tamper_preserves_the_dimension_extension(self):
         header = "|".join(replay.ADS_GL_COLUMNS) + "\n"
         fields = ["a" * 32, "1", "2024-04-30", "43", "12", "101000", "D",
@@ -1099,9 +1248,8 @@ class ReplayRecoveryTests(unittest.TestCase):
         """
         manifest = recovery.manifest
         originals = read_csv(self.fixture, "cp1252")
-        values = {spec["code"]: {"dimension": 17, "value": f"{i + 1:032x}"}
-                  for i, spec in enumerate(manifest["departments"])}
-        case = {"originals": originals, "department_values": values}
+        values = fixture_dimension_values(originals)
+        case = {"originals": originals, "dimension_values": values}
         account_specs = json.loads(recovery.artifacts["chart.json"])["accounts"]
         inventory = {"runs": {}, "packages": {}, "documents": []}
         recovery.remember_book(self.book_info)
@@ -1155,12 +1303,13 @@ class ReplayRecoveryTests(unittest.TestCase):
                 return {"data": {"accounts": [{**row, "leaf": True, "lower_bound": None,
                                               "upper_bound": None, "limit_scope": None}
                                              for row in account_specs]}}
-            if args == ("dimension", "list", "department"):
+            if args[:2] == ("dimension", "list"):
+                kind = args[2]
                 return {"data": {"values": [{
-                    **spec, "dimension": "department", "dimension_id": values[spec["code"]]["dimension"],
-                    "vid": values[spec["code"]]["value"], "parent": None,
+                    **spec, "dimension": kind, "dimension_id": values[kind][spec["code"]]["dimension"],
+                    "vid": values[kind][spec["code"]]["value"], "parent": None,
                     "valid_from": None, "valid_to": None,
-                } for spec in manifest["departments"]]}}
+                } for spec in manifest["dimensions"][kind]]}}
             if args[:2] == ("migrate", "show"):
                 return {"event": "migration_run", "data": inventory["runs"][args[2]]}
             if args == ("document", "list"):
@@ -1339,6 +1488,35 @@ class ReplayRecoveryTests(unittest.TestCase):
                     replay.preflight_recovery(native, recovery)
                 self.assertEqual(self.files(recovery.output), before)
 
+    def test_resume_refuses_changed_fund_definitions_and_leg_attribution_before_writing(self):
+        for change in ("code", "name", "dimension_id", "vid", "missing", "proposal"):
+            with self.subTest(change=change):
+                recovery = self.new_recovery(f"fund-{change}")
+                native, inventory = self.native_inventory(recovery)
+                original_read = native.call.side_effect
+
+                def changed_read(*args, **kwargs):
+                    response = original_read(*args, **kwargs)
+                    if args == ("dimension", "list", "fund"):
+                        response = deepcopy(response)
+                        if change == "missing":
+                            response["data"]["values"] = []
+                        elif change != "proposal":
+                            replacements = {"code": "06000", "name": "Different fund",
+                                            "dimension_id": 5, "vid": "e" * 32}
+                            response["data"]["values"][0][change] = replacements[change]
+                    return response
+
+                native.call.side_effect = changed_read
+                if change == "proposal":
+                    package = next(iter(inventory["packages"].values()))
+                    leg = package["chunks"][0]["legs"][0]
+                    next(value for value in leg["dimensions"] if value["dimension"] == 7)["value"] = "e" * 32
+                before = self.files(recovery.output)
+                with self.assertRaises(replay.ReplayError):
+                    replay.preflight_recovery(native, recovery)
+                self.assertEqual(self.files(recovery.output), before)
+
     def test_mixed_group_retry_preserves_recorded_receipt_and_stages_only_unrecorded_chunk(self):
         package = {"package_oid": "original", "run_state": "Open", "chunks": [
             {"entry_vid": "first", "proposal_digest": "reviewed-first", "recorded_at": 31},
@@ -1500,7 +1678,7 @@ class ReplayRecoveryTests(unittest.TestCase):
                 return {"data": {}}
             if args == ("chart", "list"):
                 return {"data": {"accounts": [{**row, "leaf": True} for row in chart]}}
-            if args == ("dimension", "list", "department"):
+            if args[:2] == ("dimension", "list"):
                 return {"data": {"values": []}}
             if args[:2] == ("migrate", "show"):
                 return {"event": "error", "data": {"exit": 3, "refusal_id": "FA-REF-132"}}
@@ -1509,7 +1687,7 @@ class ReplayRecoveryTests(unittest.TestCase):
             raise AssertionError(f"unexpected request: {args}")
 
         with mock.patch.object(replay.Native, "call", autospec=True, side_effect=command), \
-                mock.patch.object(replay.Native, "register_departments", return_value={}), \
+                mock.patch.object(replay.Native, "register_dimension", return_value={}), \
                 mock.patch.object(replay.Native, "document", side_effect=IntakeObserved):
             with self.assertRaises(replay.subprocess.TimeoutExpired):
                 replay.run_native(self.binary, self.binary, recovery.output,
