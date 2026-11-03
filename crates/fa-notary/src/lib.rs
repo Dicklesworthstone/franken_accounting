@@ -110,6 +110,9 @@ pub mod code {
     /// sole-source detail; v1 cannot authenticate that distinction (fa-e00).
     /// Missing or contradictory migration records also fail closed.
     pub const MIGRATION_STAGED: &str = "FA-REF-133";
+    /// A payload-complete proof, or its transport, would exceed its size
+    /// limit. A complete proof is refused, never truncated.
+    pub const PROOF_EXPORT_LIMIT: &str = "FA-REF-146";
 }
 
 /// What a checkpoint commits: the root over the first `leaf_count` leaves

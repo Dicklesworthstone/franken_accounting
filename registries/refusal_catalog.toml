@@ -1309,7 +1309,7 @@ fix = "use fa verify accumulator --json to select a recorded state; the owner ma
 [[refusal]]
 code = "FA-REF-146"
 name = "PROOF_EXPORT_LIMIT"
-owners = ["fa"]
+owners = ["fa", "fa-notary"]
 exit = "usage"
 cite = "plan §13.1–§13.3 (bounded complete portable proofs)"
 fix = "choose an earlier checkpoint or an inclusion proof, or export a binary file when only the inline transport is too small; a complete-prefix proof is never truncated"

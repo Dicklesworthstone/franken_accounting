@@ -29,7 +29,7 @@ const MAX_ENVELOPE_BYTES: usize = 92 + MAX_SELECTORS * 20;
 
 fn limit(what: &'static str) -> Refusal {
     Refusal::new(
-        "FA-REF-127",
+        code::PROOF_EXPORT_LIMIT,
         exit::USAGE,
         format!("payload-complete prefix exceeds its {what} limit"),
         "plan §13.1–§13.3 (bounded complete proofs include every required record)",
@@ -192,8 +192,8 @@ mod tests {
         let mut size = MAX_PREFIX_PROOF_BYTES - 16;
         add_bytes(&mut size, 16).unwrap();
         assert_eq!(size, MAX_PREFIX_PROOF_BYTES);
-        assert_eq!(add_bytes(&mut size, 1).unwrap_err().code, "FA-REF-127");
+        assert_eq!(add_bytes(&mut size, 1).unwrap_err().code, "FA-REF-146");
         let mut size = usize::MAX;
-        assert_eq!(add_bytes(&mut size, 1).unwrap_err().code, "FA-REF-127");
+        assert_eq!(add_bytes(&mut size, 1).unwrap_err().code, "FA-REF-146");
     }
 }

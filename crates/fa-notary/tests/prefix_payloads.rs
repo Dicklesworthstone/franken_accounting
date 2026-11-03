@@ -192,7 +192,7 @@ fn payload_and_leaf_limits_fail_before_attempting_to_decode_oversized_inputs() {
             .unwrap()
             .unwrap_err()
             .code,
-        "FA-REF-127"
+        "FA-REF-146"
     );
     let mut journal = history();
     let mut leaf = journal.leaves[0].clone();
@@ -205,7 +205,7 @@ fn payload_and_leaf_limits_fail_before_attempting_to_decode_oversized_inputs() {
             .unwrap()
             .unwrap_err()
             .code,
-        "FA-REF-127"
+        "FA-REF-146"
     );
 }
 

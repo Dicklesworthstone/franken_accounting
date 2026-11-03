@@ -303,7 +303,7 @@ fn complete_proof_size_limits_cover_excluded_records_before_decoding() {
         .balance_proof_complete(CASH, 1, Some(100), &[])
         .unwrap()
         .unwrap_err();
-    assert_eq!(refusal.code, "FA-REF-127");
+    assert_eq!(refusal.code, "FA-REF-146");
     let mut leaf = journal.leaves[0].clone();
     leaf.payload = vec![0; 8 * 1024 * 1024];
     journal.leaves = vec![leaf; 8];
@@ -312,7 +312,7 @@ fn complete_proof_size_limits_cover_excluded_records_before_decoding() {
         .balance_proof_complete(CASH, 1, None, &[])
         .unwrap()
         .unwrap_err();
-    assert_eq!(refusal.code, "FA-REF-127");
+    assert_eq!(refusal.code, "FA-REF-146");
 }
 
 #[test]

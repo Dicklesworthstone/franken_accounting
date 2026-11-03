@@ -77,7 +77,7 @@ impl RecordSuffix {
 
 fn limit(what: &'static str) -> Refusal {
     Refusal::new(
-        "FA-REF-127",
+        crate::code::PROOF_EXPORT_LIMIT,
         exit::USAGE,
         format!("record-complete suffix exceeds its {what} limit"),
         "plan §13.2 (a verified delta contains every appended journal record)",
