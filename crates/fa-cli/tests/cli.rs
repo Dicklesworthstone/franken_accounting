@@ -69,16 +69,20 @@ fn check_robot_output(args: &[&str], code: i32, stdout: &str) -> Vec<String> {
             vec![events.len() - 1],
             "a failure emits exactly one error event, last: args={args:?}\n{stdout}"
         );
-        let last = stdout.lines().last().unwrap_or_default();
+        // The error event's own fields, parsed: canonical key order puts a
+        // `detail` (which may carry a nested refusal's `exit`) before them.
+        let last = json::parse(stdout.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        let data = last.get("data");
         assert_eq!(
-            field(last, "exit"),
-            Some(code.to_string().as_str()),
-            "the error event names the exit code: args={args:?}"
+            data.and_then(|data| data.get("exit")),
+            Some(&Json::Int(i128::from(code))),
+            "the error event names the exit code: args={args:?}\n{stdout}"
         );
         assert_eq!(
-            field(last, "class"),
+            data.and_then(|data| data.get("class"))
+                .and_then(Json::as_str),
             Some(exit_class(code).as_str()),
-            "the error event names the exit's class: args={args:?}"
+            "the error event names the exit's class: args={args:?}\n{stdout}"
         );
     }
     events

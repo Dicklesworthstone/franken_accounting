@@ -243,6 +243,7 @@ pub(super) fn emit(
     files: &Files,
     args: &Args,
     plan: &BatchPlan,
+    capability: &Capability,
 ) -> Result<(), Fail> {
     let encode = |error| Fail::Internal(format!("encode admitted batch plan: {error}"));
     let bytes = plan.canonical_bytes().map_err(encode)?;
@@ -411,15 +412,7 @@ pub(super) fn emit(
                 command.push_str(&format!(" {flag} {}", quote(value)));
             }
         }
-        for grant in args.flag_all("--grant") {
-            command.push_str(&format!(" --grant {}", quote(grant)));
-        }
-        if plan.prepared_entries().iter().any(|entry| {
-            entry.proposal.base_totals.is_some() && entry.proposal.class != EntryClass::REVERSAL
-        }) && !args.flag_all("--grant").contains(&"read")
-        {
-            command.push_str(" --grant 'read'");
-        }
+        command.push_str(&super::commit_grants(capability));
         command.push_str(" --json");
         command
     };

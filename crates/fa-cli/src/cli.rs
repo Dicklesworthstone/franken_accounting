@@ -2972,6 +2972,19 @@ fn operator_command(args: &Args, command: &str) -> String {
     command
 }
 
+/// The `--grant` arguments with which `fa commit`, which always holds `post`,
+/// rebuilds the capability a plan was admitted under. A plan binds that
+/// capability's commitment, so the suggested commit names exactly the planned
+/// operations: one missing or one extra is refused as a different capability.
+fn commit_grants(planned: &Capability) -> String {
+    planned
+        .ops()
+        .iter()
+        .filter(|op| **op != fa::Op::Post)
+        .map(|op| format!(" --grant {}", quoted_argument(op.name())))
+        .collect()
+}
+
 const OPERATOR_PLAN_GUIDANCE: &str = "replace <same-token-file> with the original token file; reuse the same holder capability and forward data.bytes on stdin when --plan is -; attach the required independent approvals";
 
 fn command_name(verb: &str, subcommand: Option<&str>) -> String {
@@ -7766,7 +7779,7 @@ fn post_batch_document(
     }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let plan = book.plan_batch(batch, &capability)??;
-        return batch_plan::emit(out, &book, &ctx.files, args, &plan);
+        return batch_plan::emit(out, &book, &ctx.files, args, &plan, &capability);
     }
     let posted = book.post_batch(batch, &capability)??;
     out.at_book(&book)?;
@@ -9925,28 +9938,11 @@ pub(crate) fn emit_post_plan(
                 command.push_str(&format!(" {flag} {}", quoted(value)));
             }
         }
-        for grant in args.flag_all("--grant") {
-            command.push_str(&format!(" --grant {}", quoted(grant)));
-        }
-        if ((proposal.base_totals.is_some() && proposal.class != EntryClass::REVERSAL)
-            || args
-                .positional
-                .first()
-                .is_some_and(|verb| verb == "allocate"))
-            && !args.flag_all("--grant").contains(&"read")
-        {
-            command.push_str(" --grant 'read'");
-        }
-        if proposal.class == EntryClass::CLOSING {
-            // The owner close command explicitly holds these operations.
-            // A restored plan never grants them; the commit caller supplies
-            // the same capability through these ordinary command arguments.
-            for grant in ["read", "close"] {
-                if !args.flag_all("--grant").contains(&grant) {
-                    command.push_str(&format!(" --grant {}", quoted(grant)));
-                }
-            }
-        }
+        // The verb's implied operations (a disposal's or allocation's read,
+        // a year-end close's read and close) and every --grant: a restored
+        // plan never grants them, so the commit caller supplies the same
+        // capability through these ordinary command arguments.
+        command.push_str(&commit_grants(capability));
         command.push_str(" --json");
         command
     };
@@ -10146,6 +10142,7 @@ fn emit_replacement_plan(
     files: &Files,
     args: &Args,
     plan: &ReplacementPlan,
+    capability: &Capability,
 ) -> Result<(), Fail> {
     let encode = |e| Fail::Internal(format!("encode admitted correction plan: {e}"));
     let bytes = plan.canonical_bytes().map_err(encode)?;
@@ -10257,14 +10254,7 @@ fn emit_replacement_plan(
                 command.push_str(&format!(" {flag} {}", quoted(value)));
             }
         }
-        for grant in args.flag_all("--grant") {
-            command.push_str(&format!(" --grant {}", quoted(grant)));
-        }
-        if plan.replacement().proposal().base_totals.is_some()
-            && !args.flag_all("--grant").contains(&"read")
-        {
-            command.push_str(" --grant 'read'");
-        }
+        command.push_str(&commit_grants(capability));
         command.push_str(" --json");
         command
     };

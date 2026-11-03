@@ -8,11 +8,10 @@
 //! establishes separately. A proof never authenticates its own anchor, and
 //! no artifact here carries document receipts. The exported checkpoint is a
 //! candidate trust anchor, never its own proof of authenticity.
-//! Balance exports automatically use migration-aware v2 when necessary, and
-//! payload-complete v3 when every prefix entry is disclosed and every scope
-//! selector can be independently derived. Scopes without migration candidates
-//! retain their exact v1 wire bytes. Legacy notary v1/v2 APIs remain
-//! available, but are not used to claim recomputation of a complete proof.
+//! Balance exports are always payload-complete v3 (`prove_balance_complete`,
+//! refused rather than truncated). Legacy notary v1/v2 balance APIs remain
+//! available, but this export never uses them to claim recomputation of a
+//! complete proof.
 //! PrefixWithRecords exports the native v2 journal witness without requiring
 //! any account, unit, or migration-balance policy. Prefix retains v1 bytes.
 //! State exports the full canonical AccumulatorState, including its evidence
@@ -151,6 +150,23 @@ fn select(states: &[StoredState], oid: Option<Oid>) -> Result<StoredState, Refus
         })
 }
 
+/// A consistency proof or suffix runs from a retained state to a later one.
+/// Swapped states are a request error, not evidence of a rewritten history.
+fn misordered(state: &StoredState, next: &StoredState) -> Option<Refusal> {
+    (next.state.through_seq < state.state.through_seq).then(|| {
+        Refusal::new(
+            fa_journal::refusal::code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "--next-state (through sequence {}) precedes --state (through sequence {})",
+                next.state.through_seq.0, state.state.through_seq.0
+            ),
+            "plan §13.2 (a consistency proof extends a retained state to a later one)",
+            "pass the earlier recorded state as --state and the later one as --next-state",
+        )
+    })
+}
+
 /// The recorded state chain, newest first, once the export is admitted and
 /// every state is recomputed from the journal.
 fn admitted_chain<V: Vfs + Clone>(
@@ -243,6 +259,9 @@ pub(crate) fn export_suffix<V: Vfs + Clone>(
         Ok(state) => state,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if let Some(refusal) = misordered(&checkpoint, &next_checkpoint) {
+        return Ok(Err(refusal));
+    }
     let suffix = match fa_notary::prefix::prove_suffix_with_records(
         db,
         book,
@@ -294,6 +313,9 @@ pub(crate) fn export<V: Vfs + Clone>(
                 Ok(state) => state,
                 Err(refusal) => return Ok(Err(refusal)),
             };
+            if let Some(refusal) = misordered(&checkpoint, &next) {
+                return Ok(Err(refusal));
+            }
             let proof =
                 fa_notary::prove_consistency(db, book, &checkpoint.state.statement(), &next.state)?;
             next_checkpoint = Some(next);
@@ -399,9 +421,9 @@ pub struct Witnessed {
 /// The holder needs current read and witness authority, and the chain must
 /// recompute from the journal. A witness never signs a history that does not
 /// extend the one it signed last: given `previous` (its last cosigned
-/// checkpoint, carrying its own valid signature), the book must prove, and
-/// the independent verifier must accept, that this state extends that
-/// statement; a rollback or a rewritten history is refused
+/// checkpoint, carrying its own valid signature), the book must prove that
+/// this state extends that statement (an outsider re-checks the extension
+/// with `fa-verify consistency`); a rollback or a rewritten history is refused
 /// (`NOT_EXTENDED`, exit 8) and nothing is signed. Nothing is written to
 /// the book: the cosignature is the witness's to keep and distribute.
 #[allow(clippy::too_many_arguments)]
@@ -555,12 +577,17 @@ pub(crate) fn witness<V: Vfs + Clone>(
         // The book's own signatures come from the book, never from the
         // file: whatever `onto` claims under the book's key ids is replaced,
         // so a stripped or altered copy still carries the book's signature.
+        // Whatever it claims under this witness's key id is dropped too, so
+        // the cosignature below is always freshly signed; cosign keeps an
+        // existing entry, and Ed25519's determinism gives a genuine one the
+        // same bytes again.
         Some(mut onto) if onto.body == decoded.body => {
             onto.signatures.retain(|o| {
-                !decoded
-                    .signatures
-                    .iter()
-                    .any(|d| (d.signer_key_id, d.scheme) == (o.signer_key_id, o.scheme))
+                (o.signer_key_id, o.scheme) != (witness_key_id, witness.scheme())
+                    && !decoded
+                        .signatures
+                        .iter()
+                        .any(|d| (d.signer_key_id, d.scheme) == (o.signer_key_id, o.scheme))
             });
             onto.signatures.extend(decoded.signatures);
             onto.signatures.sort_by_key(|s| (s.signer_key_id, s.scheme));

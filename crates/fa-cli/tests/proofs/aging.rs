@@ -2104,6 +2104,21 @@ fn receivable_maturity_refuses_invalid_terms_without_posting() {
             r#"[{"ordinal":0,"status":"disputed"}]"#,
             "a disputed obligation names its reason_code",
         ),
+        (
+            "misspelled-installments",
+            r#"[{"ordinal":0,"status":"disputed","reason_code":7,"instalments":[{"due_date":"2026-03-31","amount":"100.00 USD"}]}]"#,
+            "obligation_maturity[0]: unknown or repeated field `instalments`",
+        ),
+        (
+            "reason-on-contractual",
+            r#"[{"ordinal":0,"status":"contractual","reason_code":7,"installments":[{"due_date":"2026-03-31","amount":"100.00 USD"}]}]"#,
+            "obligation_maturity[0]: reason_code applies only to a disputed obligation",
+        ),
+        (
+            "unknown-installment-field",
+            r#"[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"100.00 USD","currency":"USD"}]}]"#,
+            "obligation_maturity[0].installments[0]: unknown or repeated field `currency`",
+        ),
     ] {
         let intent = receivable_invoice(
             &fixture,

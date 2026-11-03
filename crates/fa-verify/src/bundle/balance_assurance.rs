@@ -163,10 +163,14 @@ fn genuine_prefix_closure_preserves_the_pinned_bundle_and_detached_receipt() {
     let report = verify_bundle(&bytes, &[key()], Some(&fixture("receipt"))).unwrap();
     assert!(report.verified(), "{:?}", report.checks);
     assert_eq!(balance_check(&report).scope, SCOPE_RECOMPUTATION);
+    let subject = &balance_check(&report).subject;
     assert!(
-        balance_check(&report)
-            .subject
-            .contains("every prefix selector")
+        subject.contains("every prefix entry selector independently rebuilt from its payload"),
+        "{subject}"
+    );
+    assert!(
+        subject.contains("non-entry leaves rest on their signed kind"),
+        "the premise the recomputation rests on is named: {subject}"
     );
     assert!(report.receipt.is_some());
 }

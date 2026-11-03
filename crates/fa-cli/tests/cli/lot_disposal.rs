@@ -25,6 +25,30 @@ fn ok(book: &Path, step: &str, args: &[&str]) -> String {
     out
 }
 
+/// The plan's suggested commit as the argv `run` takes (it supplies
+/// `--book`). A suggestion must commit as written: the plan binds its
+/// capability, so a missing `--grant` is a different capability.
+fn suggested_commit(plan: &str) -> Vec<String> {
+    let line = json::parse(plan.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+    let command = arr(&line, "next_actions")
+        .first()
+        .map(|action| text(action, "command").to_string())
+        .unwrap_or_default();
+    let mut words = command
+        .split_whitespace()
+        .map(|word| word.trim_matches('\'').to_string());
+    assert_eq!(words.next().as_deref(), Some("fa"), "{command}");
+    let mut argv = Vec::new();
+    while let Some(word) = words.next() {
+        if word == "--book" {
+            words.next();
+        } else {
+            argv.push(word);
+        }
+    }
+    argv
+}
+
 /// A launch-bound session receives a batch on stdin (`--intent -`), never
 /// as a host path (fa-yha).
 fn ok_bound_batch(book: &Path, step: &str, token: &str, batch: &str, draft: &str) -> String {
@@ -209,11 +233,29 @@ fn disposal_review_native_plan_commit_retry_and_weighted_average_remainder_work_
     );
     assert_eq!(field(&dry_run, "event"), Some("plan"));
     assert_eq!(frontier(&book), before);
-    let committed = ok(
-        &book,
-        "commit plan",
-        &["commit", "--plan", &plan_path, "--grant", "read", "--json"],
+    let suggested = suggested_commit(&dry_run);
+    assert_eq!(
+        suggested,
+        [
+            "commit",
+            "--plan",
+            plan_path.as_str(),
+            "--grant",
+            "read",
+            "--json"
+        ],
+        "the disposal's implied read is part of the planned capability"
     );
+    let (code, out, err) = run(
+        &book,
+        "commit without the implied read",
+        &["commit", "--plan", &plan_path, "--json"],
+    );
+    assert_eq!(code, 6, "{out}\n{err}");
+    assert!(out.contains("acting capability"), "{out}");
+    assert_eq!(frontier(&book), before);
+    let suggested: Vec<&str> = suggested.iter().map(String::as_str).collect();
+    let committed = ok(&book, "commit the suggested plan", &suggested);
     assert_eq!(field(&committed, "event"), Some("plan_committed"));
     let after = frontier(&book);
     let repeated = ok(
@@ -955,11 +997,21 @@ fn inline_disposal_reviews_plan_commit_and_retry_one_atomic_batch() -> std::io::
     );
     assert_eq!(field(&preview, "event"), Some("batch_plan"));
     assert_eq!(frontier(&book), before);
-    let committed = ok(
-        &book,
-        "commit both reviewed disposals",
-        &["commit", "--plan", &plan, "--grant", "read", "--json"],
+    let suggested = suggested_commit(&preview);
+    assert_eq!(
+        suggested,
+        [
+            "commit",
+            "--plan",
+            plan.as_str(),
+            "--grant",
+            "read",
+            "--json"
+        ],
+        "reviewed disposal members imply read"
     );
+    let suggested: Vec<&str> = suggested.iter().map(String::as_str).collect();
+    let committed = ok(&book, "commit both reviewed disposals", &suggested);
     assert_eq!(field(&committed, "event"), Some("batch_plan_committed"));
     assert_eq!(
         doc(&committed).get("already_recorded"),

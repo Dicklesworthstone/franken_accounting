@@ -5110,11 +5110,11 @@ impl Book {
     /// observed, never a statement about the ledger's content. The holder
     /// needs current read and witness authority. Given `previous`, the
     /// cosigned checkpoint this witness key produced last, the book must
-    /// prove (and the independent verifier accept) that this state extends
-    /// it; a rollback or rewritten history is refused (`NOT_EXTENDED`) and
-    /// nothing is signed. With `onto`, the signature is added to that
-    /// already-cosigned checkpoint of the same state. Nothing is written to
-    /// the book.
+    /// prove that this state extends it (an outsider re-checks that with
+    /// `fa-verify consistency`); a rollback or rewritten history is refused
+    /// (`NOT_EXTENDED`) and nothing is signed. With `onto`, the signature is
+    /// added to that already-cosigned checkpoint of the same state. Nothing
+    /// is written to the book.
     pub fn witness_checkpoint(
         &self,
         principal: VId,

@@ -20,6 +20,7 @@ use fa_money::{Amount, Side};
 use fa_time::DateDay;
 
 use crate::cli::{Fail, usage};
+use crate::fx::strict_object;
 use crate::json::Json;
 
 pub(crate) const USAGE: &str = r#""obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]: ordinal is the 0-based index of a payable credit leg or a receivable debit leg. Credit-only schedules stay extension 33 v1; naming a debit leg selects v2. "receivable_maturity" is debit legs only and always v2. Never supply both fields. Status is contractual (installments in the leg's unit, totalling its amount), disputed (with "reason_code") or missing_maturity (no installments)"#;
@@ -54,6 +55,12 @@ pub(crate) fn declare_terms(
     let mut terms = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         let what = format!("{field}[{i}]");
+        strict_object(
+            item,
+            &["ordinal", "status", "reason_code", "installments"],
+            &what,
+            USAGE,
+        )?;
         let ordinal = match item.get("ordinal") {
             Some(Json::Int(n)) => u16::try_from(*n)
                 .map_err(|_| usage(format!("{what}: ordinal {n} is out of range"), USAGE))?,
@@ -105,6 +112,13 @@ pub(crate) fn declare_terms(
                 ));
             }
         };
+        if item.get("reason_code").is_some() && !matches!(status, ObligationStatus::Disputed { .. })
+        {
+            return Err(usage(
+                format!("{what}: reason_code applies only to a disputed obligation"),
+                USAGE,
+            ));
+        }
         let mut installments = Vec::new();
         if let Some(list) = item.get("installments") {
             let list = list
@@ -112,6 +126,7 @@ pub(crate) fn declare_terms(
                 .ok_or_else(|| usage(format!("{what}: installments must be an array"), USAGE))?;
             for (j, installment) in list.iter().enumerate() {
                 let at = format!("{what}.installments[{j}]");
+                strict_object(installment, &["due_date", "amount"], &at, USAGE)?;
                 let due_text = installment
                     .get("due_date")
                     .and_then(Json::as_str)
