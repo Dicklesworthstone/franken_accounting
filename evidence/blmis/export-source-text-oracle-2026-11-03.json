@@ -1,0 +1,157 @@
+{
+  "scope": "Comparator-only fault injection using explicit unit-input receipt identities; no native execution is simulated or claimed.",
+  "base_commit": "6a2982eef9570f17a028670ca9b4f256cbb74df3",
+  "positive_cases": 3,
+  "negative_cases": 18,
+  "before_false_accepts": 18,
+  "after_false_accepts": 0,
+  "results": [
+    {
+      "profile": "csv-gl",
+      "changed_field": "unchanged",
+      "leg": null,
+      "before": "accepted",
+      "after": "accepted"
+    },
+    {
+      "profile": "csv-gl",
+      "changed_field": "description",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "csv-gl",
+      "changed_field": "memo",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "csv-gl",
+      "changed_field": "migrated_from",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "csv-gl",
+      "changed_field": "description",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "csv-gl",
+      "changed_field": "memo",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "csv-gl",
+      "changed_field": "migrated_from",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "unchanged",
+      "leg": null,
+      "before": "accepted",
+      "after": "accepted"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "description",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "memo",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "migrated_from",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "description",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "memo",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v2",
+      "changed_field": "migrated_from",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "unchanged",
+      "leg": null,
+      "before": "accepted",
+      "after": "accepted"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "description",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "memo",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "migrated_from",
+      "leg": 0,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "description",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "memo",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    },
+    {
+      "profile": "ads-v3",
+      "changed_field": "migrated_from",
+      "leg": 1,
+      "before": "accepted",
+      "after": "refused"
+    }
+  ]
+}

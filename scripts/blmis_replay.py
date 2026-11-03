@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 
 import blmis_source as source
 import public_ledger as ledger
@@ -181,7 +182,12 @@ def verify_principal_analysis(native: ledger.Native, rows: list[dict]) -> dict:
 
 def verify_source_export(path: Path, format_name: str, rows: list[dict],
                          posted: dict[str, dict], party: dict) -> dict:
-    """Match every exported leg, including contra legs, to original source rows."""
+    """Match every exported leg and its source citation to the original rows."""
+    absent_provenance = ""
+    if format_name == "ads":
+        certificate = tomllib.loads((path.parent / "ADS_Coordinate_Certificate.toml").read_text(encoding="utf-8"))
+        if certificate.get("format") == "aicpa_ads_gl_v3":
+            absent_provenance = r"\N"
     monetary = [row for row in rows if row["principal_movement_cents"]]
     ledger.require(set(posted) == {row["row_id"] for row in monetary}, "export/source receipt coverage differs")
     identities = [posted[row["row_id"]]["vid"] for row in monetary]
@@ -216,6 +222,16 @@ def verify_source_export(path: Path, format_name: str, rows: list[dict],
                        and actual["amount"] == source.money(abs(signed))
                        and actual["currency"] == "USD" and actual["unit_scale"] == "2",
                        f"{format_name} changed source monetary fields for {row['row_id']}")
+        # The pinned exhibit's descriptions and generated citation memos need
+        # no ADS text escapes, so both ADS versions retain these exact bytes.
+        # Native certificate replay authenticates stored text; this independent
+        # comparison also rejects text lost or changed before it was stored.
+        expected_memo = (f"analysis counterpart; {source.SOURCE_ID} Exhibit {row.get('exhibit', 'B-2')} "
+                         f"PDF p{row['pdf_page']} line {row['source_line']}")
+        ledger.require(actual["description"] == row["description"]
+                       and actual["memo"] == expected_memo
+                       and actual["migrated_from"] == absent_provenance,
+                       f"{format_name} changed source description, citation memo or original-entry provenance for {row['row_id']}")
         seen.add(key)
     ledger.require(seen == set(expected), "export omitted source principal or counterpart legs")
     return {"format": format_name, "rows": len(seen), "tagged_rows": len(monetary),

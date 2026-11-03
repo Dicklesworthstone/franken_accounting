@@ -130,9 +130,11 @@ def export_test_input(raw_rows, path, format_name, mutate=None):
         contra = ("BLMIS-CASH", cash) if cash else ("BLMIS-TRANSFER", transfer)
         for ordinal, (account, signed) in enumerate([("BLMIS-1ZA192", -delta), contra], 1):
             receipt = posted[row["row_id"]]
+            memo = (f"analysis counterpart; SRC-BLM-001 Exhibit {row.get('exhibit', 'B-2')} "
+                    f"PDF p{row['pdf_page']} line {row['source_line']}")
             records.append([receipt["vid"], str(ordinal), source_date(row), str(receipt["recorded_at"]),
                             "1", account, "D" if signed > 0 else "C", amount(abs(signed)).split()[0],
-                            "USD", "2", row["description"], "", "source evidence retained",
+                            "USD", "2", row["description"], r"\N" if format_name == "ads" else "", memo,
                             "12:" + "a" * 32 if ordinal == 1 else ""])
     if mutate is not None:
         mutate(records)
@@ -351,6 +353,28 @@ class BlmisReplayTests(unittest.TestCase):
                     path = Path(self.directory.name) / "party-tampered-exports" / format_name / mutation / "GL_Detail.txt"
                     posted = export_test_input(self.originals, path, format_name, change)
                     with self.assertRaisesRegex(replay.ledger.ReplayError, "changed party attribution"):
+                        replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
+
+    def test_export_comparator_refuses_lost_source_text_and_invented_provenance(self):
+        for format_name in ("csv-gl", "ads"):
+            for leg in (0, 1):
+                for field, index, value in (
+                    ("description", 10, "SOURCE DESCRIPTION LOST"),
+                    ("memo", 12, ""),
+                    ("other_source_citation", 12, "analysis counterpart; SRC-BLM-OTHER Exhibit B-2 PDF p31 line 16"),
+                    ("migrated_from", 11, "invented migration provenance"),
+                ):
+                    def change(records):
+                        before = deepcopy(records)
+                        records[leg][index] = value
+                        self.assertNotEqual(before[leg][index], records[leg][index])
+                        self.assertEqual([row[:10] + row[13:] for row in records],
+                                         [row[:10] + row[13:] for row in before],
+                                         "only the selected source text field may change")
+                    path = Path(self.directory.name) / "text-tampered-exports" / format_name / str(leg) / field / "GL_Detail.txt"
+                    posted = export_test_input(self.originals, path, format_name, change)
+                    with self.subTest(format=format_name, leg=leg, field=field), \
+                            self.assertRaisesRegex(replay.ledger.ReplayError, "source description, citation memo or original-entry provenance"):
                         replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
 
     def test_export_comparator_checks_counterpart_money_receipts_dates_and_row_coverage(self):
@@ -986,39 +1010,63 @@ class GlantzSixAccountReplayTests(unittest.TestCase):
             transfer = cents(row["transfers_in_literal"]) + cents(row["transfers_out_literal"])
             contra = ("BLMIS-CASH", cash) if cash else ("BLMIS-TRANSFER", transfer)
             for ordinal, (account, value) in enumerate([(f"BLMIS-{row['account']}", -delta), contra], 1):
+                memo = (f"analysis counterpart; SRC-BLM-001 Exhibit {row['exhibit']} "
+                        f"PDF p{row['pdf_page']} line {row['source_line']}")
                 base_records.append([receipt["vid"], str(ordinal), source_date(row), str(receipt["recorded_at"]),
                                      "1", account, "D" if value > 0 else "C", amount(abs(value)).split()[0],
-                                     "USD", "2", row["description"], "", "retained source evidence",
+                                     "USD", "2", row["description"], "", memo,
                                      "12:" + parties[row["account"]]["value"] if ordinal == 1 else ""])
         self.assertEqual(len(base_records), 744)
-        for mutation in (None, "swap_party", "omit_account", "tag_clearing", "money", "extra"):
-            records = deepcopy(base_records)
-            if mutation == "swap_party":
-                records[0][13] = "12:" + parties["1ZA192"]["value"]
-            elif mutation == "omit_account":
-                ids = {receipt["vid"] for row_id, receipt in self.posted.items() if ":1ZR176:" in row_id}
-                records = [record for record in records if record[0] not in ids]
-            elif mutation == "tag_clearing":
-                records[1][13] = records[0][13]
-            elif mutation == "money":
-                records[-1][7] = f"{Decimal(records[-1][7]) + Decimal('0.01'):.2f}"
-            elif mutation == "extra":
-                records.append(list(records[-1]))
-            path = Path(self.directory.name) / f"six-export-{mutation}.csv"
-            with path.open("w", encoding="utf-8", newline="") as stream:
-                stream.write("# fa_csv_gl_v1|book=unit-only-six-account|dimension_encoding=fa-dimension-ids-v1\n")
-                writer = csv.writer(stream, lineterminator="\n")
-                writer.writerow(replay.ledger.CSV_GL_COLUMNS)
-                writer.writerows(records)
-            with self.subTest(mutation=mutation):
-                if mutation is None:
-                    result = replay.verify_source_export(path, "csv-gl", self.ordered, self.posted, parties)
-                    self.assertEqual(result["rows"], 744)
-                    self.assertEqual(result["tagged_rows"], 372)
-                    self.assertEqual(result["parties"], sorted(item["code"] for item in parties.values()))
+        for format_name in ("csv-gl", "ads"):
+            for mutation in (None, "swap_party", "omit_account", "tag_clearing", "money", "extra",
+                             "description", "memo", "other_exhibit", "migrated_from"):
+                records = deepcopy(base_records)
+                if format_name == "ads":
+                    for record in records:
+                        record[11] = r"\N"
+                if mutation == "swap_party":
+                    records[0][13] = "12:" + parties["1ZA192"]["value"]
+                elif mutation == "omit_account":
+                    ids = {receipt["vid"] for row_id, receipt in self.posted.items() if ":1ZR176:" in row_id}
+                    records = [record for record in records if record[0] not in ids]
+                elif mutation == "tag_clearing":
+                    records[1][13] = records[0][13]
+                elif mutation == "money":
+                    records[-1][7] = f"{Decimal(records[-1][7]) + Decimal('0.01'):.2f}"
+                elif mutation == "extra":
+                    records.append(list(records[-1]))
+                elif mutation == "description":
+                    records[-1][10] = "unattributed native replacement"
+                elif mutation == "memo":
+                    records[-1][12] = ""
+                elif mutation == "other_exhibit":
+                    self.assertIn("Exhibit B-6", records[-1][12])
+                    records[-1][12] = records[-1][12].replace("Exhibit B-6", "Exhibit B-2")
+                elif mutation == "migrated_from":
+                    records[-1][11] = "invented migration provenance"
+                path = Path(self.directory.name) / f"six-export-{format_name}-{mutation}" / "GL_Detail.txt"
+                path.parent.mkdir()
+                if format_name == "csv-gl":
+                    with path.open("w", encoding="utf-8", newline="") as stream:
+                        stream.write("# fa_csv_gl_v1|book=unit-only-six-account|dimension_encoding=fa-dimension-ids-v1\n")
+                        writer = csv.writer(stream, lineterminator="\n")
+                        writer.writerow(replay.ledger.CSV_GL_COLUMNS)
+                        writer.writerows(records)
                 else:
-                    with self.assertRaises(replay.ledger.ReplayError):
-                        replay.verify_source_export(path, "csv-gl", self.ordered, self.posted, parties)
+                    (path.parent / "ADS_Coordinate_Certificate.toml").write_text(
+                        'schema_version = 1\nformat = "aicpa_ads_gl_v3"\ndimension_encoding = "fa-dimension-ids-v1"\n',
+                        encoding="utf-8")
+                    path.write_text("|".join(replay.ledger.ADS_GL_COLUMNS) + "\n"
+                                    + "".join("|".join(record) + "\n" for record in records), encoding="utf-8")
+                with self.subTest(format=format_name, mutation=mutation):
+                    if mutation is None:
+                        result = replay.verify_source_export(path, format_name, self.ordered, self.posted, parties)
+                        self.assertEqual(result["rows"], 744)
+                        self.assertEqual(result["tagged_rows"], 372)
+                        self.assertEqual(result["parties"], sorted(item["code"] for item in parties.values()))
+                    else:
+                        with self.assertRaises(replay.ledger.ReplayError):
+                            replay.verify_source_export(path, format_name, self.ordered, self.posted, parties)
 
     def test_all_account_cli_requires_native_binaries_and_never_reports_comparator_tests_as_execution(self):
         output = Path(self.directory.name) / "six-missing-binary"
