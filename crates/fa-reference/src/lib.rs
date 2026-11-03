@@ -2109,10 +2109,11 @@ impl Oracle {
         }
         let prev_corroborated = self.latest_corroborated_tick();
         let prev_anchor = prev_corroborated.or_else(|| self.latest_tick());
+        // An uncorroborated first reading cannot block an earlier honest
+        // baseline. Bound forward skew here; trusted ordering is checked below.
         let effective_ok = monotonic_ok
-            && prev_anchor.is_none_or(|prev| {
-                observed_utc_ns >= prev && observed_utc_ns.saturating_sub(prev) <= MAX_CLOCK_SKEW_NS
-            });
+            && prev_anchor
+                .is_none_or(|prev| observed_utc_ns.saturating_sub(prev) <= MAX_CLOCK_SKEW_NS);
         let order_anchor = prev_corroborated.or_else(|| {
             if effective_ok {
                 None
@@ -5194,6 +5195,24 @@ mod tests {
         let swept = o.sweep_batch(2).unwrap().unwrap();
         assert_eq!(swept.tick, 1_020);
         assert_eq!(swept.expired, vec![(1, 3)]);
+    }
+
+    #[test]
+    fn an_uncorroborated_first_tick_cannot_block_an_honest_baseline() {
+        let future = 1_000 + MAX_CLOCK_SKEW_NS + 500;
+        for recovered in [1_000, future] {
+            let mut oracle = Oracle::new(FiscalCalendar::monthly("cal", 1, 1).unwrap());
+            assert_eq!(oracle.record_tick_with(future, false), Ok(0));
+            assert_eq!(oracle.latest_tick(), Some(future));
+            assert_eq!(oracle.latest_corroborated_tick(), None);
+
+            assert_eq!(oracle.record_tick(recovered), Ok(1));
+            assert_eq!(oracle.latest_tick(), Some(recovered));
+            assert_eq!(oracle.latest_corroborated_tick(), Some(recovered));
+            assert_eq!(oracle.record_tick(recovered), Err(code::TICK_ORDER));
+            assert_eq!(oracle.record_tick(recovered + 1), Ok(2));
+            assert_eq!(oracle.latest_corroborated_tick(), Some(recovered + 1));
+        }
     }
 
     #[test]

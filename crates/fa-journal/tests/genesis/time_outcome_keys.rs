@@ -29,6 +29,54 @@ fn key_vid(h: &Harness, key: &[u8]) -> VId {
 }
 
 #[test]
+fn an_uncorroborated_first_tick_cannot_block_an_honest_baseline() {
+    let future = 1_000 + fa_model::limits::MAX_CLOCK_SKEW_NS + 500;
+    for recovered in [1_000, future] {
+        let mut h = harness();
+        let mut first = request(&h, b"uncorroborated-first");
+        first.observed_utc_ns = future;
+        first.monotonic_ok = false;
+        let first = tick(&mut h, first).unwrap();
+        let retained = read_entry(&h.db, first.entry_ref.vid).unwrap().unwrap();
+        assert_eq!(latest_tick(&h.db).unwrap(), Some(first.tick));
+        assert_eq!(
+            fa_journal::sweep::latest_corroborated_tick(&h.db, None).unwrap(),
+            None
+        );
+
+        let mut honest = request(&h, b"honest-baseline");
+        honest.observed_utc_ns = recovered;
+        let baseline = tick(&mut h, honest).unwrap();
+        assert_eq!(baseline.tick.observed_utc_ns, recovered);
+        assert_eq!(latest_tick(&h.db).unwrap(), Some(baseline.tick));
+        assert_eq!(
+            fa_journal::sweep::latest_corroborated_tick(&h.db, None).unwrap(),
+            Some(baseline.tick)
+        );
+        assert_eq!(
+            read_entry(&h.db, first.entry_ref.vid).unwrap().unwrap(),
+            retained
+        );
+
+        let mut duplicate = request(&h, b"same-honest-instant");
+        duplicate.observed_utc_ns = recovered;
+        let before = h.db.frontier().unwrap();
+        let refusal = tick(&mut h, duplicate).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-094", exit::REFUSAL));
+        assert_eq!(h.db.frontier().unwrap(), before);
+
+        h.tick(recovered + 1, b"following-honest-tick", 152);
+        assert_eq!(
+            fa_journal::sweep::latest_corroborated_tick(&h.db, None)
+                .unwrap()
+                .unwrap()
+                .observed_utc_ns,
+            recovered + 1
+        );
+    }
+}
+
+#[test]
 fn ticks_refuse_keys_owned_by_target_derived_postings_and_outer_batches() {
     let mut h = harness();
     let source = h.proposal(

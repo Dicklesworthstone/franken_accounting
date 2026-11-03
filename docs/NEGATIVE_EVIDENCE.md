@@ -2237,3 +2237,21 @@ approval, zero-publication and exact-retry checks. No production predicate,
 amount, refusal, gate or registry changes. The reordered complete CLI
 target still requires native execution; the prior 157 passes do not
 qualify its previously unreached grouped-stage checks.
+
+## 2026-11-03 — The reference clock rejected recovery before its first corroborated tick
+
+Source review of the remaining fa-yysv time-axis concern found that the
+reference oracle imposed an extra `observed_utc_ns >= prev_anchor` condition
+when calculating corroboration. The kernel permits an honest first baseline
+at or before a previously recorded uncorroborated instant. The oracle instead
+treated an earlier honest reading as uncorroborated and rejected it against
+that future instant, so a differential could disagree about clock recovery.
+
+The oracle now applies the registered forward-skew bound to the saturating
+elapsed interval; ordering still compares against the last corroborated tick.
+Matching reference and kernel controls exercise earlier and equal first
+baselines, reject a repeated trusted instant without publication, and admit
+the next honest tick. The kernel test retains the original uncorroborated
+record byte-for-byte. No kernel admission, hold-anchor policy, registered
+skew limit, original test or gate is weakened. Native execution and the
+old-predicate negative control are pending; source agreement is not a pass.
