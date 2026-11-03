@@ -414,6 +414,47 @@
     "source_tree": "69a1c4b1f7bbf029ad5fca1582e29fbe081c26ff",
     "tracked_worktree_clean": true
   },
+  "official_tier0_d8a00109": {
+    "actual_exit_code": 0,
+    "command": "TIER0_JOBS=1 bash scripts/tier0.sh --require-clean --log-dir /workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109",
+    "commit": "d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6",
+    "exec_session_id": 95808,
+    "local_tier0_note": "tier0 v1\nverdict=pass\ncommit=d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6\ntree=69a1c4b1f7bbf029ad5fca1582e29fbe081c26ff\nlane=local\nhost=0472d9825b25:Linux-x86_64\nworker=local\ntoolchain=rustc 1.100.0-nightly (908501772 2026-08-30)\nfmt_status=PASS\nfmt_seconds=10\ncheck_status=PASS\ncheck_seconds=460\nlog_dir=/workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109\nrecorded_utc=2026-11-03T05:32:36Z",
+    "logs": [
+      {
+        "bytes": 785,
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109.log",
+        "sha256": "7bbd3cb792be81e005e2bf344cc1ad4487c668b25748fc263028973759815e06"
+      },
+      {
+        "bytes": 397,
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109/tier0-summary.txt",
+        "sha256": "6519596d28de654fdd82984c58d9c2186deb1604dbd231dfb2b0da538dd19a19"
+      },
+      {
+        "bytes": 863,
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109/step-verdicts.jsonl",
+        "sha256": "72504645ae5956ef5fe0ef05d0a9220fdc37f10ef5d26e3eda4c3805b207f175"
+      },
+      {
+        "bytes": 0,
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109/fmt.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 10368,
+        "path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/tier0-d8a00109/check.log",
+        "sha256": "08341f1b199b76481406af827d7894c5676bda744a4a86164cd3114c75eedf91"
+      }
+    ],
+    "preserved_prior_failures": "Earlier d508 Tier0 SIGKILL remains recorded separately; this result is a later actual successful full Tier0 execution on d8.",
+    "resource_controls": "Pinned nightly-2026-08-31, jobs1, debug0, task-owned asupersync package profile; no dependency pin, source, assertion or gate changes.",
+    "schema_version": 1,
+    "scope": "Official scripts/tier0.sh: cargo fmt --all --check and cargo check -j1 --workspace --all-targets; this is not a full workspace test execution.",
+    "tier0_verdict": "pass",
+    "tracked_source_clean_after": true,
+    "tree": "69a1c4b1f7bbf029ad5fca1582e29fbe081c26ff"
+  },
   "public_data_python": {
     "actual_process_exit": 0,
     "log_path": "/workspace/scratch/e7855ec4cca9/fa-public-source-binding-proposal/integrated-python-tests.log",
@@ -482,5 +523,5 @@
       "tools/public-data/tests/test_run_live.py": "3125bf34fbad74653b0ce9ec1a4e767166bc8c3b795037ac5ea68837bbc355f1"
     }
   },
-  "repository_wide_verdict": "Not established by these scoped executions; no Tier0 or whole-workspace pass is claimed."
+  "repository_wide_verdict": "Official Tier0 PASS on implementation commit d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6: formatting and whole-workspace/all-targets compilation. This is separate from the scoped native tests and real corpus executions; a full workspace test execution is not claimed."
 }

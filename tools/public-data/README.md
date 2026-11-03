@@ -86,6 +86,28 @@ its portable report has major 1/minor 0, and it must not be described as a
 source-bound run. All 283 negative rows, 134 zero observations and 31 additional
 exact duplicate rows remain accounted for in the source controls and evidence.
 
+A separate complete DWP run then enabled all three options,
+`--batch-approvals --batch-evidence --bind-source`: **168 native calls,
+541.794 seconds and all 29 checks passed**, with process exit zero on the frozen
+`d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6` build. It processed the same complete
+13,099 raw observations into 1,091 entries and 25,930 legs. Before staging,
+the native manifest bound all 25,930 normalized import rows and every prepared
+entry; native population coverage was complete before finalization. The
+portable report contains the exact 52,594-byte source witness in a major-1,
+minor-1 container, passed the standalone verifier, and its damaged copy was
+refused. Exact grouped retries and the terminal prepare retry retained their
+original native identities without another publication.
+
+The [source-bound DWP execution evidence](../../evidence/public_spend/dwp-2025-01-source-bound-native-2026-11-03.json)
+records the complete source/helper/executable identities, report/export and
+transcript hashes, and verified receipt counts: 2,182 fresh grouped approval
+receipts, 1,091 fresh staged entries and 1,091 fresh evidence supplements,
+plus the explicit retry controls. Source binding covers the normalized CSV;
+the original raw source and every dated exported leg and memo are separately
+checked. The earlier 3,375-call/5,896.770-second unbound baseline remains
+unchanged. These are separate shared-host observations, not a controlled
+throughput comparison.
+
 Both complete datasets passed actual HTTPS acquisition and deterministic source
 preparation. The execution timings above are diagnostic development-build
 observations on a shared host, not release throughput benchmarks.
