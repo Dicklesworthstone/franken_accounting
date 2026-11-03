@@ -5209,6 +5209,7 @@ mod tests {
             assert_eq!(oracle.record_tick(recovered), Ok(1));
             assert_eq!(oracle.latest_tick(), Some(recovered));
             assert_eq!(oracle.latest_corroborated_tick(), Some(recovered));
+            assert_eq!(oracle.record_tick(recovered - 1), Err(code::TICK_ORDER));
             assert_eq!(oracle.record_tick(recovered), Err(code::TICK_ORDER));
             assert_eq!(oracle.record_tick(recovered + 1), Ok(2));
             assert_eq!(oracle.latest_corroborated_tick(), Some(recovered + 1));

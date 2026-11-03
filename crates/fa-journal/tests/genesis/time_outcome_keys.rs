@@ -58,12 +58,14 @@ fn an_uncorroborated_first_tick_cannot_block_an_honest_baseline() {
             retained
         );
 
-        let mut duplicate = request(&h, b"same-honest-instant");
-        duplicate.observed_utc_ns = recovered;
-        let before = h.db.frontier().unwrap();
-        let refusal = tick(&mut h, duplicate).unwrap_err();
-        assert_eq!((refusal.code, refusal.exit), ("FA-REF-094", exit::REFUSAL));
-        assert_eq!(h.db.frontier().unwrap(), before);
+        for rejected in [recovered - 1, recovered] {
+            let mut nonincreasing = request(&h, b"nonincreasing-honest-instant");
+            nonincreasing.observed_utc_ns = rejected;
+            let before = h.db.frontier().unwrap();
+            let refusal = tick(&mut h, nonincreasing).unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-094", exit::REFUSAL));
+            assert_eq!(h.db.frontier().unwrap(), before);
+        }
 
         h.tick(recovered + 1, b"following-honest-tick", 152);
         assert_eq!(
