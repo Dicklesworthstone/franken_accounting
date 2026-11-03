@@ -13,6 +13,9 @@
 //! the native run predicate determines which finalized chunks affect balances.
 //! Legacy applications are not reconstructed: settlement-ready opening legs
 //! must already represent individual items net of their legacy applications.
+//! Preparation binds an empty Open run to its complete retained source
+//! population. Existing staged unbound runs keep their historical contract;
+//! they are never retroactively bound by inspection, retry or finalization.
 //! The package has the admitted Human operator's upload custody, not a
 //! Generated-grade receipt. Its source bindings and transformations must replay
 //! before inspection or staging; its custody receipt does not prove them.
@@ -22,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use fa::{Book, BookError};
 use fa_formats::legacy::{self, AccountMap, LegacyColumnMap, LegacyFormat, LegacyImportBatch};
 use fa_formats::{FormatError, UnitCatalog};
+use fa_journal::migration::{SourceChunk, SourceManifest};
 use fa_journal::redaction::DocumentRead;
 use fa_journal::{Document, PostRequest, Posted, Run, RunMode, RunState, TieOut, TrialBalanceLine};
 use fa_model::{
@@ -1494,6 +1498,98 @@ struct Loaded {
     tie: TieOut,
 }
 
+fn source_manifest(loaded: &Loaded) -> Result<SourceManifest, Fail> {
+    let chunks = loaded
+        .package
+        .proposals
+        .iter()
+        .map(|proposal| {
+            Ok(SourceChunk {
+                entry_vid: migration_entry_vid(
+                    loaded.package.book_id,
+                    loaded.package.run,
+                    &proposal.idempotency_key,
+                ),
+                proposal_digest: proposal
+                    .proposal_digest()
+                    .map_err(|error| invalid(error.to_string()))?,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    Ok(SourceManifest {
+        book_id: loaded.package.book_id,
+        run_ref: loaded.package.run,
+        run_body_digest: loaded.package.run_body_digest,
+        source_oid: loaded.package.source,
+        source_commit: loaded.package.source_commit,
+        package_oid: loaded.document.oid(),
+        package_commit: loaded.document.doc_commit(),
+        source_rows: u64::try_from(loaded.batch.row_count)
+            .map_err(|_| invalid("source row count exceeds the native manifest bound"))?,
+        chunks,
+    })
+}
+
+fn check_source_binding(loaded: &Loaded) -> Result<(), Fail> {
+    if let Some(source) = &loaded.tie.source
+        && source.manifest_digest
+            != source_manifest(loaded)?
+                .digest()
+                .map_err(|error| invalid(error.to_string()))?
+    {
+        return Err(invalid(
+            "the package differs from this run's immutable source population",
+        ));
+    }
+    Ok(())
+}
+
+/// Complete preparation after retaining the package, including a retry whose
+/// earlier response was lost between upload and binding. A legacy run that
+/// already staged anything keeps its original unbound visibility law.
+fn ensure_source_binding(book: &mut Book, cap: &Capability, loaded: &Loaded) -> Result<bool, Fail> {
+    check_source_binding(loaded)?;
+    if loaded.tie.source.is_some() {
+        return Ok(false);
+    }
+    if loaded.run.state != RunState::Open || !loaded.tie.chunks.is_empty() {
+        return Ok(false);
+    }
+    let manifest = source_manifest(loaded)?;
+    admit_book(book, cap, true)?;
+    let description =
+        book.seal_text("Bind the complete retained legacy import source population")?;
+    let proposal =
+        book.migration_source_proposal(cap.holder(), &loaded.run, &manifest, description)?;
+    book.bind_migration_source(
+        &manifest,
+        &loaded.document.bytes,
+        fa_journal::RunControlRequest {
+            proposal,
+            capability: cap.clone(),
+            approvals: Vec::new(),
+        },
+    )??;
+    Ok(true)
+}
+
+fn source_fields(tie: &TieOut) -> Vec<(&'static str, Json)> {
+    vec![
+        (
+            "source_manifest_digest",
+            tie.source
+                .as_ref()
+                .map_or(Json::Null, |source| s(hex(&source.manifest_digest))),
+        ),
+        (
+            "source_complete",
+            tie.source
+                .as_ref()
+                .map_or(Json::Null, |source| Json::Bool(source.complete())),
+        ),
+    ]
+}
+
 struct StageSelection {
     index: usize,
     approvals: Vec<VId>,
@@ -1658,6 +1754,7 @@ fn stage_selection(
             Ok((selection.index, digest, approvals))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    ensure_source_binding(book, cap, loaded)?;
     let selected_count = requests.len();
     let mut completed = Vec::with_capacity(selected_count);
     for (index, digest, approvals) in requests {
@@ -1872,14 +1969,16 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         &routes,
     )?;
     let tie = recorded_chunks(book, &run, &package)?;
-    Ok(Loaded {
+    let loaded = Loaded {
         document,
         package,
         run,
         batch,
         period,
         tie,
-    })
+    };
+    check_source_binding(&loaded)?;
+    Ok(loaded)
 }
 
 fn side_name(side: Side) -> &'static str {
@@ -2108,7 +2207,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "reduce the explicit mapping and split the source into separate complete runs",
             ));
         }
-        let loaded = if let Some(loaded) = retained_package(&mut book, &cap, &run, &config)? {
+        let mut loaded = if let Some(loaded) = retained_package(&mut book, &cap, &run, &config)? {
             loaded
         } else {
             if run.state != RunState::Open {
@@ -2165,6 +2264,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 tie,
             }
         };
+        check_source_binding(&loaded)?;
         let mut output = fields(&book, &loaded)?;
         let review = review_text(&book, &loaded)?;
         if let Some(path) = args.flag("--plan-out") {
@@ -2179,11 +2279,15 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             &cap,
             fa_journal::UploadRequest {
                 kind: loaded.document.kind,
-                mime: loaded.document.mime,
-                bytes: loaded.document.bytes,
+                mime: loaded.document.mime.clone(),
+                bytes: loaded.document.bytes.clone(),
                 asserted_grade: Some(loaded.document.grade),
             },
         )??;
+        if ensure_source_binding(&mut book, &cap, &loaded)? {
+            loaded.tie = recorded_chunks(&book, &loaded.run, &loaded.package)?;
+        }
+        output.extend(source_fields(&loaded.tie));
         output.push(("recorded_at", Json::Int(i128::from(added.recorded_at.0))));
         output.push(("already_recorded", Json::Bool(added.already_recorded)));
         output.push(("plan", args.flag("--plan-out").map_or(Json::Null, s)));
@@ -2205,13 +2309,16 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None
     };
     // The complete source, all trial balances and all retained transformations
-    // are authenticated once for this request. Only Migration chunks can be
-    // published below; they cannot alter those documents, chart or run body.
+    // are authenticated once for this request. A missing population binding
+    // may be completed before the first Migration chunk; neither publication
+    // can alter those documents, the chart or the immutable run body.
     let loaded = load_package(&mut book, &cap, package_oid)?;
     if action == "show" {
         ctx.out.at_book(&book)?;
         let review = review_text(&book, &loaded)?;
-        ctx.out.event("migration_import_package", fields(&book, &loaded)?, &format!(
+        let mut output = fields(&book, &loaded)?;
+        output.extend(source_fields(&loaded.tie));
+        ctx.out.event("migration_import_package", output, &format!(
             "legacy {} package D:{} for `{}`: {}/{} exact chunks staged; run {}; finalization remains an independently approved native transition\n{review}",
             loaded.package.kind.mode_name(), hex(&package_oid.0), loaded.run.body.run_key, loaded.tie.chunks.len(), loaded.package.proposals.len(), loaded.run.state.name(),
         ));
@@ -2249,6 +2356,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    ensure_source_binding(&mut book, &cap, &loaded)?;
     let posted = book.post(PostRequest {
         proposal,
         approvals,

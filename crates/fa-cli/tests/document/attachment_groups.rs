@@ -541,6 +541,47 @@ fn attachment_groups_recheck_expiry_before_target_existence_and_exact_retry() {
         assert_eq!(fixture.open().head().unwrap().0, before_issue.0 + 3);
     }
 
+    // The direct token route must admit expiry before reading real process
+    // stdin. Malformed supplied bytes would otherwise win as a usage error.
+    let token_path = write(
+        &fixture.dir,
+        "expired-token.cap",
+        &token.canonical_bytes().unwrap(),
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&fixture.path)
+        .args(["--token", &token_path, "--via", "direct"])
+        .args(&args)
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    if let Err(error) = child.stdin.take().unwrap().write_all(b"[") {
+        // An early authority refusal may close its pipe before the parent
+        // writes; neither this race nor waiting for EOF is required to admit.
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+    let output = child.wait_with_output().unwrap();
+    let process_events = events(std::str::from_utf8(&output.stdout).unwrap());
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "{process_events:?}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(process_events.len(), 1, "{process_events:?}");
+    assert_eq!(text(&process_events[0], "event"), "error");
+    assert_eq!(text(data(&process_events[0]), "refusal_id"), "FA-REF-014");
+    assert_eq!(
+        fixture.open().head().unwrap().0,
+        before_issue.0 + 3,
+        "process-input refusal publishes neither an AccessEvent nor evidence"
+    );
+
     // Fresh authority for the same holder recovers the exact supplement;
     // its ordinary access audit remains a real, separate publication.
     let mut book = fixture.open();

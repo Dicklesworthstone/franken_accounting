@@ -18,6 +18,8 @@ mod limited_accounts;
 mod oklahoma;
 #[path = "legacy_migration/party_entity.rs"]
 mod party_entity;
+#[path = "legacy_migration/source_bound.rs"]
+mod source_bound;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -79,6 +79,25 @@ fn framed_identity(domain: &[u8], parts: &[&[u8]]) -> u128 {
     u128::from_le_bytes(low)
 }
 
+/// Period births have one identity per book/calendar/year, independent of
+/// the creator. The complete declaration is validated by Schema::apply;
+/// this reads only the committed fields that define its native identity.
+fn period_creation_identity(book: &[u8; 16], body: &[u8]) -> Result<u128, ReportError> {
+    let mut r = Reader::new(body);
+    if &r.fixed::<21>("period_creation.domain")? != b"fa:period-creation:v1" {
+        return Err(failed("period_metadata", "unsupported period declaration"));
+    }
+    let calendar = text(&mut r, 128, "period.calendar")?;
+    if calendar.is_empty() {
+        return Err(failed("period_metadata", "empty period calendar"));
+    }
+    let year = r.i32("period.year")?;
+    Ok(framed_identity(
+        b"fa:vid:period-creation:v1",
+        &[book, calendar.as_bytes(), &year.to_le_bytes()],
+    ))
+}
+
 pub(super) fn entry_info<'a>(
     proposal: &'a [u8],
     envelope: &LeafEnvelope,
@@ -429,6 +448,10 @@ pub(super) fn entry_info<'a>(
             ),
             None,
         ),
+        17 => match schema {
+            Some((13, body)) => (period_creation_identity(&envelope.book_id, body)?, None),
+            _ => (key_identity, None),
+        },
         _ => (key_identity, None),
     };
     if let Some(occurrence) = recurring {

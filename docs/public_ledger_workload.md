@@ -382,13 +382,17 @@ their presence in retained CSV does not make them native queryable dimensions.
 
 Grouped native staging and resumable orchestration reduce repeated intake and
 preserve completed chunk publications. They do not settle large-entry storage
-or million-line bulk migration acceptance (`fa-fdt` / `fa-zddh`). Native
-finalization still binds the staged chunk set and declared trial balances,
-rather than enforcing completeness against every proposal in a retained
-import package. An omitted increase and exact reversal can leave net controls
-unchanged. The driver therefore checks every source chunk and gross activity;
-an immutable native source-manifest binding enforced at staging/finalization
-remains a separate accounting-kernel gap.
+or million-line bulk migration acceptance (`fa-fdt` / `fa-zddh`). Newly prepared
+imports now bind an immutable native source manifest before staging, and
+finalization requires every proposal in that retained package in addition to
+the declared trial balances. Omitting an increase and its exact reversal
+causes refusal even when net controls agree. Previously staged or terminal unbound
+runs retain their original behavior; the historical evidence above is not
+retroactively source-bound. The driver still checks every source chunk and
+gross activity against the original source: package membership does not
+independently establish the CSV transformation or the source's economic truth.
+See [source-bound migration completeness](migration_source_completeness.md)
+for the native and independent proof boundaries.
 
 Broader source coverage also needs a declared treatment of fractional cents
 and separately sourced opening/closing controls. Other agencies' funding

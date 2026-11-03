@@ -1,0 +1,251 @@
+{
+  "boundaries": [
+    "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+    "This run predates batched approval, batched evidence attachment, and the later automatic source-binding checkpoint; it does not validate those features.",
+    "Fixture principals provide local review attestations, not independent human review.",
+    "No daemon success, interrupted-run resume, publisher opening balance, or original double-entry ledger is claimed.",
+    "Absolute retained paths document provenance; commit/blob identities, source pins, checks, outcome counts, and artifact digests are embedded here."
+  ],
+  "checks_passed": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "executable_identity_guards"
+  ],
+  "dataset": "dwp-2025-01",
+  "execution": {
+    "approvals": "individual per proposal",
+    "automatic_source_binding_checkpoint": "not exercised; uses preceding 93714f77 implementation",
+    "command": [
+      "python3",
+      "-B",
+      "tools/public-data/run_live.py",
+      "--prepared",
+      "/workspace/scratch/de9b3dc0a342/public-data-inputs/dwp-2025-01",
+      "--dataset",
+      "dwp-2025-01",
+      "--out",
+      "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli",
+      "--fa",
+      "/workspace/scratch/de9b3dc0a342/native-93714f77/fa",
+      "--fa-verify",
+      "/workspace/scratch/de9b3dc0a342/native-93714f77/fa-verify",
+      "--stage-group-size",
+      "64",
+      "--timeout",
+      "600"
+    ],
+    "source_attachments": "individual per entry",
+    "stage_group_size": 64,
+    "transport": "direct_cli"
+  },
+  "implementation": {
+    "cargo_lock_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "executables": {
+      "fa": {
+        "bytes": 239172424,
+        "sha256": "b8a0055b2ab294aa6903204a0893fe2626acbc4f025742b335adff0ad9d42498"
+      },
+      "fa-verify": {
+        "bytes": 20090376,
+        "sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8"
+      }
+    },
+    "harness_capture_boundary": "Source frozen during the ongoing run, before the proposed grouped-approval patch; source files exactly match the recorded startup revision. This is not claimed to have been written at process startup.",
+    "harness_files": [
+      {
+        "bytes": 40012,
+        "git_blob": "a99f426a21e9fa4f8102eed05dc921306222df2f",
+        "sha256": "7f4fc253f73ad90a2a30a176e1f557871e827398a535fdc85464c420e4756d58",
+        "source_path": "tools/public-data/run_live.py"
+      },
+      {
+        "bytes": 23968,
+        "git_blob": "0080de3c3e4d1cbf75d48e4f486ca507acc245f1",
+        "sha256": "ed376231ce90bb14bc33f1a4eae9d3d84e4b1fc3e3c58768c467fb4624bc03f3",
+        "source_path": "tools/public-data/public_spend.py"
+      },
+      {
+        "bytes": 4124,
+        "git_blob": "f44b473c310048f97f83f7ba3db852e0af7a6846",
+        "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7",
+        "source_path": "tools/public-data/sources.toml"
+      }
+    ],
+    "source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "source_tree": "d10a9f8191c87250a65b35dc2255cc78c4b03910",
+    "toolchain": "nightly-2026-08-31"
+  },
+  "independent_verifier": {
+    "positive": {
+      "call": 3374,
+      "checks": {
+        "pass": 88
+      },
+      "exit": 0,
+      "verdict": "verified"
+    },
+    "tampered_bundle": {
+      "call": 3375,
+      "checks": {
+        "fail": 1,
+        "pass": 1
+      },
+      "exit": 8,
+      "failed_checks": [
+        {
+          "check": "record_derivation",
+          "reason": "Digest { which: \"proposal_digest\" }",
+          "scope": "recomputation"
+        }
+      ],
+      "verdict": "failed"
+    }
+  },
+  "native_commitments": {
+    "bundle_sha256": "8887872b88fa47f18176adc6be71dca7226b3c7810eb483997932fd725985539",
+    "certificate_digest": "9c7e2ee94759119c84909b29330efb2f5c1103dc60157ac9910a499200372124",
+    "migration_run": "915226d528825e178acbfca53f62117e",
+    "output_digest": "47259bf28485719cdc6f8cb0e560b109e966bb977063fc0c19748442d413157c",
+    "package_oid": "5e2531526d0b9bb96803a5c4647aee1b6e126ab4f586450591841bf38aea116e",
+    "period": "FY2025-P01"
+  },
+  "retained_evidence": {
+    "build_identity": {
+      "bytes": 734,
+      "path": "/workspace/scratch/de9b3dc0a342/native-93714f77/build-identity.json",
+      "sha256": "2e9f0578e989af32f83c83c847e51fe28dbf261667343f99a8b1f9b099111874"
+    },
+    "full_result": {
+      "bytes": 3059,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/result.json",
+      "sha256": "fb06b4dde2dfbf9df20834e73bd5ff7447f620b0e7b096ee7113a1550ac3692c"
+    },
+    "harness_snapshot": {
+      "bytes": 2206,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli.harness-source-93714f77/snapshot.json",
+      "sha256": "7326d02b3e65e884bf85ed0669983400f51b22b01bc7f254ed54ca409e6fca3c"
+    },
+    "native_command_transcript": {
+      "bytes": 2202059,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/commands.jsonl",
+      "sha256": "e878c819f1b3348508ea63c4b848e0be6c5e11d965cf3f8b01bf7bc10efe482d"
+    },
+    "native_export": {
+      "bytes": 8204152,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/native.csv",
+      "sha256": "62d33759aa90970da121f6d0c075f7968e381fb4fcc3bab67488124fee1a9d80"
+    },
+    "normalization_receipt": {
+      "bytes": 3458,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-inputs/dwp-2025-01/receipt.json",
+      "sha256": "b8fa9bee417951c3d4b823ca4983e9a3f0475e62bd5dbf4001b112e60ca2f1e2"
+    },
+    "positive_verifier_stdout": {
+      "bytes": 23672,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/transcript/03374.stdout.jsonl",
+      "sha256": "1090ae7b301937c1ad49796f880a030e9f05ab5046eabeed92bf943d8547e915"
+    },
+    "report_bundle": {
+      "bytes": 8868413,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/trial-balance.fab",
+      "sha256": "8887872b88fa47f18176adc6be71dca7226b3c7810eb483997932fd725985539"
+    },
+    "report_receipt": {
+      "bytes": 219,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/trial-balance.receipt",
+      "sha256": "9df7bb70f7526fd3f5b12e01f52e05e41f571b1084ae6f508247131bde1c5e2b"
+    },
+    "runner_log": {
+      "bytes": 3881,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli.runner.log",
+      "sha256": "7f05d90f4e41d210232f52fae50e8da19cc2987a0c0920dc18bef2c100537489"
+    },
+    "runner_receipt": {
+      "bytes": 1037,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli.runner-result.json",
+      "sha256": "00f9258bf6ef965cf0b5c9fd071abe1412439ace7af1009051da98e9b8ec7d3d"
+    },
+    "signed_checkpoint": {
+      "bytes": 288,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/report.checkpoint",
+      "sha256": "dc83f24f24babe2d6cdcb0732a8b9770008b24d26c9c4fee3a3e7c892674e643"
+    },
+    "tampered_verifier_stdout": {
+      "bytes": 938,
+      "path": "/workspace/scratch/de9b3dc0a342/public-data-runs/dwp-2025-01-grouped-cli/transcript/03375.stdout.jsonl",
+      "sha256": "9f163938e907b10528367613740d07c621df01a88d1e9acd992a640b9ec6c53c"
+    }
+  },
+  "schema": "franken-accounting-public-spend-native-evidence-v1",
+  "source": {
+    "bytes": 1935610,
+    "controls": {
+      "date_count": 22,
+      "duplicate_rows": 31,
+      "expense_area_count": 1830,
+      "expense_type_count": 83,
+      "max_minor": "1496642800",
+      "max_transaction_rows": 1204,
+      "min_minor": "-143436900",
+      "negative_minor": "-456922600",
+      "negative_rows": 283,
+      "net_minor": "30776409400",
+      "positive_minor": "31233332000",
+      "positive_rows": 12682,
+      "row_count": 13099,
+      "split_transaction_count": 291,
+      "supplier_count": 187,
+      "transaction_count": 578,
+      "zero_rows": 134
+    },
+    "publication_url": "https://www.gov.uk/government/publications/dwp-spending-over-25000-january-2025",
+    "published_amount_precision": "whole pounds as published; undisclosed pence are not reconstructed",
+    "publisher": "Department for Work and Pensions",
+    "sha256": "b6477bc3ea1afeac5d97caa581369b78c2c473360c2fe4a7493a26da847583b1",
+    "url": "https://assets.publishing.service.gov.uk/media/68b84d92d723ba6f74dba95a/dwp-spending-over-25000-january-2025.csv"
+  },
+  "status": "PASS",
+  "timing": {
+    "boundary": "One complete observed run with shared-host contention; not a controlled benchmark or cross-version performance comparison.",
+    "finished_at_utc": "2026-11-03T05:17:45.140953+00:00",
+    "harness_seconds": 5980.011,
+    "started_at_utc": "2026-11-03T03:38:04.224244+00:00",
+    "wrapper_seconds": 5980.917
+  },
+  "workload": {
+    "accounts": 84,
+    "duplicate_source_rows_preserved": 31,
+    "entries": 1091,
+    "grouped_stage_requests_including_retry": 19,
+    "individual_approval_calls": 2184,
+    "individual_source_attachment_calls": 1091,
+    "legs": 25930,
+    "monetary_source_rows": 12965,
+    "native_calls": 3375,
+    "native_exits": {
+      "0": 3374,
+      "8_expected_tamper_refusal": 1
+    },
+    "primary_grouped_stage_requests": 18,
+    "single_chunk_post_finalization_retries": 1,
+    "source_rows": 13099,
+    "zero_source_rows_preserved": 134
+  }
+}

@@ -591,6 +591,18 @@ fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ATTACHMENT_GROUP_EXAMPLE,
             ));
         }
+        if input == "-"
+            && matches!(&ctx.files.stdin, Stdin::Process)
+            && let Some(capability) = ctx
+                .authority()
+                .map(|authority| authority.capability().clone())
+        {
+            // Process stdin is a host observation. Admit current authority
+            // before reading it, without consuming the pending AccessEvent.
+            // Inline/forwarded bytes remain caller data, and all syntax still
+            // validates before the admitted open records any access or evidence.
+            ctx.books.admit_current_before_input(args, &capability)?;
+        }
         let targets = read_attachment_group(&ctx.files, input)?;
         if cited_count > fa_model::limits::MAX_EVIDENCE_PER_ENTRY
             || targets

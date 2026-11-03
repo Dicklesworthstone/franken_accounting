@@ -53,10 +53,16 @@ counterparts. The independent verifier checks the resulting analysis book under
 its own trusted checkpoint key, not an HMRC-signed or audited set of accounts.
 
 Both complete datasets also passed actual HTTPS acquisition and deterministic
-source preparation. A native DWP completion is not established until its own
-complete execution produces a retained `PASS`; preparation and a partially
-staged run do not establish that result. Execution timings are diagnostic dev
-build observations on a shared host, not release throughput benchmarks.
+source preparation. The complete DWP January 2025 run then passed all **20
+checks: 13,099 original rows, 1,091 migration entries and 25,930 monetary legs**.
+It used frozen `93714f77` binaries, direct CLI transport, individual approvals
+and source attachments, and 18 initial staging groups of at most 64 chunks.
+The [DWP execution evidence](../../evidence/public_spend/dwp-2025-01-grouped-native-2026-11-03.json)
+retains exact source, harness and executable identities, all checks, and the
+expected `exit 8` tampered-bundle refusal. Its **5,980.011-second** elapsed
+time is one shared-host observation, not a benchmark. This run predates the
+later batched approvals, batched attachments and automatic source binding;
+it does not validate those features.
 
 The complete HMRC control body is 65,422 bytes and the DWP body is 49,105 bytes,
 both above the substrate's 16 KiB vertex ceiling. Native migration storage now

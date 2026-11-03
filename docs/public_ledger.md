@@ -557,22 +557,20 @@ The profile reports the affected groups and source ordinals for investigation.
   payloads bounded. Each migration activates atomically; finalizing the entire
   agency across several runs is not one atomic publication. The preactivation
   historical check uses the prefix before the first finalization.
-- Native finalization currently binds the staged chunk set and checks the
-  declared trial balances; it does not bind every proposal in a retained
-  import package. For example, a package can contain an opening cash/capital
-  entry plus a cash/capital increase and its exact reversal in the same
-  period. Omitting the latter two entries leaves every declared net balance
-  unchanged, so native tie-out alone cannot detect the missing gross activity.
-  The import display's recorded-count readiness is not a kernel completeness
-  guarantee. This gap remains open; the replay drivers must stage and check
-  every source chunk.
-- Closing that gap requires an explicit immutable native source-manifest
-  binding before staging: source/package commitments, transformation identity
-  and the complete ordered proposal inventory. Its publication must be atomic
-  and durable, and both staging and finalization must enforce it. Independent
-  proof coverage must say whether this manifest was supplied and verified.
-  Uploading an arbitrary Workpaper, or supplying a count to the CLI finalizer,
-  must not implicitly establish authoritative run membership.
+- Newly prepared imports bind an immutable native source manifest before
+  staging. It retains source/package commitments and the complete ordered
+  proposal inventory. Staging admits only its exact members, and finalization
+  requires the complete population as well as the declared trial balances:
+  omitting an increase and its exact reversal now refuses even when every net
+  balance agrees. Previously staged or terminal unbound runs retain their
+  original behavior; the historical execution evidence above is unchanged.
+- [Source-bound migration completeness](migration_source_completeness.md)
+  establishes membership against the retained prepared package. It does not
+  independently replay the CSV transformation or establish the source's
+  economic truth or completeness outside that package. The replay drivers
+  still check every source chunk and gross activity against the original
+  source. Portable proof coverage states whether the manifest was supplied
+  and verified; an arbitrary Workpaper or a CLI count cannot establish it.
 - The larger selection still has bounded group sizes. It does not settle
   `fa-fdt`/`fa-zddh` large-entry and million-line bulk-migration acceptance.
   Unsupported native sizes must be reported, never addressed by inventing

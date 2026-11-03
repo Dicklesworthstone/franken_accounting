@@ -379,6 +379,53 @@ mod tests {
         (vec![first, second], digest)
     }
 
+    fn period_creation(calendar: &[u8], year: i32) -> Record {
+        let mut body = Writer::default();
+        body.fixed(b"fa:period-creation:v1")
+            .bytes(calendar)
+            .i32(year)
+            .count(1)
+            .bytes(b"P1")
+            .i32(year)
+            .u16(1)
+            .u8(0)
+            .i32(0)
+            .i32(31)
+            .u8(0);
+        let body_digest = hash_parts(
+            b"fa:period-creation:v1",
+            &[&(body.buf.len() as u32).to_le_bytes(), &body.buf],
+        );
+        let mut control = Writer::default();
+        control.u8(1).u16(13).bytes(&body.buf);
+        seal(
+            proposal(17, 0, &year.to_le_bytes(), &control.buf, 13, &body_digest),
+            2,
+            &[],
+            false,
+        )
+    }
+
+    fn chart_with_period_identity(
+        chart: &Record,
+        periods: &Record,
+        period_identity: u128,
+    ) -> [u8; 32] {
+        let mut body = Writer::default();
+        body.fixed(&BOOK)
+            .count(2)
+            .u64(1)
+            .u128(identity(b"chart"))
+            .fixed(&chart.envelope.record_digest)
+            .u64(2)
+            .u128(period_identity)
+            .fixed(&periods.envelope.record_digest);
+        hash_parts(
+            CHART_DOMAIN,
+            &[&(body.buf.len() as u32).to_le_bytes(), &body.buf],
+        )
+    }
+
     fn activation_control(chart_digest: &[u8; 32]) -> Vec<u8> {
         // Pin the producer's two-part domain framing independently of definition_id.
         let digest = hash_parts(
@@ -452,6 +499,66 @@ mod tests {
         assert!(!verified.definition_birth_verified);
         assert_eq!(reviewed.accounts.len(), 1);
         assert_eq!(reviewed.accounts.values().next().unwrap().code, "1000");
+    }
+
+    #[test]
+    fn period_birth_identity_binds_book_calendar_and_year_in_the_reviewed_chart() {
+        let chart = chart(1, b"chart", b"1000");
+        let mut identities = BTreeSet::new();
+        for (calendar, year) in [
+            (b"cy".as_slice(), 2026_i32),
+            (b"fiscal", 2026),
+            (b"cy", 2027),
+        ] {
+            let periods = period_creation(calendar, year);
+            // Independent native-ID oracle: three length-framed parts, not
+            // metadata::entry_info or the ordinary principal/key helper.
+            let expected = hash_parts(
+                b"fa:vid:period-creation:v1",
+                &[
+                    &16u32.to_le_bytes(),
+                    &BOOK,
+                    &(calendar.len() as u32).to_le_bytes(),
+                    calendar,
+                    &4u32.to_le_bytes(),
+                    &year.to_le_bytes(),
+                ],
+            );
+            let period_id = u128::from_le_bytes(expected[..16].try_into().unwrap());
+            assert!(identities.insert(period_id));
+            let info = metadata::entry_info(&periods.proposal, &periods.envelope).unwrap();
+            assert_eq!(info.identity, period_id);
+            assert!(!info.matches_identity(identity(&year.to_le_bytes())));
+            let digest = chart_with_period_identity(&chart, &periods, period_id);
+            let records = vec![
+                chart.clone(),
+                periods,
+                activation(&activation_control(&digest), &[101, 102], false),
+            ];
+            let (verified, reviewed) = verify_fixture(&records, 4, &selection()).unwrap();
+            assert_eq!(verified.chart_digest, digest);
+            assert_eq!(reviewed.period_fiscal_year("P1"), Some(year));
+        }
+    }
+
+    #[test]
+    fn resealed_review_cannot_replace_the_period_birth_identity_with_an_ordinary_entry() {
+        let chart = chart(1, b"chart", b"1000");
+        let periods = period_creation(b"cy", 2026);
+        let wrong = chart_with_period_identity(&chart, &periods, identity(&2026_i32.to_le_bytes()));
+        // A fresh proposal and fresh matching approval references authenticate
+        // the wrong chart claim; exact native identity must still reject it.
+        let records = vec![
+            chart,
+            periods,
+            activation(&activation_control(&wrong), &[101, 102], false),
+        ];
+        let error = verify_fixture(&records, 4, &selection()).err().unwrap();
+        assert_eq!(error.predicate, "custom_statement_activation");
+        assert_eq!(
+            error.detail,
+            "activation chart proof differs from the complete original schema history before activation"
+        );
     }
 
     #[test]

@@ -8,6 +8,27 @@ staged journal.
 
 ## Bind the prepared population before staging
 
+`fa migrate import --action prepare --intent import.json` retains the exact
+review package and then binds its complete population to an empty Open run.
+Preparation still requires the current Human operator's `read`, `post` and
+`migrate` authority. Binding requires no extra approver under the native
+BindSource rule; each chunk and Finalize keep their independent approvals.
+
+An identical preparation retry reuses the original package and binding. If
+preparation stopped after retaining the package, the retry completes binding
+without regenerating proposals. Staging an authenticated retained package for
+an empty Open run also completes this step before its first chunk, after the
+complete staging selection has passed syntax and identifier checks.
+
+Prepared and show receipts expose `source_manifest_digest` and `source_complete`.
+The latter is the native exact membership result: a newly bound empty run is
+incomplete, and a fully staged bound run is complete even while its balances
+remain invisible until Finalize. Both fields are null for an unbound run.
+Existing unbound runs with staged chunks, including their finalization and
+exact retries, retain their historical contract. The importer never binds
+them retroactively, and show never writes a binding. An existing binding must
+match the authenticated package exactly; a different package cannot replace it.
+
 The native `bind_migration_source` facade operation binds an empty, Open
 migration run to its retained prepared package. The immutable `SourceManifest`
 contains the book and run identity, original RunBody digest, source and package

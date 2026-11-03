@@ -1000,11 +1000,11 @@ impl BookSource<'_> {
         Ok(book)
     }
 
-    /// Admit a bound token before resolving or reading permitted input paths.
+    /// Admit a bound token before reading process stdin or permitted input paths.
     /// A daemon's existing handle is checked without resolving a book path;
     /// a cold open uses only the trusted launch book and emits no coordinate.
     /// The handler still admits its concrete operation and scope afterward.
-    fn admit_current_before_input(
+    pub(crate) fn admit_current_before_input(
         &mut self,
         args: &Args,
         capability: &Capability,
@@ -13372,12 +13372,11 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         && (matches!(
             args.positional[1].as_str(),
             "issue" | "issuances" | "lint" | "regulatory" | "equity-roll-forward"
-        ) || args.flag("--branch").is_some()
-            || crate::issuance::view_flag(args).is_some())
+        ) || args.flag("--branch").is_some())
     {
         return Err(usage(
-            "--functional selects a trunk balance sheet, income statement, statement diff or publication trace; issuance views and branch workflows do not support this basis",
-            "fa statement trace --functional --definition income-statement --for <period> --before <seq> --after <seq> [--certify]",
+            "--functional selects a trunk balance sheet, income statement, statement diff or publication trace; issue a retained functional certificate with statement issue --certificate, and read branch workflows without --functional",
+            "fa statement balance-sheet --functional --for <period> [--as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>]",
         ));
     }
     // Statement issuance (plan §12.5, bead fa-wrrw).
@@ -13585,7 +13584,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             "fa statement balance-sheet|income-statement --for <period> --json",
         )
     })?;
-    let selection = StatementSelection {
+    let mut selection = StatementSelection {
         definition,
         periods: vec![period.to_string()],
         comparative: args
@@ -13594,7 +13593,6 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             .map(String::from)
             .collect(),
     };
-    let render_definition = render.as_ref().map(|_| selection.definition.clone());
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let view = crate::issuance::reported_view(
         args,
@@ -13644,25 +13642,90 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     } else {
         ReportSelection::from(selection.clone())
     };
-    // Plan §7.4: the statement as its --for period was reported (first, to
-    // an audience, or in a retained certificate); a --compare column is read
-    // at that same snapshot.
+    // Plan §7.4: native views retain their coordinate semantics. Functional
+    // issued views replay the saved question and inherit omitted comparatives;
+    // selecting an old prefix alone cannot establish the issued valuation basis.
+    let mut reported_source = None;
     if let Some(view) = &view {
         book.read_scope(who, &capability)??
             .admit_report(&reach, known_at)??;
-        known_at = Some(crate::issuance::reported_known_at(
-            &book,
-            &capability,
-            view,
-            period,
-        )?);
+        if functional {
+            let (at, source) =
+                crate::issuance::reported_statement_source(&book, &capability, view, period)?;
+            known_at = Some(at);
+            if let Some(source) = source {
+                let ReportSelection::FunctionalStatement(saved) = &source.selection else {
+                    return Err(crate::issuance::functional_statement_mismatch(
+                        "the reported certificate is not a built-in functional statement",
+                    ));
+                };
+                if saved.definition.name() != selection.definition.name()
+                    || saved.definition.kind() != selection.definition.kind()
+                    || args
+                        .flag("--definition")
+                        .is_some_and(|name| name != saved.definition.name())
+                    || saved.periods != selection.periods
+                    || args
+                        .flag("--compare")
+                        .is_some_and(|_| saved.comparative != selection.comparative)
+                {
+                    return Err(crate::issuance::functional_statement_mismatch(
+                        "the requested definition, primary period or comparative differs from the reported functional statement",
+                    ));
+                }
+                selection = (**saved).clone();
+                reported_source = Some(source);
+            }
+        } else {
+            known_at = Some(crate::issuance::reported_known_at(
+                &book,
+                &capability,
+                view,
+                period,
+            )?);
+        }
     }
+    let reach = if functional {
+        ReportSelection::FunctionalStatement(Box::new(selection.clone()))
+    } else {
+        reach
+    };
     book.read_scope(who, &capability)??
         .admit_report(&reach, known_at)??;
     if !functional {
         prepare_native_certificate_history(&mut book, &capability, known_at)?;
     }
-    let (statement, certificate) = if functional && certify {
+    let render_definition = render.as_ref().map(|_| selection.definition.clone());
+    let (statement, certificate) = if let Some(source) = reported_source {
+        // Retention reuses the issued bytes instead of invoking the fresh
+        // certification API, so keep its Produce gate before any rendered
+        // document can be written by the shared presentation path.
+        if certify {
+            fa_policy::require(
+                &capability,
+                fa_policy::Op::Produce,
+                "retaining an issued functional statement certificate",
+            )
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        }
+        let bytes = source
+            .canonical_bytes()
+            .map_err(|error| Fail::Internal(format!("reported functional statement: {error}")))?;
+        book.replay_report_artifact_for_with_history(
+            who,
+            &capability,
+            &bytes,
+            Some(&source.digest),
+            fa::ReportArtifactExpectation::AsSupplied,
+        )??;
+        let fa::ReportOutput::FunctionalStatement(statement) = book.replay_report(&source)?? else {
+            return Err(Fail::Internal(
+                "reported functional statement returned another family".into(),
+            ));
+        };
+        ctx.out.time_selection(source.time_selection.as_ref());
+        (*statement, certify.then_some(source))
+    } else if functional && certify {
         let certified = match requested_utc_ns {
             Some(instant) => {
                 book.certify_functional_statement_at_instant(who, &capability, selection, instant)??
