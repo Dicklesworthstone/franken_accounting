@@ -24084,6 +24084,13 @@ fn admit_migration(
 }
 
 fn migrate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.switch("--bind-source") && args.positional.get(1).map(String::as_str) != Some("import")
+    {
+        return Err(usage(
+            "--bind-source applies only to migrate import --action prepare",
+            "fa migrate import --action prepare --intent import.json --bind-source",
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("import") => crate::migration_import::import_cmd(ctx, args),
         Some("open") => {

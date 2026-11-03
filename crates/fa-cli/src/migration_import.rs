@@ -23,10 +23,14 @@ use fa::{Book, BookError};
 use fa_formats::legacy::{self, AccountMap, LegacyColumnMap, LegacyFormat, LegacyImportBatch};
 use fa_formats::{FormatError, UnitCatalog};
 use fa_journal::redaction::DocumentRead;
-use fa_journal::{Document, PostRequest, Posted, Run, RunMode, RunState, TieOut, TrialBalanceLine};
+use fa_journal::{
+    Document, PostRequest, Posted, Run, RunControlRequest, RunControlled, RunMode, RunState,
+    TieOut, TrialBalanceLine,
+};
+use fa_model::migration_source::{SourceChunk, SourceManifest};
 use fa_model::{
     ApprovalRef, Entry, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, Oid, Reader,
-    Writer, migration_entry_vid, migration_run_vid,
+    Writer, entry_vid, migration_entry_vid, migration_run_vid,
 };
 use fa_money::{Side, UnitId};
 use fa_policy::{Capability, Intent, Op, Profile};
@@ -38,7 +42,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Out, hex, parse_json, render_amount, usage, write_post_plan};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa migrate import --action prepare --intent import.json [--plan-out new.package] | --action show --package D:<oid> | --action stage --package D:<oid> (--chunk 0 --approval <vid> --approval <vid> | --intent stage-selection.json)";
+const EXAMPLE: &str = "fa migrate import --action prepare --intent import.json [--bind-source] [--plan-out new.package] | --action show --package D:<oid> | --action stage --package D:<oid> (--chunk 0 --approval <vid> --approval <vid> | --intent stage-selection.json)";
 const PACKAGE_DOMAIN: &[u8] = b"FA-LEGACY-OPENING-IMPORT\0";
 const PACKAGE_VERSION: u16 = 1;
 const PACKAGE_MIME: &str = "application/vnd.frankenaccounting.legacy-opening-import.v1";
@@ -137,6 +141,12 @@ fn options(args: &Args) -> Result<&str, Fail> {
     if args.switch("--dry-run") {
         return Err(usage(
             "import prepare retains exact approval material; it does not accept --dry-run",
+            EXAMPLE,
+        ));
+    }
+    if args.switch("--bind-source") && action != "prepare" {
+        return Err(usage(
+            "--bind-source applies only to migration import prepare",
             EXAMPLE,
         ));
     }
@@ -1494,6 +1504,153 @@ struct Loaded {
     tie: TieOut,
 }
 
+/// Derive the native population from the complete authenticated package. This
+/// row count describes the import source, which may be a normalized ledger; it
+/// does not assert how many observations existed in an earlier external file.
+fn source_manifest(loaded: &Loaded) -> Result<SourceManifest, Fail> {
+    Ok(SourceManifest {
+        book_id: loaded.package.book_id,
+        run_ref: loaded.run.vid,
+        run_body_digest: loaded.package.run_body_digest,
+        source_oid: loaded.package.source,
+        source_commit: loaded.package.source_commit,
+        package_oid: loaded.document.oid(),
+        package_commit: loaded.document.doc_commit(),
+        source_rows: u64::try_from(loaded.batch.row_count)
+            .map_err(|_| invalid("source row count exceeds the native manifest bound"))?,
+        chunks: loaded
+            .package
+            .proposals
+            .iter()
+            .map(|proposal| {
+                Ok(SourceChunk {
+                    entry_vid: migration_entry_vid(
+                        loaded.package.book_id,
+                        loaded.run.vid,
+                        &proposal.idempotency_key,
+                    ),
+                    proposal_digest: proposal
+                        .proposal_digest()
+                        .map_err(|error| invalid(error.to_string()))?,
+                })
+            })
+            .collect::<Result<_, Fail>>()?,
+    })
+}
+
+/// A native binding must describe this exact retained package, including its
+/// source order and declared row count. A new, internally consistent Workpaper
+/// cannot replace a bound package, even before the first chunk is staged.
+fn verified_source_binding(book: &Book, loaded: &Loaded) -> Result<Option<SourceManifest>, Fail> {
+    let Some(manifest) = book.migration_source_manifest(loaded.run.vid, None)? else {
+        return Ok(None);
+    };
+    if manifest != source_manifest(loaded)? {
+        return Err(invalid(
+            "native source binding differs from this complete retained package, source or row population",
+        ));
+    }
+    Ok(Some(manifest))
+}
+
+fn bind_source(book: &mut Book, cap: &Capability, loaded: &Loaded) -> Result<RunControlled, Fail> {
+    admit_book(book, cap, true)?;
+    let existing = verified_source_binding(book, loaded)?;
+    let manifest = source_manifest(loaded)?;
+    // This retained sealed value is used only to derive the native fixed
+    // identity. No nonce is derived, and it is never the new control's text.
+    let placeholder = loaded
+        .package
+        .proposals
+        .first()
+        .ok_or_else(|| invalid("empty package"))?
+        .description
+        .clone();
+    let mut proposal =
+        book.migration_source_proposal(cap.holder(), &loaded.run, &manifest, placeholder)?;
+    let control = entry_vid(
+        loaded.package.book_id,
+        &cap.holder().0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    if let Some((original, _)) = existing
+        .as_ref()
+        .map(|_| book.read_entry(control))
+        .transpose()?
+        .flatten()
+    {
+        // Reuse the actual original control, including its sealed description
+        // and digest, after response loss, staging, Finalize or Abandon. The
+        // kernel still checks current authority and the immutable binding.
+        proposal = original.proposal;
+    } else {
+        proposal.description =
+            book.seal_text("Bind the complete retained legacy import source population")?;
+    }
+    Ok(book.bind_migration_source(
+        &manifest,
+        &loaded.document.bytes,
+        RunControlRequest {
+            proposal,
+            capability: cap.clone(),
+            approvals: Vec::new(),
+        },
+    )??)
+}
+
+fn source_binding_fields(book: &Book, loaded: &Loaded) -> Result<Json, Fail> {
+    let Some(manifest) = verified_source_binding(book, loaded)? else {
+        return Ok(Json::Null);
+    };
+    let digest = manifest
+        .digest()
+        .map_err(|error| invalid(error.to_string()))?;
+    let coverage = loaded
+        .tie
+        .source
+        .as_ref()
+        .ok_or_else(|| invalid("native source binding is absent from its tie-out"))?;
+    if coverage.manifest_digest != digest
+        || coverage.source_rows != manifest.source_rows
+        || coverage.expected_chunks != manifest.chunks.len()
+    {
+        return Err(invalid(
+            "native source binding and tie-out population differ",
+        ));
+    }
+    let identities = |values: &[VId]| {
+        Json::Arr(
+            values
+                .iter()
+                .map(|vid| s(format!("{:032x}", vid.0)))
+                .collect(),
+        )
+    };
+    Ok(obj(vec![
+        ("manifest_vid", s(format!("{:032x}", manifest.vid().0))),
+        ("manifest_digest", s(hex(&digest))),
+        ("book_id", s(hex(&manifest.book_id.0))),
+        ("run_vid", s(format!("{:032x}", manifest.run_ref.0))),
+        ("run_body_digest", s(hex(&manifest.run_body_digest))),
+        ("source_oid", s(hex(&manifest.source_oid.0))),
+        ("source_commit", s(hex(&manifest.source_commit))),
+        ("package_oid", s(hex(&manifest.package_oid.0))),
+        ("package_commit", s(hex(&manifest.package_commit))),
+        ("source_rows", Json::Int(i128::from(manifest.source_rows))),
+        (
+            "expected_chunks",
+            Json::Int(coverage.expected_chunks as i128),
+        ),
+        (
+            "recorded_chunks",
+            Json::Int(coverage.recorded_chunks as i128),
+        ),
+        ("missing_chunks", identities(&coverage.missing_chunks)),
+        ("unexpected_chunks", identities(&coverage.unexpected_chunks)),
+        ("complete", Json::Bool(coverage.complete())),
+    ]))
+}
+
 struct StageSelection {
     index: usize,
     approvals: Vec<VId>,
@@ -1872,14 +2029,16 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         &routes,
     )?;
     let tie = recorded_chunks(book, &run, &package)?;
-    Ok(Loaded {
+    let loaded = Loaded {
         document,
         package,
         run,
         batch,
         period,
         tie,
-    })
+    };
+    verified_source_binding(book, &loaded)?;
+    Ok(loaded)
 }
 
 fn side_name(side: Side) -> &'static str {
@@ -2005,6 +2164,7 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
         ("run_state", s(loaded.run.state.name())),
         ("ties_out", Json::Bool(loaded.tie.mismatches.is_empty())),
         ("chunks", Json::Arr(chunks)),
+        ("source_binding", source_binding_fields(book, loaded)?),
     ];
     fields.push((
         "sole_opening_source",
@@ -2108,7 +2268,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "reduce the explicit mapping and split the source into separate complete runs",
             ));
         }
-        let loaded = if let Some(loaded) = retained_package(&mut book, &cap, &run, &config)? {
+        let mut loaded = if let Some(loaded) = retained_package(&mut book, &cap, &run, &config)? {
             loaded
         } else {
             if run.state != RunState::Open {
@@ -2165,7 +2325,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 tie,
             }
         };
-        let mut output = fields(&book, &loaded)?;
+        verified_source_binding(&book, &loaded)?;
         let review = review_text(&book, &loaded)?;
         if let Some(path) = args.flag("--plan-out") {
             write_post_plan(&ctx.files, path, &loaded.document.bytes)?;
@@ -2179,11 +2339,27 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             &cap,
             fa_journal::UploadRequest {
                 kind: loaded.document.kind,
-                mime: loaded.document.mime,
-                bytes: loaded.document.bytes,
+                mime: loaded.document.mime.clone(),
+                bytes: loaded.document.bytes.clone(),
                 asserted_grade: Some(loaded.document.grade),
             },
         )??;
+        let binding = if args.switch("--bind-source") {
+            let bound = bind_source(&mut book, &cap, &loaded)?;
+            loaded.tie = recorded_chunks(&book, &loaded.run, &loaded.package)?;
+            obj(vec![
+                (
+                    "control_entry",
+                    s(format!("{:032x}", bound.control_entry.0)),
+                ),
+                ("recorded_at", Json::Int(i128::from(bound.recorded_at.0))),
+                ("already_recorded", Json::Bool(bound.already_recorded)),
+            ])
+        } else {
+            Json::Null
+        };
+        let mut output = fields(&book, &loaded)?;
+        output.push(("source_binding_receipt", binding));
         output.push(("recorded_at", Json::Int(i128::from(added.recorded_at.0))));
         output.push(("already_recorded", Json::Bool(added.already_recorded)));
         output.push(("plan", args.flag("--plan-out").map_or(Json::Null, s)));

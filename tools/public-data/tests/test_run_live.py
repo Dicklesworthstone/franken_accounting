@@ -63,6 +63,45 @@ def evidence_events(*, retry: bool = False) -> list[dict]:
             for index, entry in enumerate(EVIDENCE_ENTRIES)]
 
 
+SOURCE_CHUNKS = [{"entry_vid": "00000000000000000000000000000009", "proposal_digest": "a" * 64},
+                 {"entry_vid": "0102030405060708090a0b0c0d0e0f10", "proposal_digest": "b" * 64}]
+SOURCE_INPUTS = {"book_id": "00112233445566778899aabbccddeeff", "run_vid": "102132435465768798a9bacbdcedfe0f",
+                 "source_oid": "1" * 64, "source_commit": "2" * 64, "package_oid": "3" * 64,
+                 "source_rows": 4, "chunks": SOURCE_CHUNKS}
+
+
+def source_binding_event(*, complete: bool = False, retry: bool = False) -> dict:
+    """Constructed transport observations; no native acceptance is asserted."""
+    binding = {key: value for key, value in SOURCE_INPUTS.items() if key != "chunks"}
+    binding.update(manifest_vid="4" * 32, manifest_digest="5" * 64, run_body_digest="6" * 64,
+                   package_commit="7" * 64, expected_chunks=2, recorded_chunks=2 if complete else 0,
+                   missing_chunks=[] if complete else [chunk["entry_vid"] for chunk in SOURCE_CHUNKS],
+                   unexpected_chunks=[], complete=complete)
+    return {"event": "migration_import_prepared", "book": SOURCE_INPUTS["book_id"],
+            "coordinate": {"known_at": 96 if retry else 41},
+            "data": {"source_binding": binding, "recorded_at": 40, "already_recorded": retry,
+                     "run_body_digest": "6" * 64, "package_commit": "7" * 64,
+                     "source_binding_receipt": {"control_entry": "8" * 32, "recorded_at": 41,
+                                                "already_recorded": retry}}}
+
+
+def source_report_fixture() -> tuple[bytes, bytes]:
+    # Deliberately only a container fixture: its placeholder certificate and
+    # records cannot pass fa-verify. Native proof acceptance is tested separately.
+    # These fixed non-palindromic VID bytes also catch the numeric-hex byte order.
+    manifest = (b"FA-MIGRATION-SOURCE\0\x01\x00"
+                + bytes.fromhex("00112233445566778899aabbccddeeff0ffeeddccbbaa9988776655443322110")
+                + bytes.fromhex("66" * 32 + "11" * 32 + "22" * 32 + "33" * 32 + "77" * 32)
+                + bytes.fromhex("04000000000000000200000009000000000000000000000000000000")
+                + bytes.fromhex("aa" * 32 + "100f0e0d0c0b0a090807060504030201" + "bb" * 32))
+    def blob(value: bytes) -> bytes:
+        return len(value).to_bytes(4, "little") + value
+    header = blob(b"fa:report-bundle:v1") + b"\x01\x00\x01\x00"
+    records = b"\x01\x00\x00\x00\x01\x00\x00\x00" + blob(b"r")
+    witnesses = b"\x00\x00\x00\x00\x01\x00\x00\x00" + bytes(8) + blob(manifest)
+    return header + blob(b"c") + blob(b"s") + blob(b"p") + records + witnesses, manifest
+
+
 class LiveOracleControls(unittest.TestCase):
     @staticmethod
     def native_fixture(root: Path, *, daemon: bool = False):
@@ -575,6 +614,115 @@ class LiveOracleControls(unittest.TestCase):
                 self.assertEqual(call.args[0], ["document", "attach", entry, "--evidence", "a" * 64,
                                                "--evidence", "b" * 64])
             self.assertEqual(native.evidence_group_requests, 0)
+
+    def test_source_binding_tracks_normalized_source_census_and_complete_membership(self):
+        prepared = source_binding_event()
+        original = run_live.check_source_binding(prepared, **SOURCE_INPUTS, recorded=set())
+        self.assertFalse(original["complete"])
+        complete = source_binding_event(complete=True)
+        observed = run_live.check_source_binding(complete, **SOURCE_INPUTS,
+                                                recorded={chunk["entry_vid"] for chunk in SOURCE_CHUNKS}, previous=original)
+        self.assertTrue(observed["complete"])
+        # A matching net trial balance would not excuse this omitted member.
+        with self.assertRaisesRegex(run_live.CheckError, "census"):
+            run_live.check_source_binding(complete, **SOURCE_INPUTS,
+                                          recorded={SOURCE_CHUNKS[0]["entry_vid"]}, previous=original)
+
+    def test_source_binding_refuses_wrong_source_run_population_and_false_completeness(self):
+        original = source_binding_event()
+        mutations = [("book_id", "f" * 32), ("run_vid", "f" * 32), ("source_oid", "f" * 64),
+                     ("source_commit", "f" * 64), ("package_oid", "f" * 64), ("source_rows", 2),
+                     ("source_rows", True), ("expected_chunks", 1), ("recorded_chunks", False),
+                     ("missing_chunks", []), ("missing_chunks", [SOURCE_CHUNKS[0]["entry_vid"]] * 2),
+                     ("unexpected_chunks", ["f" * 32]), ("complete", True), ("manifest_vid", "4" * 31),
+                     ("manifest_digest", "G" * 64), ("package_commit", None),
+                     ("run_body_digest", "f" * 64), ("package_commit", "f" * 64)]
+        for name, value in mutations:
+            event = copy.deepcopy(original)
+            event["data"]["source_binding"][name] = value
+            with self.subTest(field=name, value=value), self.assertRaises(run_live.CheckError):
+                run_live.check_source_binding(event, **SOURCE_INPUTS, recorded=set())
+        for value in (None, {}, False):
+            event = copy.deepcopy(original)
+            event["data"]["source_binding"] = value
+            with self.subTest(binding=value), self.assertRaises(run_live.CheckError):
+                run_live.check_source_binding(event, **SOURCE_INPUTS, recorded=set())
+        event = copy.deepcopy(original)
+        event["book"] = "f" * 32
+        with self.assertRaisesRegex(run_live.CheckError, "different book"):
+            run_live.check_source_binding(event, **SOURCE_INPUTS, recorded=set())
+
+    def test_source_binding_retries_cannot_replace_immutable_manifest_or_package(self):
+        original = run_live.check_source_binding(source_binding_event(), **SOURCE_INPUTS, recorded=set())
+        for field, value in [("manifest_vid", "f" * 32), ("manifest_digest", "f" * 64),
+                             ("run_body_digest", "f" * 64), ("package_commit", "f" * 64)]:
+            retry = source_binding_event(retry=True)
+            retry["data"]["source_binding"][field] = value
+            if field in ("run_body_digest", "package_commit"):
+                retry["data"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(run_live.CheckError, "immutable"):
+                run_live.check_source_binding(retry, **SOURCE_INPUTS, recorded=set(), previous=original)
+
+    def test_source_binding_receipts_preserve_separate_upload_and_control_retries(self):
+        original = run_live.check_binding_receipt(source_binding_event())
+        retry = source_binding_event(retry=True)
+        self.assertEqual(run_live.check_binding_receipt(retry, previous=original)["recorded_at"], 41)
+        mutations = [("receipt", "control_entry", "f" * 32), ("receipt", "recorded_at", 42),
+                     ("receipt", "already_recorded", False), ("upload", "recorded_at", 41),
+                     ("upload", "already_recorded", False), ("coordinate", "known_at", 40)]
+        for section, name, value in mutations:
+            event = copy.deepcopy(retry)
+            target = (event["coordinate"] if section == "coordinate" else
+                      event["data"]["source_binding_receipt"] if section == "receipt" else event["data"])
+            target[name] = value
+            with self.subTest(section=section, name=name), self.assertRaises(run_live.CheckError):
+                run_live.check_binding_receipt(event, previous=original)
+        event = source_binding_event()
+        event["data"]["source_binding_receipt"] = None
+        with self.assertRaises(run_live.CheckError):
+            run_live.check_binding_receipt(event)
+        for section, name, value in [("data", "recorded_at", 39), ("coordinate", "known_at", 42)]:
+            event = source_binding_event()
+            event[section][name] = value
+            with self.subTest(section=section, name=name), self.assertRaisesRegex(run_live.CheckError, "fresh preparation"):
+                run_live.check_binding_receipt(event)
+
+    def test_source_report_binds_exact_witness_and_rejects_downgrade_or_substitution(self):
+        binding = source_binding_event()["data"]["source_binding"]
+        bundle, manifest = source_report_fixture()
+        result = run_live.check_source_report_bundle(bundle, binding, SOURCE_CHUNKS)
+        self.assertEqual(result, {"major": 1, "minor": 1, "source_witnesses": 1,
+                                  "manifest_bytes": 322, "bind_leaf_index": 0})
+        # Container recognition is not a verified certificate verdict.
+        self.assertNotIn("verdict", result)
+        for offset in (22, 38, 54, 86, 118, 150, 182, 214, 226, 274):
+            changed = bytearray(manifest)
+            changed[offset] ^= 1
+            with self.subTest(manifest_offset=offset), self.assertRaisesRegex(run_live.CheckError, "exact prepared"):
+                run_live.check_source_report_bundle(bundle[:-len(manifest)] + changed, binding, SOURCE_CHUNKS)
+        downgraded = bytearray(bundle)
+        downgraded[25:27] = bytes(2)
+        with self.assertRaisesRegex(run_live.CheckError, "source-aware manifest"):
+            run_live.check_source_report_bundle(downgraded, binding, SOURCE_CHUNKS)
+        with self.assertRaisesRegex(run_live.CheckError, "exact prepared"):
+            run_live.check_source_report_bundle(bundle, binding, list(reversed(SOURCE_CHUNKS)))
+
+    def test_source_report_framing_refuses_truncation_unbounded_counts_and_extra_witnesses(self):
+        binding = source_binding_event()["data"]["source_binding"]
+        bundle, manifest = source_report_fixture()
+        witness_count = len(bundle) - len(manifest) - 16
+        witness_index = witness_count + 4
+        cases = [bundle[:position] for position in (0, 3, 26, 42, len(bundle) - 1)]
+        cases += [b"\xff\xff\xff\xff" + bundle[4:], bundle + b"unexpected"]
+        bad_count = bytearray(bundle)
+        bad_count[witness_count:witness_count + 4] = (2).to_bytes(4, "little")
+        cases.append(bytes(bad_count))
+        bad_index = bytearray(bundle)
+        bad_index[witness_index:witness_index + 8] = (1).to_bytes(8, "little")
+        cases.append(bytes(bad_index))
+        for value in cases:
+            with self.subTest(length=len(value)), self.assertRaises(run_live.CheckError):
+                run_live.check_source_report_bundle(value, binding, SOURCE_CHUNKS)
 
     def test_group_selection_reaches_daemon_as_retained_stdin_and_failure_keeps_receipts(self):
         # Replace only the book setup and native subprocess. Exercise the actual
