@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=39f088a795a9878ab1b628747c5d5c376598181e
+tree=a80abfc19c894fff13af432831453fe211296df9
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=hz3
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=165
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/final-39f-tier0-detail-20261103
+recorded_utc=2026-11-03T10:37:45Z
