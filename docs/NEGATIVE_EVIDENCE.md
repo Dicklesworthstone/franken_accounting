@@ -2160,3 +2160,26 @@ The admitted set changes only by these four explicit multi-step reasons;
 it does not count them as executable fixes. fa-wgsj is reopened for this
 reproduced regression, retaining its original acceptance. The corrected harness and referenced native workflows
 still require execution on the final source.
+
+## 2026-11-03 — Escrow mutations targeted an unused availability copy
+
+Source inspection confirms fa-escrow's advertised balancing-availability
+function had no kernel caller. The kernel used separate capacity formulas;
+MUT-032/033 mutated only the unused copy. That copy also returned None on
+bounded arithmetic overflow, which the kernel interprets as unbounded.
+The live formulas instead return zero for exhausted bounds and clamp only
+the final capacity to one representable request.
+
+The live formulas now reside in fa-escrow and serve kernel balancing and
+refusal hints. Kernel behavior is preserved; the previously unused public
+helper now has the same bounded-overflow semantics. The two existing
+mutations target those live formulas, retain their original killed-by test,
+and additionally name the kernel's existing capacity test. This retarget is
+not a completed mutation campaign: baseline execution and actual kills are
+still required. New controls cover both normal signs, exhausted and
+unbounded directions, overflow and cancellation. The old byte-length-only
+test now calls balancing_request; an additional test decodes signed wire
+extremes and refuses every truncated length plus oversized payloads.
+The only added dependency edge is test-only access to the existing first-party
+fa-time crate for the EntryPayload fixture. No timed-hold anchor or plan
+change is included; the original fa-yysv remains open.

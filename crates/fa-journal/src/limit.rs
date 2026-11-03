@@ -1515,7 +1515,13 @@ mod tests {
         // Bounded overflow leaves no room; it must never become the None
         // that the posting kernel interprets as an unbounded direction.
         assert_eq!(
-            admissible(&cell(0, i128::MAX, 0, i128::MAX), Side::Debit, &low, Side::Credit).unwrap(),
+            admissible(
+                &cell(0, i128::MAX, 0, i128::MAX),
+                Side::Debit,
+                &low,
+                Side::Credit
+            )
+            .unwrap(),
             Some(0)
         );
         let high = BalanceLimit {
