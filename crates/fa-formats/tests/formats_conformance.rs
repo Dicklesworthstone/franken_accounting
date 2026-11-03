@@ -449,6 +449,162 @@ fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negati
 }
 
 #[test]
+fn canonical_csv_round_trip_preserves_quoted_source_text() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = sample_multi_unit_journal();
+    let plain = write_csv_gl(&original);
+    assert_eq!(write_csv_gl(&read_csv_gl(&plain, &units).unwrap()), plain);
+    let mut entries = original.entries.clone();
+    entries[0].entry_id = "#journal, \"one\"".into();
+    entries[0].description =
+        "  Café, \"entry\"\r\n# fa_account|injected|Bad|Asset|D\ncontinued  ".into();
+    entries[0].migrated_from = Some("Old,GL\nsource".into());
+    entries[0].legs[0].memo = Some(" memo\t\"quoted\", value\r\nsecond ".into());
+    let journal = FormatJournal::new(
+        &original.coordinate.book_name,
+        &original.coordinate.base_unit_code,
+        original.coordinate.base_unit_scale,
+        original.coordinate.effective_through,
+        original.coordinate.known_at_seq,
+        original.accounts.clone(),
+        entries,
+        original.assertions.clone(),
+    )
+    .unwrap();
+    let csv = write_csv_gl(&journal);
+    let marker = "\"#journal, \"\"one\"\"\"";
+    assert!(csv.contains(marker));
+    let read = read_csv_gl(&csv, &units).unwrap();
+    assert_eq!(
+        read, journal,
+        "all text and the original certificate survive"
+    );
+    verify_round_trip_identity("csv_gl_v1", &journal, &read).unwrap();
+    assert_eq!(write_csv_gl(&read), csv);
+    let malformed = csv.replacen(marker, &format!("{marker}suffix"), 1);
+    assert!(matches!(
+        read_csv_gl(&malformed, &units),
+        Err(FormatError::Parse { .. })
+    ));
+    let changed = csv.replacen("Café", "Changed", 1);
+    assert!(
+        read_csv_gl(&changed, &units).is_err(),
+        "changed source text must not retain its certificate"
+    );
+}
+
+#[test]
+fn canonical_csv_accepts_certified_old_unquoted_whitespace() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = sample_multi_unit_journal();
+    let mut entries = original.entries.clone();
+    entries[0].description = "  Historical memo  ".into();
+    entries[0].migrated_from = Some("  Source export  ".into());
+    let c = &original.coordinate;
+    let journal = FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        original.accounts,
+        entries,
+        original.assertions,
+    )
+    .unwrap();
+    let modern = write_csv_gl(&journal);
+    // The old writer left middle-field whitespace unquoted; its original
+    // reader retained it and its certificate therefore binds that text.
+    let historical = modern
+        .replace("\"  Historical memo  \"", "  Historical memo  ")
+        .replace("\"  Source export  \"", "  Source export  ");
+    assert_ne!(historical, modern);
+    assert_eq!(read_csv_gl(&historical, &units).unwrap(), journal);
+}
+
+#[test]
+fn canonical_csv_old_literal_quotes_require_the_original_complete_certificate() {
+    let units = UnitCatalog::embedded().unwrap();
+    for description in ["He said \"hold\"", "\"archive\""] {
+        let original = sample_multi_unit_journal();
+        let mut entries = original.entries.clone();
+        entries[0].description = description.into();
+        let c = &original.coordinate;
+        let journal = FormatJournal::new(
+            &c.book_name,
+            &c.base_unit_code,
+            c.base_unit_scale,
+            c.effective_through,
+            c.known_at_seq,
+            original.accounts,
+            entries,
+            original.assertions,
+        )
+        .unwrap();
+        let modern = write_csv_gl(&journal);
+        let escaped = format!("\"{}\"", description.replace('"', "\"\""));
+        let historical = modern.replace(&escaped, description);
+        assert_ne!(historical, modern);
+        assert_eq!(read_csv_gl(&historical, &units).unwrap(), journal);
+        let changed = historical.replace(description, &format!("{description} changed"));
+        assert!(read_csv_gl(&changed, &units).is_err());
+
+        if description == "He said \"hold\"" {
+            // Interior unescaped quotes are invalid strict CSV. A fallback
+            // must not accept them with either original digest missing.
+            for field in [
+                format!(
+                    "|content_digest={}",
+                    hex_encode(&journal.coordinate.content_digest)
+                ),
+                format!(
+                    "|certificate_digest={}",
+                    hex_encode(&journal.coordinate.certificate_digest)
+                ),
+            ] {
+                let uncertified = historical.replace(&field, "");
+                assert_ne!(uncertified, historical);
+                assert!(read_csv_gl(&uncertified, &units).is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn canonical_csv_never_hides_changed_repeated_metadata_or_ignored_columns() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = sample_multi_unit_journal();
+    let csv = write_csv_gl(&journal);
+    for column in [1, 2, 3, 4, 9, 10, 11] {
+        let mut lines: Vec<_> = csv.lines().map(str::to_owned).collect();
+        let row = lines
+            .iter_mut()
+            .find(|row| row.starts_with("E-0001,2,"))
+            .unwrap();
+        let mut fields: Vec<_> = row.split(',').map(str::to_owned).collect();
+        fields[column] = "changed\"forged".into();
+        *row = fields.join(",");
+        let changed = lines.join("\n");
+        assert!(read_csv_gl(&changed, &units).is_err(), "column {column}");
+    }
+    // Even syntactically valid redundant fields must agree.
+    for (column, value) in [(1, "1"), (9, "3"), (10, "Different description")] {
+        let mut lines: Vec<_> = csv.lines().map(str::to_owned).collect();
+        let row = lines
+            .iter_mut()
+            .find(|row| row.starts_with("E-0001,2,"))
+            .unwrap();
+        let mut fields: Vec<_> = row.split(',').map(str::to_owned).collect();
+        fields[column] = value.into();
+        *row = fields.join(",");
+        assert!(
+            read_csv_gl(&lines.join("\n"), &units).is_err(),
+            "column {column}"
+        );
+    }
+}
+
+#[test]
 fn account_roles_survive_every_journal_round_trip_and_substitution_is_refused() {
     let original = sample_multi_unit_journal();
     let mut accounts = original.accounts.clone();

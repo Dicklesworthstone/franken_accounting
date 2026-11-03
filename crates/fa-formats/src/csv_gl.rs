@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::legacy::{CsvComments, CsvRecord, CsvRecords};
 use fa_model::EntryClass;
 use fa_money::{Amount, Side};
 
@@ -15,10 +16,13 @@ use crate::{
 
 const FMT_CSV: &str = "csv_gl_v1";
 const FMT_NDJSON: &str = "ndjson_gl_stream_v1";
+const CSV_HEADER: &str = "entry_id,line_no,effective_date,recorded_seq,entry_class,account_code,side,amount,currency,unit_scale,description,migrated_from,memo";
 
 /// Write a [`FormatJournal`] as a canonical CSV General Ledger extract with
 /// embedded coordinate header comments, account metadata comments, and a
-/// declared 13-column GL row layout.
+/// declared 13-column GL row layout. Data fields preserve CSV quoting and
+/// whitespace. The existing v1 pipe-delimited metadata still requires
+/// book/account/unit header values without pipes or line breaks.
 pub fn write_csv_gl(journal: &FormatJournal) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -67,9 +71,8 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
             asrt.unit_code,
         ));
     }
-    out.push_str(
-        "entry_id,line_no,effective_date,recorded_seq,entry_class,account_code,side,amount,currency,unit_scale,description,migrated_from,memo\n",
-    );
+    out.push_str(CSV_HEADER);
+    out.push('\n');
     for entry in &journal.entries {
         let date_str = format_date_iso(entry.effective_date);
         let mig = entry.migrated_from.as_deref().unwrap_or("");
@@ -82,19 +85,19 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
             let memo = leg.memo.as_deref().unwrap_or("");
             out.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-                csv_clean(&entry.entry_id),
+                csv_field(&entry.entry_id),
                 idx + 1,
                 date_str,
                 entry.recorded_seq,
                 entry.class.0,
-                csv_clean(&leg.account_code),
+                csv_field(&leg.account_code),
                 side_s,
                 amt,
-                csv_clean(&leg.unit_code),
+                csv_field(&leg.unit_code),
                 leg.unit_scale,
-                csv_clean(&entry.description),
-                csv_clean(mig),
-                csv_clean(memo),
+                csv_field(&entry.description),
+                csv_field(mig),
+                csv_field(memo),
             ));
         }
     }
@@ -105,6 +108,61 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
 /// back into a [`FormatJournal`], verifying the coordinate certificate and
 /// `FA-INV-01` / `FA-INV-04` refold balances.
 pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, FormatError> {
+    let strict = CsvInput::Strict(CsvRecords::new(csv, FMT_CSV, CsvComments::Metadata));
+    match read_csv_gl_records(strict, units, false) {
+        Ok(journal) => Ok(journal),
+        Err(strict_error) => {
+            // Older csv_gl_v1 writers emitted literal quotes without CSV
+            // escaping. Recover that physical-line interpretation only when
+            // BOTH original digests verify against its exact reconstructed text.
+            // Uncertified or changed malformed input retains the strict error.
+            if !csv.contains('"') {
+                return Err(strict_error);
+            }
+            read_csv_gl_records(CsvInput::Legacy(csv.lines().enumerate()), units, true)
+                .or(Err(strict_error))
+        }
+    }
+}
+
+enum CsvInput<'a> {
+    Strict(CsvRecords<'a>),
+    Legacy(std::iter::Enumerate<std::str::Lines<'a>>),
+}
+
+impl<'a> CsvInput<'a> {
+    fn next_record(&mut self) -> Result<Option<CsvRecord<'a>>, FormatError> {
+        match self {
+            Self::Strict(records) => records.next_record(),
+            Self::Legacy(lines) => {
+                for (line, text) in lines {
+                    let text = text.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some(if text.starts_with('#') {
+                        CsvRecord::Comment {
+                            line: line + 1,
+                            text,
+                        }
+                    } else {
+                        CsvRecord::Data {
+                            line: line + 1,
+                            fields: text.split(',').map(str::to_owned).collect(),
+                        }
+                    }));
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn read_csv_gl_records(
+    mut records: CsvInput<'_>,
+    units: &UnitCatalog,
+    require_certificate: bool,
+) -> Result<FormatJournal, FormatError> {
     let mut book_name = String::from("csv-import");
     let mut base_unit_code = String::from("USD");
     let mut base_unit_scale = 2u8;
@@ -117,11 +175,11 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
     let mut entries: Vec<FormatEntry> = Vec::new();
     let mut entry_index: BTreeMap<String, usize> = BTreeMap::new();
 
-    for (line_idx, raw_line) in csv.lines().enumerate() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
+    while let Some(record) = records.next_record()? {
+        let (line_idx, line, fields) = match record {
+            CsvRecord::Comment { line, text } => (line, text, None),
+            CsvRecord::Data { line, fields } => (line, "", Some(fields)),
+        };
         if let Some(meta) = line.strip_prefix("# fa_csv_gl_v1|") {
             for kv in meta.split('|') {
                 if let Some(v) = kv.strip_prefix("book=") {
@@ -231,36 +289,41 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
             });
             continue;
         }
-        if line.starts_with('#') || line.starts_with("entry_id,") {
+        let Some(cols) = fields else {
+            continue;
+        };
+        if cols.iter().map(String::as_str).eq(CSV_HEADER.split(',')) {
             continue;
         }
-
-        let cols: Vec<&str> = line.split(',').collect();
         if cols.len() != 13 {
             return Err(FormatError::Parse {
                 format: FMT_CSV,
                 detail: format!(
                     "line {}: expected 13 CSV columns, got {}",
-                    line_idx + 1,
+                    line_idx,
                     cols.len()
                 ),
             });
         }
         let entry_id = cols[0].to_owned();
-        let eff_date = parse_date_iso(FMT_CSV, cols[2])?;
+        let line_no: usize = cols[1].parse().map_err(|_| FormatError::Parse {
+            format: FMT_CSV,
+            detail: format!("line {line_idx}: invalid line_no {:?}", cols[1]),
+        })?;
+        let eff_date = parse_date_iso(FMT_CSV, &cols[2])?;
         if eff_date > effective_through {
             effective_through = eff_date;
         }
         let recorded_seq: u64 = cols[3].parse().map_err(|_| FormatError::Parse {
             format: FMT_CSV,
-            detail: format!("invalid recorded_seq in {line:?}"),
+            detail: format!("line {line_idx}: invalid recorded_seq {:?}", cols[3]),
         })?;
         let class_tag: u16 = cols[4].parse().map_err(|_| FormatError::Parse {
             format: FMT_CSV,
-            detail: format!("invalid entry_class in {line:?}"),
+            detail: format!("line {line_idx}: invalid entry_class {:?}", cols[4]),
         })?;
         let account_code = cols[5].to_owned();
-        let side = match cols[6] {
+        let side = match cols[6].as_str() {
             "D" => Side::Debit,
             "C" => Side::Credit,
             other => {
@@ -278,7 +341,19 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
                     format: FMT_CSV,
                     unit: unit_code.clone(),
                 })?;
-        let mantissa = parse_exact_decimal(FMT_CSV, cols[7], unit_scale)?;
+        let declared_scale: u8 = cols[9].parse().map_err(|_| FormatError::Parse {
+            format: FMT_CSV,
+            detail: format!("line {line_idx}: invalid unit_scale {:?}", cols[9]),
+        })?;
+        if declared_scale != unit_scale {
+            return Err(FormatError::Parse {
+                format: FMT_CSV,
+                detail: format!(
+                    "line {line_idx}: declared unit_scale {declared_scale} differs from {unit_code}'s registered scale {unit_scale}"
+                ),
+            });
+        }
+        let mantissa = parse_exact_decimal(FMT_CSV, &cols[7], unit_scale)?;
         let description = cols[10].to_owned();
         let migrated_from = if cols[11].is_empty() {
             None
@@ -292,7 +367,23 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
         };
 
         let pos = match entry_index.get(&entry_id).copied() {
-            Some(p) => p,
+            Some(p) => {
+                let entry = &entries[p];
+                if entry.effective_date != eff_date
+                    || entry.recorded_seq != recorded_seq
+                    || entry.class != EntryClass(class_tag)
+                    || entry.description != description
+                    || entry.migrated_from != migrated_from
+                {
+                    return Err(FormatError::Parse {
+                        format: FMT_CSV,
+                        detail: format!(
+                            "line {line_idx}: conflicting metadata within entry {entry_id:?}"
+                        ),
+                    });
+                }
+                p
+            }
             None => {
                 let p = entries.len();
                 entries.push(FormatEntry {
@@ -308,6 +399,14 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
                 p
             }
         };
+        if line_no != entries[pos].legs.len() + 1 {
+            return Err(FormatError::Parse {
+                format: FMT_CSV,
+                detail: format!(
+                    "line {line_idx}: entry line_no must start at 1 and be gap-free in source order"
+                ),
+            });
+        }
         entries[pos].legs.push(FormatLeg {
             account_code,
             side,
@@ -329,6 +428,13 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
         assertions,
     )?;
 
+    if require_certificate && (expected_content.is_none() || expected_cert.is_none()) {
+        return Err(FormatError::Parse {
+            format: FMT_CSV,
+            detail: "historical literal-quote CSV requires both original certificate digests"
+                .into(),
+        });
+    }
     if let (Some(exp_content), Some(exp_cert)) = (expected_content, expected_cert) {
         let coord = ExportCoordinate {
             book_name,
@@ -446,8 +552,12 @@ pub fn verify_ndjson_gl_stream(ndjson: &str) -> Result<usize, FormatError> {
     Ok(detail_rows)
 }
 
-fn csv_clean(s: &str) -> String {
-    s.replace([',', '\n', '\r'], " ")
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) || s.trim() != s || s.starts_with('#') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
 }
 
 /// A JSON string body (RFC 8259 §7): backslash, quote and every control
