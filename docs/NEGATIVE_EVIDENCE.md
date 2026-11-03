@@ -1623,27 +1623,37 @@ record four admitted reads. All original role and refusal assertions remain.
 The shared read-scope runner forwards nonempty stderr without dumping every
 successful JSON response; targeted positive witnesses remain.
 
-These review corrections and added controls are authored, not yet executed
-native evidence. Existing 19e passes do not qualify them. The source review
-also confirms that output comparison cannot detect the `accounts_at` swaps
-by itself; there is still no substrate read-counter claim.
+These aging corrections and added controls subsequently ran on exact
+`e9dc06b7750c818bcacd2094d2ee2630af09ab86`: all four pinned AR/AP role reads
+and all three plain aging forms passed, including the bare-certification,
+current-revocation, exact-amount and AccessEvent assertions. The source
+review also confirms that output comparison cannot detect the `accounts_at`
+swaps by itself; there is still no substrate read-counter claim.
 
 The corrected source `e9dc06b7750c818bcacd2094d2ee2630af09ab86`, tree
 `ac3c0fdbc6620118029d523766b0b7a10f32e878`, subsequently passed original
 Tier 0: formatting and remote all-target check on hz3, recorded
 2026-11-02 22:10:22 UTC (check 1533 seconds). The original scanner also
 passed all 33 roots with zero critical findings. Neither result executes
-the aging regression. Fresh native CLI/MCP and full-repository runs started
-on that frozen source on November 3; they remain separate from the pending
-test repairs below.
+the aging regression. The fresh six-target CLI run exited 101 on November 3
+at 02:46:55 UTC: 253 executed, 251 passed, two failed, none ignored or
+filtered. The complete GL-certificate (5), proofs (51), read-scope (11) and
+robot-schema (2) targets passed; cli was 156/1 and closing 26/1. Those two
+failures are detailed below. These are component results on e9dc, not a
+full-repository pass or qualification of the later repaired main.
 
 ## 2026-11-03 — equity and custom-trace test integration
 
 StormyLion reported three executed failures on origin `919ecf9b9` plus its
 separate changes (Agent Mail 6285). Its changes did not touch the statement
 or MCP paths in question. That is peer evidence on its stated source;
-the local executions against unmodified `e9dc06b77` are still pending.
-Source inspection confirms these test defects:
+local execution against unmodified `e9dc06b77` independently reproduced the
+two CLI failures: emitted 273/declared 274 with only
+`equity_roll_forward_diff` missing, and the read-only comparison receiving
+usage exit 2 for unsupported `--grant`. The separate whole-MCP attempt
+reached its original 1800-second compile cap (remote 137 at 02:53:29 UTC)
+before any test ran; it is neither a positive result nor a runtime
+counterexample. Source inspection confirms these test defects:
 
 - The binary event-coverage test never invoked the newly declared
   `equity_roll_forward_diff` event. It now runs the real comparison against
@@ -1686,3 +1696,16 @@ certification must name FA-REF-011 and `produce`. The event smoke also
 requires one USD unit and all 15 comparison lines, so an empty report cannot
 pass its zero-delta assertions. These final review changes still await
 native execution; the review is source evidence only.
+
+The original e9dc full run retained its real compile-cap failure (remote 137
+at 02:51:05 UTC, unchanged 1800-second limit). Once the local CLI failures
+were reproduced and their corrections committed, I stopped the superseded
+full driver and cooperatively cancelled only its verified Clippy child,
+`rchw-7d933631-afb7-45eb-b85e-395daa9f15d8`. Recovery acknowledged terminal
+delivery 143 at 02:57:26 UTC; the earlier daemon 130 remains recorded.
+The original proof verifier then exited 0, binding a stable **RED/partial**
+bundle with check exit 143 and note
+`195fe69e527470161df6125b6715adc5abefb72b`. That proves integrity only; it
+does not qualify a full pass or permit resume. No old-source MCP retry,
+cap increase, cache manipulation or skipped assertion substitutes for
+native execution of the corrected source.
