@@ -29,6 +29,17 @@ import public_ledger_source as source
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "crates/fa-oracles/fixtures/public_ledger"
 SOURCE_SYSTEM = "oklahoma-omes-period-activity-v1"
+# Docket's admitted MIME token contains no spaces. Keep the original Windows
+# code page explicit without transcoding the retained publisher bytes.
+ORIGINAL_CSV_MIME = "text/csv;charset=windows-1252"
+SOURCE_UPLOADER = "public-data-source-uploader"
+SOURCE_REVIEWER = "public-data-source-reviewer"
+REVIEW_SCOPE = (
+    "Source and helper documents are AgentUpload. A distinct local test "
+    "principal records native Reviewed attestations; this exercises evidence "
+    "admission, not independently authenticated human examination. Generated "
+    "transforms do not assert the receipt-derived Generated provenance grade."
+)
 PERIODS = ["FY2024-P10", "FY2024-P11", "FY2024-P12"]
 DIMENSION_ENCODING = "fa-dimension-ids-v1"
 CSV_GL_COLUMNS = (
@@ -302,6 +313,9 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
     manifest = {
         "format": "fa-public-ledger-replay-v1", "scope": SCOPE,
         "source_url": source.SOURCE_URL, "source_sha256": source.SOURCE_SHA256,
+        "source_encoding": source.SOURCE_ENCODING, "normalized_encoding": "utf-8",
+        "original_selection_mime": ORIGINAL_CSV_MIME,
+        "review_scope": REVIEW_SCOPE,
         "input_sha256": provenance["sha256"], "input_kind": provenance["kind"],
         "agency": agency, "agency_name": rows[0]["fields"]["OCP_AGNCY_NAME"],
         "original_selection_sha256": sha256(original), "source_rows": len(rows),
@@ -361,8 +375,28 @@ class Native:
         return self.execute(self.command(*args), expect)
 
     def document(self, path: Path, kind: str = "Spreadsheet", mime: str = "text/csv") -> str:
-        return self.call("document", "add", path, "--kind", kind, "--mime", mime,
-                         "--grade", "HumanUpload")["data"]["oid"]
+        # These bytes were fetched or transformed by the driver. Neither a
+        # public publisher nor a generated file makes this a human upload or
+        # establishes the receipt chain required for the Generated grade.
+        added = self.call("document", "add", path, "--kind", kind, "--mime", mime,
+                          "--grade", "AgentUpload", "--as", SOURCE_UPLOADER)
+        require(added.get("event") == "document", "source intake did not return a document receipt")
+        document = added["data"]
+        require(document.get("grade") == "AgentUpload" and document.get("self_sourced") is True,
+                "source intake did not retain the declared self-sourced AgentUpload provenance")
+        oid = document["oid"]
+        require(isinstance(oid, str) and re.fullmatch(r"[0-9a-f]{64}", oid, re.ASCII) is not None,
+                "source intake returned an invalid document identity")
+        # The real evidence law requires a different principal's Reviewed
+        # attestation before self-sourced evidence can meet a posting minimum.
+        # These are local fixture principals, as declared by REVIEW_SCOPE.
+        reviewed = self.call("document", "attest", "review", "--document", oid,
+                             "--as", SOURCE_REVIEWER, "--grant", "approve")
+        require(reviewed.get("event") == "attestation_recorded"
+                and reviewed["data"].get("claim") == "Reviewed"
+                and reviewed["data"].get("subject") == oid,
+                "source review did not attest the retained document")
+        return oid
 
     def head(self) -> int:
         return self.call("book", "info")["coordinate"]["known_at"]
@@ -672,7 +706,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
         native.call("chart", "import", chart_file)
     department_values = native.register_departments(manifest["departments"])
     native.call("period", "create", "--fiscal-year", "2024")
-    raw_oid = native.document(output / "original-agency.csv", mime="text/csv; charset=windows-1252")
+    raw_oid = native.document(output / "original-agency.csv", mime=ORIGINAL_CSV_MIME)
     manifest_oid = native.document(output / "manifest.json", "Workpaper", "application/json")
     empty = output / "no-opening-stock.csv"
     empty.write_text("account,unit,net\n", encoding="utf-8")
@@ -681,7 +715,8 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
     retries = []
     entry_ids: dict[str, str] = {}
     checks = ["pinned_source_bytes", "complete_agency_row_coverage", "all_source_groups_balance_exactly",
-              "no_subcent_rounding", "all_original_chartfields_retained"]
+              "no_subcent_rounding", "all_original_chartfields_retained",
+              "source_and_helper_agent_uploads_have_native_local_reviews"]
     for run in manifest["runs"]:
         name = run["name"]
         source_oid = native.document(output / run["source"])
@@ -824,6 +859,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             "dimension_tamper_refusal": dimension_rejected, "dimension_tamper_mutation": dimension_mutation,
             "dimension_export_scope": "Exact native kind IDs and value VIDs, including explicit empty sets; source codes are checked separately against retained source and native registration, not inferred from a VID",
             "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+            "review_scope": REVIEW_SCOPE,
             "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"}
 
 
