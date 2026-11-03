@@ -296,45 +296,80 @@ transaction in the state's system, or evidence that an anomaly is fraud.
 
 ## Validation status
 
-The full official resource was downloaded through its actual HTTPS redirect
-and independently verified against the pinned byte count and SHA-256.
-Full-download and retained-slice preparation produce byte-identical files for
-this complete Development Finance Authority population.
+The pinned official distribution and complete-agency selections have independent
+source checks. The Development Finance Authority helper has 18 offline tests;
+the integrated public-ledger/source suites now have **79 passing Python tests**,
+including the 18 recovery tests. Constructed native-shaped payloads remain unit
+fixtures; the native results below are separate actual executions.
 
-The recorded helper coverage before the new resume work was **18 Development
-Finance Authority tests** and **61 integrated public-ledger Python checks**.
-These are separate suites. They cover source/row-index integrity, exact Decimal
-comparisons, output preservation, native request contracts, grouped-stage
-receipts, document custody, and source/export department controls. The
-Development Finance Authority checks include the corrected native column-map
-contract: the TOML declares the columns, while the native intent supplies the
-account map once. An earlier native attempt exposed a duplicate
-`account_map`; the corrected Development Finance Authority workflow still
-needs its own native rerun before it can be recorded as passing.
+The complete Development Finance Authority integration now passes: **312 source
+rows, six retained zero rows, 306 monetary legs and 104 reconstructed monthly
+entries**. Duplicating the complete balanced source is refused for the exact
+independent FY2024-P04 trial-balance mismatch, with the observed native frontier
+unchanged at 20. It cannot pass this negative control merely by returning an
+unrelated usage error. This case is included in the actual **40/40** passing
+native migration integration target. The formats library and conformance targets
+also passed **78/78** and **28/28** tests. The
+[native-target record](../evidence/public_ledger/native-tests-2026-11-03.json)
+binds those counts to logs and the two corrected test-source blobs.
 
-The earlier [account-level execution record](../evidence/public_ledger/validation-2026-11-03.json)
-does establish real native replays for the complete museum, pension and
-university selections. Those runs used actual `fa` and `fa-verify` processes
-and checked monthly/cumulative/gross account activity, proof verification and
-one-cent tamper rejection. They are different populations from this authority
-and predate the grouped-staging, department projection and dimension-aware
-export checks. Their native success does not validate those later extensions.
+Fresh actual processes built from `93714f77` completed these workloads:
 
-The new resume implementation adds **18 driver unit tests**, which were
-**UNRUN** when the executor became unavailable. No new resume, grouped-staging,
-department/export or Development Finance Authority native PASS is claimed.
-Constructed native-shaped payloads and mocked command responses remain unit
-test fixtures, not evidence of a persisted native import or crash recovery.
-Full-source versus retained-fixture normalization was separately compared for
-the museum, pension and university populations, including original CSV,
-chart, column map and normalized run files; that source comparison is also a
-separate claim from native execution.
+| Complete selection | Source rows | Monetary legs | Accounts | Migration entries | Native department values | Outcome |
+|---|---:|---:|---:|---:|---:|---|
+| 20400 museum | 125 | 121 | 43 | 15 | 3 | PASS |
+| 31500 firefighters pension | 137 | 131 | 51 | 6 | 3 | PASS after two deliberate interruptions |
+| 66000 university | 1,055 | 1,051 | 223 | 27 | 8 | PASS |
 
-The [public-ledger workflow](../.github/workflows/public-ledger.yml) includes
-the canonical CSV regressions and native `oklahoma::` integration tests,
-alongside the helper checks. Its logs and each native run's actual report
-establish what executed. No repository-wide or Tier0 PASS for the final
-changed tree is inferred from earlier source checks or native measurements.
+The [current native evidence](../evidence/public_ledger/validation-2026-11-03-93714f77.json)
+records source and executable hashes, each completed check, complete-report and
+ADS-package hashes, caller-trusted fixture public keys, and original recovery
+receipts. All three actual ADS packages verify independently; their monetary
+and dimension-only mutations each return verifier exit 8. Native department
+reports preserve exact gross/net amounts and replay their certificates. These
+results extend the earlier account-only runs with grouped staging, native
+department attribution, dimension-aware export proofs and recovery.
+
+### Reproduce the controlled recovery boundaries
+
+`public_ledger_interrupt.py` calls the actual native commands and stops at a
+declared boundary. It does not fabricate a response or simulate a transaction
+crash. First it posts only the first member of the saved group; the second
+attempt stops just after the first real finalization commits. Each of these
+two commands intentionally returns driver exit 1. The ordinary final resume
+must exit zero and produce the complete `report.json`.
+
+```bash
+python3 scripts/public_ledger_interrupt.py \
+  --driver scripts/public_ledger.py --boundary partial-stage \
+  --marker /tmp/pension-stage-stop.json -- \
+  run --agency 31500 --out /tmp/pension-recovery \
+  --fa /absolute/path/to/fa --fa-verify /absolute/path/to/fa-verify
+
+python3 scripts/public_ledger_interrupt.py \
+  --driver scripts/public_ledger.py --boundary after-finalize \
+  --marker /tmp/pension-finalize-stop.json -- \
+  run --resume --out /tmp/pension-recovery
+
+python3 scripts/public_ledger.py run --resume --out /tmp/pension-recovery
+```
+
+Use new output/marker paths and retain the original source, helper and binary
+pins across attempts. The executed campaign preserved the first chunk's VID,
+proposal digest and CommitSeq 40, and the first finalization's control-entry ID
+and CommitSeq 60. The final resume returned those original receipts without
+another monetary publication and used the original all-staged invisible prefix,
+CommitSeq 57, for historical checks. Both failed attempts and their genuine
+native responses remain retained. The final report's duration and command count
+describe its final attempt only, not the whole three-attempt campaign; read-only
+recovery preflight calls precede per-attempt transcript creation.
+
+The [public-ledger workflow](../.github/workflows/public-ledger.yml) runs the
+source and native acceptance commands where the required execution environment
+is available. The restored session could not bind Unix sockets, so daemon
+socket regressions failed before serving; direct CLI native executions above
+did complete. Full workspace Tier0 remains unpassed after a compiler SIGKILL.
+These scoped native results do not constitute a repository-wide release gate.
 
 ## Remaining high-value work
 

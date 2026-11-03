@@ -87,6 +87,25 @@ def normalized_entries(path: Path, rows: list[dict]) -> list[dict]:
     return entries
 
 
+def configure_analysis_roles(native: ledger.Native, accounts: list[str]) -> None:
+    """Verify the declared chart and assign only its admitted cash role.
+
+    Native investor analysis classifies Equity accounts by type. Its explicit
+    investor_capital role is reserved for Liability accounts, so assigning it
+    to these unchanged analysis accounts would correctly be refused.
+    The transfer role is assigned later, after the missing-role control.
+    """
+    expected = {f"BLMIS-{account}": "Equity" for account in accounts}
+    expected.update({source.CASH_ACCOUNT: "Asset", source.TRANSFER_ACCOUNT: "Liability"})
+    listed = native.call("chart", "list")
+    actual = listed["data"]["accounts"]
+    ledger.require(listed.get("event") == "accounts" and len(actual) == len(expected)
+                   and {account["code"]: account["type"] for account in actual} == expected
+                   and all(account["unit"] == "USD" and account["leaf"] is True for account in actual),
+                   "native analysis chart differs from the declared Equity principals and cash/transfer counterparts")
+    native.call("chart", "role", source.CASH_ACCOUNT, "cash")
+
+
 def register_source_party(native: ledger.Native, output: Path) -> dict:
     """Bind the source account label to actual native party and dimension IDs."""
     path = output / "source-account-party.json"
@@ -166,14 +185,14 @@ def verify_principal_analysis(native: ledger.Native, rows: list[dict]) -> dict:
     """Run real missing-role and complete-role observations across native prefixes."""
     command = ["procedure", "run", PONZI_PROCEDURE, "--effective-through", rows[-1]["date"]]
     before_role = native.head()
-    without = native.call(*command, "--as-known-at", before_role)
+    without = native.call(*command, "--known-at", before_role)
     missing = check_principal_analysis(without, rows, before_role, include_transfers=False)
     native.call("chart", "role", source.TRANSFER_ACCOUNT, "investor_transfer")
     after_role = native.head()
     ledger.require(after_role > before_role, "declaring principal-transfer semantics did not publish native history")
-    complete = check_principal_analysis(native.call(*command, "--as-known-at", after_role),
+    complete = check_principal_analysis(native.call(*command, "--known-at", after_role),
                                         rows, after_role, include_transfers=True)
-    historical = native.call(*command, "--as-known-at", before_role)
+    historical = native.call(*command, "--known-at", before_role)
     ledger.require(historical == without, "later transfer-role assignment changed the earlier native analysis")
     return {"complete": complete, "without_transfer_role": missing,
             "historical_missing_role_result_unchanged": True,
@@ -325,8 +344,21 @@ def check_certified_ledger(native: ledger.Native, rows: list[dict], posted: dict
     replay, replay_bytes = native.execute_events(native.command(
         "replay", f"C:{certificate['oid']}", "--view", "detail", *arguments,
         "--as-known-at", report["data"]["known_at"]))
-    ledger.require(len(replay) == 1 and replay_bytes == encoded.splitlines(keepends=True)[0],
+    replay_lines = replay_bytes.splitlines(keepends=True)
+    ledger.require(len(replay) == 2 and len(replay_lines) == 2
+                   and replay[0].get("event") == "general_ledger"
+                   and replay[1].get("event") == "report_replayed",
+                   "native ledger replay must return its report and verification receipt")
+    ledger.require(replay_lines[0] == encoded.splitlines(keepends=True)[0],
                    "retained native ledger certificate did not replay exact robot bytes")
+    receipt = replay[1]
+    ledger.require(receipt.get("certificate") == certificate["oid"]
+                   and receipt.get("book") == report["book"]
+                   and receipt.get("coordinate") == report["coordinate"]
+                   and receipt["data"]["family"] == "roll-forward"
+                   and receipt["data"]["known_at"] == report["data"]["known_at"]
+                   and receipt["data"]["output_digest"] == certificate["output_digest"],
+                   "native ledger replay receipt differs from its certified report")
     return {"oid": certificate["oid"], "known_at": report["data"]["known_at"],
             "output_digest": certificate["output_digest"], "compared_native_lines": len(posted),
             **({"native_report": report["data"]} if retain_report else {})}
@@ -466,14 +498,14 @@ def check_glantz_principal_analysis(report: dict, rows: list[dict], known_at: in
 def verify_glantz_principal_analysis(native: ledger.Native, rows: list[dict]) -> dict:
     command = ["procedure", "run", PONZI_PROCEDURE, "--effective-through", max(row["date"] for row in rows)]
     before = native.head()
-    missing_report = native.call(*command, "--as-known-at", before)
+    missing_report = native.call(*command, "--known-at", before)
     missing = check_glantz_principal_analysis(missing_report, rows, before, include_transfers=False)
     native.call("chart", "role", source.TRANSFER_ACCOUNT, "investor_transfer")
     after = native.head()
     ledger.require(after > before, "declaring transfer semantics did not publish history")
-    complete = check_glantz_principal_analysis(native.call(*command, "--as-known-at", after),
+    complete = check_glantz_principal_analysis(native.call(*command, "--known-at", after),
                                               rows, after, include_transfers=True)
-    ledger.require(native.call(*command, "--as-known-at", before) == missing_report,
+    ledger.require(native.call(*command, "--known-at", before) == missing_report,
                    "later transfer-role assignment changed the earlier six-account analysis")
     differences = {}
     for account, selected in grouped_accounts(rows).items():
@@ -547,8 +579,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
                 "--base-unit", "USD", "--calendar", "monthly")
     native.call("chart", "import", output / "chart.json")
     party = register_source_party(native, output)
-    native.call("chart", "role", source.CASH_ACCOUNT, "cash")
-    native.call("chart", "role", source.PRINCIPAL_ACCOUNT, "investor_capital")
+    configure_analysis_roles(native, [source.ACCOUNT])
     years = range(int(rows[0]["date"][:4]), int(rows[-1]["date"][:4]) + 1)
     for year in years:
         native.call("period", "create", "--fiscal-year", year)
@@ -688,9 +719,7 @@ def run_glantz_native(binary: Path, verifier: Path, output: Path, pdf: Path | No
                 "--base-unit", "USD", "--calendar", "monthly")
     native.call("chart", "import", output / "chart.json")
     parties = register_glantz_parties(native, output, rows)
-    native.call("chart", "role", source.CASH_ACCOUNT, "cash")
-    for account in accounts:
-        native.call("chart", "role", f"BLMIS-{account}", "investor_capital")
+    configure_analysis_roles(native, list(accounts))
     first_date = min(row["date"] for row in rows)
     last_date = max(row["date"] for row in rows)
     for year in range(int(first_date[:4]), int(last_date[:4]) + 1):

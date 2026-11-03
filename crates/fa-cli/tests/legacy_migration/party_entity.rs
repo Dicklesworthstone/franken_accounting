@@ -169,7 +169,7 @@ fn party_and_entity_codes_survive_retained_migration_activation_retry_and_export
         );
     }
     assert_eq!(head(&fixture.book), before_retry);
-    ok(&fixture.book, &["verify", "registers"]);
+    ok(&fixture.book, &["verify", "registers", "--period", OPENING]);
     assert_eq!(
         rows(data(&ok(&fixture.book, &["entity", "list"])), "entities").len(),
         2,

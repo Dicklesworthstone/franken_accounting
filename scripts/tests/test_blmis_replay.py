@@ -288,13 +288,49 @@ class BlmisReplayTests(unittest.TestCase):
                     self.assertTrue(result["historical_missing_role_result_unchanged"])
                     self.assertEqual(native.call.call_args_list, [
                         mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
-                                  "--as-known-at", 1500),
+                                  "--known-at", 1500),
                         mock.call("chart", "role", "BLMIS-TRANSFER", "investor_transfer"),
                         mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
-                                  "--as-known-at", 2000),
+                                  "--known-at", 2000),
                         mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
-                                  "--as-known-at", 1500),
+                                  "--known-at", 1500),
                     ])
+
+    def test_analysis_role_setup_preserves_equity_and_rejects_changed_native_chart(self):
+        for accounts in ([source.ACCOUNT], list(source.GLANTZ_ACCOUNTS)):
+            principals = [{"code": f"BLMIS-{account}", "type": "Equity", "unit": "USD", "leaf": True}
+                          for account in accounts]
+            declared = principals + [
+                {"code": source.CASH_ACCOUNT, "type": "Asset", "unit": "USD", "leaf": True},
+                {"code": source.TRANSFER_ACCOUNT, "type": "Liability", "unit": "USD", "leaf": True},
+            ]
+            for mutation in (None, "liability_principal", "wrong_cash", "missing", "duplicate", "unit", "parent"):
+                actual = deepcopy(declared)
+                if mutation == "liability_principal":
+                    actual[0]["type"] = "Liability"
+                elif mutation == "wrong_cash":
+                    actual[-2]["type"] = "Equity"
+                elif mutation == "missing":
+                    actual.pop(0)
+                elif mutation == "duplicate":
+                    actual[-1] = deepcopy(actual[0])
+                elif mutation == "unit":
+                    actual[0]["unit"] = "EUR"
+                elif mutation == "parent":
+                    actual[0]["leaf"] = False
+                native = mock.Mock(spec=replay.ledger.Native)
+                native.call.side_effect = [{"event": "accounts", "data": {"accounts": actual}}, {}]
+                with self.subTest(accounts=len(accounts), mutation=mutation):
+                    if mutation is None:
+                        replay.configure_analysis_roles(native, accounts)
+                        self.assertEqual(native.call.call_args_list, [
+                            mock.call("chart", "list"),
+                            mock.call("chart", "role", "BLMIS-CASH", "cash"),
+                        ])
+                    else:
+                        with self.assertRaisesRegex(replay.ledger.ReplayError, "native analysis chart differs"):
+                            replay.configure_analysis_roles(native, accounts)
+                        native.call.assert_called_once_with("chart", "list")
 
     def test_native_party_registration_uses_actual_dimension_identity_not_party_vid(self):
         registered = {"event": "rea_recorded", "data": {"object": "party", "code": "BLMIS-1ZA192",
@@ -589,14 +625,25 @@ class BlmisReplayTests(unittest.TestCase):
         # are not cryptographic certificates and are never sent to fa-verify.
         certificate = {"oid": "unit-only-certificate", "output_digest": "unit-only-output",
                        "output_format": "fa:roll-forward:v1"}
-        report = {"event": "general_ledger", "certificate": certificate["oid"], "data": data}
+        report = {"event": "general_ledger", "certificate": certificate["oid"], "data": data,
+                  "book": "unit-only-book", "coordinate": {"branch": "trunk", "known_at": data["known_at"],
+                  "effective": "between:1992-12-07..2008-10-30", "time_evidence": None}}
         events = [report, {"event": "report_certificate", "data": certificate}]
-        first = (json.dumps(report, sort_keys=True) + "\n").encode()
-        encoded = first + (json.dumps(events[1], sort_keys=True) + "\n").encode()
+        first = json.dumps(report, sort_keys=True) + "\n"
+        encoded = first + json.dumps(events[1], sort_keys=True) + "\n"
+        receipt = self.replay_receipt(report, certificate)
         native = mock.Mock(spec=replay.ledger.Native)
         native.command.side_effect = lambda *args: [str(arg) for arg in args]
-        native.execute_events.side_effect = [(events, encoded), ([report], first)]
+        native.execute_events.side_effect = [(events, encoded),
+            ([report, receipt], first + json.dumps(receipt, sort_keys=True) + "\n")]
         return native, posted, events, encoded, first
+
+    @staticmethod
+    def replay_receipt(report, certificate):
+        return {"event": "report_replayed", "certificate": certificate["oid"],
+                "book": report["book"], "coordinate": deepcopy(report["coordinate"]),
+                "data": {"family": "roll-forward", "known_at": report["data"]["known_at"],
+                         "output_digest": certificate["output_digest"], "output_bytes": 12345, "file": None}}
 
     def test_certified_report_replays_the_identical_account_date_and_known_at_scope(self):
         native, posted, events, _, _ = self.certified_inputs()
@@ -629,12 +676,41 @@ class BlmisReplayTests(unittest.TestCase):
     def test_certificate_format_binding_and_exact_replay_bytes_are_required(self):
         for name in ("format", "binding", "bytes", "event_count"):
             native, posted, events, encoded, first = self.certified_inputs()
+            receipt = self.replay_receipt(events[0], events[1]["data"])
             if name == "format":
                 events[1]["data"]["output_format"] = "fa:other-report:v1"
             elif name == "binding":
                 events[0]["certificate"] = "different-certificate"
-            replay_events = [events[0], events[0]] if name == "event_count" else [events[0]]
-            replay_bytes = first.replace(b"1992-12-07", b"1992-12-08") if name == "bytes" else first
+            replay_events = [events[0]] if name == "event_count" else [events[0], receipt]
+            report_bytes = first.replace("1992-12-07", "1992-12-08") if name == "bytes" else first
+            replay_bytes = report_bytes + json.dumps(receipt, sort_keys=True) + "\n"
+            native.execute_events.side_effect = [(events, encoded), (replay_events, replay_bytes)]
+            with self.subTest(name=name), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_certified_ledger(native, self.rows, posted)
+
+    def test_ledger_replay_requires_ordered_events_and_matching_verification_receipt(self):
+        for name in ("missing", "extra", "reversed", "wrong_event", "certificate", "book", "coordinate",
+                     "family", "known_at", "output_digest"):
+            native, posted, events, encoded, _ = self.certified_inputs()
+            receipt = self.replay_receipt(events[0], events[1]["data"])
+            replay_events = [deepcopy(events[0]), receipt]
+            if name == "missing":
+                replay_events.pop()
+            elif name == "extra":
+                replay_events.append(deepcopy(receipt))
+            elif name == "reversed":
+                replay_events.reverse()
+            elif name == "wrong_event":
+                receipt["event"] = "report_certificate"
+            elif name in ("certificate", "book"):
+                receipt[name] = "another-source"
+            elif name == "coordinate":
+                receipt["coordinate"]["known_at"] += 1
+            elif name == "known_at":
+                receipt["data"][name] += 1
+            else:
+                receipt["data"][name] = "another-value"
+            replay_bytes = "".join(json.dumps(event, sort_keys=True) + "\n" for event in replay_events)
             native.execute_events.side_effect = [(events, encoded), (replay_events, replay_bytes)]
             with self.subTest(name=name), self.assertRaises(replay.ledger.ReplayError):
                 replay.check_certified_ledger(native, self.rows, posted)
@@ -966,6 +1042,32 @@ class GlantzSixAccountReplayTests(unittest.TestCase):
                   for account, position in positions.items()}
         self.assertEqual(deltas, {"1T0026": 238_426_600, "1ZA192": -346_263_400, "1ZB010": -20_000_000,
                                   "1ZB143": 395_500_000, "1ZR010": 0, "1ZR176": 0})
+
+    def test_six_account_role_control_uses_procedure_known_at_and_preserves_history(self):
+        without = six_account_analysis_input(self.originals, include_transfers=False)
+        without["data"]["known_at"] = 1500
+        complete = six_account_analysis_input(self.originals, include_transfers=True)
+        for changed_history in (False, True):
+            native = mock.Mock(spec=replay.ledger.Native)
+            native.head.side_effect = [1500, 2000]
+            native.call.side_effect = [without, {}, complete, complete if changed_history else without]
+            with self.subTest(changed_history=changed_history):
+                if changed_history:
+                    with self.assertRaisesRegex(replay.ledger.ReplayError, "changed the earlier six-account analysis"):
+                        replay.verify_glantz_principal_analysis(native, self.ordered)
+                else:
+                    result = replay.verify_glantz_principal_analysis(native, self.ordered)
+                    self.assertTrue(result["historical_missing_role_result_unchanged"])
+                    self.assertEqual(set(result["declared_transfer_effect_cents"]), set(self.groups))
+                    self.assertEqual(native.call.call_args_list, [
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--known-at", 1500),
+                        mock.call("chart", "role", "BLMIS-TRANSFER", "investor_transfer"),
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--known-at", 2000),
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--known-at", 1500),
+                    ])
 
     def test_six_account_principal_comparison_refuses_missing_extra_swapped_or_changed_findings(self):
         for mutation in ("missing", "duplicate", "wrong_party", "wrong_cohort", "cash_as_transfer",

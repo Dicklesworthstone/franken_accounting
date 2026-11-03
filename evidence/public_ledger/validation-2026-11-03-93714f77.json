@@ -1,0 +1,468 @@
+{
+  "binaries": {
+    "fa": {
+      "sha256": "b8a0055b2ab294aa6903204a0893fe2626acbc4f025742b335adff0ad9d42498",
+      "size_bytes": 239172424
+    },
+    "fa-verify": {
+      "sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8",
+      "size_bytes": 20090376
+    },
+    "fad": {
+      "sha256": "ccef4b475457f41b8005421edaa180c4446f70c8aa0ca143d45957803f8d8082",
+      "size_bytes": 240899624
+    }
+  },
+  "boundary": "Complete published agency selections of monthly ChartField activity; no original journal IDs, daily dates, opening stocks or complete agency books are asserted. Fixture reviews/signing keys are not independent human audits or publisher signatures.",
+  "cargo": "cargo 1.100.0-nightly (e8cb624d5 2026-08-22)",
+  "cases": [
+    {
+      "account_count": 43,
+      "ads_files": {
+        "ADS_Coordinate_Certificate.toml": {
+          "bytes": 422,
+          "sha256": "da87a2c72178717aa98e868399aa54c0193963e9cb76038cbac0c3f77f044729"
+        },
+        "ADS_Proof.fab": {
+          "bytes": 1116969,
+          "sha256": "91960f9d40462e0f51316cb33dfcd47372d734b8e397c952970563db431fdf91"
+        },
+        "ADS_Proof.receipt": {
+          "bytes": 219,
+          "sha256": "47a8d4456883b4f2d17ac630e4a5d2de814ce5e365da517a1e6827eda1e4313a"
+        },
+        "Chart_of_Accounts.txt": {
+          "bytes": 1914,
+          "sha256": "50bbfa246eeb25b38a4858d184502bb158b5d08b92961201c9d01dedd79c4416"
+        },
+        "GL_Detail.txt": {
+          "bytes": 34456,
+          "sha256": "4406bd0e30d75b0e5220e83679e37781ff59e138c30cb1900b9febb084388796"
+        },
+        "Trial_Balance.txt": {
+          "bytes": 1521,
+          "sha256": "3154588b3086fb16b061c2b8b1f7862e65ce09a61fa72a3ac507d9d124a0098c"
+        }
+      },
+      "agency": "20400",
+      "amount_tamper_verifier_exit": 8,
+      "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+      "checkpoint_public_key": "3c8a7f33ad6a0459de19b5dc6ee0ddac8206ca52fa22a214e33055e1990898a5",
+      "checks": [
+        "pinned_source_bytes",
+        "complete_agency_row_coverage",
+        "all_source_groups_balance_exactly",
+        "no_subcent_rounding",
+        "all_original_chartfields_retained",
+        "source_and_helper_agent_uploads_have_native_local_reviews",
+        "preparation_retry_is_idempotent",
+        "all_staged_activity_is_invisible",
+        "native_approved_finalization",
+        "every_month_account_cell_matches_source",
+        "cumulative_balances_match_source",
+        "native_proposal_legs_preserve_every_source_row",
+        "gross_debit_credit_account_cells_match_source",
+        "historical_preactivation_prefix_stays_invisible",
+        "native_registers_equal_journal_fold",
+        "every_native_leg_preserves_source_department_or_absence",
+        "native_department_monthly_and_cumulative_net_and_gross_match_source",
+        "department_preactivation_history_stays_invisible",
+        "department_certificates_replay_exact_robot_reports",
+        "all_finalized_chunk_retries_are_idempotent",
+        "native_upload_custody_preserved_and_fixture_reviews_recorded",
+        "native_projections_match_payloads",
+        "signed_accumulator_checkpoint",
+        "native_csv_and_ads_reread_certificates",
+        "every_exported_leg_preserves_source_department_or_absence",
+        "independent_fa_verify_ads_proof",
+        "independent_fa_verify_authenticates_every_exported_dimension_set",
+        "independent_verifier_rejects_tampered_extract",
+        "independent_verifier_rejects_dimension_only_tampering",
+        "resume_inputs_and_native_book_identity_pinned",
+        "original_native_packages_and_publication_receipts_preserved",
+        "original_finalize_proposals_durable_before_approval"
+      ],
+      "commands": 222,
+      "department_value_count": 3,
+      "dimension_tamper_verifier_exit": 8,
+      "document_review_scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+      "elapsed_seconds": 19.311,
+      "migration_entries": 15,
+      "monetary_rows": 121,
+      "positive_verifier_exit": 0,
+      "recovery": {
+        "attempt": "attempts/000001",
+        "book_id": "f0b1e94486342916405d1fde6bf0320e",
+        "native_packages_recovered": 0,
+        "original_preactivation_seq": 123,
+        "resumed": false
+      },
+      "report_sha256": "4a049f6ed75cfd505b6b4f5961a8c9ebc41404d1e30a38af9b5b9a40a46750bf",
+      "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+      "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+      "source_rows": 125,
+      "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "status": "PASS",
+      "transcripts": [
+        {
+          "attempt": "000001",
+          "retained_command_receipts": 222,
+          "sha256": "50cf8fa895e895c3763d6090e91cad19abe19cb083719480b3eb2592d48a4b34"
+        }
+      ],
+      "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"
+    },
+    {
+      "account_count": 51,
+      "ads_files": {
+        "ADS_Coordinate_Certificate.toml": {
+          "bytes": 420,
+          "sha256": "faede961454446e48986c94eb809daa22191db6ed73371dd035cf78d33fac56a"
+        },
+        "ADS_Proof.fab": {
+          "bytes": 1057035,
+          "sha256": "a03b47995f46bc610e5217fb3d0a834c1e2acd65a1e73d3582cda985dd0d5015"
+        },
+        "ADS_Proof.receipt": {
+          "bytes": 219,
+          "sha256": "c1ab3de191ff4252af31d0a234142c999b4adfc5f3603d50a3138c17a2d7bfca"
+        },
+        "Chart_of_Accounts.txt": {
+          "bytes": 2291,
+          "sha256": "13ac48a1678f09e70482db61ce567730ddfb2d0ba3911b269f8bded6cd71e508"
+        },
+        "GL_Detail.txt": {
+          "bytes": 38019,
+          "sha256": "51ae5147c8afe1f1bff1b5dcdf0ba31b940fd183fdf0fef5230e6a323da29058"
+        },
+        "Trial_Balance.txt": {
+          "bytes": 1847,
+          "sha256": "d23ec8ae8b4e043463e4c3452b24dd44222753216d62da0b5c5862448717a5b8"
+        }
+      },
+      "agency": "31500",
+      "amount_tamper_verifier_exit": 8,
+      "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+      "checkpoint_public_key": "b1523b0105ac120e6a34add0fc2310c42c78aa85c821362e05d7e14984d484f4",
+      "checks": [
+        "pinned_source_bytes",
+        "complete_agency_row_coverage",
+        "all_source_groups_balance_exactly",
+        "no_subcent_rounding",
+        "all_original_chartfields_retained",
+        "source_and_helper_agent_uploads_have_native_local_reviews",
+        "preparation_retry_is_idempotent",
+        "all_staged_activity_is_invisible",
+        "native_approved_finalization",
+        "every_month_account_cell_matches_source",
+        "cumulative_balances_match_source",
+        "native_proposal_legs_preserve_every_source_row",
+        "gross_debit_credit_account_cells_match_source",
+        "historical_preactivation_prefix_stays_invisible",
+        "native_registers_equal_journal_fold",
+        "every_native_leg_preserves_source_department_or_absence",
+        "native_department_monthly_and_cumulative_net_and_gross_match_source",
+        "department_preactivation_history_stays_invisible",
+        "department_certificates_replay_exact_robot_reports",
+        "all_finalized_chunk_retries_are_idempotent",
+        "native_upload_custody_preserved_and_fixture_reviews_recorded",
+        "native_projections_match_payloads",
+        "signed_accumulator_checkpoint",
+        "native_csv_and_ads_reread_certificates",
+        "every_exported_leg_preserves_source_department_or_absence",
+        "independent_fa_verify_ads_proof",
+        "independent_fa_verify_authenticates_every_exported_dimension_set",
+        "independent_verifier_rejects_tampered_extract",
+        "independent_verifier_rejects_dimension_only_tampering",
+        "resume_inputs_and_native_book_identity_pinned",
+        "original_native_packages_and_publication_receipts_preserved",
+        "original_finalize_proposals_durable_before_approval"
+      ],
+      "commands": 134,
+      "department_value_count": 3,
+      "dimension_tamper_verifier_exit": 8,
+      "document_review_scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+      "duration_scope": "The final successful resume attempt only; earlier deliberately interrupted attempts are not included in elapsed_seconds or commands.",
+      "elapsed_seconds": 10.623,
+      "migration_entries": 6,
+      "monetary_rows": 131,
+      "positive_verifier_exit": 0,
+      "recovery": {
+        "attempt": "attempts/000003",
+        "book_id": "cd588fbf13d9da3b2fbd4c02790f449d",
+        "native_packages_recovered": 2,
+        "original_preactivation_seq": 57,
+        "resumed": true
+      },
+      "report_sha256": "f13c53a001e50f08d0511377688fc343ca3f81de570f94ef3291ff3ceeab29a6",
+      "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+      "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+      "source_rows": 137,
+      "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "status": "PASS",
+      "transcripts": [
+        {
+          "attempt": "000001",
+          "retained_command_receipts": 44,
+          "sha256": "3ab10d3886acaf9791c7f896ea34dd53952cdb68b9fc3a9dc21075c3cfdfb91a"
+        },
+        {
+          "attempt": "000002",
+          "retained_command_receipts": 62,
+          "sha256": "d7f4730802f9de587eddc71d0087aeae45b88593e0d75c06f0cb3bcb6834b357"
+        },
+        {
+          "attempt": "000003",
+          "retained_command_receipts": 122,
+          "sha256": "08478a8ee88c469b10bc99eefeaa8af6958c83befa961b0935578d3c17d125e1"
+        }
+      ],
+      "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"
+    },
+    {
+      "account_count": 223,
+      "ads_files": {
+        "ADS_Coordinate_Certificate.toml": {
+          "bytes": 422,
+          "sha256": "9695983c94c1e4e4e6992983cd71689252b0aa22728c8f727a04a8c5a083ff91"
+        },
+        "ADS_Proof.fab": {
+          "bytes": 19835251,
+          "sha256": "100b2c17fcdfe4a87a5588c1a049a409f315ee95ff8011f4f95b956afdfe3671"
+        },
+        "ADS_Proof.receipt": {
+          "bytes": 219,
+          "sha256": "0b2ac14c948d082b951af0fd1eca5ce4751c11de5c44bf5c984a40ed638b3b0b"
+        },
+        "Chart_of_Accounts.txt": {
+          "bytes": 9620,
+          "sha256": "91c98b496e8d636143af81cdd8f89c6c482a7e7f448427e4c39580afbcd424a0"
+        },
+        "GL_Detail.txt": {
+          "bytes": 305005,
+          "sha256": "e6c2ba4a66de77d78b4194b3444556f33008b873f818d670319efef37e5ea0cc"
+        },
+        "Trial_Balance.txt": {
+          "bytes": 7867,
+          "sha256": "7b98ef67fb8f1a4914acfd2e9807ecd9b99659b397c3d6b33e7c5a7e96b7b94a"
+        }
+      },
+      "agency": "66000",
+      "amount_tamper_verifier_exit": 8,
+      "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+      "checkpoint_public_key": "a7d75a098dd5dc91eafa4985358a2697c4935c355812e439e3836a61a25c7ec2",
+      "checks": [
+        "pinned_source_bytes",
+        "complete_agency_row_coverage",
+        "all_source_groups_balance_exactly",
+        "no_subcent_rounding",
+        "all_original_chartfields_retained",
+        "source_and_helper_agent_uploads_have_native_local_reviews",
+        "preparation_retry_is_idempotent",
+        "all_staged_activity_is_invisible",
+        "native_approved_finalization",
+        "every_month_account_cell_matches_source",
+        "cumulative_balances_match_source",
+        "native_proposal_legs_preserve_every_source_row",
+        "gross_debit_credit_account_cells_match_source",
+        "historical_preactivation_prefix_stays_invisible",
+        "native_registers_equal_journal_fold",
+        "every_native_leg_preserves_source_department_or_absence",
+        "native_department_monthly_and_cumulative_net_and_gross_match_source",
+        "department_preactivation_history_stays_invisible",
+        "department_certificates_replay_exact_robot_reports",
+        "all_finalized_chunk_retries_are_idempotent",
+        "native_upload_custody_preserved_and_fixture_reviews_recorded",
+        "native_projections_match_payloads",
+        "signed_accumulator_checkpoint",
+        "native_csv_and_ads_reread_certificates",
+        "every_exported_leg_preserves_source_department_or_absence",
+        "independent_fa_verify_ads_proof",
+        "independent_fa_verify_authenticates_every_exported_dimension_set",
+        "independent_verifier_rejects_tampered_extract",
+        "independent_verifier_rejects_dimension_only_tampering",
+        "resume_inputs_and_native_book_identity_pinned",
+        "original_native_packages_and_publication_receipts_preserved",
+        "original_finalize_proposals_durable_before_approval"
+      ],
+      "commands": 399,
+      "department_value_count": 8,
+      "dimension_tamper_verifier_exit": 8,
+      "document_review_scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+      "elapsed_seconds": 163.723,
+      "migration_entries": 27,
+      "monetary_rows": 1051,
+      "positive_verifier_exit": 0,
+      "recovery": {
+        "attempt": "attempts/000001",
+        "book_id": "b179aa5543ea3f8f2b1c31a2e3bf95ea",
+        "native_packages_recovered": 0,
+        "original_preactivation_seq": 221,
+        "resumed": false
+      },
+      "report_sha256": "0822f0b454e14505696259da34da231eaf6b44f913da304a4dcb54ce2da88411",
+      "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+      "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+      "source_rows": 1055,
+      "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "status": "PASS",
+      "transcripts": [
+        {
+          "attempt": "000001",
+          "retained_command_receipts": 399,
+          "sha256": "85279a2ee2428472175ca2eff8b54fe452258cceb1badc0c740e821999505177"
+        }
+      ],
+      "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"
+    }
+  ],
+  "controlled_recovery": {
+    "after_finalize": {
+      "boundary": "after-finalize",
+      "driver_sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1",
+      "executed_arguments": [
+        "migrate",
+        "finalize",
+        "f3e36e104fcb7c7885c5a15486ceb523",
+        "--plan",
+        "-",
+        "--approval",
+        "8446487ec364ed5d2edc2a106b17b6eb",
+        "--approval",
+        "159250cb2d077f92517a4cdd6305f0be"
+      ],
+      "interruption_helper_sha256": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+      "native_receipt": {
+        "authority": {
+          "ops": null,
+          "posture": "embedded-owner",
+          "principal": "operator",
+          "profile": "Human"
+        },
+        "book": "cd588fbf13d9da3b2fbd4c02790f449d",
+        "certificate": null,
+        "coordinate": {
+          "branch": "trunk",
+          "effective": "all",
+          "known_at": 60,
+          "time_evidence": null
+        },
+        "data": {
+          "action": "finalize",
+          "already_recorded": false,
+          "chunk_count": 3,
+          "control_entry": "539d3d59f032bd99ff1d076c1da964de",
+          "from": "Open",
+          "recorded_at": 60,
+          "run_key": "omes-31500-run-000",
+          "run_vid": "f3e36e104fcb7c7885c5a15486ceb523",
+          "tie_out_digest": "cdf6b865373c78c05a6d7a563dff04e90681d93d60f752dc61903253e446b6b4",
+          "to": "Finalized"
+        },
+        "event": "migration_controlled",
+        "next_actions": [],
+        "v": 1,
+        "warnings": []
+      },
+      "pins_sha256": "2b5ba20cdcf0247b35ca6c58f497734b2ecf7d261aa2b9d431cd0bdfcfb462a3",
+      "requested_arguments": [
+        "migrate",
+        "finalize",
+        "f3e36e104fcb7c7885c5a15486ceb523",
+        "--plan",
+        "-",
+        "--approval",
+        "8446487ec364ed5d2edc2a106b17b6eb",
+        "--approval",
+        "159250cb2d077f92517a4cdd6305f0be"
+      ],
+      "schema": "fa-public-ledger-controlled-interruption-v1",
+      "scope": "Controlled stop after a completed real native command; not a mid-transaction crash.",
+      "stdin_bytes": 903,
+      "stdin_sha256": "af6e2556a5c54af28de5fdc7398f7834c9abd774b1d70a6bf0a988d0d3e92afe"
+    },
+    "attempt_driver_exits": [
+      1,
+      1,
+      0
+    ],
+    "initial_and_resumed_receipts_checked": true,
+    "partial_stage": {
+      "boundary": "partial-stage",
+      "driver_sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1",
+      "executed_arguments": [
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "29992210967c06e59cc149ddb978fcb791fc288c8f9a86d599fa482f9767f8e5",
+        "--chunk",
+        "0",
+        "--approval",
+        "b38857a5e814642e03605b5d189606e3",
+        "--approval",
+        "db00ba81328d08132c75d439be992160"
+      ],
+      "interruption_helper_sha256": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+      "native_receipt": {
+        "authority": {
+          "ops": null,
+          "posture": "embedded-owner",
+          "principal": "operator",
+          "profile": "Human"
+        },
+        "book": "cd588fbf13d9da3b2fbd4c02790f449d",
+        "certificate": null,
+        "coordinate": {
+          "branch": "trunk",
+          "effective": "all",
+          "known_at": 40,
+          "time_evidence": null
+        },
+        "data": {
+          "already_recorded": false,
+          "chunk_count": 3,
+          "chunk_index": 0,
+          "entry_vid": "3919ed8b7c1ca5b75cd09e533ba1d284",
+          "package_oid": "29992210967c06e59cc149ddb978fcb791fc288c8f9a86d599fa482f9767f8e5",
+          "proposal_digest": "aeb083c12539b44ec3b241af381bf79d1f95b1c6b2135dab30fb9eb2c557d419",
+          "ready_to_finalize": false,
+          "recorded_at": 40,
+          "recorded_count": 1,
+          "run_state": "Open",
+          "run_vid": "f3e36e104fcb7c7885c5a15486ceb523"
+        },
+        "event": "migration_import_staged",
+        "next_actions": [],
+        "v": 1,
+        "warnings": []
+      },
+      "pins_sha256": "2b5ba20cdcf0247b35ca6c58f497734b2ecf7d261aa2b9d431cd0bdfcfb462a3",
+      "requested_arguments": [
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "29992210967c06e59cc149ddb978fcb791fc288c8f9a86d599fa482f9767f8e5",
+        "--intent",
+        "/workspace/scratch/e7855ec4cca9/fa-live-omes-31500-resume-01/run-000-stage.json"
+      ],
+      "saved_complete_selection": "/workspace/scratch/e7855ec4cca9/fa-live-omes-31500-resume-01/run-000-stage.json",
+      "saved_complete_selection_sha256": "4cb0674dbf0d3a82bee47e9f0be2642414a53b387925e6d697e88893d9af5255",
+      "schema": "fa-public-ledger-controlled-interruption-v1",
+      "scope": "Controlled stop after a completed real native command; not a mid-transaction crash.",
+      "selected_chunk_count": 3
+    },
+    "retained_transcript_receipts_are_not_a_total_call_count": "Read-only recovery preflight commands are counted by the driver but precede per-attempt transcript creation.",
+    "scope": "Controlled orchestration stops after durable native operations, not mid-transaction crashes."
+  },
+  "driver_sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1",
+  "format": "fa-public-ledger-native-evidence-v1",
+  "profile_config": "[unstable]\ngit = \"shallow-deps\"\nprofile-hint-mostly-unused = true\nprofile-rustflags = true\n\n# Preserve source, assertions and overflow checks on this 8 GiB execution host.\n# Deferred code generation avoids optimizing the entire monolithic runtime.\n[profile.dev.package.asupersync]\nopt-level = 0\nhint-mostly-unused = true\nrustflags = [\"-Zhint-mostly-unused\", \"-Zthreads=1\", \"-Zmir-opt-level=0\"]\n\n[profile.test.package.asupersync]\nopt-level = 0\nhint-mostly-unused = true\nrustflags = [\"-Zhint-mostly-unused\", \"-Zthreads=1\", \"-Zmir-opt-level=0\"]\n",
+  "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+  "source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+  "source_helper_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+  "source_tree": "d10a9f8191c87250a65b35dc2255cc78c4b03910"
+}

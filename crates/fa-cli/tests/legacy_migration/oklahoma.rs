@@ -295,6 +295,11 @@ fn public_oklahoma_activity_imports_all_source_legs_and_replays_certified_folds(
     );
     assert_eq!(status, 2, "{}", refused.render());
     assert_eq!(
+        text(data(&refused), "message"),
+        "the complete mapped source does not tie exactly to the independently declared trial balance through `FY2024-P04`",
+        "the duplicated amounts must fail the independent period control"
+    );
+    assert_eq!(
         head(&fixture.book),
         before_bad,
         "a failed tie-out publishes nothing"

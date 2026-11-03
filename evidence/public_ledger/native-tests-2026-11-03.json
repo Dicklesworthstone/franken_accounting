@@ -1,0 +1,44 @@
+{
+  "actual_native_targets": [
+    {
+      "exit_code": 0,
+      "failed": 0,
+      "ignored": 0,
+      "log_sha256": "656d48af62bc125f1e21ce925ccde28c205c1cb3776922f39145b3c715d91373",
+      "passed": 40,
+      "target": "fa-cli legacy_migration"
+    },
+    {
+      "exit_code": 0,
+      "failed": 0,
+      "ignored": 0,
+      "log_sha256": "4c632177214ca6a4cd3b6a88d0efd503be2532e531ce56b56516e5b559021d4e",
+      "passed": 78,
+      "target": "fa-formats library"
+    },
+    {
+      "exit_code": 0,
+      "failed": 0,
+      "ignored": 0,
+      "log_sha256": "8c96b95de5be3cf8ee440bd80b047fa873821883af83df0990844bdd9af11f18",
+      "passed": 28,
+      "target": "fa-formats formats_conformance"
+    }
+  ],
+  "daemon_socket_targets": {
+    "behavior_reached": false,
+    "cargo_exit_codes": [
+      101,
+      101
+    ],
+    "passed": 0,
+    "reason": "Native Unix socket bind returned EPERM before serving; no assertion was weakened."
+  },
+  "production_source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+  "scope": "Three explicitly executed native targets, not a workspace or Tier0 verdict.",
+  "test_source_replacements": {
+    "crates/fa-cli/tests/legacy_migration/oklahoma.rs": "ac7b1acae6078350677c0d5761a773f0e1d00a11",
+    "crates/fa-cli/tests/legacy_migration/party_entity.rs": "993b8a684336085ab896c2a74a71452d958bcc1a"
+  },
+  "workspace_tier0": "Unpassed: prior workspace check compiler SIGKILL under shared host memory pressure."
+}

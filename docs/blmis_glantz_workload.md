@@ -65,16 +65,26 @@ The source has several details that a simple amount/date loader would lose:
 
 ### What the native six-account driver checks
 
-The driver creates six declared analysis principal accounts and six native
+The driver creates six declared Equity analysis principal accounts and six native
 counterparties, with one shared cash account and one explicitly marked
 principal-transfer clearing account. Only a principal leg receives its source
 account's native party tag. No customer or subsidiary identity is inferred
 from an account holder's name.
 
+Native investor analysis classifies these principal accounts by their declared
+Equity type. The explicit `investor_capital` role is reserved for Liability
+accounts; the driver verifies the native chart's exact types, currencies and
+leaf accounts instead of assigning an incompatible role. Cash receives its
+`cash` role immediately. The transfer-clearing role is assigned only after the
+missing-transfer-role comparison below.
+
 Every monetary source row posts separately in its declared computation order.
 Every native leg, amount, effective date, commit receipt and party identity is
 checked against the original source. The driver requests and replays an exact
-certified general ledger for each account, checks the pre-posting historical
+certified general ledger for each account. Detail replay returns the identical
+report line followed by a `report_replayed` verification receipt; the driver
+checks the receipt's book, certificate, coordinate, report family, known-at and
+output digest as well as the report bytes. It checks the pre-posting historical
 prefix, retries every entry without new history, and reconciles all annual
 account controls. For the two inconsistent accounts it requires the exact
 observed discrepancy at every affected row. `PASS` means the native book
@@ -147,12 +157,39 @@ verifying and extracting the original. Without `FA_BLMIS_GLANTZ_PDF`,
 the new full-source comparator tests explicitly skip their unavailable source;
 those skips are not evidence that extraction or native replay passed.
 
-**Validation for this extension:** the six-account census and source arithmetic
-were inspected against a fresh hash-matching PDF before the executor went
-offline. The complete new extractor, six-account comparator suite and native
-replay are **UNRUN** for this landing. Existing one-account validation recorded
-below applies to that earlier implementation and its exact tested source;
-it does not establish a pass for the new six-account path.
+### Observed native validation (2026-11-03)
+
+The complete PDF-first six-account command **exited 0 with `PASS`** after
+1,268 native commands in 415.270 seconds. It used frozen native binaries built
+from `93714f772a6279c0ea233841d1d51dbe096d9ff1` and the helper hashes recorded
+in the [compact execution evidence](../evidence/blmis/glantz-six-native-2026-11-03.json).
+
+| Check | Observed result |
+|---|---|
+| Original exhibit population | All 379 observations, including seven zero-principal rows |
+| Native monetary history | 372 entries, 744 legs; every exact retry kept its VID, digest and recorded sequence without new history |
+| Detailed account reports | Six certified ledgers and exact report/receipt replays; six pre-posting historical prefixes stayed empty |
+| Source balances and transfers | Every running observation and all 17 annual controls matched the source movements and explicit discrepancies; both paired transfer credits matched certified originating principal |
+| Investor principal | All six version-5 outcomes matched cash and credited transfers; the earlier cash-only result remained unchanged after the transfer role was recorded |
+| Native materializations | All 143 active monthly registers and the projections verified |
+| Portable exports | CSV-GL and ADS round trips passed; both source comparisons covered every monetary field, description, citation memo, provenance value and party tag on all 744 legs |
+| Independent proof | `fa-verify` accepted the original ADS package with `complete_native_leg_identities` on 744 rows, then exited 8 for both the one-cent amount mutation and the party-only mutation |
+
+The actual runs exposed three helper contract errors: assigning the
+Liability-only `investor_capital` role to declared Equity accounts, expecting
+only one event from detailed-ledger replay, and passing `--as-known-at` to a
+procedure that accepts `--known-at`. The corrections retain the declared chart
+types and every source comparison. The earlier failed attempts and complete
+successful report and command transcript remain available outside Git; the
+compact evidence records their hashes and the exact reproduction command.
+
+All **79 Python helper tests passed with the original PDF supplied**, with no
+skips. Those tests, this measured native execution, and any Rust workspace or
+CI gate are separate results. The evidence keeps the $9 and intermediate $1
+source discrepancies, the named same-day display rule, and the scope of the
+trustee's credited transfers. Source custody remains `AgentUpload` with a
+distinct same-harness fixture `Reviewed` attestation; this is an analysis-book
+execution under its own trusted signing key.
 
 ## Default single-account workload
 
@@ -280,9 +317,12 @@ The replay runs `ponzi.net_investment` version 5 under the named
 `posted_principal_transfer_v1` rule. It registers one role-labelled native
 counterparty for source account `1ZA192`, with code `BLMIS-1ZA192`, and tags only
 the principal leg of each entry with that party. Cash and transfer-clearing
-counterparts remain untagged. The three accounts receive explicit `cash`,
-`investor_capital` and `investor_transfer` roles; account names do not supply
-their classification.
+counterparts remain untagged. The principal account is classified as investor
+capital by its explicitly declared Equity type; the `investor_capital` role
+is only for Liability accounts. The cash and transfer-clearing accounts receive
+their admitted `cash` and `investor_transfer` roles. Account names do not supply
+any classification, and the driver checks that the native chart retains the
+declared types before proceeding.
 
 The procedure must preserve these distinct source amounts:
 
@@ -448,8 +488,8 @@ A successful run must complete all of these checks:
   printed observations. The zero-principal transfer stays in this comparison
   with an unchanged balance and no artificial zero-amount entry.
 - Certify the detailed general ledger and replay the certificate with its exact
-  account, unit, date, label and known-at scope, requiring byte-identical robot
-  output.
+  account, unit, date, label and known-at scope, requiring a byte-identical robot
+  report followed by its matching `report_replayed` verification receipt.
 - Query the pre-import recorded prefix after all entries have been posted and
   require it still to contain no monetary history.
 - Retry every original intent across process reopenings and require the original
@@ -496,7 +536,7 @@ build succeeds. It retains reports, failure records and command transcripts.
 A scheduled workflow or a passing comparator unit test is not evidence of a
 successful native run.
 
-## Verification status
+## Earlier B-2 ingestion validation
 
 The pinned original was downloaded and its hash matched the existing case-plan
 source pin. All three relevant PDF pages were rendered and visually inspected.
@@ -542,9 +582,8 @@ output directory receives no diagnostic writes: failure logging requires an
 explicit successful directory-creation receipt. Their mocked extractor
 contracts remain distinct from this actual PDF execution.
 
-**A successful complete native BLMIS replay remains unverified.** Earlier
-implementation attempts exhausted the shared filesystem or lost compiler
-processes under memory pressure. PDF ingestion and comparator test passes do
-not establish native posting, report replay, proof verification, a Rust
-workspace gate or CI acceptance. The workflow and driver are the reproducible
-path to obtain that missing evidence.
+Earlier native implementation attempts exhausted the shared filesystem or lost
+compiler processes under memory pressure. The complete six-account execution
+recorded above now establishes the native result for its exact helper and
+binary hashes. The historical B-2 ingestion observations in this section do
+not establish an additional standalone B-2 native run or a Rust workspace gate.

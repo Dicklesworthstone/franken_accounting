@@ -1,0 +1,1392 @@
+{
+  "annual_control_count": 17,
+  "binaries": {
+    "fa_sha256": "b8a0055b2ab294aa6903204a0893fe2626acbc4f025742b335adff0ad9d42498",
+    "fa_verify_sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8"
+  },
+  "checks": [
+    "pinned_original_pdf",
+    "native_source_intake_and_custody_receipts",
+    "complete_six_account_379_row_population",
+    "all_372_monetary_entries_and_744_legs",
+    "all_seven_zero_principal_observations_retained",
+    "every_native_running_balance_vs_source_and_explicit_gap",
+    "named_same_day_display_reorder",
+    "both_transfer_credits_from_certified_originating_principal",
+    "exact_certified_ledger_replay",
+    "immutable_preimport_prefix",
+    "every_annual_all_account_control",
+    "every_exact_retry_without_new_history",
+    "native_registers_equal_fold",
+    "native_projections",
+    "all_six_native_party_bindings",
+    "all_six_native_principal_outcomes",
+    "missing_transfer_role_control_for_all_accounts",
+    "historical_missing_role_result_unchanged",
+    "all_exported_money_and_party_dimensions_vs_original_source",
+    "signed_accumulator_checkpoint",
+    "independent_ads_verification_and_dimension_coverage",
+    "one_cent_tamper_rejected",
+    "party_only_tamper_rejected"
+  ],
+  "commands": 1268,
+  "document_custody": [
+    {
+      "doc_commit": "78aae3b38d160d65bafc9a86b2ac8166515fea2a54d50fb6cf7800913cad250d",
+      "file": "source.pdf",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 170,
+      "oid": "b614d75afe4372427a450c0cc11d29e9ffa9caddcfe4d8027e22e461c3faaf64",
+      "review_attestation_vid": "4b45d7a3e73f6a62b13921e09a1a3656",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 171,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "a1da514e0dca6c88f835299941e827c74ddf226237b8f4dc49aaed8b93ad64bf",
+      "file": "rows.csv",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 172,
+      "oid": "55f5605a85668ddfa4e1b76facf328abbb964239dc981161dfc9e79c95a13673",
+      "review_attestation_vid": "b8f2bd45163ea4b4646e552c5773ab91",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 173,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "7b4e66c219e9b48fdb355b05f1929ca4f77a87ded96c1dce6a1e6bd914fb23be",
+      "file": "source.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 174,
+      "oid": "10554224fb0640d1522489c63eadc2e4c5756c87b495f57162f4fd33d1f84470",
+      "review_attestation_vid": "da1df19393ef46fd7fad5f097fca6886",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 175,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "78c2e5a1a70c286edd65a99f7209c8a4a71f456f093082d8ee6789496db24779",
+      "file": "manifest.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 176,
+      "oid": "f28cea3f4c3a2718e824b1643620779aafcaacae5cb826b8e72a83389551572a",
+      "review_attestation_vid": "2c4ffe0c8d2de79b32bd0657cd18638a",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 177,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "ed357fa86f34c6436cf97b3495dc1e1522b7af77395f5a3c8a14427771960d6b",
+      "file": "layout.txt",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 178,
+      "oid": "a15fc3a412a4543a50e47cd95a84641ca29907f2783fe1dbea5403ea3d566daa",
+      "review_attestation_vid": "4254e5d3d9d763bd740538daf7881ae1",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 179,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "42b29aeb5106e25ecc48aa93237cbe6fa19605de9115201d8303f7f854d16970",
+      "file": "extraction.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 180,
+      "oid": "4df07a6438e9592158f5a0a7232a81127ebc0c6e41d81f63223bcf9be4465fa6",
+      "review_attestation_vid": "eb6da6ef6d028fccf2d5ae0934538828",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 181,
+      "self_sourced": true
+    }
+  ],
+  "earlier_failed_attempts": [
+    {
+      "attempt": "native-all-01",
+      "commands": {
+        "bytes": 12350,
+        "sha256": "df73e2efc70c470a92531e5912610c4a2147da079b70466368b5cfea1020ab81"
+      },
+      "failure": {
+        "bytes": 1602,
+        "sha256": "e06bd465928936dcc32ddcb218c5c85b21b86a4419369c646c6044535cc8420a"
+      },
+      "observed_process_exit": 1,
+      "reason": "The native role registry correctly refused investor_capital on an Equity account",
+      "status": "FAIL"
+    },
+    {
+      "attempt": "native-all-02",
+      "commands": {
+        "bytes": 649186,
+        "sha256": "aef5b056a3af79c2b1cd34df7de8e8792e60bfb5eb0f360d4a445fc7cb03e6af"
+      },
+      "failure": {
+        "bytes": 105,
+        "sha256": "3b18cdcc8309bdf7a287b965405c975d974f1f96dca7a1295976ebd3bcd49817"
+      },
+      "observed_process_exit": 1,
+      "reason": "The helper expected one detail replay event although the native command returned an identical report and a replay receipt",
+      "status": "FAIL"
+    },
+    {
+      "attempt": "native-all-03",
+      "commands": {
+        "bytes": 1420893,
+        "sha256": "853d75f6b5a67aad17ee8cae5aa29b52d9c3580b4c2cf0790dd3c3849279fbe6"
+      },
+      "failure": {
+        "bytes": 1085,
+        "sha256": "e211f7f84e29b94838c85a2a5246fa7c4974ba90ab3c259108759de70e11cbca"
+      },
+      "observed_process_exit": 1,
+      "reason": "The native procedure command correctly rejected the unsupported --as-known-at flag",
+      "status": "FAIL"
+    }
+  ],
+  "elapsed_seconds": 415.27,
+  "exact_entry_retries": 372,
+  "executed_helpers": {
+    "scripts/blmis_replay.py": {
+      "bytes": 60115,
+      "sha256": "7e574cbf20c1984624b98a146b77096c8608812b99fc1d2b32b1e65163121c44"
+    },
+    "scripts/blmis_source.py": {
+      "bytes": 79226,
+      "sha256": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 87487,
+      "sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 17814,
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80"
+    },
+    "scripts/tests/test_blmis_replay.py": {
+      "bytes": 73379,
+      "sha256": "faa5af09c7e2736d1813be9381e48431d3b0744033300c6c5516e55d1e1232c4"
+    },
+    "scripts/tests/test_blmis_source.py": {
+      "bytes": 52712,
+      "sha256": "f9f55c14b02cec934433f842458ac48a7c2aacaa851c6b8ee0ab219ee18c9591"
+    }
+  },
+  "export_source_oracles": [
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "csv-gl",
+      "parties": [
+        "BLMIS-1T0026",
+        "BLMIS-1ZA192",
+        "BLMIS-1ZB010",
+        "BLMIS-1ZB143",
+        "BLMIS-1ZR010",
+        "BLMIS-1ZR176"
+      ],
+      "rows": 744,
+      "tagged_rows": 372,
+      "untagged_rows": 372
+    },
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "ads",
+      "parties": [
+        "BLMIS-1T0026",
+        "BLMIS-1ZA192",
+        "BLMIS-1ZB010",
+        "BLMIS-1ZB143",
+        "BLMIS-1ZR010",
+        "BLMIS-1ZR176"
+      ],
+      "rows": 744,
+      "tagged_rows": 372,
+      "untagged_rows": 372
+    }
+  ],
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "ads/ADS_Coordinate_Certificate.toml": {
+      "bytes": 637,
+      "sha256": "bbfffc32d3cbc9d64fa3071d88e8007105bd0299583be8516b80cd63f3c4f2bb"
+    },
+    "ads/GL_Detail.txt": {
+      "bytes": 127276,
+      "sha256": "796d251f71488d55f6a1dec4ed97825781b1f5ba5a834e1ce6a19e43f44acf1d"
+    },
+    "chart.json": {
+      "bytes": 1228,
+      "sha256": "3f0f0d8c77b0ed4ba34403ec7ec91daaab8c4d8485d27436862ff501b502100a"
+    },
+    "commands.jsonl": {
+      "bytes": 3889871,
+      "sha256": "6262d379b9c3de625dc75238a2b61a835f26f027e5c642d05bb6627dfcaf7a76"
+    },
+    "extracted-source/layout.txt": {
+      "bytes": 88638,
+      "sha256": "258f770d126b7c8cb8a0216fcca98259ce75b3ae86806638f7a2711c8176033f"
+    },
+    "extraction.json": {
+      "bytes": 1457,
+      "sha256": "cabe8e4732f33a1748ce2ce570be067e28f10a6e5b1e6ce36065a7da6f522a51"
+    },
+    "gl.csv": {
+      "bytes": 128723,
+      "sha256": "47c6204894ad3bbd79a92dc02920c22174ad6519dd3f7fcd51b9ccea62e920a5"
+    },
+    "legacy.csv": {
+      "bytes": 116709,
+      "sha256": "9e13c513b4715a229cfaa1550cb8a16c00cd0db9ef4fe94b28e9843cea78851b"
+    },
+    "manifest.json": {
+      "bytes": 174351,
+      "sha256": "0b658ec84d993fd3eb4b1dd5202829a14e6a9e2a7d765567750d46bda0246439"
+    },
+    "report.json": {
+      "bytes": 3482780,
+      "sha256": "15c3875bb326b7c4e87451a1482d1a4991ee0789a1dbc7db6304dc146f761bc6"
+    },
+    "rows.csv": {
+      "bytes": 68500,
+      "sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf"
+    },
+    "source.json": {
+      "bytes": 10877,
+      "sha256": "8da252a4e2307fa1fe0bcef6ffa5073d13a028ac9b26340ff4541df6a9aa6882"
+    },
+    "source.pdf": {
+      "bytes": 389586,
+      "sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1"
+    }
+  },
+  "helper_base_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+  "helper_repairs": [
+    "Preserve declared Equity principals; assign only admitted account roles",
+    "Validate exact detailed GL report plus its report_replayed verification receipt",
+    "Use procedure run --known-at while preserving GL --as-known-at"
+  ],
+  "independent_verification": {
+    "bundle": {
+      "check": "bundle",
+      "detail": {
+        "balances": 8,
+        "book_id": "c60df4f7fd00b4095684fbd79170b261",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "1150429ae3d1d5bd5ac847a297cb02569c1581a01d4a171f30562f808b67c825",
+        "checkpoint_oid": "80604d6961fd5a16054eb6edf983698e7af9f233ebd0c0e4fbe64131cbd1b908",
+        "completeness": "seq_range_complete",
+        "documents": 2232,
+        "entries": 541,
+        "format": "1.0",
+        "inline": 0,
+        "leaf_count": 553,
+        "scope": "prefix",
+        "through_seq": 703
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "format"
+    },
+    "check_counts": [
+      {
+        "check": "ads_extract",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "closure",
+        "count": 541,
+        "result": "pass"
+      },
+      {
+        "check": "completeness",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "entries",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "manifest",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "public_commitment",
+        "count": 2232,
+        "result": "pass"
+      },
+      {
+        "check": "recomputation",
+        "count": 8,
+        "result": "pass"
+      },
+      {
+        "check": "record",
+        "count": 541,
+        "result": "pass"
+      }
+    ],
+    "command": "ads",
+    "error": null,
+    "exit_code": 0,
+    "extract": {
+      "check": "ads_extract",
+      "detail": {
+        "account_scope": null,
+        "chart_rows": 8,
+        "dimension_coverage": "complete_native_leg_identities",
+        "dimension_rows": 744,
+        "effective_through": "2008-10-30",
+        "entries": 372,
+        "known_at_seq": 703,
+        "rows": 744,
+        "tb_rows": 8,
+        "units": [
+          {
+            "code": "USD",
+            "unit_id": 0
+          }
+        ]
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "completeness"
+    },
+    "failed_checks": [],
+    "tool": "fa-verify",
+    "v": 1,
+    "verdict": "verified"
+  },
+  "ledger_certificates": {
+    "1T0026": {
+      "compared_native_lines": 112,
+      "identical_original_and_replay_line_sha256": "a028a0957aff851da14169a56f87f81473c6573daeac55c4a65329bd411a001f",
+      "known_at": 553,
+      "oid": "42555caada818545936dc0150a087c5bf27982f72404ab0c93b9ebddc166d9be",
+      "output_digest": "225e785923bbaea02654d5f95d64c44a0622df7e38a58017368975cae3d3a012"
+    },
+    "1ZA192": {
+      "compared_native_lines": 74,
+      "identical_original_and_replay_line_sha256": "9426f079bb1b11a043a573e17557bc260a2c323dfbbf6f9946d320765fc2aa13",
+      "known_at": 554,
+      "oid": "d7b172596d7e220dee2b74e17efe32e630e503ad149b7fef7eb559b4e21d712f",
+      "output_digest": "f2ef358f0edb83f13b7f56ed25315a509a5b44e4a3e91489bdd02404a8e3b952"
+    },
+    "1ZB010": {
+      "compared_native_lines": 61,
+      "identical_original_and_replay_line_sha256": "f8ed70198f06940b617fc4024d03aab84696f79cb952b8c7cf89ed31d79ced40",
+      "known_at": 555,
+      "oid": "df62feaa41278ae99ab52044145cc91537dac51a2fb5f12282e6164ff25f7770",
+      "output_digest": "e2d58e77345f95c8c36aa33bd73d76ec3022e540a3f9114f67739cefecb06bc8"
+    },
+    "1ZB143": {
+      "compared_native_lines": 50,
+      "identical_original_and_replay_line_sha256": "165f532197630a9099445b41af1b3c275f741712760a776d2bd3c9daee1cee37",
+      "known_at": 556,
+      "oid": "f9f86a3cc2139b1452078525a3dc22854faf9a3a9db0c1ac57d3ce44ba526b1c",
+      "output_digest": "18922c3c642f64f960fedf670e49f4df44bf005e207af855f1156033f91ccb42"
+    },
+    "1ZR010": {
+      "compared_native_lines": 57,
+      "identical_original_and_replay_line_sha256": "57bdbdd89b0a5c082f36539ea1f3eb03d2e51a5f66031d77200e65722aa2dffe",
+      "known_at": 557,
+      "oid": "e87d712742b10ae9187ea2e1e99a684b34f988e57ce4427529079d389cb2c659",
+      "output_digest": "d29a808cf411b49aa3a506491143385ec3b77c353445e794e9b5bef1b3d21073"
+    },
+    "1ZR176": {
+      "compared_native_lines": 18,
+      "identical_original_and_replay_line_sha256": "602641c1b1db0954494d0e061ba40f170ccb3428a1ca36356dae73ccf7ff28fb",
+      "known_at": 558,
+      "oid": "71dbcb705f00034455f66a3cdd76e68b63ce86933f68461dfad878d6a7ccc144",
+      "output_digest": "65a744d93d0ad79e65182156679d428e8818d255b9130e81075057be7ab48b43"
+    }
+  },
+  "native_entries": 372,
+  "native_exit_counts": {
+    "0": 1266,
+    "8": 2
+  },
+  "native_legs": 744,
+  "native_source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+  "observed_process_exit": 0,
+  "principal_analysis": {
+    "complete": {
+      "includes_declared_transfers": true,
+      "known_at": 560,
+      "population": 372,
+      "principal_rule": "posted_principal_transfer_v1",
+      "procedure": "ponzi.net_investment",
+      "source_accounts": {
+        "1T0026": {
+          "cash_in_cents": 1820800000,
+          "cash_out_cents": 2796643100,
+          "cohort": 1,
+          "first_inflow": "1992-11-19",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -737416500,
+          "printed_closing_principal_cents": -737416500,
+          "transfer_in_cents": 259626600,
+          "transfer_out_cents": 21200000
+        },
+        "1ZA192": {
+          "cash_in_cents": 1043998300,
+          "cash_out_cents": 1692438000,
+          "cohort": 1,
+          "first_inflow": "1992-12-07",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -994703100,
+          "printed_closing_principal_cents": -994703100,
+          "transfer_in_cents": 53736600,
+          "transfer_out_cents": 400000000
+        },
+        "1ZB010": {
+          "cash_in_cents": 124500000,
+          "cash_out_cents": 155250000,
+          "cohort": 1,
+          "first_inflow": "1993-02-03",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -50750000,
+          "printed_closing_principal_cents": -50750000,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 20000000
+        },
+        "1ZB143": {
+          "cash_in_cents": 117853200,
+          "cash_out_cents": 2208822000,
+          "cohort": 4,
+          "first_inflow": "1993-10-20",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -1695468800,
+          "printed_closing_principal_cents": -1695468800,
+          "transfer_in_cents": 400000000,
+          "transfer_out_cents": 4500000
+        },
+        "1ZR010": {
+          "cash_in_cents": 597919300,
+          "cash_out_cents": 930717300,
+          "cohort": 1,
+          "first_inflow": "1992-12-02",
+          "gap_from_printed_principal_cents": 900,
+          "native_finding_expected": true,
+          "native_principal_cents": -332798000,
+          "printed_closing_principal_cents": -332798900,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZR176": {
+          "cash_in_cents": 205001400,
+          "cash_out_cents": 486797900,
+          "cohort": 1,
+          "first_inflow": "1993-02-04",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -281796500,
+          "printed_closing_principal_cents": -281796500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        }
+      },
+      "version": 5
+    },
+    "declared_transfer_effect_cents": {
+      "1T0026": 238426600,
+      "1ZA192": -346263400,
+      "1ZB010": -20000000,
+      "1ZB143": 395500000,
+      "1ZR010": 0,
+      "1ZR176": 0
+    },
+    "historical_missing_role_result_unchanged": true,
+    "without_transfer_role": {
+      "includes_declared_transfers": false,
+      "known_at": 559,
+      "population": 362,
+      "principal_rule": "posted_principal_transfer_v1",
+      "procedure": "ponzi.net_investment",
+      "source_accounts": {
+        "1T0026": {
+          "cash_in_cents": 1820800000,
+          "cash_out_cents": 2796643100,
+          "cohort": 1,
+          "first_inflow": "1992-11-19",
+          "gap_from_printed_principal_cents": -238426600,
+          "native_finding_expected": true,
+          "native_principal_cents": -975843100,
+          "printed_closing_principal_cents": -737416500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZA192": {
+          "cash_in_cents": 1043998300,
+          "cash_out_cents": 1692438000,
+          "cohort": 1,
+          "first_inflow": "1992-12-07",
+          "gap_from_printed_principal_cents": 346263400,
+          "native_finding_expected": true,
+          "native_principal_cents": -648439700,
+          "printed_closing_principal_cents": -994703100,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZB010": {
+          "cash_in_cents": 124500000,
+          "cash_out_cents": 155250000,
+          "cohort": 1,
+          "first_inflow": "1993-02-03",
+          "gap_from_printed_principal_cents": 20000000,
+          "native_finding_expected": true,
+          "native_principal_cents": -30750000,
+          "printed_closing_principal_cents": -50750000,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZB143": {
+          "cash_in_cents": 117853200,
+          "cash_out_cents": 2208822000,
+          "cohort": 25,
+          "first_inflow": "1999-01-11",
+          "gap_from_printed_principal_cents": -395500000,
+          "native_finding_expected": true,
+          "native_principal_cents": -2090968800,
+          "printed_closing_principal_cents": -1695468800,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZR010": {
+          "cash_in_cents": 597919300,
+          "cash_out_cents": 930717300,
+          "cohort": 1,
+          "first_inflow": "1992-12-02",
+          "gap_from_printed_principal_cents": 900,
+          "native_finding_expected": true,
+          "native_principal_cents": -332798000,
+          "printed_closing_principal_cents": -332798900,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZR176": {
+          "cash_in_cents": 205001400,
+          "cash_out_cents": 486797900,
+          "cohort": 1,
+          "first_inflow": "1993-02-04",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -281796500,
+          "printed_closing_principal_cents": -281796500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        }
+      },
+      "version": 5
+    }
+  },
+  "python_validation": {
+    "boundary": "Helper tests are separate from this actual native execution and from any Rust/Tier0 gate.",
+    "command": "FA_BLMIS_GLANTZ_PDF=<the pinned original PDF> python3 -B -m unittest discover -s scripts/tests -p test_blmis*.py",
+    "log": {
+      "bytes": 178,
+      "sha256": "9dd61ad572c0a25ab4f306a46d33e2fe94380c24eef50113c14aee2b680eebbf"
+    },
+    "observed_exit": 0,
+    "original_pdf_used": true,
+    "skipped": 0,
+    "tests": 79
+  },
+  "recomputed_transfer_pairs": [
+    {
+      "credited_principal_cents": 400000000,
+      "date": "1993-10-20",
+      "incoming_row_id": "SRC-BLM-001:1ZB143:p36:l16",
+      "native_originating_balance_row_id": "SRC-BLM-001:1ZA192:p31:l20",
+      "origin": "1ZA192",
+      "originating_certificate": "d7b172596d7e220dee2b74e17efe32e630e503ad149b7fef7eb559b4e21d712f",
+      "originating_principal_cents": 485500000,
+      "outgoing_row_id": "SRC-BLM-001:1ZA192:p31:l21",
+      "recipient": "1ZB143",
+      "rule": "trustee_transfer_credit",
+      "statement_amount_cents": 400000000
+    },
+    {
+      "credited_principal_cents": 0,
+      "date": "2005-12-23",
+      "incoming_row_id": "SRC-BLM-001:1ZA192:p32:l43",
+      "native_originating_balance_row_id": "SRC-BLM-001:1ZB143:p37:l22",
+      "origin": "1ZB143",
+      "originating_certificate": "f9f86a3cc2139b1452078525a3dc22854faf9a3a9db0c1ac57d3ce44ba526b1c",
+      "originating_principal_cents": -485468800,
+      "outgoing_row_id": "SRC-BLM-001:1ZB143:p37:l23",
+      "recipient": "1ZA192",
+      "rule": "trustee_transfer_credit",
+      "statement_amount_cents": 20000000
+    }
+  ],
+  "recorded_utc": "2026-11-03T03:53:26.227494+00:00",
+  "register_period_count": 143,
+  "reproduce": {
+    "command": "python3 -B scripts/blmis_replay.py run --account all --pdf <the pinned original PDF> --out <new directory> --fa <frozen fa> --fa-verify <frozen fa-verify>",
+    "raw_artifact_policy": "The complete raw report, command transcript, failed attempts, and generated book are retained outside Git. Their hashes bind this compact summary; fresh keys and native IDs change on a fresh replay.",
+    "requirements": [
+      "The exact executed helper hashes and frozen native binary hashes above",
+      "Python 3.11 or newer and Poppler pdftotext",
+      "A new output directory; no cached result or previous book is reused"
+    ]
+  },
+  "scope": {
+    "principal_analysis_scope": "posted_principal_transfer_v1 with trustee-credited transfers as explicit inputs; the two paired credits separately recompute under trustee_transfer_credit",
+    "principal_sign": "Native debit-minus-credit is negative remaining principal; no source discrepancy is plugged",
+    "result_scope": "PASS means the native book matches every published movement and exactly reproduces the diagnosed source discrepancies; it does not assert all printed balances are arithmetically exact",
+    "review_scope": "Distinct local test reviewer exercises AgentUpload evidence admission; no authenticated human review claim",
+    "scope": "Every published transaction of all six Glantz Exhibits B-1 through B-6: 379 observations, 1992-11-19 through 2008-10-30. Trustee computations in a complaint, not a complete BLMIS general ledger or a court finding. Credited principal remains a named source input. All displayed amounts, source discrepancies, zero-principal observations and footnote markers are retained. Double-entry counterparts are explicit analysis accounts. One named same-day computation-order interpretation does not assert original transaction times or an identified canceled check. No source discrepancy is balanced away.",
+    "source_order_policy": "Source display order with the explicitly pinned same_day_display_reorder for the 1ZB010 check/stop-payment pair; one native publication per monetary row",
+    "trust_scope": "Caller-trusted key of a fresh local analysis book; no external court or trustee signing-key claim",
+    "unpaired_transfer_credit_scope": "The other 13 transfer rows retain trustee-credited principal as explicit inputs"
+  },
+  "source_account_parties": {
+    "1T0026": {
+      "code": "BLMIS-1T0026",
+      "dimension": 12,
+      "value": "afea9fba8dc9e6954bdc950cbcb4d461",
+      "vid": "26ce7bc4e76f248d1b5b70bc8bdc0907"
+    },
+    "1ZA192": {
+      "code": "BLMIS-1ZA192",
+      "dimension": 12,
+      "value": "9833fd80ae349f71934636448de76b9b",
+      "vid": "c384dc6174da5459b8332c5e0b2d0749"
+    },
+    "1ZB010": {
+      "code": "BLMIS-1ZB010",
+      "dimension": 12,
+      "value": "5855ea9a688cb29b974e8f9454c32fcf",
+      "vid": "bf70866652df796231a8da8f76b3cde6"
+    },
+    "1ZB143": {
+      "code": "BLMIS-1ZB143",
+      "dimension": 12,
+      "value": "a59ebc8275010d15cdb9718d085cab8c",
+      "vid": "d6add9a73cd57fcea6b5f9c427954fde"
+    },
+    "1ZR010": {
+      "code": "BLMIS-1ZR010",
+      "dimension": 12,
+      "value": "abc670ec958c91965c0d403dc36c4378",
+      "vid": "e2be68410eaca7f7cb2382fd00929d8a"
+    },
+    "1ZR176": {
+      "code": "BLMIS-1ZR176",
+      "dimension": 12,
+      "value": "d965c9cbe0ae6390628eee0a562477bb",
+      "vid": "76c49011ccaaddb2df4f2656b5ccbf54"
+    }
+  },
+  "source_accounts": [
+    "1T0026",
+    "1ZA192",
+    "1ZB010",
+    "1ZB143",
+    "1ZR010",
+    "1ZR176"
+  ],
+  "source_comparisons": {
+    "1T0026": {
+      "native_closing_principal_cents": -737416500,
+      "native_lines": 112,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -737416500,
+      "printed_row_gaps_cents": {},
+      "source_rows": 117
+    },
+    "1ZA192": {
+      "native_closing_principal_cents": -994703100,
+      "native_lines": 74,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -994703100,
+      "printed_row_gaps_cents": {},
+      "source_rows": 75
+    },
+    "1ZB010": {
+      "native_closing_principal_cents": -50750000,
+      "native_lines": 61,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -50750000,
+      "printed_row_gaps_cents": {},
+      "source_rows": 61
+    },
+    "1ZB143": {
+      "native_closing_principal_cents": -1695468800,
+      "native_lines": 50,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -1695468800,
+      "printed_row_gaps_cents": {},
+      "source_rows": 51
+    },
+    "1ZR010": {
+      "native_closing_principal_cents": -332798000,
+      "native_lines": 57,
+      "printed_balances_equal": false,
+      "printed_closing_principal_cents": -332798900,
+      "printed_row_gaps_cents": {
+        "SRC-BLM-001:1ZR010:p38:l23": 100,
+        "SRC-BLM-001:1ZR010:p38:l24": 100,
+        "SRC-BLM-001:1ZR010:p38:l25": 100,
+        "SRC-BLM-001:1ZR010:p38:l26": 100,
+        "SRC-BLM-001:1ZR010:p38:l27": 100,
+        "SRC-BLM-001:1ZR010:p38:l28": 100,
+        "SRC-BLM-001:1ZR010:p38:l29": 100,
+        "SRC-BLM-001:1ZR010:p38:l30": 100,
+        "SRC-BLM-001:1ZR010:p38:l31": 100,
+        "SRC-BLM-001:1ZR010:p38:l32": 100,
+        "SRC-BLM-001:1ZR010:p38:l33": 100,
+        "SRC-BLM-001:1ZR010:p38:l34": 100,
+        "SRC-BLM-001:1ZR010:p38:l35": 100,
+        "SRC-BLM-001:1ZR010:p38:l36": 200,
+        "SRC-BLM-001:1ZR010:p38:l37": 200,
+        "SRC-BLM-001:1ZR010:p38:l38": 200,
+        "SRC-BLM-001:1ZR010:p38:l39": 200,
+        "SRC-BLM-001:1ZR010:p38:l40": 200,
+        "SRC-BLM-001:1ZR010:p38:l41": 300,
+        "SRC-BLM-001:1ZR010:p38:l42": 300,
+        "SRC-BLM-001:1ZR010:p38:l43": 300,
+        "SRC-BLM-001:1ZR010:p38:l44": 400,
+        "SRC-BLM-001:1ZR010:p38:l45": 400,
+        "SRC-BLM-001:1ZR010:p38:l46": 400,
+        "SRC-BLM-001:1ZR010:p38:l47": 500,
+        "SRC-BLM-001:1ZR010:p39:l16": 500,
+        "SRC-BLM-001:1ZR010:p39:l17": 500,
+        "SRC-BLM-001:1ZR010:p39:l18": 500,
+        "SRC-BLM-001:1ZR010:p39:l19": 500,
+        "SRC-BLM-001:1ZR010:p39:l20": 500,
+        "SRC-BLM-001:1ZR010:p39:l21": 500,
+        "SRC-BLM-001:1ZR010:p39:l22": 600,
+        "SRC-BLM-001:1ZR010:p39:l23": 600,
+        "SRC-BLM-001:1ZR010:p39:l24": 600,
+        "SRC-BLM-001:1ZR010:p39:l25": 600,
+        "SRC-BLM-001:1ZR010:p39:l26": 700,
+        "SRC-BLM-001:1ZR010:p39:l27": 700,
+        "SRC-BLM-001:1ZR010:p39:l28": 700,
+        "SRC-BLM-001:1ZR010:p39:l29": 800,
+        "SRC-BLM-001:1ZR010:p39:l30": 800,
+        "SRC-BLM-001:1ZR010:p39:l31": 800,
+        "SRC-BLM-001:1ZR010:p39:l32": 800,
+        "SRC-BLM-001:1ZR010:p39:l33": 900,
+        "SRC-BLM-001:1ZR010:p39:l34": 900,
+        "SRC-BLM-001:1ZR010:p39:l35": 900,
+        "SRC-BLM-001:1ZR010:p39:l36": 900,
+        "SRC-BLM-001:1ZR010:p39:l37": 900,
+        "SRC-BLM-001:1ZR010:p39:l38": 900,
+        "SRC-BLM-001:1ZR010:p39:l39": 900,
+        "SRC-BLM-001:1ZR010:p39:l40": 900
+      },
+      "source_rows": 57
+    },
+    "1ZR176": {
+      "native_closing_principal_cents": -281796500,
+      "native_lines": 18,
+      "printed_balances_equal": false,
+      "printed_closing_principal_cents": -281796500,
+      "printed_row_gaps_cents": {
+        "SRC-BLM-001:1ZR176:p40:l21": -100,
+        "SRC-BLM-001:1ZR176:p40:l22": -100,
+        "SRC-BLM-001:1ZR176:p40:l23": -100,
+        "SRC-BLM-001:1ZR176:p40:l24": -100,
+        "SRC-BLM-001:1ZR176:p40:l25": -100,
+        "SRC-BLM-001:1ZR176:p40:l26": -100,
+        "SRC-BLM-001:1ZR176:p40:l27": -100,
+        "SRC-BLM-001:1ZR176:p40:l28": -100,
+        "SRC-BLM-001:1ZR176:p40:l29": -100,
+        "SRC-BLM-001:1ZR176:p40:l30": -100,
+        "SRC-BLM-001:1ZR176:p40:l31": -100,
+        "SRC-BLM-001:1ZR176:p40:l32": -100
+      },
+      "source_rows": 18
+    }
+  },
+  "source_diagnostic_counts": {
+    "detached_marker_rows": [
+      "SRC-BLM-001:1T0026:p27:l25",
+      "SRC-BLM-001:1T0026:p27:l27",
+      "SRC-BLM-001:1T0026:p27:l29",
+      "SRC-BLM-001:1T0026:p27:l35",
+      "SRC-BLM-001:1T0026:p27:l37",
+      "SRC-BLM-001:1T0026:p27:l40"
+    ],
+    "gap_convention": "cumulative source fold minus printed balance; local gaps use printed delta minus source movement",
+    "monetary_rows": 372,
+    "precision_limit": "Whole-dollar published cells; the cause of source differences is not established. No cent-level source precision is inferred.",
+    "same_day_display_reorder": {
+      "account": "1ZB010",
+      "computation_row_ids": [
+        "SRC-BLM-001:1ZB010:p35:l39",
+        "SRC-BLM-001:1ZB010:p35:l38"
+      ],
+      "date": "2006-10-17",
+      "display_row_ids": [
+        "SRC-BLM-001:1ZB010:p35:l38",
+        "SRC-BLM-001:1ZB010:p35:l39"
+      ],
+      "interpretation": "interpretive",
+      "reason": "Compute the published STOP PAYMENT before the same-day CHECK to reproduce their printed balances; retain source display order and amounts unchanged. No source transaction time or canceled-check identity is inferred.",
+      "rule": "same_day_display_reorder"
+    },
+    "source_rows": 379,
+    "transfer_pairs": [
+      {
+        "agrees_with_both_printed_credits": true,
+        "date": "1993-10-20",
+        "destination_account": "1ZB143",
+        "destination_credited_in_cents": 400000000,
+        "destination_row_id": "SRC-BLM-001:1ZB143:p36:l16",
+        "interpretation": "min(statement amount, max(0, preceding printed origin principal)); tested on these two source pairs only",
+        "origin_account": "1ZA192",
+        "origin_credited_out_cents": 400000000,
+        "origin_preceding_row_id": "SRC-BLM-001:1ZA192:p31:l20",
+        "origin_printed_principal_before_cents": 485500000,
+        "origin_row_id": "SRC-BLM-001:1ZA192:p31:l21",
+        "pair_id": "1993-10-20:1ZA192:1ZB143",
+        "recomputed_credit_cents": 400000000,
+        "rule": "trustee_transfer_credit",
+        "statement_amount_cents": 400000000
+      },
+      {
+        "agrees_with_both_printed_credits": true,
+        "date": "2005-12-23",
+        "destination_account": "1ZA192",
+        "destination_credited_in_cents": 0,
+        "destination_row_id": "SRC-BLM-001:1ZA192:p32:l43",
+        "interpretation": "min(statement amount, max(0, preceding printed origin principal)); tested on these two source pairs only",
+        "origin_account": "1ZB143",
+        "origin_credited_out_cents": 0,
+        "origin_preceding_row_id": "SRC-BLM-001:1ZB143:p37:l22",
+        "origin_printed_principal_before_cents": -485468800,
+        "origin_row_id": "SRC-BLM-001:1ZB143:p37:l23",
+        "pair_id": "2005-12-23:1ZB143:1ZA192",
+        "recomputed_credit_cents": 0,
+        "rule": "trustee_transfer_credit",
+        "statement_amount_cents": 20000000
+      }
+    ],
+    "transfer_rows": 17,
+    "unpaired_transfer_rows": [
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 246700300,
+        "description": "TRANS FROM 1ZB12830 (1ZB128)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 264497700,
+        "reported_marker": "[1]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l25"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 0,
+        "description": "TRANS FROM 1ZA16930 (1ZA169)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 5804700,
+        "reported_marker": "[2]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l27"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 4926300,
+        "description": "TRANS FROM 1ZA95530 (1ZA955)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 5783100,
+        "reported_marker": "[1]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l29"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 8000000,
+        "description": "TRANS FROM 1ZA95430 (1ZA954)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 9363300,
+        "reported_marker": "[1]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l30"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 0,
+        "description": "TRANS FROM 1ZA95530 (1ZA955)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 3700,
+        "reported_marker": "[2]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l35"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 0,
+        "description": "TRANS FROM 1ZA95430 (1ZA954)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 7300,
+        "reported_marker": "[2]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l37"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 0,
+        "description": "TRANS FROM 1ZA95530 (1ZA955)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 800,
+        "reported_marker": "[2]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l40"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": 0,
+        "description": "TRANS FROM 1ZA95430 (1ZA954)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 1600,
+        "reported_marker": "[2]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p27:l41"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": -11200000,
+        "description": "TRANS TO 1ZB12530 (1ZB125)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": -11200000,
+        "reported_marker": "",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p28:l24"
+      },
+      {
+        "account": "1T0026",
+        "credited_principal_cents": -10000000,
+        "description": "TRANS TO 1ZB12530 (1ZB125)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": -10000000,
+        "reported_marker": "",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1T0026:p28:l25"
+      },
+      {
+        "account": "1ZA192",
+        "credited_principal_cents": 53736600,
+        "description": "TRANS FROM 1ZB12530 (1ZB125)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": 127042200,
+        "reported_marker": "[1]",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1ZA192:p31:l28"
+      },
+      {
+        "account": "1ZB010",
+        "credited_principal_cents": -20000000,
+        "description": "TRANS TO 1ZB12530 (1ZB125)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": -20000000,
+        "reported_marker": "",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1ZB010:p34:l34"
+      },
+      {
+        "account": "1ZB143",
+        "credited_principal_cents": -4500000,
+        "description": "TRANS TO 1ZB12530 (1ZB125)",
+        "reason": "The counterparty account history is not published in this Exhibit B.",
+        "reported_cents": -4500000,
+        "reported_marker": "",
+        "role": "oracle_output",
+        "row_id": "SRC-BLM-001:1ZB143:p36:l18"
+      }
+    ],
+    "zero_principal_rows": [
+      "SRC-BLM-001:1T0026:p27:l27",
+      "SRC-BLM-001:1T0026:p27:l35",
+      "SRC-BLM-001:1T0026:p27:l37",
+      "SRC-BLM-001:1T0026:p27:l40",
+      "SRC-BLM-001:1T0026:p27:l41",
+      "SRC-BLM-001:1ZA192:p32:l43",
+      "SRC-BLM-001:1ZB143:p37:l23"
+    ]
+  },
+  "source_extraction": {
+    "command": [
+      "pdftotext",
+      "-layout",
+      "-f",
+      "27",
+      "-l",
+      "40",
+      "-",
+      "-"
+    ],
+    "format": "fa-blmis-glantz-pdf-extraction-v1",
+    "mode": "original_pdf_extracted_this_run",
+    "pdf_pages": [
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40
+    ],
+    "retained": {
+      "extracted-source/layout.txt": {
+        "bytes": 88638,
+        "sha256": "258f770d126b7c8cb8a0216fcca98259ce75b3ae86806638f7a2711c8176033f"
+      },
+      "extracted-source/rows.csv": {
+        "bytes": 68500,
+        "sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf"
+      },
+      "extracted-source/source.json": {
+        "bytes": 10877,
+        "sha256": "8da252a4e2307fa1fe0bcef6ffa5073d13a028ac9b26340ff4541df6a9aa6882"
+      },
+      "source.pdf": {
+        "bytes": 389586,
+        "sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1"
+      }
+    },
+    "reviewed_b2_metadata_sha256": "037fd6652ccfc133cf6366a765b7f70a8ff866801f2b88ff636c9c631cbaddfc",
+    "reviewed_b2_rows_sha256": "286af73204e2451bac782d03e1270ccb70d4b8138219f571db1c4ea0d0f90a3b",
+    "source_rows": 379,
+    "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+    "source_url": "https://www.madofftrustee.com/document/dockets/008796-glantzcomplaint10-05394docket93.pdf",
+    "stdin": "Verified source.pdf bytes; the extractor cannot race a subsequently changed source path."
+  },
+  "source_rows": 379,
+  "source_rows_sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf",
+  "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+  "status": "PASS",
+  "tamper_refusals": {
+    "amount": {
+      "mutation": {
+        "delta_cents": 1,
+        "line": 2,
+        "new_amount": "2800000.01",
+        "old_amount": "2800000.00"
+      },
+      "verification": {
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 8,
+            "book_id": "c60df4f7fd00b4095684fbd79170b261",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "1150429ae3d1d5bd5ac847a297cb02569c1581a01d4a171f30562f808b67c825",
+            "checkpoint_oid": "80604d6961fd5a16054eb6edf983698e7af9f233ebd0c0e4fbe64131cbd1b908",
+            "completeness": "seq_range_complete",
+            "documents": 2232,
+            "entries": 541,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 553,
+            "scope": "prefix",
+            "through_seq": 703
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 541,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 2232,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 8,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 541,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-10-30",
+            "entries": 371,
+            "known_at_seq": 703,
+            "rows": 742,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 307ec442655172794509b68057c464eb (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-10-30",
+              "entries": 371,
+              "known_at_seq": 703,
+              "rows": 742,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 307ec442655172794509b68057c464eb (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "failed"
+      }
+    },
+    "party": {
+      "mutation": {
+        "dimension": 12,
+        "entry_id": "307ec442655172794509b68057c464eb",
+        "leg": 1,
+        "line": 2,
+        "new_value": "afea9fba8dc9e6954bdc950cbcb4d460",
+        "old_value": "afea9fba8dc9e6954bdc950cbcb4d461"
+      },
+      "verification": {
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 8,
+            "book_id": "c60df4f7fd00b4095684fbd79170b261",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "1150429ae3d1d5bd5ac847a297cb02569c1581a01d4a171f30562f808b67c825",
+            "checkpoint_oid": "80604d6961fd5a16054eb6edf983698e7af9f233ebd0c0e4fbe64131cbd1b908",
+            "completeness": "seq_range_complete",
+            "documents": 2232,
+            "entries": 541,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 553,
+            "scope": "prefix",
+            "through_seq": 703
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 541,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 2232,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 8,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 541,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-10-30",
+            "entries": 371,
+            "known_at_seq": 703,
+            "rows": 742,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 307ec442655172794509b68057c464eb (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-10-30",
+              "entries": 371,
+              "known_at_seq": 703,
+              "rows": 742,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 307ec442655172794509b68057c464eb (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "failed"
+      }
+    }
+  },
+  "zero_principal_rows": [
+    "SRC-BLM-001:1T0026:p27:l27",
+    "SRC-BLM-001:1T0026:p27:l35",
+    "SRC-BLM-001:1T0026:p27:l37",
+    "SRC-BLM-001:1T0026:p27:l40",
+    "SRC-BLM-001:1T0026:p27:l41",
+    "SRC-BLM-001:1ZA192:p32:l43",
+    "SRC-BLM-001:1ZB143:p37:l23"
+  ]
+}
