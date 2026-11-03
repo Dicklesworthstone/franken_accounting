@@ -57,8 +57,9 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("aging.inventory", 3),
     ("reversal.patterns", 1),
     ("confirm.coverage", 2),
-    ("solvency.balance_sheet_test", 2),
-    ("solvency.cash_flow_test", 2),
+    // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
+    ("solvency.balance_sheet_test", 3),
+    ("solvency.cash_flow_test", 3),
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),

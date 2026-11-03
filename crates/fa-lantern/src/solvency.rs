@@ -62,6 +62,20 @@ pub const VALUATION_ADJUSTMENT_EXT_TAG: u16 = fa_model::entry::VALUATION_ADJUSTM
 /// Current schema version of `AuthenticatedObligationSchedule` and `AuthenticatedValuationSchedule`.
 pub const SCHEDULE_SCHEMA_VERSION: u16 = 1;
 
+/// The day a solvency procedure judges: the coordinate's effective date, or
+/// else the latest effective date among the live postings.
+fn as_of_day(snapshot: &Snapshot) -> Result<DateDay, LanternError> {
+    if let Some(day) = snapshot.coordinate.effective_through {
+        return Ok(day);
+    }
+    Ok(snapshot
+        .live_postings()?
+        .iter()
+        .map(|e| e.entry.proposal.effective_date)
+        .max()
+        .unwrap_or(DateDay(0)))
+}
+
 /// Compute `as_of + horizon_days` using checked civil-day arithmetic with no
 /// narrowing cast or saturation (`fa-5dpd`).
 pub fn checked_horizon_end(
@@ -436,15 +450,13 @@ pub fn evaluate_cash_flow_solvency(
             ),
         });
     }
-    let mut all_live = snapshot.live_postings()?;
+    let as_of = as_of_day(snapshot)?;
+    // The position is judged as it stood on `as_of`: supersession nets
+    // within that window, so a reversal dated later leaves the obligation
+    // that was open on the day, and a payment dated later neither relieves
+    // an obligation nor spends cash that the fold counted.
+    let mut all_live = snapshot.live_postings_through(Some(as_of))?;
     all_live.sort_by_key(|e| e.vid);
-    let as_of = snapshot.coordinate.effective_through.unwrap_or_else(|| {
-        all_live
-            .iter()
-            .map(|e| e.entry.proposal.effective_date)
-            .max()
-            .unwrap_or(DateDay(0))
-    });
     if schedule.book_id != snapshot.coordinate.book_id {
         return Err(LanternError::Parameter {
             procedure: procedure.into(),
@@ -480,7 +492,8 @@ pub fn evaluate_cash_flow_solvency(
 
     // 1. Fold liquid cash at `as_of` and collect booked liability credit legs
     // at `as_of`, plus live settlement applications (`leg.settles`) from
-    // non-PENDING entries effective through `horizon_end`.
+    // non-PENDING entries effective through `as_of`: an obligation is judged
+    // open as of the day, as the cash beside it is counted.
     let mut cash_by_scope: BTreeMap<(u32, Option<VId>), i128> = BTreeMap::new();
     let mut scope_accounts: BTreeMap<(u32, Option<VId>), BTreeSet<VId>> = BTreeMap::new();
     let mut scope_entries: BTreeMap<(u32, Option<VId>), BTreeSet<VId>> = BTreeMap::new();
@@ -555,7 +568,7 @@ pub fn evaluate_cash_flow_solvency(
                             .insert(leg.account_ref);
                         scope_entries.entry(key).or_default().insert(e.vid);
                     }
-                } else if eff <= horizon_end && leg.side == Side::Debit {
+                } else if eff <= as_of && leg.side == Side::Debit {
                     // Collect explicit settlement links (`leg.settles`) so each
                     // payment is applied once to its target obligation.
                     for s in &leg.settles {
@@ -1076,16 +1089,28 @@ pub(crate) fn run_unscheduled_book_screen(
     work: &mut Meter<'_>,
 ) -> Result<Vec<Finding>, LanternError> {
     let cash = snapshot.role_population(procedure)?;
-    let mut all_live = snapshot.live_postings()?;
-    all_live.sort_by_key(|e| e.vid);
-    let ref_date = snapshot.coordinate.effective_through.unwrap_or_else(|| {
-        all_live
-            .iter()
-            .map(|e| e.entry.proposal.effective_date)
-            .max()
-            .unwrap_or(DateDay(0))
-    });
+    let ref_date = as_of_day(snapshot)?;
     let horizon_end = checked_horizon_end(procedure, ref_date, horizon_days)?;
+    // Cash is judged as it stood on `ref_date` and book liabilities as they
+    // stand through `horizon_end`, each with supersession netted within its
+    // own window: a reversal dated after a window leaves what stood in it.
+    // Each entry live in either window is visited once.
+    let on_ref_date: BTreeSet<VId> = snapshot
+        .live_postings_through(Some(ref_date))?
+        .iter()
+        .map(|e| e.vid)
+        .collect();
+    let through_horizon: BTreeSet<VId> = snapshot
+        .live_postings_through(Some(horizon_end))?
+        .iter()
+        .map(|e| e.vid)
+        .collect();
+    let mut visit: Vec<_> = snapshot
+        .entries
+        .iter()
+        .filter(|e| on_ref_date.contains(&e.vid) || through_horizon.contains(&e.vid))
+        .collect();
+    visit.sort_by_key(|e| e.vid);
 
     let mut cash_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
     let mut liab_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
@@ -1093,52 +1118,48 @@ pub(crate) fn run_unscheduled_book_screen(
     let mut unit_entries: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
     let mut population = 0u64;
 
-    for e in &all_live {
+    // A cash account holds the Asset role only, so no leg is both.
+    for e in &visit {
         work.entry()?;
-        let eff = e.entry.proposal.effective_date;
-        if eff > horizon_end {
-            continue;
-        }
+        let cash_window = on_ref_date.contains(&e.vid);
+        let liability_window = through_horizon.contains(&e.vid);
         for leg in &e.entry.proposal.legs {
             work.leg()?;
             let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                 continue;
             };
-            let at = AccountType(acct.account_type);
-            let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-            if eff <= ref_date && cash.contains(&leg.account_ref) {
+            if cash.contains(&leg.account_ref) {
+                if !cash_window {
+                    continue;
+                }
                 population = population.saturating_add(1);
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let c = cash_net
                     .entry((leg.account_ref, leg.amount.unit.0))
                     .or_default();
                 *c = c
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("cash_flow_test cash fold"))?;
-                unit_accts
-                    .entry(leg.amount.unit.0)
-                    .or_default()
-                    .insert(leg.account_ref);
-                unit_entries
-                    .entry(leg.amount.unit.0)
-                    .or_default()
-                    .insert(e.vid);
-            } else if at == AccountType::LIABILITY {
+            } else if AccountType(acct.account_type) == AccountType::LIABILITY && liability_window {
                 population = population.saturating_add(1);
+                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let l = liab_net
                     .entry((leg.account_ref, leg.amount.unit.0))
                     .or_default();
                 *l = l
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("cash_flow_test liability fold"))?;
-                unit_accts
-                    .entry(leg.amount.unit.0)
-                    .or_default()
-                    .insert(leg.account_ref);
-                unit_entries
-                    .entry(leg.amount.unit.0)
-                    .or_default()
-                    .insert(e.vid);
+            } else {
+                continue;
             }
+            unit_accts
+                .entry(leg.amount.unit.0)
+                .or_default()
+                .insert(leg.account_ref);
+            unit_entries
+                .entry(leg.amount.unit.0)
+                .or_default()
+                .insert(e.vid);
         }
     }
 
@@ -1399,15 +1420,11 @@ pub fn valuation_schedule_from_inline_extensions(
 ) -> Result<Option<AuthenticatedValuationSchedule>, LanternError> {
     let mut any_inline = false;
     let mut valuations = Vec::new();
-    let mut all_live = snapshot.live_postings()?;
+    let as_of = as_of_day(snapshot)?;
+    // Only valuations posted on or before `as_of`, netted within that window:
+    // one dated later did not exist on the day the balance sheet is judged.
+    let mut all_live = snapshot.live_postings_through(Some(as_of))?;
     all_live.sort_by_key(|e| (e.recorded_at, e.vid));
-    let as_of = snapshot.coordinate.effective_through.unwrap_or_else(|| {
-        all_live
-            .iter()
-            .map(|e| e.entry.proposal.effective_date)
-            .max()
-            .unwrap_or(DateDay(0))
-    });
     let mut caller_principal = VId(1);
 
     for e in &all_live {
@@ -1528,15 +1545,7 @@ pub fn evaluate_balance_sheet_solvency(
         });
     }
 
-    let mut all_live = snapshot.live_postings()?;
-    all_live.sort_by_key(|e| e.vid);
-    let as_of = snapshot.coordinate.effective_through.unwrap_or_else(|| {
-        all_live
-            .iter()
-            .map(|e| e.entry.proposal.effective_date)
-            .max()
-            .unwrap_or(DateDay(0))
-    });
+    let as_of = as_of_day(snapshot)?;
     if schedule.as_of != as_of {
         return Err(LanternError::Parameter {
             procedure: procedure.into(),
@@ -2371,6 +2380,62 @@ fn make_posting(
     extensions: Vec<(u16, Vec<u8>)>,
     doc_oid: Oid,
 ) -> SnapshotEntry {
+    make_superseding_posting(book, vid, eff, class, legs, extensions, doc_oid, Vec::new())
+}
+
+/// A Reversal of `target` effective `eff`: its legs on opposite sides.
+#[cfg(test)]
+fn make_reversal(
+    book: &BookContext,
+    vid: VId,
+    eff: DateDay,
+    target: &SnapshotEntry,
+    doc_oid: Oid,
+) -> SnapshotEntry {
+    let legs = target
+        .entry
+        .proposal
+        .legs
+        .iter()
+        .map(|leg| {
+            let side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+            LegPayload::simple(side, leg.account_ref, leg.amount)
+        })
+        .collect();
+    make_superseding_posting(
+        book,
+        vid,
+        eff,
+        EntryClass::REVERSAL,
+        legs,
+        Vec::new(),
+        doc_oid,
+        vec![fa_model::Supersession {
+            target: EntryRef {
+                vid: target.vid,
+                entry_digest: target.entry.entry_digest,
+            },
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 1,
+        }],
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn make_superseding_posting(
+    book: &BookContext,
+    vid: VId,
+    eff: DateDay,
+    class: EntryClass,
+    legs: Vec<LegPayload>,
+    extensions: Vec<(u16, Vec<u8>)>,
+    doc_oid: Oid,
+    supersession: Vec<fa_model::Supersession>,
+) -> SnapshotEntry {
     let seq = u64::try_from(vid.0).unwrap();
     let payload = EntryPayload {
         schema_minor: if extensions.is_empty() {
@@ -2407,7 +2472,7 @@ fn make_posting(
             doc_commit: [0xaa; 32],
             role: 1,
         }],
-        supersession: Vec::new(),
+        supersession,
         pending: (class == EntryClass::PENDING).then_some(fa_model::Pending {
             timeout_ns: None,
             resolution_of: None,
@@ -3712,4 +3777,183 @@ fn explicit_valuation_inputs_are_visible_applicable_and_cited() {
         ),
         Err(LanternError::Parameter { name, .. }) if name == "caller_principal"
     ));
+}
+
+/// fa-ti99 and fa-gebi: the scheduled cash-flow test judges what was open on
+/// the as-of day. Version 2 let a payment dated after it relieve the payable
+/// it paid without spending the cash that paid it, and netted a reversal
+/// dated after it over the whole snapshot, so the accrual it reversed left
+/// the folded book while the as-of schedule still named it (and the run was
+/// refused).
+#[cfg(test)]
+#[test]
+fn cash_flow_solvency_counts_obligations_open_at_the_as_of_day() {
+    let apr30 = day(2026, 4, 30);
+    let (mut snapshot, book, cash_vid, ap_vid, doc_oid) = test_fixture(apr30);
+    let exp_vid = account_vid(book.book_id, "6000");
+    let usd = book.units.lookup("USD").unwrap();
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    let due = |ordinal: u16, date: DateDay, amount: i128| InlineObligationTerms {
+        ordinal,
+        status: ObligationStatus::Contractual,
+        installments: vec![ObligationInstallment {
+            due_date: date,
+            amount,
+        }],
+    };
+
+    // Cash of 200 on Jan 2.
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(30),
+        day(2026, 1, 2),
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 200)),
+            LegPayload::simple(Side::Credit, exp_vid, Amount::new(usd, 200)),
+        ],
+        Vec::new(),
+        doc_oid,
+    ));
+    // Apr 1: two payables of 200, due May 10 and May 20.
+    let legs = vec![
+        LegPayload::simple(Side::Debit, exp_vid, Amount::new(usd, 400)),
+        LegPayload::simple(Side::Credit, ap_vid, Amount::new(usd, 200)),
+        LegPayload::simple(Side::Credit, ap_vid, Amount::new(usd, 200)),
+    ];
+    let terms = [due(1, day(2026, 5, 10), 200), due(2, day(2026, 5, 20), 200)];
+    let invoice = make_posting(
+        &book,
+        VId(31),
+        day(2026, 4, 1),
+        EntryClass::ORIGINAL,
+        legs.clone(),
+        vec![InlineObligationTerms::to_extension_for_legs(&terms, &legs).unwrap()],
+        doc_oid,
+    );
+    let invoice_ref = EntryRef {
+        vid: invoice.vid,
+        entry_digest: invoice.entry.entry_digest,
+    };
+    snapshot.entries.push(invoice);
+    // May 10, after the as-of day: the first payable is paid from cash.
+    let mut pay = LegPayload::simple(Side::Debit, ap_vid, Amount::new(usd, 200));
+    pay.settles.push(Settlement {
+        target: invoice_ref,
+        ordinal: 1,
+        amount: Amount::new(usd, 200),
+    });
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(32),
+        day(2026, 5, 10),
+        EntryClass::ORIGINAL,
+        vec![
+            pay,
+            LegPayload::simple(Side::Credit, cash_vid, Amount::new(usd, 200)),
+        ],
+        Vec::new(),
+        doc_oid,
+    ));
+
+    let run = |snapshot: &Snapshot| {
+        let schedule = schedule_from_inline_extensions(procedure, snapshot, apr30)
+            .unwrap()
+            .unwrap();
+        let mut meter = Meter::new(procedure, None, None);
+        evaluate_cash_flow_solvency(procedure, snapshot, &book, 30, &schedule, &mut meter)
+    };
+    let report = run(&snapshot).unwrap();
+    let unit = &report.units[&(usd.0, None)];
+    assert_eq!(unit.liquid_cash, 200);
+    assert_eq!(
+        unit.maturing_obligations, 400,
+        "both payables were open on Apr 30"
+    );
+    assert_eq!(unit.shortfall, 200);
+    assert_eq!(report.findings.len(), 1);
+
+    // Apr 15: an accrual of 100 due May 15, reversed on May 2. It was open on
+    // Apr 30, so it is judged there.
+    let accrual_legs = vec![
+        LegPayload::simple(Side::Debit, exp_vid, Amount::new(usd, 100)),
+        LegPayload::simple(Side::Credit, ap_vid, Amount::new(usd, 100)),
+    ];
+    let accrual = make_posting(
+        &book,
+        VId(33),
+        day(2026, 4, 15),
+        EntryClass::ORIGINAL,
+        accrual_legs.clone(),
+        vec![
+            InlineObligationTerms::to_extension_for_legs(
+                &[due(1, day(2026, 5, 15), 100)],
+                &accrual_legs,
+            )
+            .unwrap(),
+        ],
+        doc_oid,
+    );
+    let reversal = make_reversal(&book, VId(34), day(2026, 5, 2), &accrual, doc_oid);
+    snapshot.entries.push(accrual);
+    snapshot.entries.push(reversal);
+    let report = run(&snapshot).unwrap();
+    let unit = &report.units[&(usd.0, None)];
+    assert_eq!(unit.maturing_obligations, 500);
+    assert_eq!(unit.shortfall, 300);
+}
+
+/// fa-gebi: an inline valuation posted after the as-of day did not exist on
+/// it. Version 2 read every live entry, so such a valuation was extracted
+/// and then refused as future-effective, failing the balance-sheet run.
+#[cfg(test)]
+#[test]
+fn balance_sheet_reads_no_valuation_posted_after_the_as_of_day() {
+    let apr30 = day(2026, 4, 30);
+    let (mut snapshot, book, cash_vid, _, doc_oid) = test_fixture(apr30);
+    let exp_vid = account_vid(book.book_id, "6000");
+    let usd = book.units.lookup("USD").unwrap();
+    let valuation = |id: &str, effective_date: DateDay| {
+        InlineValuationTerms::to_extension(&[InlineValuationTerms {
+            valuation_id: id.into(),
+            subject: ValuationSubject::Account(cash_vid),
+            entity: None,
+            unit: usd,
+            basis_law: ValuationBasisLaw::SignedDelta,
+            applicability: ValuationApplicabilityLaw::ExactAsOf { effective_date },
+            signed_amount: 10,
+            supersedes: None,
+        }])
+        .unwrap()
+    };
+    for (vid, posted, id) in [
+        (VId(40), apr30, "VAL-APR"),
+        (VId(41), day(2026, 5, 3), "VAL-MAY"),
+    ] {
+        snapshot.entries.push(make_posting(
+            &book,
+            vid,
+            posted,
+            EntryClass::ORIGINAL,
+            vec![
+                LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 50)),
+                LegPayload::simple(Side::Credit, exp_vid, Amount::new(usd, 50)),
+            ],
+            vec![valuation(id, posted)],
+            doc_oid,
+        ));
+    }
+    let schedule = valuation_schedule_from_inline_extensions(
+        crate::cutoff::SolvencyBalanceSheetTest::ID,
+        &snapshot,
+    )
+    .unwrap()
+    .expect("the Apr 30 valuation is inline");
+    assert_eq!(schedule.as_of, apr30);
+    let ids: Vec<&str> = schedule
+        .valuations
+        .iter()
+        .map(|v| v.valuation_id.as_str())
+        .collect();
+    assert_eq!(ids, ["VAL-APR"]);
 }
