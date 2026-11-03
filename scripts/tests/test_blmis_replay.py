@@ -14,7 +14,9 @@ from decimal import Decimal
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -27,7 +29,7 @@ import blmis_source as source
 
 def cents(literal):
     """Independent decoding of this fixture's published whole-dollar cells."""
-    text = literal.split(" [", 1)[0]
+    text = re.sub(r"\s+(?:\[[12]\]|\*)$", "", literal)
     if text == "-":
         return 0
     negative = text.startswith("(")
@@ -725,6 +727,309 @@ class BlmisReplayTests(unittest.TestCase):
         self.assertIn("already exists", json.loads(error.getvalue())["error"])
         self.assertEqual({path.name: path.read_bytes() for path in self.package.iterdir()}, original)
         native.assert_not_called()
+
+
+def six_account_test_inputs(originals):
+    """Construct unit inputs from raw cells; no native execution is represented."""
+    ordered = deepcopy(originals)
+    # Independently spell out the single reviewed source display exception.
+    check = next(i for i, row in enumerate(ordered)
+                 if row["account"] == "1ZB010" and int(row["pdf_page"]) == 35 and int(row["source_line"]) == 38)
+    stop = next(i for i, row in enumerate(ordered)
+                if row["account"] == "1ZB010" and int(row["pdf_page"]) == 35 and int(row["source_line"]) == 39)
+    assert stop == check + 1
+    assert ordered[check]["description"] == "CHECK" and ordered[stop]["description"] == "STOP PAYMENT"
+    ordered[check], ordered[stop] = ordered[stop], ordered[check]
+    groups, posted = {}, {}
+    for index, row in enumerate(ordered, 1):
+        groups.setdefault(row["account"], []).append(row)
+        if movement(row):
+            posted[row["row_id"]] = {
+                "vid": hashlib.sha256(("unit-vid-only:" + row["row_id"]).encode()).hexdigest()[:32],
+                "entry_digest": hashlib.sha256(("unit-digest-only:" + row["row_id"]).encode()).hexdigest(),
+                "recorded_at": 1000 + index,
+            }
+    reports = {}
+    for account, history in groups.items():
+        principal, debits, credits, lines = 0, 0, 0, []
+        for row in history:
+            value = movement(row)
+            principal += value
+            if value == 0:
+                continue
+            receipt = posted[row["row_id"]]
+            debits += max(-value, 0)
+            credits += max(value, 0)
+            lines.append({"entry_digest": receipt["entry_digest"], "recorded_at": receipt["recorded_at"],
+                          "leg_index": 0, "effective_date": source_date(row), "class": "Original",
+                          "account": f"BLMIS-{account}", "unit": "USD",
+                          "debits": amount(max(-value, 0)), "credits": amount(max(value, 0)),
+                          "running_balance": amount(-principal)})
+        reports[account] = {"oid": f"unit-only-certificate-{account}", "native_report": {
+            "label": f"blmis-glantz-{account.lower()}-published-principal", "known_at": 2000,
+            "effective_from": source_date(history[0]), "effective_through": source_date(history[-1]),
+            "cells": [{"account": f"BLMIS-{account}", "unit": "USD", "opening": amount(0),
+                       "debits": amount(debits), "credits": amount(credits), "net_change": amount(-principal),
+                       "closing": amount(-principal), "line_count": len(lines)}], "lines": lines}}
+    return ordered, groups, posted, reports
+
+
+def six_account_analysis_input(originals, *, include_transfers):
+    """Independent raw-literal expectations for the native-shaped unit input."""
+    positions = {}
+    population = 0
+    for row in originals:
+        account = row["account"]
+        values = positions.setdefault(account, {"in": 0, "out": 0, "tin": 0, "tout": 0, "dates": []})
+        cash = cents(row["deposits_literal"]) + cents(row["withdrawals_literal"])
+        transfer = (cents(row["transfers_in_literal"]) + cents(row["transfers_out_literal"])) if include_transfers else 0
+        if cash > 0:
+            values["in"] += cash
+        else:
+            values["out"] -= cash
+        if transfer > 0:
+            values["tin"] += transfer
+        else:
+            values["tout"] -= transfer
+        if cash > 0 or transfer > 0:
+            values["dates"].append(date.fromisoformat(source_date(row)))
+        if cash != 0 or transfer != 0:
+            population += 1
+    first_date = min(at for item in positions.values() for at in item["dates"])
+    findings = []
+    for account, item in positions.items():
+        principal = item["in"] + item["tin"] - item["out"] - item["tout"]
+        if principal == 0:
+            continue
+        cohort = (min(item["dates"]) - first_date).days // 90 + 1 if item["dates"] else 1
+        if principal < 0:
+            name, status = "fictitious_profit_clawback", "net_winner"
+        else:
+            name, status = "net_equity_claim", "net_loser"
+        findings.append({"statistic": {"name": name, "value": abs(principal), "scale": 2, "population": population},
+                         "narrative": (f"investor BLMIS-{account} (cohort {cohort}, status={status}): "
+                                       f"cash_in={item['in']}, cash_out={item['out']}, transfer_in={item['tin']}, "
+                                       f"transfer_out={item['tout']}, {name}={abs(principal)}, "
+                                       "principal_rule=posted_principal_transfer_v1, attribution=complete")})
+    return {"event": "procedure_run", "data": {"procedure": "ponzi.net_investment", "version": 5,
+            "claim": "statistical", "known_at": 2000, "effective_through": max(source_date(row) for row in originals),
+            "finding_count": len(findings), "findings": findings}}
+
+
+class GlantzSixAccountReplayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        pdf = os.environ.get("FA_BLMIS_GLANTZ_PDF")
+        if not pdf:
+            raise unittest.SkipTest("six-account source comparisons require FA_BLMIS_GLANTZ_PDF pointing to the pinned original; not native execution")
+        cls.directory = tempfile.TemporaryDirectory(prefix="fa-glantz-six-comparator-")
+        cls.addClassCleanup(cls.directory.cleanup)
+        cls.package = Path(cls.directory.name) / "package"
+        cls.manifest = source.prepare_glantz(cls.package, pdf=Path(pdf))
+        cls.rows, cls.metadata = source.load_glantz_fixture(cls.package)
+        with (cls.package / "rows.csv").open(encoding="utf-8", newline="") as stream:
+            cls.originals = list(csv.DictReader(stream, strict=True))
+        cls.ordered_originals, cls.original_groups, cls.posted, cls.reports = six_account_test_inputs(cls.originals)
+        cls.ordered = source.glantz_computation_order(cls.rows)
+        cls.groups = replay.grouped_accounts(cls.ordered)
+
+    def test_all_379_source_observations_map_to_372_native_intents_and_744_legs(self):
+        entries = replay.normalized_entries(self.package / "legacy.csv", self.ordered)
+        monetary = [row for row in self.ordered_originals if movement(row)]
+        self.assertEqual(len(self.originals), 379)
+        self.assertEqual(len(entries), 372)
+        self.assertEqual(sum(len(entry["legs"]) for entry in entries), 744)
+        self.assertEqual([entry["idempotency_key"] for entry in entries], [row["row_id"] for row in monetary])
+        for row, entry in zip(monetary, entries, strict=True):
+            principal, contra = entry["legs"]
+            self.assertEqual(principal["party"], f"BLMIS-{row['account']}")
+            self.assertEqual(principal["account"], principal["party"])
+            self.assertEqual(principal["amount"], amount(abs(movement(row))))
+            self.assertEqual(principal["side"], "credit" if movement(row) > 0 else "debit")
+            self.assertNotIn("party", contra)
+            self.assertEqual(contra["amount"], principal["amount"])
+            self.assertNotEqual(contra["side"], principal["side"])
+        self.assertEqual(set(self.manifest["zero_principal_rows"]),
+                         {row["row_id"] for row in self.originals if not movement(row)})
+        self.assertEqual(len(self.manifest["zero_principal_rows"]), 7)
+
+    def test_every_native_account_line_is_compared_with_the_exact_source_discrepancy(self):
+        expected_off = {"1T0026": 0, "1ZA192": 0, "1ZB010": 0, "1ZB143": 0, "1ZR010": 50, "1ZR176": 12}
+        for account, rows in self.groups.items():
+            with self.subTest(account=account):
+                report = self.reports[account]["native_report"]
+                receipts = {row["row_id"]: self.posted[row["row_id"]] for row in rows if movement(row)}
+                gaps = replay.printed_gaps(rows)
+                self.assertEqual(len(gaps), expected_off[account])
+                replay.check_ledger(report, rows, receipts, published_gaps=gaps, label=report["label"])
+                if gaps:
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.check_ledger(report, rows, receipts, label=report["label"])
+                    changed = dict(gaps)
+                    changed[next(iter(changed))] += 1
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.check_ledger(report, rows, receipts, published_gaps=changed, label=report["label"])
+        self.assertEqual(replay.printed_gaps(self.groups["1ZR010"])[self.groups["1ZR010"][-1]["row_id"]], 900)
+        self.assertEqual(set(replay.printed_gaps(self.groups["1ZR176"]).values()), {-100})
+
+    def test_stopped_check_keeps_signed_cash_and_only_the_named_same_day_order_changes(self):
+        self.assertEqual([row["row_id"] for row in self.ordered], [row["row_id"] for row in self.ordered_originals])
+        changed_positions = [i for i, (before, after) in enumerate(zip(self.originals, self.ordered_originals, strict=True))
+                             if before["row_id"] != after["row_id"]]
+        self.assertEqual(len(changed_positions), 2)
+        stop = next(row for row in self.originals if row["description"] == "STOP PAYMENT")
+        self.assertEqual(cents(stop["withdrawals_literal"]), 2_500_000)
+        entries = replay.normalized_entries(self.package / "legacy.csv", self.ordered)
+        entry = next(entry for entry in entries if entry["idempotency_key"] == stop["row_id"])
+        self.assertEqual([(leg["account"], leg["side"], leg["amount"]) for leg in entry["legs"]],
+                         [("BLMIS-1ZB010", "credit", "25000.00 USD"), ("BLMIS-CASH", "debit", "25000.00 USD")])
+        self.assertNotIn("reverses", entry, "the source never names the stopped check's native identity")
+        raw_order = [row for row in self.rows if row["account"] == "1ZB010"]
+        report = self.reports["1ZB010"]["native_report"]
+        receipts = {row["row_id"]: self.posted[row["row_id"]] for row in raw_order if movement(row)}
+        with self.assertRaises(replay.ledger.ReplayError):
+            replay.check_ledger(report, raw_order, receipts, label=report["label"])
+
+    def test_both_paired_credits_recompute_from_native_shaped_originating_balances(self):
+        pairs = replay.check_transfer_pairs(self.ordered, self.reports, self.posted)
+        self.assertEqual([pair["originating_principal_cents"] for pair in pairs], [485_500_000, -485_468_800])
+        self.assertEqual([pair["statement_amount_cents"] for pair in pairs], [400_000_000, 20_000_000])
+        self.assertEqual([pair["credited_principal_cents"] for pair in pairs], [400_000_000, 0])
+        self.assertTrue(all(pair["rule"] == "trustee_transfer_credit" for pair in pairs))
+        self.assertTrue(all(pair["originating_certificate"].startswith("unit-only-") for pair in pairs))
+        for pair in pairs:
+            self.assertIn(pair["native_originating_balance_row_id"], self.posted)
+        for field in ("running_balance", "entry_digest", "recorded_at"):
+            changed = deepcopy(self.reports)
+            basis = self.posted[pairs[0]["native_originating_balance_row_id"]]
+            line = next(item for item in changed["1ZA192"]["native_report"]["lines"]
+                        if item["entry_digest"] == basis["entry_digest"])
+            line[field] = {"running_balance": "-4854999.99 USD", "entry_digest": "f" * 64, "recorded_at": 999}[field]
+            with self.subTest(field=field), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_transfer_pairs(self.ordered, changed, self.posted)
+
+    def test_transfer_pair_cannot_invent_missing_history_or_substitute_statement_credit(self):
+        for mutation in ("missing_counterpart", "ambiguous_counterpart", "reported_amount", "principal_credit"):
+            rows = deepcopy(self.ordered)
+            selected = next(row for row in rows if row["account"] == "1ZA192" and row["date"] == "2005-12-23")
+            if mutation == "missing_counterpart":
+                rows.remove(selected)
+            elif mutation == "ambiguous_counterpart":
+                rows.append(deepcopy(selected))
+            elif mutation == "reported_amount":
+                selected["reported_cents"] += 100
+            else:
+                selected["transfers_in_cents"] = selected["reported_cents"]
+            with self.subTest(mutation=mutation), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_transfer_pairs(rows, self.reports, self.posted)
+
+    def test_all_six_native_principal_outcomes_preserve_source_balances_and_gaps(self):
+        complete = replay.check_glantz_principal_analysis(
+            six_account_analysis_input(self.originals, include_transfers=True), self.ordered, 2000, include_transfers=True)
+        missing = replay.check_glantz_principal_analysis(
+            six_account_analysis_input(self.originals, include_transfers=False), self.ordered, 2000, include_transfers=False)
+        self.assertEqual(complete["population"], 372)
+        self.assertEqual(missing["population"], 362)
+        self.assertEqual(set(complete["source_accounts"]), set(self.groups))
+        positions = complete["source_accounts"]
+        self.assertEqual(positions["1ZR176"]["native_principal_cents"], -281_796_500)
+        self.assertTrue(positions["1ZR176"]["native_finding_expected"])
+        self.assertEqual(complete["native_report"]["data"]["finding_count"], 6)
+        self.assertEqual(positions["1ZR010"]["gap_from_printed_principal_cents"], 900)
+        self.assertEqual(positions["1ZB010"]["cash_in_cents"], 124_500_000)
+        self.assertEqual(positions["1ZB010"]["cash_out_cents"], 155_250_000)
+        deltas = {account: position["native_principal_cents"] - missing["source_accounts"][account]["native_principal_cents"]
+                  for account, position in positions.items()}
+        self.assertEqual(deltas, {"1T0026": 238_426_600, "1ZA192": -346_263_400, "1ZB010": -20_000_000,
+                                  "1ZB143": 395_500_000, "1ZR010": 0, "1ZR176": 0})
+
+    def test_six_account_principal_comparison_refuses_missing_extra_swapped_or_changed_findings(self):
+        for mutation in ("missing", "duplicate", "wrong_party", "wrong_cohort", "cash_as_transfer",
+                         "population", "amount", "zero_finding", "wrong_scope"):
+            report = six_account_analysis_input(self.originals, include_transfers=True)
+            finding = report["data"]["findings"][0]
+            if mutation == "missing":
+                report["data"]["findings"].pop()
+            elif mutation in ("duplicate", "zero_finding"):
+                extra = deepcopy(finding)
+                if mutation == "zero_finding":
+                    extra["narrative"] = extra["narrative"].replace("BLMIS-1T0026", "BLMIS-1ZR176")
+                    extra["statistic"]["value"] = 0
+                report["data"]["findings"].append(extra)
+            elif mutation == "wrong_party":
+                finding["narrative"] = finding["narrative"].replace("BLMIS-1T0026", "BLMIS-1ZA192")
+            elif mutation == "wrong_cohort":
+                finding["narrative"] = re.sub(r"cohort [0-9]+,", "cohort 999999,", finding["narrative"])
+            elif mutation == "cash_as_transfer":
+                finding["narrative"] = finding["narrative"].replace("transfer_in=", "cash_in=")
+            elif mutation == "population":
+                finding["statistic"]["population"] = 379
+            elif mutation == "amount":
+                finding["statistic"]["value"] += 1
+            else:
+                report["data"]["effective_through"] = "2008-10-29"
+            report["data"]["finding_count"] = len(report["data"]["findings"])
+            with self.subTest(mutation=mutation), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_glantz_principal_analysis(report, self.ordered, 2000, include_transfers=True)
+
+    def test_all_744_export_legs_keep_separate_native_party_dimensions(self):
+        parties = {account: {"code": f"BLMIS-{account}", "vid": f"{index + 100:032x}",
+                             "dimension": 12, "value": f"{index + 200:032x}"}
+                   for index, account in enumerate(sorted(self.groups))}
+        base_records = []
+        for row in self.ordered_originals:
+            delta = movement(row)
+            if not delta:
+                continue
+            receipt = self.posted[row["row_id"]]
+            cash = cents(row["deposits_literal"]) + cents(row["withdrawals_literal"])
+            transfer = cents(row["transfers_in_literal"]) + cents(row["transfers_out_literal"])
+            contra = ("BLMIS-CASH", cash) if cash else ("BLMIS-TRANSFER", transfer)
+            for ordinal, (account, value) in enumerate([(f"BLMIS-{row['account']}", -delta), contra], 1):
+                base_records.append([receipt["vid"], str(ordinal), source_date(row), str(receipt["recorded_at"]),
+                                     "1", account, "D" if value > 0 else "C", amount(abs(value)).split()[0],
+                                     "USD", "2", row["description"], "", "retained source evidence",
+                                     "12:" + parties[row["account"]]["value"] if ordinal == 1 else ""])
+        self.assertEqual(len(base_records), 744)
+        for mutation in (None, "swap_party", "omit_account", "tag_clearing", "money", "extra"):
+            records = deepcopy(base_records)
+            if mutation == "swap_party":
+                records[0][13] = "12:" + parties["1ZA192"]["value"]
+            elif mutation == "omit_account":
+                ids = {receipt["vid"] for row_id, receipt in self.posted.items() if ":1ZR176:" in row_id}
+                records = [record for record in records if record[0] not in ids]
+            elif mutation == "tag_clearing":
+                records[1][13] = records[0][13]
+            elif mutation == "money":
+                records[-1][7] = f"{Decimal(records[-1][7]) + Decimal('0.01'):.2f}"
+            elif mutation == "extra":
+                records.append(list(records[-1]))
+            path = Path(self.directory.name) / f"six-export-{mutation}.csv"
+            with path.open("w", encoding="utf-8", newline="") as stream:
+                stream.write("# fa_csv_gl_v1|book=unit-only-six-account|dimension_encoding=fa-dimension-ids-v1\n")
+                writer = csv.writer(stream, lineterminator="\n")
+                writer.writerow(replay.ledger.CSV_GL_COLUMNS)
+                writer.writerows(records)
+            with self.subTest(mutation=mutation):
+                if mutation is None:
+                    result = replay.verify_source_export(path, "csv-gl", self.ordered, self.posted, parties)
+                    self.assertEqual(result["rows"], 744)
+                    self.assertEqual(result["tagged_rows"], 372)
+                    self.assertEqual(result["parties"], sorted(item["code"] for item in parties.values()))
+                else:
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.verify_source_export(path, "csv-gl", self.ordered, self.posted, parties)
+
+    def test_all_account_cli_requires_native_binaries_and_never_reports_comparator_tests_as_execution(self):
+        output = Path(self.directory.name) / "six-missing-binary"
+        absent = Path(self.directory.name) / "absent-native-executable"
+        with mock.patch.object(replay, "run_glantz_native") as run, redirect_stderr(io.StringIO()) as error:
+            status = replay.main(["run", "--account", "all", "--out", str(output),
+                                  "--fa", str(absent), "--fa-verify", str(absent)])
+        self.assertEqual(status, 4)
+        self.assertEqual(json.loads(error.getvalue())["status"], "UNRUN")
+        self.assertFalse(output.exists())
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

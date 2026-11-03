@@ -73,7 +73,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -B -m unittest discover -s scripts/tests -p 'test_blmis*.py' -v 2>&1 | tee artifacts/public-ledger/blmis-python-tests.log
+          python3 -B scripts/blmis_source.py fetch --output artifacts/public-ledger/glantz-source.pdf
+          FA_BLMIS_GLANTZ_PDF="$PWD/artifacts/public-ledger/glantz-source.pdf" python3 -B -m unittest discover -s scripts/tests -p 'test_blmis*.py' -v 2>&1 | tee artifacts/public-ledger/blmis-python-tests.log
 
       - name: Install the pinned compiler
         shell: bash
@@ -139,6 +140,13 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test legacy_migration generic_csv_departments --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/department-migration-tests.log
 
+      - name: Regress party and legal-entity source attribution
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test legacy_migration party_entity:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/party-entity-migration-tests.log
+
       - name: Replay the complete firefighters pension selection
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash
@@ -166,6 +174,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B scripts/blmis_replay.py run --out artifacts/public-ledger/blmis-1za192 2>&1 | tee artifacts/public-ledger/blmis-native.log
+
+      - name: Replay all six complete Glantz accounts and preserve source discrepancies
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/blmis_replay.py run --account all --pdf artifacts/public-ledger/glantz-source.pdf --out artifacts/public-ledger/blmis-six 2>&1 | tee artifacts/public-ledger/blmis-six-native.log
 
       - name: Retain replay reports and command transcripts
         if: ${{ !cancelled() }}

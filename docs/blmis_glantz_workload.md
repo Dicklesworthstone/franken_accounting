@@ -1,12 +1,163 @@
-# Published BLMIS transaction history: Glantz Exhibit B-2
+# Published BLMIS transaction history: Glantz Exhibits B-1 through B-6
 
-This workload retains **every published row of account 1ZA192** from the
-trustee's Glantz Exhibit B-2: 75 transactions dated December 7, 1992 through
-October 30, 2008. It adds actual dated transaction records and independently
-printed running balances to the [public-sector activity workloads](public_ledger.md).
+This workload has two explicit source scopes. The default retains every
+published row of account **1ZA192** in Exhibit B-2: 75 observations dated
+December 7, 1992 through October 30, 2008. The new `--account all` mode acquires
+and processes **all six Glantz Exhibit B accounts**, retaining 379 dated
+observations, including seven transfers with zero credited principal. Their
+372 monetary rows produce 744 native analysis-book legs.
+
+Both scopes use the original hash-pinned trustee PDF. These are published
+customer-account computations from a complaint, not the original BLMIS
+firm-wide general ledger. They add dated real-case records and independently
+printed controls to the [public-sector activity workloads](public_ledger.md).
 The [forensic case plan, section 9](FORENSIC_CASE_STUDIES_PLAN.md#9-case-m--madoff--blmis-trustee-ledgers)
-describes the broader BLMIS program. This is one complete account, not completion
-of the three-complaint, thirteen-account program or its M0-M7 beads.
+describes the broader three-complaint, thirteen-account program. This extension
+does not complete that program or close its M0-M7 beads.
+
+## Complete six-account ingestion and native replay
+
+The full mode reads PDF pages 27-40. It retains every displayed column, printed
+amount literal, source line and page, row hash, footnote marker, and independently
+printed footer. A fresh source census found **379 dated rows** in these six
+accounts. The earlier plan's 1,429 Glantz total is a source-count discrepancy,
+not a population target to fill with synthetic records.
+
+| Source account | PDF pages | Dated observations | Native monetary entries | Running principal compared with printed cells |
+|---|---|---:|---:|---|
+| 1T0026 | 27-30 | 117 | 112 | Exact given the trustee's credited transfers |
+| 1ZA192 | 31-33 | 75 | 74 | Exact given the trustee's credited transfers |
+| 1ZB010 | 34-35 | 61 | 61 | Exact under the explicitly named same-day display rule |
+| 1ZB143 | 36-37 | 51 | 50 | Exact given the trustee's credited transfers |
+| 1ZR010 | 38-39 | 57 | 57 | Source movements end $9 above the printed principal; 50 rows differ |
+| 1ZR176 | 40 | 18 | 18 | Source movements are $1 below printed principal on rows 6-17, then close exactly |
+| **Total** | **27-40** | **379** | **372** | **All differences remain visible; no balancing plugs** |
+
+The original 75-row B-2 fixture remains code-pinned and available offline.
+The new six-account mode prepares its rows from the verified original PDF in
+the current invocation. It does not claim that a newly calculated row hash was
+a previously reviewed repository fixture. Preparation records the exact
+extraction and generated-byte hashes. Loading a prepared six-account package
+re-extracts its pinned original and compares every regenerated source and
+normalization file; a caller-provided checksum sidecar is insufficient.
+The B-2 slice must also reproduce both existing code-owned fixture pins.
+
+The source has several details that a simple amount/date loader would lose:
+
+- Six transfer footnote markers are detached superscripts on their own
+  extraction lines. Their positions and hashes are retained separately.
+  A reported-amount asterisk on 1ZR176 has its own note semantics; it is not
+  silently converted into the transfer-credit rule.
+- On 1ZB010, the 2006-10-17 CHECK and STOP PAYMENT rows are printed out of the
+  order used by their balances. `same_day_display_reorder` swaps only that
+  specifically identified pair for computation; the raw display order remains
+  in the evidence. The source does not identify the stopped check, so the
+  helper creates no invented reversal lineage.
+- STOP PAYMENT is **+$25,000 in the Withdrawals column**. It is a positive cash
+  movement. The native gross cash flows for 1ZB010 are therefore $1,245,000 in
+  and $1,552,500 out, while the printed deposit/withdrawal column totals are
+  $1,220,000 and -$1,527,500. Both have the same net; the driver checks the
+  signed gross movements explicitly.
+- On 1ZR010, displayed deposits sum to $5,979,193 while the printed deposit
+  footer is $5,979,184. The nine-dollar difference remains a source diagnostic.
+  On 1ZR176, intermediate one-dollar differences remain diagnostics even
+  though the closing balance agrees.
+
+### What the native six-account driver checks
+
+The driver creates six declared analysis principal accounts and six native
+counterparties, with one shared cash account and one explicitly marked
+principal-transfer clearing account. Only a principal leg receives its source
+account's native party tag. No customer or subsidiary identity is inferred
+from an account holder's name.
+
+Every monetary source row posts separately in its declared computation order.
+Every native leg, amount, effective date, commit receipt and party identity is
+checked against the original source. The driver requests and replays an exact
+certified general ledger for each account, checks the pre-posting historical
+prefix, retries every entry without new history, and reconciles all annual
+account controls. For the two inconsistent accounts it requires the exact
+observed discrepancy at every affected row. `PASS` means the native book
+reproduces the source movements and exposes those discrepancies; it never
+means that all of the trustee's printed cells are arithmetically exact.
+
+There are 17 transfer rows. Two reviewed transfers have both account histories
+in this complaint:
+
+| Date | Origin → recipient | Reported transfer | Certified originating principal before transfer | Recomputed credited principal |
+|---|---|---:|---:|---:|
+| 1993-10-20 | 1ZA192 → 1ZB143 | $4,000,000 | $4,855,000 | $4,000,000 |
+| 2005-12-23 | 1ZB143 → 1ZA192 | $200,000 | -$4,854,688 | $0 |
+
+The separately named interpretive rule `trustee_transfer_credit` computes
+`min(reported_transfer, max(originating_principal, 0))`. The driver obtains
+the originating balance from the certified native ledger, after checking that
+ledger against every original source movement. It preserves aliases such as
+`TRANS TO 1Z314330 (1ZB143)` exactly; only the explicitly printed
+parenthetical identifier identifies the counterpart in these reviewed pairs.
+The other **13 transfer rows** retain trustee-credited principal as explicit
+oracle inputs. No absent originating history or additional pair is fabricated.
+
+`ponzi.net_investment` v5 is compared across all six accounts before and after
+assigning the transfer role. Gross cash and principal transfers remain separate;
+cohorts use their first actual inflow; all six nonzero account outcomes must be
+present. Account 1ZR176 closes with principal of -$2,817,965 and a zero source
+reconciliation gap; it does not have zero principal. The earlier missing-role result must remain
+unchanged at its original recorded prefix. The source's nine-dollar closing
+difference is exposed in the account comparison, not silently rounded away.
+
+Finally the driver checks native registers against folds, projections, source
+document custody, a signed accumulator checkpoint, all **744 CSV/ADS legs**,
+all six actual native party-value identities, and independent ADS proof
+verification. The standalone verifier must reject both a one-cent mutation
+and a party-only mutation. The PDF, raw extraction layout, source records,
+normalization manifest and extraction receipt are retained as native evidence
+with explicit self-sourced AgentUpload custody and distinct local fixture
+reviewers. Those reviewers are not independent human auditors.
+
+### Run the complete source
+
+Python 3.11+ and Poppler's `pdftotext` are required. Source preparation needs
+no accounting executable; native replay additionally needs the pinned `fa`
+and `fa-verify` builds.
+
+```bash
+# Verify the original bytes, extract all six accounts, and prepare the analysis.
+python3 -B scripts/blmis_source.py prepare --account all \
+  --output /path/to/new-glantz-six-package
+
+# Re-extract the original and verify all retained/generated package bytes.
+python3 -B scripts/blmis_source.py verify --account all \
+  --source-dir /path/to/new-glantz-six-package
+
+# Run source-comparator tests against the acquired original.
+FA_BLMIS_GLANTZ_PDF=/path/to/new-glantz-six-package/source.pdf \
+  python3 -B -m unittest discover -s scripts/tests -p 'test_blmis*.py' -v
+
+# Acquire/verify, normalize, post, certify, replay and independently verify.
+python3 -B scripts/blmis_replay.py run --account all \
+  --pdf /path/to/new-glantz-six-package/source.pdf \
+  --out /path/to/new-glantz-six-native \
+  --fa /path/to/fa --fa-verify /path/to/fa-verify
+```
+
+Each preparation/replay destination must be new. The optional
+`--pdf /path/to/original.pdf` on preparation avoids a download while still
+verifying and extracting the original. Without `FA_BLMIS_GLANTZ_PDF`,
+the new full-source comparator tests explicitly skip their unavailable source;
+those skips are not evidence that extraction or native replay passed.
+
+**Validation for this extension:** the six-account census and source arithmetic
+were inspected against a fresh hash-matching PDF before the executor went
+offline. The complete new extractor, six-account comparator suite and native
+replay are **UNRUN** for this landing. Existing one-account validation recorded
+below applies to that earlier implementation and its exact tested source;
+it does not establish a pass for the new six-account path.
+
+## Default single-account workload
+
+The following sections describe the unchanged 1ZA192 source scope and its
+original code-pinned fixture in detail.
 
 ## Primary source and retained evidence
 

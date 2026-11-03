@@ -503,6 +503,26 @@ credited transfers changes the closing result by $3,462,634. The workload
 documentation records the executable controls and current native validation
 status, including the version boundary for earlier procedure certificates.
 
+
+The same workload now offers `--account all` for all six Glantz exhibits:
+**379 published observations, 372 monetary entries, and 744 legs**. It retains
+detached footnotes, the explicitly identified check/stop-payment ordering
+exception, and the source's one- and nine-dollar arithmetic discrepancies.
+It checks every account ledger and exported party attribution, and recomputes
+the two transfers whose originating and receiving histories are both published.
+The original PDF and actual extraction are acquired before any native posting.
+See the [complete six-account commands and validation boundary](docs/blmis_glantz_workload.md#complete-six-account-ingestion-and-native-replay).
+The new six-account path is implemented but its full extraction/comparator and
+native replay tests are **UNRUN** for this landing because the executor went
+offline; earlier one-account results do not establish its acceptance.
+
+Generic legacy CSV imports also support explicit `party` and `legal_entity`
+column mappings. They resolve existing native dimension identities, preserve
+exact source codes, and retain native reference and per-entity balance checks.
+Imports never create counterparties or subsidiaries implicitly. The
+[attribution mapping guide](docs/public_ledger.md) explains the declaration,
+source-bound replay checks, and current test boundary.
+
 ### Bank CSV downloads
 
 Bank downloads can use an explicit column, date and amount declaration:
