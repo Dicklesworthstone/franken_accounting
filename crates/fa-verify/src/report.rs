@@ -341,6 +341,7 @@ struct Certificate<'a> {
     selection: Selection,
     dimension: Option<dimension::Selection>,
     functional: bool,
+    source_storage: bool,
     registry_digest: [u8; 32],
     journal_root: [u8; 32],
     leaves: u64,
@@ -544,11 +545,12 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         7
     };
     // Native certificates preserve their original ordered family closure and
-    // may append the MigrationRunFragment storage attestation. This reader
+    // may append MigrationRunFragment and source root/fragment attestations.
+    // The source root and fragment queries are an ordered pair. This reader
     // authenticates the complete canonical run body against its Open control
     // independently below; native query attestations are not outsider proofs.
-    let inputs = r.count(expected_inputs + 1, 4, "certificate.native_inputs")?;
-    if inputs != expected_inputs && inputs != expected_inputs + 1 {
+    let inputs = r.count(expected_inputs + 3, 4, "certificate.native_inputs")?;
+    if inputs < expected_inputs {
         return Err(failed(
             "certificate_closure",
             "certificate must retain every native input attestation for its report family",
@@ -589,6 +591,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         selection,
         dimension: dimension_selection,
         functional,
+        source_storage: inputs >= expected_inputs + 2,
         registry_digest,
         journal_root,
         leaves,
@@ -877,7 +880,8 @@ fn verify_report_with_recipient_inputs(
         ));
     }
     let major = r.u16("report_bundle.major")?;
-    if !matches!(major, 1..=3) || r.u16("report_bundle.minor")? != 0 {
+    let minor = r.u16("report_bundle.minor")?;
+    if !matches!(major, 1..=3) || minor > 1 {
         return Err(failed(
             "supported_report",
             "unsupported report bundle format",
@@ -1094,6 +1098,15 @@ fn verify_report_with_recipient_inputs(
     if let (Some(aging), Some(control)) = (&due_date, &control) {
         due_date_reconciliation::bind(aging, &cert, control)?;
     }
+    if control
+        .as_ref()
+        .is_some_and(|control| control.source_storage != cert.source_storage)
+    {
+        return Err(failed(
+            "certificate_closure",
+            "reconciliation sources at one frontier must retain the same source storage closure",
+        ));
+    }
     let certificate_digest = equity_diff
         .as_ref()
         .map(|value| value.digest)
@@ -1219,6 +1232,22 @@ fn verify_report_with_recipient_inputs(
             r.bytes(MAX_RECORD_BYTES, "migration.body")?,
         ));
     }
+    let mut manifests = Vec::new();
+    if minor == 1 {
+        let n = r.count(records.len(), 12, "report_bundle.source_manifests")?;
+        for _ in 0..n {
+            manifests.push((
+                r.u64("migration_source.bind_index")?,
+                r.bytes(MAX_RECORD_BYTES, "migration_source.manifest")?,
+            ));
+        }
+    }
+    let bodies = crate::migration_balance::join_report_witnesses(
+        &prefix.envelopes,
+        &records,
+        bodies,
+        manifests,
+    )?;
     let mut functional_registry = None;
     let mut consolidation_registry = None;
     let mut lot_units = None;
@@ -2877,6 +2906,7 @@ fn historical_inputs<'a>(
         visible: visible_migrations,
         activations: migration_activations,
         activation_sources: migration_activation_sources,
+        source_bound,
     } = crate::migration_balance::report_visibility_with_sources(
         envelopes,
         records,
@@ -2884,6 +2914,12 @@ fn historical_inputs<'a>(
         cert.known_at,
     )
     .map_err(|e| failed("migration_visibility", e.to_string()))?;
+    if cert.source_storage != source_bound {
+        return Err(failed(
+            "certificate_closure",
+            "native source storage attestations must match BindSource presence at the certified frontier",
+        ));
+    }
     let mut schema = metadata::Schema::default();
     let mut dimension_history = dimension::History::default();
     let mut infos = BTreeMap::new();

@@ -492,6 +492,7 @@ fn replay_registry_fixture(
         selection: selected,
         dimension: None,
         functional: true,
+        source_storage: false,
         registry_digest: [0; 32],
         journal_root: [0; 32],
         leaves: 0,

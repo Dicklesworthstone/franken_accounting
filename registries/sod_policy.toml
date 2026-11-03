@@ -259,6 +259,18 @@ exclusions = ["preparer", "duplicate"]
 cite = "plan §8.6 (a MigrationRun opens staging)"
 
 [[rule]]
+name = "migration-run-bind-source"
+class = "MigrationControl"
+transition = "BindSource"
+preparer_op = "migrate"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §5.8/§8.6 (bind the exact retained source population before staging; Finalize retains its two-Human approval)"
+
+[[rule]]
 name = "migration-run-finalize"
 class = "MigrationControl"
 transition = "Finalize"

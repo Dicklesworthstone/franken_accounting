@@ -15,7 +15,7 @@ use crate::genesis::BookContext;
 use crate::refusal::KernelError;
 use crate::rows::{bytes, prop, text};
 
-use super::{RunState, kind, read_run};
+use super::{RunState, kind, read_run, read_source_manifest_at, tie_out};
 
 struct Control {
     at: CommitSeq,
@@ -118,6 +118,7 @@ pub fn verify_run_visibility_at<V: Vfs + Clone>(
         ordered.sort_by_key(|control| control.at);
         let mut state = None;
         let mut terminal_at = None;
+        let mut source_at = None;
         for control in ordered {
             if control.body_digest != digest || control.effective != run.body.opening_date {
                 return Err(corrupt(format!(
@@ -131,12 +132,41 @@ pub fn verify_run_visibility_at<V: Vfs + Clone>(
                     Some(RunState::Open)
                 }
                 (kind::FINALIZE, Some(RunState::Open)) if control.at > run.opened_at => {
+                    if source_at.is_some() {
+                        let tie = tie_out(db, book, &run, control.at)?;
+                        if tie.digest != control.tie_out_digest
+                            || !tie.mismatches.is_empty()
+                            || !tie.source.as_ref().is_some_and(|source| source.complete())
+                        {
+                            return Err(corrupt(
+                                "finalized run does not bind its complete source population",
+                            ));
+                        }
+                    }
                     terminal_at = Some(control.at);
                     Some(RunState::Finalized)
                 }
                 (kind::ABANDON, Some(RunState::Open)) if control.at > run.opened_at => {
+                    if source_at.is_some()
+                        && tie_out(db, book, &run, control.at)?.digest != control.tie_out_digest
+                    {
+                        return Err(corrupt(
+                            "abandoned run does not bind its recorded source subset",
+                        ));
+                    }
                     terminal_at = Some(control.at);
                     Some(RunState::Abandoned)
+                }
+                (kind::BIND_SOURCE, Some(RunState::Open))
+                    if control.at > run.opened_at && source_at.is_none() =>
+                {
+                    let manifest = read_source_manifest_at(db, book.book_id, vid, control.at)?
+                        .ok_or_else(|| corrupt("source binding has no native manifest"))?;
+                    if manifest.digest()? != control.tie_out_digest {
+                        return Err(corrupt("source binding digest differs from its manifest"));
+                    }
+                    source_at = Some(control.at);
+                    Some(RunState::Open)
                 }
                 _ => {
                     return Err(corrupt(format!(
@@ -149,6 +179,24 @@ pub fn verify_run_visibility_at<V: Vfs + Clone>(
             return Err(corrupt(format!(
                 "run {vid:?} state differs from its controls"
             )));
+        }
+        if read_source_manifest_at(db, book.book_id, vid, at)?.is_some() != source_at.is_some() {
+            return Err(corrupt(
+                "source manifest and binding control population differ",
+            ));
+        }
+        if let Some(bound_at) = source_at {
+            let tie = tie_out(db, book, &run, at)?;
+            if tie.chunks.iter().any(|chunk| chunk.recorded_at <= bound_at)
+                || !tie
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.unexpected_chunks.is_empty())
+            {
+                return Err(corrupt(
+                    "staged chunks precede or differ from their immutable source binding",
+                ));
+            }
         }
         expected.insert(vid, (run, terminal_at));
     }

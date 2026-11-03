@@ -3040,6 +3040,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 return Ok(Err(r));
             }
         };
+        if let Err(refusal) = migration::witness_source_member(&txn, db, book, &run, proposal)? {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
         // The run's own Opening period holds the opening chunks; a Normal
         // code must be declared; any other special period is FullDetail
         // detail inside the declared run of periods (a pre-opening Opening,

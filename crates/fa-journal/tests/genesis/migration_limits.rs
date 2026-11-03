@@ -2,6 +2,9 @@ use super::*;
 use fa_journal::limit::{LimitCell, LimitScope, cell_vid};
 use fa_journal::migration::{self, RunBody, RunControlRequest, RunControlled, RunMode, RunState};
 
+#[path = "migration_source.rs"]
+mod source_tests;
+
 fn limited(scope: LimitScope) -> Harness {
     lock_opening(harness_configured(
         Vec::new(),

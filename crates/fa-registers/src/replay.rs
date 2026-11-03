@@ -218,6 +218,8 @@ impl EntrySelection {
                             if valid_time.is_some()
                                 || labels.contains(&label::MIGRATION_RUN)
                                 || labels.contains(&label::MIGRATION_RUN_FRAGMENT)
+                                || labels.contains(&label::MIGRATION_SOURCE)
+                                || labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
                             {
                                 return false;
                             }
@@ -237,6 +239,8 @@ impl EntrySelection {
                             if *changed == label::ENTRY
                                 || *changed == label::MIGRATION_RUN
                                 || *changed == label::MIGRATION_RUN_FRAGMENT
+                                || *changed == label::MIGRATION_SOURCE
+                                || *changed == label::MIGRATION_SOURCE_FRAGMENT
                             {
                                 return false;
                             }
@@ -284,6 +288,8 @@ impl EntrySelection {
             // complete snapshot rather than assuming those chunks absent.
             if row.labels.contains(&label::MIGRATION_RUN)
                 || row.labels.contains(&label::MIGRATION_RUN_FRAGMENT)
+                || row.labels.contains(&label::MIGRATION_SOURCE)
+                || row.labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
             {
                 return false;
             }

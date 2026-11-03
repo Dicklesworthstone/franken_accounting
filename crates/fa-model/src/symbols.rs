@@ -89,6 +89,8 @@ symbols!(
         (ASSET_SCHEDULE, "AssetSchedule", 61),
         (CLOSE_TASK, "CloseTask", 62),
         (MIGRATION_RUN_FRAGMENT, "MigrationRunFragment", 63),
+        (MIGRATION_SOURCE, "MigrationSource", 64),
+        (MIGRATION_SOURCE_FRAGMENT, "MigrationSourceFragment", 65),
     ]
 );
 

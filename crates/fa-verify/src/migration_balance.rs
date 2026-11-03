@@ -16,11 +16,19 @@
 //! Full-prefix disclosure and linear payload cost are explicit obligations;
 //! callers lacking whole-book read authority must not produce this format.
 //!
+//! V4 appends `list(bind_leaf_index u64 || bytes(source_manifest))`. Every
+//! selected bound run requires its exact native-bound population; finalized
+//! runs must contain every member exactly once, including excluded accounts
+//! and dates. Open/Abandoned populations may be partial and remain invisible.
+//! A missing manifest never downgrades a bound run to a legacy proof.
+//!
 //! This proves the register visibility predicate, not the migration's economic
 //! correctness, authorization, or trial-balance tie-out. Nothing reads current
 //! database projections. Unknown bodies and malformed lifecycles fail closed.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+mod source;
 
 use crate::balance::{
     Balance, BalanceClaim, CLASS_MIGRATION, SCOPE_MEMBERSHIP_ONLY, SCOPE_RECOMPUTATION, in_scope,
@@ -32,6 +40,8 @@ use crate::proof::{Checkpoint, VerifyError, complete_prefix, open, read_envelope
 
 pub const BALANCE_FORMAT_V2: &[u8] = b"fa:acc-balance-proof:v2";
 pub const BALANCE_FORMAT_V3: &[u8] = b"fa:acc-balance-proof:v3";
+/// V3's complete prefix followed by control-bound source-manifest witnesses.
+pub const BALANCE_FORMAT_V4: &[u8] = b"fa:acc-balance-proof:v4";
 /// Includes framing, all record payloads, and migration-body witnesses.
 pub const MAX_BALANCE_PROOF_BYTES: usize = 64 * 1024 * 1024;
 
@@ -61,12 +71,17 @@ fn run_identity(book: &[u8; 16], key: &[u8]) -> u128 {
 #[derive(Clone, Copy, Debug)]
 enum Metadata {
     Ordinary,
-    Chunk(u128),
+    Chunk {
+        run: u128,
+        vid: u128,
+        digest: [u8; 32],
+    },
     Control {
         run: u128,
         kind: u8,
         digest: [u8; 32],
         body_digest: [u8; 32],
+        evidence: Option<[source::Citation; 2]>,
     },
 }
 
@@ -82,6 +97,8 @@ struct Run {
     open_day: i32,
     digest: [u8; 32],
     terminal: Option<(u64, u8)>,
+    terminal_digest: Option<[u8; 32]>,
+    binding: Option<source::Binding>,
     policy: Option<Policy>,
 }
 
@@ -89,7 +106,63 @@ fn scope_error(index: u64) -> VerifyError {
     VerifyError::RecordSet { index }
 }
 
-/// Verify v2 or v3 against an independently trusted checkpoint.
+fn control(
+    runs: &mut BTreeMap<u128, Run>,
+    metadata: Metadata,
+    index: u64,
+    effective_day: Option<i32>,
+) -> Result<(), VerifyError> {
+    let Metadata::Control {
+        run,
+        kind,
+        digest,
+        body_digest,
+        evidence,
+    } = metadata
+    else {
+        return Err(scope_error(index));
+    };
+    if kind == 0 {
+        if runs.contains_key(&run) || body_digest != digest {
+            return Err(scope_error(index));
+        }
+        runs.insert(
+            run,
+            Run {
+                open_index: index,
+                open_day: effective_day.ok_or_else(|| scope_error(index))?,
+                digest,
+                terminal: None,
+                terminal_digest: None,
+                binding: None,
+                policy: None,
+            },
+        );
+        return Ok(());
+    }
+    let state = runs.get_mut(&run).ok_or_else(|| scope_error(index))?;
+    if state.terminal.is_some() || index <= state.open_index || body_digest != state.digest {
+        return Err(scope_error(index));
+    }
+    if kind == 3 {
+        if state.binding.is_some() || effective_day != Some(state.open_day) {
+            return Err(scope_error(index));
+        }
+        state.binding = Some(source::Binding {
+            index,
+            digest,
+            evidence: evidence.ok_or_else(|| scope_error(index))?,
+        });
+    } else if matches!(kind, 1 | 2) {
+        state.terminal = Some((index, kind));
+        state.terminal_digest = Some(digest);
+    } else {
+        return Err(scope_error(index));
+    }
+    Ok(())
+}
+
+/// Verify v2, v3 or v4 against an independently trusted checkpoint.
 /// V3 authenticates EVERY envelope's derivation, including excluded leaves.
 /// Both versions authenticate the supplied lifecycle controls and run bodies;
 /// a partial-payload v2 result explicitly retains the weaker membership scope.
@@ -104,10 +177,14 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
             },
         }));
     }
-    let complete = Reader::new(proof).bytes(128, "proof.format")? == BALANCE_FORMAT_V3;
+    let format = Reader::new(proof).bytes(128, "proof.format")?;
+    let source_bound = format == BALANCE_FORMAT_V4;
+    let complete = source_bound || format == BALANCE_FORMAT_V3;
     let mut r = open(
         proof,
-        if complete {
+        if source_bound {
+            BALANCE_FORMAT_V4
+        } else if complete {
             BALANCE_FORMAT_V3
         } else {
             BALANCE_FORMAT_V2
@@ -144,6 +221,16 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
             r.bytes(MAX_RECORD_BYTES, "run_body.bytes")?,
         ));
     }
+    let mut manifests = Vec::new();
+    if source_bound {
+        let n = r.count(raw.len(), 12, "proof.source_manifests")?;
+        for _ in 0..n {
+            manifests.push((
+                r.u64("source_manifest.bind_leaf_index")?,
+                r.bytes(MAX_RECORD_BYTES, "source_manifest.bytes")?,
+            ));
+        }
+    }
     r.finish("migration balance proof")?;
 
     let envelopes = complete_prefix(&raw, &checkpoint)?;
@@ -171,9 +258,23 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
     let mut runs: BTreeMap<u128, Run> = BTreeMap::new();
     let mut opens = Vec::new();
     let mut needed_runs = BTreeSet::new();
+    let mut source_chunks = Vec::new();
     let mut verified = Vec::with_capacity(records.len());
     for ((index, len, payload), (_, envelope)) in records.iter().zip(&expected) {
         let legs = check_record(envelope, payload, *len).map_err(VerifyError::Record)?;
+        if source_bound && envelope.class == CLASS_MIGRATION {
+            let Metadata::Chunk { run, vid, digest } =
+                metadata(envelope, &payload[..*len], *index)?
+            else {
+                return Err(scope_error(*index));
+            };
+            source_chunks.push(source::Chunk {
+                index: *index,
+                run,
+                vid,
+                digest,
+            });
+        }
         // In v3, even a Pending/undated/unrelated/future leaf reaches the
         // derivation check above. Only authenticated selectors may exclude it.
         // Do not interpret unrelated control payloads as migration metadata,
@@ -184,41 +285,13 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
             continue;
         }
         let metadata = metadata(envelope, &payload[..*len], *index)?;
-        if let Metadata::Chunk(run) = metadata {
+        if let Metadata::Chunk { run, .. } = metadata {
             needed_runs.insert(run);
         }
-        if let Metadata::Control {
-            run,
-            kind,
-            digest,
-            body_digest,
-        } = metadata
-        {
+        if let Metadata::Control { run, kind, .. } = metadata {
+            control(&mut runs, metadata, *index, envelope.effective_day)?;
             if kind == 0 {
-                if runs.contains_key(&run) {
-                    return Err(scope_error(*index));
-                }
-                let open_day = envelope.effective_day.ok_or_else(|| scope_error(*index))?;
-                runs.insert(
-                    run,
-                    Run {
-                        open_index: *index,
-                        open_day,
-                        digest,
-                        terminal: None,
-                        policy: None,
-                    },
-                );
                 opens.push((*index, run));
-            } else {
-                let state = runs.get_mut(&run).ok_or_else(|| scope_error(*index))?;
-                if state.terminal.is_some()
-                    || *index <= state.open_index
-                    || body_digest != state.digest
-                {
-                    return Err(scope_error(*index));
-                }
-                state.terminal = Some((*index, kind));
             }
         }
         verified.push((*index, *envelope, metadata, legs));
@@ -251,13 +324,15 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
         return Err(scope_error(*extra));
     }
 
+    source::verify(&envelopes, &runs, &needed_runs, &source_chunks, &manifests)?;
+
     let (mut debits, mut credits) = (0i128, 0i128);
     let mut contributing = Vec::new();
     for (index, envelope, metadata, legs) in &verified {
         let visible = match metadata {
             Metadata::Control { .. } => false,
             Metadata::Ordinary => true,
-            Metadata::Chunk(run) => {
+            Metadata::Chunk { run, .. } => {
                 let state = runs.get(run).ok_or_else(|| scope_error(*index))?;
                 if *index <= state.open_index
                     || state
@@ -361,7 +436,7 @@ fn metadata(e: &LeafEnvelope, proposal: &[u8], index: u64) -> Result<Metadata, V
         }
         let run = r.u128("control.run_ref")?;
         let kind = r.u8("control.kind")?;
-        if kind > 2 {
+        if kind > 3 {
             return Err(scope_error(index));
         }
         Some((run, kind, r.fixed::<32>("control.tie_out_digest")?))
@@ -382,7 +457,7 @@ fn metadata(e: &LeafEnvelope, proposal: &[u8], index: u64) -> Result<Metadata, V
             r.fixed::<22>("entry.residual")?;
         }
     }
-    r.bytes(MAX_RECORD_BYTES, "entry.idempotency_key")?;
+    let key = r.bytes(MAX_RECORD_BYTES, "entry.idempotency_key")?;
     let origin = r.u8("entry.origin")?;
     if e.class == CLASS_MIGRATION_CONTROL {
         let (run, kind, digest) = control.ok_or_else(|| scope_error(index))?;
@@ -393,18 +468,44 @@ fn metadata(e: &LeafEnvelope, proposal: &[u8], index: u64) -> Result<Metadata, V
         if kind == 0 && body_digest != digest {
             return Err(scope_error(index));
         }
+        let evidence = if kind == 3 {
+            r.u128("entry.principal")?;
+            if r.present("entry.session")? {
+                r.u128("entry.session")?;
+            }
+            if r.count(2, 65, "entry.evidence")? != 2 {
+                return Err(scope_error(index));
+            }
+            let mut citations = [([0; 32], [0; 32], 0); 2];
+            for citation in &mut citations {
+                *citation = (
+                    r.fixed("evidence.document_oid")?,
+                    r.fixed("evidence.doc_commit")?,
+                    r.u8("evidence.role")?,
+                );
+            }
+            Some(citations)
+        } else {
+            None
+        };
         return Ok(Metadata::Control {
             run,
             kind,
             digest,
             body_digest,
+            evidence,
         });
     }
     if origin == 2 {
         if e.class != CLASS_MIGRATION {
             return Err(scope_error(index));
         }
-        return Ok(Metadata::Chunk(r.u128("origin.run_ref")?));
+        let run = r.u128("origin.run_ref")?;
+        return Ok(Metadata::Chunk {
+            run,
+            vid: source::chunk_vid(&e.book_id, run, key),
+            digest: hash_parts(crate::envelope::PROPOSAL_DIGEST_DOMAIN, &[proposal]),
+        });
     }
     if e.class == CLASS_MIGRATION || !matches!(origin, 0 | 1 | 4 | 5) {
         return Err(scope_error(index));
@@ -487,6 +588,9 @@ pub(crate) struct ReportVisibility {
     pub visible: BTreeSet<u64>,
     pub activations: BTreeMap<u64, u64>,
     pub activation_sources: BTreeMap<u64, usize>,
+    /// Source storage belongs in the native query closure even before its
+    /// first chunk, when no selected population witness is needed yet.
+    pub source_bound: bool,
 }
 
 /// Return both counting chunks and their authenticated activation sequence.
@@ -512,6 +616,80 @@ pub(crate) fn report_visibility_with_sources(
     bodies: &[(u64, &[u8])],
     known_at: u64,
 ) -> Result<ReportVisibility, VerifyError> {
+    let mut run_bodies = Vec::new();
+    let mut manifests = Vec::new();
+    if bodies.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(scope_error(bodies[0].0));
+    }
+    for &(index, bytes) in bodies {
+        match witness_kind(envelopes, records, index)? {
+            0 => run_bodies.push((index, bytes)),
+            3 => manifests.push((index, bytes)),
+            _ => return Err(scope_error(index)),
+        }
+    }
+    report_visibility_with_manifests(envelopes, records, &run_bodies, &manifests, known_at)
+}
+
+fn witness_kind(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    index: u64,
+) -> Result<u8, VerifyError> {
+    let e = envelopes
+        .get(index as usize)
+        .ok_or_else(|| scope_error(index))?;
+    let &(len, payload) = records
+        .get(index as usize)
+        .ok_or_else(|| scope_error(index))?;
+    if e.kind != crate::envelope::KIND_ENTRY || e.class != CLASS_MIGRATION_CONTROL {
+        return Err(scope_error(index));
+    }
+    match metadata(
+        e,
+        payload.get(..len).ok_or_else(|| scope_error(index))?,
+        index,
+    )? {
+        Metadata::Control { kind, .. } => Ok(kind),
+        _ => Err(scope_error(index)),
+    }
+}
+
+/// Report minor 1 adds a separate source-manifest list. Validate each list's
+/// declared type before joining it for historical-source selection. A minor 0
+/// bundle cannot smuggle a manifest through its Open-body list.
+pub(crate) fn join_report_witnesses<'a>(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    bodies: Vec<(u64, &'a [u8])>,
+    manifests: Vec<(u64, &'a [u8])>,
+) -> Result<Vec<(u64, &'a [u8])>, VerifyError> {
+    for (expected, values) in [(0, &bodies), (3, &manifests)] {
+        if values.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(scope_error(values[0].0));
+        }
+        for &(index, _) in values {
+            if witness_kind(envelopes, records, index)? != expected {
+                return Err(scope_error(index));
+            }
+        }
+    }
+    let mut combined = bodies;
+    combined.extend(manifests);
+    combined.sort_unstable_by_key(|(index, _)| *index);
+    Ok(combined)
+}
+
+/// Source-bound report profile. Legacy callers supply no manifest witnesses
+/// and continue to reject a selected bound population rather than silently
+/// downgrading its completeness contract.
+pub(crate) fn report_visibility_with_manifests(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    bodies: &[(u64, &[u8])],
+    manifests: &[(u64, &[u8])],
+    known_at: u64,
+) -> Result<ReportVisibility, VerifyError> {
     let mut runs: BTreeMap<u128, Run> = BTreeMap::new();
     let mut needed = BTreeSet::new();
     let mut chunks = Vec::new();
@@ -524,44 +702,17 @@ pub(crate) fn report_visibility_with_sources(
         }
         let index = index as u64;
         match metadata(envelope, &payload[..*len], index)? {
-            Metadata::Chunk(run) => {
+            Metadata::Chunk { run, vid, digest } => {
                 needed.insert(run);
-                chunks.push((index, run, envelope.effective_day));
+                chunks.push(source::Chunk {
+                    index,
+                    run,
+                    vid,
+                    digest,
+                });
             }
-            Metadata::Control {
-                run,
-                kind,
-                digest,
-                body_digest,
-            } => {
-                if kind == 0 {
-                    if runs
-                        .insert(
-                            run,
-                            Run {
-                                open_index: index,
-                                open_day: envelope
-                                    .effective_day
-                                    .ok_or_else(|| scope_error(index))?,
-                                digest,
-                                terminal: None,
-                                policy: None,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err(scope_error(index));
-                    }
-                } else {
-                    let state = runs.get_mut(&run).ok_or_else(|| scope_error(index))?;
-                    if state.terminal.is_some()
-                        || index <= state.open_index
-                        || body_digest != state.digest
-                    {
-                        return Err(scope_error(index));
-                    }
-                    state.terminal = Some((index, kind));
-                }
+            metadata @ Metadata::Control { .. } => {
+                control(&mut runs, metadata, index, envelope.effective_day)?
             }
             Metadata::Ordinary => return Err(scope_error(index)),
         }
@@ -595,10 +746,12 @@ pub(crate) fn report_visibility_with_sources(
         }
         state.policy = Some(policy);
     }
+    source::verify(envelopes, &runs, &needed, &chunks, manifests)?;
     let mut visible = BTreeSet::new();
     let mut activated = BTreeMap::new();
     let mut activation_sources = BTreeMap::new();
-    for (index, run, day) in chunks {
+    for source::Chunk { index, run, .. } in chunks {
+        let day = envelopes[index as usize].effective_day;
         let state = runs.get(&run).ok_or_else(|| scope_error(index))?;
         if index <= state.open_index
             || state
@@ -623,6 +776,7 @@ pub(crate) fn report_visibility_with_sources(
         visible,
         activations: activated,
         activation_sources,
+        source_bound: runs.values().any(|run| run.binding.is_some()),
     })
 }
 
@@ -640,6 +794,7 @@ pub(crate) fn report_bodies_at<'a>(
 ) -> Result<Vec<(u64, &'a [u8])>, VerifyError> {
     let mut needed = BTreeSet::new();
     let mut opens = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
     for (index, (envelope, (len, payload))) in envelopes.iter().zip(records).enumerate() {
         if envelope.commit_seq > known_at
             || envelope.kind != crate::envelope::KIND_ENTRY
@@ -649,19 +804,25 @@ pub(crate) fn report_bodies_at<'a>(
         }
         let index = index as u64;
         match metadata(envelope, &payload[..*len], index)? {
-            Metadata::Chunk(run) => {
+            Metadata::Chunk { run, .. } => {
                 needed.insert(run);
             }
             Metadata::Control { run, kind: 0, .. } if opens.insert(run, index).is_some() => {
                 return Err(scope_error(index));
             }
+            Metadata::Control { run, kind: 3, .. } if bindings.insert(run, index).is_some() => {
+                return Err(scope_error(index));
+            }
             _ => {}
         }
     }
-    let indexes = needed
-        .into_iter()
-        .map(|run| opens.get(&run).copied().ok_or_else(|| scope_error(0)))
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let mut indexes = BTreeSet::new();
+    for run in needed {
+        indexes.insert(opens.get(&run).copied().ok_or_else(|| scope_error(0))?);
+        if let Some(binding) = bindings.get(&run) {
+            indexes.insert(*binding);
+        }
+    }
     Ok(bodies
         .iter()
         .filter(|(index, _)| indexes.contains(index))
@@ -672,6 +833,7 @@ pub(crate) fn report_bodies_at<'a>(
 #[cfg(test)]
 mod tests {
     mod complete_tests;
+    mod source_tests;
 
     use super::*;
     use crate::codec::Writer;
@@ -691,6 +853,7 @@ mod tests {
         Control(u128, u8, [u8; 32]),
     }
 
+    #[derive(Clone)]
     struct Record {
         envelope: LeafEnvelope,
         len: usize,
@@ -892,6 +1055,7 @@ mod tests {
             .filter(|(i, r)| {
                 Some(*i) != omit
                     && (format == BALANCE_FORMAT_V3
+                        || format == BALANCE_FORMAT_V4
                         || r.envelope.class == CLASS_MIGRATION_CONTROL
                         || in_scope(&r.envelope, 10, 1, through))
             })

@@ -33,6 +33,7 @@ pub mod erasable;
 pub mod ids;
 pub mod limits;
 pub mod lot_disposal;
+pub mod migration_source;
 pub mod mirrors;
 pub mod obligation;
 pub mod proportional;

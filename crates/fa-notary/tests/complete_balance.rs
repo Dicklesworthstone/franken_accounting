@@ -1,6 +1,9 @@
 //! Real model codec versus the independent v3 balance verifier.
 //! Detached journals test proof semantics, not kernel admission or economics.
 
+#[path = "complete_balance/source_bound.rs"]
+mod source_bound;
+
 use fa_journal::migration::{RunBody, RunMode, kind};
 use fa_model::{
     ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,

@@ -427,7 +427,7 @@ existing bytes and content digests. A dimension-only change changes the
 extended journal digest even when every monetary amount is unchanged.
 
 ADS and SAF-T proof verification compares these tags with the authenticated
-native proposals. The verifier reports `dimension_rows` when that comparison
+native proposals (FA-INV-14). The verifier reports `dimension_rows` when that comparison
 is available. Historical exports without the extension remain readable and
 report `null` for this coverage; a successful monetary check alone does not
 establish departmental attribution. The public-ledger driver requires the

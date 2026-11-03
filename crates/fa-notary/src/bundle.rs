@@ -657,7 +657,7 @@ pub fn assemble_with_runs(
     checkpoint: &StoredCheckpoint,
     request: &BundleRequest,
     documents: &BTreeMap<Oid, DocumentRead>,
-    run_bodies: &BTreeMap<VId, fa_journal::migration::RunBody>,
+    run_bodies: &dyn crate::migration_balance::MigrationSourceInputs,
     approvals: &BTreeMap<VId, Vec<u8>>,
 ) -> Outcome<Bundle> {
     let statement = journal.statement();

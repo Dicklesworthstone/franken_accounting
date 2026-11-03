@@ -30,6 +30,7 @@ pub enum ObjectKind {
     StatementDefinition = 7,
     PeriodPlan = 8,
     MigrationRun = 9,
+    MigrationSource = 10,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -288,6 +289,7 @@ mod tests {
             ObjectKind::StatementDefinition,
             ObjectKind::PeriodPlan,
             ObjectKind::MigrationRun,
+            ObjectKind::MigrationSource,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -366,7 +368,8 @@ mod tests {
                 | ObjectKind::RegisterCheckpoint
                 | ObjectKind::StatementDefinition
                 | ObjectKind::PeriodPlan
-                | ObjectKind::MigrationRun => ObjectKind::PostPlan,
+                | ObjectKind::MigrationRun
+                | ObjectKind::MigrationSource => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -552,6 +555,7 @@ mod tests {
             ),
             ("period_plan_kind", ObjectKind::PeriodPlan as i128),
             ("migration_run_kind", ObjectKind::MigrationRun as i128),
+            ("migration_source_kind", ObjectKind::MigrationSource as i128),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);
         }

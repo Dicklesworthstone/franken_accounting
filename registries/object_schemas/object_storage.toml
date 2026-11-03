@@ -16,6 +16,7 @@ register_checkpoint_kind = 6
 statement_definition_kind = 7
 period_plan_kind = 8
 migration_run_kind = 9
+migration_source_kind = 10
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -63,3 +64,7 @@ migration_run_kind = 9
 # authoritative label preserved by scratch replay. The root's state may later
 # transition; reassembly pins its original immutable birth and authenticates
 # every fragment at the requested known-at, never at an invented current time.
+# MigrationSource kind 10 retains the bounded canonical source population.
+# Its immutable MigrationSource root and MigrationSourceFragment children
+# publish with BindSource in one transaction; the root names that control.
+# Scratch replay preserves both labels. Unlike a run, this root never changes.

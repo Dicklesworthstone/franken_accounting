@@ -572,6 +572,12 @@ name = "CloseTask"
 [[label]]
 id = 63
 name = "MigrationRunFragment"
+[[label]]
+id = 64
+name = "MigrationSource"
+[[label]]
+id = 65
+name = "MigrationSourceFragment"
 
 # CloseTask -> prerequisite CloseTask, within the same CloseRun.
 [[relation]]

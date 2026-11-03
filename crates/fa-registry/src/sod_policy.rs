@@ -92,7 +92,7 @@ const BOOK_SCOPED_CONTROLS: &[&str] = &[
     "CloseControl",
 ];
 /// A MigrationRun's lifecycle (plan §8.6).
-const MIGRATION_TRANSITIONS: &[&str] = &["Open", "Finalize", "Abandon"];
+const MIGRATION_TRANSITIONS: &[&str] = &["Open", "BindSource", "Finalize", "Abandon"];
 
 /// Which entry a rule governs. `state` is the period state the entry
 /// resolves to (for `PeriodControl`, the transition's from-state); `None`
@@ -630,6 +630,7 @@ mod tests {
                 0,
             ),
             (key("MigrationControl", None, None, Some("Open")), 0),
+            (key("MigrationControl", None, None, Some("BindSource")), 0),
             (key("MigrationControl", None, None, Some("Finalize")), 2),
             (key("MigrationControl", None, None, Some("Abandon")), 0),
         ] {

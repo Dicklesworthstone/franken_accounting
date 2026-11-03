@@ -70,6 +70,13 @@ use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
 mod visibility;
 pub use visibility::verify_run_visibility_at;
+mod source;
+pub use fa_model::migration_source::{SourceChunk, SourceManifest};
+pub(crate) use source::witness_source_member;
+pub use source::{
+    SOURCE_TIE_OUT_DOMAIN, SourceCoverage, bind_source, read_source_manifest_at,
+    source_binding_proposal,
+};
 
 /// Canonical bytes of a run body: `u16 version ‖ book_id[16] ‖ str run_key
 /// ‖ str source_system ‖ u8 mode ‖ trial_balance oid[32] ‖ i32 opening_date
@@ -99,6 +106,7 @@ pub mod kind {
     pub const OPEN: u8 = 0;
     pub const FINALIZE: u8 = 1;
     pub const ABANDON: u8 = 2;
+    pub const BIND_SOURCE: u8 = 3;
 }
 
 pub use fa_palimpsest::{PeriodBalance, RunMode, RunState, TrialBalanceLine};
@@ -811,6 +819,8 @@ pub struct TieOut {
     pub chunks: Vec<RunChunk>,
     pub mismatches: Vec<TieOutLine>,
     pub digest: [u8; 32],
+    /// Present only for an explicitly bound native source population.
+    pub source: Option<SourceCoverage>,
 }
 
 type Fold = BTreeMap<(VId, UnitId), i128>;
@@ -872,7 +882,7 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
     let mut mismatches = compare(db, book, at, None, &run.body.lines, &opening)?;
     if run.body.mode == RunMode::FullDetail {
         mismatches.extend(full_detail_chain(db, book, at, run, &by_period)?);
-        return finish_tie_out(run, at, chunks, mismatches);
+        return finish_tie_out(db, book, run, at, chunks, mismatches);
     }
     let mut cumulative = opening;
     for p in &run.body.periods {
@@ -893,10 +903,12 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
             &cumulative,
         )?);
     }
-    finish_tie_out(run, at, chunks, mismatches)
+    finish_tie_out(db, book, run, at, chunks, mismatches)
 }
 
-fn finish_tie_out(
+fn finish_tie_out<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
     run: &Run,
     at: CommitSeq,
     chunks: Vec<RunChunk>,
@@ -907,12 +919,22 @@ fn finish_tie_out(
         w.u128(c.vid.0).fixed(&c.proposal_digest);
     });
     let list = w.finish().map_err(|e| KernelError::Model(e.into()))?;
-    let digest = domain_digest(TIE_OUT_DOMAIN, &[&run.body.digest()?, &list]);
+    let source = read_source_manifest_at(db, book.book_id, run.vid, at)?
+        .map(|manifest| source::source_coverage(&manifest, &chunks))
+        .transpose()?;
+    let digest = match &source {
+        Some(source) => domain_digest(
+            SOURCE_TIE_OUT_DOMAIN,
+            &[&run.body.digest()?, &source.manifest_digest, &list],
+        ),
+        None => domain_digest(TIE_OUT_DOMAIN, &[&run.body.digest()?, &list]),
+    };
     Ok(TieOut {
         at,
         chunks,
         mismatches,
         digest,
+        source,
     })
 }
 
@@ -1239,6 +1261,12 @@ pub fn plan_run_transition<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(not_open(&run)));
     }
     let tie = tie_out(db, book, &run, db.frontier()?)?;
+    if control_kind == kind::FINALIZE
+        && let Some(source) = &tie.source
+        && !source.complete()
+    {
+        return Ok(Err(source::completeness_refusal(&run, source)));
+    }
     if control_kind == kind::FINALIZE && !tie.mismatches.is_empty() {
         return Ok(Err(mismatch_refusal(book, &tie.mismatches)));
     }
@@ -1577,6 +1605,13 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let tie = tie_out(db, book, &run, basis)?;
+    if control_kind == kind::FINALIZE
+        && let Some(source) = &tie.source
+        && !source.complete()
+    {
+        txn.abort();
+        return Ok(Err(source::completeness_refusal(&run, source)));
+    }
     if control_kind == kind::FINALIZE && !tie.mismatches.is_empty() {
         txn.abort();
         return Ok(Err(mismatch_refusal(book, &tie.mismatches)));
@@ -2126,7 +2161,7 @@ fn recorded_or_conflict(
         return Ok(Err(conflict));
     }
     let to = match k {
-        kind::OPEN => RunState::Open,
+        kind::OPEN | kind::BIND_SOURCE => RunState::Open,
         kind::FINALIZE => RunState::Finalized,
         kind::ABANDON => RunState::Abandoned,
         t => {

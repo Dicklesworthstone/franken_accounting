@@ -1230,15 +1230,32 @@ fn migration_fragment_statement(at: CommitSeq) -> String {
     )
 }
 
-fn migration_fragments_at<V: Vfs + Clone>(
+fn migration_source_statements(at: CommitSeq) -> [String; 2] {
+    ["MigrationSource", "MigrationSourceFragment"].map(|label| format!(
+        "MATCH (n:{label}) FOR SYSTEM_TIME AS OF SEQ {} RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        at.0
+    ))
+}
+
+fn migration_storage_statements_at<V: Vfs + Clone>(
     db: &Database<V>,
     at: CommitSeq,
-) -> Result<bool, BookError> {
-    Ok(db
-        .vertices_at(at)
-        .map_err(fa_journal::KernelError::from)?
+) -> Result<Vec<String>, BookError> {
+    let rows = db.vertices_at(at).map_err(fa_journal::KernelError::from)?;
+    let mut statements = Vec::new();
+    if rows
         .iter()
-        .any(|row| row.labels.contains(&label::MIGRATION_RUN_FRAGMENT)))
+        .any(|row| row.labels.contains(&label::MIGRATION_RUN_FRAGMENT))
+    {
+        statements.push(migration_fragment_statement(at));
+    }
+    if rows.iter().any(|row| {
+        row.labels.contains(&label::MIGRATION_SOURCE)
+            || row.labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
+    }) {
+        statements.extend(migration_source_statements(at));
+    }
+    Ok(statements)
 }
 
 fn input_snapshot(at: CommitSeq, selection: &ReportSelection, index: usize) -> CommitSeq {
@@ -1457,8 +1474,8 @@ impl ReportCertificate {
                 + usize::from(selection.bound_dimension().is_some())
                 + CUSTOM_STATEMENT_INPUTS
                     * usize::from(matches!(selection, ReportSelection::CustomStatement(_)));
-            let count = r.count(required_inputs + 1, "native inputs")?;
-            if count != required_inputs && count != required_inputs + 1 {
+            let count = r.count(required_inputs + 3, "native inputs")?;
+            if count < required_inputs {
                 return Err(r.invalid("complete native input closure"));
             }
             let mut inputs = Vec::new();
@@ -1520,8 +1537,12 @@ impl ReportCertificate {
             ));
         }
         let mut expected = statements(self.known_at, &self.selection);
-        if self.inputs.len() == expected.len() + 1 {
+        let storage_count = self.inputs.len().saturating_sub(expected.len());
+        if matches!(storage_count, 1 | 3) {
             expected.push(migration_fragment_statement(self.known_at));
+        }
+        if matches!(storage_count, 2 | 3) {
+            expected.extend(migration_source_statements(self.known_at));
         }
         if self.inputs.len() != expected.len()
             || self
@@ -1851,9 +1872,7 @@ fn certify_selected<V: Vfs + Clone>(
     }
     let mut inputs = Vec::new();
     let mut source_queries = statements(at, &selection);
-    if migration_fragments_at(db, at)? {
-        source_queries.push(migration_fragment_statement(at));
-    }
+    source_queries.extend(migration_storage_statements_at(db, at)?);
     for statement in source_queries {
         query.checkpoint().map_err(BookError::Context)?;
         let (_, certificate) = db
@@ -1977,11 +1996,16 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
     // An original inline-only certificate remains replayable at its original
     // prefix. It cannot omit canonical storage fragments that already existed
     // at that prefix, even if an attacker recomputes its outer content digest.
-    if certificate.inputs.len() == statements(certificate.known_at, &certificate.selection).len()
-        && migration_fragments_at(db, certificate.known_at)?
+    let mut required = statements(certificate.known_at, &certificate.selection);
+    required.extend(migration_storage_statements_at(db, certificate.known_at)?);
+    if certificate
+        .inputs
+        .iter()
+        .map(|input| &input.statement)
+        .ne(required.iter())
     {
         return Ok(Err(invalid(
-            "native input closure omits migration body fragments at the certified prefix",
+            "native input closure omits migration body or source storage at the certified prefix",
         )));
     }
     let current = match registry_digest(&certificate.selection) {

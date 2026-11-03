@@ -2977,6 +2977,45 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.open_migration_run(&purposes, body, req)))
     }
 
+    /// Build a native source-binding control for the exact retained package.
+    pub fn migration_source_proposal(
+        &self,
+        principal: VId,
+        run: &fa_journal::Run,
+        manifest: &fa_model::migration_source::SourceManifest,
+        description: Erasable<String>,
+    ) -> Result<fa_model::EntryPayload, BookError> {
+        with_store!(&self.store, core => core.migration_source_proposal(
+            principal, run, manifest, description,
+        ))
+    }
+
+    /// Bind an empty migration run to all proposals in its retained package.
+    /// A later finalization cannot omit a cancelling pair or replace a member.
+    pub fn bind_migration_source(
+        &mut self,
+        manifest: &fa_model::migration_source::SourceManifest,
+        package_bytes: &[u8],
+        req: fa_journal::RunControlRequest,
+    ) -> Outcome<fa_journal::RunControlled> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.bind_migration_source(
+            &purposes, manifest, package_bytes, req,
+        )))
+    }
+
+    /// Return the authenticated source population, or `None` for a legacy
+    /// unbound run. Absence never establishes source completeness.
+    pub fn migration_source_manifest(
+        &self,
+        run: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_model::migration_source::SourceManifest>, BookError> {
+        with_store!(&self.store, core => core.migration_source_manifest(
+            &self.purposes(), run, known_at,
+        ))
+    }
+
     /// Plan a run's `Finalize` (or `Abandon`) against the head: the proposal
     /// whose digest the approvers approve. Its `tie_out_digest` binds the
     /// chunks committed so far.

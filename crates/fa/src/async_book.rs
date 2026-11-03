@@ -3450,6 +3450,63 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::open_run(&mut self.db, cx, &self.context, body, req).await?)
     }
 
+    /// Prepare the immutable source-population control for an existing run.
+    pub fn migration_source_proposal(
+        &self,
+        principal: VId,
+        run: &fa_journal::Run,
+        manifest: &fa_model::migration_source::SourceManifest,
+        description: Erasable<String>,
+    ) -> Result<fa_model::EntryPayload, BookError> {
+        Ok(fa_journal::migration::source_binding_proposal(
+            &self.context,
+            principal,
+            run,
+            manifest,
+            description,
+        )?)
+    }
+
+    /// Bind every expected source proposal before any chunk can be staged.
+    /// The kernel authenticates the package bytes against their retained
+    /// Document and checks the complete declared population in one publication.
+    pub async fn bind_migration_source(
+        &mut self,
+        cx: &PurposeContexts,
+        manifest: &fa_model::migration_source::SourceManifest,
+        package_bytes: &[u8],
+        req: fa_journal::RunControlRequest,
+    ) -> Outcome<fa_journal::RunControlled> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::migration::bind_source(
+            &mut self.db,
+            cx,
+            &self.context,
+            manifest,
+            package_bytes,
+            req,
+        )
+        .await?)
+    }
+
+    /// The immutable source population at the selected recorded frontier.
+    pub fn migration_source_manifest(
+        &self,
+        cx: &PurposeContexts,
+        run: VId,
+        known_at: Option<CommitSeq>,
+    ) -> Result<Option<fa_model::migration_source::SourceManifest>, BookError> {
+        self.query(cx, |db, book| {
+            let at = fa_registers::resolve_known_at(db, known_at)?;
+            Ok(fa_journal::migration::read_source_manifest_at(
+                db,
+                book.book_id,
+                run,
+                at,
+            )?)
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn plan_migration_transition(
         &self,
