@@ -495,6 +495,14 @@ cannot pass merely because account totals still match. Its
 [reproduction command](docs/public_ledger.md#exercise-native-source-population-completeness)
 uses a fresh book and retains the actual native command arguments.
 
+The [portable-report companion](docs/public_ledger_portable_proof.md) exports a
+retained departmental certificate, pins its signed checkpoint and runs the
+separate `fa-verify report` command with an expected certificate, trusted fixture
+key and detached receipt. The full university workflow exercises both ordinary
+and source-bound bundles, including the real Entry and migration-run fragments.
+Its validation record distinguishes a completed native verification from a
+scheduled check.
+
 The entire 373,357-row publication has been profiled. **All three complete agency
 fixtures passed the native account-level workflow:** 1,317 original rows
 produce 1,303 exact monetary legs across 48

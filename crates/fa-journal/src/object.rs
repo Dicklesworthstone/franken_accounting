@@ -647,6 +647,11 @@ mod tests {
             .unwrap(),
             body
         );
+        // Staging requires the live frontier to equal the pinned snapshot.
+        // Prepare the write before the race to exercise commit-time witnesses.
+        let mut unrelated = WriteBatch::new(relation::HAS_LEG);
+        unrelated.create_vertex(VId(76), vec![label::CERTIFICATE], vec![]);
+        reader.write(&mut db, unrelated).unwrap();
         let fragment = fragment_vid(book, root, identity(kind, &body), 0);
         let mut damage = WriteBatch::new(relation::HAS_LEG);
         damage.set_vertex_property(
@@ -670,9 +675,6 @@ mod tests {
             .unwrap(),
             body
         );
-        let mut unrelated = WriteBatch::new(relation::HAS_LEG);
-        unrelated.create_vertex(VId(76), vec![label::CERTIFICATE], vec![]);
-        reader.write(&mut db, unrelated).unwrap();
         assert!(
             runtime
                 .block_on(reader.commit(&mut db, &cx.commit()))

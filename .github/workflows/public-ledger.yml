@@ -59,6 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -B scripts/public_ledger_portable_proof.py --help
           python3 -m unittest discover -s scripts/tests -p 'test_public_ledger*.py' -v 2>&1 | tee artifacts/public-ledger/python-tests.log
 
       - name: Install the real bankruptcy PDF extractor
@@ -148,7 +149,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis entry_storage:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/entry-storage-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis entry_storage_tests:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/entry-storage-tests.log
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib object::tests:: --jobs 1 -- --nocapture 2>&1 | tee -a artifacts/public-ledger/entry-storage-tests.log
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib fragmented_hold_expires_and_scheduled_reversal_preserves_all_legs --jobs 1 -- --nocapture 2>&1 | tee -a artifacts/public-ledger/entry-storage-tests.log
 
@@ -195,6 +196,27 @@ jobs:
           set -euo pipefail
           python3 scripts/public_ledger.py run --agency 66000 --out artifacts/public-ledger/university 2>&1 | tee artifacts/public-ledger/university.log
 
+      - name: Independently verify the university report with complete Entry fragments
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/public_ledger_portable_proof.py --run artifacts/public-ledger/university --out artifacts/public-ledger/university-portable --fa target/debug/fa --fa-verify target/debug/fa-verify --require-entry-fragments 2>&1 | tee artifacts/public-ledger/university-portable.log
+
+      - name: Replay the complete university selection with native source-population binding
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/public_ledger_source_bound_replay.py --repo "$PWD" run --agency 66000 --out artifacts/public-ledger/university-source-bound --fa "$PWD/target/debug/fa" --fa-verify "$PWD/target/debug/fa-verify" 2>&1 | tee artifacts/public-ledger/university-source-bound.log
+
+      - name: Independently verify the source-bound university report and public proof example
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/public_ledger_portable_proof.py --run artifacts/public-ledger/university-source-bound --out artifacts/public-ledger/university-source-bound-portable --fa target/debug/fa --fa-verify target/debug/fa-verify --source-bound --require-entry-fragments --emit-public-example 2>&1 | tee artifacts/public-ledger/university-source-bound-portable.log
+
       - name: Replay the complete museum selection
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash
@@ -239,5 +261,10 @@ jobs:
             artifacts/public-ledger/*/record-silent-analytics.json
             artifacts/public-ledger/*/legacy.csv
             artifacts/public-ledger/*/extracted-source/*
+            artifacts/public-ledger/*-portable/validation.json
+            artifacts/public-ledger/*-portable/report.fab
+            artifacts/public-ledger/*-portable/checkpoint.bin
+            artifacts/public-ledger/*-portable/report.receipt
+            artifacts/public-ledger/*-portable/trusted-public-key.txt
           retention-days: 14
           if-no-files-found: error
