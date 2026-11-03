@@ -1,0 +1,1996 @@
+{
+  "binaries": {
+    "fa_sha256": "20200170403c9dd6a1d787796d1a63dc7578018598b23bdfc2f03c6fc50db788",
+    "fa_verify_sha256": "5f444d7a2fd39b970972487745cb3a95e79eb36f44d76119a2ad2c8cbe42d8ad"
+  },
+  "caller_trusted_public_key": "49e82f978db4bba9a926ade3efdb6969efd06bc01b159b538a107936c8f1d32d",
+  "checked_transcript_census": {
+    "annual_tb": 26,
+    "certified_gl": 6,
+    "commands": 4105,
+    "document_read": 1,
+    "historical_gl": 6,
+    "native_export_verify": 2,
+    "outsider_pass_exit_0": 1,
+    "outsider_refusal_exit_8": 2,
+    "posted": 1586,
+    "principal_procedure": 3,
+    "recorded": 1586,
+    "register_advance": 272,
+    "register_verify": 272,
+    "report_replay": 6
+  },
+  "checks": [
+    "complete_original_pdf_extracted_and_intaken_this_run",
+    "complete_28_9_mb_original_cold_readback",
+    "all_2364_source_observations_and_six_accounts",
+    "independent_decimal_raw_literal_fold",
+    "all_717_tax_stars_have_scoped_footnote_premises",
+    "all_778_zero_principal_observations_compared",
+    "all_1586_entries_and_3172_legs",
+    "every_printed_discrepancy_retained_without_tolerance_or_plug",
+    "six_exact_certified_ledger_replays",
+    "six_immutable_preimport_prefixes",
+    "every_exact_retry_without_new_history",
+    "all_26_annual_cumulative_trial_balances",
+    "native_principal_analysis_with_role_history",
+    "native_transfer_event_34_dollar_gap_retained",
+    "all_posting_month_registers",
+    "native_projections",
+    "unchanged_complete_original_document_custody",
+    "signed_accumulator_checkpoint",
+    "every_exported_leg_text_and_party_dimension_vs_source",
+    "independent_ads_proofs",
+    "one_cent_tamper_rejected",
+    "party_only_tamper_rejected"
+  ],
+  "commands": 4105,
+  "completion_record_written_utc": "2026-11-03T09:03:35.959731+00:00",
+  "completion_time_basis": "Filesystem modification time of the wrapper result record written after the observed process exit.",
+  "document_custody": [
+    {
+      "doc_commit": "bb4fe2409a3483f6e47517b63107990631cf5295879c9229d5b57deca6c118e2",
+      "file": "source.pdf",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 308,
+      "oid": "38c71ab818177b27c2870eb280b38edce6ff1abeaf8f7fb0ab3ff2b989b6263f",
+      "review_attestation_vid": "fac1cafbdba14380fda52428c0177dc1",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 309,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "655b6b3571a2c7f30ad13fdf7ef79a74fe1a50e5e78872e2febd8b6e340ba932",
+      "file": "rows.csv",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 310,
+      "oid": "5387897848102c09ea7d6154d636f5d61d83e05851c43f25e9fe99987040c0e6",
+      "review_attestation_vid": "fd8c89dbf0431202376ca352ca7e86e2",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 311,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "0d6d060b59b4aea9063516482661676463806055b760cb1bb48ba182cb416062",
+      "file": "source.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 312,
+      "oid": "f43244787c0c5a0e5fe0e8e57bbcef3f7f89c44d2d7088aa224ca3fd6a7ee962",
+      "review_attestation_vid": "ab8f54c08d95c012ccff80ef8e6b060e",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 313,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "bc62d0c5d380ec50ab24887adc90af22ef4195bfb2d2de5a1a0841d11fdb83ca",
+      "file": "manifest.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 314,
+      "oid": "17f694c166cb766d74959a943b63af8a3139d2895cee7308ce66e4e6ee70e3c9",
+      "review_attestation_vid": "81c729c7b18563b288bc850dcaf70d0d",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 315,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "303b6f4dfb79be86c86f0b2a19a2d32adb5c97af2ae6bccf258f8486849e04b9",
+      "file": "observations.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 316,
+      "oid": "e7d833448970463ac1b377e161b56ce3767025c23e88427fcd529c1b0c559fd7",
+      "review_attestation_vid": "4f908ec398585fec466f986827d75aa0",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 317,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "7c4232b26189796558502a6cfe8c55b02414c3a592aa8bcff2b9b3bc4b81581c",
+      "file": "layout.txt",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 318,
+      "oid": "92681bd47c4b5878fe245c58ac1bce3eb8804593717a89f05a234d1392128cd9",
+      "review_attestation_vid": "6d8088fe94ff122835416c79956b6e18",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 319,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "34da967887a9e4654ec8c4b1fdc6f8fb508d0fbca16cbae576aadbf4bfbd75e4",
+      "file": "extraction.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 320,
+      "oid": "90a159d6ed49bb980d18259bf2ef5db54d412470ca73e37c5162e9f3bfdb86ec",
+      "review_attestation_vid": "32ff00c1fa7b52df201a3cd64745207a",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 321,
+      "self_sourced": true
+    }
+  ],
+  "elapsed_seconds": 4229.817,
+  "exact_entry_retries": 1586,
+  "executed_helpers": {
+    "scripts/blmis_magnify.py": {
+      "bytes": 42051,
+      "sha256": "876362a7872e5f447c5eef10d3310fb6ec3004f8ce8a78053dcd3064ac2382d5"
+    },
+    "scripts/blmis_magnify_replay.py": {
+      "bytes": 29715,
+      "sha256": "e5ee95d5acc9893901ffb235d5de4ec30b031c36b7efd42a5606906157ae46bf"
+    },
+    "scripts/blmis_replay.py": {
+      "bytes": 60202,
+      "sha256": "31cf64d790b6c7ee592f1f9db8bc533f2b551d202862e592ea1d7ba6f50dbe6a"
+    },
+    "scripts/blmis_source.py": {
+      "bytes": 79226,
+      "sha256": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2"
+    },
+    "scripts/native_document_readback.py": {
+      "bytes": 6060,
+      "sha256": "22157b96fc3713c62b3b5bee544207892036c4273d405e3bd66ea9678b78c1d6"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 87487,
+      "sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 17814,
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80"
+    }
+  },
+  "execution_records": {
+    "magnify-native-1-readback-helper.json": {
+      "bytes": 366,
+      "sha256": "ae38a5bcbd6861a8aef3febe2ca5c31878832c5a17f93426ba836df97402058c"
+    },
+    "magnify-native-1-result.json": {
+      "bytes": 1820,
+      "sha256": "b6af490b14a30d41ff52fbaf3d51d184c32fdc7715012146cd15d31d0d4f3c89"
+    },
+    "magnify-native-1-started.json": {
+      "bytes": 1748,
+      "sha256": "f262de15811987ad0ea565e8f2560ba9452084587472a0ca7bf786965014fde9"
+    },
+    "magnify-native-1.log": {
+      "bytes": 111,
+      "sha256": "7517cc176f9765fc3fbb2ce0ea4e207b9ca8427467760f6b30e8fe91cf8f94ea"
+    }
+  },
+  "export_source_oracles": [
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "csv-gl",
+      "parties": [
+        "BLMIS-1FN024",
+        "BLMIS-1FN025",
+        "BLMIS-1FN037",
+        "BLMIS-1FN073",
+        "BLMIS-1FN097",
+        "BLMIS-1FR051"
+      ],
+      "rows": 3172,
+      "tagged_rows": 1586,
+      "untagged_rows": 1586
+    },
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "ads",
+      "parties": [
+        "BLMIS-1FN024",
+        "BLMIS-1FN025",
+        "BLMIS-1FN037",
+        "BLMIS-1FN073",
+        "BLMIS-1FN097",
+        "BLMIS-1FR051"
+      ],
+      "rows": 3172,
+      "tagged_rows": 1586,
+      "untagged_rows": 1586
+    }
+  ],
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "ads/ADS_Coordinate_Certificate.toml": {
+      "bytes": 649,
+      "sha256": "f15fe282886c1ac04cf9849ee6aa75189aee1432f01da925507da772c80f2a8a"
+    },
+    "ads/ADS_Proof.fab": {
+      "bytes": 9429734,
+      "sha256": "5298d655b6a051f1c4602ee105fd652272476d2b1260208f59e1e3ed677d24fb"
+    },
+    "ads/ADS_Proof.receipt": {
+      "bytes": 219,
+      "sha256": "da180d5b0919c5763cb83406aa33f666c4f2dbc2bacf8eb9c96f08d553182853"
+    },
+    "ads/Chart_of_Accounts.txt": {
+      "bytes": 621,
+      "sha256": "20ce6315ff3a0470ec32c5938685bcae467ee11a37b36caa969d841e091b6a2f"
+    },
+    "ads/GL_Detail.txt": {
+      "bytes": 573878,
+      "sha256": "0c9764fd555ed85c3e092ea23177428f5a77814ac228f390a98ee5885ae5cf8e"
+    },
+    "ads/Trial_Balance.txt": {
+      "bytes": 431,
+      "sha256": "ccfdab156cf43ab848d1a2cbeb8243fd24831f439114e02fede435cf6670ed4c"
+    },
+    "commands.jsonl": {
+      "bytes": 73445566,
+      "sha256": "6828c4e3482597779e7a41a945fd85f16817987c0545ada0c902fda6a48d5fdb"
+    },
+    "controls.json": {
+      "bytes": 26161,
+      "sha256": "37318a613a916ed26a9a7cf2c2e232d4edba4e52eada2418420d36bf7ea2ff6b"
+    },
+    "extracted-source/layout.txt": {
+      "bytes": 721606,
+      "sha256": "2528f349bc87df810e36b54f61179cd78118720d5ec21140ebb498d7052544ec"
+    },
+    "extraction.json": {
+      "bytes": 1810,
+      "sha256": "facee14208f0add94c98d2aadad185697087630036232536a8c8ab17ca68402e"
+    },
+    "gl.csv": {
+      "bytes": 575346,
+      "sha256": "c8723124874114946e47dcf38defdea8fe1a4cc94abb005c79a386d246905cd4"
+    },
+    "legacy.csv": {
+      "bytes": 533847,
+      "sha256": "1861791452e87c62e06a3340f08b2ba3364a76d42556310b0d924429e1cf5511"
+    },
+    "manifest.json": {
+      "bytes": 762944,
+      "sha256": "c9632eed0c76ee0c169af9796dc3f31f24900d9df5e22248e5f9f9110e55ff7e"
+    },
+    "observations.json": {
+      "bytes": 857019,
+      "sha256": "bee6f1260d87f54bb059d5881cca8ce7ee3d4c0d9c8de01499216643a58ef256"
+    },
+    "original-readback.pdf": {
+      "bytes": 28947445,
+      "sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec"
+    },
+    "report.json": {
+      "bytes": 17281749,
+      "sha256": "c666631f441ca4ddaac06eaf41e1de42f95588d8308603a8fffe51a62671250b"
+    },
+    "rows.csv": {
+      "bytes": 522085,
+      "sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697"
+    },
+    "source.json": {
+      "bytes": 24684,
+      "sha256": "7350a15658dfc63da0386f8b17ca19acc09c454938df5abf94ca78e96e89fc80"
+    },
+    "source.pdf": {
+      "bytes": 28947445,
+      "sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec"
+    }
+  },
+  "helper_commit": "357e7b6d9b4c8206ea1761c5e2258b5afa5c3a3c",
+  "independent_source_export_audit": {
+    "record": {
+      "bytes": 5490,
+      "sha256": "516625f255e42f162a96bbdfd05da2261a402b1628a4f62345f1c575ad4f8030"
+    },
+    "result": {
+      "account_results": {
+        "1FN024": {
+          "closing_gap_cents": -4200,
+          "closing_printed_cents": -728337700,
+          "closing_source_fold_cents": -728341900,
+          "entries": 327,
+          "maximum_gap_cents": 4200,
+          "observations": 342,
+          "printed_discrepancies": 330,
+          "starred_exclusions": 0,
+          "zero_observations": 15
+        },
+        "1FN025": {
+          "closing_gap_cents": 0,
+          "closing_printed_cents": -474582200,
+          "closing_source_fold_cents": -474582200,
+          "entries": 45,
+          "maximum_gap_cents": 0,
+          "observations": 58,
+          "printed_discrepancies": 0,
+          "starred_exclusions": 0,
+          "zero_observations": 13
+        },
+        "1FN037": {
+          "closing_gap_cents": 1600,
+          "closing_printed_cents": -12367318500,
+          "closing_source_fold_cents": -12367316900,
+          "entries": 1179,
+          "maximum_gap_cents": 1800,
+          "observations": 1927,
+          "printed_discrepancies": 1920,
+          "starred_exclusions": 717,
+          "zero_observations": 748
+        },
+        "1FN073": {
+          "closing_gap_cents": 100,
+          "closing_printed_cents": -103109800,
+          "closing_source_fold_cents": -103109700,
+          "entries": 6,
+          "maximum_gap_cents": 100,
+          "observations": 6,
+          "printed_discrepancies": 2,
+          "starred_exclusions": 0,
+          "zero_observations": 0
+        },
+        "1FN097": {
+          "closing_gap_cents": 0,
+          "closing_printed_cents": -32179000,
+          "closing_source_fold_cents": -32179000,
+          "entries": 4,
+          "maximum_gap_cents": 0,
+          "observations": 4,
+          "printed_discrepancies": 0,
+          "starred_exclusions": 0,
+          "zero_observations": 0
+        },
+        "1FR051": {
+          "closing_gap_cents": 0,
+          "closing_printed_cents": -1123001900,
+          "closing_source_fold_cents": -1123001900,
+          "entries": 25,
+          "maximum_gap_cents": 0,
+          "observations": 27,
+          "printed_discrepancies": 0,
+          "starred_exclusions": 0,
+          "zero_observations": 2
+        }
+      },
+      "actual_posted_receipts": 1586,
+      "actual_unchanged_retry_receipts": 1586,
+      "audit_script": {
+        "bytes": 16114,
+        "path": "/workspace/scratch/63219534715b/validation/audit_magnify_source_export.py",
+        "sha256": "b7a0623f53a4b76fa7eb3db7501784b9d678a473957fc23fc09d0665100e9c54"
+      },
+      "book_id": "f7c8d2e6020a94bf16b9eff17df6c168",
+      "external_origin_transfer_cents": 68200,
+      "extraction_receipt": {
+        "bytes": 1810,
+        "path": "/workspace/scratch/63219534715b/validation/runs/magnify-native-1/extraction.json",
+        "sha256": "facee14208f0add94c98d2aadad185697087630036232536a8c8ab17ca68402e"
+      },
+      "failures": [],
+      "first_post_sequence": 322,
+      "format": "fa-independent-source-export-audit-v1",
+      "last_post_sequence": 1907,
+      "method": "Independent standard-library Decimal parsing of every pinned original row literal, with exact source-line/marker hashes. No production source parser, normalization, computation-order, export comparator or monetary oracle was imported. Actual native post and retry receipts, six party inventories, all submitted intents and all 3172 CSV legs were compared field for field.",
+      "native_entries": 1586,
+      "native_evidence_documents_per_intent": 7,
+      "native_export": {
+        "bytes": 575346,
+        "path": "/workspace/scratch/63219534715b/validation/runs/magnify-native-1/gl.csv",
+        "sha256": "c8723124874114946e47dcf38defdea8fe1a4cc94abb005c79a386d246905cd4"
+      },
+      "native_intents_checked": 1586,
+      "native_legs": 3172,
+      "native_report": null,
+      "native_source_party_tags": 1586,
+      "paired_transfer_literal_available_cents": 281662700,
+      "paired_transfer_source_credit_cents": 281666100,
+      "paired_transfer_source_gap_cents": 3400,
+      "positive_withdrawal_cents": 124949700,
+      "positive_withdrawal_corrections": 43,
+      "printed_zero_cash_observations": 6,
+      "recorded_utc": "2026-11-03T09:00:09.169750+00:00",
+      "scope": "Read-only artifact audit; no native command or book access. Source withdrawals retain their printed signs. Stars become zero principal only under the exact 1FN037 footnote4 premise. Printed balance discrepancies and source-credited transfers remain separate facts; no rounding tolerance, inferred refund, legal transfer-credit conclusion or balancing plug. CSV entries are Original analysis posts, so migrated_from remains absent.",
+      "source_accounts": 6,
+      "source_line_hashes_checked": 2364,
+      "source_metadata_file": {
+        "bytes": 24684,
+        "path": "/workspace/scratch/63219534715b/validation/runs/magnify-native-1/source.json",
+        "sha256": "7350a15658dfc63da0386f8b17ca19acc09c454938df5abf94ca78e96e89fc80"
+      },
+      "source_observations_file": {
+        "bytes": 857019,
+        "path": "/workspace/scratch/63219534715b/validation/runs/magnify-native-1/observations.json",
+        "sha256": "bee6f1260d87f54bb059d5881cca8ce7ee3d4c0d9c8de01499216643a58ef256"
+      },
+      "source_pdf": {
+        "bytes": 28947445,
+        "path": "/workspace/scratch/63219534715b/validation/runs/magnify-native-1/source.pdf",
+        "sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec"
+      },
+      "source_rows": 2364,
+      "source_rows_file": {
+        "bytes": 522085,
+        "path": "/workspace/scratch/63219534715b/validation/runs/magnify-native-1/rows.csv",
+        "sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697"
+      },
+      "starred_exclusions": 717,
+      "starred_reported_amount_cents": -68275700,
+      "status": "PASS",
+      "transfer_oracle_observations": 58,
+      "untagged_counterparts": 1586,
+      "zero_principal_observations": 778,
+      "zero_principal_transfer_observations": 55
+    }
+  },
+  "independent_verification": {
+    "ads_extract": {
+      "check": "ads_extract",
+      "detail": {
+        "account_scope": null,
+        "chart_rows": 8,
+        "dimension_coverage": "complete_native_leg_identities",
+        "dimension_rows": 3172,
+        "effective_through": "2008-12-03",
+        "entries": 1586,
+        "known_at_seq": 2186,
+        "rows": 3172,
+        "tb_rows": 8,
+        "units": [
+          {
+            "code": "USD",
+            "unit_id": 0
+          }
+        ]
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "completeness"
+    },
+    "bundle": {
+      "check": "bundle",
+      "detail": {
+        "balances": 8,
+        "book_id": "f7c8d2e6020a94bf16b9eff17df6c168",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "d464490848c7aeda5e97fc0d6066a5e67ebc92ee08f08c606682e25a64b5dc42",
+        "checkpoint_oid": "07c655bd044e8e21c264768a2727f1a1103fa7af4e624a87f9831773d82d7a6e",
+        "completeness": "seq_range_complete",
+        "documents": 11102,
+        "entries": 1893,
+        "format": "1.0",
+        "inline": 0,
+        "leaf_count": 1907,
+        "scope": "prefix",
+        "through_seq": 2186
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "format"
+    },
+    "check_count": 14903,
+    "check_counts": [
+      {
+        "check": "ads_extract",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "closure",
+        "count": 1893,
+        "result": "pass"
+      },
+      {
+        "check": "completeness",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "entries",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "manifest",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "public_commitment",
+        "count": 11102,
+        "result": "pass"
+      },
+      {
+        "check": "recomputation",
+        "count": 8,
+        "result": "pass"
+      },
+      {
+        "check": "record",
+        "count": 1893,
+        "result": "pass"
+      }
+    ],
+    "command": "ads",
+    "error": null,
+    "exit_code": 0,
+    "failed_checks": [],
+    "tool": "fa-verify",
+    "v": 1,
+    "verdict": "verified"
+  },
+  "ledger_certificates": {
+    "1FN024": {
+      "compared_native_lines": 327,
+      "known_at": 1907,
+      "oid": "6190a8efb6dba4b0480b057e9bed9a3b8890c10b59c4860a7082f30e8a68b00c",
+      "output_digest": "ef48d186501de12061f79bb4c227cbbe5356430720c6fb8fe4bae9ec0959074c"
+    },
+    "1FN025": {
+      "compared_native_lines": 45,
+      "known_at": 1909,
+      "oid": "c7585ac9d36b2e0cd44d992d636007b8e32cb27796383901189339f152ce1fe0",
+      "output_digest": "6579a5b541ea5389a12e92124a2144b217e4e76013fd99ca83f1cb21f27f48ea"
+    },
+    "1FN037": {
+      "compared_native_lines": 1179,
+      "known_at": 1908,
+      "oid": "73327fc387eff6aefbaf8c1209e99a7f2bf10209f6bdc64aee07627f02526515",
+      "output_digest": "49e6f913a90214861bd58a30507d26059fe2a831a9f4e7c7de673890a766f0ac"
+    },
+    "1FN073": {
+      "compared_native_lines": 6,
+      "known_at": 1910,
+      "oid": "d7f5711e48c15deef84d3f505602a774c8b73d71fa6eb37159ebf27150ff80dd",
+      "output_digest": "a634d996d6feb07eea3fce6495556212cd5b8046c73ec9eab428391b7ece38ba"
+    },
+    "1FN097": {
+      "compared_native_lines": 4,
+      "known_at": 1911,
+      "oid": "2722afd0f811d6c2b34294d82809140f78866204e914fa24a98d1a16b959a3ef",
+      "output_digest": "2fba597d9c9ccada3a07ce260b41778f4a916c9cc174e411ef1bdbf949cf4935"
+    },
+    "1FR051": {
+      "compared_native_lines": 25,
+      "known_at": 1912,
+      "oid": "89dc01f90cb4daec7846350182c7d00e3f06ad7921299811bad2c42d7078a30a",
+      "output_digest": "856c4dfdadb6482f5ba5cfcd23c4a53d3f58e73f8bed160f2963d689a1b0b3ca"
+    }
+  },
+  "max_child_rss_kib": 270016,
+  "native_annual_control_count": 26,
+  "native_annual_trial_balances": [
+    {
+      "at_date": "1983-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": -312428800,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": 0,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 312428800,
+        "BLMIS-TRANSFER": 0
+      }
+    },
+    {
+      "at_date": "1984-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": -309093400,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": 0,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 309093400,
+        "BLMIS-TRANSFER": 0
+      }
+    },
+    {
+      "at_date": "1985-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": -306317100,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": 0,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 306248900,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1986-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": -304316900,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": 0,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 304248700,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1987-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": -300053700,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": 0,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 299985500,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1988-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": -283184900,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": 0,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 283116700,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1989-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 5364500,
+        "BLMIS-1FN025": 0,
+        "BLMIS-1FN037": -247617900,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 242185200,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1990-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 27609700,
+        "BLMIS-1FN025": 705000,
+        "BLMIS-1FN037": -190529800,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 162146900,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1991-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 30934500,
+        "BLMIS-1FN025": 5390200,
+        "BLMIS-1FN037": -117821200,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": 81428300,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1992-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 36021200,
+        "BLMIS-1FN025": 50507400,
+        "BLMIS-1FN037": 68330900,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -154927700,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1993-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 36021200,
+        "BLMIS-1FN025": 69057400,
+        "BLMIS-1FN037": 194783300,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -299930100,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1994-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 56021200,
+        "BLMIS-1FN025": 69057400,
+        "BLMIS-1FN037": 449398700,
+        "BLMIS-1FN073": 0,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -574545500,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1995-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 83841900,
+        "BLMIS-1FN025": 69582200,
+        "BLMIS-1FN037": 649593500,
+        "BLMIS-1FN073": -99998500,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -703087300,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1996-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 148841900,
+        "BLMIS-1FN025": 129582200,
+        "BLMIS-1FN037": 868893400,
+        "BLMIS-1FN073": -89810400,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -1057575300,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1997-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 188841900,
+        "BLMIS-1FN025": 144582200,
+        "BLMIS-1FN037": 1133155100,
+        "BLMIS-1FN073": -96892000,
+        "BLMIS-1FN097": 0,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -1369755400,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1998-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 298841900,
+        "BLMIS-1FN025": 144582200,
+        "BLMIS-1FN037": 1600507200,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 18179000,
+        "BLMIS-1FR051": 0,
+        "BLMIS-CASH": -1915288200,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "1999-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 378841900,
+        "BLMIS-1FN025": 144582200,
+        "BLMIS-1FN037": 2263161500,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 37000000,
+        "BLMIS-CASH": -2708942500,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2000-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 410841900,
+        "BLMIS-1FN025": 144582200,
+        "BLMIS-1FN037": 3070245300,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 103001900,
+        "BLMIS-CASH": -3614028200,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2001-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 435841900,
+        "BLMIS-1FN025": 144582200,
+        "BLMIS-1FN037": 3674130300,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 293001900,
+        "BLMIS-CASH": -4432913200,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2002-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 483341900,
+        "BLMIS-1FN025": 459582200,
+        "BLMIS-1FN037": 4609316900,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 643001900,
+        "BLMIS-CASH": -6080599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2003-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 553341900,
+        "BLMIS-1FN025": 459582200,
+        "BLMIS-1FN037": 6109316900,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 743001900,
+        "BLMIS-CASH": -7750599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2004-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 588341900,
+        "BLMIS-1FN025": 474582200,
+        "BLMIS-1FN037": 7494316900,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 743001900,
+        "BLMIS-CASH": -9185599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2005-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 623341900,
+        "BLMIS-1FN025": 474582200,
+        "BLMIS-1FN037": 8662316900,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 763001900,
+        "BLMIS-CASH": -10408599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2006-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 658341900,
+        "BLMIS-1FN025": 474582200,
+        "BLMIS-1FN037": 10057316900,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 863001900,
+        "BLMIS-CASH": -11938599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2007-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 693341900,
+        "BLMIS-1FN025": 474582200,
+        "BLMIS-1FN037": 11247316900,
+        "BLMIS-1FN073": -146890300,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 1023001900,
+        "BLMIS-CASH": -13323599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    },
+    {
+      "at_date": "2008-12-31",
+      "native_trial_balance_cents": {
+        "BLMIS-1FN024": 728341900,
+        "BLMIS-1FN025": 474582200,
+        "BLMIS-1FN037": 12367316900,
+        "BLMIS-1FN073": 103109700,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 1123001900,
+        "BLMIS-CASH": -14828599800,
+        "BLMIS-TRANSFER": 68200
+      }
+    }
+  ],
+  "native_binary_provenance": {
+    "artifact_id": 13210366143,
+    "artifact_sha256": "a3946ad20f1a0891c025fb3e071e8a03dc390ed8b13da2c5a49b6fca069aa7f0",
+    "cargo_lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "repository": "Dicklesworthstone/franken_accounting",
+    "rust_sources_and_manifests_match_validated_checkout": true,
+    "scope": "Native binaries compiled at the identified Rust source commit; the seven executed case-helper files are identified independently by their frozen hashes and helper commit.",
+    "source_commit": "88286f8c41f3943fde51e76334b33db758422c95",
+    "workflow_run_id": 41588158231,
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231"
+  },
+  "native_entries": 1586,
+  "native_legs": 3172,
+  "observed_process_exit": 0,
+  "original_document_readback": {
+    "book": "f7c8d2e6020a94bf16b9eff17df6c168",
+    "bytes": 28947445,
+    "coordinate": {
+      "branch": "trunk",
+      "effective": "all",
+      "known_at": 309,
+      "time_evidence": null
+    },
+    "doc_commit": "bb4fe2409a3483f6e47517b63107990631cf5295879c9229d5b57deca6c118e2",
+    "format": "fa-native-document-readback-v1",
+    "grade": "AgentUpload",
+    "kind": "Other",
+    "mime": "application/pdf",
+    "oid": "38c71ab818177b27c2870eb280b38edce6ff1abeaf8f7fb0ab3ff2b989b6263f",
+    "read_protocol": "document read --out in a separate fa CLI process; exact file and robot bytes",
+    "recovered": "original-readback.pdf",
+    "recovered_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+    "robot_bytes_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+    "source": "source.pdf",
+    "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+    "source_unchanged": true,
+    "view": "full"
+  },
+  "principal_analysis": {
+    "declared_transfer_effect_cents": {
+      "1FN024": -281597900,
+      "1FN025": 0,
+      "1FN037": 281666100,
+      "1FN073": 0,
+      "1FN097": 0,
+      "1FR051": 0
+    },
+    "historical_missing_role_result_unchanged": true
+  },
+  "principal_analysis_positions": {
+    "complete": {
+      "includes_declared_transfers": true,
+      "known_at": 1914,
+      "population": 1586,
+      "principal_rule": "posted_principal_transfer_v1",
+      "procedure": "ponzi.net_investment",
+      "source_accounts": {
+        "1FN024": {
+          "cash_in_cents": 424066600,
+          "cash_out_cents": 870810600,
+          "cohort": 1,
+          "first_inflow": "1983-07-11",
+          "gap_from_printed_principal_cents": -4200,
+          "native_finding_expected": true,
+          "native_principal_cents": -728341900,
+          "printed_closing_principal_cents": -728337700,
+          "transfer_in_cents": 68200,
+          "transfer_out_cents": 281666100
+        },
+        "1FN025": {
+          "cash_in_cents": 3165000,
+          "cash_out_cents": 477747200,
+          "cohort": 40,
+          "first_inflow": "1993-03-02",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -474582200,
+          "printed_closing_principal_cents": -474582200,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FN037": {
+          "cash_in_cents": 335000,
+          "cash_out_cents": 12649318000,
+          "cohort": 24,
+          "first_inflow": "1989-03-17",
+          "gap_from_printed_principal_cents": 1600,
+          "native_finding_expected": true,
+          "native_principal_cents": -12367316900,
+          "printed_closing_principal_cents": -12367318500,
+          "transfer_in_cents": 281666100,
+          "transfer_out_cents": 0
+        },
+        "1FN073": {
+          "cash_in_cents": 169996800,
+          "cash_out_cents": 273106500,
+          "cohort": 48,
+          "first_inflow": "1995-04-05",
+          "gap_from_printed_principal_cents": 100,
+          "native_finding_expected": true,
+          "native_principal_cents": -103109700,
+          "printed_closing_principal_cents": -103109800,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FN097": {
+          "cash_in_cents": 9998000,
+          "cash_out_cents": 42177000,
+          "cohort": 61,
+          "first_inflow": "1998-04-23",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -32179000,
+          "printed_closing_principal_cents": -32179000,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FR051": {
+          "cash_in_cents": 60998100,
+          "cash_out_cents": 1184000000,
+          "cohort": 68,
+          "first_inflow": "2000-01-26",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -1123001900,
+          "printed_closing_principal_cents": -1123001900,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        }
+      },
+      "version": 5
+    },
+    "without_transfer_role": {
+      "includes_declared_transfers": false,
+      "known_at": 1913,
+      "population": 1583,
+      "principal_rule": "posted_principal_transfer_v1",
+      "procedure": "ponzi.net_investment",
+      "source_accounts": {
+        "1FN024": {
+          "cash_in_cents": 424066600,
+          "cash_out_cents": 870810600,
+          "cohort": 1,
+          "first_inflow": "1983-07-11",
+          "gap_from_printed_principal_cents": 281593700,
+          "native_finding_expected": true,
+          "native_principal_cents": -446744000,
+          "printed_closing_principal_cents": -728337700,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FN025": {
+          "cash_in_cents": 3165000,
+          "cash_out_cents": 477747200,
+          "cohort": 40,
+          "first_inflow": "1993-03-02",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -474582200,
+          "printed_closing_principal_cents": -474582200,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FN037": {
+          "cash_in_cents": 335000,
+          "cash_out_cents": 12649318000,
+          "cohort": 34,
+          "first_inflow": "1991-10-01",
+          "gap_from_printed_principal_cents": -281664500,
+          "native_finding_expected": true,
+          "native_principal_cents": -12648983000,
+          "printed_closing_principal_cents": -12367318500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FN073": {
+          "cash_in_cents": 169996800,
+          "cash_out_cents": 273106500,
+          "cohort": 48,
+          "first_inflow": "1995-04-05",
+          "gap_from_printed_principal_cents": 100,
+          "native_finding_expected": true,
+          "native_principal_cents": -103109700,
+          "printed_closing_principal_cents": -103109800,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FN097": {
+          "cash_in_cents": 9998000,
+          "cash_out_cents": 42177000,
+          "cohort": 61,
+          "first_inflow": "1998-04-23",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -32179000,
+          "printed_closing_principal_cents": -32179000,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1FR051": {
+          "cash_in_cents": 60998100,
+          "cash_out_cents": 1184000000,
+          "cohort": 68,
+          "first_inflow": "2000-01-26",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -1123001900,
+          "printed_closing_principal_cents": -1123001900,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        }
+      },
+      "version": 5
+    }
+  },
+  "principal_scope": "Analysis of the trustee's published principal inputs and explicit withholding-refund exclusion; no dated refund reconstruction or legal net-equity conclusion. All 58 transfer credits remain source oracle inputs.",
+  "printed_annual_control_count": 91,
+  "printed_annual_control_counts_by_account": {
+    "1FN024": 26,
+    "1FN025": 19,
+    "1FN037": 20,
+    "1FN073": 14,
+    "1FN097": 2,
+    "1FR051": 10
+  },
+  "readback_helper_identity_capture": {
+    "capture_scope": "Supplemental identity captured while the frozen Magnify native workload runs; this helper was not among the initial seven-module snapshot.",
+    "captured_utc": "2026-11-03T07:54:49.896753+00:00"
+  },
+  "reproduce": [
+    "python3",
+    "-B",
+    "scripts/blmis_magnify_replay.py",
+    "run",
+    "--out",
+    "artifacts/magnify-native",
+    "--fa",
+    "target/debug/fa",
+    "--fa-verify",
+    "target/debug/fa-verify"
+  ],
+  "result_scope": "PASS means exact agreement with independently folded published movements, with every printed discrepancy retained. It does not assert that printed source balances are exact.",
+  "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+  "scope": "Every dated row of the six Magnify Exhibit B accounts: 2,364 observations. The pinned publisher-hosted affidavit contains an attached copy of the complaint's Exhibit B; original and enclosing docket identities are retained. These are trustee computations in a complaint, not a complete BLMIS general ledger or court findings. All eleven/twelve printed columns, positive corrections, source zero cells, 717 starred tax observations and arithmetic differences survive. Transfer principal is an explicit oracle input, not independently reproduced net equity. Analysis counterparts and the zero-before-first-row baseline are declared constructions. No dated IRS refunds, missing description text, absent lookback columns or balancing adjustments are invented.",
+  "source_account_parties": {
+    "1FN024": {
+      "code": "BLMIS-1FN024",
+      "dimension": 12,
+      "value": "724c4a44d17403261c785c511c574a11",
+      "vid": "47ede3665298804be05f51a87aa441f6"
+    },
+    "1FN025": {
+      "code": "BLMIS-1FN025",
+      "dimension": 12,
+      "value": "2713644c8b7ac16edf5f5e52c941e4b4",
+      "vid": "80678f892373eb34c188433a3d9ea009"
+    },
+    "1FN037": {
+      "code": "BLMIS-1FN037",
+      "dimension": 12,
+      "value": "384bb97a13c81f7458d658b83f9600c4",
+      "vid": "81626eb3af8232d0ecee7688b3e579f7"
+    },
+    "1FN073": {
+      "code": "BLMIS-1FN073",
+      "dimension": 12,
+      "value": "256d9de54a215df8469ce04fa506c36f",
+      "vid": "b577c2e1ee51509ef5901dfec821e8a0"
+    },
+    "1FN097": {
+      "code": "BLMIS-1FN097",
+      "dimension": 12,
+      "value": "121fde46bcf73d79b81f17a0efbcef1a",
+      "vid": "db12ca871d3948950adc67477ddeb873"
+    },
+    "1FR051": {
+      "code": "BLMIS-1FR051",
+      "dimension": 12,
+      "value": "9603ffeafa9b9be74a0d14709d5ef922",
+      "vid": "cfaff684549bde71cfecfa3ea5058d53"
+    }
+  },
+  "source_accounts": 6,
+  "source_comparisons": {
+    "1FN024": {
+      "account": "1FN024",
+      "all_printed_balances_equal": false,
+      "closing_gap_cents": -4200,
+      "maximum_printed_gap_cents": 4200,
+      "native_closing_principal_cents": -728341900,
+      "native_lines": 327,
+      "native_matches_source_movements_exactly": true,
+      "printed_closing_principal_cents": -728337700,
+      "printed_rows_off": 330,
+      "source_rows": 342,
+      "starred_exclusions": 0,
+      "transfer_oracle_observations": 17,
+      "zero_principal_observations": 15
+    },
+    "1FN025": {
+      "account": "1FN025",
+      "all_printed_balances_equal": true,
+      "closing_gap_cents": 0,
+      "maximum_printed_gap_cents": 0,
+      "native_closing_principal_cents": -474582200,
+      "native_lines": 45,
+      "native_matches_source_movements_exactly": true,
+      "printed_closing_principal_cents": -474582200,
+      "printed_rows_off": 0,
+      "source_rows": 58,
+      "starred_exclusions": 0,
+      "transfer_oracle_observations": 13,
+      "zero_principal_observations": 13
+    },
+    "1FN037": {
+      "account": "1FN037",
+      "all_printed_balances_equal": false,
+      "closing_gap_cents": 1600,
+      "maximum_printed_gap_cents": 1800,
+      "native_closing_principal_cents": -12367316900,
+      "native_lines": 1179,
+      "native_matches_source_movements_exactly": true,
+      "printed_closing_principal_cents": -12367318500,
+      "printed_rows_off": 1920,
+      "source_rows": 1927,
+      "starred_exclusions": 717,
+      "transfer_oracle_observations": 26,
+      "zero_principal_observations": 748
+    },
+    "1FN073": {
+      "account": "1FN073",
+      "all_printed_balances_equal": false,
+      "closing_gap_cents": 100,
+      "maximum_printed_gap_cents": 100,
+      "native_closing_principal_cents": -103109700,
+      "native_lines": 6,
+      "native_matches_source_movements_exactly": true,
+      "printed_closing_principal_cents": -103109800,
+      "printed_rows_off": 2,
+      "source_rows": 6,
+      "starred_exclusions": 0,
+      "transfer_oracle_observations": 0,
+      "zero_principal_observations": 0
+    },
+    "1FN097": {
+      "account": "1FN097",
+      "all_printed_balances_equal": true,
+      "closing_gap_cents": 0,
+      "maximum_printed_gap_cents": 0,
+      "native_closing_principal_cents": -32179000,
+      "native_lines": 4,
+      "native_matches_source_movements_exactly": true,
+      "printed_closing_principal_cents": -32179000,
+      "printed_rows_off": 0,
+      "source_rows": 4,
+      "starred_exclusions": 0,
+      "transfer_oracle_observations": 0,
+      "zero_principal_observations": 0
+    },
+    "1FR051": {
+      "account": "1FR051",
+      "all_printed_balances_equal": true,
+      "closing_gap_cents": 0,
+      "maximum_printed_gap_cents": 0,
+      "native_closing_principal_cents": -1123001900,
+      "native_lines": 25,
+      "native_matches_source_movements_exactly": true,
+      "printed_closing_principal_cents": -1123001900,
+      "printed_rows_off": 0,
+      "source_rows": 27,
+      "starred_exclusions": 0,
+      "transfer_oracle_observations": 2,
+      "zero_principal_observations": 2
+    }
+  },
+  "source_extraction": {
+    "command": [
+      "pdftotext",
+      "-layout",
+      "-f",
+      "112",
+      "-l",
+      "162",
+      "-",
+      "-"
+    ],
+    "format": "fa-blmis-magnify-pdf-extraction-v1",
+    "mode": "original_pdf_extracted_this_run",
+    "pdf_pages": [
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126,
+      127,
+      128,
+      129,
+      130,
+      131,
+      132,
+      133,
+      134,
+      135,
+      136,
+      137,
+      138,
+      139,
+      140,
+      141,
+      142,
+      143,
+      144,
+      145,
+      146,
+      147,
+      148,
+      149,
+      150,
+      151,
+      152,
+      153,
+      154,
+      155,
+      156,
+      157,
+      158,
+      159,
+      160,
+      161,
+      162
+    ],
+    "retained": {
+      "extracted-source/layout.txt": {
+        "bytes": 721606,
+        "sha256": "2528f349bc87df810e36b54f61179cd78118720d5ec21140ebb498d7052544ec"
+      },
+      "extracted-source/rows.csv": {
+        "bytes": 522085,
+        "sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697"
+      },
+      "extracted-source/source.json": {
+        "bytes": 24684,
+        "sha256": "7350a15658dfc63da0386f8b17ca19acc09c454938df5abf94ca78e96e89fc80"
+      },
+      "source.pdf": {
+        "bytes": 28947445,
+        "sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec"
+      }
+    },
+    "reviewed_metadata_sha256": "7350a15658dfc63da0386f8b17ca19acc09c454938df5abf94ca78e96e89fc80",
+    "reviewed_rows_sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697",
+    "source_rows": 2364,
+    "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+    "source_url": "https://www.madofftrustee.com/document/dockets/magnify_affidavit_opposingcounsel_10-05279_docket150.pdf",
+    "stdin": "The complete verified original PDF bytes, not an excerpt or reconstructed PDF."
+  },
+  "source_rows": 2364,
+  "source_rows_sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697",
+  "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+  "started_utc": "2026-11-03T07:53:05.495703+00:00",
+  "status": "PASS",
+  "tamper_refusals": {
+    "amount": {
+      "mutation": {
+        "delta_cents": 1,
+        "line": 2,
+        "new_amount": "3136150.01",
+        "old_amount": "3136150.00"
+      },
+      "verification": {
+        "ads_extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-12-03",
+            "entries": 1585,
+            "known_at_seq": 2186,
+            "rows": 3170,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 0f374cbbcba52a6feb98f25919f7c6a5 (recorded at 322) is no proven entry selected through 2008-12-03; a proven entry recorded at 322 (effective 1983-07-11, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 8,
+            "book_id": "f7c8d2e6020a94bf16b9eff17df6c168",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "d464490848c7aeda5e97fc0d6066a5e67ebc92ee08f08c606682e25a64b5dc42",
+            "checkpoint_oid": "07c655bd044e8e21c264768a2727f1a1103fa7af4e624a87f9831773d82d7a6e",
+            "completeness": "seq_range_complete",
+            "documents": 11102,
+            "entries": 1893,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 1907,
+            "scope": "prefix",
+            "through_seq": 2186
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_count": 14903,
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 1893,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 11102,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 8,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 1893,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-12-03",
+              "entries": 1585,
+              "known_at_seq": 2186,
+              "rows": 3170,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 0f374cbbcba52a6feb98f25919f7c6a5 (recorded at 322) is no proven entry selected through 2008-12-03; a proven entry recorded at 322 (effective 1983-07-11, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "failed"
+      }
+    },
+    "party": {
+      "mutation": {
+        "dimension": 12,
+        "entry_id": "0f374cbbcba52a6feb98f25919f7c6a5",
+        "leg": 1,
+        "line": 2,
+        "new_value": "724c4a44d17403261c785c511c574a10",
+        "old_value": "724c4a44d17403261c785c511c574a11"
+      },
+      "verification": {
+        "ads_extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-12-03",
+            "entries": 1585,
+            "known_at_seq": 2186,
+            "rows": 3170,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 0f374cbbcba52a6feb98f25919f7c6a5 (recorded at 322) is no proven entry selected through 2008-12-03; a proven entry recorded at 322 (effective 1983-07-11, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 8,
+            "book_id": "f7c8d2e6020a94bf16b9eff17df6c168",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "d464490848c7aeda5e97fc0d6066a5e67ebc92ee08f08c606682e25a64b5dc42",
+            "checkpoint_oid": "07c655bd044e8e21c264768a2727f1a1103fa7af4e624a87f9831773d82d7a6e",
+            "completeness": "seq_range_complete",
+            "documents": 11102,
+            "entries": 1893,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 1907,
+            "scope": "prefix",
+            "through_seq": 2186
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_count": 14903,
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 1893,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 11102,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 8,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 1893,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-12-03",
+              "entries": 1585,
+              "known_at_seq": 2186,
+              "rows": 3170,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 0f374cbbcba52a6feb98f25919f7c6a5 (recorded at 322) is no proven entry selected through 2008-12-03; a proven entry recorded at 322 (effective 1983-07-11, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "failed"
+      }
+    }
+  },
+  "transfer_scope": {
+    "external_origin": {
+      "origin_history_present": false,
+      "origin_source_account": "105102",
+      "source_credited_principal_cents": 68200,
+      "source_row_id": "SRC-BLM-006:1FN024:p112:l58"
+    },
+    "independent_credit_reproduction": false,
+    "paired_source_credit": {
+      "date": "1989-03-17",
+      "incoming_row_id": "SRC-BLM-006:1FN037:p122:l18",
+      "native_origin_minus_printed_cents": -3400,
+      "native_origin_principal_after_cents": -3400,
+      "native_origin_principal_before_cents": 281662700,
+      "outgoing_row_id": "SRC-BLM-006:1FN024:p116:l43",
+      "printed_origin_principal_after_cents": 0,
+      "reported_amount_cents": 300000000,
+      "source_credit_minus_native_available_cents": 3400,
+      "source_credited_principal_cents": 281666100
+    },
+    "scope": "Every credited amount is an oracle input from the trustee's table. Native source-fold agreement does not establish legal transfer credit; the paired credit exceeds the literal-origin principal by $34, and the $682 external origin lacks its ledger.",
+    "transfer_oracle_observations": 58,
+    "zero_principal_transfer_observations": 55
+  },
+  "trust_scope": "Caller-trusted key of a fresh local analysis book; no court or trustee signing-key claim",
+  "verification_scope": "Actual complete native case execution, source comparisons and standalone ADS proofs. The compact summary hashes full artifacts; it is not a replacement for the signed proof bundle, a whole-workspace test result or closure of separate case-harness requirements.",
+  "verified_register_period_count": 272,
+  "verified_register_periods": [
+    "FY1983-P07",
+    "FY1983-P09",
+    "FY1983-P12",
+    "FY1984-P03",
+    "FY1984-P06",
+    "FY1984-P09",
+    "FY1984-P10",
+    "FY1984-P12",
+    "FY1985-P01",
+    "FY1985-P03",
+    "FY1985-P04",
+    "FY1985-P06",
+    "FY1985-P07",
+    "FY1985-P08",
+    "FY1985-P09",
+    "FY1985-P10",
+    "FY1985-P11",
+    "FY1985-P12",
+    "FY1986-P01",
+    "FY1986-P02",
+    "FY1986-P03",
+    "FY1986-P04",
+    "FY1986-P05",
+    "FY1986-P06",
+    "FY1986-P07",
+    "FY1986-P08",
+    "FY1986-P09",
+    "FY1986-P10",
+    "FY1986-P11",
+    "FY1986-P12",
+    "FY1987-P01",
+    "FY1987-P02",
+    "FY1987-P03",
+    "FY1987-P04",
+    "FY1987-P05",
+    "FY1987-P06",
+    "FY1987-P07",
+    "FY1987-P08",
+    "FY1987-P09",
+    "FY1987-P10",
+    "FY1987-P11",
+    "FY1987-P12",
+    "FY1988-P01",
+    "FY1988-P02",
+    "FY1988-P03",
+    "FY1988-P04",
+    "FY1988-P05",
+    "FY1988-P06",
+    "FY1988-P08",
+    "FY1988-P09",
+    "FY1988-P10",
+    "FY1988-P11",
+    "FY1988-P12",
+    "FY1989-P01",
+    "FY1989-P02",
+    "FY1989-P03",
+    "FY1989-P04",
+    "FY1989-P05",
+    "FY1989-P06",
+    "FY1989-P07",
+    "FY1989-P08",
+    "FY1989-P09",
+    "FY1989-P10",
+    "FY1989-P11",
+    "FY1989-P12",
+    "FY1990-P01",
+    "FY1990-P02",
+    "FY1990-P03",
+    "FY1990-P04",
+    "FY1990-P05",
+    "FY1990-P06",
+    "FY1990-P07",
+    "FY1990-P08",
+    "FY1990-P09",
+    "FY1990-P10",
+    "FY1990-P11",
+    "FY1990-P12",
+    "FY1991-P01",
+    "FY1991-P02",
+    "FY1991-P03",
+    "FY1991-P04",
+    "FY1991-P05",
+    "FY1991-P06",
+    "FY1991-P07",
+    "FY1991-P08",
+    "FY1991-P09",
+    "FY1991-P10",
+    "FY1991-P11",
+    "FY1991-P12",
+    "FY1992-P01",
+    "FY1992-P02",
+    "FY1992-P03",
+    "FY1992-P04",
+    "FY1992-P05",
+    "FY1992-P06",
+    "FY1992-P07",
+    "FY1992-P08",
+    "FY1992-P09",
+    "FY1992-P10",
+    "FY1992-P11",
+    "FY1992-P12",
+    "FY1993-P01",
+    "FY1993-P02",
+    "FY1993-P03",
+    "FY1993-P04",
+    "FY1993-P05",
+    "FY1993-P06",
+    "FY1993-P07",
+    "FY1993-P08",
+    "FY1993-P09",
+    "FY1993-P10",
+    "FY1993-P11",
+    "FY1993-P12",
+    "FY1994-P01",
+    "FY1994-P02",
+    "FY1994-P03",
+    "FY1994-P04",
+    "FY1994-P05",
+    "FY1994-P06",
+    "FY1994-P07",
+    "FY1994-P08",
+    "FY1994-P09",
+    "FY1994-P10",
+    "FY1994-P11",
+    "FY1994-P12",
+    "FY1995-P01",
+    "FY1995-P02",
+    "FY1995-P03",
+    "FY1995-P04",
+    "FY1995-P05",
+    "FY1995-P06",
+    "FY1995-P07",
+    "FY1995-P08",
+    "FY1995-P09",
+    "FY1995-P10",
+    "FY1995-P11",
+    "FY1995-P12",
+    "FY1996-P01",
+    "FY1996-P02",
+    "FY1996-P03",
+    "FY1996-P04",
+    "FY1996-P05",
+    "FY1996-P06",
+    "FY1996-P07",
+    "FY1996-P08",
+    "FY1996-P09",
+    "FY1996-P10",
+    "FY1996-P11",
+    "FY1996-P12",
+    "FY1997-P01",
+    "FY1997-P02",
+    "FY1997-P03",
+    "FY1997-P04",
+    "FY1997-P05",
+    "FY1997-P06",
+    "FY1997-P07",
+    "FY1997-P08",
+    "FY1997-P09",
+    "FY1997-P10",
+    "FY1997-P11",
+    "FY1997-P12",
+    "FY1998-P01",
+    "FY1998-P02",
+    "FY1998-P03",
+    "FY1998-P04",
+    "FY1998-P05",
+    "FY1998-P06",
+    "FY1998-P07",
+    "FY1998-P08",
+    "FY1998-P09",
+    "FY1998-P10",
+    "FY1998-P11",
+    "FY1998-P12",
+    "FY1999-P01",
+    "FY1999-P02",
+    "FY1999-P03",
+    "FY1999-P04",
+    "FY1999-P05",
+    "FY1999-P06",
+    "FY1999-P07",
+    "FY1999-P08",
+    "FY1999-P09",
+    "FY1999-P10",
+    "FY1999-P11",
+    "FY1999-P12",
+    "FY2000-P01",
+    "FY2000-P02",
+    "FY2000-P03",
+    "FY2000-P04",
+    "FY2000-P05",
+    "FY2000-P06",
+    "FY2000-P07",
+    "FY2000-P08",
+    "FY2000-P09",
+    "FY2000-P10",
+    "FY2000-P11",
+    "FY2000-P12",
+    "FY2001-P01",
+    "FY2001-P02",
+    "FY2001-P03",
+    "FY2001-P04",
+    "FY2001-P05",
+    "FY2001-P06",
+    "FY2001-P07",
+    "FY2001-P08",
+    "FY2001-P09",
+    "FY2001-P10",
+    "FY2001-P11",
+    "FY2001-P12",
+    "FY2002-P01",
+    "FY2002-P02",
+    "FY2002-P03",
+    "FY2002-P04",
+    "FY2002-P05",
+    "FY2002-P06",
+    "FY2002-P07",
+    "FY2002-P08",
+    "FY2002-P09",
+    "FY2002-P10",
+    "FY2002-P11",
+    "FY2003-P01",
+    "FY2003-P03",
+    "FY2003-P06",
+    "FY2003-P07",
+    "FY2003-P08",
+    "FY2003-P09",
+    "FY2003-P10",
+    "FY2003-P12",
+    "FY2004-P01",
+    "FY2004-P03",
+    "FY2004-P05",
+    "FY2004-P07",
+    "FY2004-P08",
+    "FY2004-P10",
+    "FY2004-P12",
+    "FY2005-P01",
+    "FY2005-P03",
+    "FY2005-P04",
+    "FY2005-P05",
+    "FY2005-P07",
+    "FY2005-P08",
+    "FY2005-P09",
+    "FY2005-P10",
+    "FY2005-P11",
+    "FY2005-P12",
+    "FY2006-P01",
+    "FY2006-P02",
+    "FY2006-P03",
+    "FY2006-P04",
+    "FY2006-P05",
+    "FY2006-P07",
+    "FY2006-P08",
+    "FY2006-P10",
+    "FY2006-P11",
+    "FY2006-P12",
+    "FY2007-P01",
+    "FY2007-P02",
+    "FY2007-P03",
+    "FY2007-P04",
+    "FY2007-P06",
+    "FY2007-P07",
+    "FY2007-P08",
+    "FY2007-P10",
+    "FY2007-P12",
+    "FY2008-P01",
+    "FY2008-P03",
+    "FY2008-P05",
+    "FY2008-P06",
+    "FY2008-P07",
+    "FY2008-P09",
+    "FY2008-P10",
+    "FY2008-P11"
+  ],
+  "wrapper_elapsed_seconds": 4230.464
+}

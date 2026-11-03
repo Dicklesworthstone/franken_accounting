@@ -174,11 +174,11 @@ to the book's owned external blob storage. See
 `a_document_past_the_inline_bound_lives_in_the_blob_store_and_every_read_verifies`
 in [`crates/fa/src/book/tests.rs`](../crates/fa/src/book/tests.rs).
 
-That code path supports retaining the complete original as one document; it is
-not a waiver or a claim that an excerpt is equivalent. Successful native intake
-of this particular PDF still requires an executed native run. Lossless gzip
-compression was investigated and still exceeds the inline threshold, so the
-source helper does not use it to disguise the document's size.
+The executed native workload below retained the complete original as one
+document and recovered every byte through a separate native read process.
+Lossless gzip compression was investigated and still exceeds the inline
+threshold, so the source helper does not use it to disguise the document's
+size.
 
 ## Reproduce the complete source package
 
@@ -273,11 +273,11 @@ controls, tampering refusals and exact normalized legs. Representative original
 pages were visually checked for the incomplete description, the twelve-column
 header, the tax footnote and the annotated eleven-column footer.
 
-These source results establish acquisition, extraction and preparation. They
-do not stand in for an executed native journal, certificate or outsider bundle
-verification. The native workload needs its own transcript and evidence. This
-work advances case-plan §9 and bead `fa-yugf.72` without claiming completion of
-that bead's separate case-harness and expectation-loader requirements.
+These source results establish acquisition, extraction and preparation. The
+separate executed native result below supplies the actual journal, certificate
+and outsider-bundle verification evidence. This work advances case-plan §9 and
+bead `fa-yugf.72` without claiming completion of that bead's separate
+case-harness and expectation-loader requirements.
 
 ## Execute the complete native workload
 
@@ -372,3 +372,84 @@ identities and are comparator tests, not native execution evidence:
 python3 -B -m unittest discover -s scripts/tests \
   -p 'test_blmis_magnify_replay.py' -v
 ```
+
+## Executed native result: November 3, 2026
+
+The complete workload **passed with an observed process exit of 0** after
+**4,105 native commands**. The driver measured **4,229.817 seconds**; the
+outer process wrapper measured **4,230.464 seconds**. The run retained its
+original checks and completed within the configured per-command time limits.
+These timings describe the recorded debug-binary, separate-CLI execution, not
+a production performance benchmark.
+
+A read-only source review identifies a further scaling opportunity:
+[`export.rs`](../crates/fa-cli/src/export.rs) constructs two full prefix bundles,
+and [`bundle.rs`](../crates/fa-notary/src/bundle.rs)'s `stubs` recomputes a
+document's chunk root for each citing entry. For this workload, that implies
+about **91.8 GB of repeated original-PDF hash input** across both constructions;
+this is an inference from source, not a measured disk-I/O count. File timestamps
+bound CSV publication through the completed ADS certificate at **279.837
+seconds**. That interval includes CSV verification and intervening work, so it
+is an upper bound rather than an isolated ADS-export benchmark. No optimization
+or verification shortcut was applied to the recorded run.
+
+The checked result is retained in
+[`evidence/blmis/magnify-native-2026-11-03.json`](../evidence/blmis/magnify-native-2026-11-03.json).
+It binds the complete native transcript, full report, source extraction,
+original and recovered PDFs, exports and signed proof files by byte count and
+SHA-256. It also records the observed wrapper exit, native binary provenance,
+seven executed helper hashes, six ledger certificate identities, all 26
+cumulative year-end balances and all 272 verified posting months.
+
+Every native principal balance agreed exactly with the independently folded
+movement columns. The source's printed discrepancies remained visible:
+
+| Account | Observations compared | Native entries | Native closing principal | Native minus printed |
+|---|---:|---:|---:|---:|
+| `1FN024` | 342 | 327 | −$7,283,419 | −$42 |
+| `1FN025` | 58 | 45 | −$4,745,822 | $0 |
+| `1FN037` | 1,927 | 1,179 | −$123,673,169 | +$16 |
+| `1FN073` | 6 | 6 | −$1,031,097 | +$1 |
+| `1FN097` | 4 | 4 | −$321,790 | $0 |
+| `1FR051` | 27 | 25 | −$11,230,019 | $0 |
+
+The transcript census independently confirmed **1,586 original posts and
+1,586 exact retries**, six certified ledgers and six exact certificate replays,
+six empty historical views, 26 annual trial balances, three principal-procedure
+calls, and 272 register advancement/verification pairs. The original document
+readback reproduced all **28,947,445 bytes** and the original SHA-256 from both
+the recovered file and the native robot payload.
+
+Both complete exports contained **3,172 exact source legs**, with 1,586 native
+party-tagged principal legs and 1,586 untagged counterparts. Independent
+`fa-verify` accepted the complete ADS bundle with **14,903 passing checks** and
+authenticated dimension identities on every exported leg. Separate one-cent
+amount and party-dimension mutations each produced the observed verifier exit
+**8**, while the untampered bundle produced exit **0**.
+
+A separate read-only artifact audit used standard-library `Decimal` directly
+on the retained raw literals and imported none of the production source parser,
+normalizer or export comparator. It independently checked all 2,364 source-line
+hashes, detached footnote markers, 717 starred exclusions, 778 zero-principal
+observations, 43 positive withdrawal corrections, actual posting/retry receipts,
+all submitted intents and all CSV fields and dimension identities. That audit
+also passed; its result and hash are included in the checked evidence. It ran
+after CSV publication and before the final native report, so its own scope is
+explicitly the source-to-CSV comparison; the completed native run supplies the
+separate final proof and tamper results.
+
+The native executables came from the verified GitHub Actions artifact for
+Rust source commit
+[`88286f8`](https://github.com/Dicklesworthstone/franken_accounting/commit/88286f8c41f3943fde51e76334b33db758422c95).
+The executed case helpers are bound to commit
+[`357e7b6`](https://github.com/Dicklesworthstone/franken_accounting/commit/357e7b6d9b4c8206ea1761c5e2258b5afa5c3a3c)
+and their individual hashes. The evidence identifies the workflow, artifact,
+lockfile and both executable hashes rather than attributing execution to an
+unverified build.
+
+`PASS` establishes the declared principal-history construction and its proof
+chain. It preserves the −$34 transfer-event remainder, the external $682 credit
+with no originating ledger, all 58 credited-transfer source inputs and the
+footnote-based withholding exclusions. It does not turn those premises or the
+printed balances into a legal net-equity determination, reconstruct dated IRS
+refunds, or claim a complete original BLMIS general ledger.

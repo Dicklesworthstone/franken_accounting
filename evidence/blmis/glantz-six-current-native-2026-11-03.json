@@ -1,0 +1,1260 @@
+{
+  "annual_control_count": 17,
+  "annual_control_range": [
+    "1992-12-31",
+    "2008-12-31"
+  ],
+  "bead_closure_claimed": false,
+  "checks": [
+    "pinned_original_pdf",
+    "native_source_intake_and_custody_receipts",
+    "complete_six_account_379_row_population",
+    "all_372_monetary_entries_and_744_legs",
+    "all_seven_zero_principal_observations_retained",
+    "every_native_running_balance_vs_source_and_explicit_gap",
+    "named_same_day_display_reorder",
+    "both_transfer_credits_from_certified_originating_principal",
+    "exact_certified_ledger_replay",
+    "immutable_preimport_prefix",
+    "every_annual_all_account_control",
+    "every_exact_retry_without_new_history",
+    "native_registers_equal_fold",
+    "native_projections",
+    "all_six_native_party_bindings",
+    "all_six_native_principal_outcomes",
+    "missing_transfer_role_control_for_all_accounts",
+    "historical_missing_role_result_unchanged",
+    "all_exported_money_and_party_dimensions_vs_original_source",
+    "signed_accumulator_checkpoint",
+    "independent_ads_verification_and_dimension_coverage",
+    "one_cent_tamper_rejected",
+    "party_only_tamper_rejected"
+  ],
+  "commands": 1268,
+  "document_custody": [
+    {
+      "doc_commit": "78aae3b38d160d65bafc9a86b2ac8166515fea2a54d50fb6cf7800913cad250d",
+      "file": "source.pdf",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 170,
+      "oid": "e723b632e466b27576b21933197e9105d4cf8ded1ba436f52eda7e78e9859ccb",
+      "review_attestation_vid": "d586d4e7afb19c0789069cd8b3c5d231",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 171,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "a1da514e0dca6c88f835299941e827c74ddf226237b8f4dc49aaed8b93ad64bf",
+      "file": "rows.csv",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 172,
+      "oid": "b64b67ab181c6baa182983a2f54dc0a60ec2eae640d274e009c272a174e62385",
+      "review_attestation_vid": "21e017fc2114664e68a2f5cac26f4268",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 173,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "7b4e66c219e9b48fdb355b05f1929ca4f77a87ded96c1dce6a1e6bd914fb23be",
+      "file": "source.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 174,
+      "oid": "e4730008ec57ebac086c5cddc8a442c9ff3778652980568cb6c21b26bb3a1881",
+      "review_attestation_vid": "834898dd3e8ea9ac91499cad4094d226",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 175,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "78c2e5a1a70c286edd65a99f7209c8a4a71f456f093082d8ee6789496db24779",
+      "file": "manifest.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 176,
+      "oid": "3297c3698f1c8eb631cc7a1587388af5013d90b55e61e27a3733a552ecc4fe96",
+      "review_attestation_vid": "2c195e0d9b178d0880756f9138a7a921",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 177,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "ed357fa86f34c6436cf97b3495dc1e1522b7af77395f5a3c8a14427771960d6b",
+      "file": "layout.txt",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 178,
+      "oid": "23d7445eda8a6d58ff894f657825b964347b2774b6a8b6dccecce5088700b0bf",
+      "review_attestation_vid": "9769485ff62208509e5e1ba4b0b13da7",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 179,
+      "self_sourced": true
+    },
+    {
+      "doc_commit": "42b29aeb5106e25ecc48aa93237cbe6fa19605de9115201d8303f7f854d16970",
+      "file": "extraction.json",
+      "intake_grade": "AgentUpload",
+      "intake_recorded_at": 180,
+      "oid": "9429ec60b7c72c2cf1727c4c9e732065789c9de264e6bfc6a946789b2009ebe5",
+      "review_attestation_vid": "049cb73e2cf00a435920ef9ce3d4880a",
+      "review_claim": "Reviewed",
+      "review_principal": "public-data-source-reviewer",
+      "review_recorded_at": 181,
+      "self_sourced": true
+    }
+  ],
+  "driver_sha256": "31cf64d790b6c7ee592f1f9db8bc533f2b551d202862e592ea1d7ba6f50dbe6a",
+  "elapsed_seconds": 424.207,
+  "exact_entry_retries": 372,
+  "executed_helpers": {
+    "scripts/blmis_replay.py": {
+      "bytes": 60202,
+      "sha256": "31cf64d790b6c7ee592f1f9db8bc533f2b551d202862e592ea1d7ba6f50dbe6a"
+    },
+    "scripts/blmis_source.py": {
+      "bytes": 79226,
+      "sha256": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 87487,
+      "sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 17814,
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80"
+    }
+  },
+  "export_source_oracles": [
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "csv-gl",
+      "parties": [
+        "BLMIS-1T0026",
+        "BLMIS-1ZA192",
+        "BLMIS-1ZB010",
+        "BLMIS-1ZB143",
+        "BLMIS-1ZR010",
+        "BLMIS-1ZR176"
+      ],
+      "rows": 744,
+      "tagged_rows": 372,
+      "untagged_rows": 372
+    },
+    {
+      "dimension_encoding": "fa-dimension-ids-v1",
+      "format": "ads",
+      "parties": [
+        "BLMIS-1T0026",
+        "BLMIS-1ZA192",
+        "BLMIS-1ZB010",
+        "BLMIS-1ZB143",
+        "BLMIS-1ZR010",
+        "BLMIS-1ZR176"
+      ],
+      "rows": 744,
+      "tagged_rows": 372,
+      "untagged_rows": 372
+    }
+  ],
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "ads-amount-tampered/GL_Detail.txt": {
+      "bytes": 127276,
+      "sha256": "20b6d521b33e2995dd3d108f64218c4468accdcf13f040e9f78013f140623f75"
+    },
+    "ads-party-tampered/GL_Detail.txt": {
+      "bytes": 127276,
+      "sha256": "4f1a355d00bb41ca8abf5da047ac665dd21011dedeb622e9c969067b9bf52657"
+    },
+    "ads/ADS_Coordinate_Certificate.toml": {
+      "bytes": 637,
+      "sha256": "23ed07ad08e5b2374407c1441e8225f2cfc3cffdec10482223bdfd0c9e1d7db1"
+    },
+    "ads/GL_Detail.txt": {
+      "bytes": 127276,
+      "sha256": "b96b1035f4978c3ca6f4e312d408d7cb1cea798449a86638382a4cf773b12c9f"
+    },
+    "chart.json": {
+      "bytes": 1228,
+      "sha256": "3f0f0d8c77b0ed4ba34403ec7ec91daaab8c4d8485d27436862ff501b502100a"
+    },
+    "commands.jsonl": {
+      "bytes": 3929857,
+      "sha256": "1771f536959b6e0d5b5653559dc63373de9b58f06f7c56691a90c785dc7ed831"
+    },
+    "extracted-source/layout.txt": {
+      "bytes": 88638,
+      "sha256": "258f770d126b7c8cb8a0216fcca98259ce75b3ae86806638f7a2711c8176033f"
+    },
+    "extraction.json": {
+      "bytes": 1457,
+      "sha256": "cabe8e4732f33a1748ce2ce570be067e28f10a6e5b1e6ce36065a7da6f522a51"
+    },
+    "gl.csv": {
+      "bytes": 128723,
+      "sha256": "e2fbf174039f99e580d7c938dc35fc1b7df07b7c0ed855d3c8938223b83facfa"
+    },
+    "legacy.csv": {
+      "bytes": 116709,
+      "sha256": "9e13c513b4715a229cfaa1550cb8a16c00cd0db9ef4fe94b28e9843cea78851b"
+    },
+    "manifest.json": {
+      "bytes": 174351,
+      "sha256": "0b658ec84d993fd3eb4b1dd5202829a14e6a9e2a7d765567750d46bda0246439"
+    },
+    "report.json": {
+      "bytes": 3482781,
+      "sha256": "d9b0862a2c0ea678352f19031787a1aada08fbfb7646e0da7a6552400e72b732"
+    },
+    "rows.csv": {
+      "bytes": 68500,
+      "sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf"
+    },
+    "source.json": {
+      "bytes": 10877,
+      "sha256": "8da252a4e2307fa1fe0bcef6ffa5073d13a028ac9b26340ff4541df6a9aa6882"
+    },
+    "source.pdf": {
+      "bytes": 389586,
+      "sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1"
+    }
+  },
+  "historical_prefix": {
+    "accounts": 6,
+    "empty_reports": 6,
+    "known_at": [
+      181
+    ]
+  },
+  "independent_verification": {
+    "bundle": {
+      "check": "bundle",
+      "detail": {
+        "balances": 8,
+        "book_id": "d02f1000a23b10149359d880fedb354c",
+        "branch_id": "00000000000000000000000000000000",
+        "bundle_digest": "fb159a82e74b26b3d4721b2059d6d8f068377daba5dc40bca161d26b5034efa9",
+        "checkpoint_oid": "a899c2bc6fcff2dc9884d033c0916a6e37af8aadd34f633ca3c97033b553f85d",
+        "completeness": "seq_range_complete",
+        "documents": 2232,
+        "entries": 541,
+        "format": "1.0",
+        "inline": 0,
+        "leaf_count": 553,
+        "scope": "prefix",
+        "through_seq": 703
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "format"
+    },
+    "check_counts": [
+      {
+        "check": "ads_extract",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "closure",
+        "count": 541,
+        "result": "pass"
+      },
+      {
+        "check": "completeness",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "entries",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "manifest",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "public_commitment",
+        "count": 2232,
+        "result": "pass"
+      },
+      {
+        "check": "recomputation",
+        "count": 8,
+        "result": "pass"
+      },
+      {
+        "check": "record",
+        "count": 541,
+        "result": "pass"
+      }
+    ],
+    "command": "ads",
+    "error": null,
+    "exit_code": 0,
+    "extract": {
+      "check": "ads_extract",
+      "detail": {
+        "account_scope": null,
+        "chart_rows": 8,
+        "dimension_coverage": "complete_native_leg_identities",
+        "dimension_rows": 744,
+        "effective_through": "2008-10-30",
+        "entries": 372,
+        "known_at_seq": 703,
+        "rows": 744,
+        "tb_rows": 8,
+        "units": [
+          {
+            "code": "USD",
+            "unit_id": 0
+          }
+        ]
+      },
+      "reason": null,
+      "result": "pass",
+      "scope": "completeness"
+    },
+    "failed_checks": [],
+    "tool": "fa-verify",
+    "verdict": "verified"
+  },
+  "ledger_certificates": {
+    "1T0026": {
+      "compared_native_lines": 112,
+      "known_at": 553,
+      "oid": "4975ee0167b277259e8f2fec8070a82bbf0d7cd3740e71a58af049b399b96459",
+      "output_digest": "164f0e9a1f3453a6a9d76232d0347e1de2e5c9ad5fa904ea092d7ded0711ff8c"
+    },
+    "1ZA192": {
+      "compared_native_lines": 74,
+      "known_at": 554,
+      "oid": "d43542df4ee1f40aadce461d69910d91794d4937aaffb5332c4688dcc2d0a968",
+      "output_digest": "c05459dd185690653994e2c126eeca6a7aef910cc6b5dc838cb6e8da5b303ffa"
+    },
+    "1ZB010": {
+      "compared_native_lines": 61,
+      "known_at": 555,
+      "oid": "1023439eb9fef10cb9493f789f6b5b7cf127eef2dd2cd56d78c374d779ae32c9",
+      "output_digest": "e341f4c49d1b9d4fa9a9883275571908e75c39fc513588215f4e5f582fca31c2"
+    },
+    "1ZB143": {
+      "compared_native_lines": 50,
+      "known_at": 556,
+      "oid": "8c831bb40d51a4e9adb5bffbddc12c4f8eb25ac6a4c645a23d9208a03a1066e8",
+      "output_digest": "cbdc286329e156c5e67761c793d7a10443414b766d0a730b765976c9e2c2d04f"
+    },
+    "1ZR010": {
+      "compared_native_lines": 57,
+      "known_at": 557,
+      "oid": "b80721868d6cc6c72098b0021c19a1254197a8781927b23c02f59aab7111fb65",
+      "output_digest": "ea7df8fd7ffb9b59e50ecd488f48b5351aabc6a756b4d7eddc16cfaa16297828"
+    },
+    "1ZR176": {
+      "compared_native_lines": 18,
+      "known_at": 558,
+      "oid": "df02379915a0344c6365f80e53de979fc6d89ca7c829978874cee702473b9e5c",
+      "output_digest": "61ce69a4b9f3f46e7680051b3acdbc2219505579b95111111a2eadefd3aeb775"
+    }
+  },
+  "maximum_child_rss_kib": 119976,
+  "native_build": {
+    "artifact_archive_sha256": "a3946ad20f1a0891c025fb3e071e8a03dc390ed8b13da2c5a49b6fca069aa7f0",
+    "artifact_id": 13210366143,
+    "artifact_name": "public-ledger-native-88286f8c41f3943fde51e76334b33db758422c95",
+    "binaries": {
+      "fa": {
+        "bytes": 235016792,
+        "sha256": "20200170403c9dd6a1d787796d1a63dc7578018598b23bdfc2f03c6fc50db788"
+      },
+      "fa_verify": {
+        "bytes": 20213496,
+        "sha256": "5f444d7a2fd39b970972487745cb3a95e79eb36f44d76119a2ad2c8cbe42d8ad"
+      }
+    },
+    "compiler": "nightly-2026-08-31",
+    "lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "provenance_files": {
+      "acquisition.json": {
+        "bytes": 275,
+        "sha256": "275fe55f4e36e3cf688b27ffb33a8f24bec361252219927dbfdd0ed7636ef914"
+      },
+      "artifacts/public-ledger/native-binaries.sha256": {
+        "bytes": 171,
+        "sha256": "e8bdd2fef43187aaab7f30dfd432f77e18a90d0e4c826505e48a95428399db35"
+      },
+      "artifacts/public-ledger/native-lock.txt": {
+        "bytes": 41,
+        "sha256": "7a2b745cd7da4313e68dde2e65a3acf91e0fbe39a3e42138c8e8df9b3f72c119"
+      },
+      "artifacts/public-ledger/native-source.txt": {
+        "bytes": 41,
+        "sha256": "d554906e7f9d40648cac3fc8055cd90fe0089ae57e2822951dff90d9b00a4494"
+      },
+      "github-workflow-evidence.json": {
+        "bytes": 5382,
+        "sha256": "3b7dd435f64e0658edc86ccabfabac7413a0b55738c5ad8b6a9665b8188c641d"
+      },
+      "verification.json": {
+        "bytes": 797,
+        "sha256": "1723cbe1b32467fa932fcbe10ed53fe1374b1c66e762422760af9934af5b9b69"
+      }
+    },
+    "rust_sources_and_manifests_match_execution_checkout": true,
+    "source_commit": "88286f8c41f3943fde51e76334b33db758422c95",
+    "workflow_job_id": 125763882661,
+    "workflow_result": "success",
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231"
+  },
+  "native_entries": 372,
+  "native_exit_counts": {
+    "0": 1266,
+    "8": 2
+  },
+  "native_legs": 744,
+  "native_program_counts": {
+    "fa": 1265,
+    "fa-verify": 3
+  },
+  "observed_process_exit": 0,
+  "principal_analysis": {
+    "complete": {
+      "includes_declared_transfers": true,
+      "known_at": 560,
+      "native_finding_count": 6,
+      "native_report_sha256": "f8c83359752230726ff4f0106c55e3d44adff17f0070baf641cdd8f1b5974deb",
+      "population": 372,
+      "principal_rule": "posted_principal_transfer_v1",
+      "procedure": "ponzi.net_investment",
+      "source_accounts": {
+        "1T0026": {
+          "cash_in_cents": 1820800000,
+          "cash_out_cents": 2796643100,
+          "cohort": 1,
+          "first_inflow": "1992-11-19",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -737416500,
+          "printed_closing_principal_cents": -737416500,
+          "transfer_in_cents": 259626600,
+          "transfer_out_cents": 21200000
+        },
+        "1ZA192": {
+          "cash_in_cents": 1043998300,
+          "cash_out_cents": 1692438000,
+          "cohort": 1,
+          "first_inflow": "1992-12-07",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -994703100,
+          "printed_closing_principal_cents": -994703100,
+          "transfer_in_cents": 53736600,
+          "transfer_out_cents": 400000000
+        },
+        "1ZB010": {
+          "cash_in_cents": 124500000,
+          "cash_out_cents": 155250000,
+          "cohort": 1,
+          "first_inflow": "1993-02-03",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -50750000,
+          "printed_closing_principal_cents": -50750000,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 20000000
+        },
+        "1ZB143": {
+          "cash_in_cents": 117853200,
+          "cash_out_cents": 2208822000,
+          "cohort": 4,
+          "first_inflow": "1993-10-20",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -1695468800,
+          "printed_closing_principal_cents": -1695468800,
+          "transfer_in_cents": 400000000,
+          "transfer_out_cents": 4500000
+        },
+        "1ZR010": {
+          "cash_in_cents": 597919300,
+          "cash_out_cents": 930717300,
+          "cohort": 1,
+          "first_inflow": "1992-12-02",
+          "gap_from_printed_principal_cents": 900,
+          "native_finding_expected": true,
+          "native_principal_cents": -332798000,
+          "printed_closing_principal_cents": -332798900,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZR176": {
+          "cash_in_cents": 205001400,
+          "cash_out_cents": 486797900,
+          "cohort": 1,
+          "first_inflow": "1993-02-04",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -281796500,
+          "printed_closing_principal_cents": -281796500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        }
+      },
+      "version": 5
+    },
+    "declared_transfer_effect_cents": {
+      "1T0026": 238426600,
+      "1ZA192": -346263400,
+      "1ZB010": -20000000,
+      "1ZB143": 395500000,
+      "1ZR010": 0,
+      "1ZR176": 0
+    },
+    "historical_missing_role_result_unchanged": true,
+    "without_transfer_role": {
+      "includes_declared_transfers": false,
+      "known_at": 559,
+      "native_finding_count": 6,
+      "native_report_sha256": "bb949be98cd63258aa301a347203fa598e4639b8f22d30e00c506b7e6da83ec1",
+      "population": 362,
+      "principal_rule": "posted_principal_transfer_v1",
+      "procedure": "ponzi.net_investment",
+      "source_accounts": {
+        "1T0026": {
+          "cash_in_cents": 1820800000,
+          "cash_out_cents": 2796643100,
+          "cohort": 1,
+          "first_inflow": "1992-11-19",
+          "gap_from_printed_principal_cents": -238426600,
+          "native_finding_expected": true,
+          "native_principal_cents": -975843100,
+          "printed_closing_principal_cents": -737416500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZA192": {
+          "cash_in_cents": 1043998300,
+          "cash_out_cents": 1692438000,
+          "cohort": 1,
+          "first_inflow": "1992-12-07",
+          "gap_from_printed_principal_cents": 346263400,
+          "native_finding_expected": true,
+          "native_principal_cents": -648439700,
+          "printed_closing_principal_cents": -994703100,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZB010": {
+          "cash_in_cents": 124500000,
+          "cash_out_cents": 155250000,
+          "cohort": 1,
+          "first_inflow": "1993-02-03",
+          "gap_from_printed_principal_cents": 20000000,
+          "native_finding_expected": true,
+          "native_principal_cents": -30750000,
+          "printed_closing_principal_cents": -50750000,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZB143": {
+          "cash_in_cents": 117853200,
+          "cash_out_cents": 2208822000,
+          "cohort": 25,
+          "first_inflow": "1999-01-11",
+          "gap_from_printed_principal_cents": -395500000,
+          "native_finding_expected": true,
+          "native_principal_cents": -2090968800,
+          "printed_closing_principal_cents": -1695468800,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZR010": {
+          "cash_in_cents": 597919300,
+          "cash_out_cents": 930717300,
+          "cohort": 1,
+          "first_inflow": "1992-12-02",
+          "gap_from_printed_principal_cents": 900,
+          "native_finding_expected": true,
+          "native_principal_cents": -332798000,
+          "printed_closing_principal_cents": -332798900,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        },
+        "1ZR176": {
+          "cash_in_cents": 205001400,
+          "cash_out_cents": 486797900,
+          "cohort": 1,
+          "first_inflow": "1993-02-04",
+          "gap_from_printed_principal_cents": 0,
+          "native_finding_expected": true,
+          "native_principal_cents": -281796500,
+          "printed_closing_principal_cents": -281796500,
+          "transfer_in_cents": 0,
+          "transfer_out_cents": 0
+        }
+      },
+      "version": 5
+    }
+  },
+  "prior_execution": {
+    "native_source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+    "scope": "The earlier complete six-account PASS remains unchanged. This fresh run verifies the current helper and the same pinned native artifact used by the seven-account migration, Square One and Magnify workloads.",
+    "summary": "evidence/blmis/glantz-six-native-2026-11-03.json"
+  },
+  "process_evidence": {
+    "glantz-six-current-native-1-result.json": {
+      "bytes": 1413,
+      "sha256": "cf44db90dcc182a086460e6090249daae0ba0f5c4f7142bad6915087db08a1c0"
+    },
+    "glantz-six-current-native-1-started.json": {
+      "bytes": 1291,
+      "sha256": "f65a1815412d740f0860000aa4415670382a0cb3fb2dbe2afd6ff82b4ebb9a37"
+    },
+    "glantz-six-current-native-1.log": {
+      "bytes": 108,
+      "sha256": "8e8b34b9a55fa5703808e1bdd0b672f848cecbc0832366a292ccb8fc2309cfd5"
+    }
+  },
+  "process_wall_seconds": 424.389,
+  "recomputed_transfer_pairs": [
+    {
+      "credited_principal_cents": 400000000,
+      "date": "1993-10-20",
+      "incoming_row_id": "SRC-BLM-001:1ZB143:p36:l16",
+      "native_originating_balance_row_id": "SRC-BLM-001:1ZA192:p31:l20",
+      "origin": "1ZA192",
+      "originating_certificate": "d43542df4ee1f40aadce461d69910d91794d4937aaffb5332c4688dcc2d0a968",
+      "originating_principal_cents": 485500000,
+      "outgoing_row_id": "SRC-BLM-001:1ZA192:p31:l21",
+      "recipient": "1ZB143",
+      "rule": "trustee_transfer_credit",
+      "statement_amount_cents": 400000000
+    },
+    {
+      "credited_principal_cents": 0,
+      "date": "2005-12-23",
+      "incoming_row_id": "SRC-BLM-001:1ZA192:p32:l43",
+      "native_originating_balance_row_id": "SRC-BLM-001:1ZB143:p37:l22",
+      "origin": "1ZB143",
+      "originating_certificate": "8c831bb40d51a4e9adb5bffbddc12c4f8eb25ac6a4c645a23d9208a03a1066e8",
+      "originating_principal_cents": -485468800,
+      "outgoing_row_id": "SRC-BLM-001:1ZB143:p37:l23",
+      "recipient": "1ZA192",
+      "rule": "trustee_transfer_credit",
+      "statement_amount_cents": 20000000
+    }
+  ],
+  "recorded_utc": "2026-11-03T08:58:17.809603+00:00",
+  "register_period_count": 143,
+  "reproduce": "python3 -B scripts/blmis_replay.py run --account all --pdf /path/to/pinned-glantz.pdf --out /path/to/new-six-account-run --fa /path/to/matching/fa --fa-verify /path/to/matching/fa-verify",
+  "scope": {
+    "principal_analysis_scope": "posted_principal_transfer_v1 with trustee-credited transfers as explicit inputs; the two paired credits separately recompute under trustee_transfer_credit",
+    "principal_sign": "Native debit-minus-credit is negative remaining principal; no source discrepancy is plugged",
+    "result_scope": "PASS means the native book matches every published movement and exactly reproduces the diagnosed source discrepancies; it does not assert all printed balances are arithmetically exact",
+    "review_scope": "Distinct local test reviewer exercises AgentUpload evidence admission; no authenticated human review claim",
+    "scope": "Every published transaction of all six Glantz Exhibits B-1 through B-6: 379 observations, 1992-11-19 through 2008-10-30. Trustee computations in a complaint, not a complete BLMIS general ledger or a court finding. Credited principal remains a named source input. All displayed amounts, source discrepancies, zero-principal observations and footnote markers are retained. Double-entry counterparts are explicit analysis accounts. One named same-day computation-order interpretation does not assert original transaction times or an identified canceled check. No source discrepancy is balanced away.",
+    "source_order_policy": "Source display order with the explicitly pinned same_day_display_reorder for the 1ZB010 check/stop-payment pair; one native publication per monetary row",
+    "trust_scope": "Caller-trusted key of a fresh local analysis book; no external court or trustee signing-key claim",
+    "unpaired_transfer_credit_scope": "The other 13 transfer rows retain trustee-credited principal as explicit inputs"
+  },
+  "source": {
+    "source_accounts": [
+      "1T0026",
+      "1ZA192",
+      "1ZB010",
+      "1ZB143",
+      "1ZR010",
+      "1ZR176"
+    ],
+    "source_extraction": {
+      "command": [
+        "pdftotext",
+        "-layout",
+        "-f",
+        "27",
+        "-l",
+        "40",
+        "-",
+        "-"
+      ],
+      "format": "fa-blmis-glantz-pdf-extraction-v1",
+      "mode": "original_pdf_extracted_this_run",
+      "pdf_pages": [
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40
+      ],
+      "retained": {
+        "extracted-source/layout.txt": {
+          "bytes": 88638,
+          "sha256": "258f770d126b7c8cb8a0216fcca98259ce75b3ae86806638f7a2711c8176033f"
+        },
+        "extracted-source/rows.csv": {
+          "bytes": 68500,
+          "sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf"
+        },
+        "extracted-source/source.json": {
+          "bytes": 10877,
+          "sha256": "8da252a4e2307fa1fe0bcef6ffa5073d13a028ac9b26340ff4541df6a9aa6882"
+        },
+        "source.pdf": {
+          "bytes": 389586,
+          "sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1"
+        }
+      },
+      "reviewed_b2_metadata_sha256": "037fd6652ccfc133cf6366a765b7f70a8ff866801f2b88ff636c9c631cbaddfc",
+      "reviewed_b2_rows_sha256": "286af73204e2451bac782d03e1270ccb70d4b8138219f571db1c4ea0d0f90a3b",
+      "source_rows": 379,
+      "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+      "source_url": "https://www.madofftrustee.com/document/dockets/008796-glantzcomplaint10-05394docket93.pdf",
+      "stdin": "Verified source.pdf bytes; the extractor cannot race a subsequently changed source path."
+    },
+    "source_rows": 379,
+    "source_rows_sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf",
+    "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+    "zero_principal_rows": [
+      "SRC-BLM-001:1T0026:p27:l27",
+      "SRC-BLM-001:1T0026:p27:l35",
+      "SRC-BLM-001:1T0026:p27:l37",
+      "SRC-BLM-001:1T0026:p27:l40",
+      "SRC-BLM-001:1T0026:p27:l41",
+      "SRC-BLM-001:1ZA192:p32:l43",
+      "SRC-BLM-001:1ZB143:p37:l23"
+    ]
+  },
+  "source_account_parties": {
+    "1T0026": {
+      "code": "BLMIS-1T0026",
+      "dimension": 12,
+      "value": "85b6149b016e2e1839ad5f00d5c1be20",
+      "vid": "51b2c106fcc0552fe19b47930a02ac08"
+    },
+    "1ZA192": {
+      "code": "BLMIS-1ZA192",
+      "dimension": 12,
+      "value": "c0489ffc9291d7f65a7dcc9ff3bc6ae1",
+      "vid": "4319eea7cfbd1f7b30c296b7382c7ecd"
+    },
+    "1ZB010": {
+      "code": "BLMIS-1ZB010",
+      "dimension": 12,
+      "value": "dab27ede72be8e22d6001c9c51dbbef5",
+      "vid": "7430200622b5dc5b98ce157debae8cde"
+    },
+    "1ZB143": {
+      "code": "BLMIS-1ZB143",
+      "dimension": 12,
+      "value": "7222950951ea2878c7bb93ceac8f3755",
+      "vid": "9797a82622a11043e7312e015224c070"
+    },
+    "1ZR010": {
+      "code": "BLMIS-1ZR010",
+      "dimension": 12,
+      "value": "ab73e30d218b21e6fc30d15456d688f8",
+      "vid": "97547f48a44b582c1fe78b043d7cd9ff"
+    },
+    "1ZR176": {
+      "code": "BLMIS-1ZR176",
+      "dimension": 12,
+      "value": "645ececeee4ae9922827706e518baf6f",
+      "vid": "6d3ad9d7388f3bcf30bf9081cd748957"
+    }
+  },
+  "source_comparisons": {
+    "1T0026": {
+      "native_closing_principal_cents": -737416500,
+      "native_lines": 112,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -737416500,
+      "printed_row_gaps_cents": {},
+      "source_rows": 117
+    },
+    "1ZA192": {
+      "native_closing_principal_cents": -994703100,
+      "native_lines": 74,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -994703100,
+      "printed_row_gaps_cents": {},
+      "source_rows": 75
+    },
+    "1ZB010": {
+      "native_closing_principal_cents": -50750000,
+      "native_lines": 61,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -50750000,
+      "printed_row_gaps_cents": {},
+      "source_rows": 61
+    },
+    "1ZB143": {
+      "native_closing_principal_cents": -1695468800,
+      "native_lines": 50,
+      "printed_balances_equal": true,
+      "printed_closing_principal_cents": -1695468800,
+      "printed_row_gaps_cents": {},
+      "source_rows": 51
+    },
+    "1ZR010": {
+      "native_closing_principal_cents": -332798000,
+      "native_lines": 57,
+      "printed_balances_equal": false,
+      "printed_closing_principal_cents": -332798900,
+      "printed_row_gaps_cents": {
+        "SRC-BLM-001:1ZR010:p38:l23": 100,
+        "SRC-BLM-001:1ZR010:p38:l24": 100,
+        "SRC-BLM-001:1ZR010:p38:l25": 100,
+        "SRC-BLM-001:1ZR010:p38:l26": 100,
+        "SRC-BLM-001:1ZR010:p38:l27": 100,
+        "SRC-BLM-001:1ZR010:p38:l28": 100,
+        "SRC-BLM-001:1ZR010:p38:l29": 100,
+        "SRC-BLM-001:1ZR010:p38:l30": 100,
+        "SRC-BLM-001:1ZR010:p38:l31": 100,
+        "SRC-BLM-001:1ZR010:p38:l32": 100,
+        "SRC-BLM-001:1ZR010:p38:l33": 100,
+        "SRC-BLM-001:1ZR010:p38:l34": 100,
+        "SRC-BLM-001:1ZR010:p38:l35": 100,
+        "SRC-BLM-001:1ZR010:p38:l36": 200,
+        "SRC-BLM-001:1ZR010:p38:l37": 200,
+        "SRC-BLM-001:1ZR010:p38:l38": 200,
+        "SRC-BLM-001:1ZR010:p38:l39": 200,
+        "SRC-BLM-001:1ZR010:p38:l40": 200,
+        "SRC-BLM-001:1ZR010:p38:l41": 300,
+        "SRC-BLM-001:1ZR010:p38:l42": 300,
+        "SRC-BLM-001:1ZR010:p38:l43": 300,
+        "SRC-BLM-001:1ZR010:p38:l44": 400,
+        "SRC-BLM-001:1ZR010:p38:l45": 400,
+        "SRC-BLM-001:1ZR010:p38:l46": 400,
+        "SRC-BLM-001:1ZR010:p38:l47": 500,
+        "SRC-BLM-001:1ZR010:p39:l16": 500,
+        "SRC-BLM-001:1ZR010:p39:l17": 500,
+        "SRC-BLM-001:1ZR010:p39:l18": 500,
+        "SRC-BLM-001:1ZR010:p39:l19": 500,
+        "SRC-BLM-001:1ZR010:p39:l20": 500,
+        "SRC-BLM-001:1ZR010:p39:l21": 500,
+        "SRC-BLM-001:1ZR010:p39:l22": 600,
+        "SRC-BLM-001:1ZR010:p39:l23": 600,
+        "SRC-BLM-001:1ZR010:p39:l24": 600,
+        "SRC-BLM-001:1ZR010:p39:l25": 600,
+        "SRC-BLM-001:1ZR010:p39:l26": 700,
+        "SRC-BLM-001:1ZR010:p39:l27": 700,
+        "SRC-BLM-001:1ZR010:p39:l28": 700,
+        "SRC-BLM-001:1ZR010:p39:l29": 800,
+        "SRC-BLM-001:1ZR010:p39:l30": 800,
+        "SRC-BLM-001:1ZR010:p39:l31": 800,
+        "SRC-BLM-001:1ZR010:p39:l32": 800,
+        "SRC-BLM-001:1ZR010:p39:l33": 900,
+        "SRC-BLM-001:1ZR010:p39:l34": 900,
+        "SRC-BLM-001:1ZR010:p39:l35": 900,
+        "SRC-BLM-001:1ZR010:p39:l36": 900,
+        "SRC-BLM-001:1ZR010:p39:l37": 900,
+        "SRC-BLM-001:1ZR010:p39:l38": 900,
+        "SRC-BLM-001:1ZR010:p39:l39": 900,
+        "SRC-BLM-001:1ZR010:p39:l40": 900
+      },
+      "source_rows": 57
+    },
+    "1ZR176": {
+      "native_closing_principal_cents": -281796500,
+      "native_lines": 18,
+      "printed_balances_equal": false,
+      "printed_closing_principal_cents": -281796500,
+      "printed_row_gaps_cents": {
+        "SRC-BLM-001:1ZR176:p40:l21": -100,
+        "SRC-BLM-001:1ZR176:p40:l22": -100,
+        "SRC-BLM-001:1ZR176:p40:l23": -100,
+        "SRC-BLM-001:1ZR176:p40:l24": -100,
+        "SRC-BLM-001:1ZR176:p40:l25": -100,
+        "SRC-BLM-001:1ZR176:p40:l26": -100,
+        "SRC-BLM-001:1ZR176:p40:l27": -100,
+        "SRC-BLM-001:1ZR176:p40:l28": -100,
+        "SRC-BLM-001:1ZR176:p40:l29": -100,
+        "SRC-BLM-001:1ZR176:p40:l30": -100,
+        "SRC-BLM-001:1ZR176:p40:l31": -100,
+        "SRC-BLM-001:1ZR176:p40:l32": -100
+      },
+      "source_rows": 18
+    }
+  },
+  "source_diagnostic_counts": {
+    "1T0026": {
+      "classification": "exact",
+      "closing_gap_cents": 0,
+      "maximum_gap_cents": 0,
+      "maximum_local_gap_cents": 0,
+      "rows": 117,
+      "rows_off": 0
+    },
+    "1ZA192": {
+      "classification": "exact",
+      "closing_gap_cents": 0,
+      "maximum_gap_cents": 0,
+      "maximum_local_gap_cents": 0,
+      "rows": 75,
+      "rows_off": 0
+    },
+    "1ZB010": {
+      "classification": "exact_under_named_same_day_order",
+      "closing_gap_cents": 0,
+      "maximum_gap_cents": 0,
+      "maximum_local_gap_cents": 0,
+      "rows": 61,
+      "rows_off": 0
+    },
+    "1ZB143": {
+      "classification": "exact",
+      "closing_gap_cents": 0,
+      "maximum_gap_cents": 0,
+      "maximum_local_gap_cents": 0,
+      "rows": 51,
+      "rows_off": 0
+    },
+    "1ZR010": {
+      "classification": "printed_source_discrepancy",
+      "closing_gap_cents": 900,
+      "maximum_gap_cents": 900,
+      "maximum_local_gap_cents": 100,
+      "rows": 57,
+      "rows_off": 50
+    },
+    "1ZR176": {
+      "classification": "printed_source_discrepancy",
+      "closing_gap_cents": 0,
+      "maximum_gap_cents": 100,
+      "maximum_local_gap_cents": 100,
+      "rows": 18,
+      "rows_off": 12
+    }
+  },
+  "status": "PASS",
+  "tamper_refusals": {
+    "amount": {
+      "mutation": {
+        "delta_cents": 1,
+        "line": 2,
+        "new_amount": "2800000.01",
+        "old_amount": "2800000.00"
+      },
+      "verification": {
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 8,
+            "book_id": "d02f1000a23b10149359d880fedb354c",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "fb159a82e74b26b3d4721b2059d6d8f068377daba5dc40bca161d26b5034efa9",
+            "checkpoint_oid": "a899c2bc6fcff2dc9884d033c0916a6e37af8aadd34f633ca3c97033b553f85d",
+            "completeness": "seq_range_complete",
+            "documents": 2232,
+            "entries": 541,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 553,
+            "scope": "prefix",
+            "through_seq": 703
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 541,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 2232,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 8,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 541,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-10-30",
+            "entries": 371,
+            "known_at_seq": 703,
+            "rows": 742,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 8761d756c3edfa99d2912bdec2eb9c8a (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-10-30",
+              "entries": 371,
+              "known_at_seq": 703,
+              "rows": 742,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 8761d756c3edfa99d2912bdec2eb9c8a (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "verdict": "failed"
+      }
+    },
+    "party": {
+      "mutation": {
+        "dimension": 12,
+        "entry_id": "8761d756c3edfa99d2912bdec2eb9c8a",
+        "leg": 1,
+        "line": 2,
+        "new_value": "85b6149b016e2e1839ad5f00d5c1be21",
+        "old_value": "85b6149b016e2e1839ad5f00d5c1be20"
+      },
+      "verification": {
+        "bundle": {
+          "check": "bundle",
+          "detail": {
+            "balances": 8,
+            "book_id": "d02f1000a23b10149359d880fedb354c",
+            "branch_id": "00000000000000000000000000000000",
+            "bundle_digest": "fb159a82e74b26b3d4721b2059d6d8f068377daba5dc40bca161d26b5034efa9",
+            "checkpoint_oid": "a899c2bc6fcff2dc9884d033c0916a6e37af8aadd34f633ca3c97033b553f85d",
+            "completeness": "seq_range_complete",
+            "documents": 2232,
+            "entries": 541,
+            "format": "1.0",
+            "inline": 0,
+            "leaf_count": 553,
+            "scope": "prefix",
+            "through_seq": 703
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "format"
+        },
+        "check_counts": [
+          {
+            "check": "ads_extract",
+            "count": 1,
+            "result": "fail"
+          },
+          {
+            "check": "bundle",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "checkpoint",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "closure",
+            "count": 541,
+            "result": "pass"
+          },
+          {
+            "check": "completeness",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "entries",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "manifest",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "production_receipt",
+            "count": 1,
+            "result": "pass"
+          },
+          {
+            "check": "public_commitment",
+            "count": 2232,
+            "result": "pass"
+          },
+          {
+            "check": "recomputation",
+            "count": 8,
+            "result": "pass"
+          },
+          {
+            "check": "record",
+            "count": 541,
+            "result": "pass"
+          }
+        ],
+        "command": "ads",
+        "error": null,
+        "exit_code": 8,
+        "extract": {
+          "check": "ads_extract",
+          "detail": {
+            "account_scope": null,
+            "chart_rows": null,
+            "dimension_coverage": "not_authenticated",
+            "dimension_rows": null,
+            "effective_through": "2008-10-30",
+            "entries": 371,
+            "known_at_seq": 703,
+            "rows": 742,
+            "tb_rows": 0,
+            "units": [
+              {
+                "code": "USD",
+                "unit_id": 0
+              }
+            ]
+          },
+          "reason": "GL_Detail entry 8761d756c3edfa99d2912bdec2eb9c8a (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+          "result": "fail",
+          "scope": "completeness"
+        },
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2008-10-30",
+              "entries": 371,
+              "known_at_seq": 703,
+              "rows": 742,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 8761d756c3edfa99d2912bdec2eb9c8a (recorded at 182) is no proven entry selected through 2008-10-30; a proven entry recorded at 182 (effective 1992-11-19, 2 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "tool": "fa-verify",
+        "verdict": "failed"
+      }
+    }
+  },
+  "transcript_census": {
+    "all_native_exits_checked": true,
+    "byte_identical_certified_replays": 6,
+    "empty_historical_ledgers": 6,
+    "exact_retry_receipts_compared": 372,
+    "fresh_receipts_compared": 372,
+    "records": 1268,
+    "verifier_responses_match_report": true
+  },
+  "whole_workspace_gates": {
+    "cargo_test_workspace": "UNRUN",
+    "clippy_workspace": "UNRUN",
+    "scope": "This measured native replay and standalone proof verification do not constitute a current whole-workspace gate verdict.",
+    "tier0": "UNRUN",
+    "tier1": "UNRUN"
+  },
+  "workload": "complete-six-account-glantz-replay-current-native-artifact"
+}

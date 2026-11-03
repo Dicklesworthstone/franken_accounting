@@ -191,6 +191,51 @@ trustee's credited transfers. Source custody remains `AgentUpload` with a
 distinct same-harness fixture `Reviewed` attestation; this is an analysis-book
 execution under its own trusted signing key.
 
+### Fresh execution with the shared native artifact (2026-11-03)
+
+The complete six-account workload was run again with the verified native CI
+artifact from Rust source commit
+`88286f8c41f3943fde51e76334b33db758422c95`, the same executable bytes used for
+the seven-account migration and the Square One and Magnify workloads. This
+fresh run **passed without a runner or source-helper change**. The earlier
+execution above remains a separate retained result.
+
+The [current-artifact execution summary](../evidence/blmis/glantz-six-current-native-2026-11-03.json)
+records all helper hashes captured before launch, the native artifact and
+compiler provenance, exact executable identities, complete report/transcript
+hashes, native certificate identities, source discrepancies and verifier
+results. The command ran from 08:51:13 to 08:58:17 UTC, returning exit 0 after
+**1,268 native commands in 424.207 seconds**; outer process duration was
+424.389 seconds. The observed calls were 1,265 `fa` commands and three
+`fa-verify` commands. Native exit counts were 1,266 successes and the two
+expected tamper refusals at exit 8.
+
+All **379 original observations** were retained, including seven
+zero-principal observations. All **372 monetary entries / 744 legs** were
+posted and compared with their original amounts and actual publication
+receipts. Both `1ZR010` and `1ZR176` participated in the native replay: the
+USD 9 closing difference in the former and the intermediate USD 1 differences
+in the latter remained explicit source differences. Neither account was
+excluded or altered to obtain the result.
+
+The actual command transcript was independently checked for all 372 fresh
+receipts and all 372 exact retries, six byte-identical certified-ledger
+replays, and six empty historical ledgers at recorded prefix 181. Native
+execution also checked 17 annual balance controls and all 143 monthly
+register advances and verifications.
+The six-account version-5 investor analysis passed both transfer-role states,
+and both paired transfer credits matched certified originating principal.
+CSV and ADS source comparisons covered all 744 legs and all six actual party
+bindings. Standalone ADS verification accepted complete native leg identities;
+the one-cent amount mutation and the party-only mutation each failed the
+actual verifier with exit 8, and both altered packages were retained.
+
+This execution establishes the complete six-account source replay on the
+shared native artifact. It is separate from the exact-footing migration
+subset, from the earlier single-account workload, and from whole-workspace
+gates. Current cargo workspace tests, clippy, tier0 and tier1 remain **UNRUN**
+in this execution summary; no bead closure is claimed.
+
 ## Default single-account workload
 
 The following sections describe the unchanged 1ZA192 source scope and its

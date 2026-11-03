@@ -498,6 +498,17 @@ not supply the firm's original double-entry general ledger.
 | [Magnify Exhibit B](docs/blmis_magnify_workload.md) | 6 | 2,364 | 1,586 | 3,172 |
 | **Total** | **13** | **3,793** | **2,298** | **4,596** |
 
+All three complete replays have passed actual native execution with the same
+verified `fa` and `fa-verify` binaries. The checked
+[Glantz](evidence/blmis/glantz-six-current-native-2026-11-03.json),
+[Square One](evidence/blmis/square-one-native-2026-11-03.json), and
+[Magnify](evidence/blmis/magnify-native-2026-11-03.json) records retain exact
+source and executable identities, complete export comparisons, certificate
+replays, register checks and actual amount-only and party-only tamper refusals.
+The executions cover every monetary row in the table, including accounts with
+published discrepancies; a matching printed balance is never a precondition
+for admission to these replay workloads.
+
 With matching `fa` and `fa-verify` binaries built in `target/debug`, run the
 complete native workflows from the repository root:
 
@@ -539,6 +550,17 @@ every monthly balance still agrees, but native source completeness must refuse
 finalization. It then restores the two original observations, finalizes the
 same run atomically, and independently verifies every monthly report bundle.
 The default without `--include-magnify` preserves the four-account Glantz scope.
+
+The [native monetary control](docs/blmis_migration_negative.md) also checks a
+balanced $1 error after approved chunks have been staged. Two matched books
+contain all 371 monetary entries; finalization planning accepts the
+unaltered amount and refuses the changed amount with exactly 388 monetary
+mismatches. Both control books remain Open without activating their entries.
+
+```bash
+python3 -B scripts/blmis_migration_negative.py \
+  --out artifacts/blmis-monetary-control
+```
 
 `ponzi.net_investment` version 5 keeps cash and declared principal transfers
 separate under `posted_principal_transfer_v1`; ambiguous marked transfers are
@@ -2300,11 +2322,12 @@ an independent decimal calculation over the original CSV.
 
 ```bash
 python3 tools/public-data/public_spend.py prepare \
-  --dataset hmrc-2025-03 --out /tmp/fa-public-hmrc
+  --dataset hmrc-2025-03 --out /tmp/fa-public-hmrc --native-attribution
 python3 tools/public-data/run_live.py \
   --prepared /tmp/fa-public-hmrc --dataset hmrc-2025-03 \
   --out /tmp/fa-public-hmrc-live \
-  --fa target/debug/fa --fa-verify target/debug/fa-verify
+  --fa target/debug/fa --fa-verify target/debug/fa-verify \
+  --native-attribution --batch-approvals --batch-evidence --bind-source
 ```
 
 The live runner requires the real binaries and exercises approved FullDetail
@@ -2313,6 +2336,15 @@ folds, every exported dated leg, certificate replay and independent report
 bundle verification, including a tampered-bundle refusal. It retains command
 transcripts and writes `PASS` only after all required observations succeed;
 successful source preparation alone is not a native execution result.
+
+The complete attributed HMRC run passed with **127 entries and 2,860 legs**,
+retaining all **42 expense areas and 160 suppliers** as native identities.
+All 42 area reports and the whole-book report passed **601 independent
+verification checks**. Changing only a supplier or expense-area value in an
+otherwise unchanged export was refused. The
+[execution record](evidence/public_spend/hmrc-2025-03-attribution-native-2026-11-03.json)
+includes the original source comparison and the real identity-key integration
+failure that this workload exposed and repaired.
 
 These are whole published monthly expenditure extracts, **not original complete
 double-entry ledgers**. The fixture uses declared modeled Expense accounts and
