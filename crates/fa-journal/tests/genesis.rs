@@ -11259,7 +11259,7 @@ fn year_end_close_preserves_offsetting_funds_untagged_balances_and_incremental_d
             .rate_doc_oids
             .is_empty()
     );
-    for pair in proposal.legs.chunks_exact(2) {
+    for pair in proposal.legs.as_chunks::<2>().0 {
         assert_eq!(pair[0].dimension_set, pair[1].dimension_set);
         assert_eq!(pair[0].account_ref, h.rent);
         assert_eq!(pair[1].account_ref, equity);
