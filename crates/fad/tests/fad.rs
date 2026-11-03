@@ -244,6 +244,81 @@ impl Daemon {
 }
 
 #[test]
+fn short_lived_connections_do_not_exhaust_the_serving_runtime() {
+    // A real default-runtime daemon is required: the lab's detached Cx does
+    // not exercise the pinned runtime's child-region admission governor.
+    // The previous empty per-socket regions failed at connection 1,000 even
+    // though each preceding socket and child region had already closed.
+    const CONNECTIONS: u64 = 1_105;
+    let dir = tmp("connection-lifetime");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let before = ok(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
+    let reg = registry().expect("verbs.toml");
+    let socket = book.join(&reg.daemon.socket);
+    let request = Request {
+        op: Op::Status,
+        argv: vec!["--json".into()],
+        cwd: None,
+        stdin: None,
+        token: None,
+    };
+    // start() inherits stderr, so per-connection diagnostics cannot fill an
+    // undrained pipe and turn the regression into a logging deadlock.
+    let mut daemon = start(&book);
+    let pid = daemon.child.id().to_string();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for index in 1..=CONNECTIONS {
+            // call() opens and drops a fresh real Unix socket for every ask.
+            let response = client::call(&socket, &request, &reg.daemon)
+                .unwrap_or_else(|error| panic!("connection {index}: {error}"));
+            assert_eq!(
+                response.exit, 0,
+                "connection {index}: {}{}",
+                response.stdout, response.stderr
+            );
+            assert_eq!(checked(&response.stdout), vec!["fad_status"]);
+            assert_eq!(field(&response.stdout, "pid"), Some(pid.as_str()));
+            assert_eq!(
+                field(&response.stdout, "requests").and_then(|value| value.parse::<u64>().ok()),
+                Some(index),
+                "each connection must reach the same daemon exactly once"
+            );
+        }
+        let served = ok(&[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--book",
+            &b,
+            "--via",
+            "fad",
+            "--json",
+        ]);
+        assert_eq!(served, before, "the held book still supplies the same fold");
+    }));
+
+    // Release the owned process even when the old lifetime limit reproduces.
+    let (stop_code, stopped, stop_error) = fad(&["stop", "--book", &b, "--json"]);
+    if stop_code != 0 && daemon.child.try_wait().ok().flatten().is_none() {
+        let _ = daemon.child.kill();
+    }
+    let (exit, rest) = daemon.finish();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    assert_eq!(stop_code, 0, "{stopped}{stop_error}");
+    assert_eq!(exit, 0, "{rest}");
+    assert_eq!(checked(&rest), vec!["fad_stopped"]);
+    assert_eq!(Lease::holder(&book, &reg.daemon.lease), None);
+    assert_eq!(
+        ok(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]),
+        before,
+        "clean stop and durable reopen preserve the accounting result"
+    );
+}
+
+#[test]
 fn fiscal_year_launch_maintains_future_created_periods_and_posted_amounts_over_the_real_socket() {
     use fa_cli::json::{self, Json};
     use std::time::{Duration, Instant};

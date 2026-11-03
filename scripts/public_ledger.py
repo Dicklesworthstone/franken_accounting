@@ -340,6 +340,7 @@ class Native:
         self.output = output
         self.book = output / "book"
         self.commands = 0
+        self.document_custody: list[dict] = []
         self.environment = dict(os.environ)
         self.environment.pop("FA_BOOK", None)
         self.environment.pop("FA_TOKEN", None)
@@ -396,6 +397,15 @@ class Native:
                 and reviewed["data"].get("claim") == "Reviewed"
                 and reviewed["data"].get("subject") == oid,
                 "source review did not attest the retained document")
+        review = reviewed["data"]
+        self.document_custody.append({
+            "file": path.name, "oid": oid, "doc_commit": document["doc_commit"],
+            "intake_grade": document["grade"], "self_sourced": document["self_sourced"],
+            "intake_recorded_at": document["recorded_at"],
+            "review_principal": SOURCE_REVIEWER, "review_claim": review["claim"],
+            "review_attestation_vid": review["attestation_vid"],
+            "review_recorded_at": review["recorded_at"],
+        })
         return oid
 
     def head(self) -> int:
@@ -740,6 +750,11 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
         run_vid = native.call("migrate", "open", "--intent", run_path)["data"]["run_vid"]
         intent = {"run": f"MR:{run_vid}", "source": f"D:{source_oid}", "format": "csv",
                   "column_map": COLUMN_MAP,
+                  # June 30 also belongs to year-end adjustment/closing periods.
+                  # Route each aggregate by its published fiscal period, not by
+                  # an ambiguous date or inferred closing-journal semantics.
+                  "entry_periods": {entry_id: f"FY2024-P{int(entry_id.split(':')[3]):02}"
+                                    for entry_id in run["entry_ids"]},
                   "account_map": {row["code"]: row["code"] for row in accounts}}
         intent_path = output / f"{name}-import.json"
         write_json(intent_path, intent)
@@ -812,6 +827,14 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
     require(native.head() == head, "finalized retries appended duplicate history")
     checks.append("all_finalized_chunk_retries_are_idempotent")
     native.call("verify", "projections")
+    held = {row["oid"]: row for row in native.call("document", "list")["data"]["documents"]}
+    for intake in native.document_custody:
+        current = held.get(intake["oid"])
+        require(current is not None and current["grade"] == intake["intake_grade"]
+                and current["doc_commit"] == intake["doc_commit"]
+                and current["recorded_at"] == intake["intake_recorded_at"],
+                "review or migration changed the original document custody")
+    checks.append("native_upload_custody_preserved_and_fixture_reviews_recorded")
     native.call("checkpoint", "create", "--grant", "witness")
     native.call("verify", "accumulator")
     checks.extend(["native_projections_match_payloads", "signed_accumulator_checkpoint"])
@@ -858,6 +881,8 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             "export_source_oracles": export_oracles,
             "dimension_tamper_refusal": dimension_rejected, "dimension_tamper_mutation": dimension_mutation,
             "dimension_export_scope": "Exact native kind IDs and value VIDs, including explicit empty sets; source codes are checked separately against retained source and native registration, not inferred from a VID",
+            "document_custody": native.document_custody,
+            "document_review_scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
             "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
             "review_scope": REVIEW_SCOPE,
             "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"}

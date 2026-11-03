@@ -322,6 +322,93 @@ fn populate<V: Vfs + Clone>(runtime: &Runtime, cx: &PurposeContexts, book: &mut 
 }
 
 #[test]
+fn migration_fragment_closure_is_exact_and_legacy_prefixes_remain_replayable() {
+    let mut h = Harness::new(SymbolTable::compiled().digest().0);
+    h.populate();
+    let legacy = h.certificate(None).unwrap();
+    assert_eq!(legacy.certificate.inputs.len(), super::INPUTS.len());
+
+    // Isolate the source-closure boundary with a storage record. The native
+    // large-run tests separately exercise authenticated run/fragment identity.
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(
+        VId(0xf63),
+        vec![label::MIGRATION_RUN_FRAGMENT],
+        vec![
+            (
+                property::FA_PAYLOAD,
+                scalar_bytes("fragment", vec![1; 4096]).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                scalar_bytes("fragment digest", vec![2; 32]).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                scalar_bytes("fragment book", BOOK.0.to_vec()).unwrap(),
+            ),
+        ],
+    );
+    let cx = h.cx();
+    h.runtime
+        .block_on(h.book.db.write(&cx.commit(), batch))
+        .unwrap();
+    let certified = h.certificate(None).unwrap();
+    assert_eq!(certified.certificate.inputs.len(), super::INPUTS.len() + 1);
+    assert_eq!(
+        certified.certificate.inputs.last().unwrap().statement,
+        super::migration_fragment_statement(certified.certificate.known_at)
+    );
+    let decoded =
+        super::ReportCertificate::decode(&certified.certificate.canonical_bytes().unwrap())
+            .unwrap();
+    assert_eq!(
+        h.book.replay_report(&h.cx(), &decoded).unwrap().unwrap(),
+        certified.report
+    );
+
+    // Re-sealing the outer digest cannot turn an omitted source snapshot into
+    // the original inline-only profile at a prefix that already has fragments.
+    let mut missing = decoded.clone();
+    missing.inputs.pop();
+    let missing = missing.resealed_under(missing.registry_digest);
+    assert!(super::ReportCertificate::decode(&missing.canonical_bytes().unwrap()).is_ok());
+    let refusal = h
+        .book
+        .replay_report(&h.cx(), &missing)
+        .unwrap()
+        .unwrap_err();
+    assert!(refusal.message.contains("omits migration body fragments"));
+
+    for changed in ["query", "snapshot", "duplicate"] {
+        let mut malformed = decoded.clone();
+        match changed {
+            "query" => {
+                malformed.inputs.last_mut().unwrap().statement =
+                    super::statements(malformed.known_at, &malformed.selection)[0].clone()
+            }
+            "snapshot" => malformed.inputs.last_mut().unwrap().plan.snapshot_seq = CommitSeq(0),
+            _ => malformed
+                .inputs
+                .push(malformed.inputs.last().unwrap().clone()),
+        }
+        let malformed = malformed.resealed_under(malformed.registry_digest);
+        assert!(
+            super::ReportCertificate::decode(&malformed.canonical_bytes().unwrap()).is_err(),
+            "{changed}"
+        );
+    }
+    // A later storage layout never changes an older certificate's source set.
+    assert_eq!(
+        h.book
+            .replay_report(&h.cx(), &legacy.certificate)
+            .unwrap()
+            .unwrap(),
+        legacy.report
+    );
+}
+
+#[test]
 fn native_label_prefix_birth_can_issue_new_certificates_without_weakening_old_closures() {
     for ceiling in [43, 44, 46] {
         let mut h = Harness::new(prefix_digest(ceiling));
