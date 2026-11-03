@@ -2181,5 +2181,7 @@ unbounded directions, overflow and cancellation. The old byte-length-only
 test now calls balancing_request; an additional test decodes signed wire
 extremes and refuses every truncated length plus oversized payloads.
 The only added dependency edge is test-only access to the existing first-party
-fa-time crate for the EntryPayload fixture. No timed-hold anchor or plan
-change is included; the original fa-yysv remains open.
+fa-time crate for the EntryPayload fixture. The facade's unused direct
+fa-escrow dependency is removed; its journal dependency consumes the law.
+No timed-hold anchor or plan change is included; the original fa-yysv
+remains open.

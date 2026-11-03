@@ -791,7 +791,6 @@ dependencies = [
  "asupersync",
  "fa-canon",
  "fa-docket",
- "fa-escrow",
  "fa-formats",
  "fa-intents",
  "fa-journal",
