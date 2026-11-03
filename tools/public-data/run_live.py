@@ -100,7 +100,8 @@ def decimal(value: int) -> str:
     return f"{'-' if value < 0 else ''}{abs(value) // 100}.{abs(value) % 100:02}"
 
 
-def verify_prepared(directory: Path, dataset: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def verify_prepared(directory: Path, dataset: str, *,
+                    native_attribution: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     """Rebuild every expected output from independently pinned original bytes.
 
     Rehashing a modified manifest is insufficient: the pinned source catalogue and
@@ -108,7 +109,8 @@ def verify_prepared(directory: Path, dataset: str) -> tuple[dict[str, Any], dict
     """
     sources = public_spend.load_sources()
     require(dataset in sources, f"unknown pinned dataset {dataset!r}")
-    expected_files = public_spend.build_bundle(sources[dataset], (directory / "raw.csv").read_bytes())
+    expected_files = public_spend.build_bundle(sources[dataset], (directory / "raw.csv").read_bytes(),
+                                              native_attribution=native_attribution)
     for name, expected in expected_files.items():
         actual = (directory / name).read_bytes()
         require(actual == expected, f"prepared {name} differs from its pinned source transformation")
@@ -433,13 +435,152 @@ def check_evidence_group(events: list[dict[str, Any]], entries: list[str], *,
     return receipts
 
 
-def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[str, int]:
+def dimension_set(value: str) -> tuple[tuple[int, str], ...]:
+    """Read the native canonical export identities; never derive them from labels."""
+    require(isinstance(value, str), "native dimension set must be a string")
+    if not value:
+        return ()
+    result = []
+    previous = 0
+    for field in value.split(";"):
+        match = re.fullmatch(r"([1-9][0-9]*):([0-9a-f]{32})", field)
+        require(match is not None, "native dimension set contains an invalid identity")
+        assert match is not None
+        kind = int(match[1])
+        require(previous < kind <= 0xFFFFFFFF, "native dimension kinds are repeated, unordered or out of range")
+        result.append((kind, match[2]))
+        previous = kind
+    require(len(result) <= 64, "native dimension set exceeds its declared bound")
+    return tuple(result)
+
+
+def source_dimensions(row: dict[str, str], identities: dict[str, dict]) -> tuple[tuple[int, str], ...]:
+    result = []
+    for kind, column in (("cost_center", "cost_center_code"), ("party", "supplier_code")):
+        code = row.get(column)
+        require(code in identities[kind], f"normalized source names an unknown {kind} code")
+        value = identities[kind][code]
+        result.append((value["dimension"], value["value"]))
+    return tuple(result)
+
+
+def check_attribution_inventory(attribution: dict, cost_centers: list[dict], parties: list[dict],
+                                created: dict[str, dict]) -> dict[str, dict]:
+    """Join exact original labels to independently read native value identities."""
+    result: dict[str, dict] = {"cost_center": {}, "party": {}}
+    for kind, source_key, rows, number in (("cost_center", "cost_centers", cost_centers, 2),
+                                          ("party", "suppliers", parties, 12)):
+        expected = {value["code"]: value for value in attribution[source_key]}
+        require(len(expected) == len(attribution[source_key]) == len(rows),
+                f"native {kind} census differs from the complete source")
+        for row in rows:
+            code = row.get("code")
+            require(code in expected and code not in result[kind], f"native {kind} code is unexpected or repeated")
+            original = expected[code]
+            receipt = created[kind][code]
+            if kind == "cost_center":
+                require(row.get("dimension") == kind and row.get("dimension_id") == number
+                        and row.get("name") == original["name"]
+                        and all(row.get(field) is None for field in ("parent", "valid_from", "valid_to"))
+                        and row == receipt["value"], "native cost-center definition changed exact source attribution")
+                vid = row.get("vid")
+            else:
+                name = row.get("name")
+                require(row.get("kind") == "Counterparty" and row.get("dimension_id") == number
+                        and isinstance(name, dict) and name.get("untrusted_content") == original["name"]
+                        and name.get("source") == "P:" + str(row.get("vid"))
+                        and row.get("vid") == receipt["target"]
+                        and row.get("created_at") == receipt["recorded_at"],
+                        "native party definition changed the exact published supplier label")
+                vid = row.get("dimension_value_vid")
+                require(vid != row.get("vid"), "native Party object identity replaced its dimension value")
+            require(isinstance(vid, str) and re.fullmatch(r"[0-9a-f]{32}", vid) is not None,
+                    "native attribution has an invalid value identity")
+            result[kind][code] = {"dimension": number, "value": vid, "name": original["name"]}
+        require(len({value["value"] for value in result[kind].values()}) == len(expected),
+                "distinct source labels share one native value identity")
+    return result
+
+
+def register_attribution(native: Native, attribution: dict) -> dict[str, dict]:
+    require(attribution.get("profile") == public_spend.ATTRIBUTION_PROFILE,
+            "unknown native attribution profile")
+    created: dict[str, dict] = {"cost_center": {}, "party": {}}
+    parties_dir = native.out / "source-parties"
+    parties_dir.mkdir()
+    for kind, source_key in (("cost_center", "cost_centers"), ("party", "suppliers")):
+        for value in attribution[source_key]:
+            code, name = value["code"], value["name"]
+            if kind == "cost_center":
+                event = native.one(["dimension", "add", kind, code, "--name", name])
+                require(event.get("event") == "dimension_value_recorded", "native omitted the dimension receipt")
+            else:
+                path = parties_dir / f"{code}.json"
+                write_new(path, json_bytes({"code": code, "kind": "Counterparty", "name": name}))
+                event = native.one(["party", "add", str(path)])
+                require(event.get("event") == "rea_recorded" and body(event).get("object") == "party"
+                        and body(event).get("code") == code, "native omitted the source-party receipt")
+            require(event.get("book") == native.book_id
+                    and isinstance(event.get("authority"), dict)
+                    and event["authority"].get("principal") == native.owner_principal,
+                    "native attribution was registered under another book or authority")
+            require(body(event).get("already_recorded") is False, "fresh source registration was unexpectedly reused")
+            created[kind][code] = body(event)
+    cost_centers = body(native.one(["dimension", "list", "cost_center"]))["values"]
+    parties = body(native.one(["party", "list"]))["parties"]
+    identities = check_attribution_inventory(attribution, cost_centers, parties, created)
+    write_new(native.out / "native-attribution-identities.json", json_bytes(identities))
+    return identities
+
+
+def check_prepared_attribution(chunks: list[dict], prepared: Path, identities: dict[str, dict]) -> None:
+    """Compare every ordered source group, including both modeled leg tags."""
+    groups: dict[str, tuple[str, list[tuple]]] = {}
+    with (prepared / "legacy.csv").open(encoding="utf-8", newline="") as stream:
+        for row in csv.DictReader(stream, strict=True):
+            day, legs = groups.setdefault(row["entry_id"], (row["effective_date"], []))
+            require(day == row["effective_date"], "one source journal names multiple effective dates")
+            legs.append((row["account_code"], {"D": "debit", "C": "credit"}[row["side"]],
+                         money(row["amount"], unit=False), source_dimensions(row, identities)))
+    expected = Counter((day, tuple(legs)) for day, legs in groups.values())
+    actual = Counter()
+    for index, chunk in enumerate(chunks):
+        require(chunk.get("index") == index and chunk.get("leg_count") == len(chunk.get("legs", [])),
+                "native prepared attribution has a different ordered chunk census")
+        legs = []
+        for ordinal, leg in enumerate(chunk["legs"]):
+            require(leg.get("index") == ordinal, "native prepared leg order differs")
+            tags = leg.get("dimensions")
+            require(isinstance(tags, list) and len(tags) == 2,
+                    "native prepared leg lost or added an attribution dimension")
+            dimensions = tuple((value.get("dimension"), value.get("value")) for value in tags)
+            legs.append((leg.get("account"), leg.get("side"), money(leg["amount"]), dimensions))
+        actual[(chunk.get("effective_date"), tuple(legs))] += 1
+    require(actual == expected, "native prepared legs changed source supplier, cost-center, amount or order")
+
+
+def export_rows(path: Path) -> list[dict[str, str]]:
+    # Strip only the metadata prefix, never a physical line inside a quoted cell.
+    with path.open(encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    lines = text.splitlines(keepends=True)
+    start = 0
+    while start < len(lines) and lines[start].startswith("#"):
+        start += 1
+    return list(csv.DictReader(io.StringIO("".join(lines[start:]), newline=""), strict=True))
+
+
+def check_export(path: Path, prepared: Path, expected: dict[str, Any], *,
+                 attribution: dict | None = None, identities: dict[str, dict] | None = None) -> dict[str, int]:
     """Compare every exported native leg, including its source identity and memo.
 
     A zero grand total alone would admit omissions, duplicate payments and paired
     sign changes. This multiset check independently compares the complete dated
     source-model leg population, retaining repeated original rows.
     """
+    attributed = expected.get("native_attribution") == public_spend.ATTRIBUTION_PROFILE
+    require(attributed == (attribution is not None and identities is not None),
+            "native attribution export has no exact source oracle and value inventory")
     with (prepared / "legacy.csv").open(encoding="utf-8", newline="") as stream:
         source = list(csv.DictReader(stream, strict=True))
     source_legs: Counter[tuple[Any, ...]] = Counter()
@@ -450,16 +591,9 @@ def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[s
         source_id = expected["source_system"] + ":" + row["entry_id"]
         source_ordinals[source_id] += 1
         source_legs[(source_id, source_ordinals[source_id], row["effective_date"], row["account_code"], side,
-                     money(row["amount"], unit=False), row["description"], row["memo"])] += 1
-    # Native CSV has a comment preamble; remove only that initial metadata,
-    # never physical lines inside a quoted memo beginning with '#'.
-    with path.open(encoding="utf-8", newline="") as stream:
-        text = stream.read()
-    lines = text.splitlines(keepends=True)
-    start = 0
-    while start < len(lines) and lines[start].startswith("#"):
-        start += 1
-    reader = csv.DictReader(io.StringIO("".join(lines[start:]), newline=""), strict=True)
+                     money(row["amount"], unit=False), row["description"], row["memo"],
+                     source_dimensions(row, identities) if attributed else ())] += 1
+    reader = export_rows(path)
     actual_legs: Counter[tuple[Any, ...]] = Counter()
     entries: dict[str, str] = {}
     for row in reader:
@@ -468,20 +602,136 @@ def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[s
         require(row["side"] in ("D", "C"), "export has an unknown posting side")
         side = "debit" if row["side"] == "D" else "credit"
         actual_legs[(row["migrated_from"], int(row["line_no"]), row["effective_date"], row["account_code"], side,
-                     money(row["amount"], unit=False), row["description"], row["memo"])] += 1
+                     money(row["amount"], unit=False), row["description"], row["memo"],
+                     dimension_set(row.get("dimension_set_v1", "")))] += 1
         prior = entries.setdefault(row["entry_id"], row["migrated_from"])
         require(prior == row["migrated_from"], "native entry combines different source journals")
     require(actual_legs == source_legs, "native export lost, duplicated or changed dated source legs/memos")
     require(sum(actual_legs.values()) == expected["leg_count"], "native export leg census differs from source")
     require(len(entries) == expected["entry_count"], "native export journal census differs from source")
     require(len(set(entries.values())) == len(entries), "source journal was split across multiple native entries")
+    if attributed:
+        assert attribution is not None and identities is not None
+        # Independent gross/net controls for every value are rebuilt from the
+        # original publisher fields during preflight, not from these exports.
+        for kind, source_key in (("cost_center", "cost_centers"), ("party", "suppliers")):
+            by_value = {value["value"]: code for code, value in identities[kind].items()}
+            number = 2 if kind == "cost_center" else 12
+            observed: dict[str, dict[str, list[int]]] = {}
+            for row in reader:
+                tags = dict(dimension_set(row["dimension_set_v1"]))
+                require(tags.get(number) in by_value, "export contains an unknown native source attribution")
+                code = by_value[tags[number]]
+                cell = observed.setdefault(code, {}).setdefault(row["account_code"], [0, 0, 0])
+                amount = money(row["amount"], unit=False)
+                cell[0 if row["side"] == "D" else 1] += amount
+                cell[2] += amount if row["side"] == "D" else -amount
+            for value in attribution[source_key]:
+                actual = {code: tuple(cell) for code, cell in observed.get(value["code"], {}).items() if any(cell)}
+                require(actual == expected_cells(value), f"exported {kind} gross/net cells differ from original source")
     return {"entries": len(entries), "legs": sum(actual_legs.values())}
+
+
+def check_cost_center_report(event: dict, value: dict, *, invisible: bool = False) -> None:
+    require(event.get("event") == "trial_balance", "native cost-center report has another event type")
+    require(body(event).get("dimension") == {"dimension": "cost_center", "value": value["code"],
+                                             "values": [value["code"]]},
+            "native trial balance selected another cost center or an unexpected descendant")
+    check_tb(event, value, invisible=invisible)
+
+
+def certify_cost_centers(native: Native, attribution: dict, period: str, pre_finalize: int) -> list[dict]:
+    """Exercise every published expense area, including a zero-only area."""
+    directory = native.out / "cost-center-reports"
+    directory.mkdir()
+    reports = []
+    for value in attribution["cost_centers"]:
+        code = value["code"]
+        selected = ["tb", "--period", period, "--dimension", "cost_center=" + code]
+        historical = native.one([*selected, "--as-known-at", str(pre_finalize)])
+        check_cost_center_report(historical, value, invisible=True)
+        require(historical.get("coordinate", {}).get("known_at") == pre_finalize,
+                "cost-center historical report moved its selected prefix")
+        check_cost_center_report(native.one([*selected, "--activity"]), value)
+        certified = native.execute([*selected, "--certify"])
+        report = event_named(certified, "trial_balance")
+        check_cost_center_report(report, value)
+        certificate = body(event_named(certified, "report_certificate"))
+        require(certificate.get("output_format") == "fa:dimension-trial-balance:v1"
+                and report.get("certificate") == certificate.get("oid"),
+                "native cost-center certificate is not bound to the selected report")
+        replay_path = directory / f"{code}.report"
+        replayed = native.execute(["replay", "C:" + certificate["oid"], "--output", str(replay_path)])
+        replay = event_named(replayed, "trial_balance")
+        check_cost_center_report(replay, value)
+        require(body(replay) == body(report), "cost-center replay changed its exact report")
+        require(body(event_named(replayed, "report_replayed")).get("output_digest") == certificate["output_digest"],
+                "native cost-center replay changed its certified output digest")
+        reports.append({"code": code, "name": value["name"], "source_rows": value["row_count"],
+                        "posted_source_rows": value["posted_row_count"], "certificate_oid": certificate["oid"],
+                        "output_digest": certificate["output_digest"],
+                        "known_at": report["coordinate"]["known_at"],
+                        "historical_known_at": pre_finalize,
+                        "replayed_report_sha256": digest(replay_path.read_bytes())})
+        print(f"cost centers: certified {len(reports)}/{len(attribution['cost_centers'])}", file=sys.stderr, flush=True)
+    return reports
+
+
+def verify_cost_center_proofs(native: Native, reports: list[dict], state: dict, signed: dict,
+                             checkpoint: Path, binding: dict | None, chunks: list[dict]) -> None:
+    for report in reports:
+        code = report["code"]
+        bundle = native.out / "cost-center-reports" / f"{code}.fab"
+        receipt = bundle.with_suffix(".receipt")
+        native.one(["bundle", "produce", "--certificate", "C:" + report["certificate_oid"],
+                    "--state", state["oid"], "--out", str(bundle), "--receipt-out", str(receipt)])
+        if binding is not None:
+            report["source_population"] = check_source_report_bundle(bundle.read_bytes(), binding, chunks)
+        results = native.execute(["report", str(bundle), "--key", signed["checkpoint_public_key"],
+                                  "--checkpoint", str(checkpoint), "--receipt", str(receipt),
+                                  "--expect", report["certificate_oid"]], verifier=True)
+        verified = [value for value in results if value.get("verdict") == "verified"]
+        require(len(verified) == 1, "standalone verifier did not authenticate the cost-center report")
+        checks = [check for check in verified[0].get("checks", []) if check.get("check") == "dimension_filter"]
+        require(len(checks) == 1 and checks[0].get("result") == "pass"
+                and checks[0].get("scope") == "authenticated_journal"
+                and checks[0].get("detail", {}).get("dimension") == "cost_center"
+                and checks[0].get("detail", {}).get("value") == code
+                and checks[0].get("detail", {}).get("included_values") == [code],
+                "standalone verifier did not independently bind the exact cost-center selection")
+        report.update(bundle_sha256=digest(bundle.read_bytes()), receipt_sha256=digest(receipt.read_bytes()),
+                      independently_verified=True)
+
+
+def tamper_export_attribution(source: Path, destination: Path, kind: str,
+                              identities: dict[str, dict]) -> dict:
+    """Change one valid dimension identity, retaining every other logical cell."""
+    rows = export_rows(source)
+    number = 2 if kind == "cost_center" else 12
+    require(kind in ("cost_center", "party") and bool(rows), "invalid attribution tamper control")
+    before = dict(dimension_set(rows[0]["dimension_set_v1"]))[number]
+    candidates = sorted(value["value"] for value in identities[kind].values() if value["value"] != before)
+    require(bool(candidates), f"{kind} substitution control requires two distinct published values")
+    after = candidates[0]
+    token = f"{number}:{before}"
+    replacement = f"{number}:{after}"
+    with source.open(encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    require(token in text, "attribution tamper target is missing")
+    write_new(destination, text.replace(token, replacement, 1).encode("utf-8"))
+    changed = export_rows(destination)
+    expected = [dict(row) for row in rows]
+    expected[0]["dimension_set_v1"] = rows[0]["dimension_set_v1"].replace(token, replacement, 1)
+    require(changed == expected and changed != rows,
+            "attribution negative control changed anything besides one valid dimension value")
+    return {"kind": kind, "dimension": number, "before": before, "after": after,
+            "changed_legs": 1, "file": destination.name, "sha256": digest(destination.read_bytes())}
 
 
 class Native:
     def __init__(self, fa: Path, verifier: Path, out: Path, timeout: int, fad: Path | None = None,
                  stage_group_size: int = 64, batch_approvals: bool = False, batch_evidence: bool = False,
-                 bind_source: bool = False):
+                 bind_source: bool = False, native_attribution: bool = False):
         self.fa, self.verifier, self.out, self.timeout = fa, verifier, out, timeout
         require(type(stage_group_size) is int and 1 <= stage_group_size <= 4096,
                 "stage group size must be an integer between 1 and 4096")
@@ -495,6 +745,8 @@ class Native:
         self.batch_evidence = batch_evidence
         require(type(bind_source) is bool, "source binding must be explicitly enabled or disabled")
         self.bind_source = bind_source
+        require(type(native_attribution) is bool, "native attribution must be explicitly enabled or disabled")
+        self.native_attribution = native_attribution
         self.evidence_group_requests = 0
         self.evidence_receipts: dict[str, dict[str, Any]] = {}
         self.document_commitments: dict[str, str] = {}
@@ -765,6 +1017,8 @@ class Native:
 
 
 def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) -> dict[str, Any]:
+    require(native.native_attribution == (expected.get("native_attribution") == public_spend.ATTRIBUTION_PROFILE),
+            "native attribution execution and preparation profiles differ")
     start = date.fromisoformat(expected["period_start"])
     period = f"FY{start.year}-P{start.month:02}"
     go_live = f"{start.year + 1}-01-01"
@@ -775,13 +1029,20 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     native.owner_principal = authority.get("principal") if isinstance(authority, dict) else None
     native.one(["chart", "import", str(prepared / "chart.json")])
     native.one(["period", "create", "--fiscal-year", str(start.year)])
+    attribution = identities = None
+    if native.native_attribution:
+        attribution = json.loads((prepared / "native_attribution.json").read_bytes())
+        identities = register_attribution(native, attribution)
     docs = {}
-    for name, kind, mime in [("raw.csv", "Spreadsheet", "text/csv;charset=windows-1252"),
-                             ("legacy.csv", "Spreadsheet", "text/csv;charset=utf-8"),
-                             ("receipt.json", "Workpaper", "application/json"),
-                             ("provenance.jsonl", "Workpaper", "application/x-ndjson"),
-                             ("records.jsonl", "Workpaper", "application/x-ndjson"),
-                             ("expected_tb.json", "Workpaper", "application/json")]:
+    documents = [("raw.csv", "Spreadsheet", "text/csv;charset=windows-1252"),
+                 ("legacy.csv", "Spreadsheet", "text/csv;charset=utf-8"),
+                 ("receipt.json", "Workpaper", "application/json"),
+                 ("provenance.jsonl", "Workpaper", "application/x-ndjson"),
+                 ("records.jsonl", "Workpaper", "application/x-ndjson"),
+                 ("expected_tb.json", "Workpaper", "application/json")]
+    if native.native_attribution:
+        documents.append(("native_attribution.json", "Workpaper", "application/json"))
+    for name, kind, mime in documents:
         docs[name] = native.document(prepared / name, kind, mime)
     readback = native.out / "document-readback"
     readback.mkdir()
@@ -827,6 +1088,8 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     chunks = preparation["chunks"]
     require(len(chunks) == expected["entry_count"] > 0, "native chunk count differs from complete source")
     require(sum(chunk["leg_count"] for chunk in chunks) == expected["leg_count"], "native preparation changed source leg count")
+    if identities is not None:
+        check_prepared_attribution(chunks, prepared, identities)
     package = preparation["package_oid"]
     binding = binding_receipt = source_report = None
     binding_inputs: dict[str, Any] = {}
@@ -876,6 +1139,8 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
         entries = [staged["entry_vid"] for staged in receipts]
         staged_at = {staged["entry_vid"]: staged["recorded_at"] for staged in receipts}
         evidence = [docs[name] for name in ("raw.csv", "receipt.json", "provenance.jsonl", "records.jsonl")]
+        if native.native_attribution:
+            evidence.append(docs["native_attribution.json"])
         native.attach_sources(entries, evidence, staged_at=staged_at)
         if start == 0 and native.batch_evidence:
             before = native.head()
@@ -931,7 +1196,16 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     export = native.out / "native.csv"
     native.one(["export", "csv-gl", "--period", period, "--out", str(export)])
     native.one(["verify", "export", "csv-gl", str(export)])
-    census = check_export(export, prepared, expected)
+    census = check_export(export, prepared, expected, attribution=attribution, identities=identities)
+    attribution_controls = []
+    cost_center_reports = []
+    if attribution is not None and identities is not None:
+        for kind in ("cost_center", "party"):
+            tampered_export = native.out / f"tampered-{kind}.csv"
+            mutation = tamper_export_attribution(export, tampered_export, kind, identities)
+            native.execute(["verify", "export", "csv-gl", str(tampered_export)], expected_exit=8)
+            attribution_controls.append(mutation)
+        cost_center_reports = certify_cost_centers(native, attribution, period, pre_finalize)
     certified_events = native.execute(["tb", "--period", period, "--certify"])
     certificate_event = event_named(certified_events, "report_certificate")
     report_events = [event for event in certified_events if event.get("event") != "report_certificate"]
@@ -948,6 +1222,8 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     signed = body(native.one(["proof", "signed-checkpoint", "--state", state["oid"]]))
     checkpoint_path = native.out / "report.checkpoint"
     write_new(checkpoint_path, bytes.fromhex(signed["bytes"]))
+    if cost_center_reports:
+        verify_cost_center_proofs(native, cost_center_reports, state, signed, checkpoint_path, binding, chunks)
     bundle_path, receipt_path = native.out / "trial-balance.fab", native.out / "trial-balance.receipt"
     native.one(["bundle", "produce", "--certificate", locator, "--state", state["oid"],
                 "--out", str(bundle_path), "--receipt-out", str(receipt_path)])
@@ -974,6 +1250,9 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
             "batch_evidence": native.batch_evidence, "evidence_group_requests": native.evidence_group_requests,
             "bind_source": native.bind_source, "source_binding": binding, "source_binding_receipt": binding_receipt,
             "source_report": source_report,
+            "native_attribution": public_spend.ATTRIBUTION_PROFILE if native.native_attribution else None,
+            "attribution_identities": identities, "cost_center_reports": cost_center_reports,
+            "attribution_tamper_controls": attribution_controls,
             "period": period, "migration_run": run_vid, "package_oid": package, "documents": docs,
             "certificate_digest": certificate["oid"], "output_digest": certificate["output_digest"],
             "checkpoint_public_key": signed["checkpoint_public_key"], "bundle_sha256": digest(bundle_path.read_bytes()),
@@ -990,7 +1269,17 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
                          if native.batch_evidence else [])
                       + (["native_source_binding_matches_complete_prepared_population", "bound_prepare_retry_without_publication",
                           "source_population_complete_before_activation", "terminal_binding_retry_retains_original_identity",
-                          "portable_source_manifest_matches_every_prepared_proposal"] if native.bind_source else []),
+                          "portable_source_manifest_matches_every_prepared_proposal"] if native.bind_source else [])
+                      + (["native_source_supplier_and_cost_center_inventory",
+                          "every_prepared_leg_preserves_supplier_and_cost_center",
+                          "every_exported_leg_preserves_supplier_and_cost_center",
+                          "all_supplier_and_cost_center_gross_and_net_cells_match_original_source",
+                          "all_cost_center_historical_prefixes_remain_invisible",
+                          "all_cost_center_stock_and_activity_reports_match_original_source",
+                          "all_cost_center_certificates_replay_exactly",
+                          "all_cost_center_portable_reports_independently_verified",
+                          "supplier_only_and_cost_center_only_export_mutations_refused"]
+                         if native.native_attribution else []),
             "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance."}
 
 
@@ -1019,6 +1308,8 @@ def main() -> int:
                         help="attach source documents to each staging group in one native call; requires document attach --entries")
     parser.add_argument("--bind-source", action="store_true",
                         help="bind the complete retained native package before staging and verify its portable source manifest")
+    parser.add_argument("--native-attribution", action="store_true",
+                        help="require attributed preparation; import all supplier/expense-area tags and prove every cost-center report")
     args = parser.parse_args()
     if args.timeout < 1:
         parser.error("--timeout must be positive")
@@ -1026,7 +1317,7 @@ def main() -> int:
         parser.error("--stage-group-size must be between 1 and 4096")
     prepared, out = args.prepared.resolve(), args.out.resolve()
     try:
-        _, expected = verify_prepared(prepared, args.dataset)
+        _, expected = verify_prepared(prepared, args.dataset, native_attribution=args.native_attribution)
         out.mkdir(parents=True, exist_ok=False)
     except (OSError, ValueError, CheckError) as error:
         print(f"public-data preflight refused: {error}", file=sys.stderr)
@@ -1039,7 +1330,7 @@ def main() -> int:
     code = 1
     try:
         native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size,
-                        args.batch_approvals, args.batch_evidence, args.bind_source)
+                        args.batch_approvals, args.batch_evidence, args.bind_source, args.native_attribution)
         result = run(native, prepared, args.dataset, expected)
         code = 0
     except KeyboardInterrupt:
@@ -1076,6 +1367,7 @@ def main() -> int:
     result["approval_group_requests"] = native.approval_group_requests if native is not None else 0
     result["batch_evidence"] = args.batch_evidence
     result["bind_source"] = args.bind_source
+    result["native_attribution"] = public_spend.ATTRIBUTION_PROFILE if args.native_attribution else None
     result["evidence_group_requests"] = native.evidence_group_requests if native is not None else 0
     write_new(out / "result.json", json_bytes(result))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
