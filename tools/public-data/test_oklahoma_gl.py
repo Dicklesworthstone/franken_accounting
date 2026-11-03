@@ -10,6 +10,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 
 HERE = Path(__file__).resolve().parent
@@ -112,6 +113,24 @@ class OklahomaPublicDataTests(unittest.TestCase):
         for name, control in manifest["outputs"].items():
             self.assertEqual(hashlib.sha256(first[name]).hexdigest(), control["sha256"])
             self.assertEqual(len(first[name]), control["bytes"])
+
+    def test_column_map_contains_only_the_native_column_declaration(self):
+        # Account mappings belong to the native import intent. Embedding a
+        # second table here causes native preparation to refuse before any
+        # source rows or independently declared monetary controls are checked.
+        outputs = gl.artifacts(self.source)
+        declaration = tomllib.loads(outputs["column_map.toml"].decode("utf-8"))
+        self.assertEqual(declaration, {"columns": {
+            "source_system": gl.SOURCE_SYSTEM,
+            "default_unit": "USD",
+            "entry_id_column": "entry_id",
+            "effective_date_column": "effective_date",
+            "account_column": "account",
+            "signed_amount_column": "amount",
+            "unit_column": "currency",
+            "description_column": "description",
+            "memo_column": "memo",
+        }})
 
     def test_tampered_source_fails_before_any_output_is_written(self):
         folder = self.scratch()

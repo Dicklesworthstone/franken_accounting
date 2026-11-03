@@ -319,8 +319,7 @@ def artifacts(source: Path, kind: str = "auto") -> dict[str, bytes]:
         'default_unit = "USD"\nentry_id_column = "entry_id"\n'
         'effective_date_column = "effective_date"\naccount_column = "account"\n'
         'signed_amount_column = "amount"\nunit_column = "currency"\n'
-        'description_column = "description"\nmemo_column = "memo"\n\n[account_map]\n'
-        + "".join(f'"{code}" = "{code}"\n' for code in sorted(ACCOUNTS))
+        'description_column = "description"\nmemo_column = "memo"\n'
     )
     out = {
         "source.csv": raw.decode("cp1252").encode("utf-8"),
