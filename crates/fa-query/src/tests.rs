@@ -388,6 +388,8 @@ fn branches_procedures_and_certificates() {
         ("CALL fa.open_items", None),
         ("CALL fa.open_items() AS KNOWN AT 4", None),
         ("CALL fa.open_items('1200')", Some("1200".to_string())),
+        // The list form the docs and the CALL fix hint name.
+        ("CALL fa.open_items(['1200'])", Some("1200".to_string())),
     ] {
         assert_eq!(
             rewrite(text).unwrap().selection,
@@ -410,6 +412,7 @@ fn branches_procedures_and_certificates() {
             "CALL fa.open_items('1200') FOR PERIOD 'FY2026-P03'",
             "not for a period",
         ),
+        ("CALL fa.open_items(['1200', '1300'])", "stands alone"),
         (
             "CALL fa.open_items EFFECTIVE BETWEEN '2026-01-01' AND '2026-01-31'",
             "by period and known-at",
@@ -1030,4 +1033,55 @@ fn a_period_range_selects_every_period_between_its_ends() {
         let r = refused(text);
         assert!(r.message.contains(says), "{text}: {r:?}");
     }
+}
+
+/// A `//` comment ending the text before an inserted clause used to comment
+/// out `FOR SYSTEM_TIME AS OF SEQ` and the line after it: the read ran at the
+/// frontier over every account while reporting known-at 4. Comments are
+/// blanked before the native statement is cut, so nothing they precede is lost.
+#[test]
+fn a_line_comment_never_swallows_an_inserted_clause() {
+    let (p, n) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) // cash only\nWHERE a.code = '1000'\nRETURN COUNT(*) AS legs AS KNOWN AT 4",
+    );
+    assert_eq!(p.known_at, KnownAt::Seq(4));
+    let statement = n.statement(4);
+    assert!(!statement.contains("//"), "{statement}");
+    assert!(
+        statement.starts_with(
+            "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) FOR SYSTEM_TIME AS OF SEQ 4 WHERE a.code = '1000'"
+        ),
+        "{statement}"
+    );
+    assert!(
+        statement.ends_with("RETURN COUNT(*) AS legs"),
+        "{statement}"
+    );
+    // A block comment is blanked too; a statement without comments is unchanged.
+    let (_, n) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) /* cash */ WHERE a.code = '1000' RETURN COUNT(*) AS legs",
+    );
+    assert!(!n.statement(4).contains("cash"), "{}", n.statement(4));
+}
+
+/// The substrate reads a backtick-quoted name as the plain word, but the
+/// profile's checks read names as words: `` l.`amount` `` ordered or took the
+/// max across units, and `` (r:`RegisterState`) `` read the derived cache, past
+/// the checks that refuse the same queries spelled plainly. A backtick name is
+/// refused instead.
+#[test]
+fn a_backtick_quoted_name_is_refused_rather_than_read_unchecked() {
+    for text in [
+        "MATCH (l:Leg) RETURN l ORDER BY l.`amount` DESC LIMIT 10",
+        "MATCH (l:Leg) RETURN MAX(l.`amount`) AS top",
+        "MATCH (r:`RegisterState`) RETURN r",
+    ] {
+        let refusal = refused(text);
+        assert!(
+            format!("{refusal:?}").contains("backtick-quoted name"),
+            "{text}: {refusal:?}"
+        );
+    }
+    // A backtick inside a quoted string is just a character.
+    native("MATCH (a:Account) WHERE a.code = 'a`b' RETURN a.code");
 }
