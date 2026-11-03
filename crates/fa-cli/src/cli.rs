@@ -9861,6 +9861,42 @@ pub(crate) fn emit_post_plan(
             ("source_ordinals", Json::Arr(source_ordinals)),
         ])
     });
+    // A lot disposal's cost relief was priced by its account's lot law
+    // (fa-0hs4.9): the rehearsal names that law beside the legs it derived.
+    let lot_disposal = proposal
+        .lot_disposal_basis()
+        .map_err(|error| Fail::Internal(format!("admitted plan lot-disposal basis: {error}")))?
+        .map(|basis| {
+            let account = accounts.get(&basis.account).ok_or_else(|| {
+                Fail::Internal(format!(
+                    "admitted lot disposal names a missing account {:032x}",
+                    basis.account.0
+                ))
+            })?;
+            let quantity = render_amount(basis.quantity, &book.context().units)?;
+            let line = format!(
+                "\nLot disposal: {quantity} from {} under {} ({}, {} rounding) over the lots recorded through sequence {}; policy entry {:032x}",
+                account.code,
+                basis.law.name(),
+                basis.regime.as_str(),
+                basis.rounding_law.name(),
+                basis.known_at.0,
+                basis.policy.vid.0,
+            );
+            let json = obj(vec![
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", basis.account.0))),
+                ("quantity", s(quantity)),
+                ("law", s(basis.law.name())),
+                ("regime", s(basis.regime.as_str())),
+                ("rounding_law", s(basis.rounding_law.name())),
+                ("known_at", Json::Int(i128::from(basis.known_at.0))),
+                ("policy_entry", s(format!("{:032x}", basis.policy.vid.0))),
+                ("policy_digest", s(hex(&basis.policy.entry_digest))),
+            ]);
+            Ok::<_, Fail>((json, line))
+        })
+        .transpose()?;
     let bound = out.is_bound();
     let authority_posture = out.authority_posture();
     let bound_void = !out.can_confirm() && disposition == Some("voids");
@@ -9961,6 +9997,9 @@ pub(crate) fn emit_post_plan(
             rate.denominator(),
         ));
     }
+    if let Some((_, line)) = &lot_disposal {
+        human.push_str(line);
+    }
     if let Some((_, lines)) = &net_effect {
         human.push_str("\nNet effect (the target plus this entry):\n");
         human.push_str(&lines.join("\n"));
@@ -10053,6 +10092,10 @@ pub(crate) fn emit_post_plan(
             ),
             ("disposition", disposition.map_or(Json::Null, s)),
             ("proportional_post", proportional_json),
+            (
+                "lot_disposal",
+                lot_disposal.map_or(Json::Null, |(json, _)| json),
+            ),
             (
                 "supersedes",
                 Json::Arr(

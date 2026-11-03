@@ -1160,3 +1160,102 @@ fn inline_disposal_batches_refuse_changed_reviews_and_later_poison_atomically()
     );
     Ok(())
 }
+
+/// fa-0hs4.9: a direct `fa dispose --dry-run` names the lot law that priced
+/// the relief beside the legs it derived, agrees with the review of the same
+/// disposal, and writes nothing.
+#[test]
+fn dispose_dry_run_names_law_and_derived_legs() -> std::io::Result<()> {
+    // Lots: 10 SHARE at 100.00 (03-05), then 10 SHARE at 20.00 (03-10).
+    for (law, relieved) in [
+        ("FIFO", "104.00 USD"),
+        ("LIFO", "40.00 USD"),
+        ("WeightedAverage", "72.00 USD"),
+    ] {
+        let (_dir, book, evidence) = setup(law)?;
+        let before = frontier(&book);
+        let disposal = |mode: &'static str| {
+            vec![
+                "dispose",
+                "--account",
+                "1400",
+                "--quantity",
+                "12.000000 SHARE",
+                "--quantity-offset",
+                "1499",
+                "--cost-offset",
+                "5100",
+                "--date",
+                "2026-03-15",
+                "--key",
+                "rehearsed-disposal",
+                "--evidence",
+                evidence.as_str(),
+                mode,
+                "--json",
+            ]
+        };
+        let rehearsed = ok(&book, "dry run", &disposal("--dry-run"));
+        assert_eq!(field(&rehearsed, "event"), Some("plan"), "{law}");
+        let plan = doc(&rehearsed);
+        let basis = plan.get("lot_disposal").expect("lot_disposal");
+        assert_eq!(text(basis, "law"), law);
+        assert_eq!(text(basis, "regime"), "US-GAAP");
+        assert_eq!(text(basis, "account"), "1400");
+        assert_eq!(text(basis, "quantity"), "12.000000 SHARE");
+        let legs = arr(&plan, "legs")
+            .iter()
+            .map(|leg| {
+                (
+                    text(leg, "account").to_string(),
+                    text(leg, "side").to_string(),
+                    text(leg, "amount").to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (account, side, amount) in [
+            ("1400", "credit", "12.000000 SHARE"),
+            ("1499", "debit", "12.000000 SHARE"),
+            ("5100", "debit", relieved),
+            ("1400", "credit", relieved),
+        ] {
+            let expected = (account.to_string(), side.to_string(), amount.to_string());
+            assert!(
+                legs.contains(&expected),
+                "{law}: no derived leg {expected:?} in {legs:?}"
+            );
+        }
+        assert_eq!(legs.len(), 4, "{law}: {legs:?}");
+        assert_eq!(frontier(&book), before, "{law}: the dry run wrote");
+
+        // The review of the same disposal states the same basis.
+        let reviewed = ok(&book, "review", &disposal("--review-only"));
+        let review = doc(&reviewed);
+        for key in [
+            "law",
+            "regime",
+            "rounding_law",
+            "quantity",
+            "policy_entry",
+            "policy_digest",
+            "account_vid",
+        ] {
+            assert_eq!(text(basis, key), text(&review, key), "{law}: {key}");
+        }
+        assert_eq!(basis.get("known_at"), review.get("known_at"), "{law}");
+
+        // A human reader of the rehearsal sees the law too.
+        let mut human = disposal("--dry-run");
+        human.pop();
+        let (code, out, err) = fa(Some(&book), &human);
+        assert_eq!(code, 0, "{law}: {err}");
+        assert!(
+            out.contains(&format!(
+                "Lot disposal: 12.000000 SHARE from 1400 under {law} (US-GAAP"
+            )),
+            "{law}: {out}"
+        );
+        assert_eq!(frontier(&book), before, "{law}: the review wrote");
+    }
+    Ok(())
+}
