@@ -12977,12 +12977,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let comparison_units = arr(&comparison, "units");
     assert_eq!(comparison_units.len(), 1, "{out}");
     for unit in comparison_units {
-        assert_eq!(text(&unit, "unit"), "USD", "{out}");
-        let lines = arr(&unit, "lines");
+        assert_eq!(text(unit, "unit"), "USD", "{out}");
+        let lines = arr(unit, "lines");
         assert_eq!(lines.len(), 15, "{out}");
         for line in lines {
-            assert_eq!(text(&line, "before"), text(&line, "after"), "{out}");
-            assert_eq!(text(&line, "delta"), "0.00 USD", "{out}");
+            assert_eq!(text(line, "before"), text(line, "after"), "{out}");
+            assert_eq!(text(line, "delta"), "0.00 USD", "{out}");
         }
     }
     // Disclosed in a Disclosure document once another principal reviewed

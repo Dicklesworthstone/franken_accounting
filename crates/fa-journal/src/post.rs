@@ -1033,8 +1033,11 @@ fn not_implemented(class_name: &str) -> Refusal {
 /// How the posting pipeline admits a request (plan §14.2, §15.2, §15.3).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Admission {
-    /// Publish under the request's own capability ([`fa_policy::admit_base`]).
+    /// Publish under the request's own capability ([`fa_policy::admit_base_for_post`]).
     Commit,
+    /// An authenticated single or replacement plan. Only the plan verifier
+    /// constructs this token; it supplies the rehearsal, never authority.
+    VerifiedPlan(crate::plan::VerifiedPostPlan),
     /// A member of an authenticated atomic batch. Only the batch verifier
     /// can make this token after checking the complete artifact and caller
     /// binding. The caller still needs their own trunk authority; the token
@@ -1364,6 +1367,29 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
         req,
         None,
         Admission::Commit,
+        None,
+        None,
+        &mut None,
+    )
+}
+
+/// Reproduce an authenticated portable plan with every ordinary posting law.
+/// The verifier must still compare effects and retain the certificate in this
+/// transaction before publication. No public request can construct its token.
+pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+    verified: crate::plan::VerifiedPostPlan,
+) -> Outcome<PostPreparation> {
+    prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        Admission::VerifiedPlan(verified),
         None,
         None,
         &mut None,
@@ -2027,14 +2053,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         if (carried.is_some() && asset_charge_batch.is_none())
             || replacement_basis.is_some()
-            || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(
-                    admission,
-                    Admission::VerifiedBatch(_)
-                        | Admission::PlanDraft(_)
-                        | Admission::Promote(_)
-                        | Admission::ScratchDraft(_)
-                ) && asset_charge_batch.is_some()))
+            || !(matches!(
+                admission,
+                Admission::Commit | Admission::VerifiedPlan(_) | Admission::Plan
+            ) || (matches!(
+                admission,
+                Admission::VerifiedBatch(_)
+                    | Admission::PlanDraft(_)
+                    | Admission::Promote(_)
+                    | Admission::ScratchDraft(_)
+            ) && asset_charge_batch.is_some()))
         {
             return Ok(Err(crate::asset_cost::unsupported_batch()));
         }
@@ -2050,14 +2078,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         if (carried.is_some() && disposal_batch.is_none())
             || replacement_basis.is_some()
-            || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(
-                    admission,
-                    Admission::VerifiedBatch(_)
-                        | Admission::PlanDraft(_)
-                        | Admission::Promote(_)
-                        | Admission::ScratchDraft(_)
-                ) && disposal_batch.is_some()))
+            || !(matches!(
+                admission,
+                Admission::Commit | Admission::VerifiedPlan(_) | Admission::Plan
+            ) || (matches!(
+                admission,
+                Admission::VerifiedBatch(_)
+                    | Admission::PlanDraft(_)
+                    | Admission::Promote(_)
+                    | Admission::ScratchDraft(_)
+            ) && disposal_batch.is_some()))
         {
             return Ok(Err(crate::disposal::unsupported_batch()));
         }
@@ -2102,11 +2132,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         if carried.is_some()
             || replacement_basis.is_some()
-            || !(matches!(admission, Admission::Commit | Admission::Plan)
-                || (matches!(
-                    admission,
-                    Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
-                ) && revaluation_draft.is_some()))
+            || !(matches!(
+                admission,
+                Admission::Commit | Admission::VerifiedPlan(_) | Admission::Plan
+            ) || (matches!(
+                admission,
+                Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+            ) && revaluation_draft.is_some()))
         {
             return Ok(Err(crate::revaluation::unsupported_batch()));
         }

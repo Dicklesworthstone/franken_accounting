@@ -6689,6 +6689,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "retaining a report certificate",
                 )
             })
+            .and_then(|()| fa_policy::admit_control_write(capability))
             .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));

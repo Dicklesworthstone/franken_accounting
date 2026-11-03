@@ -366,6 +366,31 @@ fn every_citation_becomes_a_same_birth_edge_without_losing_ordered_paths() {
 }
 
 #[test]
+fn required_rehearsal_refuses_finding_publication_without_changing_retained_sources() {
+    let mut f = Fixture::new(223);
+    f.post(10, "3000", "1000", 100);
+    let certificate = f.certify("jet.weekend", None);
+    let before = f.head();
+    let capability = cap(&["read", "produce"]).with_requires_dry_run();
+    let cx = f.cx();
+    let refusal = f
+        .runtime
+        .block_on(
+            f.book
+                .record_findings(&cx, PRINCIPAL, &capability, certificate.digest()),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(refusal.message.contains("requires_dry_run"));
+    assert_eq!(f.head(), before);
+    assert_eq!(f.count(), 0);
+    let recorded = f.record(certificate.digest()).unwrap();
+    assert_eq!(recorded.recorded_at.0, before.0 + 1);
+    assert_eq!(recorded.report.findings, certificate.report().findings);
+}
+
+#[test]
 fn current_authority_and_complete_retained_source_precede_any_publication() {
     let mut f = Fixture::new(113);
     f.post(10, "3000", "1000", 100);

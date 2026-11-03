@@ -6579,6 +6579,97 @@ fn an_agent_rehearses_a_trunk_post_that_commits_for_no_one() {
 }
 
 #[test]
+fn required_rehearsal_accepts_only_authenticated_single_and_replacement_plans() {
+    let mut h = harness();
+    let mut request = h.request(
+        h.proposal(
+            h.rent_legs(100),
+            b"required-single-plan",
+            EntryClass::ORIGINAL,
+        ),
+        &["post"],
+    );
+    let capability = request.capability.clone().with_requires_dry_run();
+    request.capability = capability.clone();
+    let before = h.db.frontier().unwrap();
+    let refusal = h.post(request.clone()).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let plan = h.post_plan(request).unwrap();
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let mut certificate = plan.certificate().clone();
+    certificate.authentication[0] ^= 1;
+    let forged = fa_intents::PostPlan::new(
+        plan.intent().clone(),
+        plan.prepared_entry().clone(),
+        certificate,
+    )
+    .unwrap();
+    let refusal = h.publish_plan(forged, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(posted.recorded_at().0, before.0 + 1);
+    let certificate_vid =
+        plan_certificate_vid(h.book.book_id, &plan.certificate().digest().unwrap());
+    assert_eq!(
+        h.db.vertex(certificate_vid).unwrap().unwrap().created_at,
+        posted.recorded_at()
+    );
+    assert!(
+        h.db.edge(edge_id(
+            relation::CITES,
+            posted.entry_ref().vid,
+            certificate_vid
+        ))
+        .unwrap()
+        .is_some()
+    );
+    let after = h.db.frontier().unwrap();
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap().entry_ref(),
+        posted.entry_ref()
+    );
+    assert_eq!(h.db.frontier().unwrap(), after);
+
+    let (mut reversal, mut replacement) = h.planned_rent_correction(posted.entry_ref());
+    reversal.capability = capability.clone();
+    replacement.capability = capability.clone();
+    let plan = h.replacement_plan(reversal, replacement).unwrap();
+    assert_eq!(h.db.frontier().unwrap(), after);
+    let pair = h
+        .publish_replacement_plan(plan.clone(), &capability)
+        .unwrap();
+    assert_eq!(pair.0.recorded_at(), pair.1.recorded_at());
+    assert_eq!(pair.0.recorded_at().0, after.0 + 1);
+    let certificate_vid = plan_certificate_vid(h.book.book_id, &plan.certificate_digest().unwrap());
+    for posted in [&pair.0, &pair.1] {
+        let (entry, at) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+        assert!(
+            entry.plan_certificate.is_none(),
+            "graph evidence is not a native OID"
+        );
+        assert_eq!(at, posted.recorded_at());
+        assert!(
+            h.db.edge(edge_id(
+                relation::CITES,
+                posted.entry_ref().vid,
+                certificate_vid
+            ))
+            .unwrap()
+            .is_some()
+        );
+    }
+    let after_pair = h.db.frontier().unwrap();
+    let retry = h.publish_replacement_plan(plan, &capability).unwrap();
+    assert_eq!(
+        (retry.0.entry_ref(), retry.1.entry_ref()),
+        (pair.0.entry_ref(), pair.1.entry_ref())
+    );
+    assert_eq!(h.db.frontier().unwrap(), after_pair);
+}
+
+#[test]
 fn portable_post_plan_is_zero_write_and_retains_exact_evidence_with_its_entry() {
     let mut h = harness();
     let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
@@ -11259,7 +11350,7 @@ fn year_end_close_preserves_offsetting_funds_untagged_balances_and_incremental_d
             .rate_doc_oids
             .is_empty()
     );
-    for pair in proposal.legs.chunks_exact(2) {
+    for pair in proposal.legs.as_chunks::<2>().0 {
         assert_eq!(pair[0].dimension_set, pair[1].dimension_set);
         assert_eq!(pair[0].account_ref, h.rent);
         assert_eq!(pair[1].account_ref, equity);

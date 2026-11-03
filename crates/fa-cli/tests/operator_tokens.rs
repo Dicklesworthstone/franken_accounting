@@ -368,6 +368,82 @@ fn a_requires_dry_run_token_cannot_publish_an_unrehearsed_document_upload() {
 }
 
 #[test]
+fn required_rehearsal_refuses_draft_and_scenario_publications() {
+    for (seed, verb, open, opened, discarded) in [
+        (0xbc, "draft", "new", "draft_opened", "draft_discarded"),
+        (
+            0xbd,
+            "scenario",
+            "fork",
+            "scenario_forked",
+            "scenario_discarded",
+        ),
+    ] {
+        let mut f = Fixture::new(seed);
+        let ordinary = token("rehearsed-draft-owner", &[Op::Read, Op::Post], 37);
+        let restricted = f.issue(&requiring_dry_run(&ordinary));
+        let unflagged = f.issue(&ordinary);
+        let words = [verb, open, "reviewed-work"];
+        let refused = f.refused(&restricted, &words, "FA-REF-011");
+        assert!(text(&refused, "message").contains("requires_dry_run"));
+        assert_eq!(text(&f.ok(&unflagged, &words, None), "event"), opened);
+        let words = [verb, "discard", "reviewed-work"];
+        let refused = f.refused(&restricted, &words, "FA-REF-011");
+        assert!(text(&refused, "message").contains("requires_dry_run"));
+        assert_eq!(text(&f.ok(&unflagged, &words, None), "event"), discarded);
+    }
+}
+
+#[test]
+fn required_rehearsal_refuses_native_certificate_and_report_artifact_retention() {
+    for artifact in [false, true] {
+        let mut f = Fixture::new(if artifact { 0xbf } else { 0xbe });
+        let certified = f
+            .book
+            .certify_trial_balance(
+                fa::TrialBalanceSelection::Periods(vec![PERIOD.to_string()]),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let certificate = certified.certificate;
+        let ordinary = Capability::embedded(principal_vid(ISSUER), &["read", "produce"]).unwrap();
+        let restricted = ordinary.clone().with_requires_dry_run();
+        let report = fa::ReportArtifact::try_from(&certificate).unwrap();
+        let bytes = report.canonical_bytes().unwrap();
+        let before = f.book.head().unwrap();
+        let refused = if artifact {
+            f.book.retain_report_artifact(
+                restricted.holder(),
+                &restricted,
+                &bytes,
+                Some(report.digest()),
+            )
+        } else {
+            f.book
+                .retain_certificate(restricted.holder(), &restricted, &certificate)
+        }
+        .unwrap()
+        .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-011", 7));
+        assert!(refused.message.contains("requires_dry_run"));
+        assert_eq!(f.book.head().unwrap(), before);
+        if artifact {
+            f.book
+                .retain_report_artifact(ordinary.holder(), &ordinary, &bytes, Some(report.digest()))
+                .unwrap()
+                .unwrap();
+        } else {
+            f.book
+                .retain_certificate(ordinary.holder(), &ordinary, &certificate)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(f.book.head().unwrap().0, before.0 + 1);
+    }
+}
+
+#[test]
 fn a_requires_dry_run_capability_still_produces_a_read_only_proof_bundle() {
     let mut f = Fixture::new(0xbb);
     let ordinary = Capability::embedded(

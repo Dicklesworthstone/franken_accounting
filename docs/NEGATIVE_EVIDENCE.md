@@ -1836,3 +1836,57 @@ without advancing the head.
 These are authored tests, not execution evidence;
 native execution, any old-code counterexample, and full qualification of
 this newer tree remain pending. The original Bead stays in progress.
+
+**Subsequent evidence and review.** The whole policy package on exact
+`a6b66f44d2f9d56bf62390db1c18b1855016f410` passed 57 tests (43 unit,
+9 registry/property and 5 engine/oracle differential cases), zero failed/ignored/filtered,
+remote exit 0 at 05:46:52 UTC. Its first development dispatch on hz3 was
+refused before Cargo by namespace initialization status 73/Killed, frontend
+103. Ordinary recovery acknowledged that exact preparation's terminal
+exit 1. One supported hz4 fallback executed the unchanged command at the
+original 1800-second cap. This development result is not Tier 0 or a full
+repository verdict, and it does not qualify subsequent source corrections.
+
+Independent read-only review 6333 found substantive gaps; no code was run
+by that reviewer. Single and replacement PostPlans still encountered raw
+commit admission, so a required-rehearsal capability could plan but could
+not commit them. Setting an arbitrary native OID would be wrong: these
+plans retain graph certificates and deliberately leave Entry.plan_certificate
+empty. The repair instead uses a private verifier token, constructed only
+after authenticating the plan and exact capability. It discharges only the
+rehearsal prerequisite. Normal authority, policy witnesses, production law,
+effect/entry/period/epoch comparison, and atomic certificate/CITES retention
+remain required. A real native regression exercises single and replacement
+publication, corrupted authentication, unchanged head on refusal, exact
+retries and graph retention.
+
+The review also found unmatch and retained findings/certificate/report-artifact
+writes bypassing shared intent admission. These now use the same guard;
+scenario/draft/close artifact retention refuses before replay at its public
+boundary too. Paired native regressions cover unmatch, findings and retained
+reports. Draft/scenario creation and discard, and other journaled rehearsal
+controls, conservatively refuse the explicit caveat: a draft's journal record
+is still a write. Some control previews share this unsupported admission;
+they are not claimed available under the caveat. Pure reads, proof export
+and supported posting rehearsal remain distinct.
+
+The existing scheduled-admission test had accepted a sweep that blocked
+every reversal but still published its cursor under the caveat. Its original
+flagged row is now a separate, stronger assertion: FA-REF-011/exit 7, no
+reversal and no head advance, including no cursor. Original ceiling/class
+rows remain, as do the ordinary sweeps elsewhere in that suite. No test was
+removed or ignored and no assertion/tolerance/budget/lint policy was lowered.
+
+The original ac419 full gate passed its complete workspace check (1530
+seconds) and then actually failed Clippy on five redundant borrows in the
+new equity event test. Removing those borrows preserves every expected
+value and assertion. A separate previously reviewed chunks_exact-to-as_chunks
+test correction is also applied with the same ignored-remainder semantics;
+it is source correction, not a lint exemption. Further obsolete-source tests
+were deliberately stopped after the genuine Clippy failure: only the owned
+driver and exact fa.lib child were stopped, ordinary cancellation/recovery
+acknowledged delivery 143 (the daemon's earlier 130 remains recorded).
+The original verifier exits 0 after recovery for stable **RED/partial** note
+`82ff122f30cef96bfc0f351ccfac739256ebfeed`. Integrity is not a PASS or resume
+authority. Native and full qualification of this newer correction remain
+pending; predicted failures from source review are not executed counterexamples.

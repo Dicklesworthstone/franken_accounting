@@ -1395,6 +1395,34 @@ fn metadata_cap(principal: VId) -> Capability {
 }
 
 #[test]
+fn a_requires_dry_run_token_cannot_publish_an_unrehearsed_bank_unmatch() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let original = h.confirm(&cap(CONFIRMER), request).unwrap();
+    let row = h.db.vertex(original.match_vid).unwrap();
+    let before = h.head();
+    let ordinary = metadata_cap(CONFIRMER);
+    let refusal = h
+        .unmatch(
+            &ordinary.clone().with_requires_dry_run(),
+            decision_ref(&original),
+        )
+        .unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::CAPABILITY, exit::SAFETY)
+    );
+    assert!(refusal.message.contains("requires_dry_run"));
+    assert_eq!(h.head(), before);
+    assert_eq!(h.db.vertex(original.match_vid).unwrap(), row);
+    let corrected = h.unmatch(&ordinary, decision_ref(&original)).unwrap();
+    assert_eq!(corrected.recorded_at.0, before.0 + 1);
+    assert_eq!(h.db.vertex(original.match_vid).unwrap(), row);
+}
+
+#[test]
 fn explicit_unmatch_preserves_original_facts_and_reconfirms_with_immutable_generations() {
     let mut h = Harness::new();
     let entry = h.entry(&[10_000], "WIRE", b"cash");

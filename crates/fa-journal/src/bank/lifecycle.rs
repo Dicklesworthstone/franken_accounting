@@ -689,6 +689,9 @@ pub async fn unmatch_bank_match<V: Vfs + Clone>(
     capability: &Capability,
     request: BankUnmatchRequest,
 ) -> Outcome<BankUnmatchRecorded> {
+    if let Err(denial) = fa_policy::admit_control_write(capability) {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
     if let Err(refusal) = admit_bank_match_history(db, book, capability, None)? {
         return Ok(Err(refusal));
     }

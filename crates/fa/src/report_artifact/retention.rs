@@ -65,6 +65,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         expected_digest: Option<&[u8; 32]>,
         expected: ReportArtifactExpectation<'_>,
     ) -> Outcome<RetainedCertificate> {
+        if let Err(denial) = fa_policy::admit_control_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
         }
@@ -123,6 +126,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &crate::ScenarioDiffCertificate,
         verified_at: CommitSeq,
     ) -> Outcome<RetainedCertificate> {
+        if let Err(denial) = fa_policy::admit_control_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
         }
@@ -162,6 +168,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &crate::DraftDiffCertificate,
         verified_at: CommitSeq,
     ) -> Outcome<RetainedCertificate> {
+        if let Err(denial) = fa_policy::admit_control_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         let admitted = self.query(cx, |db, context| {
             let authority =
                 match fa_journal::policy::admit_reads(db, context, principal, capability)? {
@@ -208,6 +217,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &crate::CloseRunRehearsalCertificate,
         verified_at: CommitSeq,
     ) -> Outcome<RetainedCertificate> {
+        if let Err(denial) = fa_policy::admit_control_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
         }

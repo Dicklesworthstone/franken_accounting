@@ -659,7 +659,7 @@ mod tests {
 
     /// Planning lifts only the Agent's trunk denial (plan §15.3): the
     /// holder, op, book and ceiling checks still run in the same order, and
-    /// committing re-admits through [`admit`], which still refuses.
+    /// committing re-admits through [`admit_base_for_post`], which still refuses.
     #[test]
     fn an_agent_may_plan_on_trunk_within_every_other_admission_check() {
         let agent = Capability::new(VId(5), Profile::Agent, &[Op::Read, Op::Post], VId(1))
@@ -701,15 +701,15 @@ mod tests {
 
     #[test]
     fn requires_dry_run_admits_reads_and_posting_rehearsal_but_no_unrehearsed_control() {
-        let capability = Capability::new(VId(5), Profile::Human, &Op::ALL, VId(1))
-            .unwrap()
-            .with_requires_dry_run();
+        let ordinary = Capability::new(VId(5), Profile::Human, &Op::ALL, VId(1)).unwrap();
+        let capability = ordinary.clone().with_requires_dry_run();
         assert_eq!(admit_read(&capability, VId(5), BOOK), Ok(()));
         for op in Op::ALL {
             let intent = Intent {
                 op,
                 ..intent(VId(5), &[])
             };
+            assert_eq!(admit(&ordinary, &intent), Ok(()), "unflagged {op}");
             let denial = admit(&capability, &intent).unwrap_err();
             assert!(matches!(
                 denial,
@@ -724,10 +724,22 @@ mod tests {
                 assert_eq!(admit_for_post(&capability, &intent), Ok(()));
                 assert_eq!(admit_base_for_plan(&capability, &intent), Ok(()));
             } else {
-                assert!(admit_base_for_post(&capability, &intent).is_err());
-                assert!(admit_for_post(&capability, &intent).is_err());
+                for denied in [
+                    admit_base_for_post(&capability, &intent).unwrap_err(),
+                    admit_for_post(&capability, &intent).unwrap_err(),
+                ] {
+                    assert_eq!((denied.code(), denied.exit()), ("FA-REF-011", 7));
+                    assert!(denied.message().contains("requires_dry_run"));
+                }
             }
         }
+        let agent = Capability::new(VId(5), Profile::Agent, &[Op::Read, Op::Post], VId(1)).unwrap();
+        assert_eq!(admit_read(&agent, VId(5), BOOK), Ok(()));
+        assert_eq!(admit_base_for_plan(&agent, &intent(VId(5), &[])), Ok(()));
+        assert_eq!(
+            admit_for_post(&agent, &intent(VId(5), &[])),
+            Err(Denial::AgentOnTrunk)
+        );
     }
 
     #[test]

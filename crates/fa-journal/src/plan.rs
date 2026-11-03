@@ -26,10 +26,17 @@ use crate::genesis::BookContext;
 use crate::object::{self, ObjectKind};
 use crate::policy;
 use crate::post::{
-    PostPreparation, PostRequest, Posted, prepare_plan, prepare_post, prepare_replacement_pair,
+    Admission, PostPreparation, PostRequest, Posted, prepare_plan, prepare_replacement_pair,
+    prepare_replacement_pair_admitted, prepare_verified_plan,
 };
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, replacement_vid, resolution_vid, reversal_vid, scalar_bytes};
+
+/// Only this verifier can discharge a required rehearsal for a single or
+/// replacement plan, after authenticating the artifact and caller binding.
+/// Publication still reproduces and compares all original native effects.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VerifiedPostPlan(());
 
 fn invalidated(message: impl Into<String>) -> Refusal {
     Refusal::new(
@@ -533,7 +540,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
         .collect();
     // Authentication of the plan never replaces admission of the caller.
     // Do this before observing the identity, retained certificate, or head.
-    if let Err(denial) = fa_policy::admit(
+    if let Err(denial) = fa_policy::admit_for_post(
         &capability,
         &fa_policy::Intent {
             principal: proposal.principal_ref,
@@ -601,7 +608,13 @@ pub async fn commit_plan<V: Vfs + Clone>(
             certificate.snapshot_seq.0,
         ))));
     }
-    let mut prepared = match prepare_post(db, ctx, book, request(plan.intent(), capability))? {
+    let mut prepared = match prepare_verified_plan(
+        db,
+        ctx,
+        book,
+        request(plan.intent(), capability),
+        VerifiedPostPlan(()),
+    )? {
         Err(refusal) => {
             return Ok(Err(invalidated(format!(
                 "production revalidation refused the plan: {} ({})",
@@ -1006,13 +1019,23 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
         return Ok(Err(policy::refusal(&denial)));
     }
     for member in [plan.reversal(), plan.replacement()] {
-        if let Err(refusal) = crate::post::authorize_request(
-            db,
-            book,
-            &request(member.intent(), capability.clone()),
-            crate::post::Admission::Commit,
-        )? {
-            return Ok(Err(refusal));
+        let proposal = member.intent().proposal();
+        let explicit: Vec<_> = proposal
+            .legs
+            .iter()
+            .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+            .collect();
+        if let Err(denial) = fa_policy::admit_for_post(
+            &capability,
+            &fa_policy::Intent {
+                principal: proposal.principal_ref,
+                trunk: true,
+                op: fa_policy::Op::Post,
+                book: book.book_id,
+                legs: &explicit,
+            },
+        ) {
+            return Ok(Err(policy::refusal(&denial)));
         }
     }
     let commitment = capability
@@ -1029,6 +1052,17 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
         return Ok(Err(invalidated(
             "the correction plan changed or belongs to a different acting capability",
         )));
+    }
+    let admission = Admission::VerifiedPlan(VerifiedPostPlan(()));
+    for member in [plan.reversal(), plan.replacement()] {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(member.intent(), capability.clone()),
+            admission,
+        )? {
+            return Ok(Err(refusal));
+        }
     }
     ctx.query()
         .checkpoint()
@@ -1048,13 +1082,13 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             "the correction's accounting basis changed; rehearse the complete pair again",
         )));
     }
-    let preparation = prepare_replacement_pair(
+    let preparation = prepare_replacement_pair_admitted(
         db,
         ctx,
         book,
         request(plan.reversal().intent(), capability.clone()),
         request(plan.replacement().intent(), capability),
-        false,
+        admission,
     )?;
     let mut prepared = match preparation {
         Ok((None, PostPreparation::Ready(prepared))) => prepared,
