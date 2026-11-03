@@ -1334,6 +1334,180 @@ fn slow_client_sending_a_frame_every_29s_does_not_starve_other_clients_and_unaut
     );
 }
 
+/// fa-2iu5: client B is accepted, then client A's request runs for 31 s
+/// (longer than the 30 s idle limit) and B sends its frame meanwhile. When
+/// the loop returns, B's deadline has lapsed but its frame is waiting: it is
+/// read and answered, not expired as Idle. A connection that really sends
+/// nothing for 30 s is still expired.
+#[test]
+fn a_waiting_request_is_served_after_a_slow_one() {
+    use asupersync::Budget;
+    use asupersync::lab::{AutoAdvanceTermination, LabRuntime};
+    use asupersync::net::tcp::VirtualTcpListener;
+    use std::sync::Arc;
+
+    const SEC: u64 = 1_000_000_000;
+
+    async fn sleep_ns(cx: &Cx, nanos: u64) {
+        let at = clock::deadline_after(clock::timer(cx).unwrap().now(), nanos).unwrap();
+        clock::Deadline::new(cx, at).unwrap().await.unwrap();
+    }
+
+    /// Answers every request with its argv; `--n=1` takes 31 s.
+    struct SlowFirst {
+        seen: Vec<Vec<String>>,
+        timings: Vec<ConnectionTiming>,
+    }
+
+    impl Service for SlowFirst {
+        async fn handle(&mut self, cx: &Cx, request: Request) -> (Response, Next) {
+            self.seen.push(request.argv.clone());
+            if request.argv.iter().any(|arg| arg == "--n=1") {
+                sleep_ns(cx, 31 * SEC).await;
+            }
+            let next = if request.op == Op::Stop {
+                Next::Stop
+            } else {
+                Next::Continue
+            };
+            let response = Response {
+                op: request.op,
+                exit: 0,
+                stdout: request.argv.join(" "),
+                stderr: String::new(),
+            };
+            (response, next)
+        }
+
+        fn deadline(&self) -> Option<Time> {
+            None
+        }
+
+        async fn tick(&mut self, _cx: &Cx) {}
+
+        fn on_connection_closed(&mut self, timing: ConnectionTiming) {
+            self.timings.push(timing);
+        }
+    }
+
+    async fn answer(cx: &Cx, client: &mut VirtualTcpStream) -> Option<String> {
+        let reply = read_frame(cx, client, MAX).await.ok().flatten()?;
+        Some(
+            Response::from_json(&canonical(&reply).unwrap(), 1)
+                .unwrap()
+                .stdout,
+        )
+    }
+
+    let mut lab = LabRuntime::new(LabConfig::new(43).with_auto_advance());
+    let root = lab.state.create_root_region(Budget::INFINITE);
+    let listener = Arc::new(VirtualTcpListener::new(addr(9100)));
+    let listener_for_client = Arc::clone(&listener);
+
+    let (server_task, mut server_handle) = lab
+        .state
+        .create_task(root, Budget::INFINITE, async move {
+            let cx = Cx::current().expect("lab server cx");
+            let limits = Limits {
+                protocol: 1,
+                max_frame_bytes: MAX,
+                idle: Some(Duration::from_secs(30)),
+            };
+            let mut service = SlowFirst {
+                seen: Vec::new(),
+                timings: Vec::new(),
+            };
+            serve_with(&cx, &*listener, limits, Path::new(BOOK), &mut service)
+                .await
+                .expect("serve_with");
+            (service.seen, service.timings)
+        })
+        .unwrap();
+
+    let (client_task, mut client_handle) = lab
+        .state
+        .create_task(root, Budget::INFINITE, async move {
+            let cx = Cx::current().expect("lab client cx");
+            let now_ns = || clock::timer(&cx).unwrap().now().as_nanos();
+
+            // t = 0: B connects and is accepted with nothing to send yet.
+            let (server_b, mut client_b) = VirtualTcpStream::pair(addr(9100), addr(2));
+            listener_for_client.inject_connection(server_b, addr(2));
+            sleep_ns(&cx, SEC).await;
+
+            // t = 1 s: A's request runs until t = 32 s.
+            let (server_a, mut client_a) = VirtualTcpStream::pair(addr(9100), addr(1));
+            listener_for_client.inject_connection(server_a, addr(1));
+            client_a
+                .write_all(&frame(&request(Op::Run, 1)))
+                .await
+                .unwrap();
+            sleep_ns(&cx, SEC).await;
+
+            // t = 2 s: B sends its request while A's is still running.
+            client_b
+                .write_all(&frame(&request(Op::Run, 2)))
+                .await
+                .unwrap();
+            assert_eq!(
+                answer(&cx, &mut client_a).await.as_deref(),
+                Some("tb --n=1 --json")
+            );
+            assert_eq!(now_ns(), 32 * SEC);
+            assert_eq!(
+                answer(&cx, &mut client_b).await.as_deref(),
+                Some("tb --n=2 --json"),
+                "B's waiting request must be answered, not dropped as Idle"
+            );
+            let _ = AsyncWriteExt::shutdown(&mut client_a).await;
+            let _ = AsyncWriteExt::shutdown(&mut client_b).await;
+            drop((client_a, client_b));
+
+            // D connects and sends nothing: it is still expired after 30 s.
+            let (server_d, _client_d) = VirtualTcpStream::pair(addr(9100), addr(4));
+            listener_for_client.inject_connection(server_d, addr(4));
+            sleep_ns(&cx, 31 * SEC).await;
+
+            let (server_stop, mut client_stop) = VirtualTcpStream::pair(addr(9100), addr(5));
+            listener_for_client.inject_connection(server_stop, addr(5));
+            client_stop
+                .write_all(&frame(&request(Op::Stop, 9)))
+                .await
+                .unwrap();
+            assert_eq!(
+                answer(&cx, &mut client_stop).await.as_deref(),
+                Some("tb --n=9 --json")
+            );
+        })
+        .unwrap();
+
+    {
+        let mut sched = lab.scheduler.lock();
+        sched.schedule(server_task, Budget::INFINITE.priority);
+        sched.schedule(client_task, Budget::INFINITE.priority);
+    }
+    let advanced = lab.run_with_auto_advance();
+    assert!(
+        matches!(advanced.termination, AutoAdvanceTermination::Quiescent),
+        "{advanced:?}"
+    );
+    assert!(lab.report().lab_test_passed(), "{:?}", lab.report());
+    client_handle.try_join().unwrap().expect("client task");
+    let (seen, timings) = server_handle.try_join().unwrap().expect("server task");
+    let argv = |n: usize| request(Op::Run, n).argv;
+    assert_eq!(seen, vec![argv(1), argv(2), argv(9)], "{seen:?}");
+    let idle: Vec<_> = timings
+        .iter()
+        .filter(|t| t.ended == Ended::Idle)
+        .map(|t| t.requests)
+        .collect();
+    assert_eq!(
+        idle,
+        vec![0],
+        "only the silent connection D idles out: {timings:?}"
+    );
+}
+
 #[test]
 fn connection_session_token_is_bound_for_lifetime_and_refuses_mid_connection_switch_under_chaos() {
     fn req_with_token(n: usize, token: Option<&[u8]>) -> Request {

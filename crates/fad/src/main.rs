@@ -268,14 +268,32 @@ fn serve(
             .filter(|t| !t.is_empty())
             .map(PathBuf::from)
     });
-    if (token_path.is_some() || !parsed.flag_all("--cluster").is_empty()) && mcp_mode.is_none() {
-        return cli::usage_error(
-            argv,
-            "--token and --cluster on `fad serve` require `--mcp stdio|socket`",
-            "fad serve --book <dir> --mcp stdio --token <file>",
-            false,
-        )
-        .0;
+    // A token and clusters bind the MCP session fad hosts on stdio. Under
+    // `--mcp socket` (or none) fad hosts no session, so they would be
+    // silently ignored; refuse them, naming FA_TOKEN when only the
+    // environment supplied the token.
+    let clusters = !parsed.flag_all("--cluster").is_empty();
+    if (token_path.is_some() || clusters) && !mcp_stdio {
+        let (source, binds, require) =
+            if parsed.flag("--token").is_none() && token_path.is_some() && !clusters {
+                ("FA_TOKEN (set in the environment)", "binds", "requires")
+            } else {
+                ("--token and --cluster", "bind", "require")
+            };
+        let (problem, fix) = if mcp_mode == Some("socket") {
+            (
+                format!(
+                    "{source} {binds} a hosted MCP session, and `fad serve --mcp socket` hosts none: it serves fad.sock for a separately started fa-mcp client"
+                ),
+                "fa-mcp --book <dir> --token <file> [--cluster <name>] (routes through this daemon's socket), or fad serve --book <dir> --mcp stdio --token <file>",
+            )
+        } else {
+            (
+                format!("{source} on `fad serve` {require} `--mcp stdio`"),
+                "fad serve --book <dir> --mcp stdio --token <file>, or unset FA_TOKEN to serve without a hosted MCP session",
+            )
+        };
+        return cli::usage_error(argv, problem, fix, false).0;
     }
     let hosted_token = if mcp_stdio {
         let Some(path) = &token_path else {
@@ -559,11 +577,15 @@ fn serve(
                 child.try_wait().ok().flatten().is_some()
             })
             .await;
-            if child.try_wait().ok().flatten().is_none() {
+            // A child still running here outlived an authorized stop (or a
+            // serve failure, reported below): fad ends it, and that kill is
+            // not a failure of the hosted session.
+            let killed = child.try_wait().ok().flatten().is_none();
+            if killed {
                 let _ = child.kill();
             }
             let status = child.wait().map_err(|e| format!("wait fa-mcp: {e}"))?;
-            if !status.success() {
+            if !killed && !status.success() {
                 drop(listener);
                 let _ = region.close().await;
                 return Err(format!(

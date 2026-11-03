@@ -2129,3 +2129,149 @@ fn untokened_fad_requests_cannot_self_grant_authority() {
     assert_eq!(code, 0, "{stopped}\n{err}");
     assert_eq!(daemon.finish().0, 0);
 }
+
+/// fa-2iu5: a token and clusters bind the MCP session fad hosts on stdio.
+/// `--mcp socket` hosts none, so it refuses them instead of ignoring them,
+/// and a token that only the environment supplied is named as FA_TOKEN.
+#[test]
+fn socket_mcp_refuses_stdio_only_flags_naming_the_route() {
+    let dir = tmp("mcp-socket");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let absent = dir.join("absent.token").display().to_string();
+    for flags in [
+        vec!["--token", absent.as_str()],
+        vec!["--cluster", "ledger"],
+    ] {
+        let mut argv = vec!["serve", "--book", &b, "--mcp", "socket"];
+        argv.extend(flags.iter().copied());
+        argv.push("--json");
+        let (code, out, err) = fad(&argv);
+        assert_eq!(code, 2, "{argv:?}\n{out}\n{err}");
+        assert!(out.contains("`fad serve --mcp socket` hosts none"), "{out}");
+        assert!(out.contains("fa-mcp --book <dir> --token <file>"), "{out}");
+        assert!(!book.join("fad.sock").exists());
+    }
+    let from_env = |mode: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fad"));
+        command.args(["serve", "--book", &b]);
+        if let Some(mode) = mode {
+            command.args(["--mcp", mode]);
+        }
+        let out = command
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .env("FA_TOKEN", &absent)
+            .output()
+            .expect("run fad");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        checked(&stdout);
+        (out.status.code(), stdout)
+    };
+    for mode in [None, Some("socket")] {
+        let (code, out) = from_env(mode);
+        assert_eq!(code, Some(2), "{mode:?}: {out}");
+        assert!(out.contains("FA_TOKEN (set in the environment)"), "{out}");
+        assert!(!out.contains("--token and --cluster"), "{out}");
+        assert!(!book.join("fad.sock").exists());
+    }
+    // Without them, `--mcp socket` serves the socket and stops cleanly.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fad"))
+        .args(["serve", "--book", &b, "--mcp", "socket", "--json"])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn fad");
+    let mut out = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut serving = String::new();
+    let _ = out.read_line(&mut serving);
+    assert_eq!(
+        checked(serving.trim_end()),
+        vec!["fad_serving"],
+        "{serving}"
+    );
+    let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{stopped}\n{err}");
+    assert_eq!(child.wait().expect("wait for fad").code(), Some(0));
+}
+
+/// fa-2iu5: after an authorized `fad stop`, fad ends the fa-mcp child it
+/// hosts. That kill is the stop working, not a hosted-session failure, so
+/// fad exits 0 and reports `fad_stopped` (on stderr: stdout is the MCP
+/// transport). A stand-in child that only waits makes the kill certain.
+#[test]
+fn stopping_an_mcp_hosted_daemon_exits_cleanly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("mcp-stop");
+    let (book, _) = book(&dir);
+    let b = book.display().to_string();
+    let token = dir.join("agent.token").display().to_string();
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "agent-mcp",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let stand_in = dir.join("waiting-mcp");
+    std::fs::write(&stand_in, "#!/bin/sh\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fad"))
+        .args([
+            "serve", "--book", &b, "--mcp", "stdio", "--token", &token, "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .env("FA_MCP_BIN", &stand_in)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn fad");
+    let mut diagnostics = BufReader::new(child.stderr.take().expect("piped stderr"));
+    let mut serving = String::new();
+    let _ = diagnostics.read_line(&mut serving);
+    assert_eq!(
+        checked(serving.trim_end()),
+        vec!["fad_serving"],
+        "{serving}"
+    );
+    let (code, stopped, err) = fad(&["stop", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{stopped}\n{err}");
+    let status = child.wait().expect("wait for fad");
+    let mut rest = String::new();
+    let _ = diagnostics.read_to_string(&mut rest);
+    let mut transport = String::new();
+    let _ = child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .read_to_string(&mut transport);
+    assert_eq!(status.code(), Some(0), "{rest}");
+    // stderr also carries fad's plain-text connection diagnostics; its one
+    // robot event is the stop report.
+    let events: Vec<String> = rest
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .flat_map(checked)
+        .collect();
+    assert_eq!(events, vec!["fad_stopped"], "{rest}");
+    assert!(
+        transport.is_empty(),
+        "the MCP transport carries no fad event: {transport}"
+    );
+}
