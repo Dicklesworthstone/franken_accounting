@@ -82,6 +82,12 @@ pub const CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v
 /// The same approved custom layout evaluated from retained base valuations.
 /// Native custom v11 bytes and meanings remain unchanged.
 pub const FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v12";
+/// Functional carrying amounts for one authenticated dimension subtree.
+/// Native v8 and unfiltered functional v10 formats retain their exact bytes.
+pub const FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] =
+    b"fa:report-certificate:v13";
+pub const FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT: &str =
+    "fa:functional-dimension-trial-balance:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -240,6 +246,13 @@ pub enum ReportSelection {
         dimension: String,
         value: String,
     },
+    /// A dimension subtree in the book's functional currency, retaining
+    /// entity cells, exact valuation evidence and the historical hierarchy.
+    FunctionalDimensionTrialBalance {
+        selection: TrialBalanceSelection,
+        dimension: String,
+        value: String,
+    },
     /// A regulatory schedule over the same exact folds a statement of its
     /// kind uses, mapped by account code (`fa statement regulatory`).
     RegulatorySchedule(Box<crate::statements::RegulatorySelection>),
@@ -322,8 +335,15 @@ impl ReportSelection {
                 selection,
                 dimension,
                 value,
+            }
+            | Self::FunctionalDimensionTrialBalance {
+                selection,
+                dimension,
+                value,
             } => {
                 selection.is_canonical()
+                    && (!self.uses_functional_valuations()
+                        || crate::functional_trial_balance::supported_selection(selection))
                     && fa_model::dimension_kind(dimension).is_some()
                     && !value.is_empty()
                     && value.len() <= fa_model::rea::MAX_REA_CODE_BYTES
@@ -374,6 +394,15 @@ impl ReportSelection {
                 dimension,
                 value,
             },
+            Self::FunctionalDimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => Self::FunctionalDimensionTrialBalance {
+                selection: selection.normalize(),
+                dimension,
+                value,
+            },
             Self::Statement(selection) => Self::Statement(Box::new((*selection).normalize())),
             Self::FunctionalStatement(selection) => {
                 Self::FunctionalStatement(Box::new((*selection).normalize()))
@@ -395,7 +424,8 @@ impl ReportSelection {
         match self {
             Self::FunctionalStatement(_)
             | Self::FunctionalConsolidation { .. }
-            | Self::FunctionalTrialBalance(_) => true,
+            | Self::FunctionalTrialBalance(_)
+            | Self::FunctionalDimensionTrialBalance { .. } => true,
             Self::CustomStatement(selection) => selection.functional,
             _ => false,
         }
@@ -413,6 +443,9 @@ impl ReportSelection {
             Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
             Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
             Self::DimensionTrialBalance { .. } => DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT,
+            Self::FunctionalDimensionTrialBalance { .. } => {
+                FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT
+            }
             Self::RegulatorySchedule(_) => REGULATORY_SCHEDULE_OUTPUT_FORMAT,
             Self::CustomStatement(selection) if selection.functional => {
                 crate::custom_statement::FUNCTIONAL_OUTPUT_FORMAT
@@ -425,7 +458,10 @@ impl ReportSelection {
     /// binds as one more native input.
     fn bound_dimension(&self) -> Option<fa_model::DimensionKind> {
         match self {
-            Self::DimensionTrialBalance { dimension, .. } => fa_model::dimension_kind(dimension),
+            Self::DimensionTrialBalance { dimension, .. }
+            | Self::FunctionalDimensionTrialBalance { dimension, .. } => {
+                fa_model::dimension_kind(dimension)
+            }
             _ => None,
         }
     }
@@ -466,6 +502,15 @@ impl ReportSelection {
                 value,
             } => {
                 w.u8(6);
+                selection.write(w);
+                w.str(dimension).str(value);
+            }
+            Self::FunctionalDimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => {
+                w.u8(11);
                 selection.write(w);
                 w.str(dimension).str(value);
             }
@@ -526,6 +571,21 @@ impl ReportSelection {
             10 if version == 12 => Ok(Self::CustomStatement(Box::new(
                 crate::custom_statement::CustomStatementSelection::read(r, true)?,
             ))),
+            11 if version == 13 => Ok(Self::FunctionalDimensionTrialBalance {
+                selection: TrialBalanceSelection::read(r)?,
+                dimension: r
+                    .str(
+                        fa_model::rea::MAX_REA_CODE_BYTES,
+                        "functional report dimension",
+                    )?
+                    .to_string(),
+                value: r
+                    .str(
+                        fa_model::rea::MAX_REA_CODE_BYTES,
+                        "functional report dimension value",
+                    )?
+                    .to_string(),
+            }),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -580,6 +640,14 @@ impl ReportSelection {
                 crate::dimension::trial_balance_at(db, book, selection, dimension, value, at)?
                     .map(|report| ReportOutput::DimensionTrialBalance(Box::new(report))),
             ),
+            Self::FunctionalDimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => Ok(crate::dimension::functional_trial_balance_at(
+                db, book, selection, dimension, value, at,
+            )?
+            .map(|report| ReportOutput::FunctionalDimensionTrialBalance(Box::new(report)))),
             Self::RegulatorySchedule(selection) => {
                 Ok(crate::statements::regulatory_at(db, book, selection, at)?
                     .map(|statement| ReportOutput::RegulatorySchedule(Box::new(statement))))
@@ -605,6 +673,7 @@ pub enum ReportOutput {
     Consolidation(Box<crate::consolidation::Consolidation>),
     FunctionalConsolidation(Box<crate::consolidation::FunctionalConsolidation>),
     DimensionTrialBalance(Box<crate::dimension::DimensionTrialBalance>),
+    FunctionalDimensionTrialBalance(Box<crate::dimension::FunctionalDimensionTrialBalance>),
     /// The statement a regulatory schedule evaluates to.
     RegulatorySchedule(Box<fa_statements::Statement>),
     CustomStatement(Box<crate::custom_statement::CustomStatementReport>),
@@ -617,6 +686,7 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.known_at,
             Self::FunctionalTrialBalance(report) => report.known_at,
             Self::DimensionTrialBalance(report) => report.trial_balance.known_at,
+            Self::FunctionalDimensionTrialBalance(report) => report.trial_balance.known_at,
             Self::ExplainBalance(report) => report.known_at,
             Self::OpenItems(report) => report.known_at,
             Self::Statement(report)
@@ -636,6 +706,9 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.known_at = known_at,
             Self::FunctionalTrialBalance(report) => report.known_at = known_at,
             Self::DimensionTrialBalance(report) => report.trial_balance.known_at = known_at,
+            Self::FunctionalDimensionTrialBalance(report) => {
+                report.trial_balance.known_at = known_at
+            }
             Self::ExplainBalance(report) => report.known_at = known_at,
             Self::OpenItems(report) => report.known_at = known_at,
             Self::Statement(report)
@@ -667,6 +740,7 @@ impl ReportOutput {
             Self::Consolidation(report) => report.canonical_bytes(),
             Self::FunctionalConsolidation(report) => report.canonical_bytes(),
             Self::DimensionTrialBalance(report) => report.canonical_bytes(),
+            Self::FunctionalDimensionTrialBalance(report) => report.canonical_bytes(),
             // Domain-separated, so a schedule's bytes never read as a
             // native statement's.
             Self::RegulatorySchedule(report) => {
@@ -851,7 +925,9 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     }
     if matches!(
         selection,
-        ReportSelection::FunctionalStatement(_) | ReportSelection::FunctionalTrialBalance(_)
+        ReportSelection::FunctionalStatement(_)
+            | ReportSelection::FunctionalTrialBalance(_)
+            | ReportSelection::FunctionalDimensionTrialBalance { .. }
     ) {
         sources.extend([
             ("fx_laws", include_str!("../../../registries/fx_laws.toml")),
@@ -930,6 +1006,7 @@ fn offline_registry_profile(certificate: &ReportCertificate) -> bool {
             &certificate.selection,
             ReportSelection::TrialBalance(_)
                 | ReportSelection::FunctionalTrialBalance(_)
+                | ReportSelection::FunctionalDimensionTrialBalance { .. }
                 | ReportSelection::FunctionalStatement(_)
                 | ReportSelection::CustomStatement(_)
                 | ReportSelection::Consolidation { .. }
@@ -1350,6 +1427,9 @@ impl ReportCertificate {
             ReportSelection::DimensionTrialBalance { .. } => {
                 DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
             }
+            ReportSelection::FunctionalDimensionTrialBalance { .. } => {
+                FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
+            }
             ReportSelection::RegulatorySchedule(_) => REGULATORY_SCHEDULE_CERTIFICATE_FORMAT,
             ReportSelection::CustomStatement(selected) if selected.functional => {
                 FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT
@@ -1392,6 +1472,7 @@ impl ReportCertificate {
             || self.format() == FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT
             || self.format() == CUSTOM_STATEMENT_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -1416,43 +1497,49 @@ impl ReportCertificate {
             let mut r = Reader::new(bytes);
             // V10 is the first two-digit version. Preserve every earlier wire
             // header and consume its exact length before reading framed fields.
-            let version = if bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
-                r.fixed::<{ FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>(
-                    "certificate format",
-                )?;
-                12
-            } else if bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
-                r.fixed::<{ CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>("certificate format")?;
-                11
-            } else if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
-                r.fixed::<{ FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
-                    "certificate format",
-                )?;
-                10
-            } else {
-                let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
-                if format == CERTIFICATE_FORMAT {
-                    1
-                } else if format == INSTANT_CERTIFICATE_FORMAT {
-                    2
-                } else if format == REPORT_CERTIFICATE_FORMAT {
-                    3
-                } else if format == STATEMENT_CERTIFICATE_FORMAT {
-                    4
-                } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
-                    5
-                } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
-                    6
-                } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
-                    7
-                } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
-                    8
-                } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
-                    9
+            let version =
+                if bytes.starts_with(FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                    r.fixed::<{ FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
+                        "certificate format",
+                    )?;
+                    13
+                } else if bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
+                    r.fixed::<{ FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>(
+                        "certificate format",
+                    )?;
+                    12
+                } else if bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
+                    r.fixed::<{ CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>("certificate format")?;
+                    11
+                } else if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                    r.fixed::<{ FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
+                        "certificate format",
+                    )?;
+                    10
                 } else {
-                    return Err(r.invalid("report certificate format"));
-                }
-            };
+                    let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
+                    if format == CERTIFICATE_FORMAT {
+                        1
+                    } else if format == INSTANT_CERTIFICATE_FORMAT {
+                        2
+                    } else if format == REPORT_CERTIFICATE_FORMAT {
+                        3
+                    } else if format == STATEMENT_CERTIFICATE_FORMAT {
+                        4
+                    } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
+                        5
+                    } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
+                        6
+                    } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
+                        7
+                    } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
+                        8
+                    } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
+                        9
+                    } else {
+                        return Err(r.invalid("report certificate format"));
+                    }
+                };
             for (name, expected) in [("replay scope", REPLAY_SCOPE), ("authority", AUTHORITY)] {
                 if r.str(64, name)? != expected {
                     return Err(r.invalid(name));
@@ -2039,6 +2126,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             &certificate.selection,
             ReportSelection::FunctionalStatement(_)
                 | ReportSelection::FunctionalTrialBalance(_)
+                | ReportSelection::FunctionalDimensionTrialBalance { .. }
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
                 | ReportSelection::DimensionTrialBalance { .. }
@@ -2216,6 +2304,25 @@ pub(crate) fn status<V: Vfs + Clone>(
             let mut current = tagged.as_ref().clone();
             current.values = values.into_keys().collect();
             Some(ReportOutput::DimensionTrialBalance(Box::new(current)))
+        }
+        ReportOutput::FunctionalDimensionTrialBalance(tagged) => {
+            fa_journal::verify_entry_history(db, cx, book, Some(head))?;
+            crate::dimension::verify_functional_hierarchy(db, book, &tagged.dimension, head)?;
+            let Some(kind) = fa_model::dimension_kind(&tagged.dimension) else {
+                return Ok(Err(invalid("the certified dimension is not registered")));
+            };
+            let Some(values) = crate::dimension::values_under(db, &kind, &tagged.value, head)?
+            else {
+                return Ok(Err(invalid(format!(
+                    "the certified {} value `{}` is absent at HEAD",
+                    tagged.dimension, tagged.value
+                ))));
+            };
+            let mut current = tagged.as_ref().clone();
+            current.values = values.into_keys().collect();
+            Some(ReportOutput::FunctionalDimensionTrialBalance(Box::new(
+                current,
+            )))
         }
         _ => None,
     };
@@ -2830,6 +2937,12 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
         ReportOutput::DimensionTrialBalance(report) => {
             trial_balance_metadata(&report.trial_balance)
         }
+        ReportOutput::FunctionalDimensionTrialBalance(report) => report
+            .trial_balance
+            .accounts
+            .iter()
+            .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
+            .collect(),
         ReportOutput::ExplainBalance(report) => BTreeMap::from([(
             report.account,
             AccountMetadata::Complete(report.account_row.clone()),
@@ -3022,6 +3135,19 @@ pub(crate) fn selected(
                 }
                 _ => Ok(false),
             },
+            (
+                ReportSelection::FunctionalDimensionTrialBalance { .. },
+                ReportOutput::FunctionalDimensionTrialBalance(report),
+            ) => match entry.proposal.control.as_ref() {
+                Some(ControlPayload::SchemaChange {
+                    kind: fa_journal::dimension::SCHEMA_CHANGE_DIMENSION_VALUE,
+                    canonical_bytes,
+                }) => {
+                    let spec = fa_journal::dimension::DimensionValueSpec::decode(canonical_bytes)?;
+                    Ok(spec.dimension == report.dimension && report.values.contains(&spec.code))
+                }
+                _ => Ok(false),
+            },
             _ => Ok(false),
         };
     }
@@ -3058,6 +3184,22 @@ pub(crate) fn selected(
         (
             ReportSelection::DimensionTrialBalance { .. },
             ReportOutput::DimensionTrialBalance(report),
+        ) => {
+            if !entry
+                .proposal
+                .legs
+                .iter()
+                .any(|leg| report.tags(book.book_id, leg))
+            {
+                return Ok(false);
+            }
+            if let Some(through) = report.trial_balance.effective_through {
+                return Ok(entry.proposal.effective_date <= through);
+            }
+        }
+        (
+            ReportSelection::FunctionalDimensionTrialBalance { .. },
+            ReportOutput::FunctionalDimensionTrialBalance(report),
         ) => {
             if !entry
                 .proposal
@@ -3177,6 +3319,10 @@ pub(crate) fn selected(
         ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods))
         | ReportSelection::FunctionalTrialBalance(TrialBalanceSelection::Activity(periods))
         | ReportSelection::DimensionTrialBalance {
+            selection: TrialBalanceSelection::Activity(periods),
+            ..
+        }
+        | ReportSelection::FunctionalDimensionTrialBalance {
             selection: TrialBalanceSelection::Activity(periods),
             ..
         } => periods.binary_search(&period.code).is_ok(),

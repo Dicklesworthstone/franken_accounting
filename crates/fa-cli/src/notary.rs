@@ -1224,6 +1224,15 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ) => {
                 crate::fx::render_functional_trial_balance(&ctx.out, &book, report, Some(&digest))?
             }
+            (
+                ReportOutput::FunctionalDimensionTrialBalance(report),
+                ReportSelection::FunctionalDimensionTrialBalance { .. },
+            ) => crate::fx::render_functional_dimension_trial_balance(
+                &ctx.out,
+                &book,
+                report,
+                Some(&digest),
+            )?,
             (ReportOutput::Consolidation(report), ReportSelection::Consolidation { .. }) => {
                 crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
             }
@@ -1550,7 +1559,8 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     match &certificate.selection {
         ReportSelection::TrialBalance(selection)
         | ReportSelection::FunctionalTrialBalance(selection)
-        | ReportSelection::DimensionTrialBalance { selection, .. } => {
+        | ReportSelection::DimensionTrialBalance { selection, .. }
+        | ReportSelection::FunctionalDimensionTrialBalance { selection, .. } => {
             ctx.out.effective(match selection {
                 TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
                 TrialBalanceSelection::Periods(periods)

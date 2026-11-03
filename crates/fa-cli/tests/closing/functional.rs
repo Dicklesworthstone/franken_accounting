@@ -160,13 +160,108 @@ fn restored_plan(
     (plan_path, plan)
 }
 
+fn functional_dimension_certificate(
+    f: &Fixture,
+    name: &str,
+    dimension: &str,
+    selector: &[&str],
+) -> (String, Json, fa::ReportCertificate) {
+    use super::equity_certificate::{many, unhex};
+
+    let path = f.dir.join(format!("{name}.cert"));
+    let at = head(&f.book);
+    let mut args = vec!["tb", "--functional", "--dimension", dimension];
+    args.extend_from_slice(selector);
+    args.extend(["--certificate-out", path.to_str().unwrap()]);
+    let (code, events) = many(&f.book, &args);
+    assert_eq!(code, 0, "{events:?}");
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        text(&events[0], "event"),
+        "functional_dimension_trial_balance"
+    );
+    let encoded = std::fs::read(&path).unwrap();
+    assert!(encoded.starts_with(fa::FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT));
+    let certificate = fa::ReportCertificate::decode(&encoded).unwrap();
+    assert_eq!(i128::from(certificate.known_at.0), at);
+    assert_eq!(certificate.inputs.len(), 9);
+    assert!(
+        certificate
+            .output
+            .starts_with(fa::FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT.as_bytes())
+    );
+    let locator = format!("C:{}", text(&events[1], "oid"));
+    let checkpoint = ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let signed = ok(
+        &f.book,
+        &[
+            "proof",
+            "signed-checkpoint",
+            "--state",
+            text(&checkpoint, "oid"),
+        ],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let exported = ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&checkpoint, "oid"),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &unhex(text(&exported, "bytes")),
+        &[key],
+        None,
+        Some(&unhex(text(&exported, "receipt"))),
+        Some(&certificate.digest),
+    )
+    .expect("native functional dimension report independently replays its complete signed history");
+    assert_eq!(verified.output, certificate.output);
+    assert!(verified.functional_trial_balance.is_some());
+    assert!(verified.dimension.is_some());
+    (locator, events[0].clone(), certificate)
+}
+
+fn functional_net<'a>(report: &'a Json, account: &str) -> &'a str {
+    let row = get(report, "rows")
+        .as_arr()
+        .unwrap()
+        .iter()
+        .find(|row| text(row, "account") == account)
+        .unwrap_or_else(|| panic!("missing {account}: {}", report.render()));
+    text(row, "net")
+}
+
 #[test]
 fn fund_close_keeps_exact_carrying_values_across_reopen_export_and_reclose() {
     use super::equity_certificate::{many, unhex};
 
     let f = fixture("any-currency");
+    ok(
+        &f.book,
+        &["dimension", "add", "fund", "FUNDS", "--name", "All funds"],
+    );
     for code in ["F1", "F2"] {
-        ok(&f.book, &["dimension", "add", "fund", code, "--name", code]);
+        ok(
+            &f.book,
+            &[
+                "dimension",
+                "add",
+                "fund",
+                code,
+                "--name",
+                code,
+                "--parent",
+                "FUNDS",
+            ],
+        );
     }
     post_foreign_in_fund(
         &f,
@@ -302,6 +397,53 @@ fn fund_close_keeps_exact_carrying_values_across_reopen_export_and_reclose() {
     assert_eq!(verified.output, certificate.output());
     assert!(verified.functional_trial_balance.is_some());
 
+    // The closed fund still owns its original 110 USD carrying value after
+    // closing. Neither the other fund's 120 USD nor the untagged expense may
+    // enter this certified slice; closing itself is retained at that basis.
+    let (fund_locator, fund_report, fund_certificate) = functional_dimension_certificate(
+        &f,
+        "fund-f1-stock",
+        "fund=F1",
+        &["--as-of", "2026-12-31"],
+    );
+    assert_eq!(functional_net(&fund_report, "1000"), "110.00 USD");
+    assert_eq!(functional_net(&fund_report, "3000"), "-110.00 USD");
+    assert_eq!(functional_net(&fund_report, "4000"), "0.00 USD");
+    assert_eq!(integer(&fund_report, "entries"), 2);
+    assert_eq!(get(&fund_report, "balanced"), &Json::Bool(true));
+    assert!(
+        !get(&fund_report, "rows")
+            .as_arr()
+            .unwrap()
+            .iter()
+            .any(|row| text(row, "account") == "6000")
+    );
+    let (_, combined, _) = functional_dimension_certificate(
+        &f,
+        "fund-hierarchy-activity",
+        "fund=FUNDS",
+        &["--period", "FY2026-P12", "--activity"],
+    );
+    assert_eq!(functional_net(&combined, "1000"), "-10.00 USD");
+    assert_eq!(functional_net(&combined, "4000"), "10.00 USD");
+    assert!(
+        !get(&combined, "rows")
+            .as_arr()
+            .unwrap()
+            .iter()
+            .any(|row| text(row, "account") == "3000"),
+        "December activity excludes the separate FY2026-CLOSE posting period"
+    );
+    assert_eq!(
+        get(get(&combined, "dimension"), "values"),
+        &Json::Arr(
+            ["F1", "F2", "FUNDS"]
+                .into_iter()
+                .map(|value| Json::Str(value.into()))
+                .collect()
+        )
+    );
+
     post_foreign_in_fund(
         &f,
         "fund-late-sale",
@@ -328,6 +470,106 @@ fn fund_close_keeps_exact_carrying_values_across_reopen_export_and_reclose() {
         "closing_noop"
     );
     assert_eq!(many(&f.book, &["replay", &locator]).0, 0);
+    let (code, replayed) = many(&f.book, &["replay", &fund_locator]);
+    assert_eq!(code, 0, "{replayed:?}");
+    assert_eq!(get(&replayed[0], "data"), get(&fund_report, "data"));
+    let historical_at = fund_certificate.known_at.0.to_string();
+    let historical = ok(
+        &f.book,
+        &[
+            "tb",
+            "--functional",
+            "--dimension",
+            "fund=F1",
+            "--as-of",
+            "2026-12-31",
+            "--as-known-at",
+            &historical_at,
+        ],
+    );
+    assert_eq!(get(&historical, "data"), get(&fund_report, "data"));
+    let current = ok(
+        &f.book,
+        &[
+            "tb",
+            "--functional",
+            "--dimension",
+            "fund=F1",
+            "--as-of",
+            "2026-12-31",
+        ],
+    );
+    assert_eq!(functional_net(&current, "1000"), "123.00 USD");
+    assert_eq!(functional_net(&current, "3000"), "-123.00 USD");
+    assert_eq!(
+        text(
+            &ok(&f.book, &["certificate", "status", &fund_locator]),
+            "status"
+        ),
+        "SupersededBy"
+    );
+}
+
+#[test]
+fn functional_dimension_one_sided_cells_and_holds_are_certified_without_false_balance() {
+    let f = fixture("any-currency");
+    ok(
+        &f.book,
+        &[
+            "dimension",
+            "add",
+            "cost_center",
+            "OPS",
+            "--name",
+            "Operations",
+        ],
+    );
+    for (verb, key, amount) in [
+        ("post", "dimension-cash", "12.34"),
+        ("reserve", "dimension-held", "5.00"),
+    ] {
+        let path = write(
+            &f.dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-12-30","idempotency_key":"{key}","legs":[{{"side":"debit","account":"1000","amount":"{amount} USD","dimensions":{{"cost_center":"OPS"}}}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        ok(
+            &f.book,
+            &[verb, "--intent", &path, "--evidence", &f.evidence],
+        );
+    }
+    let (_, report, _) = functional_dimension_certificate(
+        &f,
+        "cost-center-functional",
+        "cost_center=OPS",
+        &["--period", "FY2026-P12", "--activity"],
+    );
+    assert_eq!(functional_net(&report, "1000"), "12.34 USD");
+    assert_eq!(get(&report, "rows").as_arr().unwrap().len(), 1);
+    assert_eq!(get(&report, "balanced"), &Json::Bool(false));
+    assert_eq!(get(&report, "pending_balanced"), &Json::Bool(false));
+    assert_eq!(text(get(&report, "pending_totals"), "debits"), "5.00 USD");
+    assert_eq!(text(get(&report, "pending_totals"), "credits"), "0.00 USD");
+    let before = head(&f.book);
+    let (code, refused) = closing_agent(
+        &f,
+        &["read"],
+        &[
+            "tb",
+            "--functional",
+            "--dimension",
+            "cost_center=OPS",
+            "--period",
+            "FY2026-P12",
+            "--certify",
+        ],
+    );
+    assert_eq!(code, 7, "{refused:?}");
+    assert_eq!(text(&refused, "event"), "error");
+    assert_eq!(text(get(&refused, "data"), "class"), "safety");
+    assert_eq!(head(&f.book), before);
 }
 
 #[test]

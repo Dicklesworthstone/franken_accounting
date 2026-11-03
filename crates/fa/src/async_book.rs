@@ -5146,6 +5146,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &certificate.selection,
                 crate::ReportSelection::TrialBalance(_)
                     | crate::ReportSelection::FunctionalTrialBalance(_)
+                    | crate::ReportSelection::FunctionalDimensionTrialBalance { .. }
                     | crate::ReportSelection::FunctionalStatement(_)
                     | crate::ReportSelection::Consolidation { .. }
                     | crate::ReportSelection::FunctionalConsolidation { .. }
@@ -5168,6 +5169,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             || matches!(
                 &certificate.selection,
                 crate::ReportSelection::FunctionalTrialBalance(_)
+                    | crate::ReportSelection::FunctionalDimensionTrialBalance { .. }
                     | crate::ReportSelection::FunctionalStatement(_)
                     | crate::ReportSelection::CustomStatement(_)
             ))
@@ -5496,6 +5498,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             crate::ReportSelection::OpenItems { .. }
                 | crate::ReportSelection::ExplainBalance { .. }
                 | crate::ReportSelection::FunctionalTrialBalance(_)
+                | crate::ReportSelection::FunctionalDimensionTrialBalance { .. }
                 | crate::ReportSelection::FunctionalStatement(_)
                 | crate::ReportSelection::CustomStatement(_)
                 | crate::ReportSelection::Consolidation { .. }

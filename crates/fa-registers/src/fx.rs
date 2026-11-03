@@ -26,9 +26,9 @@ use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    EntryReadCount, PeriodOf, RegisterError, accounting_class_included, contribution_seq,
-    entries_at, entries_at_counted, entry_period, migration_activations, period_at, resolutions,
-    resolve_known_at,
+    DimensionFilter, EntryReadCount, PeriodOf, RegisterError, accounting_class_included,
+    contribution_seq, entries_at, entries_at_counted, entry_period, migration_activations,
+    period_at, resolutions, resolve_known_at,
 };
 
 /// Domain separator for functional-value register fold digests (`FA-INV-04.functional-fold`).
@@ -218,12 +218,24 @@ fn add_functional_entry(
     entry: &Entry,
     period: &str,
     (recorded_at, known_at): (CommitSeq, CommitSeq),
+    filter: Option<&DimensionFilter>,
 ) -> Result<(), RegisterError> {
     let mut touched = BTreeSet::new();
     let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
     for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
         let mantissa = functional_mantissa(spec, entry_vid, ordinal, leg)?;
         let entity = entity_of(spec, leg);
+        // Entry-level entity equality remains a source law. A dimension
+        // projection may select only one side, so validate before filtering.
+        let entity_slot = by_entity.entry(entity.clone()).or_insert((0, 0));
+        let total = match leg.side {
+            Side::Debit => &mut entity_slot.0,
+            Side::Credit => &mut entity_slot.1,
+        };
+        *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
+        if filter.is_some_and(|filter| !filter.admits(leg)) {
+            continue;
+        }
         let key = FunctionalCellKey {
             account: leg.account_ref,
             unit_id: spec.base_unit.0,
@@ -236,10 +248,9 @@ fn add_functional_entry(
             credits: 0,
             entry_count: 0,
         });
-        let entity_slot = by_entity.entry(entity).or_insert((0, 0));
-        let (amount, total) = match leg.side {
-            Side::Debit => (&mut cell.debits, &mut entity_slot.0),
-            Side::Credit => (&mut cell.credits, &mut entity_slot.1),
+        let amount = match leg.side {
+            Side::Debit => &mut cell.debits,
+            Side::Credit => &mut cell.credits,
         };
         crate::capacity_add(amount, mantissa, |accumulated| crate::RegisterCapacity {
             account: key.account,
@@ -257,7 +268,6 @@ fn add_functional_entry(
             accumulated,
             incoming: mantissa,
         })?;
-        *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
         touched.insert(key);
     }
     for (entity, (debits, credits)) in by_entity {
@@ -317,8 +327,12 @@ fn fold_functional_entry_contributions(
     commit_seq: CommitSeq,
     entry_vid: VId,
     entry: &Entry,
+    filter: Option<&DimensionFilter>,
 ) -> Result<[u8; 32], RegisterError> {
     for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+        if filter.is_some_and(|filter| !filter.admits(leg)) {
+            continue;
+        }
         let ord_u16 = u16::try_from(ordinal)
             .map_err(|_| KernelError::Corrupt("leg ordinal exceeds u16".into()))?;
         let mantissa = functional_mantissa(spec, entry_vid, ordinal, leg)?;
@@ -334,6 +348,28 @@ fn fold_functional_entry_contributions(
         )?;
     }
     Ok(acc)
+}
+
+/// Bind a projected fold to its exact historical value identities. The
+/// unfiltered path retains every existing v1 digest byte for byte.
+fn dimension_digest(
+    inner: [u8; 32],
+    filter: Option<&DimensionFilter>,
+) -> Result<[u8; 32], RegisterError> {
+    let Some(filter) = filter else {
+        return Ok(inner);
+    };
+    let values: Vec<_> = filter.values.iter().copied().collect();
+    let mut w = Writer::new();
+    w.fixed(&inner)
+        .u32(filter.dimension)
+        .list(&values, |w, value| {
+            w.u128(value.0);
+        });
+    let mut h = Hasher::new();
+    h.update(b"fa:register-functional-dimension:v1");
+    h.update(&w.finish().map_err(RegisterError::Encoding)?);
+    Ok(h.finalize().0)
 }
 
 fn digest_of(
@@ -408,6 +444,27 @@ pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
         period_code,
         known_at,
         excluded_classes,
+        None,
+        &mut FunctionalFoldWork::default(),
+    )
+}
+
+/// Functional activity over only the tagged legs, retaining entity cells and
+/// full source-entry valuation checks. The projected totals need not balance.
+pub fn fold_period_functional_tagged<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    known_at: Option<CommitSeq>,
+    filter: &DimensionFilter,
+) -> Result<FunctionalFold, RegisterError> {
+    literal_period_functional(
+        db,
+        book,
+        period_code,
+        known_at,
+        &[],
+        Some(filter),
         &mut FunctionalFoldWork::default(),
     )
 }
@@ -418,6 +475,7 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
     known_at: Option<CommitSeq>,
     excluded_classes: &[EntryClass],
+    filter: Option<&DimensionFilter>,
     work: &mut FunctionalFoldWork,
 ) -> Result<FunctionalFold, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
@@ -462,7 +520,11 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
     };
 
     for (vid, entry, created_at) in &entries {
-        if entry.proposal.legs.is_empty() || entry_period(book, entry)? != period_code {
+        if entry.proposal.legs.is_empty()
+            || entry_period(book, entry)? != period_code
+            || filter
+                .is_some_and(|filter| !entry.proposal.legs.iter().any(|leg| filter.admits(leg)))
+        {
             continue;
         }
         if !accounting_class_included(db, book, seq, (*vid, entry), &by_id, excluded_classes)? {
@@ -481,6 +543,7 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
                     entry,
                     period_code,
                     (*created_at, seq),
+                    filter,
                 )?;
                 let hold_digest = fold_functional_entry_contributions(
                     [0u8; 32],
@@ -488,6 +551,7 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
                     *created_at,
                     *vid,
                     entry,
+                    filter,
                 )?;
                 pending_holds.insert((*created_at, *vid), hold_digest);
             }
@@ -499,6 +563,7 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
                 entry,
                 period_code,
                 (*created_at, seq),
+                filter,
             )?;
             posted_legs_digest = fold_functional_entry_contributions(
                 posted_legs_digest,
@@ -506,6 +571,7 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
                 *created_at,
                 *vid,
                 entry,
+                filter,
             )?;
             entries_count = entries_count
                 .checked_add(1)
@@ -551,7 +617,7 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
         pending,
         watermark,
         entries: entries_count,
-        fold_digest,
+        fold_digest: dimension_digest(fold_digest, filter)?,
     })
 }
 
@@ -690,6 +756,7 @@ pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs 
                         entry,
                         period,
                         (*created_at, seq),
+                        None,
                     )?;
                     let hold_digest = fold_functional_entry_contributions(
                         [0u8; 32],
@@ -697,6 +764,7 @@ pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs 
                         *created_at,
                         *vid,
                         entry,
+                        None,
                     )?;
                     fold.pending_holds.insert((*created_at, *vid), hold_digest);
                 }
@@ -708,6 +776,7 @@ pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs 
                     entry,
                     period,
                     (*created_at, seq),
+                    None,
                 )?;
                 fold.posted_legs_digest = fold_functional_entry_contributions(
                     fold.posted_legs_digest,
@@ -715,6 +784,7 @@ pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs 
                     *created_at,
                     *vid,
                     entry,
+                    None,
                 )?;
                 fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
             }
@@ -778,7 +848,7 @@ pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs 
             .iter()
             .map(|period| {
                 work.literal_fallbacks = work.literal_fallbacks.saturating_add(1);
-                literal_period_functional(db, book, period, Some(seq), excluded_classes, work)
+                literal_period_functional(db, book, period, Some(seq), excluded_classes, None, work)
             })
             .collect(),
     }
@@ -828,12 +898,22 @@ fn add_functional_stock_entry(
     entry_vid: VId,
     entry: &Entry,
     (recorded_at, known_at, through): (CommitSeq, CommitSeq, DateDay),
+    filter: Option<&DimensionFilter>,
 ) -> Result<(), RegisterError> {
     let mut touched = BTreeSet::new();
     let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
     for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
         let mantissa = functional_mantissa(spec, entry_vid, ordinal, leg)?;
         let entity = entity_of(spec, leg);
+        let totals = by_entity.entry(entity.clone()).or_insert((0i128, 0i128));
+        let total = match leg.side {
+            Side::Debit => &mut totals.0,
+            Side::Credit => &mut totals.1,
+        };
+        *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
+        if filter.is_some_and(|filter| !filter.admits(leg)) {
+            continue;
+        }
         let key = FunctionalStockCellKey {
             account: leg.account_ref,
             unit_id: spec.base_unit.0,
@@ -847,10 +927,9 @@ fn add_functional_stock_entry(
                 credits: 0,
                 entry_count: 0,
             });
-        let totals = by_entity.entry(entity).or_insert((0i128, 0i128));
-        let (amount, total) = match leg.side {
-            Side::Debit => (&mut cell.debits, &mut totals.0),
-            Side::Credit => (&mut cell.credits, &mut totals.1),
+        let amount = match leg.side {
+            Side::Debit => &mut cell.debits,
+            Side::Credit => &mut cell.credits,
         };
         crate::capacity_add(amount, mantissa, |accumulated| crate::RegisterCapacity {
             account: key.account,
@@ -868,7 +947,6 @@ fn add_functional_stock_entry(
             accumulated,
             incoming: mantissa,
         })?;
-        *total = total.checked_add(mantissa).ok_or(RegisterError::Overflow)?;
         touched.insert(key);
     }
     for (entity, (debits, credits)) in by_entity {
@@ -909,6 +987,28 @@ pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     effective_through: DateDay,
     known_at: Option<CommitSeq>,
+) -> Result<FunctionalStockFold, RegisterError> {
+    fold_functional_stock_filtered(db, book, effective_through, known_at, None)
+}
+
+/// Functional stock over tagged legs, with the original entry's base-law
+/// checks and pending release/activation witnesses retained in full.
+pub fn fold_functional_stock_tagged<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    effective_through: DateDay,
+    known_at: Option<CommitSeq>,
+    filter: &DimensionFilter,
+) -> Result<FunctionalStockFold, RegisterError> {
+    fold_functional_stock_filtered(db, book, effective_through, known_at, Some(filter))
+}
+
+fn fold_functional_stock_filtered<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    effective_through: DateDay,
+    known_at: Option<CommitSeq>,
+    filter: Option<&DimensionFilter>,
 ) -> Result<FunctionalStockFold, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let root = db
@@ -965,7 +1065,11 @@ pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
     let mut source = Hasher::new();
     source.update(b"fa:register-functional-stock-sources:v1");
     for (vid, entry, created_at) in &entries {
-        if entry.proposal.legs.is_empty() || entry.proposal.effective_date > effective_through {
+        if entry.proposal.legs.is_empty()
+            || entry.proposal.effective_date > effective_through
+            || filter
+                .is_some_and(|filter| !entry.proposal.legs.iter().any(|leg| filter.admits(leg)))
+        {
             continue;
         }
         let contribution = contribution_seq(entry, *created_at, &activated)?;
@@ -1010,6 +1114,7 @@ pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
                     *vid,
                     entry,
                     (*created_at, seq, effective_through),
+                    filter,
                 )?;
             }
         } else {
@@ -1019,6 +1124,7 @@ pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
                 *vid,
                 entry,
                 (*created_at, seq, effective_through),
+                filter,
             )?;
             entries_count = entries_count
                 .checked_add(1)
@@ -1059,7 +1165,7 @@ pub fn fold_functional_stock<V: asupersync::fs::Vfs + Clone>(
         pending,
         watermark,
         entries: entries_count,
-        fold_digest: digest.finalize().0,
+        fold_digest: dimension_digest(digest.finalize().0, filter)?,
     })
 }
 

@@ -10,13 +10,17 @@
 //! changing a chunk's birth. Source-bound native/carrying year-end closes are
 //! independently reconstructed. Item-allocated revaluation and translation
 //! laws remain unsupported until their separate source proofs can be replayed.
+//! Dimension reports project only after this complete validation. Their
+//! authenticated descendant identities bind the fold, and original leg
+//! ordinals survive projection even when its displayed cells are one-sided.
 
 mod arithmetic;
 mod calendar;
 mod valuation;
 
 use super::{
-    Certificate, ReportError, Selection, failed, metadata, open_items, registry, statement, text,
+    Certificate, ReportError, Selection, VerifiedDimensionSelection, dimension, failed, metadata,
+    open_items, registry, statement, text,
 };
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
@@ -26,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) use valuation::{MAX_RATE_BYTES, MAX_RATES};
 pub(super) const MAX_BOOK_BYTES: usize = 1024 * 1024;
 pub(super) const OUTPUT_FORMAT: &[u8] = b"fa:functional-trial-balance:v1";
+pub(super) const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:functional-dimension-trial-balance:v1";
 pub(super) const STATEMENT_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement:v1";
 pub(super) const BOOK_PARAMETERS_SOURCE: &str =
     "certificate-bound-report-parameters; genesis-registration-not-proved";
@@ -243,9 +248,18 @@ fn add_cells(
     legs: &[Leg],
     entry: &valuation::CheckedEntry,
     base: u32,
+    selected: Option<&[bool]>,
 ) -> Result<(), ReportError> {
     let mut touched = BTreeSet::new();
-    for ((leg, amount), entity) in legs.iter().zip(&entry.amounts).zip(&entry.entities) {
+    for (ordinal, ((leg, amount), entity)) in legs
+        .iter()
+        .zip(&entry.amounts)
+        .zip(&entry.entities)
+        .enumerate()
+    {
+        if selected.is_some_and(|mask| !mask[ordinal]) {
+            continue;
+        }
         let key = (leg.account, base, entity.clone());
         let cell = cells
             .entry(key.clone())
@@ -305,6 +319,7 @@ fn contribution(
     base: u32,
     legs: &[Leg],
     entry: &valuation::CheckedEntry,
+    selected: Option<&[bool]>,
 ) -> [u8; 32] {
     for (ordinal, ((leg, amount), entity)) in legs
         .iter()
@@ -312,6 +327,9 @@ fn contribution(
         .zip(&entry.entities)
         .enumerate()
     {
+        if selected.is_some_and(|mask| !mask[ordinal]) {
+            continue;
+        }
         let mut w = Writer::default();
         w.fixed(&previous)
             .u64(seq)
@@ -555,6 +573,8 @@ pub(super) fn replay(
     book_bytes: &[u8],
     documents: &[([u8; 32], &[u8])],
     schema: &metadata::Schema,
+    dimension: Option<&VerifiedDimensionSelection>,
+    dimension_history: &dimension::History,
     envelopes: &[LeafEnvelope],
     records: &[(usize, &[u8])],
     legs: &[Vec<Leg>],
@@ -584,6 +604,9 @@ pub(super) fn replay(
         migration_activations,
     )?;
     let (periods, through, activity) = schema.selection(&cert.selection)?;
+    let dimension_filter = dimension
+        .map(|selection| dimension::LegFilter::new(&cert.book, selection, dimension_history))
+        .transpose()?;
     let mut indices: Vec<_> = infos.keys().copied().collect();
     indices.sort_by_key(|index| (envelopes[*index].commit_seq, infos[index].identity));
     let mut identities = BTreeSet::new();
@@ -637,6 +660,21 @@ pub(super) fn replay(
         };
         if !selected {
             continue;
+        }
+        let selected_legs = dimension_filter
+            .as_ref()
+            .map(|filter| dimension::selected_legs(&records[index].1[..records[index].0], filter))
+            .transpose()?;
+        if let Some(mask) = &selected_legs {
+            if mask.len() != legs[index].len() {
+                return Err(failed(
+                    "dimension_tags",
+                    "dimension and functional leg counts disagree",
+                ));
+            }
+            if !mask.iter().any(|selected| *selected) {
+                continue;
+            }
         }
         let seq = envelope.commit_seq;
         let entry = &checked[&index];
@@ -694,15 +732,35 @@ pub(super) fn replay(
                 watermark = Some(watermark.map_or(release, |at| at.max(release)));
             } else {
                 source.u8(0);
-                add_cells(&mut pending, &legs[index], entry, spec.base)?;
+                add_cells(
+                    &mut pending,
+                    &legs[index],
+                    entry,
+                    spec.base,
+                    selected_legs.as_deref(),
+                )?;
                 pending_holds.insert(
                     (seq, info.identity),
-                    contribution([0; 32], seq, info.identity, spec.base, &legs[index], entry),
+                    contribution(
+                        [0; 32],
+                        seq,
+                        info.identity,
+                        spec.base,
+                        &legs[index],
+                        entry,
+                        selected_legs.as_deref(),
+                    ),
                 );
             }
         } else {
             source.u8(0);
-            add_cells(&mut cells, &legs[index], entry, spec.base)?;
+            add_cells(
+                &mut cells,
+                &legs[index],
+                entry,
+                spec.base,
+                selected_legs.as_deref(),
+            )?;
             posted_chain = contribution(
                 posted_chain,
                 seq,
@@ -710,6 +768,7 @@ pub(super) fn replay(
                 spec.base,
                 &legs[index],
                 entry,
+                selected_legs.as_deref(),
             );
             entries = entries
                 .checked_add(1)
@@ -746,6 +805,9 @@ pub(super) fn replay(
         cells_bytes(&mut fold, &pending, Some(period));
         hash_parts(b"fa:register-functional-fold:v1", &[&fold.buf])
     };
+    let fold_digest = dimension_filter
+        .as_ref()
+        .map_or(fold_digest, |filter| filter.functional_digest(&fold_digest));
     let mut accounts = BTreeMap::new();
     for cell in cells.iter().chain(&pending) {
         if let std::collections::btree_map::Entry::Vacant(account) = accounts.entry(cell.account) {
@@ -765,7 +827,21 @@ pub(super) fn replay(
         accounts,
         book_parameters_source: BOOK_PARAMETERS_SOURCE,
     };
-    let output = output(&result, &cert.selection, cert.known_at)?;
+    let inner = output(&result, &cert.selection, cert.known_at)?;
+    let output = if let Some(selection) = dimension {
+        let mut w = Writer::default();
+        w.fixed(DIMENSION_OUTPUT_FORMAT)
+            .bytes(selection.dimension.as_bytes())
+            .bytes(selection.value.as_bytes())
+            .count(selection.values.len());
+        for value in &selection.values {
+            w.bytes(value.as_bytes());
+        }
+        w.bytes(&inner);
+        w.buf
+    } else {
+        inner
+    };
     Ok((result, output))
 }
 

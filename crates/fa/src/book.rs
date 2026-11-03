@@ -3777,6 +3777,52 @@ impl Book {
         )))
     }
 
+    /// Functional carrying values for one historical dimension subtree,
+    /// preserving the original entity cells and pending column.
+    pub fn functional_dimension_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+    ) -> Outcome<crate::FunctionalDimensionTrialBalance> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_dimension_trial_balance(
+            &purposes, capability, selection, known_at, dimension, value,
+        )))
+    }
+
+    /// Certify exact functional values and the historical dimension hierarchy.
+    pub fn certify_functional_dimension_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_dimension_trial_balance(
+            &purposes, capability, selection, known_at, dimension, value,
+        )))
+    }
+
+    /// Certify a functional dimension report at retained TimeEvidence brackets.
+    pub fn certify_functional_dimension_trial_balance_at_instant(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+        dimension: &str,
+        value: &str,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_dimension_trial_balance_at_instant(
+            &purposes, capability, selection, requested_utc_ns, dimension, value,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.
@@ -7933,6 +7979,7 @@ impl ReadScope<'_> {
             | ReportSelection::CustomStatement(_)
             | ReportSelection::FunctionalStatement(_)
             | ReportSelection::FunctionalTrialBalance(_)
+            | ReportSelection::FunctionalDimensionTrialBalance { .. }
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
             | ReportSelection::DimensionTrialBalance { .. } => self.authority.whole_book(seq),

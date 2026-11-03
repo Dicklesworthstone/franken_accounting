@@ -191,6 +191,26 @@ pub(crate) fn report_at<V: Vfs + Clone>(
     selection: &TrialBalanceSelection,
     at: CommitSeq,
 ) -> Outcome<FunctionalTrialBalance> {
+    report_filtered_at(db, book, selection, at, None)
+}
+
+pub(crate) fn report_tagged_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selection: &TrialBalanceSelection,
+    at: CommitSeq,
+    filter: &fa_registers::DimensionFilter,
+) -> Outcome<FunctionalTrialBalance> {
+    report_filtered_at(db, book, selection, at, Some(filter))
+}
+
+fn report_filtered_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selection: &TrialBalanceSelection,
+    at: CommitSeq,
+    filter: Option<&fa_registers::DimensionFilter>,
+) -> Outcome<FunctionalTrialBalance> {
     if !supported_selection(selection) {
         return Ok(Err(invalid_selection()));
     }
@@ -201,7 +221,16 @@ pub(crate) fn report_at<V: Vfs + Clone>(
     let chart = fa_journal::chart::read_at(db, book, at)?;
     let mut report = match selection {
         TrialBalanceSelection::Activity(periods) => {
-            let fold = fa_registers::fold_period_functional(db, book, &periods[0], Some(at))?;
+            let fold = match filter {
+                Some(filter) => fa_registers::fold_period_functional_tagged(
+                    db,
+                    book,
+                    &periods[0],
+                    Some(at),
+                    filter,
+                )?,
+                None => fa_registers::fold_period_functional(db, book, &periods[0], Some(at))?,
+            };
             FunctionalTrialBalance {
                 selection: selection.clone(),
                 effective_through: None,
@@ -257,7 +286,12 @@ pub(crate) fn report_at<V: Vfs + Clone>(
                 }
                 TrialBalanceSelection::Activity(_) => unreachable!("activity handled above"),
             };
-            let fold = fa_registers::fold_functional_stock(db, book, through, Some(at))?;
+            let fold = match filter {
+                Some(filter) => {
+                    fa_registers::fold_functional_stock_tagged(db, book, through, Some(at), filter)?
+                }
+                None => fa_registers::fold_functional_stock(db, book, through, Some(at))?,
+            };
             FunctionalTrialBalance {
                 selection: selection.clone(),
                 effective_through: Some(through),

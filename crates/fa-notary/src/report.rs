@@ -834,7 +834,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -1004,6 +1004,25 @@ mod format_tests {
             .bytes(&aging.finish().unwrap())
             .bytes(control);
         outer.finish().unwrap()
+    }
+
+    #[test]
+    fn functional_dimension_routing_requires_v13_output_and_selector() {
+        let journal =
+            Journal::from_records(fa_model::Id128([3; 16]), CommitSeq(9), Vec::new()).unwrap();
+        let valid = native_header(13, "fa:functional-dimension-trial-balance:v1", 11);
+        assert!(functional::certificate(&valid, &journal, CommitSeq(9)));
+        assert!(!functional::certificate(&valid, &journal, CommitSeq(8)));
+        for malformed in [
+            native_header(13, "fa:dimension-trial-balance:v1", 11),
+            native_header(13, "fa:functional-trial-balance:v1", 11),
+            native_header(13, "fa:functional-dimension-trial-balance:v1", 8),
+            native_header(8, "fa:functional-dimension-trial-balance:v1", 11),
+            native_header(10, "fa:functional-dimension-trial-balance:v1", 11),
+            native_header(130, "fa:functional-dimension-trial-balance:v1", 11),
+        ] {
+            assert!(!functional::certificate(&malformed, &journal, CommitSeq(9)));
+        }
     }
 
     #[test]
