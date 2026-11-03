@@ -176,6 +176,99 @@ The test principals belong only to this isolated development fixture. They
 do not authenticate the publisher's accounting or stand in for real reviewer
 credentials.
 
+
+## Resume an interrupted complete-agency replay
+
+The broader [complete-agency driver](public_ledger.md) now supports resuming
+its persisted native book on a POSIX filesystem with advisory file locking. This applies to `scripts/public_ledger.py run`;
+the separate 90000 preparation helper and Rust regression above keep their
+existing interfaces.
+
+For example, start the complete firefighters pension workload with the real
+binaries and a new output directory:
+
+```bash
+python3 -B scripts/public_ledger.py run \
+  --agency 31500 \
+  --fa /path/to/fa \
+  --fa-verify /path/to/fa-verify \
+  --out /path/to/pension-replay
+```
+
+After an interruption, continue that same book:
+
+```bash
+python3 -B scripts/public_ledger.py run \
+  --resume --out /path/to/pension-replay
+```
+
+Resume defaults to the original agency, source path and executable paths.
+An explicit replacement path is admitted only when its bytes satisfy the
+original pins. The driver checks the original source, each regenerated chart
+and normalized source artifact, its own normalization code, the Python
+version, and both executable hashes before continuation. A changed source,
+mapping, retained input, binary or model is refused; it does not become a
+new import into an old book. Use a separately reviewed new run for a changed
+model or source, preserving the original run and its evidence.
+
+The driver saves the actual native book ID before chart, document or
+financial work and verifies that identity on every resume. A missing book,
+another book at the same path, an abandoned migration or a native package
+outside the declared source population is refused. If genesis committed but
+the process died before saving its book ID, the helper refuses to adopt the
+unidentified book. No schema or financial work can yet have started in that
+window. Existing outputs from older driver versions without recovery pins
+are also preserved and refused, rather than silently adopted.
+
+Recovery uses the native journal and retained package inventory. A helper
+transcript or a cached completed-row count cannot establish that a posting
+happened.
+
+| Interruption boundary | Continuation |
+| --- | --- |
+| Chart, department, period or evidence setup | Reissue the same native identity-bound requests. The native implementation returns the original chart controls, value IDs, fiscal-year creation, document custody and review attestations. |
+| Migration open response lost | Inspect the deterministic native run key, then retry the identical retained declaration. |
+| Preparation response lost | Discover the original native package through the document inventory and authenticate it with native package inspection. Compare its full source-row proposals, source identity and import configuration before staging. |
+| Group staging stops after some publications | Read each original chunk's VID, proposal digest and recorded sequence from the native package. Reuse retained approval IDs and accept a mixture of recorded retries and new chunks only when each receipt matches its original membership. A group remains several native publications, not one atomic transaction. |
+| One fund finalizes before another | Keep the original known-at snapshot taken after all chunks staged and before any activation. Check empty net **and gross** balances at that same snapshot; do not substitute the partially activated current head. |
+| Approval or finalization response lost | Reuse the exact sealed finalization proposal saved durably before approval, and the original approval IDs saved before commitment. Native idempotency resolves whether commitment already happened. |
+| Export or verifier interruption | Preserve the incomplete attempt and rerun all source reconciliation, exports and independent verification in a new attempt directory. |
+
+`recovery/` retains checksummed immutable inputs, native book identity, exact
+finalization plans and the original preactivation snapshot. Checkpoints are
+synced before atomic exclusive publication; interrupted temporary files are
+kept for investigation and never treated as authoritative. An advisory lock
+prevents two copies of the helper from continuing the same run concurrently.
+The checksum detects damaged helper files; the native journal and its
+authenticated packages remain the authority for accounting state.
+
+The relevant retry contracts live in native [chart installation](../crates/fa-journal/src/genesis.rs),
+[period creation](../crates/fa-journal/src/period_creation.rs),
+[dimension controls](../crates/fa-journal/src/dimension.rs),
+[document custody and attachment](../crates/fa-journal/src/evidence.rs),
+[review attestations](../crates/fa-journal/src/attestation.rs), and
+[approvals](../crates/fa-journal/src/policy.rs). Approval identity includes the
+security policy epoch; this isolated workload does not change that policy.
+Already retained staging and finalization approval IDs are reused exactly.
+
+Each `attempts/000001/`, `attempts/000002/`, and subsequent directory holds
+its own command transcript, exports, tamper controls and failure or success
+report. Existing partial exports are not overwritten. The top-level
+`report.json` is published only after a complete successful native run,
+including independent ADS proof verification with dimension coverage and
+amount-only and dimension-only negative controls. Resuming a completed run
+refuses and points to that existing report.
+
+The resume tests cover source/model/binary mismatch, a directory-creation
+race, lost setup and approval acknowledgements, native package discovery,
+mixed old/new chunk receipts, immutable snapshot reuse, and checkpoint
+failure before approval. Their mocked call contracts are unit tests; they
+are not native crash-recovery evidence. These new tests were **UNRUN** in
+the development session because the execution environment became unavailable.
+Persisted native interruption acceptance remains unverified and must not be
+reported as passing merely because a helper test or source oracle passes.
+
+
 ## Independent controls
 
 The Python helper computes exact integer-cent controls directly from the
@@ -203,42 +296,73 @@ transaction in the state's system, or evidence that an anomaly is fraud.
 
 ## Validation status
 
-The full official resource has been downloaded successfully through the repaired
-HTTPS redirect path and independently verified against the pinned byte count
-and SHA-256. Full-download and retained-slice preparation produce byte-identical
-files for this complete agency population.
+The full official resource was downloaded through its actual HTTPS redirect
+and independently verified against the pinned byte count and SHA-256.
+Full-download and retained-slice preparation produce byte-identical files for
+this complete Development Finance Authority population.
 
-All 17 tests for this helper pass, including independent Decimal controls,
-source and row-index tampering, output preservation, and complete package
-creation. The broader public-ledger helper suite also passes all 46 tests,
-including the three redirect controls and eight department-projection checks. Full-source versus retained-fixture
-normalization was separately compared for its museum, pension and university
-populations; their source CSV, chart and normalized run files agree exactly.
+The recorded helper coverage before the new resume work was **18 Development
+Finance Authority tests** and **61 integrated public-ledger Python checks**.
+These are separate suites. They cover source/row-index integrity, exact Decimal
+comparisons, output preservation, native request contracts, grouped-stage
+receipts, document custody, and source/export department controls. The
+Development Finance Authority checks include the corrected native column-map
+contract: the TOML declares the columns, while the native intent supplies the
+account map once. An earlier native attempt exposed a duplicate
+`account_map`; the corrected Development Finance Authority workflow still
+needs its own native rerun before it can be recorded as passing.
+
+The earlier [account-level execution record](../evidence/public_ledger/validation-2026-11-03.json)
+does establish real native replays for the complete museum, pension and
+university selections. Those runs used actual `fa` and `fa-verify` processes
+and checked monthly/cumulative/gross account activity, proof verification and
+one-cent tamper rejection. They are different populations from this authority
+and predate the grouped-staging, department projection and dimension-aware
+export checks. Their native success does not validate those later extensions.
+
+The new resume implementation adds **18 driver unit tests**, which were
+**UNRUN** when the executor became unavailable. No new resume, grouped-staging,
+department/export or Development Finance Authority native PASS is claimed.
+Constructed native-shaped payloads and mocked command responses remain unit
+test fixtures, not evidence of a persisted native import or crash recovery.
+Full-source versus retained-fixture normalization was separately compared for
+the museum, pension and university populations, including original CSV,
+chart, column map and normalized run files; that source comparison is also a
+separate claim from native execution.
 
 The [public-ledger workflow](../.github/workflows/public-ledger.yml) includes
-the canonical CSV regressions and native `oklahoma::` integration tests, which
-also run this helper's 17 offline tests. It retains their logs with the other
-agency reports.
-
-Native acceptance remains unverified. The pinned formatter accepted the CSV
-changes and new integration files, but the restored environment killed the
-Rust test build while compiling the pinned asupersync dependency, before any
-FrankenAccounting test ran. A repository-wide compile check is a separate
-requirement and has not yet passed. Source/normalization results are not a
-native migration, replay, proof-verifier or release-readiness result.
+the canonical CSV regressions and native `oklahoma::` integration tests,
+alongside the helper checks. Its logs and each native run's actual report
+establish what executed. No repository-wide or Tier0 PASS for the final
+changed tree is inferred from earlier source checks or native measurements.
 
 ## Remaining high-value work
 
-The full resource is deliberately retained as the acquisition target, while
-the engine regression starts with one complete, manageable population.
-Broader coverage needs native dimension mapping, a declared treatment of
-fractional cents, larger-entry storage and bulk migration (existing bead
-`fa-zddh`), and separately sourced opening/closing controls. Other agencies'
-funding groups can be unbalanced even when the agency-period total balances;
-the adapter must report that limitation instead of inventing a balancing leg.
+The broader OMES driver now projects nonblank departments into native
+dimensions and keeps source blanks untagged. The four-account Development
+Finance Authority helper described here still retains its other chartfields
+as evidence without projecting them. Fund, class funding, program and project
+attribution need explicit source-to-dimension mappings where appropriate;
+their presence in retained CSV does not make them native queryable dimensions.
 
-The BLMIS Exhibit B ledger work already planned under `fa-yugf.67` through
-`fa-yugf.77` remains the appropriate route to genuine published transaction
-rows and trustee running-balance controls. This Oklahoma workload adds a
-different, reproducible public-sector source without relabeling statement
-reconstructions as original corporate ledgers.
+Grouped native staging and resumable orchestration reduce repeated intake and
+preserve completed chunk publications. They do not settle large-entry storage
+or million-line bulk migration acceptance (`fa-fdt` / `fa-zddh`). Native
+finalization still binds the staged chunk set and declared trial balances,
+rather than enforcing completeness against every proposal in a retained
+import package. An omitted increase and exact reversal can leave net controls
+unchanged. The driver therefore checks every source chunk and gross activity;
+an immutable native source-manifest binding enforced at staging/finalization
+remains a separate accounting-kernel gap.
+
+Broader source coverage also needs a declared treatment of fractional cents
+and separately sourced opening/closing controls. Other agencies' funding
+groups can be unbalanced even when the agency-period total balances; the
+adapter must report that limitation instead of inventing a balancing leg.
+
+The [BLMIS Glantz transaction workload](blmis_glantz_workload.md) provides a
+complementary route to actual published bankruptcy-case transactions and
+printed running-principal controls. Its acquisition, source validation,
+accounting interpretation and native execution have their own evidence
+boundaries. Neither workload relabels a monthly aggregate or a statement
+reconstruction as an undisclosed corporate transaction ledger.

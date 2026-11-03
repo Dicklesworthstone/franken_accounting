@@ -192,5 +192,17 @@ jobs:
             artifacts/public-ledger/*/report.json
             artifacts/public-ledger/*/failure.json
             artifacts/public-ledger/*/commands.jsonl
+            artifacts/public-ledger/*/attempts/*/report.json
+            artifacts/public-ledger/*/attempts/*/failure.json
+            artifacts/public-ledger/*/attempts/*/commands.jsonl
+            artifacts/public-ledger/*/recovery/*.json
+            artifacts/public-ledger/glantz-source.pdf
+            artifacts/public-ledger/*/manifest.json
+            artifacts/public-ledger/*/extraction.json
+            artifacts/public-ledger/*/rows.csv
+            artifacts/public-ledger/*/source.json
+            artifacts/public-ledger/*/controls.json
+            artifacts/public-ledger/*/legacy.csv
+            artifacts/public-ledger/*/extracted-source/*
           retention-days: 14
           if-no-files-found: error

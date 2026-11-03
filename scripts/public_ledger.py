@@ -13,6 +13,7 @@ import calendar
 from collections import defaultdict
 import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,8 @@ import subprocess
 import sys
 import time
 import tomllib
+import uuid
+from typing import Callable
 
 import public_ledger_source as source
 
@@ -92,6 +95,194 @@ def write_json(path: Path, value: object) -> None:
         stream.write("\n")
 
 
+
+def json_bytes(value: object) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def publish_bytes(path: Path, content: bytes) -> None:
+    """Publish a complete immutable file, retaining any interrupted temporary.
+
+    Linking a synced file is exclusive and atomic: a crash cannot expose a
+    half-written authoritative checkpoint. Pending files are never read as
+    checkpoints and are kept for investigation, not automatically deleted.
+    """
+    if path.exists():
+        require(path.is_file() and not path.is_symlink() and path.read_bytes() == content,
+                f"retained file differs: {path}")
+        with path.open("rb") as stream:
+            os.fsync(stream.fileno())
+    else:
+        pending = path.with_name(f".pending-{path.name}-{uuid.uuid4().hex}")
+        with pending.open("xb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(pending, path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def read_fact(path: Path) -> dict:
+    require(path.is_file() and not path.is_symlink(), f"missing recovery checkpoint: {path}")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    require(isinstance(record, dict) and set(record) == {"sha256", "value"}
+            and isinstance(record["value"], dict), f"invalid recovery checkpoint: {path}")
+    require(record["sha256"] == hashlib.sha256(json_bytes(record["value"])).hexdigest(),
+            f"recovery checkpoint checksum differs: {path}")
+    return record["value"]
+
+
+class ReplayRecovery:
+    """Retained workflow inputs, never an alternative journal or receipt store."""
+
+    def __init__(self, output: Path, path: Path, agency: str,
+                 binary: Path, verifier: Path, *, resume: bool,
+                 on_created: Callable[[], None] | None = None):
+        try:
+            import fcntl
+        except ImportError as error:
+            raise ReplayError("resumable native runs require POSIX advisory file locking") from error
+        self.output = output
+        self.directory = output / "recovery"
+        self.resumed = resume
+        self.attempt: Path | None = None
+        self.lock = None
+        self.manifest, self.artifacts = preparation_artifacts(path, agency)
+        pins = {
+            "format": "fa-public-ledger-recovery-v1", "agency": agency,
+            "input_sha256": sha256(path),
+            "artifacts": {name: hashlib.sha256(content).hexdigest()
+                          for name, content in sorted(self.artifacts.items())},
+            "runtime": {
+                "fa_sha256": sha256(binary), "fa_verify_sha256": sha256(verifier),
+                "driver_sha256": sha256(Path(__file__)),
+                "normalizer_sha256": sha256(Path(source.__file__)),
+                "python_version": list(sys.version_info[:3]),
+            },
+        }
+        self.facts: dict[str, dict] = {}
+        if resume:
+            saved = read_fact(self.directory / "pins.json")
+            require({key: saved.get(key) for key in pins} == pins,
+                    "resume source, agency, normalization, Python or executable pins differ")
+            require(set(saved) == set(pins) | {"source_path", "fa_path", "fa_verify_path"},
+                    "recovery pins have unexpected fields")
+            require(not (output / "report.json").exists(), "run already completed; preserve and read report.json")
+        else:
+            require(not output.exists(), "output already exists; use run --resume for an interrupted pinned run")
+            output.mkdir(parents=True, exist_ok=False)
+            if on_created is not None:
+                on_created()
+            self.directory.mkdir()
+            self.save("pins", {**pins, "source_path": str(path.resolve(strict=True)),
+                               "fa_path": str(binary.resolve(strict=True)),
+                               "fa_verify_path": str(verifier.resolve(strict=True))})
+        # Lock a pre-existing immutable file, so refusal never creates a lock
+        # file in another run. A process death releases the advisory lock.
+        self.lock = (self.directory / "pins.json").open("rb")
+        try:
+            fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            require(not (output / "report.json").exists(), "run already completed; preserve and read report.json")
+            allowed_plans = {f"plan-{run['name']}" for run in self.manifest["runs"]}
+            for checkpoint in sorted(self.directory.glob("*.json")):
+                name = checkpoint.stem
+                require(name in {"pins", "book", "preactivation"} or name in allowed_plans
+                        or name.startswith("input-"), f"unknown recovery checkpoint: {name}")
+                self.facts[name] = read_fact(checkpoint)
+            for name, content in self.artifacts.items():
+                self.check_input(output / name, content)
+            for name, value in self.facts.items():
+                if name.startswith("input-"):
+                    filename, content = self.input_value(value)
+                    require(name == f"input-{filename}", "recovery input name differs")
+                    require(filename not in self.artifacts, "recovery input shadows a source artifact")
+                    self.check_input(output / filename, content)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self.lock is not None:
+            self.lock.close()
+            self.lock = None
+
+    @staticmethod
+    def check_input(path: Path, content: bytes) -> None:
+        if path.exists():
+            require(path.is_file() and not path.is_symlink() and path.read_bytes() == content,
+                    f"retained input differs: {path}")
+
+    @staticmethod
+    def input_value(value: dict) -> tuple[str, bytes]:
+        require(set(value) == {"name", "hex"} and isinstance(value["name"], str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value["name"]) is not None,
+                "invalid retained input name")
+        content = bytes.fromhex(value["hex"])
+        require(content.hex() == value["hex"], "retained input has noncanonical byte encoding")
+        return value["name"], content
+
+    def save(self, name: str, value: dict) -> dict:
+        if name in self.facts:
+            require(self.facts[name] == value, f"immutable recovery checkpoint differs: {name}")
+        record = {"sha256": hashlib.sha256(json_bytes(value)).hexdigest(), "value": value}
+        publish_bytes(self.directory / f"{name}.json", json_bytes(record))
+        self.facts[name] = value
+        return value
+
+    def restore_inputs(self) -> None:
+        # Only after every pin, existing file and native scope passed preflight.
+        for name, content in self.artifacts.items():
+            publish_bytes(self.output / name, content)
+        for name, value in self.facts.items():
+            if name.startswith("input-"):
+                filename, content = self.input_value(value)
+                publish_bytes(self.output / filename, content)
+
+    def input(self, name: str, content: bytes) -> Path:
+        value = {"name": name, "hex": content.hex()}
+        self.input_value(value)
+        path = self.output / name
+        require(name not in self.artifacts, "dynamic input shadows a source artifact")
+        require(f"input-{name}" in self.facts or not path.exists(),
+                f"untracked native input exists: {path}")
+        self.save(f"input-{name}", value)
+        publish_bytes(path, content)
+        return path
+
+    def input_json(self, name: str, value: dict) -> Path:
+        return self.input(name, json_bytes(value))
+
+    def retained_json(self, name: str) -> dict:
+        fact = self.facts.get(f"input-{name}")
+        require(fact is not None, f"native progress has no retained input: {name}")
+        filename, content = self.input_value(fact)
+        require(filename == name, "retained input identity differs")
+        value = json.loads(content)
+        require(isinstance(value, dict), "retained native input is not an object")
+        return value
+
+    def begin_attempt(self) -> Path:
+        attempts = self.output / "attempts"
+        attempts.mkdir(exist_ok=True)
+        numbers = [int(path.name) for path in attempts.iterdir()
+                   if path.is_dir() and re.fullmatch(r"[0-9]{6}", path.name)]
+        require(not numbers or max(numbers) < 999999, "too many replay attempts")
+        self.attempt = attempts / f"{max(numbers, default=0) + 1:06}"
+        self.attempt.mkdir(exist_ok=False)
+        return self.attempt
+
+    def remember_book(self, info: dict) -> None:
+        require(re.fullmatch(r"[0-9a-f]{32}", info["book_id"], re.ASCII) is not None,
+                "native book identity is invalid")
+        require(info["base_unit"] == "USD" and info["entities"] == [],
+                "native book scope differs from the declared activity book")
+        self.save("book", {key: info[key] for key in ("book_id", "base_unit", "calendar", "entities")})
+
+
 def money(cents: int) -> str:
     return f"{'-' if cents < 0 else ''}{abs(cents) // 100}.{abs(cents) % 100:02}"
 
@@ -121,8 +312,8 @@ def input_provenance(path: Path, agency: str) -> tuple[dict, list[int] | None]:
     return {"kind": "complete_agency_selection", "sha256": digest, "manifest": manifest}, records
 
 
-def extract_original(path: Path, destination: Path, agency: str) -> None:
-    """Copy selected original logical records byte-for-byte, including CRLF."""
+def original_bytes(path: Path, agency: str) -> bytes:
+    """Select original logical records byte-for-byte, including CRLF."""
     class Lines:
         def __init__(self, stream):
             self.stream = stream
@@ -136,7 +327,7 @@ def extract_original(path: Path, destination: Path, agency: str) -> None:
             self.consumed.append(line)
             return line.decode("cp1252")
 
-    with path.open("rb") as raw, destination.open("xb") as out:
+    with path.open("rb") as raw, io.BytesIO() as out:
         physical = Lines(raw)
         records = csv.reader(physical, strict=True)
         header = next(records)
@@ -148,6 +339,12 @@ def extract_original(path: Path, destination: Path, agency: str) -> None:
             if fields[0] == agency:
                 out.write(b"".join(physical.consumed))
             physical.consumed.clear()
+        return out.getvalue()
+
+
+def extract_original(path: Path, destination: Path, agency: str) -> None:
+    with destination.open("xb") as stream:
+        stream.write(original_bytes(path, agency))
 
 
 def account_spec(code: str, name: str) -> dict:
@@ -236,7 +433,8 @@ def department_oracle(rows: list[dict]) -> dict[str, dict[str, dict]]:
     return result
 
 
-def normalize(path: Path, agency: str, output: Path) -> dict:
+def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, bytes]]:
+    """Recompute every source-derived input without touching an existing run."""
     provenance, record_map = input_provenance(path, agency)
     selected = source.prepare_agency(path, agency, source_records=record_map)
     rows = selected["rows"]
@@ -245,15 +443,13 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
     require({r["fields"]["ACCOUNTING_PERIOD"] for r in rows} == {"10", "11", "12"}, "agency must cover all three quarter periods")
     departments = department_specs(rows)
     department_activity = department_oracle(rows)
-    output.mkdir(parents=True, exist_ok=False)
-    original = output / "original-agency.csv"
-    extract_original(path, original, agency)
+    original = original_bytes(path, agency)
+    artifacts = {"original-agency.csv": original}
     activity = oracle(rows)
     accounts = sorted({r["fields"]["ACCOUNT"]: r["fields"]["ACCTDESCR"] for r in rows}.items())
     chart = [account_spec(code, name) for code, name in accounts]
-    write_json(output / "chart.json", {"accounts": chart})
-    with (output / "column_map.toml").open("x", encoding="utf-8", newline="\n") as stream:
-        stream.write(COLUMN_MAP)
+    artifacts["chart.json"] = json_bytes({"accounts": chart})
+    artifacts["column_map.toml"] = COLUMN_MAP.encode("utf-8")
 
     # Separate native migration runs follow actual fund/class boundaries.
     # Each source monetary row is one leg. No row is split or netted away.
@@ -276,10 +472,10 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
         if not monetary:
             continue
         name = f"run-{index:03}"
-        normalized = output / f"{name}.csv"
+        normalized = f"{name}.csv"
         run_rows: list[dict] = []
         group_ids = []
-        with normalized.open("x", encoding="utf-8", newline="") as stream:
+        with io.StringIO(newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
             writer.writeheader()
             for group in sorted(groups, key=lambda g: int(g["key"][1])):
@@ -305,8 +501,9 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
                     mapping.append({"source_record": record, "run": name, "entry_id": entry_id,
                                     "leg": leg_index, "account": original_fields["ACCOUNT"], "cents": cents,
                                     "department": department_code(original_fields["DEPTID"])})
-        runs.append({"name": name, "key": list(key), "source": normalized.name,
-                     "sha256": sha256(normalized), "entry_ids": group_ids,
+            artifacts[normalized] = stream.getvalue().encode("utf-8")
+        runs.append({"name": name, "key": list(key), "source": normalized,
+                     "sha256": hashlib.sha256(artifacts[normalized]).hexdigest(), "entry_ids": group_ids,
                      "rows": len(run_rows), "activity_cents": oracle(run_rows)})
     require(used | set(omitted_zero) == {r["source_record"] for r in rows}, "source-row coverage gap")
     require(not (used & set(omitted_zero)), "zero/monetary source-row overlap")
@@ -318,7 +515,7 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
         "review_scope": REVIEW_SCOPE,
         "input_sha256": provenance["sha256"], "input_kind": provenance["kind"],
         "agency": agency, "agency_name": rows[0]["fields"]["OCP_AGNCY_NAME"],
-        "original_selection_sha256": sha256(original), "source_rows": len(rows),
+        "original_selection_sha256": hashlib.sha256(original).hexdigest(), "source_rows": len(rows),
         "source_columns": len(source.HEADERS), "account_count": len(accounts),
         "monetary_rows": len(used), "zero_rows": sorted(omitted_zero),
         "row_mapping": mapping, "runs": runs, "activity_cents": activity,
@@ -329,7 +526,19 @@ def normalize(path: Path, agency: str, output: Path) -> dict:
         "dimension_policy": "original_DEPTID maps to native department; nonblank codes stay exact strings, whitespace-only is absent, and surrounding whitespace on a nonblank code is refused. Every other chartfield remains in retained evidence, without native projection. An empty department oracle key denotes untagged source rows; it is never a native value.",
         "oracle_policy": "Integer-cent fold of original source fields; not an audited agency opening/closing trial balance",
     }
-    write_json(output / "manifest.json", manifest)
+    artifacts["manifest.json"] = json_bytes(manifest)
+    return manifest, artifacts
+
+
+def normalize(path: Path, agency: str, output: Path, *,
+              on_created: Callable[[], None] | None = None) -> dict:
+    manifest, artifacts = preparation_artifacts(path, agency)
+    output.mkdir(parents=True, exist_ok=False)
+    if on_created is not None:
+        on_created()
+    for name, content in artifacts.items():
+        with (output / name).open("xb") as stream:
+            stream.write(content)
     return manifest
 
 
@@ -341,19 +550,23 @@ class Native:
         self.book = output / "book"
         self.commands = 0
         self.document_custody: list[dict] = []
+        self.log_path: Path | None = output / "commands.jsonl"
         self.environment = dict(os.environ)
         self.environment.pop("FA_BOOK", None)
         self.environment.pop("FA_TOKEN", None)
         self.environment.update(NO_COLOR="1", CI="1")
 
-    def execute_events(self, command: list[str], expect: int = 0) -> tuple[list[dict], str]:
+    def execute_events(self, command: list[str], expect: int | tuple[int, ...] = 0,
+                       *, input_text: str | None = None) -> tuple[list[dict], str]:
         self.commands += 1
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                                env=self.environment, timeout=600, check=False)
-        with (self.output / "commands.jsonl").open("a", encoding="utf-8") as log:
-            log.write(json.dumps({"command": command, "exit": result.returncode,
-                                  "stdout": result.stdout, "stderr": result.stderr}, ensure_ascii=False) + "\n")
-        require(result.returncode == expect,
+                                input=input_text, env=self.environment, timeout=600, check=False)
+        if self.log_path is not None:
+            with self.log_path.open("a", encoding="utf-8") as log:
+                log.write(json.dumps({"command": command, "exit": result.returncode,
+                                      "stdout": result.stdout, "stderr": result.stderr}, ensure_ascii=False) + "\n")
+        accepted = (expect,) if isinstance(expect, int) else expect
+        require(result.returncode in accepted,
                 f"native command exited {result.returncode}, expected {expect}: {command!r}\n{result.stdout}\n{result.stderr}")
         try:
             lines = result.stdout.splitlines()
@@ -364,16 +577,18 @@ class Native:
         require(all(isinstance(value, dict) for value in values), "native result is not a JSON object")
         return values, result.stdout
 
-    def execute(self, command: list[str], expect: int = 0) -> dict:
-        values, _ = self.execute_events(command, expect)
+    def execute(self, command: list[str], expect: int | tuple[int, ...] = 0,
+                *, input_text: str | None = None) -> dict:
+        values, _ = self.execute_events(command, expect, input_text=input_text)
         require(len(values) == 1, f"native command did not return one robot envelope: {command!r}")
         return values[0]
 
     def command(self, *args: object) -> list[str]:
         return [str(self.binary), "--book", str(self.book), *map(str, args), "--json"]
 
-    def call(self, *args: object, expect: int = 0) -> dict:
-        return self.execute(self.command(*args), expect)
+    def call(self, *args: object, expect: int | tuple[int, ...] = 0,
+             input_text: str | None = None) -> dict:
+        return self.execute(self.command(*args), expect, input_text=input_text)
 
     def document(self, path: Path, kind: str = "Spreadsheet", mime: str = "text/csv") -> str:
         # These bytes were fetched or transformed by the driver. Neither a
@@ -678,7 +893,8 @@ def verify_prepared_legs(manifest: dict, run: dict, package: dict, department_va
                     f"native proposal differs from original source record {row['source_record']}")
 
 
-def verify_staged_group(event: dict, package: dict, run_vid: str, *, retry: bool = False) -> list[dict]:
+def verify_staged_group(event: dict, package: dict, run_vid: str, *,
+                        retry: bool = False, recover: bool = False) -> list[dict]:
     require(event.get("event") == "migration_import_group_staged", "missing native grouped staging event")
     result = event["data"]
     chunks = package["chunks"]
@@ -688,8 +904,9 @@ def verify_staged_group(event: dict, package: dict, run_vid: str, *, retry: bool
     require(result.get("selected_count") == result.get("completed_count")
             == result.get("recorded_count") == result.get("chunk_count") == len(chunks),
             "native group omitted or duplicated source chunks")
-    require(result.get("run_state") == ("Finalized" if retry else "Open")
-            and result.get("ready_to_finalize") is (not retry),
+    expected_state = package["run_state"] if recover else ("Finalized" if retry else "Open")
+    require(expected_state in ("Open", "Finalized") and result.get("run_state") == expected_state
+            and result.get("ready_to_finalize") is (expected_state == "Open"),
             "native group returned an incorrect activation state")
     receipts = result.get("chunks")
     require(isinstance(receipts, list) and len(receipts) == len(chunks), "native group omitted chunk receipts")
@@ -701,7 +918,12 @@ def verify_staged_group(event: dict, package: dict, run_vid: str, *, retry: bool
         seq = receipt.get("recorded_at")
         require(type(seq) is int and seq > 0 and seq not in sequences, "native group repeats a publication sequence")
         sequences.add(seq)
-        require(receipt.get("already_recorded") is retry, "native grouped receipt misstates its retry status")
+        previous = chunk["recorded_at"] if recover else None
+        expected_retry = retry or previous is not None
+        require(receipt.get("already_recorded") is expected_retry, "native grouped receipt misstates its retry status")
+        if previous is not None:
+            require(type(previous) is int and seq == previous,
+                    "recovered group changed an original native publication sequence")
     return receipts
 
 
@@ -733,22 +955,301 @@ def verify_department_balances(native: Native, manifest: dict, before_finalize: 
     return certificates
 
 
-def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> dict:
+
+def run_key(manifest: dict, run: dict) -> str:
+    return f"omes-{manifest['agency']}-{run['name']}"
+
+
+def package_identity(package: dict) -> dict:
+    return {
+        key: package[key] for key in
+        ("package_oid", "run_vid", "run_body_digest", "source_oid")
+    } | {"chunks": [{"entry_vid": chunk["entry_vid"],
+                    "proposal_digest": chunk["proposal_digest"]}
+                   for chunk in package["chunks"]]}
+
+
+def activation_membership(prepared: list[dict]) -> dict:
+    result = {}
+    for run in prepared:
+        package = run["package"]
+        require(package["recorded_count"] == package["chunk_count"] and package["ties_out"],
+                "activation prefix requires every source chunk to be staged and tied out")
+        require(all(type(chunk["recorded_at"]) is int and chunk["recorded_at"] > 0
+                    for chunk in package["chunks"]), "native chunk receipt is missing")
+        result[run["name"]] = {
+            **package_identity(package),
+            "recorded_at": [chunk["recorded_at"] for chunk in package["chunks"]],
+        }
+    return result
+
+
+def check_finalization_plan(plan: dict, run: dict) -> None:
+    require(isinstance(plan, dict) and set(plan) == {
+        "run_vid", "action", "proposal_digest", "tie_out_digest", "chunk_count", "bytes", "plan",
+    }, "retained finalization plan shape differs")
+    require(plan["run_vid"] == run["run_vid"] and plan["action"] == "finalize"
+            and plan["tie_out_digest"] == run["tie_out_digest"]
+            and plan["chunk_count"] == run["chunk_count"] and plan["plan"] is None,
+            "retained finalization plan differs from the native migration")
+    for field in ("proposal_digest", "tie_out_digest"):
+        require(isinstance(plan[field], str)
+                and re.fullmatch(r"[0-9a-f]{64}", plan[field], re.ASCII) is not None,
+                "retained finalization plan digest is invalid")
+    wire = bytes.fromhex(plan["bytes"])
+    require(wire.hex() == plan["bytes"] and wire.startswith(b"FA-MIGRATE-PLAN\0"),
+            "retained finalization proposal bytes are invalid")
+
+
+def preflight_recovery(native: Native, recovery: ReplayRecovery) -> dict[str, dict]:
+    """Read the real book before restoring files or making a continuation write."""
+    manifest = recovery.manifest
+    book_fact = recovery.facts.get("book")
+    if not native.book.exists():
+        require(book_fact is None, "the pinned native book is missing; do not create a replacement")
+        require(not any(name != "pins" for name in recovery.facts),
+                "recovery progress exists without its native book")
+        return {}
+    require(book_fact is not None,
+            "existing book has no pinned identity; genesis acknowledgement was not retained, so refuse adoption")
+    info = native.call("book", "info")["data"]
+    require({key: info.get(key) for key in book_fact} == book_fact
+            and set(book_fact) == {"book_id", "base_unit", "calendar", "entities"},
+            "native book identity or declared scope differs")
+
+    expected_accounts = {row["code"]: row for row in json.loads(recovery.artifacts["chart.json"])["accounts"]}
+    observed_accounts = native.call("chart", "list")["data"]["accounts"]
+    for account in observed_accounts:
+        expected = expected_accounts.get(account["code"])
+        require(expected is not None and all(account.get(key) == expected[key]
+                                            for key in ("code", "name", "type", "unit"))
+                and account.get("leaf") is True
+                and all(account.get(key) is None for key in ("lower_bound", "upper_bound", "limit_scope")),
+                f"native chart differs from source crosswalk: {account['code']}")
+    require(len({row["code"] for row in observed_accounts}) == len(observed_accounts),
+            "native chart repeats an account")
+    expected_departments = {spec["code"]: spec["name"] for spec in manifest["departments"]}
+    departments = {}
+    for value in native.call("dimension", "list", "department")["data"]["values"]:
+        require(value["dimension"] == "department" and value["code"] in expected_departments
+                and value["code"] not in departments and value["name"] == expected_departments[value["code"]]
+                and all(value[field] is None for field in ("parent", "valid_from", "valid_to")),
+                "native department definition differs from the retained source")
+        departments[value["code"]] = {"dimension": value["dimension_id"], "value": value["vid"]}
+
+    expected_runs = {run_key(manifest, run): run for run in manifest["runs"]}
+    current = {}
+    for key, run in expected_runs.items():
+        response = native.call("migrate", "show", key, expect=(0, 3))
+        if response.get("event") == "error":
+            require(response["data"].get("exit") == 3
+                    and response["data"].get("refusal_id") == "FA-REF-132",
+                    f"cannot inspect native migration {key}")
+            require(f"input-{run['name']}-import.json" not in recovery.facts,
+                    f"previously opened native migration is missing: {key}")
+            continue
+        require(response.get("event") == "migration_run", "unexpected migration inspection response")
+        actual = response["data"]
+        require(actual["state"] in ("Open", "Finalized"),
+                f"native migration {key} is {actual['state']}; an abandoned run cannot be resumed")
+        original = recovery.retained_json(f"{run['name']}-open.json")
+        require(actual["run_key"] == key and original["run_key"] == key
+                and actual["source_system"] == original["source_system"] == SOURCE_SYSTEM
+                and actual["mode"] == original["mode"] == "FullDetail"
+                and actual["opening_date"] == original["opening_date"] == "2024-07-01"
+                and actual["trial_balance_oid"] == original["trial_balance"],
+                f"native migration declaration differs: {key}")
+        current[key] = actual
+
+    packages = {}
+    documents = native.call("document", "list")["data"]["documents"]
+    package_mimes = {
+        "application/vnd.frankenaccounting.legacy-opening-import.v1",
+        "application/vnd.frankenaccounting.legacy-period-balances-import.v1",
+        "application/vnd.frankenaccounting.legacy-full-detail-import.v1",
+    }
+    for document in documents:
+        if document["mime"] not in package_mimes:
+            continue
+        package = native.call("migrate", "import", "--action", "show",
+                              "--package", document["oid"])["data"]
+        key = package["run_key"]
+        require(key in current and key not in packages and package["mode"] == "FullDetail",
+                "native book contains an unexpected or duplicate migration package")
+        run = expected_runs[key]
+        actual = current[key]
+        original = recovery.retained_json(f"{run['name']}-import.json")
+        expected_intent = {
+            "run": f"MR:{actual['run_vid']}", "source": f"D:{package['source_oid']}",
+            "format": "csv", "column_map": COLUMN_MAP,
+            "entry_periods": {entry_id: f"FY2024-P{int(entry_id.split(':')[3]):02}"
+                              for entry_id in run["entry_ids"]},
+            "account_map": {code: code for code in expected_accounts},
+        }
+        require(original == expected_intent, "retained import configuration differs from its native package")
+        require(package["package_oid"] == document["oid"] and package["run_vid"] == actual["run_vid"]
+                and package["run_state"] == actual["state"], "native package identity or state differs")
+        verify_prepared_legs(manifest, run, package, departments)
+        recorded = [{"vid": chunk["entry_vid"], "proposal_digest": chunk["proposal_digest"],
+                     "recorded_at": chunk["recorded_at"]}
+                    for chunk in package["chunks"] if chunk["recorded_at"] is not None]
+        require(len(recorded) == package["recorded_count"] == actual["chunk_count"]
+                and sorted(recorded, key=lambda item: item["vid"])
+                == sorted(actual["chunks"], key=lambda item: item["vid"]),
+                "native staged receipts are not members of the original immutable package")
+        packages[key] = package
+    for key, actual in current.items():
+        require(key in packages or (actual["state"] == "Open" and actual["chunk_count"] == 0),
+                "native migration has posted chunks without its original retained package")
+        plan = recovery.facts.get(f"plan-{expected_runs[key]['name']}")
+        if plan is not None:
+            require(set(plan) == {"plan"}, "invalid finalization checkpoint")
+            check_finalization_plan(plan["plan"], actual)
+        approval_name = f"{expected_runs[key]['name']}-finalize-approvals.json"
+        if f"input-{approval_name}" in recovery.facts:
+            approved = recovery.retained_json(approval_name)
+            require(plan is not None and approved.get("proposal_digest") == plan["plan"]["proposal_digest"],
+                    "retained finalization approvals refer to a different proposal")
+        if actual["state"] == "Finalized":
+            require(plan is not None and "preactivation" in recovery.facts,
+                    "finalized migration lacks the original plan or preactivation snapshot")
+            require(f"input-{approval_name}" in recovery.facts,
+                    "finalized migration lacks its original approval identities")
+    prefix = recovery.facts.get("preactivation")
+    if prefix is not None:
+        require(len(packages) == len(expected_runs), "preactivation checkpoint has missing native packages")
+        prepared = [{"name": expected_runs[key]["name"], "package": packages[key]}
+                    for key in expected_runs]
+        require(set(prefix) == {"known_at", "packages"}
+                and prefix["packages"] == activation_membership(prepared),
+                "preactivation package membership differs")
+        require(type(prefix["known_at"]) is int and 0 < prefix["known_at"] <= native.head()
+                and all(seq <= prefix["known_at"] for item in prefix["packages"].values()
+                        for seq in item["recorded_at"]),
+                "preactivation snapshot is outside the staged native history")
+        for period in PERIODS:
+            same_cells(native.tb(period, known_at=prefix["known_at"], expected_gross={}), {},
+                       f"{period} retained preactivation snapshot")
+    else:
+        require(not any(name.startswith("plan-") for name in recovery.facts),
+                "finalization plan has no original preactivation snapshot")
+    return packages
+
+
+def activation_prefix(native: Native, recovery: ReplayRecovery, prepared: list[dict]) -> int:
+    membership = activation_membership(prepared)
+    prefix = recovery.facts.get("preactivation")
+    if prefix is None:
+        require(all(run["package"]["run_state"] == "Open" for run in prepared),
+                "cannot reconstruct an empty prefix after a migration finalized")
+        prefix = {"known_at": native.head(), "packages": membership}
+    require(prefix["packages"] == membership, "original preactivation package membership changed")
+    require(type(prefix["known_at"]) is int and all(seq <= prefix["known_at"]
+            for item in membership.values() for seq in item["recorded_at"]),
+            "preactivation snapshot predates the original staged receipts")
+    for period in PERIODS:
+        same_cells(native.tb(period, known_at=prefix["known_at"], expected_gross={}), {},
+                   f"{period} staged visibility at original preactivation snapshot")
+    recovery.save("preactivation", prefix)
+    return prefix["known_at"]
+
+
+
+def retained_stage_selection(native: Native, recovery: ReplayRecovery, run: dict) -> Path:
+    name = f"{run['name']}-stage.json"
+    if f"input-{name}" in recovery.facts:
+        selection = recovery.retained_json(name)
+    else:
+        selection = {"chunks": [
+            {"index": index, "approvals": native.approve(chunk["proposal_digest"], "chunk-reviewer")}
+            for index, chunk in enumerate(run["package"]["chunks"])
+        ]}
+    chunks = selection.get("chunks")
+    require(set(selection) == {"chunks"} and isinstance(chunks, list)
+            and len(chunks) == len(run["package"]["chunks"]), "retained stage selection changed")
+    for index, selected in enumerate(chunks):
+        require(isinstance(selected, dict) and set(selected) == {"index", "approvals"}
+                and type(selected["index"]) is int and selected["index"] == index,
+                "retained stage selection changed source chunk order")
+        approvals = selected["approvals"]
+        require(isinstance(approvals, list) and len(approvals) == 2 and len(set(approvals)) == 2
+                and all(isinstance(approval, str)
+                        and re.fullmatch(r"[0-9a-f]{32}", approval, re.ASCII) is not None
+                        for approval in approvals), "retained stage approvals are invalid")
+    # Once published, reuse these IDs, including approvals whose first response
+    # was lost. Native staging rechecks the approvals against each exact digest.
+    return recovery.input_json(name, selection)
+
+
+def finalize_recovered(native: Native, recovery: ReplayRecovery, run: dict) -> dict:
+    require("preactivation" in recovery.facts, "finalization requires the original preactivation snapshot")
+    actual = native.call("migrate", "show", run["run_vid"])["data"]
+    require(actual["state"] in ("Open", "Finalized") and actual["ties_out"],
+            "native migration cannot be finalized")
+    name = f"plan-{run['name']}"
+    saved = recovery.facts.get(name)
+    if saved is None:
+        require(actual["state"] == "Open", "cannot regenerate an already approved finalization proposal")
+        proposed = native.call("migrate", "finalize", run["run_vid"], "--dry-run")["data"]
+        check_finalization_plan(proposed, actual)
+        # This must be durable before the first approval, including a lost
+        # approval response. Retrying uses these exact sealed proposal bytes.
+        saved = recovery.save(name, {"plan": proposed})
+    proposed = saved["plan"]
+    check_finalization_plan(proposed, actual)
+    recovery.save(name, saved)
+    approval_name = f"{run['name']}-finalize-approvals.json"
+    if f"input-{approval_name}" in recovery.facts:
+        approved = recovery.retained_json(approval_name)
+    else:
+        require(actual["state"] == "Open", "finalized migration lacks its original approval identities")
+        approved = {"proposal_digest": proposed["proposal_digest"],
+                    "approvals": native.approve(proposed["proposal_digest"], "finalize-reviewer")}
+    approvals = approved.get("approvals")
+    require(set(approved) == {"proposal_digest", "approvals"}
+            and approved["proposal_digest"] == proposed["proposal_digest"]
+            and isinstance(approvals, list) and len(approvals) == 2
+            and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value, re.ASCII)
+                    for value in approvals) and len(set(approvals)) == 2,
+            "retained finalization approvals differ from the original proposal")
+    recovery.input_json(approval_name, approved)
+    head = native.head()
+    result = native.call("migrate", "finalize", run["run_vid"], "--plan", "-",
+                         "--approval", approvals[0], "--approval", approvals[1],
+                         input_text=proposed["bytes"] + "\n")["data"]
+    require(result["run_vid"] == run["run_vid"] and result["to"] == "Finalized",
+            "migration did not finalize the original run")
+    if actual["state"] == "Finalized":
+        require(result["already_recorded"] and native.head() == head,
+                "finalization retry changed the original native result")
+    return result
+
+
+def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
+               *, recovery: ReplayRecovery) -> dict:
+    require(manifest == recovery.manifest and output == recovery.output,
+            "native replay differs from its pinned recovery inputs")
     native = Native(binary, verifier, output)
-    native.call("book", "create", "--name", f"OMES {manifest['agency']} FY2024 Q4 ACTIVITY ONLY",
-                "--base-unit", "USD", "--calendar", "monthly", "--year-start-month", "7",
-                "--opening-date", "2024-07-01")
+    native.log_path = None
+    recovered = preflight_recovery(native, recovery)
+    recovery.restore_inputs()
+    attempt = recovery.begin_attempt()
+    native.log_path = attempt / "commands.jsonl"
+    if not native.book.exists():
+        native.call("book", "create", "--name", f"OMES {manifest['agency']} FY2024 Q4 ACTIVITY ONLY",
+                    "--base-unit", "USD", "--calendar", "monthly", "--year-start-month", "7",
+                    "--opening-date", "2024-07-01")
+    # Persist identity before the first schema, document or monetary mutation.
+    recovery.remember_book(native.call("book", "info")["data"])
     accounts = json.loads((output / "chart.json").read_text())["accounts"]
     for index in range(0, len(accounts), 32):
-        chart_file = output / f"chart-{index:03}.json"
-        write_json(chart_file, {"accounts": accounts[index:index + 32]})
+        chart_file = recovery.input_json(f"chart-{index:03}.json", {"accounts": accounts[index:index + 32]})
         native.call("chart", "import", chart_file)
     department_values = native.register_departments(manifest["departments"])
     native.call("period", "create", "--fiscal-year", "2024")
     raw_oid = native.document(output / "original-agency.csv", mime=ORIGINAL_CSV_MIME)
     manifest_oid = native.document(output / "manifest.json", "Workpaper", "application/json")
-    empty = output / "no-opening-stock.csv"
-    empty.write_text("account,unit,net\n", encoding="utf-8")
+    empty = recovery.input("no-opening-stock.csv", b"account,unit,net\n")
     empty_oid = native.document(empty)
     prepared = []
     retries = []
@@ -766,16 +1267,15 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
                 cumulative[account] += cents
             lines = [{"account": account, "unit": "USD", "net": money(cents)}
                      for account, cents in sorted(cumulative.items()) if cents]
-            oracle_path = output / f"{name}-{period}-source-oracle.json"
-            write_json(oracle_path, {"scope": SCOPE, "period": period, "lines": lines,
-                                     "source_sha256": source.SOURCE_SHA256})
+            oracle_path = recovery.input_json(f"{name}-{period}-source-oracle.json",
+                                              {"scope": SCOPE, "period": period, "lines": lines,
+                                               "source_sha256": source.SOURCE_SHA256})
             tb_oid = native.document(oracle_path, "Spreadsheet", "application/json")
             periods.append({"period": period, "trial_balance": tb_oid, "lines": lines})
         run_body = {"run_key": f"omes-{manifest['agency']}-{name}", "source_system": SOURCE_SYSTEM,
                     "mode": "FullDetail", "trial_balance": empty_oid, "opening_date": "2024-07-01",
                     "lines": [], "periods": periods, "detail_base": [], "sole_opening_source": True}
-        run_path = output / f"{name}-open.json"
-        write_json(run_path, run_body)
+        run_path = recovery.input_json(f"{name}-open.json", run_body)
         run_vid = native.call("migrate", "open", "--intent", run_path)["data"]["run_vid"]
         intent = {"run": f"MR:{run_vid}", "source": f"D:{source_oid}", "format": "csv",
                   "column_map": COLUMN_MAP,
@@ -785,10 +1285,14 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
                   "entry_periods": {entry_id: f"FY2024-P{int(entry_id.split(':')[3]):02}"
                                     for entry_id in run["entry_ids"]},
                   "account_map": {row["code"]: row["code"] for row in accounts}}
-        intent_path = output / f"{name}-import.json"
-        write_json(intent_path, intent)
+        intent_path = recovery.input_json(f"{name}-import.json", intent)
         package = native.call("migrate", "import", "--action", "prepare", "--intent", intent_path)["data"]
         verify_prepared_legs(manifest, run, package, department_values)
+        require(package["run_state"] in ("Open", "Finalized"), "native migration is not resumable")
+        previous = recovered.get(run_key(manifest, run))
+        if previous is not None:
+            require(package_identity(package) == package_identity(previous),
+                    "preparation changed the original native package or proposal identities")
         for source_id, chunk in zip(run["entry_ids"], package["chunks"], strict=True):
             require(source_id not in entry_ids, "source entry occurs in more than one native migration")
             require(re.fullmatch(r"[0-9a-f]{32}", chunk["entry_vid"], re.ASCII) is not None,
@@ -800,34 +1304,31 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             require(again["package_oid"] == package["package_oid"] and again["already_recorded"], "preparation retry changed package")
             require(native.head() == head, "preparation retry published another entry")
             checks.append("preparation_retry_is_idempotent")
-        package_oid = package["package_oid"]
-        selection = []
-        for chunk_index, chunk in enumerate(package["chunks"]):
-            approvals = native.approve(chunk["proposal_digest"], "chunk-reviewer")
-            selection.append({"index": chunk_index, "approvals": approvals})
-        selection_path = output / f"{name}-stage.json"
-        write_json(selection_path, {"chunks": selection})
+        prepared.append({"name": name, "run_vid": run_vid,
+                         "package_oid": package["package_oid"], "package": package})
+
+    # All existing and newly prepared populations are checked before staging.
+    # A lost grouped response is recovered by native membership, not a local
+    # completed-count file: each receipt has its own original CommitSeq.
+    for run in prepared:
+        name, run_vid, package_oid = run["name"], run["run_vid"], run["package_oid"]
+        package = run["package"]
+        selection_path = retained_stage_selection(native, recovery, run)
         command = ["migrate", "import", "--action", "stage", "--package", package_oid,
                    "--intent", selection_path]
-        receipts = verify_staged_group(native.call(*command), package, run_vid)
+        receipts = verify_staged_group(native.call(*command), package, run_vid, recover=True)
         for staged in receipts:
             native.call("document", "attach", staged["entry_vid"], "--evidence", raw_oid, "--evidence", manifest_oid)
         retries.append((command, receipts, package, run_vid))
         shown = native.call("migrate", "import", "--action", "show", "--package", package_oid)["data"]
         require(shown["ties_out"] and shown["recorded_count"] == package["chunk_count"], "staged source does not tie out")
-        prepared.append({"name": name, "run_vid": run_vid, "package_oid": package_oid})
+        require(package_identity(shown) == package_identity(package), "staging changed native package membership")
+        run["package"] = shown
 
-    before_finalize = native.head()
-    for period in PERIODS:
-        same_cells(native.tb(period), {}, f"{period} staged visibility")
+    before_finalize = activation_prefix(native, recovery, prepared)
     checks.append("all_staged_activity_is_invisible")
     for run in prepared:
-        plan = output / f"{run['name']}-finalize.plan"
-        proposed = native.call("migrate", "finalize", run["run_vid"], "--plan-out", plan)["data"]
-        approvals = native.approve(proposed["proposal_digest"], "finalize-reviewer")
-        result = native.call("migrate", "finalize", run["run_vid"], "--plan", plan,
-                             "--approval", approvals[0], "--approval", approvals[1])["data"]
-        require(result["to"] == "Finalized", "migration did not finalize")
+        finalize_recovered(native, recovery, run)
     checks.append("native_approved_finalization")
     cumulative = defaultdict(int)
     cumulative_gross = defaultdict(int)
@@ -872,36 +1373,43 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
     native.call("checkpoint", "create", "--grant", "witness")
     native.call("verify", "accumulator")
     checks.extend(["native_projections_match_payloads", "signed_accumulator_checkpoint"])
-    csv_export = output / "gl.csv"
+    csv_export = attempt / "gl.csv"
     native.call("export", "csv-gl", "--as-of", "2024-06-30", "--out", csv_export)
     native.call("verify", "export", "csv-gl", csv_export)
-    exported = native.call("export", "ads", "--as-of", "2024-06-30", "--out", output / "ads", "--with-proofs")
-    native.call("verify", "export", "ads", output / "ads")
+    exported = native.call("export", "ads", "--as-of", "2024-06-30", "--out", attempt / "ads", "--with-proofs")
+    native.call("verify", "export", "ads", attempt / "ads")
     export_oracles = [
         verify_exported_legs(manifest, entry_ids, department_values, csv_export, "csv-gl"),
-        verify_exported_legs(manifest, entry_ids, department_values, output / "ads/GL_Detail.txt", "ads"),
+        verify_exported_legs(manifest, entry_ids, department_values, attempt / "ads/GL_Detail.txt", "ads"),
     ]
     checks.extend(["native_csv_and_ads_reread_certificates", "every_exported_leg_preserves_source_department_or_absence"])
     trusted_key = exported["data"]["proof"]["checkpoint_public_key"]
     # This is the caller's just-created test book's trusted key, not a key read
     # from an untrusted incoming bundle. Production recipients need their own
     # separately authenticated anchor; this harness does not establish one.
-    verification = native.execute([str(native.verifier), "ads", str(output / "ads"), "--key", trusted_key, "--json"])
+    verification = native.execute([str(native.verifier), "ads", str(attempt / "ads"), "--key", trusted_key, "--json"])
     require_ads_dimension_proof(verification, manifest["monetary_rows"])
     checks.extend(["independent_fa_verify_ads_proof", "independent_fa_verify_authenticates_every_exported_dimension_set"])
     # Mutate a COPY, leaving the accepted evidence and production book intact.
-    tampered = output / "ads-tampered"
-    shutil.copytree(output / "ads", tampered)
+    tampered = attempt / "ads-tampered"
+    shutil.copytree(attempt / "ads", tampered)
     mutation = tamper_ads_amount(tampered / "GL_Detail.txt")
     rejected = native.execute([str(native.verifier), "ads", str(tampered), "--key", trusted_key, "--json"], expect=8)
     checks.append("independent_verifier_rejects_tampered_extract")
-    dimension_tampered = output / "ads-dimension-tampered"
-    shutil.copytree(output / "ads", dimension_tampered)
+    dimension_tampered = attempt / "ads-dimension-tampered"
+    shutil.copytree(attempt / "ads", dimension_tampered)
     dimension_mutation = tamper_ads_dimension(dimension_tampered / "GL_Detail.txt")
     dimension_rejected = native.execute([str(native.verifier), "ads", str(dimension_tampered),
                                          "--key", trusted_key, "--json"], expect=8)
     checks.append("independent_verifier_rejects_dimension_only_tampering")
+    checks.extend(["resume_inputs_and_native_book_identity_pinned",
+                   "original_native_packages_and_publication_receipts_preserved",
+                   "original_finalize_proposals_durable_before_approval"])
     return {"status": "PASS", "scope": SCOPE, "agency": manifest["agency"],
+            "recovery": {"resumed": recovery.resumed, "attempt": str(attempt.relative_to(output)),
+                         "native_packages_recovered": len(recovered),
+                         "book_id": recovery.facts["book"]["book_id"],
+                         "original_preactivation_seq": before_finalize},
             "source_sha256": source.SOURCE_SHA256, "source_rows": manifest["source_rows"],
             "monetary_rows": manifest["monetary_rows"], "source_columns": manifest["source_columns"],
             "account_count": manifest["account_count"], "migration_runs": len(prepared),
@@ -933,14 +1441,21 @@ def main(argv: list[str] | None = None) -> int:
     for action in ("prepare", "run"):
         command = sub.add_parser(action, help="normalize a complete agency" if action == "prepare" else "execute real native migration, folds and offline proof verification")
         command.add_argument("--source", type=Path, help="pinned statewide CSV or committed complete-agency fixture")
-        command.add_argument("--agency", default="31500", help="exact business-unit code; default complete firefighters pension quarter")
-        command.add_argument("--out", type=Path, required=True, help="new directory; an existing run is never overwritten")
+        command.add_argument("--agency", help="exact business-unit code; default 31500, or the original agency with --resume")
+        command.add_argument("--out", type=Path, required=True, help="new directory, or an interrupted pinned run with --resume")
         if action == "run":
-            command.add_argument("--fa", type=Path, default=ROOT / "target/debug/fa")
-            command.add_argument("--fa-verify", type=Path, default=ROOT / "target/debug/fa-verify")
+            command.add_argument("--fa", type=Path, help="default target/debug/fa; resume defaults to the original executable")
+            command.add_argument("--fa-verify", type=Path, help="default target/debug/fa-verify; resume defaults to the original executable")
+            command.add_argument("--resume", action="store_true", help="continue the original pinned book and proposals; preserve prior attempts")
     args = parser.parse_args(argv)
     started = time.monotonic()
-    output_existed = args.out.exists()
+    output_created = False
+
+    def own_output() -> None:
+        nonlocal output_created
+        output_created = True
+
+    recovery: ReplayRecovery | None = None
     try:
         if args.action == "fetch":
             print(source.fetch_source(args.out))
@@ -949,24 +1464,44 @@ def main(argv: list[str] | None = None) -> int:
             write_json(args.out, value)
             print(json.dumps({"status": "PROFILED", "report": str(args.out), "source_sha256": source.SOURCE_SHA256}))
         else:
-            path = args.source or FIXTURES / f"omes-fy2024-q4-{args.agency}.csv"
+            saved = read_fact(args.out / "recovery/pins.json") if args.action == "run" and args.resume else {}
+            agency = args.agency or saved.get("agency", "31500")
+            path = args.source or (Path(saved["source_path"]) if saved else FIXTURES / f"omes-fy2024-q4-{agency}.csv")
             if args.action == "run":
-                require(args.fa.is_file() and args.fa_verify.is_file(), "build fa and fa-verify first: cargo build -p fa-cli --bin fa -p fa-verify --bin fa-verify")
-            manifest = normalize(path, args.agency, args.out)
-            if args.action == "run":
-                report = run_native(args.fa, args.fa_verify, args.out, manifest)
+                binary = args.fa or Path(saved.get("fa_path", ROOT / "target/debug/fa"))
+                verifier = args.fa_verify or Path(saved.get("fa_verify_path", ROOT / "target/debug/fa-verify"))
+                require(binary.is_file() and verifier.is_file(),
+                        "build fa and fa-verify first: cargo build -p fa-cli --bin fa -p fa-verify --bin fa-verify")
+                recovery = ReplayRecovery(args.out, path, agency, binary, verifier,
+                                          resume=args.resume, on_created=own_output)
+                manifest = recovery.manifest
+                report = run_native(binary, verifier, args.out, manifest, recovery=recovery)
                 report["elapsed_seconds"] = round(time.monotonic() - started, 3)
-                write_json(args.out / "report.json", report)
+                require(recovery.attempt is not None, "native run has no validation attempt")
+                publish_bytes(recovery.attempt / "report.json", json_bytes(report))
+                publish_bytes(args.out / "report.json", json_bytes(report))
                 print(json.dumps({key: report[key] for key in ("status", "agency", "source_rows", "monetary_rows", "account_count", "migration_entries", "commands", "elapsed_seconds")}))
             else:
-                print(json.dumps({"status": "PREPARED", "agency": args.agency, "source_rows": manifest["source_rows"], "out": str(args.out)}))
+                manifest = normalize(path, agency, args.out, on_created=own_output)
+                print(json.dumps({"status": "PREPARED", "agency": agency, "source_rows": manifest["source_rows"], "out": str(args.out)}))
         return 0
     except (ReplayError, source.SourceError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         message = {"status": "FAIL", "error": str(error)}
-        if args.action in ("run", "prepare") and not output_existed and args.out.is_dir() and not (args.out / "failure.json").exists():
-            write_json(args.out / "failure.json", message)
+        failure = None
+        if recovery is not None and recovery.attempt is not None:
+            failure = recovery.attempt / "failure.json"
+        elif args.action in ("run", "prepare") and output_created and args.out.is_dir():
+            failure = args.out / "failure.json"
+        if failure is not None and not failure.exists():
+            try:
+                publish_bytes(failure, json_bytes(message))
+            except OSError as save_error:
+                message["failure_record_error"] = str(save_error)
         print(json.dumps(message), file=sys.stderr)
         return 1
+    finally:
+        if recovery is not None:
+            recovery.close()
 
 
 if __name__ == "__main__":
