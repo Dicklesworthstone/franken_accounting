@@ -67,6 +67,7 @@ use crate::genesis::{BookContext, UnitPolicy};
 use crate::post::{PostRequest, Posted, post, read_entry};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, mantissa_scalar, prop, scalar_bytes, scalar_text};
+use fa_escrow::{inflow_room, outflow_room};
 
 pub use fa_escrow::{
     Breach, LimitScope, admissible_balancing_amount, availability_of, balancing_bytes,
@@ -915,31 +916,15 @@ pub fn admissible(
     side: Side,
 ) -> Result<Option<i128>, KernelError> {
     let (net, pending_out, pending_in) = cell.availability(normal)?;
-    let a = if side == normal {
-        let Some(upper) = limit.upper else {
-            return Ok(None);
-        };
-        inflow_room(upper, net, pending_in)
-    } else {
-        let Some(lower) = limit.lower else {
-            return Ok(None);
-        };
-        outflow_room(lower, net, pending_out)
-    };
-    Ok(Some(a))
-}
-
-// Reservations are nonnegative. Combine them with the net first: an
-// overflow then lies beyond every representable bound. Clamp only the
-// resulting capacity to the domain of an individual requested amount.
-fn inflow_room(upper: i128, net: i128, pending_in: i128) -> i128 {
-    net.checked_add(pending_in)
-        .map_or(0, |occupied| upper.saturating_sub(occupied).max(0))
-}
-
-fn outflow_room(lower: i128, net: i128, pending_out: i128) -> i128 {
-    net.checked_sub(pending_out)
-        .map_or(0, |available| available.saturating_sub(lower).max(0))
+    Ok(admissible_balancing_amount(
+        net,
+        pending_out,
+        pending_in,
+        normal,
+        side,
+        limit.lower,
+        limit.upper,
+    ))
 }
 
 /// What a balancing post moved (plan §5.5): the requested amount and the
@@ -1526,6 +1511,21 @@ mod tests {
         assert_eq!(
             admissible(&cell(i128::MAX, 0, 0, 0), Side::Debit, &low, Side::Credit).unwrap(),
             Some(i128::MAX)
+        );
+        // Bounded overflow leaves no room; it must never become the None
+        // that the posting kernel interprets as an unbounded direction.
+        assert_eq!(
+            admissible(&cell(0, i128::MAX, 0, i128::MAX), Side::Debit, &low, Side::Credit).unwrap(),
+            Some(0)
+        );
+        let high = BalanceLimit {
+            lower: None,
+            upper: Some(i128::MAX),
+            scope: LimitScope::Lifetime,
+        };
+        assert_eq!(
+            admissible(&cell(i128::MAX, 0, 1, 0), Side::Debit, &high, Side::Debit).unwrap(),
+            Some(0)
         );
         assert_ne!(
             period_cell_vid(VId(1), "P01"),

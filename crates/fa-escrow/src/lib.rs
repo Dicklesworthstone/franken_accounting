@@ -156,6 +156,8 @@ pub fn availability_of(
 
 /// Maximum admissible movement on `side` for a balancing leg against `(lower, upper)`
 /// bounds in the account's normal-balance sign (plan §5.5).
+/// `None` means the direction has no bound; bounded arithmetic overflow
+/// never grants unbounded movement. Reservations must be nonnegative.
 #[must_use]
 pub fn admissible_balancing_amount(
     net: i128,
@@ -167,21 +169,76 @@ pub fn admissible_balancing_amount(
     upper: Option<i128>,
 ) -> Option<i128> {
     if leg_side != normal {
-        // Outflow against lower bound: net - pending_out - x >= lower => x <= net - pending_out - lower
-        let bound = lower?;
-        let slack = net.checked_sub(pending_out)?.checked_sub(bound)?;
-        Some(slack.max(0))
+        Some(outflow_room(lower?, net, pending_out))
     } else {
-        // Inflow against upper bound: net + pending_in + x <= upper => x <= upper - (net + pending_in)
-        let bound = upper?;
-        let slack = bound.checked_sub(net.checked_add(pending_in)?)?;
-        Some(slack.max(0))
+        Some(inflow_room(upper?, net, pending_in))
     }
+}
+
+/// Inflow capacity under an upper bound, with nonnegative reservations.
+/// Combine net and reservations before subtracting from the bound: an
+/// occupied sum above `i128::MAX` has no capacity under any valid bound.
+/// Clamp only the final capacity to the domain of one requested amount.
+#[must_use]
+pub fn inflow_room(upper: i128, net: i128, pending_in: i128) -> i128 {
+    net.checked_add(pending_in)
+        .map_or(0, |occupied| upper.saturating_sub(occupied).max(0))
+}
+
+/// Outflow capacity under a lower bound, with nonnegative reservations.
+/// A net less reservations below `i128::MIN` lies below every valid bound;
+/// a capacity above `i128::MAX` admits every representable request.
+#[must_use]
+pub fn outflow_room(lower: i128, net: i128, pending_out: i128) -> i128 {
+    net.checked_sub(pending_out)
+        .map_or(0, |available| available.saturating_sub(lower).max(0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn balancing_fixture() -> EntryPayload {
+        use fa_model::{EntryClass, EntryOrigin, Erasable, Id128, LegPayload, Oid, SealKey};
+        use fa_money::{Amount, UnitId};
+        let legs = vec![
+            LegPayload::simple(Side::Debit, VId(1), Amount::new(UnitId(1), 42_500)),
+            LegPayload::simple(Side::Credit, VId(2), Amount::new(UnitId(1), 42_500)),
+        ];
+        EntryPayload {
+            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            book_id: Id128([9; 16]),
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ORIGINAL,
+            effective_date: fa_time::DateDay(20_000),
+            document_date: None,
+            description: Erasable::seal(
+                &"balancing decoder fixture".to_string(),
+                None,
+                &SealKey([7; 32]),
+                [1; 32],
+                [2; 24],
+            ),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).expect("balanced totals"),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: b"balancing-decoder".to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([1; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: VId(77),
+            session_ref: None,
+            evidence: Vec::new(),
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            tags: Vec::new(),
+            extensions: Vec::new(),
+        }
+    }
 
     #[test]
     fn escrow_cell_vids_are_domain_separated_and_deterministic() {
@@ -236,5 +293,98 @@ mod tests {
     fn escrow_balancing_bytes_round_trip() {
         let raw = balancing_bytes(1, 42_500);
         assert_eq!(raw.len(), 18);
+        let mut proposal = balancing_fixture();
+        proposal.extensions.push((BALANCING_EXTENSION, raw));
+        assert_eq!(balancing_request(&proposal), Ok(Some((1, 42_500))));
+    }
+
+    #[test]
+    fn escrow_balancing_bytes_round_trip_through_balancing_request() {
+        let mut proposal = balancing_fixture();
+        assert_eq!(balancing_request(&proposal), Ok(None));
+        // The decoder preserves wire values; posting separately validates
+        // the requested amount and selected leg against the entry's shape.
+        for leg in [0, 1, u16::MAX] {
+            for requested in [i128::MIN, -1, 0, 42_500, i128::MAX] {
+                proposal.extensions = vec![(BALANCING_EXTENSION, balancing_bytes(leg, requested))];
+                assert_eq!(balancing_request(&proposal), Ok(Some((leg, requested))));
+            }
+        }
+        for len in (0..18).chain([19, 20, 255]) {
+            proposal.extensions = vec![(BALANCING_EXTENSION, vec![0; len])];
+            let error = balancing_request(&proposal).expect_err("malformed extension refused");
+            assert!(error.contains(&format!("{len} bytes, not 18")), "{error}");
+        }
+    }
+
+    #[test]
+    fn bounded_balancing_overflow_never_means_unbounded() {
+        for (normal, opposite) in [(Side::Debit, Side::Credit), (Side::Credit, Side::Debit)] {
+            assert_eq!(
+                admissible_balancing_amount(i128::MAX, 0, 1, normal, normal, None, Some(i128::MAX)),
+                Some(0),
+            );
+            assert_eq!(
+                admissible_balancing_amount(
+                    i128::MIN + 1,
+                    i128::MAX,
+                    0,
+                    normal,
+                    opposite,
+                    Some(i128::MIN),
+                    None
+                ),
+                Some(0),
+            );
+            assert_eq!(
+                admissible_balancing_amount(
+                    i128::MAX,
+                    0,
+                    0,
+                    normal,
+                    opposite,
+                    Some(i128::MIN),
+                    None
+                ),
+                Some(i128::MAX),
+            );
+            assert_eq!(
+                admissible_balancing_amount(
+                    i128::MIN + 1,
+                    0,
+                    0,
+                    normal,
+                    normal,
+                    None,
+                    Some(i128::MAX)
+                ),
+                Some(i128::MAX),
+            );
+            // Cancellation must precede clamping the final capacity.
+            assert_eq!(
+                admissible_balancing_amount(-10, 0, 20, normal, normal, None, Some(i128::MAX)),
+                Some(i128::MAX - 10),
+            );
+            assert_eq!(
+                admissible_balancing_amount(10, 20, 0, normal, opposite, Some(i128::MIN), None),
+                Some(i128::MAX - 9),
+            );
+            assert_eq!(
+                admissible_balancing_amount(i128::MAX, 0, 1, normal, normal, None, None),
+                None,
+            );
+            assert_eq!(
+                admissible_balancing_amount(
+                    i128::MIN + 1,
+                    i128::MAX,
+                    0,
+                    normal,
+                    opposite,
+                    None,
+                    None
+                ),
+                None,
+            );
+        }
     }
 }

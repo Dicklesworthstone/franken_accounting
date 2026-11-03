@@ -322,20 +322,20 @@ description = "Bypass per-unit amount ceiling enforcement in fa_policy::admit_ba
 [[mutant]]
 id = "MUT-032"
 file = "crates/fa-escrow/src/lib.rs"
-find = "let slack = net.checked_sub(pending_out)?.checked_sub(bound)?;"
-replace = "let slack = net.checked_add(pending_out)?.checked_sub(bound)?;"
+find = "net.checked_sub(pending_out)"
+replace = "net.checked_add(pending_out)"
 law = "FA-INV-15.availability"
-killed_by = ["fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign"]
-description = "Add pending outflows instead of subtracting them when computing lower-bound availability slack."
+killed_by = ["fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign", "fa-journal::lib::limit::tests::admissible_is_the_room_on_the_legs_side"]
+description = "Add pending outflows instead of subtracting them in the live lower-bound capacity used by kernel balancing and refusal hints (fa-yysv)."
 
 [[mutant]]
 id = "MUT-033"
 file = "crates/fa-escrow/src/lib.rs"
-find = "let slack = bound.checked_sub(net.checked_add(pending_in)?)?;"
-replace = "let slack = bound.checked_sub(net.checked_sub(pending_in)?)?;"
+find = "net.checked_add(pending_in)"
+replace = "net.checked_sub(pending_in)"
 law = "FA-INV-15.availability"
-killed_by = ["fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign"]
-description = "Subtract pending inflows instead of adding them when computing upper-bound cap slack."
+killed_by = ["fa-escrow::lib::tests::escrow_availability_and_balancing_headroom_follow_normal_sign", "fa-journal::lib::limit::tests::admissible_is_the_room_on_the_legs_side"]
+description = "Subtract pending inflows instead of adding them in the live upper-bound capacity used by kernel balancing and refusal hints (fa-yysv)."
 
 [[mutant]]
 id = "MUT-034"
