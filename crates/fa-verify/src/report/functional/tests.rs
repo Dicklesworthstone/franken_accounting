@@ -3,13 +3,15 @@
 mod closing;
 mod consolidation;
 mod custom_statement;
+mod dimension;
 mod migration;
 mod revaluation;
 mod settlement;
 mod statements;
 
 use super::super::{
-    FUNCTIONAL_CERTIFICATE_FORMAT, REPORT_BUNDLE_FORMAT, certificate, verify_report_with_inputs,
+    FUNCTIONAL_CERTIFICATE_FORMAT, FUNCTIONAL_DIMENSION_CERTIFICATE_FORMAT, REPORT_BUNDLE_FORMAT,
+    certificate, verify_report_with_inputs,
 };
 use super::*;
 use crate::checkpoint::SignedCheckpoint;
@@ -448,6 +450,29 @@ fn replay_registry_fixture(
     bodies: &[(u64, &[u8])],
     definitions: &registry::FunctionalRegistry,
 ) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
+    replay_registry_dimension_fixture(
+        records,
+        selected,
+        known_at,
+        spec,
+        rates,
+        bodies,
+        definitions,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_registry_dimension_fixture(
+    records: &[Record],
+    selected: Selection,
+    known_at: u64,
+    spec: &[u8],
+    rates: &[RateFixture],
+    bodies: &[(u64, &[u8])],
+    definitions: &registry::FunctionalRegistry,
+    dimension: Option<super::super::dimension::Selection>,
+) -> Result<(VerifiedFunctionalTrialBalance, Vec<u8>), ReportError> {
     let envelopes: Vec<_> = records
         .iter()
         .map(|record| record.envelope.clone())
@@ -463,6 +488,7 @@ fn replay_registry_fixture(
         .collect::<Vec<_>>();
     let mut infos = BTreeMap::new();
     let mut schema = metadata::Schema::default();
+    let mut dimension_history = super::super::dimension::History::default();
     for (index, record) in records.iter().enumerate() {
         if record.envelope.kind != KIND_ENTRY || record.envelope.commit_seq > known_at {
             continue;
@@ -470,6 +496,9 @@ fn replay_registry_fixture(
         let info = metadata::entry_info(&record.bytes[..record.len], &record.envelope)?;
         if let Some((kind, bytes)) = info.schema {
             schema.apply(kind, bytes, &BOOK, record.envelope.commit_seq)?;
+            if dimension.is_some() {
+                dimension_history.apply(kind, bytes, &BOOK)?;
+            }
         }
         infos.insert(index, info);
     }
@@ -490,7 +519,7 @@ fn replay_registry_fixture(
         known_at,
         time_selection: None,
         selection: selected,
-        dimension: None,
+        dimension,
         functional: true,
         source_storage: false,
         registry_digest: [0; 32],
@@ -509,12 +538,19 @@ fn replay_registry_fixture(
         &envelopes, &raw, bodies, known_at,
     )
     .map_err(|error| failed("migration_visibility", error.to_string()))?;
+    let dimension = cert
+        .dimension
+        .as_ref()
+        .map(|selection| dimension_history.select(selection))
+        .transpose()?;
     replay(
         &cert,
         definitions,
         spec,
         &documents,
         &schema,
+        dimension.as_ref(),
+        &dimension_history,
         &envelopes,
         &raw,
         &legs,
@@ -996,11 +1032,16 @@ fn pack_profile_with_migrations(
         .fixed(&[0; 16])
         .u64(known_at)
         .fixed(profile.selector);
+    let inputs = if profile.format == FUNCTIONAL_DIMENSION_CERTIFICATE_FORMAT {
+        9
+    } else {
+        8
+    };
     cert.fixed(&closure(docs))
         .fixed(&root_of(&historical))
         .u64(historical.len() as u64)
-        .count(8);
-    for _ in 0..8 {
+        .count(inputs);
+    for _ in 0..inputs {
         cert.bytes(b"native read witnesses are opaque");
     }
     cert.bytes(output)

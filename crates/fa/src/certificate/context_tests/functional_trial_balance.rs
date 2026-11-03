@@ -30,6 +30,448 @@ fn output(report: &ReportOutput) -> &FunctionalTrialBalance {
     report
 }
 
+fn fund(h: &mut Harness, code: &str, parent: Option<&str>) {
+    let cx = h.cx();
+    h.runtime
+        .block_on(h.book.create_dimension_value(
+            &cx,
+            &crate::dimension::DimensionValueSpec {
+                dimension: "fund".into(),
+                code: code.into(),
+                name: code.into(),
+                parent: parent.map(str::to_string),
+                valid_from: None,
+                valid_to: None,
+            },
+            PRINCIPAL,
+            format!("functional-dimension:{code}").as_bytes(),
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+}
+
+fn fund_fixture() -> Harness {
+    let (mut h, rate) = fixture();
+    fund(&mut h, "ROOT", None);
+    fund(&mut h, "CHILD", Some("ROOT"));
+    fund(&mut h, "OTHER", None);
+    let mut proposal = original(&h);
+    proposal.idempotency_key = b"functional-dimension-foreign".to_vec();
+    proposal.origin = EntryOrigin::Intent {
+        intent_oid: Oid([0x91; 32]),
+        intent_kind: 1,
+    };
+    for (leg, code) in proposal.legs.iter_mut().zip(["CHILD", "OTHER"]) {
+        leg.amount = Amount::new(rate.quote_unit, 1_000);
+        leg.dimension_set = vec![(7, fa_model::dimension_value_vid(BOOK, "fund", code))];
+    }
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let cx = h.cx();
+    let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
+    let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
+    let proposal = cx
+        .merge_eval()
+        .with_restriction(|| {
+            fa_journal::fx::value_proposal(
+                &mut budget,
+                proposal,
+                &spec(),
+                &h.book.context().units,
+                FxLawId::SpotClose,
+                std::slice::from_ref(&rate),
+            )
+        })
+        .unwrap();
+    h.runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    let mut pending = original(&h);
+    pending.class = EntryClass::PENDING;
+    pending.idempotency_key = b"functional-dimension-held".to_vec();
+    pending.origin = EntryOrigin::Intent {
+        intent_oid: Oid([0x92; 32]),
+        intent_kind: 1,
+    };
+    for (leg, code) in pending.legs.iter_mut().zip(["CHILD", "OTHER"]) {
+        leg.amount.mantissa = 300;
+        leg.dimension_set = vec![(7, fa_model::dimension_value_vid(BOOK, "fund", code))];
+    }
+    pending.unit_totals = EntryPayload::fold_unit_totals(&pending.legs).unwrap();
+    pending.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    h.runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal: pending,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    h
+}
+
+fn certify_fund(h: &mut Harness, selection: TrialBalanceSelection) -> CertifiedReport {
+    let cx = h.cx();
+    h.runtime
+        .block_on(h.book.certify_functional_dimension_trial_balance(
+            &cx,
+            &cap(&["read", "produce"]),
+            selection,
+            None,
+            "fund",
+            "ROOT",
+        ))
+        .unwrap()
+        .unwrap()
+}
+
+fn fund_output(report: &ReportOutput) -> &crate::FunctionalDimensionTrialBalance {
+    let ReportOutput::FunctionalDimensionTrialBalance(report) = report else {
+        panic!("expected a functional dimension trial balance");
+    };
+    report
+}
+
+#[test]
+fn functional_dimension_slice_preserves_pending_and_exact_base_values() {
+    let mut h = fund_fixture();
+    let at = h.head();
+    for selection in [
+        activity(),
+        TrialBalanceSelection::Periods(vec![PERIOD.into()]),
+        TrialBalanceSelection::AsOf(day()),
+    ] {
+        let certified = certify_fund(&mut h, selection.clone());
+        let output = fund_output(&certified.report);
+        assert_eq!(output.dimension, "fund");
+        assert_eq!(output.value, "ROOT");
+        assert_eq!(output.values, ["CHILD", "ROOT"]);
+        let report = &output.trial_balance;
+        assert_eq!(report.selection, selection);
+        assert_eq!(report.known_at, at);
+        assert_eq!(report.watermark, Some(at));
+        assert_eq!(report.entries, 1);
+        assert_eq!(report.cells.len(), 1);
+        assert_eq!(report.cells[0].account, account_vid(BOOK, "1000"));
+        assert_eq!(report.total_debits().unwrap(), 1_250);
+        assert_eq!(report.total_credits().unwrap(), 0);
+        assert_eq!(report.pending.len(), 1);
+        assert_eq!(report.pending[0].debits, 300);
+        assert_eq!(report.pending[0].credits, 0);
+        assert_eq!(certified.certificate.inputs.len(), 9);
+        assert_eq!(
+            certified.certificate.output,
+            output.canonical_bytes().unwrap()
+        );
+        assert!(
+            certified
+                .certificate
+                .canonical_bytes()
+                .unwrap()
+                .starts_with(crate::FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT)
+        );
+        assert_eq!(
+            h.book
+                .replay_report(&h.cx(), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report
+        );
+    }
+    assert_eq!(h.head(), at, "reads and certification do not append");
+}
+
+#[test]
+fn functional_dimension_certificates_bind_historical_hierarchy_and_reject_resealed_output() {
+    let mut h = fund_fixture();
+    let certified = certify_fund(&mut h, activity());
+    let cx = h.cx();
+    let bytes = certified.certificate.canonical_bytes().unwrap();
+    let retained = h
+        .runtime
+        .block_on(h.book.retain_report_artifact(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &bytes,
+            Some(&certified.certificate.digest),
+        ))
+        .unwrap()
+        .unwrap();
+    fund(&mut h, "LATER", Some("ROOT"));
+    let saved = h
+        .runtime
+        .block_on(h.book.read_certificate(&cx, &retained.digest))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.canonical_bytes().unwrap(), bytes);
+    assert_eq!(
+        h.book.replay_report(&cx, &saved).unwrap().unwrap(),
+        certified.report
+    );
+    assert_eq!(fund_output(&certified.report).values, ["CHILD", "ROOT"]);
+    assert_eq!(
+        fund_output(&certify_fund(&mut h, activity()).report).values,
+        ["CHILD", "LATER", "ROOT"]
+    );
+    assert!(matches!(
+        h.book.certificate_status(&cx, &saved).unwrap().unwrap(),
+        CertificateStatus::SupersededBy { .. }
+    ));
+    for alteration in 0..4 {
+        let mut output = fund_output(&certified.report).clone();
+        match alteration {
+            0 => output.trial_balance.cells[0].debits += 1,
+            1 => output.dimension = "project".into(),
+            2 => output.values.push("OTHER".into()),
+            _ => output.trial_balance.cells[0].entity = Some("invented".into()),
+        }
+        let mut forged = saved.clone();
+        forged.output = output.canonical_bytes().unwrap();
+        reseal(&mut forged);
+        ReportCertificate::decode(&forged.canonical_bytes().unwrap()).unwrap();
+        let refusal = h.book.replay_report(&cx, &forged).unwrap().unwrap_err();
+        assert!(
+            refusal
+                .message
+                .contains("differs from its certified output"),
+            "{refusal:?}"
+        );
+    }
+    let mut missing = saved;
+    missing.inputs.pop();
+    reseal(&mut missing);
+    assert!(ReportCertificate::decode(&missing.canonical_bytes().unwrap()).is_err());
+}
+
+#[test]
+fn functional_dimension_closes_follow_authenticated_projection_versions() {
+    let mut h = fund_fixture();
+    let original = certify_fund(&mut h, activity());
+    let original_at = h.head();
+    let cx = h.cx();
+    let child = fa_model::dimension_value_vid(BOOK, "fund", "CHILD");
+    let mut certificates = vec![original.certificate.clone()];
+    for closed_day in [20, 17] {
+        let closed_on = DateDay::from_ymd(2026, 1, closed_day).unwrap();
+        h.runtime
+            .block_on(h.book.close_dimension_value(
+                &cx,
+                &crate::dimension::DimensionCloseSpec {
+                    dimension: "fund".into(),
+                    code: "CHILD".into(),
+                    closed_on,
+                },
+                PRINCIPAL,
+                format!("functional-dimension-close:{closed_day}").as_bytes(),
+                &cap(&["schema_change"]),
+            ))
+            .unwrap()
+            .unwrap();
+        let at = h.head();
+        let row = h.book.db.vertex_at(child, at).unwrap().unwrap();
+        assert_eq!(
+            row.created_at, at,
+            "a close creates a new projection version"
+        );
+        let value = crate::dimension::DimensionValueRow::decode(&row)
+            .unwrap()
+            .unwrap();
+        assert_eq!(value.spec.parent.as_deref(), Some("ROOT"));
+        assert_eq!(value.spec.valid_to, Some(closed_on));
+
+        let current = certify_fund(&mut h, activity());
+        let report = fund_output(&current.report);
+        assert_eq!(report.values, ["CHILD", "ROOT"]);
+        assert_eq!(report.trial_balance.known_at, at);
+        assert_eq!(report.trial_balance.total_debits().unwrap(), 1_250);
+        assert_eq!(report.trial_balance.total_credits().unwrap(), 0);
+        assert_eq!(report.trial_balance.pending[0].debits, 300);
+        certificates.push(current.certificate);
+        for saved in &certificates {
+            let replayed = h.book.replay_report(&cx, saved).unwrap().unwrap();
+            assert_eq!(replayed.canonical_bytes().unwrap(), saved.output);
+        }
+        let historical = h
+            .runtime
+            .block_on(h.book.functional_dimension_trial_balance(
+                &cx,
+                &cap(&["read"]),
+                activity(),
+                Some(original_at),
+                "fund",
+                "ROOT",
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&historical, fund_output(&original.report));
+        assert_eq!(h.head(), at, "certification and replay never append");
+    }
+}
+
+#[test]
+fn functional_dimension_certification_refuses_unjournaled_hierarchy_projection_changes() {
+    for mutation in ["reparent", "close", "missing"] {
+        let mut h = fund_fixture();
+        let certified = certify_fund(&mut h, activity());
+        let original_at = h.head();
+        let cx = h.cx();
+        let child = fa_model::dimension_value_vid(BOOK, "fund", "CHILD");
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        if mutation == "missing" {
+            batch.delete_vertex(child);
+        } else {
+            let row = h.book.db.vertex_at(child, original_at).unwrap().unwrap();
+            let mut value = crate::dimension::DimensionValueRow::decode(&row)
+                .unwrap()
+                .unwrap()
+                .spec;
+            match mutation {
+                "reparent" => value.parent = Some("OTHER".into()),
+                "close" => value.valid_to = Some(DateDay::from_ymd(2026, 1, 16).unwrap()),
+                _ => unreachable!(),
+            }
+            batch.set_vertex_property(
+                child,
+                property::FA_PAYLOAD,
+                Some(
+                    fa_journal::rows::scalar_bytes(
+                        "forged dimension projection",
+                        value.encode().unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            );
+        }
+        h.runtime
+            .block_on(h.book.db.write(&cx.commit(), batch))
+            .unwrap();
+        let poisoned_at = h.head();
+        let failure = h
+            .runtime
+            .block_on(h.book.certify_functional_dimension_trial_balance(
+                &cx,
+                &cap(&["read", "produce"]),
+                activity(),
+                None,
+                "fund",
+                "ROOT",
+            ))
+            .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("hierarchy differs from immutable controls"),
+            "{mutation}: {failure:?}"
+        );
+        let failure = h
+            .runtime
+            .block_on(h.book.functional_dimension_trial_balance(
+                &cx,
+                &cap(&["read"]),
+                activity(),
+                None,
+                "fund",
+                "ROOT",
+            ))
+            .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("hierarchy differs from immutable controls"),
+            "{mutation}: {failure:?}"
+        );
+        assert_eq!(h.head(), poisoned_at, "a refused report cannot be retained");
+        let historical = h
+            .runtime
+            .block_on(h.book.functional_dimension_trial_balance(
+                &cx,
+                &cap(&["read"]),
+                activity(),
+                Some(original_at),
+                "fund",
+                "ROOT",
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&historical, fund_output(&certified.report));
+        assert_eq!(
+            h.book
+                .replay_report(&cx, &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "{mutation}: the intact historical prefix remains replayable"
+        );
+        assert_eq!(h.head(), poisoned_at);
+    }
+}
+
+#[test]
+fn functional_dimension_v13_selector_keeps_native_v8_and_functional_v10_distinct() {
+    let mut h = fund_fixture();
+    let certified = certify_fund(&mut h, activity());
+    let selection = certified.certificate.selection.clone();
+    let mut writer = fa_model::Writer::new();
+    selection.write(&mut writer).unwrap();
+    let encoded = writer.finish().unwrap();
+    assert_eq!(encoded[0], 11);
+    let mut reader = fa_model::Reader::new(&encoded);
+    assert_eq!(ReportSelection::read(&mut reader, 13).unwrap(), selection);
+    reader.finish().unwrap();
+    for version in 1..13 {
+        assert!(ReportSelection::read(&mut fa_model::Reader::new(&encoded), version).is_err());
+    }
+    let legacy = certify(&mut h, activity());
+    assert!(
+        legacy
+            .certificate
+            .canonical_bytes()
+            .unwrap()
+            .starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT)
+    );
+    assert_eq!(legacy.certificate.inputs.len(), 8);
+    let native = h
+        .book
+        .certify_report(
+            &h.cx(),
+            ReportSelection::DimensionTrialBalance {
+                selection: activity(),
+                dimension: "fund".into(),
+                value: "ROOT".into(),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        native
+            .certificate
+            .canonical_bytes()
+            .unwrap()
+            .starts_with(crate::certificate::DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT)
+    );
+    assert_eq!(native.certificate.inputs.len(), 8);
+    assert_ne!(native.certificate.output, certified.certificate.output);
+}
+
 #[test]
 fn stock_and_activity_certificates_preserve_exact_cells_chart_and_native_rate_witnesses() {
     let (mut h, rate) = fixture();

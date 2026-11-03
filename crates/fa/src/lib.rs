@@ -174,12 +174,15 @@ pub use cash_flow_certificate::{
 };
 pub use certificate::{
     CertificateStatus, CertificateSupersedingCase, CertifiedReport, CertifiedTrialBalance,
-    FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT, FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
-    ReportCertificate, ReportOutput, ReportSelection, StatementMetadata, TrialBalanceSelection,
+    FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT,
+    FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT, FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT,
+    FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT, ReportCertificate, ReportOutput, ReportSelection,
+    StatementMetadata, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use consolidation::FunctionalConsolidation;
 pub use custom_statement::{CustomStatementReport, CustomStatementSelection};
+pub use dimension::FunctionalDimensionTrialBalance;
 pub use disposal::{
     LotDisposalPostRequest, LotPolicy, LotPolicyRecorded, LotPolicyRequest, PreparedLotDisposal,
     StoredLotPolicy,

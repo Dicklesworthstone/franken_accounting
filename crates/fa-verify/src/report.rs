@@ -55,6 +55,9 @@
 //! PeriodEndRevaluation laws with exact Rate bodies, signed intake receipts,
 //! six registries and explicit Book parameters. Recipient pins or production
 //! receipts authenticate those parameters; Book genesis is not proved.
+//! Functional v13 dimension trial balances verify that same complete valuation
+//! prefix before selecting tagged legs from the authenticated hierarchy. Their
+//! projected cells can be one-sided; the original entries still must balance.
 //! Functional statement comparisons retain both v5 sources in this same
 //! transport. Each historical prefix is reconstructed independently, including
 //! its exact original Rate subset, before every delta and mapping is compared.
@@ -200,6 +203,7 @@ const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certi
 const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
 const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v10";
+const FUNCTIONAL_DIMENSION_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v13";
 const CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = custom_statement::NATIVE_FORMAT;
 const FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = custom_statement::FUNCTIONAL_FORMAT;
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
@@ -369,7 +373,9 @@ fn strings(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<String>, Repor
 }
 fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
-    let functional_trial_balance = bytes.starts_with(FUNCTIONAL_CERTIFICATE_FORMAT);
+    let functional_dimension = bytes.starts_with(FUNCTIONAL_DIMENSION_CERTIFICATE_FORMAT);
+    let functional_trial_balance =
+        bytes.starts_with(FUNCTIONAL_CERTIFICATE_FORMAT) || functional_dimension;
     let custom_statement = bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT)
         || bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT);
     let format = if functional_trial_balance || custom_statement {
@@ -389,7 +395,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || functional_custom_statement;
     let statement = format.as_slice() == STATEMENT_CERTIFICATE_FORMAT || functional_statement;
     let instant = format.as_slice() == INSTANT_CERTIFICATE_FORMAT;
-    let dimension = format.as_slice() == DIMENSION_CERTIFICATE_FORMAT;
+    let dimension = format.as_slice() == DIMENSION_CERTIFICATE_FORMAT || functional_dimension;
     let open_items = format.as_slice() == OPEN_ITEMS_CERTIFICATE_FORMAT;
     if format.as_slice() != CERTIFICATE_FORMAT
         && !statement
@@ -402,7 +408,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, v10 functional trial balance, or v11/v12 custom statement",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, v10 functional trial balance, v11/v12 custom statement, or v13 functional dimension trial balance",
         ));
     }
     for (field, expected) in [
@@ -419,10 +425,14 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let known_at = r.u64("certificate.known_at")?;
     let selector = r.u8("certificate.selector")?;
     let selector = if functional_trial_balance {
-        if selector != 8 {
+        if selector != if functional_dimension { 11 } else { 8 } {
             return Err(failed(
                 "supported_report",
-                "native v10 requires a functional selector",
+                if functional_dimension {
+                    "native v13 requires a functional dimension selector"
+                } else {
+                    "native v10 requires a functional selector"
+                },
             ));
         }
         r.u8("certificate.functional.selection")?
@@ -513,6 +523,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         Selection::Statement(_) => "fa:statement:v1",
         Selection::CustomStatement(_) if functional => "fa:functional-custom-statement:v1",
         Selection::CustomStatement(_) => "fa:custom-statement-report:v1",
+        _ if functional_dimension => "fa:functional-dimension-trial-balance:v1",
         _ if dimension => "fa:dimension-trial-balance:v1",
         _ if functional => "fa:functional-trial-balance:v1",
         _ => "fa:trial-balance:v1",
@@ -539,6 +550,8 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let leaves = r.u64("certificate.leaves")?;
     let expected_inputs = if custom_statement {
         if functional { 13 } else { 12 }
+    } else if functional_dimension {
+        9
     } else if dimension || functional {
         8
     } else {
@@ -1130,7 +1143,7 @@ fn verify_report_with_recipient_inputs(
     if (cert.functional || is_consolidation) != (major == 3) {
         return Err(failed(
             "supported_report",
-            "functional v5/v10/v12 and consolidation v6/v7 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
+            "functional v5/v10/v12/v13 and consolidation v6/v7 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
         ));
     }
     let is_statement = matches!(cert.selection, Selection::Statement(_));
@@ -1725,6 +1738,8 @@ fn verify_report_with_recipient_inputs(
                     book,
                     &functional_rates,
                     &schema,
+                    dimension.as_ref(),
+                    &dimension_history,
                     envelopes,
                     &records,
                     &legs,
@@ -1859,7 +1874,7 @@ fn verify_report_with_recipient_inputs(
             statement: None,
             custom_statement: None,
             statement_diff,
-            dimension: None,
+            dimension,
             statement_trace,
             open_items: None,
             lots: None,

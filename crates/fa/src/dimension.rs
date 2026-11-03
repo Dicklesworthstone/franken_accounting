@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, code, exit};
-use fa_model::{Id128, Writer};
+use fa_journal::rows::{book_root, bytes, prop, text};
+use fa_model::symbols::{label, property, relation};
+use fa_model::{ControlPayload, Entry, EntryClass, Id128, Writer};
 use fa_policy::Capability;
 use fa_registers::{DimensionFilter, TrialBalance};
 use fgdb::Database;
@@ -52,17 +54,48 @@ impl DimensionTrialBalance {
 
     /// Does `leg` carry one of the values this report folds?
     pub(crate) fn tags(&self, book: Id128, leg: &fa_model::LegPayload) -> bool {
-        let Some(kind) = fa_model::dimension_kind(&self.dimension) else {
-            return false;
-        };
-        leg.dimension_set.iter().any(|(id, vid)| {
-            *id == kind.id
-                && self
-                    .values
-                    .iter()
-                    .any(|code| fa_model::dimension_value_vid(book, kind.code, code) == *vid)
-        })
+        tags(&self.dimension, &self.values, book, leg)
     }
+}
+
+/// Exact functional carrying values for one historical dimension subtree.
+/// Entity cells remain separate; an analytic slice need not balance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionalDimensionTrialBalance {
+    pub trial_balance: crate::FunctionalTrialBalance,
+    pub dimension: String,
+    pub value: String,
+    pub values: Vec<String>,
+}
+
+impl FunctionalDimensionTrialBalance {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(crate::certificate::FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT.as_bytes())
+            .str(&self.dimension)
+            .str(&self.value)
+            .list(&self.values, |w, value| {
+                w.str(value);
+            })
+            .bytes(&self.trial_balance.canonical_bytes()?);
+        w.finish()
+    }
+
+    pub(crate) fn tags(&self, book: Id128, leg: &fa_model::LegPayload) -> bool {
+        tags(&self.dimension, &self.values, book, leg)
+    }
+}
+
+fn tags(dimension: &str, values: &[String], book: Id128, leg: &fa_model::LegPayload) -> bool {
+    let Some(kind) = fa_model::dimension_kind(dimension) else {
+        return false;
+    };
+    leg.dimension_set.iter().any(|(id, vid)| {
+        *id == kind.id
+            && values
+                .iter()
+                .any(|code| fa_model::dimension_value_vid(book, kind.code, code) == *vid)
+    })
 }
 
 /// `value` and every value of `kind` under it at `at`, by the parent each
@@ -106,6 +139,135 @@ pub(crate) fn values_under<V: Vfs + Clone>(
     ))
 }
 
+/// Check v13 hierarchy projections against the original declaration/close
+/// controls at this prefix. Callers first verify the immutable Entry history.
+/// This proves the report's selected hierarchy, not every posting's original
+/// dimension requirements or valid-time admission. Native v8 stays unchanged.
+pub(crate) fn verify_functional_hierarchy<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    dimension: &str,
+    at: CommitSeq,
+) -> Result<(), BookError> {
+    let Some(kind) = fa_model::dimension_kind(dimension) else {
+        // The ordinary selector validator supplies the user-facing refusal.
+        return Ok(());
+    };
+    let corrupt = |why: &str| {
+        fa_journal::KernelError::Corrupt(format!(
+            "functional dimension hierarchy differs from immutable controls: {why}"
+        ))
+    };
+    let rows = db.vertices_at(at).map_err(fa_journal::KernelError::from)?;
+    let by_id: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
+    let mut controls: Vec<_> = rows
+        .iter()
+        .filter(|row| row.labels.contains(&label::ENTRY))
+        .collect();
+    controls.sort_by_key(|row| (row.created_at, row.birth_ordinal));
+    let mut declared: BTreeMap<VId, (DimensionValueSpec, CommitSeq)> = BTreeMap::new();
+    for row in controls {
+        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "dimension control")?)
+            .map_err(fa_journal::KernelError::from)?;
+        let Some(ControlPayload::SchemaChange {
+            kind: change,
+            canonical_bytes,
+        }) = &entry.proposal.control
+        else {
+            continue;
+        };
+        if !matches!(
+            *change,
+            fa_journal::dimension::SCHEMA_CHANGE_DIMENSION_VALUE
+                | fa_journal::dimension::SCHEMA_CHANGE_DIMENSION_CLOSE
+        ) {
+            continue;
+        }
+        if entry.proposal.class != EntryClass::SCHEMA_CONTROL
+            || entry.proposal.book_id != book.book_id
+            || entry.proposal.branch_id != Id128::TRUNK
+            || !entry.proposal.legs.is_empty()
+        {
+            return Err(corrupt("a declaration or close is not a same-book schema control").into());
+        }
+        if *change == fa_journal::dimension::SCHEMA_CHANGE_DIMENSION_VALUE {
+            let spec = DimensionValueSpec::decode(canonical_bytes)?;
+            if spec.dimension != kind.code {
+                continue;
+            }
+            if spec.parent.as_ref().is_some_and(|parent| {
+                !declared.contains_key(&fa_model::dimension_value_vid(
+                    book.book_id,
+                    kind.code,
+                    parent,
+                ))
+            }) {
+                return Err(
+                    corrupt("a parent was not previously declared in this dimension").into(),
+                );
+            }
+            let vid = fa_model::dimension_value_vid(book.book_id, kind.code, &spec.code);
+            if declared.insert(vid, (spec, row.created_at)).is_some() {
+                return Err(corrupt("a dimension value was declared more than once").into());
+            }
+        } else {
+            let close = DimensionCloseSpec::decode(canonical_bytes)?;
+            if close.dimension != kind.code {
+                continue;
+            }
+            let vid = fa_model::dimension_value_vid(book.book_id, kind.code, &close.code);
+            let Some((spec, projection_at)) = declared.get_mut(&vid) else {
+                return Err(corrupt("a close precedes the value's declaration").into());
+            };
+            if spec.valid_from.is_some_and(|from| close.closed_on <= from)
+                || spec.valid_to.is_some_and(|to| close.closed_on > to)
+            {
+                return Err(corrupt("a close empties or extends a validity window").into());
+            }
+            spec.valid_to = Some(close.closed_on);
+            // A close updates the value's payload in this publication. The
+            // substrate's created_at names that visible projection version,
+            // not the original vertex birth. Its expected version must move
+            // only with the authenticated close whose exact spec we replay.
+            *projection_at = row.created_at;
+        }
+    }
+    let in_book: BTreeSet<_> = db
+        .in_neighbours_at(book_root(), relation::IN_BOOK, at)
+        .map_err(fa_journal::KernelError::from)?
+        .into_iter()
+        .collect();
+    for (vid, (spec, projection_at)) in &declared {
+        let row = by_id
+            .get(vid)
+            .ok_or_else(|| corrupt("a declared value projection is missing"))?;
+        let actual = DimensionValueRow::decode(row)?
+            .ok_or_else(|| corrupt("a declared value projection is relabeled"))?;
+        if actual.dimension_id != kind.id
+            || actual.spec != *spec
+            || actual.created_at != *projection_at
+            || !in_book.contains(vid)
+            || bytes(row, property::BOOK_ID, "dimension value book")? != book.book_id.0
+            || text(row, property::CODE, "dimension value code")? != spec.code
+        {
+            return Err(corrupt(
+                "a value projection changes its declaration, parent, close or book",
+            )
+            .into());
+        }
+    }
+    for row in &rows {
+        if row.labels.contains(&label::DIMENSION_VALUE)
+            && prop(row, property::DIMENSION_ID)
+                == Some(&fgdb_types::CanonicalScalar::Int(i64::from(kind.id)))
+            && !declared.contains_key(&row.vid)
+        {
+            return Err(corrupt("a value projection has no immutable declaration").into());
+        }
+    }
+    Ok(())
+}
+
 /// The trial balance `selection` selects at `at` over only the legs tagged
 /// with `dimension`'s `value` or a value under it: the literal journal fold
 /// both `fa tb --dimension` and its certificate's replay run.
@@ -117,6 +279,35 @@ pub(crate) fn trial_balance_at<V: Vfs + Clone>(
     value: &str,
     at: CommitSeq,
 ) -> Outcome<DimensionTrialBalance> {
+    let (filter, values) = match filter_at(db, dimension, value, at)? {
+        Ok(selected) => selected,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let trial_balance = match selection {
+        TrialBalanceSelection::Periods(periods) => {
+            fa_registers::trial_balance_tagged(db, book, periods, Some(at), &filter)?
+        }
+        TrialBalanceSelection::Activity(periods) => {
+            fa_registers::period_activity_tagged(db, book, periods, Some(at), &filter)?
+        }
+        TrialBalanceSelection::AsOf(day) => {
+            fa_registers::balance_as_of_tagged(db, book, *day, Some(at), &filter)?
+        }
+    };
+    Ok(Ok(DimensionTrialBalance {
+        trial_balance,
+        dimension: dimension.to_string(),
+        value: value.to_string(),
+        values,
+    }))
+}
+
+fn filter_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    dimension: &str,
+    value: &str,
+    at: CommitSeq,
+) -> Outcome<(DimensionFilter, Vec<String>)> {
     let Some(kind) = fa_model::dimension_kind(dimension) else {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
@@ -142,22 +333,33 @@ pub(crate) fn trial_balance_at<V: Vfs + Clone>(
         dimension: kind.id,
         values: values.values().copied().collect(),
     };
-    let trial_balance = match selection {
-        TrialBalanceSelection::Periods(periods) => {
-            fa_registers::trial_balance_tagged(db, book, periods, Some(at), &filter)?
-        }
-        TrialBalanceSelection::Activity(periods) => {
-            fa_registers::period_activity_tagged(db, book, periods, Some(at), &filter)?
-        }
-        TrialBalanceSelection::AsOf(day) => {
-            fa_registers::balance_as_of_tagged(db, book, *day, Some(at), &filter)?
-        }
+    Ok(Ok((filter, values.into_keys().collect())))
+}
+
+pub(crate) fn functional_trial_balance_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selection: &TrialBalanceSelection,
+    dimension: &str,
+    value: &str,
+    at: CommitSeq,
+) -> Outcome<FunctionalDimensionTrialBalance> {
+    verify_functional_hierarchy(db, book, dimension, at)?;
+    let (filter, values) = match filter_at(db, dimension, value, at)? {
+        Ok(selected) => selected,
+        Err(refusal) => return Ok(Err(refusal)),
     };
-    Ok(Ok(DimensionTrialBalance {
+    let trial_balance = match crate::functional_trial_balance::report_tagged_at(
+        db, book, selection, at, &filter,
+    )? {
+        Ok(report) => report,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    Ok(Ok(FunctionalDimensionTrialBalance {
         trial_balance,
         dimension: dimension.to_string(),
         value: value.to_string(),
-        values: values.into_keys().collect(),
+        values,
     }))
 }
 
@@ -283,5 +485,111 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             };
             trial_balance_at(db, book, selection, dimension, value, at)
         })
+    }
+
+    /// Read committed functional carrying amounts in one dimension subtree,
+    /// under current whole-book authority and at one retained prefix.
+    pub async fn functional_dimension_trial_balance(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selection: TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+    ) -> Outcome<FunctionalDimensionTrialBalance> {
+        let at = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, false)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self.query(cx, |db, book| {
+            crate::certificate::context_at(db, book, at)?;
+            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(at))?;
+            functional_trial_balance_at(db, book, &selection, dimension, value, at)
+        })?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, Some(at), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify the selected dimension hierarchy, exact functional cells and
+    /// original Rate/law closure under current whole-book Read and Produce.
+    pub async fn certify_functional_dimension_trial_balance(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selection: TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+    ) -> Outcome<crate::CertifiedReport> {
+        let at = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, true)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !crate::functional_trial_balance::supported_selection(&selection) {
+            return Ok(Err(crate::functional_trial_balance::invalid_selection()));
+        }
+        let result = self.certify_report(
+            cx,
+            crate::ReportSelection::FunctionalDimensionTrialBalance {
+                selection,
+                dimension: dimension.to_string(),
+                value: value.to_string(),
+            },
+            Some(at),
+        )?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, Some(at), true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Retain the original TimeEvidence brackets along with the dimension and
+    /// functional valuation inputs. Portable export keeps its sequence-only law.
+    pub async fn certify_functional_dimension_trial_balance_at_instant(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selection: TrialBalanceSelection,
+        requested_utc_ns: u64,
+        dimension: &str,
+        value: &str,
+    ) -> Outcome<crate::CertifiedReport> {
+        if let Err(refusal) = self
+            .prepare_functional_report(cx, capability.holder(), capability, None, true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if !crate::functional_trial_balance::supported_selection(&selection) {
+            return Ok(Err(crate::functional_trial_balance::invalid_selection()));
+        }
+        let result = self.certify_report_at_instant(
+            cx,
+            crate::ReportSelection::FunctionalDimensionTrialBalance {
+                selection,
+                dimension: dimension.to_string(),
+                value: value.to_string(),
+            },
+            requested_utc_ns,
+        )?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, None, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
     }
 }

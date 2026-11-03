@@ -100,6 +100,7 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
             | ReportSelection::CustomStatement(_)
             | ReportSelection::FunctionalStatement(_)
             | ReportSelection::FunctionalTrialBalance(_)
+            | ReportSelection::FunctionalDimensionTrialBalance { .. }
             | ReportSelection::ExplainBalance { .. }
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
@@ -166,6 +167,7 @@ impl Epoch {
                 | ReportSelection::CustomStatement(_)
                 | ReportSelection::FunctionalStatement(_)
                 | ReportSelection::FunctionalTrialBalance(_)
+                | ReportSelection::FunctionalDimensionTrialBalance { .. }
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
         ) {
