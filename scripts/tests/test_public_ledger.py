@@ -85,11 +85,11 @@ def native_package(case, run):
     """
     chunks = []
     for index, entry_id in enumerate(run["entry_ids"]):
-        _, agency, year, period, ledger, fund, funding = entry_id.split(":")
+        _, agency, year, period, ledger, *boundary = entry_id.split(":")
         selected = [row for row in case["originals"] if (
-            row["BUSINESS_UNIT"], row["FISCAL_YEAR"], row["ACCOUNTING_PERIOD"],
-            row["LEDGER"], row["FUND_CODE"], row["CLASS_FLD"],
-        ) == (agency, year, period, ledger, fund, funding)
+            row["BUSINESS_UNIT"], row["FISCAL_YEAR"], row["ACCOUNTING_PERIOD"], row["LEDGER"],
+        ) == (agency, year, period, ledger)
+            and (boundary == ["agency-period"] or [row["FUND_CODE"], row["CLASS_FLD"]] == boundary)
             and cents(row[source.AMOUNT_COLUMN]) != 0]
         legs = []
         for ordinal, row in enumerate(selected):
@@ -107,7 +107,7 @@ def native_package(case, run):
             "chunk_count": len(chunks), "chunks": chunks}
 
 
-def write_export_fixture(case, path, format_name, transform=None):
+def write_export_fixture(case, path, format_name, transform=None, *, balance_boundary="fund-class"):
     """An export-shaped assertion fixture built only from original source rows.
 
     Neither the normalized run files nor manifest row mappings supply amounts,
@@ -118,8 +118,9 @@ def write_export_fixture(case, path, format_name, transform=None):
     for row in case["originals"]:
         if cents(row[source.AMOUNT_COLUMN]) == 0:
             continue
+        boundary = ["agency-period"] if balance_boundary == "agency-period" else [row["FUND_CODE"], row["CLASS_FLD"]]
         key = ":".join(["OK", row["BUSINESS_UNIT"], row["FISCAL_YEAR"],
-                        row["ACCOUNTING_PERIOD"], row["LEDGER"], row["FUND_CODE"], row["CLASS_FLD"]])
+                        row["ACCOUNTING_PERIOD"], row["LEDGER"], *boundary])
         grouped[key].append(row)
     entry_ids = {key: f"{index + 1000:032x}" for index, key in enumerate(sorted(grouped))}
     rows = []
@@ -151,6 +152,136 @@ def write_export_fixture(case, path, format_name, transform=None):
         path.write_text("|".join(replay.ADS_GL_COLUMNS) + "\n"
                         + "".join("|".join(row) + "\n" for row in rows), encoding="utf-8")
     return entry_ids
+
+
+class AgencyPeriodNormalizationTests(unittest.TestCase):
+    """Authentic interfund source population; no mocked run claims native PASS."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.directory.cleanup)
+        cls.root = Path(cls.directory.name)
+        cls.fixture = replay.FIXTURES / "omes-fy2024-q4-80700.csv"
+        cls.originals = read_csv(cls.fixture, "cp1252")
+        cls.provenance = json.loads(cls.fixture.with_suffix(".json").read_text(encoding="utf-8"))
+        cls.output = cls.root / "prepared"
+        cls.manifest = replay.normalize(cls.fixture, "80700", cls.output, balance_boundary="agency-period")
+        cls.values = fixture_dimension_values(cls.originals)
+        cls.case = {"originals": cls.originals, "dimension_values": cls.values}
+
+    def test_health_authority_source_pin_and_declared_boundary_are_exact(self):
+        self.assertEqual(hashlib.sha256(self.fixture.read_bytes()).hexdigest(),
+                         "275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28")
+        self.assertEqual(self.fixture.stat().st_size, 432290)
+        self.assertEqual(self.provenance["rows"], 1440)
+        self.assertEqual(self.provenance["source_sha256"], source.SOURCE_SHA256)
+        self.assertEqual((self.output / "original-agency.csv").read_bytes(), self.fixture.read_bytes())
+        with self.assertRaisesRegex(source.SourceError, "unbalanced source group"):
+            replay.preparation_artifacts(self.fixture, "80700")
+        self.assertEqual(self.manifest["balance_boundary"], "agency-period")
+        self.assertEqual(len(self.manifest["runs"]), 1)
+        self.assertEqual(self.manifest["runs"][0]["entry_ids"], [
+            f"OK:80700:2024:{period}:ACTUALS:agency-period" for period in (10, 11, 12)
+        ])
+        self.assertEqual(self.manifest["monetary_rows"], 1405)
+        self.assertEqual(len(self.manifest["zero_rows"]), 35)
+        self.assertEqual(self.manifest["account_count"], 118)
+
+    def test_every_original_chartfield_and_zero_row_survives_agency_period_grouping(self):
+        record_ids = [r["record_index"] for r in self.provenance["source_records"]]
+        originals = dict(zip(record_ids, self.originals, strict=True))
+        normalized = read_csv(self.output / self.manifest["runs"][0]["source"], "utf-8")
+        expected_ids = [i for period in ("10", "11", "12") for i, row in originals.items()
+                        if row["ACCOUNTING_PERIOD"] == period and cents(row[source.AMOUNT_COLUMN])]
+        self.assertEqual([int(r["source_record"]) for r in normalized], expected_ids)
+        self.assertEqual(len(normalized), len(set(expected_ids)))
+        for row in normalized:
+            original = originals[int(row["source_record"])]
+            self.assertEqual({column: row[f"original_{column}"] for column in source.HEADERS}, original)
+            self.assertEqual(cents(row["signed_amount"]), cents(original[source.AMOUNT_COLUMN]))
+            self.assertEqual(row["account_code"], original["ACCOUNT"])
+            self.assertEqual(row["effective_date"], DATES[original["ACCOUNTING_PERIOD"]])
+        self.assertEqual(self.manifest["zero_rows"],
+                         [i for i, row in originals.items() if not cents(row[source.AMOUNT_COLUMN])])
+
+    def test_original_monthly_gross_and_unbalanced_class_controls_are_preserved(self):
+        gross = defaultdict(int)
+        controls = defaultdict(lambda: {"rows": 0, "net_mills": 0})
+        for row in self.originals:
+            amount = cents(row[source.AMOUNT_COLUMN])
+            gross[row["ACCOUNTING_PERIOD"]] += max(amount, 0)
+            key = tuple(row[column] for column in source.GROUP_COLUMNS)
+            controls[key]["rows"] += 1
+            controls[key]["net_mills"] += amount * 10
+        self.assertEqual(dict(gross), {"10": 163371647239, "11": 100874726295, "12": 109174206133})
+        actual = {tuple(row["key"]): {k: row[k] for k in ("rows", "net_mills")}
+                  for row in self.manifest["source_group_controls"]}
+        self.assertEqual(actual, dict(controls))
+        self.assertEqual({key: row["net_mills"] for key, row in actual.items() if row["net_mills"]}, {
+            ("2024", "10", "ACTUALS", "1000", "20000"): -479860,
+            ("2024", "10", "ACTUALS", "1000", "99400"): 479860,
+        })
+        chart = json.loads((self.output / "chart.json").read_text())["accounts"]
+        self.assertEqual(next(row for row in chart if row["code"] == "621000"), {
+            "code": "621000", "name": "Appropriated Transfers Out", "type": "Equity", "unit": "USD",
+        })
+        self.assertIn("621000 Appropriated Transfers Out -> Equity", self.manifest["chart_policy"])
+        with self.assertRaisesRegex(replay.ReplayError, "unreviewed source description"):
+            replay.account_spec("621000", "Different semantics")
+
+    def test_native_proposal_and_export_oracles_cover_all_1405_original_legs(self):
+        run = self.manifest["runs"][0]
+        package = native_package(self.case, run)
+        self.assertEqual([chunk["leg_count"] for chunk in package["chunks"]], [453, 465, 487])
+        replay.verify_prepared_legs(self.manifest, run, package, self.values)
+        for format_name in ("csv-gl", "ads"):
+            path = self.root / f"agency-period-{format_name}" / "gl.txt"
+            ids = write_export_fixture(self.case, path, format_name, balance_boundary="agency-period")
+            result = replay.verify_exported_legs(self.manifest, ids, self.values, path, format_name)
+            self.assertEqual(result["rows"], 1405)
+        changed = deepcopy(package)
+        changed["chunks"][0]["legs"][0]["dimensions"] = []
+        with self.assertRaisesRegex(replay.ReplayError, "differs from original source record"):
+            replay.verify_prepared_legs(self.manifest, run, changed, self.values)
+
+    def test_oversized_month_is_refused_before_creating_outputs_or_splitting_rows(self):
+        records = [r["record_index"] for r in self.provenance["source_records"]]
+        selected = source.prepare_agency(self.fixture, "80700", source_records=records,
+                                          balance_boundary="agency-period")
+        limit = next(row["value"] for row in tomllib.loads((replay.ROOT / "registries/limits.toml").read_text())["limit"]
+                     if row["name"] == "max_legs_per_entry")
+        # Keep the true, balanced population and add a cancelling pair enough
+        # times to exceed the actual native limit. Every added row remains a
+        # monetary leg; a net-zero optimization must not erase the overflow.
+        example = next(row for row in selected["groups"][0]["rows"] if row["amount_mills"])
+        positive, negative = deepcopy(example), deepcopy(example)
+        positive["amount_mills"], negative["amount_mills"] = 10, -10
+        selected["groups"][0]["rows"].extend([positive, negative] * (limit // 2 + 1))
+        output = self.root / "oversized"
+        with mock.patch.object(source, "prepare_agency", return_value=selected):
+            with self.assertRaisesRegex(replay.ReplayError, "Entry limit.*without splitting or netting"):
+                replay.normalize(self.fixture, "80700", output, balance_boundary="agency-period")
+        self.assertFalse(output.exists())
+
+    def test_recovery_pins_the_explicit_boundary_and_refuses_a_changed_choice(self):
+        output = self.root / "recovery-boundary"
+        binary = Path(sys.executable)
+        first = replay.ReplayRecovery(output, self.fixture, "80700", binary, binary,
+                                      resume=False, balance_boundary="agency-period")
+        first.restore_inputs()
+        first.close()
+        self.assertEqual(replay.read_fact(output / "recovery/pins.json")["balance_boundary"], "agency-period")
+        resumed = replay.ReplayRecovery(output, self.fixture, "80700", binary, binary,
+                                        resume=True, balance_boundary="agency-period")
+        self.assertEqual(resumed.manifest, self.manifest)
+        resumed.close()
+        before = {str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}
+        with self.assertRaises(source.SourceError):
+            replay.ReplayRecovery(output, self.fixture, "80700", binary, binary,
+                                  resume=True, balance_boundary="fund-class")
+        self.assertEqual(before, {str(p.relative_to(output)): p.read_bytes()
+                                  for p in output.rglob("*") if p.is_file()})
 
 
 class PinnedAgencyNormalizationTests(unittest.TestCase):

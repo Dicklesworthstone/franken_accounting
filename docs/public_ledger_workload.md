@@ -403,8 +403,15 @@ for the native and independent proof boundaries.
 
 Broader source coverage also needs a declared treatment of fractional cents
 and separately sourced opening/closing controls. Other agencies' funding
-groups can be unbalanced even when the agency-period total balances; the
-adapter must report that limitation instead of inventing a balancing leg.
+groups can be unbalanced even when the agency-period total balances. The broader
+driver now accepts an explicit
+[`--balance-boundary agency-period`](public_ledger.md#whole-agency-activity-across-fund-and-class-boundaries)
+choice that retains those nonzero funding controls and every original source
+leg in one reconstructed monthly Entry. It still refuses an unbalanced whole
+month, subcents and over-limit Entries, and never invents a balancing leg.
+The complete Health Care Authority fixture exercises this distinction with
+1,440 real rows and 1,405 monetary legs. Native acceptance is reported separately
+from source normalization and these documentation statements.
 
 The [BLMIS Glantz transaction workload](blmis_glantz_workload.md) provides a
 complementary route to actual published bankruptcy-case transactions and

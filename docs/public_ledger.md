@@ -200,8 +200,10 @@ and does not redistribute them under the CSV's license.
 
 All records for each named agency in the pinned quarter are included. The
 fixtures are not random samples or balanced subsets chosen from within an
-agency. Every selected agency's natural `(fiscal year, period, ledger, fund,
-class funding)` group balances exactly in the original source.
+agency. The three selections below have natural `(fiscal year, period, ledger,
+fund, class funding)` groups that balance exactly in the original source.
+The complete Health Care Authority selection described next exercises a
+different, explicitly chosen balance boundary.
 
 | Business unit | Published entity | Original rows | Accounts | Natural groups | Debit activity, quarter |
 |---|---|---:|---:|---:|---:|
@@ -219,6 +221,80 @@ records both full-distribution and selected-file hashes, original logical-record
 ordinals and physical line positions, per-period account totals, and distinct
 values across all 36 fields. Fixture bytes and sidecars are checked together;
 a modified input is refused before a native book is created.
+
+### Whole-agency activity across fund and class boundaries
+
+The default `fund-class` interpretation refuses agency `80700` (Health Care
+Authority), although its entire April, May and June activity balances exactly.
+Two published April class-funding slices inside fund `1000` have opposite nets:
+class `20000` is −$479.86 and class `99400` is +$479.86. Demanding that each slice
+balance independently would prevent this complete agency population from being
+imported. An optional `--balance-boundary agency-period` therefore reconstructs
+one activity Entry per agency, fiscal year, accounting period and ACTUALS ledger.
+It preserves every original row and chartfield; it does not alter the source
+accounting to force either class slice to balance.
+
+The new fixture contains all **1,440 published rows**, **118 accounts**, and
+all **36 source fields**. Its 35 zero-valued rows remain evidence. The 1,405
+nonzero rows become exactly 453, 465 and 487 native legs in three monthly Entries,
+in one migration run. Opposing rows are not netted together. The month-end dates
+and Entry IDs are declared replay interpretations, because the public source
+does not contain original transaction dates or journal identifiers.
+
+| Source fiscal period | Published rows | Monetary legs | Debit activity | Credit activity |
+|---|---:|---:|---:|---:|
+| FY2024-P10 | 470 | 453 | $1,633,716,472.39 | $1,633,716,472.39 |
+| FY2024-P11 | 474 | 465 | $1,008,747,262.95 | $1,008,747,262.95 |
+| FY2024-P12 | 496 | 487 | $1,091,742,061.33 | $1,091,742,061.33 |
+
+The original byte-preserved selection is
+`crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-80700.csv`:
+432,290 bytes, SHA-256
+`275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28`.
+Its adjacent manifest records original logical-record and physical-line
+positions, independent decimal controls, and the complete distribution's pin.
+The prepared manifest also retains every original fund/class group's row count
+and exact signed net, including the two nonzero slices.
+
+```bash
+# Default grouping deliberately refuses this source; the broader boundary is explicit.
+python3 scripts/public_ledger.py prepare --agency 80700 \
+  --balance-boundary agency-period --out artifacts/omes-health-prepared
+
+# Exercise native source-population binding, all source-row/dimension checks,
+# persisted history, gross/net folds and independent ADS verification.
+python3 scripts/public_ledger_source_bound_replay.py --repo . run \
+  --agency 80700 --balance-boundary agency-period \
+  --out artifacts/omes-health --fa target/debug/fa --fa-verify target/debug/fa-verify
+
+python3 scripts/public_ledger_portable_proof.py \
+  --run artifacts/omes-health --out artifacts/omes-health-proof --source-bound \
+  --fa target/debug/fa --fa-verify target/debug/fa-verify
+```
+
+Preparation and replay also accept `--source path/to/ledger_fy24_qtr4.csv` after the
+existing `fetch` command verifies the complete distribution. Source selection
+and normalization produce the same original rows, accounting mappings and
+controls from either input. The manifest labels which input was used.
+
+This boundary is an explicit choice, never a fallback after a failed narrower
+check. Each whole agency-period must balance exactly; different months, years
+or agencies cannot offset each other. Fractional-cent values still refuse.
+Each month's nonzero source population must fit the registered
+`max_legs_per_entry` bound (currently 4,096); oversized months refuse before an
+output or native book is created, without splitting source legs or inventing
+transactions. Native byte and control bounds continue to apply at admission.
+Account `621000`, **Appropriated Transfers Out**, has an explicit Equity
+crosswalk in this activity-only book, as does the existing **Other Financing
+Sources/Uses** account. This is not a claim about the agency's financial-statement
+presentation; a changed source description for `621000` requires review.
+
+Recovery pins the chosen boundary as well as the prepared artifacts. The stock
+driver's `run --resume` reuses that original choice when the flag is omitted and
+refuses a different choice. Source-bound acceptance currently uses the existing
+fresh-run companion, which explicitly does not support resume. Actual native
+acceptance is established by the executed `report.json`, transcript and portable
+proof result; the offline source checks alone do not establish it.
 
 ## Run it
 
@@ -684,10 +760,12 @@ The profile reports the affected groups and source ordinals for investigation.
   native chart and dimension values. Other chartfields are not yet native
   queryable dimensions; class-funding and program codes keep their original
   meaning without being relabelled as an unrelated registered kind.
-- Run boundaries follow real fund/class boundaries to keep native control
-  payloads bounded. Each migration activates atomically; finalizing the entire
-  agency across several runs is not one atomic publication. The preactivation
-  historical check uses the prefix before the first finalization.
+- Default run boundaries follow real fund/class boundaries to keep native
+  control payloads bounded. Each migration activates atomically; finalizing an
+  agency across several default runs is not one atomic publication. The explicit
+  `agency-period` boundary keeps the three complete months in one bounded native
+  run. The preactivation historical check uses the prefix before the first
+  finalization in either case.
 - Import preparation supports an explicit `--bind-source` opt-in before
   staging. Its immutable native manifest retains source/package commitments
   and the complete ordered proposal inventory. For a bound run, staging admits

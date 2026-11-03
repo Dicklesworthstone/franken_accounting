@@ -50,6 +50,7 @@ HEADERS = (
 GROUP_COLUMNS = (
     "FISCAL_YEAR", "ACCOUNTING_PERIOD", "LEDGER", "FUND_CODE", "CLASS_FLD",
 )
+BALANCE_BOUNDARIES = ("fund-class", "agency-period")
 _AMOUNT = re.compile(r"([+-]?)([0-9]+)(?:\.([0-9]{1,3}))?\Z", re.ASCII)
 _BLOCK_BYTES = 1024 * 1024
 
@@ -363,18 +364,50 @@ def read_agency(
 
 def prepare_agency(
     path: str | Path, agency: str, *, source_records: Sequence[int] | None = None,
+    balance_boundary: str = "fund-class",
 ) -> dict:
-    """Require exact cents and balance in *every* selected natural source group.
+    """Require exact cents and balance at the explicitly selected boundary.
 
     Zero rows and all-zero groups remain in the result as source evidence. The
     caller may omit them from monetary postings, but must retain their source
     coverage. No balancing, rounding, artificial counterpart or amount split
-    is performed here.
+    is performed here. The default checks each source fund/class partition.
+    ``agency-period`` instead checks the entire agency's monthly ACTUALS
+    activity, preserving all fund/class codes and their observed imbalances.
+    This is an explicit accounting interpretation, never an automatic retry
+    after a failed finer-grained check. Periods and fiscal years never offset
+    each other, and no group is represented as an original source journal.
     """
+    if balance_boundary not in BALANCE_BOUNDARIES:
+        raise SourceError(f"unsupported balance boundary {balance_boundary!r}; choose {BALANCE_BOUNDARIES}")
     result = read_agency(path, agency, source_records=source_records)
     subcents = [r["source_record"] for r in result["rows"] if r["amount_mills"] % 10]
     if subcents:
         raise SourceError(f"agency {agency} has subcent source amounts at records {subcents[:20]}; import refused")
+    if balance_boundary == "agency-period":
+        result["source_group_controls"] = [
+            {"key": group["key"], "rows": len(group["rows"]), "net_mills": group["net_mills"]}
+            for group in result["groups"]
+        ]
+        groups: dict[tuple[str, ...], dict] = {}
+        # Iterate the original rows, not concatenated fund groups: order and
+        # source ordinals within the new Entry must remain source-derived.
+        for row in result["rows"]:
+            key = tuple(row["fields"][column] for column in GROUP_COLUMNS[:3])
+            group = groups.setdefault(key, {"key": list(key), "rows": [], "net_mills": 0})
+            group["rows"].append(row)
+            group["net_mills"] += row["amount_mills"]
+        result["groups"] = [groups[key] for key in sorted(groups)]
+        result["balance_boundary"] = balance_boundary
+        result["group_columns"] = list(GROUP_COLUMNS[:3])
+        result["summary"].update(
+            group_count=len(groups),
+            max_group_rows=max(len(group["rows"]) for group in result["groups"]),
+            max_nonzero_group_rows=max(
+                sum(row["amount_mills"] != 0 for row in group["rows"])
+                for group in result["groups"]
+            ),
+        )
     unbalanced = [g for g in result["groups"] if g["net_mills"]]
     if unbalanced:
         first = unbalanced[0]

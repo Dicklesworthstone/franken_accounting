@@ -125,6 +125,51 @@ class SourceParsingTests(unittest.TestCase):
         self.assertEqual(profile["summary"]["subcent_rows"], 2)
         self.assertEqual([r["amount_mills"] for r in profile["subcent_diagnostics"]], [4, -4])
 
+    def test_explicit_agency_period_boundary_preserves_interfund_rows_and_controls(self):
+        rows = [
+            record(FUND_CODE="2000", DEPTID="002", **{source.AMOUNT_COLUMN: "1.23"}),
+            record(FUND_CODE="1000", CLASS_FLD="90000", PROJECT_ID="A", **{source.AMOUNT_COLUMN: "-1.20"}),
+            record(FUND_CODE="2000", DEPTID="001", **{source.AMOUNT_COLUMN: "-0.03"}),
+            record(FUND_CODE="3000", CLASS_FLD="00000", **{source.AMOUNT_COLUMN: "0"}),
+        ]
+        self.write(rows)
+        with self.assertRaisesRegex(source.SourceError, "unbalanced source group"):
+            source.prepare_agency(self.path, "03900")
+        result = source.prepare_agency(self.path, "03900", source_records=[4, 8, 9, 12],
+                                       balance_boundary="agency-period")
+        self.assertEqual(result["balance_boundary"], "agency-period")
+        self.assertEqual(result["group_columns"], ["FISCAL_YEAR", "ACCOUNTING_PERIOD", "LEDGER"])
+        self.assertEqual(len(result["groups"]), 1)
+        group = result["groups"][0]
+        self.assertEqual(group["key"], ["2024", "10", "ACTUALS"])
+        self.assertEqual(group["net_mills"], 0)
+        self.assertEqual([r["fields"] for r in group["rows"]], rows)
+        self.assertEqual([r["source_record"] for r in group["rows"]], [4, 8, 9, 12])
+        self.assertEqual(result["summary"]["rows"], 4)
+        self.assertEqual(result["summary"]["max_nonzero_group_rows"], 3)
+        self.assertEqual(result["source_group_controls"], [
+            {"key": ["2024", "10", "ACTUALS", "1000", "90000"], "rows": 1, "net_mills": -1200},
+            {"key": ["2024", "10", "ACTUALS", "2000", "8315A"], "rows": 2, "net_mills": 1200},
+            {"key": ["2024", "10", "ACTUALS", "3000", "00000"], "rows": 1, "net_mills": 0},
+        ])
+
+    def test_agency_period_boundary_cannot_offset_year_period_or_agency(self):
+        for change in [{"FISCAL_YEAR": "2023"}, {"ACCOUNTING_PERIOD": "11"},
+                       {"BUSINESS_UNIT": "01000"}]:
+            with self.subTest(change=change):
+                self.write([record(), record(**change, **{source.AMOUNT_COLUMN: "-1.23"})])
+                with self.assertRaisesRegex(source.SourceError, "complete agency import is refused"):
+                    source.prepare_agency(self.path, "03900", balance_boundary="agency-period")
+
+    def test_agency_period_boundary_still_refuses_subcents_and_unknown_boundary(self):
+        self.write([record(**{source.AMOUNT_COLUMN: "0.004"}),
+                    record(FUND_CODE="2000", **{source.AMOUNT_COLUMN: "-0.004"})])
+        with self.assertRaisesRegex(source.SourceError, "subcent"):
+            source.prepare_agency(self.path, "03900", balance_boundary="agency-period")
+        for boundary in ["auto", "agency", "statewide", "", None, 1]:
+            with self.subTest(boundary=boundary), self.assertRaisesRegex(source.SourceError, "unsupported balance boundary"):
+                source.prepare_agency(self.path, "03900", balance_boundary=boundary)
+
     def test_profile_reports_imbalance_without_repair(self):
         self.write([record(), record(ACCOUNTING_PERIOD="11", **{source.AMOUNT_COLUMN: "-1.22"})])
         profile = source.profile_source(self.path, verify=False)

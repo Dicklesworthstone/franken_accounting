@@ -10,7 +10,7 @@ The catalog declares the dataset Creative Commons Attribution (CC BY):
 http://www.opendefinition.org/licenses/cc-by
 
 The CSV fixtures preserve the original header and original bytes of every row
-for business units 20400, 31500, and 66000, including zero amounts, Windows-1252
+for business units 20400, 31500, 66000, and 80700, including zero amounts, Windows-1252
 text, and CRLF line endings. This is a selection from the distribution; rows are
 not fabricated, rounded, balanced with new entries, or reduced to net amounts.
 Each adjacent JSON manifest records the full distribution's pinned SHA-256,
@@ -26,6 +26,16 @@ journal IDs and month-end effective dates belong to the documented replay model.
 | 20400 | J. M. Davis museum | 125 |
 | 31500 | Firefighters Pension & Retirement System | 137 |
 | 66000 | Southeastern Oklahoma State University | 1,055 |
+| 80700 | Health Care Authority | 1,440 |
+
+The first three agencies' natural `(fiscal year, period, ledger, fund,
+class funding)` groups balance exactly in the original source. Agency 80700
+instead requires the explicit `--balance-boundary agency-period` interpretation:
+its whole monthly activity balances, but two April class-funding slices have
+opposite $479.86 nets. Both slices and all their original fields remain intact;
+no balancing leg is introduced. Its 1,405 nonzero rows become three monthly
+activity Entries with 453, 465 and 487 legs; 35 zero rows remain source evidence.
+This does not assert that either boundary identifies original journal entries.
 
 The full distribution contains 373,357 rows and is not vendored. Reacquire it with
 the checksum-pinned helper. Its complete profile, including unbalanced groups and
