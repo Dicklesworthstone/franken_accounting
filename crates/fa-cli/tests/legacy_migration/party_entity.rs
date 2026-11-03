@@ -61,7 +61,9 @@ fn prepare(fixture: &Fixture) -> (Json, String) {
     let path = fixture.file("party-entity-import.json", &intent.render());
     let prepared = ok(
         &fixture.book,
-        &["migrate", "import", "--action", "prepare", "--intent", &path],
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
     );
     assert_eq!(integer(data(&prepared), "row_count"), 4);
     assert_eq!(integer(data(&prepared), "chunk_count"), 2);
@@ -130,7 +132,9 @@ fn party_and_entity_codes_survive_retained_migration_activation_retry_and_export
     let before_retry = head(&fixture.book);
     let repeated = ok(
         &fixture.book,
-        &["migrate", "import", "--action", "prepare", "--intent", &path],
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &path,
+        ],
     );
     assert_eq!(text(data(&repeated), "package_oid"), package);
     assert_eq!(data(&repeated).get("chunks"), data(&prepared).get("chunks"));
@@ -267,7 +271,14 @@ fn source_attribution_substitution_refuses_even_with_valid_native_values_and_sam
         let before = head(&fixture.book);
         let (status, refused) = run(
             &fixture.book,
-            &["migrate", "import", "--action", "show", "--package", &forged],
+            &[
+                "migrate",
+                "import",
+                "--action",
+                "show",
+                "--package",
+                &forged,
+            ],
         );
         assert_eq!(status, 8, "{}", refused.render());
         assert_eq!(head(&fixture.book), before);
@@ -282,7 +293,12 @@ fn missing_party_or_entity_and_cross_entity_imbalance_cannot_stage_or_create_obj
     let cross_entity = SOURCE.replace("-100.00, ,Entity-A", "-100.00, ,Entity-B");
     for (source, create_first_party, status, reason) in [
         (SOURCE, false, 2, "does not exist in this book"),
-        (wrong_case_entity.as_str(), true, 3, "none of this book's entities"),
+        (
+            wrong_case_entity.as_str(),
+            true,
+            3,
+            "none of this book's entities",
+        ),
         (missing_entity.as_str(), true, 3, "names no legal entity"),
         (
             cross_entity.as_str(),

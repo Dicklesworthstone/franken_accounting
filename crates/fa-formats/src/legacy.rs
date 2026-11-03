@@ -21,8 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::{BookContext, RunBody, RunMode, TrialBalanceLine};
 use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid,
-    PeriodRef, account_vid, dimension_kind, dimension_value_vid, entity_value_vid,
-    party_value_vid,
+    PeriodRef, account_vid, dimension_kind, dimension_value_vid, entity_value_vid, party_value_vid,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
@@ -1461,7 +1460,10 @@ fn parse_tabular_csv_with_format(
     let header_description = format == LegacyFormat::GenericCsv
         && column_map.description_column != column_map.memo_column;
     for (kind, column) in &column_map.dimension_columns {
-        if import_dimension_id(kind).is_none() || column.trim().is_empty() || column.trim() != column {
+        if import_dimension_id(kind).is_none()
+            || column.trim().is_empty()
+            || column.trim() != column
+        {
             return Err(FormatError::Parse {
                 format: fmt_name,
                 detail: format!(
@@ -3072,7 +3074,10 @@ mod tests {
                 proposals[index].legs[0].dimension_set,
                 vec![
                     (1, entity_value_vid(book.book_id, entity)),
-                    (3, dimension_value_vid(book.book_id, "department", "0100001")),
+                    (
+                        3,
+                        dimension_value_vid(book.book_id, "department", "0100001")
+                    ),
                     (12, party_value_vid(book.book_id, party)),
                 ]
             );
@@ -3082,8 +3087,7 @@ mod tests {
             );
         }
         assert_ne!(
-            proposals[0].legs[0].dimension_set[2].1,
-            proposals[1].legs[0].dimension_set[2].1,
+            proposals[0].legs[0].dimension_set[2].1, proposals[1].legs[0].dimension_set[2].1,
             "native party codes are case-sensitive"
         );
         assert_ne!(
