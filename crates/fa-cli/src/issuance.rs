@@ -186,6 +186,42 @@ pub(crate) fn reported_known_at(
     })
 }
 
+/// The complete retained statement selected by an issued view. A first-Lock
+/// fallback has a coordinate but no issued certificate to replay.
+pub(crate) fn reported_statement_source(
+    book: &fa::Book,
+    capability: &fa::Capability,
+    view: &ReportedView,
+    period: &str,
+) -> Result<(fgdb_types::CommitSeq, Option<fa::ReportCertificate>), Fail> {
+    let certificate = match view {
+        ReportedView::Originally => {
+            let original = book.originally_reported(period)??;
+            match original.basis {
+                fa_journal::ReportedBasis::Issuance(record) => record.issuance.certificate,
+                fa_journal::ReportedBasis::Lock(_) => return Ok((original.known_at, None)),
+            }
+        }
+        ReportedView::IssuedTo(audience) => {
+            book.issued_to(period, *audience)??.issuance.certificate
+        }
+        ReportedView::ReportedIn(certificate) => *certificate,
+    };
+    let source = book.reported_statement(capability, &certificate, period)??;
+    Ok((source.known_at, Some(source)))
+}
+
+pub(crate) fn functional_statement_mismatch(message: &str) -> Fail {
+    fa_journal::Refusal::new(
+        fa::certificate::code::CERTIFICATE_INVALID,
+        fa_journal::exit::VERIFICATION,
+        message,
+        "plan §12.5 (reported views preserve the complete issued statement selection)",
+        "select the issued functional balance-sheet or income-statement certificate and its primary period; omit --compare to inherit the saved comparative columns",
+    )
+    .into()
+}
+
 /// Whether `flag` (a value flag or a switch) is on the command line.
 pub(crate) fn present(args: &Args, flag: &str) -> bool {
     args.switch(flag) || !args.flag_all(flag).is_empty()

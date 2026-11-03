@@ -129,6 +129,147 @@ def expected_cells(expected: dict[str, Any]) -> dict[str, tuple[int, int, int]]:
     return cells
 
 
+def check_source_binding(event: dict[str, Any], *, book_id: str, run_vid: str,
+                         source_oid: str, source_commit: str, package_oid: str,
+                         source_rows: int, chunks: list[dict[str, Any]], recorded: set[str],
+                         previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Check native population observations against the original prepared source.
+
+    This oracle neither supplies the kernel's manifest nor authenticates a proof.
+    The complete source reconstruction and standalone verifier remain separate.
+    """
+    preparation = body(event)
+    value = preparation.get("source_binding")
+    require(isinstance(value, dict), "native omitted the requested source binding")
+    require(event.get("book") == book_id, "source binding event belongs to a different book")
+    for name, width in [("book_id", 32), ("run_vid", 32), ("manifest_vid", 32),
+                        ("run_body_digest", 64), ("manifest_digest", 64), ("source_oid", 64),
+                        ("source_commit", 64), ("package_oid", 64), ("package_commit", 64)]:
+        require(isinstance(value.get(name), str)
+                and re.fullmatch(r"[0-9a-f]{" + str(width) + "}", value[name]) is not None,
+                f"native source binding has no canonical {name}")
+    require(value["book_id"] == book_id and value["run_vid"] == run_vid,
+            "native bound a different book or migration run")
+    require(value["source_oid"] == source_oid.removeprefix("D:") and value["source_commit"] == source_commit,
+            "native bound a different normalized source document")
+    require(value["package_oid"] == package_oid.removeprefix("D:"), "native bound a different prepared package")
+    require(value["run_body_digest"] == preparation.get("run_body_digest")
+            and value["package_commit"] == preparation.get("package_commit"),
+            "native source binding differs from its prepared run body or package commitment")
+    require(type(value.get("source_rows")) is int and value["source_rows"] == source_rows
+            and 0 < source_rows < 2**64, "native bound the wrong normalized source-row census")
+    members = [chunk["entry_vid"] for chunk in chunks]
+    require(1 <= len(chunks) <= 4096 and len(set(members)) == len(members),
+            "prepared source population is empty, repeated or too large")
+    for chunk in chunks:
+        require(re.fullmatch(r"[0-9a-f]{32}", chunk["entry_vid"]) is not None
+                and re.fullmatch(r"[0-9a-f]{64}", chunk["proposal_digest"]) is not None,
+                "prepared source member has a noncanonical native identity")
+    require(recorded <= set(members), "observed staging contains a foreign prepared member")
+    require(type(value.get("expected_chunks")) is int and value["expected_chunks"] == len(members)
+            and type(value.get("recorded_chunks")) is int and value["recorded_chunks"] == len(recorded),
+            "native source binding changed the expected or recorded chunk census")
+    missing = value.get("missing_chunks")
+    require(isinstance(missing, list) and all(isinstance(item, str) for item in missing)
+            and len(missing) == len(set(missing)) and set(missing) == set(members) - recorded,
+            "native source binding hid, duplicated or substituted a missing member")
+    require(value.get("unexpected_chunks") == [], "native source binding contains unexpected members")
+    require(value.get("complete") is (len(recorded) == len(members)),
+            "native source binding misstates population completeness")
+    if previous is not None:
+        for name in ("manifest_vid", "manifest_digest", "book_id", "run_vid", "run_body_digest",
+                     "source_oid", "source_commit", "package_oid", "package_commit", "source_rows", "expected_chunks"):
+            require(value[name] == previous[name], f"native source binding changed immutable {name}")
+    return dict(value)
+
+
+def check_binding_receipt(event: dict[str, Any], *, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    preparation = body(event)
+    receipt = preparation.get("source_binding_receipt")
+    require(isinstance(receipt, dict), "native prepare omitted its source-binding receipt")
+    require(isinstance(receipt.get("control_entry"), str)
+            and re.fullmatch(r"[0-9a-f]{32}", receipt["control_entry"]) is not None,
+            "native source-binding receipt has no canonical control identity")
+    upload_at, bound_at = preparation.get("recorded_at"), receipt.get("recorded_at")
+    coordinate = event.get("coordinate", {}).get("known_at")
+    require(type(upload_at) is int and type(bound_at) is int and 0 < upload_at < bound_at
+            and type(coordinate) is int and coordinate >= bound_at,
+            "native source-binding receipt lost the separate upload and binding coordinates")
+    retry = previous is not None
+    require(receipt.get("already_recorded") is retry and preparation.get("already_recorded") is retry,
+            "native prepare changed package or binding retry status")
+    if not retry:
+        require(bound_at == upload_at + 1 and coordinate == bound_at,
+                "fresh preparation did not publish only its package and source binding")
+    if previous is not None:
+        require(receipt["control_entry"] == previous["control_entry"] and bound_at == previous["recorded_at"],
+                "native source-binding retry changed its original publication identity")
+    return dict(receipt)
+
+
+def check_source_report_bundle(bundle: bytes, binding: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, int]:
+    """Inspect bounded container framing and compare the exact expected witness.
+
+    No record, certificate, signature or arithmetic is decoded here. Only the
+    actual independent fa-verify invocation establishes authenticated acceptance.
+    """
+    require(len(bundle) <= 64 * 1024 * 1024, "source-aware report bundle exceeds 64 MiB")
+    position = 0
+
+    def take(count: int) -> bytes:
+        nonlocal position
+        require(count <= len(bundle) - position, "source-aware report bundle is truncated")
+        value = bundle[position:position + count]
+        position += count
+        return value
+
+    def number(width: int) -> int:
+        return int.from_bytes(take(width), "little")
+
+    def blob(limit: int) -> bytes:
+        length = number(4)
+        require(length <= limit, "source-aware report field exceeds its bound")
+        return take(length)
+
+    def count(minimum_bytes: int) -> int:
+        value = number(4)
+        require(value <= (len(bundle) - position) // minimum_bytes,
+                "source-aware report list count exceeds its retained bytes")
+        return value
+
+    require(blob(64) == b"fa:report-bundle:v1", "native source-aware report has a different container domain")
+    major, minor = number(2), number(2)
+    require(major in (1, 2, 3) and minor == 1, "native report omitted its source-aware manifest closure")
+    for _ in range(3):
+        blob(64 * 1024 * 1024)
+    records = count(8)
+    for _ in range(records):
+        number(4)
+        blob(8 * 1024 * 1024)
+    for _ in range(count(12)):
+        number(8)
+        blob(8 * 1024 * 1024)
+    require(count(12) == 1, "fresh single-run book report has an unexpected source-witness population")
+    leaf_index = number(8)
+    require(leaf_index < records, "source witness references a missing prefix record")
+    manifest = blob(256 * 1024)
+    expected = bytearray(b"FA-MIGRATION-SOURCE\0" + (1).to_bytes(2, "little"))
+    expected.extend(bytes.fromhex(binding["book_id"]))
+    expected.extend(int(binding["run_vid"], 16).to_bytes(16, "little"))
+    for name in ("run_body_digest", "source_oid", "source_commit", "package_oid", "package_commit"):
+        expected.extend(bytes.fromhex(binding[name]))
+    expected.extend(binding["source_rows"].to_bytes(8, "little"))
+    expected.extend(len(chunks).to_bytes(4, "little"))
+    for chunk in chunks:
+        expected.extend(int(chunk["entry_vid"], 16).to_bytes(16, "little"))
+        expected.extend(bytes.fromhex(chunk["proposal_digest"]))
+    require(manifest == expected, "report source witness differs from the exact prepared source population")
+    if major == 1:
+        require(position == len(bundle), "source-aware v1 report has trailing container bytes")
+    return {"major": major, "minor": minor, "source_witnesses": 1,
+            "manifest_bytes": len(manifest), "bind_leaf_index": leaf_index}
+
+
 def check_tb(event: dict[str, Any], expected: dict[str, Any], *, invisible: bool = False) -> None:
     rows = body(event).get("rows")
     require(isinstance(rows, list), "trial balance has no rows array")
@@ -339,7 +480,8 @@ def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[s
 
 class Native:
     def __init__(self, fa: Path, verifier: Path, out: Path, timeout: int, fad: Path | None = None,
-                 stage_group_size: int = 64, batch_approvals: bool = False, batch_evidence: bool = False):
+                 stage_group_size: int = 64, batch_approvals: bool = False, batch_evidence: bool = False,
+                 bind_source: bool = False):
         self.fa, self.verifier, self.out, self.timeout = fa, verifier, out, timeout
         require(type(stage_group_size) is int and 1 <= stage_group_size <= 4096,
                 "stage group size must be an integer between 1 and 4096")
@@ -351,6 +493,8 @@ class Native:
         self.book_id: str | None = None
         require(type(batch_evidence) is bool, "batch evidence must be explicitly enabled or disabled")
         self.batch_evidence = batch_evidence
+        require(type(bind_source) is bool, "source binding must be explicitly enabled or disabled")
+        self.bind_source = bind_source
         self.evidence_group_requests = 0
         self.evidence_receipts: dict[str, dict[str, Any]] = {}
         self.document_commitments: dict[str, str] = {}
@@ -458,7 +602,7 @@ class Native:
         # harness never relabels its uploads as human or third-party evidence.
         uploaded = body(self.one(["document", "add", str(path), "--kind", kind, "--mime", mime]))
         oid = uploaded["oid"]
-        if self.batch_evidence:
+        if self.batch_evidence or self.bind_source:
             commitment = uploaded.get("doc_commit")
             require(isinstance(oid, str) and re.fullmatch(r"[0-9a-f]{64}", oid) is not None
                     and isinstance(commitment, str) and re.fullmatch(r"[0-9a-f]{64}", commitment) is not None,
@@ -674,17 +818,34 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     write_new(intent_path, json_bytes({"run": "MR:" + run_vid, "source": "D:" + docs["legacy.csv"], "format": "csv",
                                       "default_unit": "GBP", "account_map": json.loads((prepared / "account_map.json").read_bytes()),
                                       "column_map": (prepared / "columns.toml").read_text(), "entry_periods": entry_periods}))
-    preparation = body(native.one(["migrate", "import", "--action", "prepare", "--intent", str(intent_path)]))
+    prepare_args = ["migrate", "import", "--action", "prepare", "--intent", str(intent_path)]
+    if native.bind_source:
+        prepare_args.append("--bind-source")
+    preparation_event = native.one(prepare_args)
+    preparation = body(preparation_event)
     require(preparation["mode"] == "FullDetail" and preparation["sole_opening_source"] is True, "native changed migration mode")
     chunks = preparation["chunks"]
     require(len(chunks) == expected["entry_count"] > 0, "native chunk count differs from complete source")
     require(sum(chunk["leg_count"] for chunk in chunks) == expected["leg_count"], "native preparation changed source leg count")
     package = preparation["package_oid"]
+    binding = binding_receipt = source_report = None
+    binding_inputs: dict[str, Any] = {}
+    if native.bind_source:
+        binding_inputs = {"book_id": native.book_id, "run_vid": run_vid,
+                          "source_oid": docs["legacy.csv"], "source_commit": native.document_commitments[docs["legacy.csv"]],
+                          "package_oid": package, "source_rows": expected["leg_count"], "chunks": chunks}
+        binding = check_source_binding(preparation_event, **binding_inputs, recorded=set())
+        binding_receipt = check_binding_receipt(preparation_event)
     before = native.head()
-    again = body(native.one(["migrate", "import", "--action", "prepare", "--intent", str(intent_path)]))
+    again_event = native.one(prepare_args)
+    again = body(again_event)
     require(again["package_oid"] == package and again["already_recorded"] is True,
             "import prepare retry did not return its original retained package")
     require(native.head() == before, "import prepare retry published new state")
+    if native.bind_source:
+        check_source_binding(again_event, **binding_inputs, recorded=set(), previous=binding)
+        check_binding_receipt(again_event, previous=binding_receipt)
+        require(again["recorded_at"] == preparation["recorded_at"], "prepare retry changed its original package upload coordinate")
     check_tb(native.one(["tb", "--period", period]), expected, invisible=True)
     first_approvals: list[str] = []
     native.start_bulk()
@@ -733,8 +894,12 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     bulk_head = native.head()
     native.stop_bulk()
     require(native.head() == bulk_head, "native daemon stop/reopen changed the recorded frontier")
-    shown = body(native.one(["migrate", "import", "--action", "show", "--package", package]))
+    shown_event = native.one(["migrate", "import", "--action", "show", "--package", package])
+    shown = body(shown_event)
     require(shown["ties_out"] is True and shown["run_state"] == "Open", "fully staged source does not tie out natively")
+    if native.bind_source:
+        binding = check_source_binding(shown_event, **binding_inputs,
+                                       recorded={chunk["entry_vid"] for chunk in chunks}, previous=binding)
     check_tb(native.one(["tb", "--period", period]), expected, invisible=True)
     pre_finalize = native.head()
     plan = native.out / "finalize.plan"
@@ -753,6 +918,16 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     again = body(native.one(native.with_approvals(["migrate", "import", "--action", "stage", "--package", package,
                                                   "--chunk", "0"], first_approvals)))
     require(again["already_recorded"] is True and native.head() == before, "post-finalization retry duplicated source data")
+    if native.bind_source:
+        before = native.head()
+        terminal_event = native.one(prepare_args)
+        terminal = body(terminal_event)
+        require(terminal.get("run_state") == "Finalized", "source-bound prepare retry lost terminal run state")
+        binding = check_source_binding(terminal_event, **binding_inputs,
+                                       recorded={chunk["entry_vid"] for chunk in chunks}, previous=binding)
+        check_binding_receipt(terminal_event, previous=binding_receipt)
+        require(terminal["recorded_at"] == preparation["recorded_at"] and native.head() == before,
+                "terminal source-bound prepare retry republished package or binding")
     export = native.out / "native.csv"
     native.one(["export", "csv-gl", "--period", period, "--out", str(export)])
     native.one(["verify", "export", "csv-gl", str(export)])
@@ -776,6 +951,9 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     bundle_path, receipt_path = native.out / "trial-balance.fab", native.out / "trial-balance.receipt"
     native.one(["bundle", "produce", "--certificate", locator, "--state", state["oid"],
                 "--out", str(bundle_path), "--receipt-out", str(receipt_path)])
+    if native.bind_source:
+        assert binding is not None
+        source_report = check_source_report_bundle(bundle_path.read_bytes(), binding, chunks)
     verify_args = ["report", str(bundle_path), "--key", signed["checkpoint_public_key"],
                    "--checkpoint", str(checkpoint_path), "--receipt", str(receipt_path), "--expect", certificate["oid"]]
     verified = native.execute(verify_args, verifier=True)
@@ -794,6 +972,8 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
             "stage_group_size": native.stage_group_size, "stage_requests": stage_requests,
             "batch_approvals": native.batch_approvals, "approval_group_requests": native.approval_group_requests,
             "batch_evidence": native.batch_evidence, "evidence_group_requests": native.evidence_group_requests,
+            "bind_source": native.bind_source, "source_binding": binding, "source_binding_receipt": binding_receipt,
+            "source_report": source_report,
             "period": period, "migration_run": run_vid, "package_oid": package, "documents": docs,
             "certificate_digest": certificate["oid"], "output_digest": certificate["output_digest"],
             "checkpoint_public_key": signed["checkpoint_public_key"], "bundle_sha256": digest(bundle_path.read_bytes()),
@@ -807,7 +987,10 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
                       + (["approval_groups_bound_to_each_digest_and_reviewer", "approval_group_retry_without_publication"]
                          if native.batch_approvals else [])
                       + (["group_evidence_binds_every_entry_and_source_commitment", "evidence_group_retry_without_publication"]
-                         if native.batch_evidence else []),
+                         if native.batch_evidence else [])
+                      + (["native_source_binding_matches_complete_prepared_population", "bound_prepare_retry_without_publication",
+                          "source_population_complete_before_activation", "terminal_binding_retry_retains_original_identity",
+                          "portable_source_manifest_matches_every_prepared_proposal"] if native.bind_source else []),
             "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance."}
 
 
@@ -834,6 +1017,8 @@ def main() -> int:
                         help="approve each staging group in two token-bound native calls; requires fa approve --proposals")
     parser.add_argument("--batch-evidence", action="store_true",
                         help="attach source documents to each staging group in one native call; requires document attach --entries")
+    parser.add_argument("--bind-source", action="store_true",
+                        help="bind the complete retained native package before staging and verify its portable source manifest")
     args = parser.parse_args()
     if args.timeout < 1:
         parser.error("--timeout must be positive")
@@ -854,7 +1039,7 @@ def main() -> int:
     code = 1
     try:
         native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size,
-                        args.batch_approvals, args.batch_evidence)
+                        args.batch_approvals, args.batch_evidence, args.bind_source)
         result = run(native, prepared, args.dataset, expected)
         code = 0
     except KeyboardInterrupt:
@@ -890,6 +1075,7 @@ def main() -> int:
     result["batch_approvals"] = args.batch_approvals
     result["approval_group_requests"] = native.approval_group_requests if native is not None else 0
     result["batch_evidence"] = args.batch_evidence
+    result["bind_source"] = args.bind_source
     result["evidence_group_requests"] = native.evidence_group_requests if native is not None else 0
     write_new(out / "result.json", json_bytes(result))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

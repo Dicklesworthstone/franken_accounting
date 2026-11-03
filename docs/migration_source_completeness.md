@@ -8,6 +8,50 @@ staged journal.
 
 ## Bind the prepared population before staging
 
+The CLI makes this an explicit preparation choice:
+
+```sh
+fa migrate import --action prepare --intent import.json --bind-source \
+  --book ./book --json
+```
+
+The default preparation path remains unbound for existing callers. The option
+uses the complete authenticated source, mapping and retained package; it accepts
+no caller-supplied member list. It binds an empty Open run before the first chunk
+is staged. A retained unbound package can be bound while its run is still empty;
+an already staged or terminal unbound run cannot acquire a retrospective
+completeness claim. Existing chunk approvals and package bytes are preserved.
+
+Preparation still emits one `migration_import_prepared` event. Its optional
+`source_binding` object reports the native manifest identity/digest, original
+source and package commitments, declared source rows and exact membership
+coverage. The separate `source_binding_receipt` reports the original control
+entry, sequence and retry status. The enclosing `recorded_at` and
+`already_recorded` continue to describe the package upload. `--action show`
+remains read-only, reports the same verified binding state, and returns
+`source_binding: null` for an unbound run. Both show and staging compare an
+existing native manifest against the entire selected package before proceeding.
+
+Upload and binding are separate native publications. If upload succeeds but
+binding or acknowledgement fails, repeat the unchanged preparation with
+`--bind-source` under current authority. It reuses the first package and, when
+already bound, the original exact control proposal and receipt. This recovery
+also works after staging or finalization; it never substitutes the stored
+preparer for the caller's authority. Binding requires the existing Human
+read/post/migrate preparation authority. Ordinary independent approvals still
+govern each staged chunk and finalization.
+
+`source_rows` counts rows parsed from the retained import document. For public
+data helpers that transform an expenditure download into a two-leg normalized
+ledger, this document is `legacy.csv` and the count is the normalized ledger's
+leg count, not the raw download's observations. Preserve and separately replay
+the raw download, its transformation and the exact dated-leg oracle. Native
+source membership does not establish that this earlier transformation was
+faithful, economically true or complete against records outside the download.
+
+The option is available to direct CLI and daemon-forwarded CLI preparation. The
+current MCP migration tool's explicit switches do not expose `--bind-source`.
+
 The native `bind_migration_source` facade operation binds an empty, Open
 migration run to its retained prepared package. The immutable `SourceManifest`
 contains the book and run identity, original RunBody digest, source and package

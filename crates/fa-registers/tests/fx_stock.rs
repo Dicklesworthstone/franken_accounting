@@ -1223,6 +1223,66 @@ fn maintained_cross_period_overflow_refolds_to_identify_the_retained_source() {
     assert_eq!(f.db.vertices().unwrap(), before);
 }
 
+/// fa-bgsy: period activity over two periods whose maintained cells are each
+/// in range but sum past i128 refolds literally, as the trial balance does,
+/// so the refusal names the retained source entry instead of a bare overflow.
+#[test]
+fn maintained_cross_period_activity_overflow_refolds_to_identify_the_retained_source() {
+    let mut f = Fixture::new();
+    f.post(f.proposal("december-maximum", day(2025, 12, 5), f.usd, i128::MAX));
+    let ctx = f.ctx();
+    f.runtime
+        .block_on(fa_registers::advance(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            "FY2025-P12",
+        ))
+        .unwrap();
+    let next = f.proposal("january-one", day(2026, 1, 5), f.usd, 1);
+    let (source, recorded_at) = f.append_retained_fault(next);
+    let ctx = f.ctx();
+    f.runtime
+        .block_on(fa_registers::advance(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            "FY2026-P01",
+        ))
+        .unwrap();
+    let head = f.db.frontier().unwrap();
+    let before = f.db.vertices().unwrap();
+    // Each period alone is in range and is served from its maintained cells.
+    for period in ["FY2025-P12", "FY2026-P01"] {
+        let (_, served) =
+            fa_registers::period_activity_served(&f.db, &f.book, &[period.into()]).unwrap();
+        assert!(
+            matches!(served, fa_registers::Served::Maintained(_)),
+            "{period}: {served:?}"
+        );
+    }
+    let both = ["FY2025-P12".to_string(), "FY2026-P01".to_string()];
+    let error = fa_registers::period_activity_served(&f.db, &f.book, &both).unwrap_err();
+    let RegisterError::Capacity(diagnosis) = error else {
+        panic!("exact source diagnosis required: {error:?}")
+    };
+    assert_eq!(diagnosis.source, source);
+    assert_eq!(
+        (diagnosis.recorded_at, diagnosis.known_at),
+        (recorded_at, head)
+    );
+    assert_eq!((diagnosis.accumulated, diagnosis.incoming), (i128::MAX, 1));
+    assert_eq!(diagnosis.effective_through, None);
+    // The served read follows the literal fold's law exactly.
+    let literal = fa_registers::period_activity(&f.db, &f.book, &both, None).unwrap_err();
+    let RegisterError::Capacity(literal) = literal else {
+        panic!("literal diagnosis required: {literal:?}")
+    };
+    assert_eq!(diagnosis, literal);
+    assert_eq!(f.db.frontier().unwrap(), head);
+    assert_eq!(f.db.vertices().unwrap(), before);
+}
+
 #[test]
 fn equal_amounts_with_different_rate_provenance_have_different_source_digests() {
     fn one(source: &str) -> FunctionalStockFold {

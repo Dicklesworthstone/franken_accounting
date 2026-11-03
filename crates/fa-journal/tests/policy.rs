@@ -3694,6 +3694,31 @@ fn an_issuance_never_drops_its_issuers_caveats() {
         .issue(&redacted, &kept, b"keeps-redaction")
         .expect("a grant that keeps the redaction caveat");
     assert_eq!(issued.commitment, kept.commitment().unwrap());
+
+    // fa-7yiz: a trunk-confined issuer is admitted to issue (issuance is a
+    // trunk act), so the grant law itself keeps the confinement. Dropping it
+    // would let the issued token act on drafts and scenarios.
+    let head = h.db.frontier().unwrap();
+    let confined = human(PREPARER, &["read", "issue_capability"])
+        .on_branch(Id128::TRUNK)
+        .unwrap();
+    let r = h
+        .issue(&confined, &grant(CAROL), b"drops-branch")
+        .unwrap_err();
+    eprintln!("issuance: branch dropped -> {} {}", r.code, r.message);
+    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(
+        r.message
+            .contains(&format!("branch = {}", Id128::TRUNK.to_hex())),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    let kept = grant(CAROL).on_branch(Id128::TRUNK).unwrap();
+    let issued = h
+        .issue(&confined, &kept, b"keeps-branch")
+        .expect("a grant that keeps the trunk confinement");
+    assert_eq!(issued.commitment, kept.commitment().unwrap());
 }
 
 /// fa-v62: revoking an issuer capability cascades to every capability it

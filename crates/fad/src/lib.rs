@@ -1500,6 +1500,22 @@ async fn serve_with<L: Listener, H: Service>(
             if let Some(timer) = deadline.as_mut()
                 && let Poll::Ready(result) = Pin::new(timer).poll(task)
             {
+                // A connection whose idle deadline lapsed while this loop was
+                // handling another request may already hold its frame: read
+                // it before the timer expires it as Idle (fa-2iu5). Only
+                // lapsed connections go first, and a served one gets a fresh
+                // deadline, so due work is still not starved.
+                if result.is_ok()
+                    && let Ok(clock_now) = clock::timer(cx).map(|t| t.now())
+                {
+                    for (idx, conn) in connections.iter_mut().enumerate() {
+                        if conn.deadline().is_some_and(|at| clock_now >= at)
+                            && let Poll::Ready(step) = conn.poll_step(task, limits.max_frame_bytes)
+                        {
+                            return Poll::Ready(Ok(Ready::Conn(idx, step)));
+                        }
+                    }
+                }
                 return Poll::Ready(result.map(|()| Ready::Timer).map_err(|e| {
                     std::io::Error::other(format!("{}", WaitError::Clock(e).frame()))
                 }));

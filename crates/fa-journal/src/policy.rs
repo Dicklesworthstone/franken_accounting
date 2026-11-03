@@ -2116,8 +2116,18 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
         }
     }
     // Issuance is a whole-book act on trunk, so admission already refuses an
-    // issuer carrying an accounts, periods, effective, known-at or branch
-    // caveat. A redaction caveat does not limit reach, so it is kept here.
+    // issuer carrying an accounts, periods, effective or known-at caveat, or
+    // a branch caveat naming another branch. A trunk-confined issuer is
+    // admitted, so its confinement is kept here, as is a redaction caveat,
+    // which does not limit reach.
+    if let Some(branch) = issuer.branch()
+        && issued.branch() != Some(branch)
+    {
+        return widen(format!(
+            "it drops the issuer's branch = {} caveat",
+            branch.to_hex()
+        ));
+    }
     if let Some(contract) = issuer.redaction()
         && issued.redaction() != Some(contract)
     {

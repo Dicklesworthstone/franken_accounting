@@ -1,0 +1,373 @@
+{
+  "approval_group_requests": 38,
+  "batch_approvals": true,
+  "batch_evidence": true,
+  "bind_source": true,
+  "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+  "build_scope": {
+    "debug_info": "0",
+    "measurement": "One complete execution on a shared development host; not a release throughput benchmark or controlled comparison",
+    "profile": "dev",
+    "runtime_override": "asupersync opt-level=0; hint-mostly-unused; -Zthreads=1; -Zmir-opt-level=0",
+    "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)"
+  },
+  "bulk_transport": "direct_cli",
+  "bundle_sha256": "977da7d1cb63e14fc887e77fe9edb10ec3ad3b3b18a0512b54001698dfc7aaf7",
+  "certificate_digest": "1726a3cb11da02e784fea951f3515108185446d3ebee7a98387faf40f949b6f5",
+  "checkpoint_public_key": "f3cc01a60ec1f527038894d480a86001c61f37030b5a26ce8198f7d936437fbd",
+  "checks": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "approval_groups_bound_to_each_digest_and_reviewer",
+    "approval_group_retry_without_publication",
+    "group_evidence_binds_every_entry_and_source_commitment",
+    "evidence_group_retry_without_publication",
+    "native_source_binding_matches_complete_prepared_population",
+    "bound_prepare_retry_without_publication",
+    "source_population_complete_before_activation",
+    "terminal_binding_retry_retains_original_identity",
+    "portable_source_manifest_matches_every_prepared_proposal",
+    "executable_identity_guards"
+  ],
+  "dataset": "dwp-2025-01",
+  "diagnostic_comparison": {
+    "earlier_executions": [
+      {
+        "checks_retained": 20,
+        "commands_sha256": "a38f7abdc55eae3849b78b50f31964d5adbc37e1ca012db54d4e6a9fdc8d9fd5",
+        "elapsed_seconds": 5896.77,
+        "evidence": "dwp-2025-01-grouped-native-2026-11-03.json",
+        "native_calls": 3375,
+        "result_sha256": "e018c3616a8c20ecda0b86b44a8afceb126038104faa5905ce5e77854f5d11dc",
+        "source_bound": false
+      }
+    ],
+    "identity_scope": "Each fresh book has its own native identities and certificate; the successful legacy baseline remains unchanged and is not reclassified as source-bound.",
+    "measurement_scope": "Separate complete executions on a shared development host; no controlled throughput or causal speedup claim.",
+    "same_pinned_source_and_full_leg_census": true
+  },
+  "document_custody": {
+    "byte_identical_source_readbacks": 6,
+    "grade": "AgentUpload",
+    "review_principal": "public-data-fixture-reviewer-a",
+    "review_scope": "Distinct same-harness fixture principal; not independent human review",
+    "reviewed_attestations": 19,
+    "self_sourced": true,
+    "uploaded_documents": 19
+  },
+  "documents": {
+    "expected_tb.json": "515ac9b285470d732a5ee159550b86eee84fc5a1ecd4c7d41829472d177af833",
+    "legacy.csv": "1135f47f905ed9f9942a94e2ad66631a6a0a56b88ec739a1fee4a1a58d7e0c20",
+    "provenance.jsonl": "22c2482d7575f6e8b85736819116288d49109e8edbf866373c1dad952e984dd6",
+    "raw.csv": "c46351e6cc6cdfbc4dfa9f6898cc5617a2f6ab96ee468557af16a69ff5a05f83",
+    "receipt.json": "7aa4ae108fa0c617db26ef0dc887de100c24120dba939562ec33b675e95a6318",
+    "records.jsonl": "8700a82c83ecafc8bcf181a7f5e02d9e0fe7d0f600c41fb7527c8781436556ec"
+  },
+  "elapsed_seconds": 541.794,
+  "evidence_builder": {
+    "bound_rechecks_sha256": "1211f3bda6b5840eabdf8cd5fe50135c03d99a6a85e5b5a4a9c97743c6c6fb4b",
+    "general_assembler_sha256": "b4b16b9b9c8abbd2523a9db1b15e04852f1932f40c4557d933fdcf7d007fec03",
+    "scope": "Read-only reconstruction after the actual native execution; no native commands were rerun to produce this compact evidence."
+  },
+  "evidence_group_requests": 19,
+  "executed_helpers": {
+    "tools/public-data/public_spend.py": {
+      "bytes": 23968,
+      "sha256": "ed376231ce90bb14bc33f1a4eae9d3d84e4b1fc3e3c58768c467fb4624bc03f3"
+    },
+    "tools/public-data/run_live.py": {
+      "bytes": 66444,
+      "sha256": "8531eab05c19d5f1020b45a604cce11a79a969d3a9fc428c8d7904607333e8f0"
+    },
+    "tools/public-data/sources.toml": {
+      "bytes": 4124,
+      "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7"
+    }
+  },
+  "fa_sha256": "fcc24183a50b9363e83acb721f95a9761f5f3d49542e647347e0ade5c2c372b3",
+  "fa_verify_sha256": "3261595874b1129d67f8e09e475195aeb29ff34ac20ffaf1bbe7819acee3112c",
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "commands.jsonl": {
+      "bytes": 110799,
+      "sha256": "679c831c11dd888627144a03371b677688d63de015620a88330f805087f779d2"
+    },
+    "finalize.plan": {
+      "bytes": 451,
+      "sha256": "31a804c21477402811a9b12a713f7396359853959be48fb2da622f51d2a4a2b8"
+    },
+    "native.csv": {
+      "bytes": 8204224,
+      "sha256": "9c2f6e56a8e82b04bad45780f3bba9b4ba504ef8ddb956956f53a5852cd41c66"
+    },
+    "replayed.report": {
+      "bytes": 17143,
+      "sha256": "b23fe145db575de673f32cdfc3fc41518fe663afcfd3e99d250f7a324f541193"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "sha256": "df35f968893abc069c9f68f4e361feeb56a134b70485dc4d3b3a328d4c1d33a3"
+    },
+    "result.json": {
+      "bytes": 4863,
+      "sha256": "9fe6bf5fbb211cee76319193f6be746e46feadf067e0ccad5615ad2f3f3972dd"
+    },
+    "tampered-trial-balance.fab": {
+      "bytes": 8923702,
+      "sha256": "67bcce3cbf4a667198b7eb2809daa51138ad881636425453b8ff5f45f017f99a"
+    },
+    "trial-balance.fab": {
+      "bytes": 8923702,
+      "sha256": "977da7d1cb63e14fc887e77fe9edb10ec3ad3b3b18a0512b54001698dfc7aaf7"
+    },
+    "trial-balance.receipt": {
+      "bytes": 219,
+      "sha256": "76417055a3cdc266f8c3b3f994db654f84d6a9cce9625be575a69763ea653eff"
+    }
+  },
+  "independent_verification": {
+    "check_counts": [
+      {
+        "check": "canonical_report",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "report_bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "trial_balance_row",
+        "count": 84,
+        "result": "pass"
+      }
+    ],
+    "exit_code": 0,
+    "report_bundle": {
+      "bundle_digest": "b6b6f72e6ad312bc6b1860a6f22a609f9f97c212a0861a3a79ca86240eebdd96",
+      "certificate_digest": "1726a3cb11da02e784fea951f3515108185446d3ebee7a98387faf40f949b6f5",
+      "effective_through": 20119,
+      "known_at": 4414,
+      "native_read_attestations": "retained; not used as outsider proofs",
+      "output_digest": "18c1b02a552eed172ab9de2206435e48aff1899e483bf03df8b4b1d1ade16e93",
+      "records": 2228,
+      "report_mode": "stock",
+      "rows": 84,
+      "unit_universe_source": "not-applicable"
+    },
+    "verdict": "verified"
+  },
+  "migration_run": "1b170f45664ac79b40a2b6ffd2391a6e",
+  "model_scope": {
+    "historical_span": "January 2025 source activity is carried through empty scoped months to January 1, 2026 go-live; no claim is made about later actual DWP activity or closing balances.",
+    "native_account_categories": 83,
+    "native_offset_account": {
+      "code": "published-payment-offset",
+      "meaning": "Explicit modeled counterpart; no bank-cash balance is inferred",
+      "type": "Equity"
+    },
+    "source_fields": "Every source field, duplicate row and row identity remains in retained raw/normalized/provenance evidence. Source area, supplier, reference and other dimensions are not asserted to be native queryable dimension tags by this runner.",
+    "verification_trust": "The independently verified report is from this locally created analysis book and caller-trusted checkpoint key; it is not a DWP-signed or audited ledger."
+  },
+  "native_calls": 168,
+  "native_exit_counts": {
+    "0": 167,
+    "8": 1
+  },
+  "native_export": {
+    "entries": 1091,
+    "legs": 25930
+  },
+  "native_source_commit": "d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6",
+  "native_source_tree": "69a1c4b1f7bbf029ad5fca1582e29fbe081c26ff",
+  "observed_execution": {
+    "argv": [
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "-B",
+      "/workspace/scratch/e7855ec4cca9/fa-live-d8a00109-dwp-source-bound-helper-snapshot/tools/public-data/run_live.py",
+      "--prepared",
+      "/workspace/scratch/e7855ec4cca9/public-data-prepared-recovered/dwp-2025-01",
+      "--dataset",
+      "dwp-2025-01",
+      "--out",
+      "/workspace/scratch/e7855ec4cca9/fa-live-dwp-batched-01",
+      "--fa",
+      "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fa",
+      "--fa-verify",
+      "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/fa-verify",
+      "--stage-group-size",
+      "64",
+      "--timeout",
+      "300",
+      "--batch-approvals",
+      "--batch-evidence",
+      "--bind-source"
+    ],
+    "completed_utc": "2026-11-03T05:33:00.035121+00:00",
+    "helper_manifest": "/workspace/scratch/e7855ec4cca9/fa-live-d8a00109-dwp-source-bound-helper-snapshot/manifest.json",
+    "helper_manifest_sha256": "90cbc9d2236d0420302e257ea5bf21fd5ee5aef95a27ec6af71d76f6015c6d7b",
+    "launcher_elapsed_seconds": 542.834,
+    "log": "/workspace/scratch/e7855ec4cca9/fa-live-dwp-batched-01.log",
+    "log_sha256": "f45f551bd043a3786007c9186ad0e9be876a98c991117b9fc5f027d19f9e884e",
+    "native_manifest": "/workspace/scratch/e7855ec4cca9/fa-build-tools/frozen/d8a00109/manifest.json",
+    "native_manifest_sha256": "996163b464ac17b50b3f0d5f0790f5e037802746e7a20ac5206c38782e4b56c2",
+    "observed_process_exit": 0,
+    "observer_artifact": {
+      "bytes": 1594,
+      "sha256": "7035cf9570ae3af7b9365ea082d44b03e9c77b8aefe4f1e1118332b11a10de93"
+    },
+    "raw_source_sha256": "b6477bc3ea1afeac5d97caa581369b78c2c473360c2fe4a7493a26da847583b1",
+    "started_utc": "2026-11-03T05:23:57.201238+00:00"
+  },
+  "observed_process_exit": 0,
+  "output_digest": "18c1b02a552eed172ab9de2206435e48aff1899e483bf03df8b4b1d1ade16e93",
+  "package_oid": "a39380e8d7a638a7da2fd65b9644cd3f6be9e6e030856904943fd30732490159",
+  "period": "FY2025-P01",
+  "recorded_utc": "2026-11-03T05:34:43.211925+00:00",
+  "report_coordinates": {
+    "book_id": "c3bb93ca656a4738a6a55476e7da723f",
+    "certified_report_known_at": 4414,
+    "finalization_control_entry": "7d3746ba1480f0ba744494125646d9e6",
+    "finalization_recorded_at": 4413,
+    "head_after_finalization_approvals": 4412,
+    "historical_empty_tb_known_at": 4410,
+    "pre_finalization_known_at": 4410
+  },
+  "reproduce": "python3 -B tools/public-data/run_live.py --prepared /path/to/complete-dwp-2025-01 --dataset dwp-2025-01 --out /path/to/new-native-execution --fa /path/to/frozen/fa --fa-verify /path/to/frozen/fa-verify --stage-group-size 64 --timeout 300 --batch-approvals --batch-evidence --bind-source",
+  "source": {
+    "byte_length": 1935610,
+    "encoding": "cp1252",
+    "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "limits": "Published payment components over the publication threshold. Staff salaries are excluded and recoverable VAT is excluded. Whole-pound source values are preserved without reconstructing undisclosed pence. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied.",
+    "publication_url": "https://www.gov.uk/government/publications/dwp-spending-over-25000-january-2025",
+    "publisher": "Department for Work and Pensions",
+    "title": "DWP spending over \u00a325,000, January 2025",
+    "url": "https://assets.publishing.service.gov.uk/media/68b84d92d723ba6f74dba95a/dwp-spending-over-25000-january-2025.csv"
+  },
+  "source_acceptance_rechecks": {
+    "bind_control_entry": "86239acf12372b993f1cd33543d90e9a",
+    "bind_recorded_at": 44,
+    "issued_reviewer_tokens": 2,
+    "native_group_receipts": {
+      "approval_fresh": 2182,
+      "approval_retry": 128,
+      "evidence_fresh": 1091,
+      "evidence_retry": 64,
+      "stage_fresh": 1091,
+      "stage_retry": 64
+    },
+    "native_group_requests": {
+      "approval_groups": 38,
+      "evidence_groups": 19,
+      "stage_groups": 19,
+      "terminal_single_retry": 1
+    },
+    "native_prepare_calls": 3,
+    "normalized_source_rows": 25930,
+    "package_upload_recorded_at": 43,
+    "portable_witness_scope": "Exact canonical native manifest bytes observed inside a minor-1 report container; authenticated acceptance comes from the separate real fa-verify execution against its retained checkpoint and receipt.",
+    "raw_source_observations": 13099,
+    "required_checks": 29,
+    "reviewer_principals": [
+      "public-data-fixture-reviewer-a",
+      "public-data-fixture-reviewer-b"
+    ],
+    "source_scope": "The manifest binds the normalized import CSV and exact retained package; original raw acquisition and complete transformation/export are separately replayed.",
+    "terminal_single_chunk_retry": 1
+  },
+  "source_binding": {
+    "book_id": "c3bb93ca656a4738a6a55476e7da723f",
+    "complete": true,
+    "expected_chunks": 1091,
+    "manifest_digest": "0014342fb7ea0a8e8612602daf18ac239147fd274726908d6e03e3b346faed82",
+    "manifest_vid": "26bec7f5f3bb47d07ce6722120aad697",
+    "missing_chunks": [],
+    "package_commit": "d25a02083e695f0a405c4d96e30444d7d95b5613307a3fbe26839297702c5e38",
+    "package_oid": "a39380e8d7a638a7da2fd65b9644cd3f6be9e6e030856904943fd30732490159",
+    "recorded_chunks": 1091,
+    "run_body_digest": "751292729c1bc56b0eb6e31a1bb5312977f49adff84edaa1fac707522caaa4aa",
+    "run_vid": "1b170f45664ac79b40a2b6ffd2391a6e",
+    "source_commit": "f8778fdf64202689e59c8115a83266adc3692b5eee5104c513f39fdbae59da7a",
+    "source_oid": "1135f47f905ed9f9942a94e2ad66631a6a0a56b88ec739a1fee4a1a58d7e0c20",
+    "source_rows": 25930,
+    "unexpected_chunks": []
+  },
+  "source_binding_receipt": {
+    "already_recorded": false,
+    "control_entry": "86239acf12372b993f1cd33543d90e9a",
+    "recorded_at": 44
+  },
+  "source_report": {
+    "bind_leaf_index": 42,
+    "major": 1,
+    "manifest_bytes": 52594,
+    "minor": 1,
+    "source_witnesses": 1
+  },
+  "source_sha256": "b6477bc3ea1afeac5d97caa581369b78c2c473360c2fe4a7493a26da847583b1",
+  "source_stats": {
+    "date_count": 22,
+    "duplicate_rows": 31,
+    "expense_area_count": 1830,
+    "expense_type_count": 83,
+    "max_minor": "1496642800",
+    "max_transaction_rows": 1204,
+    "min_minor": "-143436900",
+    "negative_minor": "-456922600",
+    "negative_rows": 283,
+    "net_minor": "30776409400",
+    "positive_minor": "31233332000",
+    "positive_rows": 12682,
+    "row_count": 13099,
+    "split_transaction_count": 291,
+    "supplier_count": 187,
+    "transaction_count": 578,
+    "zero_rows": 134
+  },
+  "stage_group_size": 64,
+  "stage_requests": 18,
+  "status": "PASS",
+  "tamper_refusal": {
+    "exit_code": 8,
+    "failed_checks": [
+      {
+        "check": "record_derivation",
+        "detail": {},
+        "reason": "Digest { which: \"proposal_digest\" }",
+        "result": "fail",
+        "scope": "recomputation"
+      }
+    ],
+    "mutation": "Flip one bit at the midpoint of the authentic report-bundle bytes; retain the original trusted key, checkpoint, receipt and expected certificate digest",
+    "verdict": "failed"
+  },
+  "transcript_scope": "commands.jsonl binds all 168 started/completed commands, their stdout/stderr SHA-256 values and each exact forwarded stdin request. All referenced transcript file hashes and stdin lengths were independently rechecked when preparing this summary."
+}

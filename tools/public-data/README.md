@@ -44,19 +44,92 @@ rows, 127 entries and 2,860 legs. The comparison with 463 calls and 113.172
 seconds is diagnostic evidence from separate shared-host executions; both
 earlier records remain unchanged.
 
+A fresh complete HMRC run enabled
+`--batch-approvals --batch-evidence --bind-source`: **100 native calls,
+38.402 seconds and all 29 checks passed**, with process exit zero on frozen
+`d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6` binaries. All 1,430 raw source
+observations still produce 127 entries and 2,860 legs. The native source
+manifest binds all 2,860 normalized CSV rows and every original package member;
+source coverage is complete before independently approved finalization, and
+preparation retries preserve the original package and BindSource receipt even
+after finalization. The actual report includes the exact minor-1 source witness
+and passes the standalone verifier; the damaged bundle is refused. The
+[execution evidence](../../evidence/public_spend/hmrc-2025-03-source-bound-native-2026-11-03.json)
+records source, helper and native hashes, verified individual approval/evidence
+receipt counts and transcript hashes, exact retries and the separate
+upload/binding coordinates. The earlier 463-call/113.172-second confirmation
+and 219-call/65.599-second approval-only records remain unchanged; these are
+separate shared-host observations, not a controlled performance comparison.
+
+An [additional complete HMRC confirmation](../../evidence/public_spend/hmrc-2025-03-source-bound-confirmation-2026-11-03.json)
+ran on frozen `33237a2d` binaries with `--bind-source --batch-approvals
+--batch-evidence`: **1,430 original rows, 127 entries, 2,860 legs, 100 native
+calls and all 29 checks passed** in **31.865 seconds**. A separate read-only
+acceptance exported a version-4 balance proof from the same authenticated
+checkpoint. All eight standalone checks passed against gross amounts
+predeclared from the pinned original CSV; changing the expected debit by one
+penny was refused with exit eight. The book head remained 556 throughout the
+extra checks, and the original runner result remained unchanged. The evidence
+retains both verifier transcripts and their exact command/output digests. This
+timing is one shared-host observation, not a benchmark or controlled comparison.
 The native report covers the explicitly modeled GBP expenditure and offset
 accounts. Supplier, area, reference and other original fields remain in retained
 source/provenance evidence and source-side controls; this runner does not claim
 that all those fields are native queryable dimension tags. The extract supplies
 no complete original general ledger, opening stocks or original double-entry
 counterparts. The independent verifier checks the resulting analysis book under
-its own trusted checkpoint key, not an HMRC-signed or audited set of accounts.
+its own trusted checkpoint key, not a department-signed or audited set of accounts.
 
-Both complete datasets also passed actual HTTPS acquisition and deterministic
-source preparation. A native DWP completion is not established until its own
-complete execution produces a retained `PASS`; preparation and a partially
-staged run do not establish that result. Execution timings are diagnostic dev
-build observations on a shared host, not release throughput benchmarks.
+The complete DWP January 2025 extract also passed its full native workflow on
+2026-11-03: **13,099 original records, 1,091 migration entries, 25,930 monetary
+legs, 3,375 native calls and 5,896.770 seconds**, with process exit zero and all
+20 checks completed. Its 18 initial staging groups used at most 64 independently
+approved chunks; approval and evidence commands remained separate. The
+[DWP execution evidence](../../evidence/public_spend/dwp-2025-01-grouped-native-2026-11-03.json)
+retains the pinned complete source, frozen `93714f77` executable/helper identities,
+all transcript and exported-artifact hashes, 19 source/control uploads and
+fixture review attestations, and six exact source-document readbacks. Every
+dated exported leg and memo was checked, all 84 account registers matched the
+native fold, finalization published at one commit, and the independent verifier
+accepted the authentic 8,868,413-byte report and refused its modified copy.
+This completed baseline predates explicit native source-population binding:
+its portable report has major 1/minor 0, and it must not be described as a
+source-bound run. All 283 negative rows, 134 zero observations and 31 additional
+exact duplicate rows remain accounted for in the source controls and evidence.
+
+A [separate complete DWP confirmation](../../evidence/public_spend/dwp-2025-01-grouped-confirmation-2026-11-03.json)
+passed all **20 checks for 13,099 rows, 1,091 entries and 25,930 legs** in
+**5,980.011 seconds**. That direct-CLI run used the same frozen `93714f77`
+binaries and helpers, 18 staging groups of at most 64 chunks, and individual
+approvals and source attachments, with distinct book and proof identities.
+Both DWP timings are individual shared-host observations, not benchmarks;
+neither run exercises native source binding or the later batching features.
+
+A separate complete DWP run then enabled all three options,
+`--batch-approvals --batch-evidence --bind-source`: **168 native calls,
+541.794 seconds and all 29 checks passed**, with process exit zero on the frozen
+`d8a00109b6184aa1d8d1c000c498cd4fb5f0b9b6` build. It processed the same complete
+13,099 raw observations into 1,091 entries and 25,930 legs. Before staging,
+the native manifest bound all 25,930 normalized import rows and every prepared
+entry; native population coverage was complete before finalization. The
+portable report contains the exact 52,594-byte source witness in a major-1,
+minor-1 container, passed the standalone verifier, and its damaged copy was
+refused. Exact grouped retries and the terminal prepare retry retained their
+original native identities without another publication.
+
+The [source-bound DWP execution evidence](../../evidence/public_spend/dwp-2025-01-source-bound-native-2026-11-03.json)
+records the complete source/helper/executable identities, report/export and
+transcript hashes, and verified receipt counts: 2,182 fresh grouped approval
+receipts, 1,091 fresh staged entries and 1,091 fresh evidence supplements,
+plus the explicit retry controls. Source binding covers the normalized CSV;
+the original raw source and every dated exported leg and memo are separately
+checked. The earlier 3,375-call/5,896.770-second unbound baseline remains
+unchanged. These are separate shared-host observations, not a controlled
+throughput comparison.
+
+Both complete datasets passed actual HTTPS acquisition and deterministic source
+preparation. The execution timings above are diagnostic development-build
+observations on a shared host, not release throughput benchmarks.
 
 The complete HMRC control body is 65,422 bytes and the DWP body is 49,105 bytes,
 both above the substrate's 16 KiB vertex ceiling. Native migration storage now
@@ -193,6 +266,58 @@ default individual attachment mode remains available for existing binaries;
 there is no automatic authority change or fallback on a grouped refusal.
 Grouping appends the same source-evidence records and leaves finalization,
 source-to-export comparisons and independent proof verification in the workflow.
+
+### Require the complete retained source population in native activation and proofs
+
+Add `--bind-source` to use native
+[`migrate import --action prepare --bind-source`](../../docs/migration_source_completeness.md).
+This is an explicit compatibility choice: the default still prepares an
+unbound legacy run, and requesting binding against an older binary fails.
+For a complete large extract, all three options can be combined:
+
+```bash
+python3 tools/public-data/run_live.py \
+  --prepared /tmp/fa-public-dwp --dataset dwp-2025-01 \
+  --out /tmp/fa-public-dwp-source-bound \
+  --fa /absolute/path/to/fa --fa-verify /absolute/path/to/fa-verify \
+  --stage-group-size 64 --batch-approvals --batch-evidence --bind-source
+```
+
+Preparation first retains the native package, then binds its complete ordered
+entry identities and proposal digests to the empty Open run. These are two
+separate native publications. The runner checks both original receipt
+coordinates and retries the same preparation before staging and after
+finalization, requiring the original package, binding control and sequences
+without publishing duplicates. The operation uses current migration authority;
+all independent chunk approvals and finalization approvals remain required.
+There is no fallback to an unbound run if binding fails.
+
+The bound document is the complete normalized `legacy.csv`, whose original
+bytes are read back before preparation. Its declared `source_rows` therefore
+counts monetary ledger legs: **2,860 for HMRC and 25,930 for DWP**. It is not the
+raw observation count of 1,430 or 13,099, respectively. The runner separately
+retains and reconstructs the complete original government CSV, including the
+134 zero-amount DWP observations, and checks every dated exported leg and memo.
+The binding cannot establish transactions absent from the published source or
+replace those independent transformation checks.
+
+Before staging, every prepared member must appear in the native missing-member
+list. Before activation, the same manifest must report every expected member
+recorded, no missing or unexpected entries, and complete coverage. Native
+finalization enforces this independently of the Python harness. An omitted
+transaction and its offsetting reversal cannot pass merely because the net
+trial balance still agrees.
+
+The report must then use the source-aware minor version and carry exactly the
+expected source manifest for this fresh single-run book. A bounded container
+inspection compares the complete witness bytes, including the original
+package order, against the checked native preparation and document commitments.
+It does not decode or authenticate ledger records or signatures. The existing
+standalone `fa-verify report` call must independently accept the actual bundle,
+checkpoint, certificate and receipt; the tampered-bundle control must still
+be refused. `result.json` retains the manifest identities, complete native
+coverage, original binding receipt and observed report format. Runs executed
+without this flag remain explicitly unbound evidence.
 
 The same native interface can resume an interrupted import:
 
