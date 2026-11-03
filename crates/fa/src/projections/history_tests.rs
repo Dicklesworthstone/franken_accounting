@@ -5,6 +5,7 @@ use std::path::Path;
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
+use fa_journal::rows::bytes;
 use fa_journal::{AccountSpec, BookSpec, Document, PostRequest, UnitPolicy};
 use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, LegPayload, Oid,
