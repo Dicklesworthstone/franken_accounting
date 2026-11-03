@@ -10279,6 +10279,49 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     let whole = doc(&out);
     assert_eq!(whole.get("dimension"), Some(&Json::Null));
     assert_eq!(whole.get("balanced"), Some(&Json::Bool(true)));
+    // Functional dimension reporting now has its own certified profile.
+    // The selected expense legs retain their exact base amounts; the
+    // untagged cash legs do not make this partial fold balance.
+    let functional_file = dir.join("functional-dimension.cert").display().to_string();
+    let (code, certified) = tb(
+        "cost_center=CC",
+        &[
+            "--certify",
+            "--functional",
+            "--certificate-out",
+            &functional_file,
+        ],
+    );
+    assert_eq!(code, 0, "{certified}");
+    let lines: Vec<&str> = certified.lines().collect();
+    assert_eq!(lines.len(), 2, "{certified}");
+    assert_eq!(
+        field(lines[0], "event"),
+        Some("functional_dimension_trial_balance")
+    );
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid");
+    assert_eq!(field(lines[0], "certificate"), Some(oid));
+    assert_eq!(
+        text(&certificate, "output_format"),
+        "fa:functional-dimension-trial-balance:v1"
+    );
+    let functional = doc(lines[0]);
+    assert_eq!(text(&functional, "base_unit"), "USD");
+    assert_eq!(functional.get("balanced"), Some(&Json::Bool(false)));
+    let rows = arr(&functional, "rows");
+    assert_eq!(rows.len(), 1, "{certified}");
+    assert_eq!(text(&rows[0], "account"), "6100");
+    assert_eq!(text(&rows[0], "debits"), "84.00 USD");
+    assert_eq!(functional.get("dimension"), report.get("dimension"));
+    let original = format!("{}\n", lines[0]);
+    let retained = format!("C:{oid}");
+    for source in [functional_file.as_str(), retained.as_str()] {
+        let (code, replayed) = run(&["replay", source]);
+        assert_eq!(code, 0, "{replayed}");
+        assert_eq!(replayed, original, "{source}: fixed-prefix replay");
+    }
     // Planted: an unknown value, an unregistered dimension, no value, and a
     // certificate of a mode a dimension report does not take.
     for (filter, extra) in [
@@ -10286,7 +10329,10 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
         ("nope=CC", &[][..]),
         ("cost_center", &[][..]),
         ("cost_center=CC", &["--certify", "--summary"][..]),
-        ("cost_center=CC", &["--certify", "--functional"][..]),
+        (
+            "cost_center=CC",
+            &["--certify", "--functional", "--summary"][..],
+        ),
     ] {
         let (code, out) = tb(filter, extra);
         assert_eq!(code, 2, "{filter} {extra:?}: {out}");
@@ -13224,6 +13270,61 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["period", "open", "FY2026-P03"]);
 
+    run2(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "EVENTS",
+        "--name",
+        "Events cost center",
+    ]);
+    let dimension_source = write(
+        &dir,
+        "events-dimension-source.txt",
+        "Invoice for the tagged event fixture",
+    );
+    let (_, dimension_document) = run2(&[
+        "document",
+        "add",
+        &dimension_source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let dimension_document = doc(&dimension_document);
+    let dimension_post = write(
+        &dir,
+        "events-dimension-post.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"events-functional-dimension","legs":[{"side":"debit","account":"6000","amount":"1.00 USD","dimensions":{"cost_center":"EVENTS"}},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    run2(&[
+        "post",
+        "--intent",
+        &dimension_post,
+        "--evidence",
+        text(&dimension_document, "oid"),
+    ]);
+    let (_, dimension_report) = run2(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--dimension",
+        "cost_center=EVENTS",
+        "--functional",
+    ]);
+    assert_eq!(
+        field(&dimension_report, "event"),
+        Some("functional_dimension_trial_balance")
+    );
+    let dimension_report = doc(&dimension_report);
+    assert_eq!(arr(&dimension_report, "rows").len(), 1);
+    assert_eq!(
+        text(&arr(&dimension_report, "rows")[0], "debits"),
+        "1.00 USD"
+    );
+    assert_eq!(dimension_report.get("balanced"), Some(&Json::Bool(false)));
+
     run2(&["tb", "--summary", "--period", "FY2026-P03"]);
     run2(&[
         "gl",
@@ -13898,29 +13999,32 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     // retained source and trial balance produce one sealed migration chunk,
     // which two independent reviewers approve before staging.
     let book4 = dir.join("legacy-events-book");
-    let mut run4 = |args: &[&str]| -> String {
+    let mut run4 = |args: &[&str], expected: i32| -> String {
         let mut argv = args.to_vec();
         argv.push("--json");
         let (code, out, err) = fa(Some(book4.as_path()), &argv);
-        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        assert_eq!(code, expected, "args={argv:?}\n{out}\n{err}");
         seen.extend(check_robot_output(&argv, code, &out));
         out
     };
-    run4(&[
-        "book",
-        "create",
-        "--name",
-        "Legacy source event coverage",
-        "--opening-date",
-        "2026-07-01",
-    ]);
+    run4(
+        &[
+            "book",
+            "create",
+            "--name",
+            "Legacy source event coverage",
+            "--opening-date",
+            "2026-07-01",
+        ],
+        0,
+    );
     let legacy_chart = write(
         &dir,
         "legacy-events-chart.json",
         r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Opening equity","type":"Equity","unit":"USD"}]}"#,
     );
-    run4(&["chart", "import", &legacy_chart]);
-    run4(&["period", "create", "--fiscal-year", "2026"]);
+    run4(&["chart", "import", &legacy_chart], 0);
+    run4(&["period", "create", "--fiscal-year", "2026"], 0);
     let legacy_source = write(
         &dir,
         "legacy-events-source.csv",
@@ -13928,34 +14032,40 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
 robot-opening,2025-12-20,Legacy Cash,125.50,,USD,Cash source,2025-12-20T12:30:00Z,legacy-author\n\
 robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:30:00Z,legacy-author\n",
     );
-    let source_added = run4(&[
-        "document",
-        "add",
-        &legacy_source,
-        "--kind",
-        "Spreadsheet",
-        "--mime",
-        "text/csv",
-        "--grade",
-        "HumanUpload",
-    ]);
+    let source_added = run4(
+        &[
+            "document",
+            "add",
+            &legacy_source,
+            "--kind",
+            "Spreadsheet",
+            "--mime",
+            "text/csv",
+            "--grade",
+            "HumanUpload",
+        ],
+        0,
+    );
     let legacy_source_oid = text(&doc(&source_added), "oid").to_string();
     let legacy_tb = write(
         &dir,
         "legacy-events-tb.csv",
         "account,unit,debit,credit\n1000,USD,125.50,\n3000,USD,,125.50\n",
     );
-    let tb_added = run4(&[
-        "document",
-        "add",
-        &legacy_tb,
-        "--kind",
-        "Spreadsheet",
-        "--mime",
-        "text/csv",
-        "--grade",
-        "HumanUpload",
-    ]);
+    let tb_added = run4(
+        &[
+            "document",
+            "add",
+            &legacy_tb,
+            "--kind",
+            "Spreadsheet",
+            "--mime",
+            "text/csv",
+            "--grade",
+            "HumanUpload",
+        ],
+        0,
+    );
     let legacy_tb_oid = text(&doc(&tb_added), "oid").to_string();
     assert_ne!(legacy_source_oid, legacy_tb_oid);
     let legacy_run_intent = write(
@@ -13965,7 +14075,7 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
             r#"{{"run_key":"legacy-events","source_system":"quickbooks-csv","mode":"OpeningOnly","trial_balance":"{legacy_tb_oid}","opening_date":"2026-01-01","lines":[{{"account":"1000","unit":"USD","debit":"125.50"}},{{"account":"3000","unit":"USD","credit":"125.50"}}]}}"#
         ),
     );
-    let opened = run4(&["migrate", "open", "--intent", &legacy_run_intent]);
+    let opened = run4(&["migrate", "open", "--intent", &legacy_run_intent], 0);
     let legacy_run = text(&doc(&opened), "run_vid").to_string();
     let legacy_import_intent = write(
         &dir,
@@ -13974,14 +14084,17 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
             r#"{{"run":"MR:{legacy_run}","source":"D:{legacy_source_oid}","format":"quickbooks-csv","account_map":{{"Legacy Cash":"1000","Legacy Equity":"3000"}}}}"#
         ),
     );
-    let prepared = doc(&run4(&[
-        "migrate",
-        "import",
-        "--action",
-        "prepare",
-        "--intent",
-        &legacy_import_intent,
-    ]));
+    let prepared = doc(&run4(
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            &legacy_import_intent,
+        ],
+        0,
+    ));
     assert_eq!(int(&prepared, "row_count"), Some(2));
     assert_eq!(int(&prepared, "chunk_count"), Some(1));
     assert_eq!(int(&prepared, "recorded_count"), Some(0));
@@ -13990,53 +14103,146 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         panic!("one complete source journal entry: {}", prepared.render());
     };
     let chunk_digest = text(chunk, "proposal_digest").to_string();
-    let shown = doc(&run4(&[
-        "migrate",
-        "import",
-        "--action",
-        "show",
-        "--package",
-        &package,
-    ]));
+    let shown = doc(&run4(
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "show",
+            "--package",
+            &package,
+        ],
+        0,
+    ));
     assert_eq!(text(&shown, "package_oid"), package);
     assert_eq!(shown.get("chunks"), prepared.get("chunks"));
-    let first_approval = doc(&run4(&[
-        "approve",
-        "--proposal",
-        &chunk_digest,
-        "--as",
-        "legacy-event-reviewer-one",
-    ]));
-    let second_approval = doc(&run4(&[
-        "approve",
-        "--proposal",
-        &chunk_digest,
-        "--as",
-        "legacy-event-reviewer-two",
-    ]));
+    // Group staging emits its typed progress before the native approval
+    // refusal, even when no chunk has been admitted. The package remains
+    // resumable and has no recorded migration chunk.
+    let unapproved_selection = write(
+        &dir,
+        "legacy-events-unapproved-selection.json",
+        r#"{"chunks":[{"index":0,"approvals":[]}]}"#,
+    );
+    let refused = run4(
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "stage",
+            "--package",
+            &package,
+            "--intent",
+            &unapproved_selection,
+        ],
+        7,
+    );
+    let lines: Vec<&str> = refused.lines().collect();
+    assert_eq!(lines.len(), 2, "{refused}");
+    assert_eq!(field(lines[0], "event"), Some("migration_import_progress"));
+    assert_eq!(field(lines[1], "event"), Some("error"));
+    assert_eq!(text(&doc(lines[1]), "refusal_id"), "FA-REF-012");
+    let progress = doc(lines[0]);
+    assert_eq!(progress.get("atomic"), Some(&Json::Bool(false)));
+    assert_eq!(int(&progress, "selected_count"), Some(1));
+    assert_eq!(int(&progress, "completed_count"), Some(0));
+    assert_eq!(int(&progress, "failed_chunk_index"), Some(0));
+    assert_eq!(text(&progress, "phase"), "posting");
+    assert!(arr(&progress, "chunks").is_empty());
+    let still_unstaged = doc(&run4(
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "show",
+            "--package",
+            &package,
+        ],
+        0,
+    ));
+    assert_eq!(int(&still_unstaged, "recorded_count"), Some(0));
+    let first_approval = doc(&run4(
+        &[
+            "approve",
+            "--proposal",
+            &chunk_digest,
+            "--as",
+            "legacy-event-reviewer-one",
+        ],
+        0,
+    ));
+    let second_approval = doc(&run4(
+        &[
+            "approve",
+            "--proposal",
+            &chunk_digest,
+            "--as",
+            "legacy-event-reviewer-two",
+        ],
+        0,
+    ));
     let first_approval = text(&first_approval, "approval_vid");
     let second_approval = text(&second_approval, "approval_vid");
     assert_ne!(first_approval, second_approval);
-    let staged = doc(&run4(&[
-        "migrate",
-        "import",
-        "--action",
-        "stage",
-        "--package",
-        &package,
-        "--chunk",
-        "0",
-        "--approval",
-        first_approval,
-        "--approval",
-        second_approval,
-    ]));
+    let staged = doc(&run4(
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "stage",
+            "--package",
+            &package,
+            "--chunk",
+            "0",
+            "--approval",
+            first_approval,
+            "--approval",
+            second_approval,
+        ],
+        0,
+    ));
     assert_eq!(text(&staged, "proposal_digest"), chunk_digest);
     assert_eq!(int(&staged, "recorded_count"), Some(1));
     assert_eq!(int(&staged, "chunk_count"), Some(1));
     assert_eq!(staged.get("already_recorded"), Some(&Json::Bool(false)));
     assert_eq!(staged.get("ready_to_finalize"), Some(&Json::Bool(true)));
-    let opening_tb = doc(&run4(&["tb", "--period", "FY2026-OPEN"]));
+    // The grouped retry preserves the exact individually committed receipt.
+    let approved_selection = write(
+        &dir,
+        "legacy-events-approved-selection.json",
+        &format!(
+            r#"{{"chunks":[{{"index":0,"approvals":["{first_approval}","{second_approval}"]}}]}}"#
+        ),
+    );
+    let grouped = doc(&run4(
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "stage",
+            "--package",
+            &package,
+            "--intent",
+            &approved_selection,
+        ],
+        0,
+    ));
+    assert_eq!(grouped.get("atomic"), Some(&Json::Bool(false)));
+    assert_eq!(int(&grouped, "selected_count"), Some(1));
+    assert_eq!(int(&grouped, "completed_count"), Some(1));
+    assert_eq!(int(&grouped, "recorded_count"), Some(1));
+    assert_eq!(grouped.get("ready_to_finalize"), Some(&Json::Bool(true)));
+    let [receipt] = arr(&grouped, "chunks") else {
+        panic!("one selected chunk: {}", grouped.render());
+    };
+    assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(receipt.get("entry_vid"), staged.get("entry_vid"));
+    assert_eq!(receipt.get("recorded_at"), staged.get("recorded_at"));
+    assert_eq!(
+        receipt.get("proposal_digest"),
+        staged.get("proposal_digest")
+    );
+    let opening_tb = doc(&run4(&["tb", "--period", "FY2026-OPEN"], 0));
     assert!(
         arr(&opening_tb, "rows").is_empty(),
         "staging remains invisible until native finalization"
@@ -18007,7 +18213,7 @@ fn solvency_contra_assets_have_a_certified_replayable_deficit() -> std::io::Resu
     let deducted = ok(&["post", "--intent", &depreciation, "--evidence", &evidence]);
     let deduction_vid = field(&deducted, "vid").unwrap().to_owned();
     let result = doc(&ok(&procedure));
-    assert_eq!(int(&result, "version"), Some(2));
+    assert_eq!(int(&result, "version"), Some(3));
     assert_eq!(int(&result, "finding_count"), Some(1));
     let finding = &arr(&result, "findings")[0];
     let statistic = finding.get("statistic").unwrap();
@@ -18123,7 +18329,7 @@ fn solvency_historical_cash_assertion_does_not_erase_a_current_deficit() -> std:
     ]));
     assert_eq!(checked.get("holds"), Some(&Json::Bool(true)));
     let after = doc(&ok(&procedure));
-    assert_eq!(int(&after, "version"), Some(2));
+    assert_eq!(int(&after, "version"), Some(3));
     assert_eq!(int(&after, "finding_count"), Some(1));
     assert_eq!(after.get("findings"), before.get("findings"));
     Ok(())

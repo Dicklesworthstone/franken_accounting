@@ -2185,3 +2185,35 @@ fa-time crate for the EntryPayload fixture. The facade's unused direct
 fa-escrow dependency is removed; its journal dependency consumes the law.
 No timed-hold anchor or plan change is included; the original fa-yysv
 remains open.
+
+## 2026-11-03 — CLI fixtures still excluded newly supported report and import modes
+
+The complete CLI target on 4a085aa0 ran 154 passes and four failures. A
+dimension fixture still expected usage exit 2 for certified functional
+dimension reports, although the registered v13 profile now succeeds. Two
+balance-sheet solvency fixtures pinned version 2 after 37f0c685a changed
+the actual procedure and registry to version 3 for effective-date selection.
+The event fixture omitted functional_dimension_trial_balance,
+migration_import_group_staged and migration_import_progress. It observed
+no undeclared event. These are observed fixture/contract mismatches, not
+authority to weaken a production predicate.
+
+The dimension fixture now exercises the supported profile with exact
+84.00 USD, the original hierarchy, certificate linkage and byte-identical
+replay from both file and retained ID. Unknown dimensions and unsupported
+summary combinations still refuse, including functional plus summary.
+The event fixture executes a nonempty tagged functional fold, a group
+refused for missing native approvals with zero recorded chunks, and an
+approved grouped retry preserving the exact original receipt. Every old
+success still requires exit 0, and exact registry/event equality remains.
+The two solvency version literals become 3; the deficit, citations, replay,
+historical-assertion and unchanged-finding assertions remain intact.
+
+The admitted fixture profile is now the implemented functional dimension
+mode; unsupported combinations remain excluded. No monetary amount, gate,
+registered procedure or production authority changes. The original failed
+run is retained and the repaired complete CLI target still needs execution.
+In the same run, cross-target passed 2 and restatement passed 12 cases;
+refusal-fix execution passed 2, applying 41 of 154 codes and explicitly
+documenting the remaining 113. These passing targets do not turn the
+four-target invocation's actual exit 101 into a passing repository verdict.
