@@ -56,9 +56,9 @@ python3 -B scripts/public_ledger_portable_proof.py \
   --dimension department --value 1000001 --require-entry-fragments
 ```
 
-Choose new output paths for each attempt. Existing replay and proof directories
-are preserved; the proof output must be separate from the replay directory.
-The proof helper requires the completed replay's actual `PASS` report,
+Choose new output paths for each attempt. Existing replay and verification directories
+are preserved; the verification output must be separate from the replay directory.
+The verification helper requires the completed replay's actual `PASS` report,
 checksummed recovery pins and original book identity, the original pinned
 source manifest, matching driver and normalizer bytes, and the exact same
 executable hashes. It checks these inputs again before declaring success.
@@ -106,11 +106,11 @@ python3 -B scripts/public_ledger_portable_proof.py \
 ```
 
 These commands are reproducible selections, not a claim that every dimension
-has completed a measured native run. This agency has no published project
+has completed a native run. This agency has no published project
 values. The original source's fund/class balances remain separately visible;
 the monthly grouping does not invent balancing entries or discard rows.
 
-## What the proof checks
+## What the verifier checks
 
 The helper selects the requested retained dimension certificate from the
 completed report. It obtains a signed checkpoint for an explicitly returned
@@ -129,7 +129,7 @@ Successful process exit and an actual `verified` verdict are both required.
 The bundle, checkpoint and detached receipt are hashed before verification;
 their bytes must remain unchanged through inspection, optional public-example
 emission and the final acceptance record. A successful verifier invocation
-cannot authorize publication of subsequently replaced proof files.
+cannot authorize publication of subsequently replaced verification files.
 The additional checks bind the observed book to its original checksummed
 identity, and the selected dimension, retained certificate digest and every
 migration-run body to the completed replay. Source-bound mode also requires
@@ -152,7 +152,7 @@ ten-input native closure, including `MigrationRunFragment` and `EntryFragment`.
 The source-bound form must have twelve native inputs, adding
 `MigrationSource` and `MigrationSourceFragment` in the registered order.
 Missing, extra, reordered or wrong-profile inputs fail the helper. The native
-verifier remains responsible for authentication and accounting proof acceptance.
+verifier remains responsible for authentication and accounting bundle acceptance.
 
 A fixture's public key establishes the caller-selected trust anchor for this
 exercise. It does not establish an externally authenticated agency identity.
@@ -164,7 +164,7 @@ or opening balances.
 
 ## Retained outputs and a small public example
 
-Each proof directory contains:
+Each verification directory contains:
 
 | File | Purpose |
 |---|---|
@@ -179,7 +179,7 @@ The optional `--emit-public-example` flag emits deterministic gzip/base64 and
 hash metadata for exactly `report.fab`, `checkpoint.bin` and `report.receipt`.
 Emission occurs only after independent verification and final input-pin checks
 have passed. The three compressed files must total at most 2 MiB; larger
-examples are explicitly omitted while their ordinary proof outputs remain.
+examples are explicitly omitted while their ordinary verification outputs remain.
 No native book or private key is in this allowlist.
 
 The GitHub workflow executes the stock and source-bound university replays and
@@ -214,7 +214,7 @@ The source, driver, normalizer and executable hashes remained unchanged.
 The helper is the exact version introduced in `a0c79c5`, SHA256
 `61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0`.
 The [execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
-retains the complete original failure, subsequent measured results, actual
+retains the complete original failure, subsequent execution results, actual
 commands, verifier receipts and artifact hashes.
 
 The [public offline example](../examples/public_ledger/university_source_bound/README.md)
@@ -260,7 +260,7 @@ mode contradictions and malformed framing. These arithmetic and admission
 tests do not create a new native cryptographic acceptance claim for the newer
 helper or the Rust assertion-drift implementation.
 
-## Measured canonical recovery and exact dimension proofs
+## Executed canonical recovery and exact dimension verification
 
 The subsequent [source-bound recovery campaign](../evidence/public_ledger/source-bound-recovery-validation-2026-11-03.json)
 executed the canonical recovery driver from `afe795b` and this helper from
@@ -280,18 +280,18 @@ reconciliations before a separate portable step ran.
 
 Each row represents four actual commands, an independent `verified` verdict,
 the original pinned book identity, an exact June 30 stock cutoff, and stable
-input and proof-file hashes. The two health reports include the complete
+input and verification-file hashes. The two health reports include the complete
 migration-run, migration-source and Entry-fragment closure from all 1,405
 original monetary legs. Product `00` is a small source slice, while the fund
 report exercises the entire 118-account population. The public record keeps
-each proof's actual command transcript and validation result separate.
+each bundle's actual command transcript and validation result separate.
 
 The [recovered museum offline example](../examples/public_ledger/museum_recovered_source_bound/README.md)
-contains the actual package-gap recovery's public proof in 29,470 compressed
+contains the actual package-gap recovery's public verification bundle in 29,470 compressed
 bytes, with no native book or private key. Its manifest provides the original
-and compressed hashes, certificate, fixture trust anchor and measured recovery
+and compressed hashes, certificate, fixture trust anchor and recorded recovery
 history. The earlier capacity interruption and later transcript-analysis
 failure remain recorded; neither is silently turned into a successful run.
-These native results validate the new Python recovery and proof paths. The
+These native results validate the new Python recovery and verification paths. The
 later Rust assertion-drift implementation still requires its own compiled
 regression results.

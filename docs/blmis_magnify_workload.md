@@ -350,12 +350,12 @@ The full run also requires these completed native checks before it emits
   custody and exact file and robot-payload hashes.
 - Full CSV and ADS exports compared leg by leg against the source, including
   original text and native party dimension identities, followed by independent
-  ADS proof verification with the caller-trusted local book key.
+  ADS accumulator proof verification with the caller-trusted local book key.
 - Independent refusal of an exported one-cent amount mutation and a party-only
   dimension mutation. The original export stays intact in a separate directory.
 
 The output contains the complete source package, book, entry intents, native
-command transcript, certified report receipts, exports and proof artifacts.
+command transcript, certified report receipts, exports and verification artifacts.
 `report.json` records the source comparisons, document custody, all successful
 checks, binary hashes and driver hash. A fresh failed run preserves
 `failure.json` and its available evidence; existing output is never overwritten.
@@ -376,8 +376,8 @@ python3 -B -m unittest discover -s scripts/tests \
 ## Executed native result: November 3, 2026
 
 The complete workload **passed with an observed process exit of 0** after
-**4,105 native commands**. The driver measured **4,229.817 seconds**; the
-outer process wrapper measured **4,230.464 seconds**. The run retained its
+**4,105 native commands**. The driver recorded **4,229.817 seconds**; the
+outer process wrapper recorded **4,230.464 seconds**. The run retained its
 original checks and completed within the configured per-command time limits.
 These timings describe the recorded debug-binary, separate-CLI execution, not
 a production performance benchmark.
@@ -387,7 +387,7 @@ A read-only source review identifies a further scaling opportunity:
 and [`bundle.rs`](../crates/fa-notary/src/bundle.rs)'s `stubs` recomputes a
 document's chunk root for each citing entry. For this workload, that implies
 about **91.8 GB of repeated original-PDF hash input** across both constructions;
-this is an inference from source, not a measured disk-I/O count. File timestamps
+this is an inference from source; disk-I/O was not counted. File timestamps
 bound CSV publication through the completed ADS certificate at **279.837
 seconds**. That interval includes CSV verification and intervening work, so it
 is an upper bound rather than an isolated ADS-export benchmark. No optimization
@@ -396,7 +396,7 @@ or verification shortcut was applied to the recorded run.
 The checked result is retained in
 [`evidence/blmis/magnify-native-2026-11-03.json`](../evidence/blmis/magnify-native-2026-11-03.json).
 It binds the complete native transcript, full report, source extraction,
-original and recovered PDFs, exports and signed proof files by byte count and
+original and recovered PDFs, exports and signed accumulator proof files by byte count and
 SHA-256. It also records the observed wrapper exit, native binary provenance,
 seven executed helper hashes, six ledger certificate identities, all 26
 cumulative year-end balances and all 272 verified posting months.
@@ -436,7 +436,7 @@ all submitted intents and all CSV fields and dimension identities. That audit
 also passed; its result and hash are included in the checked evidence. It ran
 after CSV publication and before the final native report, so its own scope is
 explicitly the source-to-CSV comparison; the completed native run supplies the
-separate final proof and tamper results.
+separate final verification and tamper results.
 
 The native executables came from the verified GitHub Actions artifact for
 Rust source commit
@@ -447,7 +447,7 @@ and their individual hashes. The evidence identifies the workflow, artifact,
 lockfile and both executable hashes rather than attributing execution to an
 unverified build.
 
-`PASS` establishes the declared principal-history construction and its proof
+`PASS` establishes the declared principal-history construction and its evidence
 chain. It preserves the −$34 transfer-event remainder, the external $682 credit
 with no originating ledger, all 58 credited-transfer source inputs and the
 footnote-based withholding exclusions. It does not turn those premises or the
@@ -545,7 +545,7 @@ book, so all **1,586 monetary entries** have an exact-retry check.
 
 Both CSV and ADS export oracles matched all **3,172 balanced legs**, including
 their source text and party identities. The standalone verifier accepted the
-original ADS proof with exit **0**, rejected a one-cent amount change with exit
+original ADS accumulator proof with exit **0**, rejected a one-cent amount change with exit
 **8**, and independently rejected a party-only identity change with exit **8**.
 All continuation helper, source and executable pins matched before and after
 execution, and the original interrupted output remained unchanged.
@@ -568,13 +568,13 @@ population is the 1,586 monetary observations, not the broader native journal
 census that also contains control entries. Every procedure matched its
 independent source predicate and reproduced its certified historical bytes.
 These are statistical observations under the declared source assumptions;
-the standalone verifier's acceptance concerns the accounting export proof.
+the standalone verifier's acceptance concerns the accounting export's accumulator proof.
 
 The [execution record](../evidence/blmis/record_silent_validation_2026-11-03.json)
 retains the original failure, preflight and completed continuation as distinct
 results, with report, transcript, source and binary hashes. The helper's
 20 focused guard tests also passed, including a secondary disk-full error
-while recording failure and a directory-creation ownership race. The measured
+while recording failure and a directory-creation ownership race. The recorded
 duration describes this continuation only and is not a throughput benchmark.
 
 A completed report explicitly records

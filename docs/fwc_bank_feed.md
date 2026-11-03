@@ -121,7 +121,7 @@ the hosted workflow for this revision. Neither a compile check nor the isolated
 codec tests establish full bank-import runtime acceptance or a live connector
 integration result.
 
-The [measured validation record](../evidence/formats/fwc-json-validation-2026-11-03.json)
+The [execution record](../evidence/formats/fwc-json-validation-2026-11-03.json)
 retains the exact source pins, commands, log hashes, successful checks and
 unexecuted runtime boundaries. An older repaired-engine build does not validate
 this later parser change.

@@ -293,7 +293,7 @@ the canonical flag. Use the canonical `run --resume` command for recovery.
 Native acceptance of the new recovery path is separate from its unit checks
 and the earlier fresh source-bound runs recorded below.
 
-#### Measured canonical recovery (2026-11-03)
+#### Executed canonical recovery (2026-11-03)
 
 The complete 20400 museum selection now has an actual native PASS after the
 package-before-binding interruption. The final canonical continuation used
@@ -305,7 +305,7 @@ publication and source-binding control were retained. This successful attempt
 recorded the preactivation prefix at sequence 129 before finalization; the
 earlier failed attempt had not yet published that recovery fact.
 
-The [measured recovery record](../evidence/public_ledger/source-bound-recovery-validation-2026-11-03.json)
+The [recovery execution record](../evidence/public_ledger/source-bound-recovery-validation-2026-11-03.json)
 preserves all attempts. The controlled first attempt exited 1 after publishing
 the real Open package without its binding. The next attempt bound and staged
 all five packages but exited 120 while shared temporary storage was full,
@@ -327,7 +327,7 @@ and 32 nonzero gross cells. The v8 certificate contains
 ten native inputs and all five genuine migration-source witnesses; this
 museum selection does not require the university's larger Entry-fragment
 profile. Original book, source, executable and helper identities and the
-three proof-file hashes remained unchanged. The complete final archive was
+three verification-file hashes remained unchanged. The complete final archive was
 checked against all 1,592 members before its temporary directory disappeared.
 
 A second fresh museum run stopped after staging the first approved chunk.
@@ -380,8 +380,8 @@ Each report has the genuine twelve-input closure, including migration-run,
 source and Entry fragments, and one complete source witness. Product `00` is
 a small original slice within the complete imported population; its leading
 zeroes and exact source attribution remain significant. These are separately
-executed native proof results, not values inferred from the earlier department
-proof. The complete health book, logs and proofs were preserved in a verified
+executed native verification results, not values inferred from the earlier department
+report. The complete health book, logs and bundles were preserved in a verified
 5,543-member archive, with every file hash and the gzip CRC checked.
 
 To reproduce the controlled publication gap with the committed helper, choose
@@ -445,7 +445,7 @@ Fresh executions using the verified native binaries from
 `f3f1d66b25f9b01535efa9de74e38cb600b08a59` passed for all three complete OMES
 selections. These runs retain nonblank department, fund and product codes
 through native migration, certified reports, CSV and ADS exports, and
-standalone proof verification. The selected sources contain no nonblank project
+standalone accumulator proof verification. The selected sources contain no nonblank project
 codes; project parsing tests do not establish a populated native project run.
 
 | Complete selection | Source rows | Monetary legs | Entries | Department / fund / product values | Commands | Seconds |
@@ -455,7 +455,7 @@ codes; project parsing tests do not establish a populated native project run.
 | 66000 university | 1,055 | 1,051 | 27 | 8 / 1 / 9 | 521 | 164.695 |
 
 Each run passed all 38 original-source and native assertions. The independent
-verifier returned 0 for the complete ADS proof and 8 for a one-cent mutation
+verifier returned 0 for the complete ADS accumulator proof and 8 for a one-cent mutation
 and for each separately changed department, fund or product identity present
 in that source. The university's formerly oversized 157-leg Entry now passes
 as one Entry, preserving its complete source legs and dimension sets.
@@ -477,7 +477,7 @@ run and Entry fragments; the source-bound report contained 12, adding the
 source manifest and source-fragment queries, and retained nine source
 witnesses. Each exact retained report verified with the caller-trusted public
 key of its fresh test book.
-The [public proof example](../examples/public_ledger/university_source_bound/README.md)
+The [public verification example](../examples/public_ledger/university_source_bound/README.md)
 retains the source-bound bundle, checkpoint and detached receipt in compressed
 form; its separately decompressed files passed another real verifier invocation
 with all 91 checks.
@@ -631,7 +631,7 @@ A separately exported portable FY2024-P12 departmental report also passed
 `EntryFragment` closure, and **one source witness**. The authoritative default
 `fund-class` preparation still refuses the original two April class imbalances;
 that negative control remains in
-[the separate measured Health Care Authority record](../evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json).
+[the separate Health Care Authority execution record](../evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json).
 
 The engine is the exact `f3f1d66` artifact, while the grouping driver and source
 reader are exact `a24ea4f` bytes, used from checkout `31fb970` with the separately

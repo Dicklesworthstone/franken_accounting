@@ -116,8 +116,8 @@ python3 -B scripts/blmis_migration_negative.py \
 Omit either PDF argument to fetch its pinned original. `pdftotext` is required.
 The destination must be new; existing books and evidence are preserved.
 Matching native executables are required by the shared runner. This control
-invokes `fa`; it does not invoke `fa-verify` or claim an independent report
-proof. The source-bound migration and full replay workloads exercise those
+invokes `fa`; it does not invoke `fa-verify` or independently verify a report
+bundle. The source-bound migration and full replay workloads exercise those
 separate verification paths.
 
 The output retains both books, the hash-checked common-prefix manifest,

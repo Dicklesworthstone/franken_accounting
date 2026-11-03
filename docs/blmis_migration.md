@@ -179,7 +179,7 @@ After activation the driver:
 The checkpoint key is explicitly trusted for this fresh local analysis book;
 it is not represented as a court or trustee signing key. The output preserves
 binary identities, individual command stdout/stderr, exact requests, source
-custody and approvals, reports, proof bundles and the terminal result.
+custody and approvals, reports, verification bundles and the terminal result.
 
 Source dates and citation identities are retained. The named same-day
 computation-order interpretation for B-3 is carried in the manifest. The

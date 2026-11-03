@@ -120,6 +120,6 @@ native `fa-cli` bank-test target. These checks compile the added regressions;
 they do not execute them. The
 [validation record](../evidence/formats/camt-counterparty-validation-2026-11-03.json)
 retains source hashes, exact commands, exits and that distinction. Local runtime
-tests remain unrun under the measured dependency-codegen resource limit, and
+tests remain unrun after dependency codegen reached its resource limit, and
 the hosted runtime results must name the revision containing this repair before
 being reported as acceptance.

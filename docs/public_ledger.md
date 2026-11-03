@@ -81,7 +81,7 @@ prefix 270 carried 12 native inputs, adding `MigrationSource` and
 `MigrationSourceFragment`, with nine source witnesses. Their bundle minor
 versions were 0 and 1 respectively. Parsing those input lists is descriptive;
 the separate `fa-verify` process established authentication and recomputation.
-The [public university proof example](../examples/public_ledger/university_source_bound/README.md)
+The [public university verification example](../examples/public_ledger/university_source_bound/README.md)
 packages the verified source-bound report, checkpoint, detached receipt and
 fixture public-key manifest. Fresh decompression and verification of those
 packaged files also passed, with exit 0 and 91 verifier checks.
@@ -391,16 +391,16 @@ driver's `run --resume` reuses that original choice when the flag is omitted and
 refuses a different choice. Source-bound acceptance currently uses the existing
 fresh-run companion, which explicitly does not support resume.
 
-#### Measured native acceptance — 2026-11-03
+#### Executed native acceptance — 2026-11-03
 
 The complete source-bound Health Care Authority replay **passed**, using the
 reacquired **113,856,733-byte pinned statewide distribution** as its actual
 input. Independent extraction also matched the committed agency fixture's
-exact Git blob and all 1,440 original record ordinals. The measured results and
+exact Git blob and all 1,440 original record ordinals. The recorded results and
 source, helper, executable, transcript and report identities are retained in
 [the Health Care Authority execution record](../evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json).
 
-| Executed check | Measured outcome |
+| Executed check | Observed outcome |
 |---|---|
 | Full source-bound import and replay | PASS; 666 native commands, 662 exit `0` and four expected tamper refusals with exit `8` |
 | Source, proposal, history, retry, register and export assertions | All 39 driver checks passed; 1,405 source legs preserved in three Entries |
@@ -417,7 +417,7 @@ every exported source leg. Deliberate amount, department, product and fund
 changes each failed independent verification. This agency has **no nonblank
 project codes**, so it supplies no real-data project-value acceptance.
 
-The separate portable proof took **6.143 seconds** and verifies the retained
+The separate portable verification took **6.143 seconds** and verifies the retained
 **FY2024-P12 / department 1000001** report at native sequence **90**. Its one
 source witness binds the admitted normalized migration package; original-source
 selection and normalization remain separate, checked source-oracle steps.

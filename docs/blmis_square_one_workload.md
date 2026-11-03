@@ -254,7 +254,7 @@ The run additionally checks:
 - Native projections, original document custody, the signed accumulator
   checkpoint, and exact CSV and ADS exports of all 680 legs, including source
   descriptions, page-and-line citations and party dimensions.
-- Independent ADS proof verification by `fa-verify`, followed by actual
+- Independent ADS accumulator proof verification by `fa-verify`, followed by actual
   refusals of a one-cent amount mutation and a party-dimension-only mutation.
 
 `report.json` is written with `PASS` only after all these checks finish. It
@@ -263,7 +263,7 @@ certificate and entry receipts, custody records, annual controls, export
 comparisons, verifier results and binary hashes. `commands.jsonl` contains the
 actual process arguments, exit codes and native responses. A failed run keeps
 its book, transcript and `failure.json` for diagnosis; it does not overwrite a
-previous run. The proof's trust root is the explicitly supplied checkpoint key
+previous run. The accumulator proof's trust root is the explicitly supplied checkpoint key
 of this local analysis book, not a trustee or court signature.
 
 The driver checks are available separately:

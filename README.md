@@ -518,7 +518,7 @@ key and detached receipt. The full university workflow exercises both ordinary
 and source-bound bundles, including the real Entry and migration-run fragments.
 Both university report modes have passed actual independent verification: the
 ordinary bundle contains 10 native inputs, and the source-bound bundle contains
-12 with all nine source witnesses. The [public offline proof example](examples/public_ledger/university_source_bound/README.md)
+12 with all nine source witnesses. The [public offline verification example](examples/public_ledger/university_source_bound/README.md)
 contains the real signed checkpoint, report bundle and receipt in 85,694
 compressed bytes; its decompressed files pass all 91 verifier checks without
 the native book or a private key. Exact source, helper and binary pins retain
@@ -634,7 +634,7 @@ same historical results after later history. Benford keeps its registered
 notice. These are statistical observations under declared source assumptions,
 not labelled fraud outcomes or independent audit assurance. The
 [procedure documentation](docs/blmis_glantz_workload.md#source-checked-forensic-observations-on-real-records)
-and [measured execution record](evidence/blmis/record_silent_validation_2026-11-03.json)
+and [retained execution record](evidence/blmis/record_silent_validation_2026-11-03.json)
 state the actual run coverage and distinguish native analytics replay from
 standalone accounting-proof verification.
 
@@ -642,7 +642,7 @@ The latest seven-procedure campaign completed fresh Glantz and Square One
 workflows. Magnify completed through a separately pinned continuation after a
 disk-full interruption: it revalidated the original source, postings and
 certificates, completed every remaining retry, verified all 272 monthly
-registers, matched every exported leg and passed independent proof verification
+registers, matched every exported leg and passed independent offline verification
 with both amount-only and party-only tamper refusals. The original interrupted
 attempt remains recorded as incomplete; the
 [recovery guide](docs/blmis_magnify_workload.md#continue-the-preserved-exact-retry-interruption)

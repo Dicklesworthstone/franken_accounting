@@ -2332,3 +2332,29 @@ conflict check; their final complete Genesis run is still required. No schema,
 capsule or row limit, verifier, gate, timeout, amount or publication law changes.
 fa-fdt remains open behind its original fa-nd7g dependency; neither the broad
 object-layer acceptance nor the full repository gate is claimed complete.
+
+## 2026-11-03 — Retained verification examples used uncited claim-class wording
+
+The unchanged native registry checker on 772e78d60 ran 16 tests successfully
+and failed `real_workspace_registries_pass`: the README's new portable-report
+paragraph called its retained bundle a "proof" without a live claim citation.
+The related BLMIS paragraphs also called their retained execution record
+"measured" and their offline verification "proof verification".
+
+These are now a verification example, a retained execution record and offline
+verification. The documented inputs, command, verifier-check counts, source
+pins, interruption history and tamper refusals are unchanged. No proof-class
+artifact or citation is invented, and no linter, gate or requirement is relaxed.
+The next native run again completed 16 tests successfully and failed the same
+workspace check, now at `docs/blmis_magnify_workload.md` paragraph 56. Review
+found the same ambiguity in the related public-ledger and format execution
+notes. Those now distinguish accumulator proofs, signed verification bundles
+and execution records, and describe recorded durations without claiming a
+qualified performance result. Commands, counts, hashes, numeric durations,
+source links and limitations remain intact. The claim checker is unchanged.
+
+The corrected source then passed the unchanged complete native registry
+target: 17 passed, zero failed, ignored or filtered, remote exit 0 at
+23:10:50 UTC. The independent docs-sync command exited 0 with all four checks
+passing. These source checks are documentation maintenance; the full
+exact-tree repository gate still requires execution.
