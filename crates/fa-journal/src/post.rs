@@ -1109,7 +1109,6 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         admission,
         Admission::Commit | Admission::Case(_) | Admission::Recurring(_)
     ) && req.capability.has_requires_dry_run_caveat()
-        && req.plan_certificate.is_none()
     {
         return Ok(Err(policy::refusal(&fa_policy::Denial::OutOfScope {
             caveat: "requires_dry_run",

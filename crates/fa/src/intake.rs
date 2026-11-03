@@ -46,7 +46,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .and_then(|()| fa_policy::scope(capability, book.book_id))
                 .and_then(|()| {
                     fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
-                }),
+                })
+                .and_then(|()| fa_policy::admit_control_write(capability)),
             IntakeAction::ImportRun | IntakeAction::BankImport => {
                 let key = fa_policy::sod::control_key("ImportControl", None, "Import");
                 let op = policy::steward()?.preparer_op(&key).ok_or_else(|| {
@@ -153,6 +154,36 @@ mod tests {
                     .unwrap();
             }
             assert_eq!(book.head(&cx).unwrap(), before);
+        });
+    }
+
+    #[test]
+    fn required_rehearsal_refuses_intake_before_the_host_consumes_evidence() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        runtime.block_on(async {
+            let book = create(&cx).await;
+            let before = book.head(&cx).unwrap();
+            let ordinary = capability(Profile::Human, 49, &[Op::Post, Op::Read, Op::Reconcile]);
+            let restricted = ordinary.clone().with_requires_dry_run();
+            for action in [
+                IntakeAction::Upload,
+                IntakeAction::ImportRun,
+                IntakeAction::BankImport,
+            ] {
+                let refusal = book
+                    .preflight_intake(&cx, &restricted, action)
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+                assert!(refusal.message.contains("requires_dry_run"));
+                assert_eq!(book.head(&cx).unwrap(), before);
+                book.preflight_intake(&cx, &ordinary, action)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(book.head(&cx).unwrap(), before);
+            }
         });
     }
 

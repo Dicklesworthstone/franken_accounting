@@ -6595,6 +6595,12 @@ fn required_rehearsal_accepts_only_authenticated_single_and_replacement_plans() 
     let refusal = h.post(request.clone()).unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
     assert_eq!(h.db.frontier().unwrap(), before);
+    let mut arbitrary_certificate = request.clone();
+    arbitrary_certificate.plan_certificate = Some(Oid([0xa5; 32]));
+    let refusal = h.post(arbitrary_certificate).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+    assert!(refusal.message.contains("requires_dry_run"));
+    assert_eq!(h.db.frontier().unwrap(), before);
     let plan = h.post_plan(request).unwrap();
     assert_eq!(h.db.frontier().unwrap(), before);
     let mut certificate = plan.certificate().clone();
@@ -6635,7 +6641,30 @@ fn required_rehearsal_accepts_only_authenticated_single_and_replacement_plans() 
     let (mut reversal, mut replacement) = h.planned_rent_correction(posted.entry_ref());
     reversal.capability = capability.clone();
     replacement.capability = capability.clone();
+    let refusal = h
+        .post_pair(reversal.clone(), replacement.clone())
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), after);
     let plan = h.replacement_plan(reversal, replacement).unwrap();
+    assert_eq!(h.db.frontier().unwrap(), after);
+    let corrupt_member = |member: &fa_intents::PostPlan| {
+        let mut certificate = member.certificate().clone();
+        certificate.authentication[0] ^= 1;
+        fa_intents::PostPlan::new(
+            member.intent().clone(),
+            member.prepared_entry().clone(),
+            certificate,
+        )
+        .unwrap()
+    };
+    let forged = fa_intents::ReplacementPlan::new(
+        corrupt_member(plan.reversal()),
+        corrupt_member(plan.replacement()),
+    )
+    .unwrap();
+    let refusal = h.publish_replacement_plan(forged, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
     assert_eq!(h.db.frontier().unwrap(), after);
     let pair = h
         .publish_replacement_plan(plan.clone(), &capability)
