@@ -922,7 +922,7 @@ fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
     tick(&mut h, april(), 129);
     let head = h.db.frontier().unwrap();
     let capability = executor(&h).with_requires_dry_run();
-    let refusal = sweep(&mut h, capability).unwrap().unwrap_err();
+    let refusal = sweep(&mut h, capability).unwrap_err();
     assert_eq!(
         (refusal.code, refusal.exit),
         (code::CAPABILITY, exit::SAFETY)
