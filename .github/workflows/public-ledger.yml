@@ -225,6 +225,20 @@ jobs:
           set -euo pipefail
           python3 -B scripts/public_ledger_portable_proof.py --run artifacts/public-ledger/university-source-bound --out artifacts/public-ledger/university-source-bound-portable --fa target/debug/fa --fa-verify target/debug/fa-verify --source-bound --require-entry-fragments --emit-public-example 2>&1 | tee artifacts/public-ledger/university-source-bound-portable.log
 
+      - name: Replay the complete health-care authority across declared class boundaries
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/public_ledger_source_bound_replay.py --repo "$PWD" run --agency 80700 --balance-boundary agency-period --out artifacts/public-ledger/health-authority-source-bound --fa "$PWD/target/debug/fa" --fa-verify "$PWD/target/debug/fa-verify" 2>&1 | tee artifacts/public-ledger/health-authority-source-bound.log
+
+      - name: Independently verify the source-bound health-care authority report
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/public_ledger_portable_proof.py --run artifacts/public-ledger/health-authority-source-bound --out artifacts/public-ledger/health-authority-source-bound-portable --fa target/debug/fa --fa-verify target/debug/fa-verify --source-bound --require-entry-fragments 2>&1 | tee artifacts/public-ledger/health-authority-source-bound-portable.log
+
       - name: Replay the complete museum selection
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash

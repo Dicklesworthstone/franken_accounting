@@ -485,7 +485,9 @@ unchanged canonical digests. Historical reads, same-batch resolution, register
 maintenance, native certificates and portable proofs resolve the complete
 original bytes. The [storage and validation section](docs/public_ledger.md#preserve-large-entries-without-losing-source-detail)
 explains compatibility, corruption controls and the real source that exposed
-the defect; earlier account-only execution records do not validate this repair.
+the defect. Fresh complete-chartfield replays now pass for all three original
+agency fixtures, including the intact 157-leg university Entry. The execution
+record retains the earlier refusal and the separate hosted test failure.
 
 The [source-bound replay helper](scripts/public_ledger_source_bound_replay.py)
 adds the native `--bind-source` preparation switch to the same complete-agency
@@ -500,10 +502,28 @@ retained departmental certificate, pins its signed checkpoint and runs the
 separate `fa-verify report` command with an expected certificate, trusted fixture
 key and detached receipt. The full university workflow exercises both ordinary
 and source-bound bundles, including the real Entry and migration-run fragments.
-Its validation record distinguishes a completed native verification from a
-scheduled check.
+Both university report modes have passed actual independent verification: the
+ordinary bundle contains 10 native inputs, and the source-bound bundle contains
+12 with all nine source witnesses. The [public offline proof example](examples/public_ledger/university_source_bound/README.md)
+contains the real signed checkpoint, report bundle and receipt in 85,694
+compressed bytes; its decompressed files pass all 91 verifier checks without
+the native book or a private key. Exact source, helper and binary pins retain
+the scope of those results.
 
-The entire 373,357-row publication has been profiled. **All three complete agency
+An explicit [agency-period balance boundary](docs/public_ledger.md#whole-agency-activity-across-fund-and-class-boundaries)
+also supports complete monthly activity whose individual fund/class slices do
+not balance. The Health Care Authority fixture preserves all 1,440 published
+rows, including 1,405 monetary legs and 35 zero rows. Its two offsetting April
+class balances remain visible; the adapter neither invents a balancing leg nor
+nets those source rows away. The default fund/class boundary remains strict.
+The complete source-bound health-care replay passed 666 native commands and
+all 39 driver checks, followed by an independently verified portable report
+with the full fragment closure and one source witness. Its
+[execution record](evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json)
+preserves the strict-profile refusal, exact source and executable pins, and
+the distinct accounting scope of this activity-only import.
+
+The entire 373,357-row publication has been profiled. **The original three complete agency
 fixtures passed the native account-level workflow:** 1,317 original rows
 produce 1,303 exact monetary legs across 48
 migration entries, with every monthly/cumulative/gross account cell reconciled,

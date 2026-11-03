@@ -126,18 +126,65 @@ The fragment witness-conflict regression stages its candidate write before a
 concurrent publication; it then requires the stale commit to fail without
 publishing that candidate.
 
-## Validation boundary
+## Observed acceptance (2026-11-03)
 
-The preceding hosted run at `f3f1d66b25f9b01535efa9de74e38cb600b08a59`
-completed the full stock university replay: 1,055 source rows, 1,051 monetary
-legs, 223 accounts, 27 Entries and 521 native commands. Its 512-leg retained
-certificate/portable-proof regression and all 878 independent-verifier tests
-passed. Its separate fragment-object group failed because the test staged a
-write only after a concurrent publication had advanced its snapshot. The
-genesis filter also selected zero tests. Those results are preserved as an
-overall failed job, rather than relabeled as complete acceptance.
+Both complete university replays and both independent portable proofs passed
+with the actual executables built from
+`f3f1d66b25f9b01535efa9de74e38cb600b08a59`. Each fresh replay preserved all
+1,055 source rows, posted 1,051 monetary legs across 27 Entries and nine
+migration runs, registered 223 accounts, and executed 521 native commands.
+The source, driver, normalizer and executable hashes remained unchanged.
 
-The helper and source-bound university workflow introduced here have received
-source review. Their Python/native execution is not claimed until the hosted
-steps execute successfully on the published revision. Use the actual
-`validation.json`, command transcript and workflow results for that distinction.
+| Actual portable result | Ordinary university | Source-bound university |
+|---|---:|---:|
+| Independent verifier verdict | verified | verified |
+| Native inputs | 10 | 12 |
+| Bundle minor version | 0 | 1 |
+| Canonical migration-run bodies | 9 | 9 |
+| Migration-source witnesses | 0 | 9 |
+| Migration-run and Entry fragments | Both present | Both present |
+| Bundle bytes | 263,355 | 273,822 |
+| Native helper commands | 4 | 4 |
+
+The helper is the exact version introduced in `a0c79c5`, SHA256
+`61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0`.
+The [execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
+retains the complete original failure, subsequent measured results, actual
+commands, verifier receipts and artifact hashes.
+
+The [public offline example](../examples/public_ledger/university_source_bound/README.md)
+contains the actual source-bound bundle, checkpoint and receipt from this
+successful run, compressed to 85,694 bytes in total. Its manifest records both
+compressed and original hashes, the expected certificate and the fixture trust
+anchor. Its reproduction command verifies those public files without opening
+or possessing the generated native book.
+
+These workload passes are distinct from the complete Rust regression gate.
+The earlier hosted run at `f3f1d66` passed the 512-leg retained-certificate and
+portable-proof regression and all 878 independent-verifier tests. Its separate
+fragment-object group failed because the test staged a write only after a
+concurrent publication had advanced its snapshot. The genesis filter selected
+zero tests, and the subsequent lifecycle command was not reached. That job
+remains recorded as failed. The later operation-order and filter corrections
+must establish their own runtime acceptance; the positive real-data results
+do not stand in for those tests or the complete workspace gate.
+
+The same path also passed for the complete Health Care Authority selection
+under the explicit `agency-period` boundary. Its source-bound replay preserved
+1,440 source rows and 1,405 monetary legs across three monthly Entries; the
+independently verified departmental report contained 12 native inputs, one
+migration-run body and one source witness, including both run and Entry
+fragments. The replay passed 39 driver checks over 666 native commands, and
+the portable report passed 30 independent verifier checks. The
+[separate execution record](../evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json)
+retains the newer helper pins and the strict fund/class profile's unchanged
+refusal. That distinction is necessary because the report uses a declared
+monthly activity grouping while preserving the two offsetting source class
+balances.
+
+The source-bound companion rejects `--resume` and every abbreviation that the
+stock parser could treat as that option before resolving the repository or
+observing an existing output. Its six argument-admission tests and the expanded
+public-ledger/source suite passed together: 99 tests with exit 0. This preserves
+the companion's fresh-book contract; ordinary recovery remains a separate
+stock-driver operation with its original source and boundary pins.
