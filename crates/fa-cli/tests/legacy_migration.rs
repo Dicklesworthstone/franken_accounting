@@ -14,6 +14,8 @@ mod grouped;
 mod limited_accounts;
 #[path = "legacy_migration/oklahoma.rs"]
 mod oklahoma;
+#[path = "legacy_migration/party_entity.rs"]
+mod party_entity;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -182,6 +184,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(format: &str, source: &str, unit: &str, kind: &str, go_live: &str) -> Self {
+        Self::with_entities(format, source, unit, kind, go_live, &[])
+    }
+
+    fn with_entities(
+        format: &str,
+        source: &str,
+        unit: &str,
+        kind: &str,
+        go_live: &str,
+        entities: &[&str],
+    ) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let path = std::env::temp_dir().join(format!(
@@ -196,19 +209,20 @@ impl Fixture {
             }
         };
         let book = dir.join("book");
-        ok(
-            &book,
-            &[
-                "book",
-                "create",
-                "--name",
-                "Legacy opening import",
-                "--base-unit",
-                unit,
-                "--opening-date",
-                go_live,
-            ],
-        );
+        let mut create = vec![
+            "book",
+            "create",
+            "--name",
+            "Legacy opening import",
+            "--base-unit",
+            unit,
+            "--opening-date",
+            go_live,
+        ];
+        for entity in entities {
+            create.extend(["--entity", *entity]);
+        }
+        ok(&book, &create);
         let mut fixture = Self {
             dir,
             book,

@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::{BookContext, RunBody, RunMode, TrialBalanceLine};
 use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid,
-    PeriodRef, account_vid, dimension_kind, dimension_value_vid,
+    PeriodRef, account_vid, dimension_kind, dimension_value_vid, entity_value_vid,
+    party_value_vid,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
@@ -259,8 +260,10 @@ pub struct LegacyColumnMap {
     pub entered_by_column: Option<String>,
     pub approved_by_column: Option<String>,
     pub account_mappings: BTreeMap<String, String>,
-    /// Registered dimension kind -> source column containing its value code.
-    /// Blank cells omit the dimension; nonblank codes are preserved exactly.
+    /// Registered dimension kind, `party`, or `legal_entity` -> source column
+    /// containing its existing native value code. Blank cells omit the
+    /// dimension; nonblank codes are preserved exactly. This never declares a
+    /// party, legal entity or ordinary dimension value in the target book.
     pub dimension_columns: BTreeMap<String, String>,
 }
 
@@ -352,11 +355,11 @@ impl LegacyColumnMap {
                     }
                 }
                 "dimension_columns" => {
-                    if dimension_kind(&k).is_none() || v.trim().is_empty() || v.trim() != v {
+                    if import_dimension_id(&k).is_none() || v.trim().is_empty() || v.trim() != v {
                         return Err(FormatError::Parse {
                             format: FMT,
                             detail: format!(
-                                "line {}: dimension mapping {k:?} must name a registered dimension kind and an exact nonblank source column",
+                                "line {}: dimension mapping {k:?} must name a registered dimension kind, party or legal_entity and an exact nonblank source column",
                                 line_idx + 1
                             ),
                         });
@@ -556,9 +559,32 @@ pub struct LegacyChunkEntry {
     pub leg_dimensions: BTreeMap<usize, BTreeMap<String, String>>,
 }
 
+fn import_dimension_id(kind: &str) -> Option<u32> {
+    match kind {
+        fa_model::LEGAL_ENTITY_DIMENSION_CODE => Some(fa_model::LEGAL_ENTITY_DIMENSION),
+        fa_model::PARTY_DIMENSION_CODE => Some(fa_model::PARTY_DIMENSION),
+        _ => dimension_kind(kind).map(|kind| kind.id),
+    }
+}
+
 fn dimension_value_problem(kind: &str, code: &str) -> Option<String> {
     // Reuse the native declaration's identifier contract. This validates a
     // reference only; importing history never creates or renames its value.
+    // Party/LegalEntity codes have their own native contracts; they are not
+    // ordinary DimensionValueSpec codes and may contain UTF-8 and spaces.
+    let reserved_bound = match kind {
+        fa_model::PARTY_DIMENSION_CODE => Some(fa_model::rea::MAX_REA_CODE_BYTES),
+        // BookSpec and LegalEntityFullSpec both use the Appendix A bound.
+        fa_model::LEGAL_ENTITY_DIMENSION_CODE => Some(32),
+        _ => None,
+    };
+    if let Some(bound) = reserved_bound {
+        return (code.trim().is_empty() || code.len() > bound).then(|| {
+            format!(
+                "{kind} code must be a nonblank existing native code of at most {bound} UTF-8 bytes"
+            )
+        });
+    }
     fa_journal::dimension::DimensionValueSpec {
         dimension: kind.to_owned(),
         code: code.to_owned(),
@@ -705,13 +731,18 @@ impl LegacyImportBatch {
                 );
                 if let Some(values) = chunk.leg_dimensions.get(&ordinal) {
                     for (kind, code) in values {
-                        let kind = dimension_kind(kind).ok_or_else(|| FormatError::Parse {
+                        let id = import_dimension_id(kind).ok_or_else(|| FormatError::Parse {
                             format: self.format.registry_name(),
                             detail: format!("unregistered dimension kind {kind:?}"),
                         })?;
-                        payload
-                            .dimension_set
-                            .push((kind.id, dimension_value_vid(book.book_id, kind.code, code)));
+                        let value = match kind.as_str() {
+                            fa_model::LEGAL_ENTITY_DIMENSION_CODE => {
+                                entity_value_vid(book.book_id, code)
+                            }
+                            fa_model::PARTY_DIMENSION_CODE => party_value_vid(book.book_id, code),
+                            _ => dimension_value_vid(book.book_id, kind, code),
+                        };
+                        payload.dimension_set.push((id, value));
                     }
                     payload.dimension_set.sort_by_key(|(kind, _)| *kind);
                 }
@@ -1430,11 +1461,11 @@ fn parse_tabular_csv_with_format(
     let header_description = format == LegacyFormat::GenericCsv
         && column_map.description_column != column_map.memo_column;
     for (kind, column) in &column_map.dimension_columns {
-        if dimension_kind(kind).is_none() || column.trim().is_empty() || column.trim() != column {
+        if import_dimension_id(kind).is_none() || column.trim().is_empty() || column.trim() != column {
             return Err(FormatError::Parse {
                 format: fmt_name,
                 detail: format!(
-                    "dimension mapping {kind:?} must name a registered dimension kind and an exact nonblank source column"
+                    "dimension mapping {kind:?} must name a registered dimension kind, party or legal_entity and an exact nonblank source column"
                 ),
             });
         }
@@ -2983,14 +3014,136 @@ mod tests {
     }
 
     #[test]
+    fn legacy_csv_party_and_entity_codes_preserve_exact_native_attribution() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns(concat!(
+            "[dimension_columns]\nparty = \"investor\"\n",
+            "legal_entity = \"company\"\ndepartment = \"department\"\n",
+        ));
+        let source = concat!(
+            "entry,date,account,amount,investor,company,department\n",
+            "A,2025-12-31,1000,100.00,Case-001,Entity-A,0100001\n",
+            "A,2025-12-31,3000,-100.00, ,Entity-A,\n",
+            "B,2025-12-31,1000,25.50,case-001,Entity-B,0100001\n",
+            "B,2025-12-31,3000,-25.50,,Entity-B,\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 4);
+        assert_eq!(batch.chunks[0].leg_dimensions[&0]["party"], "Case-001");
+        assert_eq!(batch.chunks[1].leg_dimensions[&0]["party"], "case-001");
+        assert!(!batch.chunks[0].leg_dimensions[&1].contains_key("party"));
+
+        let book = BookContext {
+            book_id: Id128([0x65; 16]),
+            calendar: FiscalCalendar::monthly("cal", 1, 1).unwrap(),
+            units: UnitRegistry::with_defaults(),
+            seal_key: SealKey([0x45; 32]),
+            symbols: SymbolTable::compiled(),
+        };
+        let mut counter = 0_u64;
+        let proposals = batch
+            .to_chunk_proposals_with_sealer(
+                &book,
+                VId(1),
+                DateDay::parse("2026-01-01").unwrap(),
+                Some("FY2026-OPEN"),
+                PRINCIPAL,
+                Oid([0x83; 32]),
+                Vec::new(),
+                |text| {
+                    counter += 1;
+                    let mut salt = [0x93; 32];
+                    salt[..8].copy_from_slice(&counter.to_le_bytes());
+                    let mut nonce = [0x94; 24];
+                    nonce[..8].copy_from_slice(&counter.to_le_bytes());
+                    Ok::<_, FormatError>(Erasable::seal(
+                        &text.to_owned(),
+                        None,
+                        &book.seal_key,
+                        salt,
+                        nonce,
+                    ))
+                },
+            )
+            .unwrap();
+        for (index, entity, party) in [(0, "Entity-A", "Case-001"), (1, "Entity-B", "case-001")] {
+            assert_eq!(
+                proposals[index].legs[0].dimension_set,
+                vec![
+                    (1, entity_value_vid(book.book_id, entity)),
+                    (3, dimension_value_vid(book.book_id, "department", "0100001")),
+                    (12, party_value_vid(book.book_id, party)),
+                ]
+            );
+            assert_eq!(
+                proposals[index].legs[1].dimension_set,
+                vec![(1, entity_value_vid(book.book_id, entity))]
+            );
+        }
+        assert_ne!(
+            proposals[0].legs[0].dimension_set[2].1,
+            proposals[1].legs[0].dimension_set[2].1,
+            "native party codes are case-sensitive"
+        );
+        assert_ne!(
+            proposals[0].legs[0].dimension_set[2].1,
+            fa_model::party_vid(book.book_id, "Case-001"),
+            "a leg names the party's DimensionValue, not the Party vertex"
+        );
+        assert_ne!(
+            proposals[0].legs[0].dimension_set[0].1,
+            fa_model::legal_entity_vid(book.book_id, "Entity-A"),
+            "a leg names the entity's DimensionValue, not the LegalEntity vertex"
+        );
+
+        for (kind, replacement) in [("party", "company"), ("legal_entity", "investor")] {
+            let mut changed = columns.clone();
+            changed
+                .dimension_columns
+                .insert(kind.into(), replacement.into());
+            let changed = parse_generic_csv(source, &changed, &units, &accounts).unwrap();
+            assert_eq!(changed.trial_balance, batch.trial_balance);
+            assert_eq!(changed.source_bytes_digest, batch.source_bytes_digest);
+            assert_ne!(changed.attestation_digest, batch.attestation_digest);
+        }
+    }
+
+    #[test]
+    fn legacy_csv_reserved_dimensions_use_native_code_bounds_without_normalization() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        for (kind, bound) in [("party", 64), ("legal_entity", 32)] {
+            let columns = csv_columns(&format!("[dimension_columns]\n{kind} = \"value\"\n"));
+            for code in [" Société A ".to_string(), "é".repeat(bound / 2)] {
+                let source = format!(
+                    "entry,date,account,amount,value\nA,2025-12-31,1000,1.00,{code}\nA,2025-12-31,3000,-1.00,\n"
+                );
+                let batch = parse_generic_csv(&source, &columns, &units, &accounts).unwrap();
+                assert_eq!(batch.chunks[0].leg_dimensions[&0][kind], code);
+                assert!(!batch.chunks[0].leg_dimensions.contains_key(&1));
+            }
+            let overlong = "é".repeat(bound / 2 + 1);
+            let source = format!(
+                "entry,date,account,amount,value\nA,2025-12-31,1000,1.00,{overlong}\nA,2025-12-31,3000,-1.00,\n"
+            );
+            let error = parse_generic_csv(&source, &columns, &units, &accounts).unwrap_err();
+            assert!(error.to_string().contains("UTF-8 bytes"), "{error}");
+        }
+    }
+
+    #[test]
     fn legacy_csv_empty_dimension_projection_preserves_dimension_free_attestations() {
         let units = UnitCatalog::embedded().unwrap();
         let accounts = test_account_map();
-        let source = "entry,date,account,amount,department\nA,2025-12-31,1000,1.00, \nA,2025-12-31,3000,-1.00,\n";
+        let source = "entry,date,account,amount,department,party,entity\nA,2025-12-31,1000,1.00, , , \nA,2025-12-31,3000,-1.00,,,\n";
         let plain = parse_generic_csv(source, &csv_columns(""), &units, &accounts).unwrap();
         let mapped = parse_generic_csv(
             source,
-            &csv_columns("[dimension_columns]\ndepartment = \"department\"\n"),
+            &csv_columns(concat!(
+                "[dimension_columns]\ndepartment = \"department\"\n",
+                "party = \"party\"\nlegal_entity = \"entity\"\n",
+            )),
             &units,
             &accounts,
         )
@@ -3006,7 +3159,9 @@ mod tests {
         for declaration in [
             "[dimension_columns]\ndepartment = \"department\"\ndepartment = \"other\"\n",
             "[dimension_columns]\nunknown_kind = \"department\"\n",
-            "[dimension_columns]\nparty = \"party\"\n",
+            "[dimension_columns]\nParty = \"party\"\n",
+            "[dimension_columns]\nparty = \"party\"\nparty = \"other\"\n",
+            "[dimension_columns]\nlegal_entity = \"entity\"\nlegal_entity = \"other\"\n",
             "[dimension_columns]\ndepartment = \" \"\n",
             "[dimension_columns]\ndepartment = \" department\"\n",
         ] {

@@ -387,6 +387,88 @@ without applying today's required-dimension or value-effectivity policy to old
 records. Fund, class funding, project and other chartfields remain in evidence;
 this adapter does not yet project them into native dimensions.
 
+## Import existing parties and legal entities from generic CSV
+
+The generic CSV importer also accepts `party` and `legal_entity` in
+`[dimension_columns]`, alongside ordinary dimensions such as department,
+fund and project. This is useful when a legacy ledger already identifies the
+customer, vendor, investor or subsidiary on each source posting.
+
+These columns contain **existing native codes**. Declare the legal entities
+when creating the book and register each party with `fa party add` before
+staging. The importer resolves the codes to their native dimension values; it
+does not create parties or entities, infer a counterparty from an account name,
+or transfer a raw dimension VID from another book.
+
+For example, the following column map preserves all three source fields:
+
+```toml
+[columns]
+source_system = "legacy-csv"
+entry_id_column = "Journal"
+effective_date_column = "Date"
+account_column = "Account"
+signed_amount_column = "Amount"
+
+[dimension_columns]
+party = "InvestorID"
+legal_entity = "Company"
+department = "DepartmentID"
+```
+
+A four-row source can contain two independently balanced entities:
+
+```csv
+Journal,Date,Account,Amount,InvestorID,Company,DepartmentID
+A,2025-12-20,1000,100.00,Case-001,Entity-A,0100001
+A,2025-12-20,3000,-100.00,,Entity-A,
+B,2025-12-29,1000,25.50,case-001,Entity-B,0100001
+B,2025-12-29,3000,-25.50,,Entity-B,
+```
+
+This example assumes the accounts, the department, both legal entities and
+both counterparties are already declared. `Case-001` and `case-001` are
+different parties. The blank equity-leg party and department cells remain
+absent. No placeholder party is invented to make a dimension slice balance.
+
+| Source mapping | Native dimension ID | Native posting requirement |
+| --- | ---: | --- |
+| `legal_entity` | 1 | Names one of the book's declared entities. Every leg must name an entity in a multi-entity book, and each entry balances independently per entity and unit. |
+| `department` | 3 | Names an existing registered department value. A historical Migration preserves its original attribution. |
+| `party` | 12 | Names an existing Party's dimension value. A blank source party stays absent unless the account's native posting law requires one. |
+
+Party codes are bounded by the native 64-byte UTF-8 contract; legal entity
+codes by the native 32-byte contract. Nonblank values retain their exact case,
+Unicode and surrounding spaces. Whitespace-only cells mean absence. Ordinary
+dimension codes retain their stricter printable-ASCII identifier contract.
+The importer never trims a nonblank code to make it match a different object.
+
+Preparation retains the exact source, column map and sealed leg proposals.
+Changing only a party or entity changes the source attribution attestation;
+changing only a retained proposal's dimensions fails source replay even when
+every account total still agrees. The native staging transaction checks value
+existence and per-entity balance. Missing parties, undeclared entities,
+missing mandatory entity tags and entries that balance only across entities
+refuse without posting a partial chunk.
+
+Staging remains invisible until finalization, and exact retries retain the
+same dimension identities. Existing CSV, ADS, SAF-T and other dimension-aware
+exports carry these IDs through the same `fa-dimension-ids-v1` contract.
+These IDs prove identity within the exporting book; the source crosswalk
+remains necessary to explain what each code means.
+
+This generic mapping does not infer investor or legal-entity meaning for OMES
+chartfields. The public OMES adapter still projects only the fields described
+above.
+
+**Validation boundary:** new format and persisted CLI regressions cover the
+simultaneous entity/department/party mapping, case-distinct counterparties,
+retained-package substitution, activation/retry and dimension-preserving CSV
+and ADS certificates. They also exercise missing references and a globally
+balanced entry that violates per-entity balance. Those new Rust tests are
+**UNRUN** in this authoring session: the prerequisite native build was
+unavailable and the executor subsequently disconnected.
+
 ## Preserve attribution through CSV, ADS and offline proof verification
 
 The native format journal carries every leg's complete dimension set, including
@@ -469,6 +551,22 @@ The profile reports the affected groups and source ordinals for investigation.
   payloads bounded. Each migration activates atomically; finalizing the entire
   agency across several runs is not one atomic publication. The preactivation
   historical check uses the prefix before the first finalization.
+- Native finalization currently binds the staged chunk set and checks the
+  declared trial balances; it does not bind every proposal in a retained
+  import package. For example, a package can contain an opening cash/capital
+  entry plus a cash/capital increase and its exact reversal in the same
+  period. Omitting the latter two entries leaves every declared net balance
+  unchanged, so native tie-out alone cannot detect the missing gross activity.
+  The import display's recorded-count readiness is not a kernel completeness
+  guarantee. This gap remains open; the replay drivers must stage and check
+  every source chunk.
+- Closing that gap requires an explicit immutable native source-manifest
+  binding before staging: source/package commitments, transformation identity
+  and the complete ordered proposal inventory. Its publication must be atomic
+  and durable, and both staging and finalization must enforce it. Independent
+  proof coverage must say whether this manifest was supplied and verified.
+  Uploading an arbitrary Workpaper, or supplying a count to the CLI finalizer,
+  must not implicitly establish authoritative run membership.
 - The larger selection still has bounded group sizes. It does not settle
   `fa-fdt`/`fa-zddh` large-entry and million-line bulk-migration acceptance.
   Unsupported native sizes must be reported, never addressed by inventing
